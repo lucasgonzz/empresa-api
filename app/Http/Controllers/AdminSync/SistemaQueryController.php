@@ -3,12 +3,10 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
-use App\Models\Article;
-use App\Models\Client;
+use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -22,11 +20,13 @@ use Illuminate\Support\Facades\Log;
 class SistemaQueryController extends Controller
 {
     /**
-     * Cantidad máxima de registros que se devuelven por consulta.
+     * Cantidad máxima de registros que se devuelven por consulta. El valor
+     * real vive en ConsultasSistemaIaHelper (compartido con las tools del
+     * asistente de IA); la constante queda para no romper referencias.
      *
      * @var int
      */
-    protected const MAX_RESULTS = 20;
+    protected const MAX_RESULTS = ConsultasSistemaIaHelper::MAX_RESULTS;
 
     /**
      * Recibe una consulta en lenguaje natural, detecta su tipo por palabras clave
@@ -171,6 +171,9 @@ class SistemaQueryController extends Controller
     /**
      * Consulta artículos del owner con su stock, filtrando por nombre similar al de la consulta.
      *
+     * La query vive en ConsultasSistemaIaHelper (compartida con las tools del
+     * asistente de IA); acá solo se extrae la palabra clave y se delega.
+     *
      * @param  int  $owner_id  Id del owner (articles.user_id).
      * @return array<int, array<string, mixed>>
      */
@@ -179,71 +182,18 @@ class SistemaQueryController extends Controller
         // Palabra clave de producto extraída del texto (ej. "Coca Cola" desde "cuánto stock tengo de Coca Cola").
         $keyword = $this->extract_product_keyword($query);
 
-        $articles_query = Article::query()
-            ->where('user_id', $owner_id)
-            ->where('status', 'active');
-
-        // Si hay una palabra clave útil, se filtra por nombre / código de barras / código de proveedor.
-        if ($keyword !== '') {
-            $articles_query->where(function ($sub) use ($keyword) {
-                $sub->where('name', 'LIKE', '%' . $keyword . '%')
-                    ->orWhere('bar_code', 'LIKE', '%' . $keyword . '%')
-                    ->orWhere('provider_code', 'LIKE', '%' . $keyword . '%');
-            });
-        }
-
-        $articles = $articles_query
-            ->orderBy('name')
-            ->limit(self::MAX_RESULTS)
-            ->get(['id', 'name', 'bar_code', 'provider_code', 'price', 'final_price', 'stock']);
-
-        // Aplanamos a un array simple y legible para Claude.
-        $result = [];
-        foreach ($articles as $article) {
-            $result[] = [
-                'id'            => (int) $article->id,
-                'nombre'        => (string) $article->name,
-                'codigo'        => (string) ($article->bar_code ?? $article->provider_code ?? ''),
-                'precio'        => $article->final_price !== null ? (float) $article->final_price : (float) $article->price,
-                'stock'         => $article->stock !== null ? (float) $article->stock : 0,
-            ];
-        }
-
-        return $result;
+        return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, $keyword);
     }
 
     /**
      * Consulta los artículos más vendidos del owner en los últimos 30 días.
-     *
-     * Los ítems de venta viven en la tabla pivot article_purchases (article_id, sale_id, amount).
-     * Se agrupan por artículo sumando las cantidades vendidas.
      *
      * @param  int  $owner_id  Id del owner (articles.user_id / sales.user_id).
      * @return array<int, array<string, mixed>>
      */
     protected function query_top_sold_articles(int $owner_id): array
     {
-        $top = DB::table('article_purchases')
-            ->join('articles', 'article_purchases.article_id', '=', 'articles.id')
-            ->join('sales', 'article_purchases.sale_id', '=', 'sales.id')
-            ->where('articles.user_id', $owner_id)
-            ->where('article_purchases.created_at', '>=', now()->subDays(30))
-            ->whereNull('sales.deleted_at')
-            ->select('articles.name as nombre', DB::raw('SUM(article_purchases.amount) as total_vendido'))
-            ->groupBy('articles.id', 'articles.name')
-            ->orderByDesc('total_vendido')
-            ->limit(self::MAX_RESULTS)
-            ->get();
-
-        $result = [];
-        foreach ($top as $row) {
-            $result[] = [
-                'nombre'        => (string) $row->nombre,
-                'total_vendido' => (float) $row->total_vendido,
-            ];
-        }
-
-        return $result;
+        return ConsultasSistemaIaHelper::mas_vendidos($owner_id, 30);
     }
 
     /**
@@ -254,24 +204,7 @@ class SistemaQueryController extends Controller
      */
     protected function query_pending_collections(int $owner_id): array
     {
-        // clients.saldo positivo = el cliente debe dinero (pendiente de cobro).
-        $clients = Client::query()
-            ->where('user_id', $owner_id)
-            ->where('saldo', '>', 0)
-            ->orderByDesc('saldo')
-            ->limit(self::MAX_RESULTS)
-            ->get(['id', 'name', 'phone', 'saldo']);
-
-        $result = [];
-        foreach ($clients as $client) {
-            $result[] = [
-                'cliente'           => (string) $client->name,
-                'telefono'          => (string) ($client->phone ?? ''),
-                'saldo_pendiente'   => (float) $client->saldo,
-            ];
-        }
-
-        return $result;
+        return ConsultasSistemaIaHelper::clientes_con_saldo_pendiente($owner_id);
     }
 
     /**
@@ -285,25 +218,15 @@ class SistemaQueryController extends Controller
     {
         $keyword = $this->extract_product_keyword($query);
 
-        $clients_query = Client::query()->where('user_id', $owner_id);
-
-        if ($keyword !== '') {
-            $clients_query->where('name', 'LIKE', '%' . $keyword . '%');
-        }
-
-        $clients = $clients_query
-            ->orderBy('name')
-            ->limit(self::MAX_RESULTS)
-            ->get(['id', 'name', 'phone', 'email', 'saldo']);
-
+        /*
+         * El helper suma la clave `id` (la tool de movimientos del chat la
+         * necesita para encadenar consultas); este endpoint conserva su
+         * contrato exacto con admin-api, así que se quita antes de responder.
+         */
         $result = [];
-        foreach ($clients as $client) {
-            $result[] = [
-                'cliente'   => (string) $client->name,
-                'telefono'  => (string) ($client->phone ?? ''),
-                'email'     => (string) ($client->email ?? ''),
-                'saldo'     => $client->saldo !== null ? (float) $client->saldo : 0,
-            ];
+        foreach (ConsultasSistemaIaHelper::clientes($owner_id, $keyword) as $fila) {
+            unset($fila['id']);
+            $result[] = $fila;
         }
 
         return $result;
@@ -319,28 +242,7 @@ class SistemaQueryController extends Controller
      */
     protected function extract_product_keyword(string $query): string
     {
-        // Palabras de relleno que no aportan al filtro de nombre.
-        $stop_words = [
-            'cuanto', 'cuanta', 'cuantos', 'cuantas', 'stock', 'inventario', 'tengo', 'hay', 'queda', 'quedan',
-            'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'mi', 'mis', 'me', 'que', 'cual', 'cuales',
-            'existencia', 'existencias', 'producto', 'productos', 'articulo', 'articulos', 'sistema',
-            'cliente', 'clientes', 'factura', 'facturas', 'deuda', 'saldo', 'pendiente', 'pendientes',
-        ];
-
-        $normalized = $this->normalize_text($query);
-        // Separamos en palabras y descartamos las de relleno.
-        $words = preg_split('/\s+/', $normalized) ?: [];
-
-        $kept = [];
-        foreach ($words as $word) {
-            $word = trim($word);
-            if ($word === '' || in_array($word, $stop_words, true)) {
-                continue;
-            }
-            $kept[] = $word;
-        }
-
-        return trim(implode(' ', $kept));
+        return ConsultasSistemaIaHelper::extract_product_keyword($query);
     }
 
     /**
@@ -351,14 +253,7 @@ class SistemaQueryController extends Controller
      */
     protected function normalize_text(string $text): string
     {
-        $text = mb_strtolower(trim($text));
-
-        // Reemplazo simple de vocales acentuadas y ñ.
-        $replacements = [
-            'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n',
-        ];
-
-        return strtr($text, $replacements);
+        return ConsultasSistemaIaHelper::normalize_text($text);
     }
 
     /**

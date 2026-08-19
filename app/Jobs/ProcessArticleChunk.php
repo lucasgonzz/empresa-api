@@ -32,7 +32,7 @@ class ProcessArticleChunk implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
+    protected $csv_path, $columns, $blank_flags, $create_and_edit, $start_row, $finish_row,
               $provider_id, $user_id, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk, $actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $permitir_provider_code_repetido, $permitir_provider_code_repetido_en_multi_providers, $actualizar_por_provider_code, $user;
 
     /**
@@ -52,9 +52,10 @@ class ProcessArticleChunk implements ShouldQueue
     public $tries = 1;
     
 	public function __construct(
-            $csv_path, 
-            $columns, 
-            $create_and_edit, 
+            $csv_path,
+            $columns,
+            $blank_flags,
+            $create_and_edit,
             $start_row, 
             $finish_row, 
             $provider_id, 
@@ -77,6 +78,8 @@ class ProcessArticleChunk implements ShouldQueue
 
         $this->csv_path                                     = $csv_path;
         $this->columns                                      = $columns;
+        // Prompt 310: flags "permitir_valores_en_blanco" por columna, propagados hasta ProcessRow.
+        $this->blank_flags                                  = $blank_flags;
         $this->create_and_edit                              = $create_and_edit;
         $this->start_row                                    = $start_row;
         $this->finish_row                                   = $finish_row;
@@ -394,6 +397,7 @@ class ProcessArticleChunk implements ShouldQueue
 
             $this->importer = new ArticleImport(
                 $this->columns,
+                $this->blank_flags,
                 $this->create_and_edit,
                 $this->start_row,
                 $this->finish_row,

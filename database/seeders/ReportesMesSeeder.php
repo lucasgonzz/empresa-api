@@ -25,6 +25,17 @@ use Illuminate\Support\Facades\Log;
  * Seeder que puebla datos de varios meses para testear el módulo de reportes con rangos de fechas.
  * Genera ventas mostrador, ventas a cuenta corriente, pagos de clientes,
  * compras a proveedores, pagos a proveedores y gastos por cada mes configurado.
+ *
+ * ⚠️ DESENGANCHADO de `DatabaseSeeder` desde el grupo 321 (prompt 05, 3/8/2026). Lo reemplaza
+ * `php artisan semilla:datos`, que corrige tres límites de este archivo: (a) fechaba los
+ * movimientos de caja en el día de la corrida, no en la fecha de cada operación, porque no
+ * movía `Carbon::setTestNow()` antes de llamar a los helpers de caja; (b) todo el dinero
+ * entraba por un solo método de pago (efectivo, id 3) en vez de repartirse entre los seis; (c)
+ * usaba siempre el cliente 1 y el proveedor 1, así que nunca ejercitaba el resto del catálogo
+ * ni los filtros por cliente/proveedor de los reportes. Sigue existiendo (no se borra: en
+ * `develop` sigue viva y borrarla acá generaría un conflicto modify/delete en el próximo sync
+ * `develop` → `refractor`), y `distribuir()` pasó a `public static` porque `semilla:datos` la
+ * reusa (mismo criterio de reparto, no reescrito).
  */
 class ReportesMesSeeder extends Seeder
 {
@@ -185,11 +196,14 @@ class ReportesMesSeeder extends Seeder
                             'amount'       => 1,
                         ],
                     ],
-                    // Pago en efectivo (id = 3) por el total completo
+                    // Pago en efectivo (current_acount_payment_method_id = 3) por el total completo.
+                    // La clave tiene que ser 'current_acount_payment_method_id': con 'id' a secas,
+                    // PaymentMethodHelper::attach_payment_methods() saltea el elemento entero (ver
+                    // grupo 321, prompt 03) y la venta queda cobrada pero sin movimiento de caja.
                     'payment_methods' => [
                         [
-                            'id'     => 3,
-                            'amount' => $monto,
+                            'current_acount_payment_method_id' => 3,
+                            'amount'                            => $monto,
                         ],
                     ],
                     'created_at' => $fecha,
@@ -501,7 +515,9 @@ class ReportesMesSeeder extends Seeder
      * @param  int  $cant_registros  Cantidad de partes a generar
      * @return array<int>            Array de $cant_registros enteros que suman $total
      */
-    private function distribuir(int $total, int $cant_registros): array
+    // public static (grupo 321, prompt 05): SembrarDatosDePrueba reusa este criterio de reparto
+    // en vez de reescribirlo. La visibilidad es el único cambio; el cuerpo queda intacto.
+    public static function distribuir(int $total, int $cant_registros): array
     {
         // Array resultante con los montos de cada parte
         $partes = [];

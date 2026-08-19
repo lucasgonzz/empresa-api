@@ -458,6 +458,10 @@ class AfipFexHelper
 
         Log::info('wsfex consultar_comprobante');
 
+        // Variable de retorno inicializada para evitar warning de variable indefinida
+        // si el flujo termina sin pasar por la rama que la define (ej: sin FEXResultGet).
+        $data = null;
+
         // Log::info($this->afip_ticket->cbte_tipo);
         // Log::info($this->afip_ticket->cbte_numero);
         // Log::info($this->afip_ticket->punto_venta);
@@ -508,12 +512,18 @@ class AfipFexHelper
                         'afip_ticket_id'   => $this->afip_ticket->id,
                     ]);
 
+                    // ARCA respondió que el comprobante no existe (o hubo error de negocio):
+                    // la consulta se completó igualmente, por lo que hay que marcarla como
+                    // "consultado" para que la SPA habilite el botón de eliminar
+                    // (mismo criterio que ya aplica WSFE en su consultar_comprobante).
+                    $this->afip_ticket->update(['consultado' => 1]);
+
                 }
 
                 if (isset($result_afip->FEXGetCMPResult->FEXResultGet)) {
 
                     $data = $result_afip->FEXGetCMPResult->FEXResultGet;
-                    
+
                     if ($data->Id != 0) {
 
 
@@ -533,6 +543,14 @@ class AfipFexHelper
                         ]);
 
                         Log::info("Comprobante consultado exitosamente en WSFEX");
+                    } else {
+
+                        // Id == 0: ARCA confirma que el comprobante no existe en sus registros.
+                        // Es una respuesta definitiva (no un error transitorio), así que la
+                        // consulta se da por completada aunque no haya datos de CAE para guardar.
+                        Log::info('FEXGetCMPResult con Id == 0: comprobante no encontrado en ARCA');
+
+                        $this->afip_ticket->update(['consultado' => 1]);
                     }
 
 

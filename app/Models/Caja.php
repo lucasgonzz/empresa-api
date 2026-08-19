@@ -15,13 +15,41 @@ class Caja extends Model
     protected $guarded = [];
 
     /**
+     * Casts de columnas de liquidación/comisión (Grupo 223 · Prompt 01).
+     * `comision_iva_incluido` como boolean para que el front reciba true/false, no 0/1.
+     */
+    protected $casts = [
+        'comision_porcentaje'    => 'float',
+        'comision_iva_alicuota'  => 'float',
+        'comision_iva_incluido'  => 'boolean',
+    ];
+
+    /**
      * Eager load estándar para respuestas API (fullModel / index).
      *
      * @param \Illuminate\Database\Eloquent\Builder $q
      * @return void
      */
     function scopeWithAll($q) {
-        $q->with('current_acount_payment_methods', 'users', 'treasury_users', 'employee');
+        $q->with('current_acount_payment_methods', 'users', 'treasury_users', 'employee', 'expense_concept', 'liquidacion_configs');
+    }
+
+    /**
+     * Concepto de gasto configurado para el gasto automático que genera la comisión de esta caja.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    function expense_concept() {
+        return $this->belongsTo(ExpenseConcept::class);
+    }
+
+    /**
+     * Overrides de liquidación/comisión por método de pago dentro de esta caja.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    function liquidacion_configs() {
+        return $this->hasMany(CajaLiquidacionConfig::class);
     }
 
     function current_acount_payment_methods() {
@@ -49,5 +77,20 @@ class Caja extends Model
 
     function employee() {
         return $this->belongsTo(User::class, 'employee_id');
+    }
+
+    /**
+     * Sucursal/deposito de la caja (columna `cajas.address_id`, migracion
+     * 2025_11_07_154645_add_address_id_to_cajas_table).
+     *
+     * 🔴 No la borres por "no la usa nadie": la usa el buscador general. Sin este metodo,
+     * GlobalSearchQueryHelper::valid_relation_props() descarta la relacion con method_exists() y
+     * EN SILENCIO, asi que "Sucursal" se ve tildada en el desplegable de Cajas y no filtra nada.
+     * El nombre tiene que seguir siendo la key sin el sufijo `_id`, en snake_case.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    function address() {
+        return $this->belongsTo(Address::class, 'address_id');
     }
 }

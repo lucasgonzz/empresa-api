@@ -13,6 +13,20 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable;
 
+    /**
+     * Valor de condicion_iva_precios para Responsable Inscripto.
+     * Comportamiento actual del sistema: costo neto, IVA sumado al vender.
+     * (Grupo 231, prompt 01: movida desde UserConfiguration).
+     */
+    const CONDICION_RRII = 'RRII';
+
+    /**
+     * Valor de condicion_iva_precios para Monotributista.
+     * El monotributista no recupera IVA: se asume que los precios ya lo incluyen.
+     * (Grupo 231, prompt 01: movida desde UserConfiguration).
+     */
+    const CONDICION_MT = 'MT';
+
     protected $guarded = [];
 
     protected $hidden = [
@@ -122,6 +136,28 @@ class User extends Authenticatable
 
     function scopeWithAll($query) {
         $query->with('afip_information.iva_condition', 'permissions', 'plan', 'addresses', 'extencions', 'addresses', 'configuration', 'online_configuration', 'owner', 'inputs_size');
+    }
+
+    /**
+     * Indica si la cuenta calcula precios/costos como Monotributista.
+     * (No recupera IVA: se asume que los precios de compra ya lo incluyen).
+     * (Grupo 231, prompt 01: movido desde UserConfiguration).
+     *
+     * @return bool
+     */
+    public function es_monotributista() {
+        return $this->condicion_iva_precios == self::CONDICION_MT;
+    }
+
+    /**
+     * Indica si la cuenta calcula precios/costos como Responsable Inscripto.
+     * (El usuario indica por compra si el precio ya incluye IVA; el costo base queda neto).
+     * (Grupo 231, prompt 01: movido desde UserConfiguration).
+     *
+     * @return bool
+     */
+    public function es_responsable_inscripto() {
+        return $this->condicion_iva_precios == self::CONDICION_RRII;
     }
 
     public function inputs_size() {

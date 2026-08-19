@@ -33,6 +33,13 @@ class InitExcelImport
         $this->columns                  = ArticleImportColumnsNormalizer::normalize(
             is_array($data['columns'] ?? null) ? $data['columns'] : []
         );
+        /*
+         * Prompt 310: flags "permitir_valores_en_blanco" por columna mapeada, normalizados con
+         * los mismos alias que $this->columns para que ProcessRow los pueda cruzar por clave.
+         */
+        $this->blank_flags              = ArticleImportColumnsNormalizer::normalize_blank_flags(
+            is_array($data['blank_flags'] ?? null) ? $data['blank_flags'] : []
+        );
         $this->create_and_edit          = $data['create_and_edit'];
         $this->start_row                = $data['start_row'];
         $this->finish_row               = $data['finish_row'];
@@ -416,6 +423,7 @@ class InitExcelImport
             $this->jobs[] = new ProcessArticleChunk(
                 $this->csv_full_path,
                 $this->columns,
+                $this->blank_flags,
                 $this->create_and_edit,
                 $this->start,
                 $this->end,

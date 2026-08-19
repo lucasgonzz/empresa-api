@@ -24,6 +24,7 @@ use App\Models\Article;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Models\Provider;
+use App\Services\Compras\OfertasDeProveedorService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -37,9 +38,10 @@ class ArticleImport implements ToCollection
 
     
     public function __construct(
-        $columns, 
-        $create_and_edit, 
-        $start_row, 
+        $columns,
+        $blank_flags,
+        $create_and_edit,
+        $start_row,
         $finish_row, 
         $provider_id, 
         $user, 
@@ -97,6 +99,8 @@ class ArticleImport implements ToCollection
 
 
         $this->columns = $columns;
+        // Prompt 310: flags "permitir_valores_en_blanco" por columna, propagados hasta ProcessRow.
+        $this->blank_flags = $blank_flags;
         $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
@@ -122,6 +126,7 @@ class ArticleImport implements ToCollection
         $this->process_row = new ProcessRow([
             'ct'                                            => $this->ct,
             'columns'                                       => $this->columns,
+            'blank_flags'                                   => $this->blank_flags,
             'user'                                          => $this->user,
             'provider_id'                                   => $this->provider_id,
             'create_and_edit'                               => $this->create_and_edit,
@@ -450,6 +455,30 @@ class ArticleImport implements ToCollection
 
             /* Capturar IDs de artículos creados con código repetido para reportarlos. */
             $this->articulos_creados_con_codigo_repetido_ids = $actualizar_bbdd->get_articulos_creados_con_codigo_repetido_ids();
+
+            try {
+                // Vacía el buffer de ofertas de precio (histórico, misión sugerencias de
+                // compra) en UNA sola llamada por chunk. Propio try/catch, separado del de
+                // ActualizarBBDD de arriba: el histórico es un extra y su falla nunca puede
+                // voltear la importación, que es lo que el usuario vino a hacer.
+                OfertasDeProveedorService::registrar_lote(
+                    $this->process_row->get_ofertas_de_precio_buffer(),
+                    (int) $this->user->id,
+                    'importacion',
+                    $this->import_history_id ? (int) $this->import_history_id : null
+                );
+            } catch (\Throwable $e) {
+                Log::warning('ArticleImport: no se pudo registrar el histórico de precios ofertados', [
+                    'message' => $e->getMessage(),
+                ]);
+            } finally {
+                // Arreglo A15 post-chequeo: se limpia SIEMPRE, haya salido bien o mal el
+                // registro de arriba. Si no se limpiara acá, un chunk siguiente que reuse
+                // esta misma instancia de ProcessRow volvería a mandar todo lo ya
+                // consumido (o lo que falló) además de lo nuevo, pagando una lectura
+                // whereIn() cada vez más grande dentro de registrar_lote().
+                $this->process_row->limpiar_ofertas_de_precio_buffer();
+            }
 
             return $actualizar_bbdd->get_articulos_creados_models();
 

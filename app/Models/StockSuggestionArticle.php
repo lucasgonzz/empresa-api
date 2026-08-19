@@ -7,11 +7,12 @@ use Illuminate\Database\Eloquent\Model;
 
 class StockSuggestionArticle extends Model
 {
-    
+
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+        $q->with(['article', 'from_address', 'to_address']);
+        return $q;
     }
 
     function article() {

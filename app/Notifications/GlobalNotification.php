@@ -49,6 +49,18 @@ class GlobalNotification extends Notification
      */
     public $price_stats;
 
+    /**
+     * Datos de la corrida de análisis de Excel terminada, para el modal
+     * excel_analysis_ready (opcional). Mismo tratamiento que import_stats.
+     *
+     * A propósito NO lleva el resultado del análisis: el aviso solo dice que
+     * terminó y de qué archivo. El resumen se pide después, y solo si el usuario
+     * decide ir a verlo.
+     *
+     * @var array|null
+     */
+    public $excel_analysis;
+
     public function __construct($data)
     {
         $this->message_text             = $data['message_text'];
@@ -61,6 +73,7 @@ class GlobalNotification extends Notification
         $this->import_stats             = $data['import_stats'] ?? null;
         $this->import_options           = $data['import_options'] ?? null;
         $this->price_stats              = $data['price_stats'] ?? null;
+        $this->excel_analysis           = $data['excel_analysis'] ?? null;
     }
 
     /**
@@ -91,6 +104,7 @@ class GlobalNotification extends Notification
             'import_stats'              => $this->import_stats,
             'import_options'            => $this->import_options,
             'price_stats'               => $this->price_stats,
+            'excel_analysis'            => $this->excel_analysis,
         ]);
     }
 }

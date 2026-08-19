@@ -57,8 +57,90 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(25);
         }
 
+        // Generación automática de sugerencias de stock (v2), solo con la
+        // extensión sugerencias_inteligentes. El comando decide adentro si
+        // según la periodicidad configurada hoy toca (o sale en una línea).
+        // 05:00: lejos de debt:snapshot (23:59) y antes de que abra el
+        // comercio; withoutOverlapping(60) cubre catálogos grandes.
+        if ($company_owner && UserHelper::hasExtencion('sugerencias_inteligentes', $company_owner)) {
+            $schedule->command('sugerencias:generar')
+                ->dailyAt('05:00')
+                ->withoutOverlapping(60);
+        }
+
+        // Generación automática de sugerencias de compra a proveedores, solo
+        // con la extensión sugerencias_compras. Mismo patrón que
+        // sugerencias:generar de arriba: el comando decide adentro si según
+        // la periodicidad configurada hoy toca (o sale en una línea).
+        // 05:30 y no 05:00: no se pisa con sugerencias:generar (mismo
+        // comercio, misma ventana horaria, dos comandos que recorren todo el
+        // catálogo). withoutOverlapping(60) cubre catálogos grandes.
+        if ($company_owner && UserHelper::hasExtencion('sugerencias_compras', $company_owner)) {
+            $schedule->command('compras:generar')
+                ->dailyAt('05:30')
+                ->withoutOverlapping(60);
+        }
+
+        // Corrida automática del motor de ofertas por cliente, solo con la extensión
+        // motor_de_ofertas. Mismo patrón que los dos de arriba: el comando decide adentro si hoy
+        // toca según la periodicidad, y ese doble gate es a propósito (el de acá evita el SELECT;
+        // el de adentro cubre la corrida a mano). 06:00 y no 05:00/05:30: no se pisa con
+        // sugerencias:generar ni con compras:generar, que en la misma ventana recorren catálogo e
+        // historial del mismo comercio. withoutOverlapping(60) cubre padrones de clientes grandes.
+        if ($company_owner && UserHelper::hasExtencion('motor_de_ofertas', $company_owner)) {
+            $schedule->command('ofertas:generar')
+                ->dailyAt('06:00')
+                ->withoutOverlapping(60);
+        }
+
+        // Rollup diario del tracking de comportamiento de compradores de la tienda
+        // (misión tracking-buyers-tienda): colapsa el día de ayer de
+        // buyer_tracking_events en buyer_tracking_daily. 03:30 porque el día de ayer
+        // ya está cerrado y la tienda a esa hora no tiene tráfico; withoutOverlapping(30)
+        // cubre una tienda con muchos grupos por día.
+        //
+        // Costo permanente en los ~40 clientes reales: CERO consultas a la base. El
+        // gate por extensión de este if corta antes de que el comando arranque, y el
+        // $company_owner que mira ya está resuelto arriba (:34) para el resto del
+        // schedule — o sea que ni siquiera agrega el SELECT que sí paga
+        // demo:flush-eventos acá abajo. Y si alguien lo corre a mano, el comando
+        // repite el gate adentro.
+        if ($company_owner && UserHelper::hasExtencion('tracking_buyers', $company_owner)) {
+            $schedule->command('tracking:agregar-buyers')
+                ->dailyAt('03:30')
+                ->withoutOverlapping(30);
+        }
+
+        // Retención de los eventos crudos del tracking de compradores: borra por lotes
+        // lo de más de 90 días. 04:00, media hora después del rollup, para que el
+        // agregado del día ya esté escrito antes de que se toque nada; el agregado no
+        // se purga nunca. withoutOverlapping(30) porque el borrado por lotes de una
+        // tabla grande puede tardar.
+        //
+        // Mismo costo permanente que el de arriba en los ~40 clientes reales: cero,
+        // por el mismo gate.
+        if ($company_owner && UserHelper::hasExtencion('tracking_buyers', $company_owner)) {
+            $schedule->command('tracking:purgar-buyers')
+                ->dailyAt('04:00')
+                ->withoutOverlapping(30);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
+
+        // Barrido de los eventos de la demo que quedaron sin empujar al admin (misión 50).
+        // Cada minuto porque el panel del lead lo poléa cada 10 segundos esperando ver el
+        // movimiento en vivo; el push inmediato va por afterResponse y esto es la red de abajo.
+        //
+        // En una instancia que no es de demo el comando sale en su primera línea — pero ojo:
+        // sale DESPUÉS de un SELECT a demo_tracking_config. O sea que este es el único costo
+        // permanente de la misión 50 en los ~40 clientes reales: un SELECT sobre una tabla
+        // vacía por minuto. Lo que la misión exige en cero es el camino del request del
+        // usuario, y ahí sí es cero; esto es el cron, y no hay forma de saber si hay canal
+        // sin preguntárselo a la base.
+        $schedule->command('demo:flush-eventos')
+            ->everyMinute()
+            ->withoutOverlapping(5);
 
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.

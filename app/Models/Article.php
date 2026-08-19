@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -9,7 +10,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Article extends Model
 {
     use SoftDeletes;
-    
+
     protected $guarded = [];
 
     protected $dates = ['stock_updated_at', 'final_price_updated_at'];
@@ -24,6 +25,12 @@ class Article extends Model
     ];
 
     // protected $appends = ['costo_real'];
+
+    // Hotfix Prompt 313: `precios_por_metodo_pago` no es una columna real (es un dato calculado por
+    // request segun las reglas de recargo del usuario). Se expone via $appends + accessor para que
+    // siga viniendo en el JSON del articulo como antes, sin que Eloquent la trate como atributo a
+    // persistir en ningun save() posterior.
+    protected $appends = ['precios_por_metodo_pago'];
 
     function scopeWithAll($query) {
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category', 'article_ubications', 'article_price_ranges', 'providers', 'sales_with_deliveries_in_acopio', 'provider');
@@ -116,6 +123,22 @@ class Article extends Model
     //     }
     // }
 
+    /**
+     * Accessor de `precios_por_metodo_pago` (Hotfix Prompt 313, hereda de Capa 3 Prompt 263).
+     * Devuelve el desglose de precio equivalente por metodo de pago (con tarjeta incluida) para
+     * que el SPA de Vender (Prompt 266) lo muestre sin recalcular. Se calcula al vuelo en cada
+     * lectura, nunca se persiste: no existe como columna en `articles`.
+     *
+     * @return array|null null si no hay usuario autenticado, o si el flag
+     *                     `precio_base_incluye_tarjeta` esta apagado / no hay recargos configurados.
+     */
+    public function getPreciosPorMetodoPagoAttribute() {
+        if (is_null(Auth()->user())) {
+            return null;
+        }
+        return ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($this->final_price, UserHelper::userId());
+    }
+
     function unidad_medida() {
         return $this->belongsTo(UnidadMedida::class);
     }
@@ -178,6 +201,12 @@ class Article extends Model
 
     function article_surchages_blanco() {
         return $this->hasMany('App\Models\ArticleSurchageBlanco');
+    }
+
+    // Impuestos sobre ventas (Capa 2 — Prompt 260) que aplican a este artículo cuando el
+    // sale_tax tiene apply_to_all = false.
+    function sale_taxes() {
+        return $this->belongsToMany('App\Models\SaleTax', 'article_sale_tax');
     }
 
     function combos() {

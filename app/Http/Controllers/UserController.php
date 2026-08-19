@@ -84,6 +84,10 @@ class UserController extends Controller
         $current_redondear_centenas_en_vender   = (int) $model->redondear_centenas_en_vender;
         $current_redondear_miles_en_vender      = (int) $model->redondear_miles_en_vender;
         $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
+        // Condicion de IVA para precios (RRII/MT) previa al guardado, para detectar si cambio y disparar el recalculo masivo.
+        $current_condicion_iva_precios          = $model->condicion_iva_precios;
+        // Flag previo que indica si el costeo depende de la condicion fiscal de la cuenta, para el mismo chequeo de cambios.
+        $current_usar_condicion_fiscal_en_costeo = (int) $model->usar_condicion_fiscal_en_costeo;
 
         $current_default_version                = (int) $model->default_version;
 
@@ -119,7 +123,6 @@ class UserController extends Controller
         $model->sale_ticket_description          = $request->sale_ticket_description;
         $model->sale_ticket_name_font_size       = $request->sale_ticket_name_font_size;
         $model->sale_ticket_price_font_size      = $request->sale_ticket_price_font_size;
-        $model->sale_ticket_logo_full_width      = $request->sale_ticket_logo_full_width;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
 
         // Tarea 4: las cuatro tildes de redondeo se reemplazaron por el select "Opciones de
@@ -171,8 +174,51 @@ class UserController extends Controller
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
-        $model->aplicar_iva_al_costo                  = $request->aplicar_iva_al_costo;
+        /**
+         * Tilde historica de costeo. Va con guard, igual que `condicion_iva_precios` mas abajo y
+         * que `usar_condicion_fiscal_en_costeo`: un request que no traiga la clave la dejaba en
+         * null, que en la columna boolean se persiste como 0, o sea que un update cualquiera
+         * apagaba el flag sin que nadie lo pidiera. Y no queda latente: los tres campos entran en
+         * la comparacion de check_actualizar_articulos(), asi que el apagado silencioso dispara el
+         * recalculo de precios de TODOS los articulos de la cuenta en el acto.
+         *
+         * Ademas del `has()` se descarta el null explicito, porque `has()` devuelve true con la
+         * clave presente en null y ese null no puede significar "apagar": apagar se manda como 0.
+         * El campo sigue siendo editable — cuando viene con valor, se guarda.
+         */
+        if ($request->has('aplicar_iva_al_costo') && !is_null($request->aplicar_iva_al_costo)) {
+            $model->aplicar_iva_al_costo = (int) $request->aplicar_iva_al_costo;
+        }
         $model->aplicar_descuentos_de_venta_a_costos = $request->aplicar_descuentos_de_venta_a_costos;
+
+        /**
+         * Condicion de IVA para precios (Grupo 231): define si la cuenta es Monotributista o
+         * Responsable Inscripto y de eso depende el calculo de costeo (via
+         * ArticlePricesHelper::iva_va_al_costo). Se valida acotado porque un valor corrupto en
+         * esta columna descalibra el costeo de toda la cuenta en silencio (misma validacion que
+         * antes vivia en UserConfigurationController, movida aca en el prompt 01). Si llega algo
+         * distinto de RRII/MT no se guarda nada y se corta el request con 422. Se chequea con
+         * `has()` (a diferencia del resto de los campos de este metodo) para no romper el guardado
+         * del formulario de propiedades mientras el prompt 06 (empresa-spa) todavia no manda este
+         * campo nuevo: sin el guard, cualquier request viejo sin `condicion_iva_precios` llegaria
+         * como null y tiraria 422 en TODO guardado de configuracion, no solo en el de esta feature.
+         */
+        if ($request->has('condicion_iva_precios')) {
+            if ($request->condicion_iva_precios !== User::CONDICION_RRII && $request->condicion_iva_precios !== User::CONDICION_MT) {
+                return response()->json(['error' => true, 'message' => 'condicion_iva_precios invalida'], 422);
+            }
+            $model->condicion_iva_precios = $request->condicion_iva_precios;
+        }
+
+        /**
+         * Flag que activa la nueva dinamica de costeo dependiente de la condicion fiscal de la
+         * cuenta. Mismo guard y mismo motivo que `aplicar_iva_al_costo` mas arriba: sin el, un
+         * request que no mande la clave lo apaga en silencio y dispara el recalculo masivo de
+         * precios por check_actualizar_articulos(). No sacar el guard pensando que es redundante.
+         */
+        if ($request->has('usar_condicion_fiscal_en_costeo') && !is_null($request->usar_condicion_fiscal_en_costeo)) {
+            $model->usar_condicion_fiscal_en_costeo = (int) $request->usar_condicion_fiscal_en_costeo;
+        }
 
         /**
          * Permite `provider_code` repetido en artículos.
@@ -182,7 +228,65 @@ class UserController extends Controller
             $model->usa_provider_codes_repetidos = (bool) $request->usa_provider_codes_repetidos;
         }
 
+        /**
+         * Configuración de sugerencias de stock (v2): periodicidad de la
+         * generación automática y valores por defecto de cada sugerencia.
+         * Con guard has() (mismo criterio que usar_condicion_fiscal_en_costeo):
+         * el form sin la extensión sugerencias_inteligentes no manda estas
+         * claves, y un request viejo no puede pisar la configuración con null
+         * (la periodicidad en null apagaría la generación en silencio).
+         *
+         * sugerencias_ultima_generacion_at NO se asigna acá a propósito: esa
+         * marca la escribe únicamente el comando sugerencias:generar. El form
+         * de configuración manda el modelo entero, así que aceptarla por
+         * request hacía que cada guardado retrocediera la marca y adelantara
+         * la próxima generación automática.
+         */
+        if ($request->has('sugerencias_periodicidad') && !is_null($request->sugerencias_periodicidad)) {
+            $model->sugerencias_periodicidad = $request->sugerencias_periodicidad;
+        }
+        if ($request->has('sugerencias_modo') && !is_null($request->sugerencias_modo)) {
+            $model->sugerencias_modo = $request->sugerencias_modo;
+        }
+        if ($request->has('sugerencias_origen') && !is_null($request->sugerencias_origen)) {
+            $model->sugerencias_origen = $request->sugerencias_origen;
+        }
+        if ($request->has('sugerencias_limite_origen') && !is_null($request->sugerencias_limite_origen)) {
+            $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
+        }
 
+        /**
+         * Configuración de sugerencias de compra a proveedores: periodicidad
+         * de la generación automática (comando compras:generar). Mismo
+         * criterio que el bloque de sugerencias de stock de arriba: guard
+         * has() para que un form sin la extensión sugerencias_compras no
+         * mande esta clave, y descarte explícito del null para que ese "no
+         * mandó nada" nunca apague la generación en silencio (la
+         * periodicidad en null se comporta como 'nunca' en compras:generar).
+         *
+         * sugerencias_compras_ultima_generacion_at NO se asigna acá, mismo
+         * motivo que la marca de stock: la escribe únicamente el comando
+         * compras:generar. Si el PUT la aceptara, cada guardado del form
+         * retrocedería la marca y adelantaría la próxima generación
+         * automática.
+         */
+        if ($request->has('sugerencias_compras_periodicidad') && !is_null($request->sugerencias_compras_periodicidad)) {
+            $model->sugerencias_compras_periodicidad = $request->sugerencias_compras_periodicidad;
+        }
+
+        /**
+         * Motor de ofertas por cliente: periodicidad de la generación automática
+         * (ofertas:generar). Mismo criterio que los dos bloques de arriba: guard
+         * has() para que un form sin la extensión motor_de_ofertas no mande la
+         * clave, y descarte del null para que "no mandó nada" no apague nada.
+         *
+         * ofertas_ultima_generacion_at NO se asigna acá, mismo motivo que sus dos
+         * hermanas: la escribe SOLO el comando. Si el PUT la aceptara, cada guardado
+         * del form retrocedería la marca y adelantaría la próxima corrida.
+         */
+        if ($request->has('ofertas_periodicidad') && !is_null($request->ofertas_periodicidad)) {
+            $model->ofertas_periodicidad = $request->ofertas_periodicidad;
+        }
 
         $model->save();
 
@@ -220,6 +324,8 @@ class UserController extends Controller
                 $current_redondear_de_a_50,
                 $current_redondear_precios_en_centavos,
                 $current_aplicar_iva_al_costo,
+                $current_condicion_iva_precios,
+                $current_usar_condicion_fiscal_en_costeo,
                 $current_redondear_centenas_en_vender,
                 $current_redondear_miles_en_vender
             )
@@ -479,11 +585,99 @@ class UserController extends Controller
         return response()->json(['dark_mode' => (int) $model->dark_mode], 200);
     }
 
+    /**
+     * Guarda las preferencias de UI del chat con el asistente de IA de la
+     * persona AUTENTICADA (dueño o empleado): la posición del botón flotante
+     * y el ancho de la sidebar del panel.
+     *
+     * Mismo criterio que set_dark_mode, y a diferencia de set_img_auto_timeout:
+     * se resuelve con Auth::user() a propósito porque estas preferencias son
+     * de CADA PERSONA. Con $this->userId(), la posición que arrastra un
+     * empleado quedaría grabada en la fila del dueño y el botón se le movería
+     * de lugar al dueño al recargar.
+     *
+     * `chat_ia_fab_position` viaja como string "left,top" en px (D3 del plan:
+     * string corto en vez de JSON; parse con explode y guard de dos enteros
+     * 0..20000). `chat_ia_sidebar_width` en px, mismo rango 180..420 que la
+     * SPA permite arrastrar. Las dos claves son opcionales: se persiste solo
+     * lo que llega con valor, y un valor inválido corta con 422 SIN guardar
+     * nada (por eso se valida todo antes de escribir).
+     */
+    function set_chat_ia_preferencias(Request $request) {
+        $model = Auth::user();
+
+        $tiene_posicion = $request->has('chat_ia_fab_position') && !is_null($request->chat_ia_fab_position);
+        $tiene_ancho    = $request->has('chat_ia_sidebar_width') && !is_null($request->chat_ia_sidebar_width);
+
+        if ($tiene_posicion && !$this->es_posicion_de_fab_valida($request->chat_ia_fab_position)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_fab_position invalida: se espera "left,top" con dos enteros entre 0 y 20000.',
+            ], 422);
+        }
+
+        if ($tiene_ancho) {
+            $ancho = $request->chat_ia_sidebar_width;
+
+            if (!is_numeric($ancho) || (int) $ancho != $ancho || (int) $ancho < 180 || (int) $ancho > 420) {
+                return response()->json([
+                    'error'   => true,
+                    'message' => 'chat_ia_sidebar_width invalido: se espera un entero entre 180 y 420.',
+                ], 422);
+            }
+        }
+
+        if ($tiene_posicion) {
+            $model->chat_ia_fab_position = (string) $request->chat_ia_fab_position;
+        }
+
+        if ($tiene_ancho) {
+            $model->chat_ia_sidebar_width = (int) $request->chat_ia_sidebar_width;
+        }
+
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json([
+            'chat_ia_fab_position'  => $model->chat_ia_fab_position,
+            'chat_ia_sidebar_width' => is_null($model->chat_ia_sidebar_width) ? null : (int) $model->chat_ia_sidebar_width,
+        ], 200);
+    }
+
+    /**
+     * true si el valor es un "left,top" válido: exactamente dos enteros no
+     * negativos de hasta 20000, separados por una coma. ctype_digit y no
+     * is_numeric: "12.5" o "1e3" no son coordenadas de pantalla.
+     *
+     * @param mixed $valor Valor recibido desde el request.
+     * @return bool
+     */
+    private function es_posicion_de_fab_valida($valor) {
+        if (!is_string($valor)) {
+            return false;
+        }
+
+        $partes = explode(',', $valor);
+
+        if (count($partes) !== 2) {
+            return false;
+        }
+
+        foreach ($partes as $parte) {
+            if (!ctype_digit($parte) || (int) $parte > 20000) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     function set_img_auto_timeout($value) {
         $model = User::find($this->userId());
         $model->img_auto_timeout = $value;
         $model->save();
-        
+
         return response()->json(['model' => $model], 200);
     }
 
@@ -524,6 +718,8 @@ class UserController extends Controller
      * @param int $current_redondear_de_a_50 Valor previo del flag redondear_de_a_50.
      * @param int $current_redondear_precios_en_centavos Valor previo del flag redondear_precios_en_centavos.
      * @param int $current_aplicar_iva_al_costo Valor previo del flag aplicar_iva_al_costo.
+     * @param mixed $current_condicion_iva_precios Valor previo de condicion_iva_precios (RRII/MT).
+     * @param int $current_usar_condicion_fiscal_en_costeo Valor previo del flag usar_condicion_fiscal_en_costeo.
      * @param int $current_redondear_centenas_en_vender Valor previo del flag redondear_centenas_en_vender.
      * @param int $current_redondear_miles_en_vender Valor previo del flag redondear_miles_en_vender.
      * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
@@ -550,6 +746,8 @@ class UserController extends Controller
         $current_redondear_de_a_50,
         $current_redondear_precios_en_centavos,
         $current_aplicar_iva_al_costo,
+        $current_condicion_iva_precios,
+        $current_usar_condicion_fiscal_en_costeo,
         $current_redondear_centenas_en_vender,
         $current_redondear_miles_en_vender
     ) {
@@ -563,6 +761,8 @@ class UserController extends Controller
             || (int) $model->redondear_de_a_50 !== (int) $current_redondear_de_a_50
             || (int) $model->redondear_precios_en_centavos !== (int) $current_redondear_precios_en_centavos
             || (int) $model->aplicar_iva_al_costo !== (int) $current_aplicar_iva_al_costo
+            || $model->condicion_iva_precios != $current_condicion_iva_precios
+            || (int) $model->usar_condicion_fiscal_en_costeo !== (int) $current_usar_condicion_fiscal_en_costeo
             || (int) $model->redondear_centenas_en_vender !== (int) $current_redondear_centenas_en_vender
             || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender
 
@@ -575,6 +775,8 @@ class UserController extends Controller
             Log::info((int) $model->redondear_de_a_50.' | '.(int) $current_redondear_de_a_50);
             Log::info((int) $model->redondear_precios_en_centavos.' | '.(int) $current_redondear_precios_en_centavos);
             Log::info((int) $model->aplicar_iva_al_costo.' | '.(int) $current_aplicar_iva_al_costo);
+            Log::info($model->condicion_iva_precios.' | '.$current_condicion_iva_precios);
+            Log::info((int) $model->usar_condicion_fiscal_en_costeo.' | '.(int) $current_usar_condicion_fiscal_en_costeo);
             Log::info('Hubo cambios en propiedades de user');
 
             /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */

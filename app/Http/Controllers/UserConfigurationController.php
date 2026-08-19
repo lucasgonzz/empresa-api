@@ -25,6 +25,9 @@ class UserConfigurationController extends Controller
     public function update(Request $request, $id) {
         $model = UserConfiguration::find($id);
         $current_value = $model->iva_included;
+
+        // Grupo 231, prompt 01: condicion_iva_precios se movio a users. Ya no se valida ni se
+        // guarda desde aca (va por UserController::update()).
         $model->show_articles_without_stock     = $request->show_articles_without_stock;
         $model->iva_included                    = $request->iva_included;
         $model->apply_price_type_in_services    = $request->apply_price_type_in_services;

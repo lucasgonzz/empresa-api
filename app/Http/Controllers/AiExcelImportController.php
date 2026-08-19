@@ -101,12 +101,30 @@ class AiExcelImportController extends Controller
             $run = ExcelAnalysisRun::create([
                 'uuid'       => Str::uuid()->toString(),
                 'user_id'    => $this->userId(),
+                /*
+                 * Quién disparó la corrida, para dirigirle el aviso de "terminó"
+                 * cuando el job la complete. El canal de global_notification es
+                 * del owner y lo escuchan todos sus empleados: sin este id, el
+                 * aviso le llegaría también a los que no subieron nada.
+                 */
+                'auth_user_id' => optional(auth()->user())->id,
                 'tipo'       => 'analisis',
                 'estado'     => 'pendiente',
                 'excel_path' => $excel_path,
                 'payload'    => [
                     'model'             => $model,
                     'original_filename' => $original_filename,
+                    /*
+                     * Rango de filas y detección de cabecera. El frontend los calcula
+                     * leyendo el Excel en el navegador (paso 1) y hasta ahora vivían
+                     * solo ahí. Los guardamos porque el modal se puede reabrir en el
+                     * paso 2 desde otra pestaña o después de un F5, y en ese momento
+                     * el archivo local ya no existe: sin estos tres valores el modal
+                     * no puede rearmar el rango a importar.
+                     */
+                    'start_row'         => $request->input('start_row'),
+                    'finish_row'        => $request->input('finish_row'),
+                    'has_header_row'    => $request->input('has_header_row'),
                 ],
             ]);
 
@@ -158,10 +176,18 @@ class AiExcelImportController extends Controller
         }
 
         return response()->json([
+            'uuid'     => $run->uuid,
+            'tipo'     => $run->tipo,
             'estado'   => $run->estado,
             'progreso' => $run->progreso,
             'paso'     => $run->paso,
             'error'    => $run->error,
+            /*
+             * Estado del modal al momento de encolar la corrida. Va siempre, no
+             * solo cuando terminó: el modal se puede reabrir con el análisis
+             * todavía en curso y necesita saber de qué archivo se trata.
+             */
+            'contexto' => $run->contexto_para_frontend(),
             /*
              * El resultado completo solo se devuelve cuando la corrida terminó
              * ("listo"); mientras está pendiente/procesando/error, va null.
@@ -170,6 +196,85 @@ class AiExcelImportController extends Controller
              */
             'resultado' => $run->estado === 'listo' ? $run->resultado : null,
         ], 200);
+    }
+
+    /**
+     * Devuelve la corrida de análisis que este usuario tiene "abierta": o bien una
+     * que todavía está corriendo, o bien una que ya terminó y que él nunca llegó a
+     * mirar.
+     *
+     * Es lo que permite que el análisis sobreviva a cerrar la pestaña. El aviso de
+     * "terminó" viaja por broadcast, pero un broadcast solo llega a quien está
+     * conectado en ese momento: si el usuario encoló el análisis y se fue, el evento
+     * pasó y no vuelve. La SPA llama a este endpoint al arrancar y recupera lo que
+     * se haya perdido mientras no estaba.
+     *
+     * Se limita a corridas del propio auth_user (no del owner): el Excel lo subió
+     * una persona, y es a esa persona a la que le interesa el resultado.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function analysisEnCurso()
+    {
+        $auth_user_id = optional(auth()->user())->id;
+
+        if (is_null($auth_user_id)) {
+            return response()->json(['run' => null], 200);
+        }
+
+        /*
+         * Solo miramos las últimas 48 horas porque es lo que el job conserva:
+         * RunExcelAnalysisJob borra al arrancar las corridas de más de 2 días.
+         * Ofrecer una corrida más vieja que eso sería ofrecer algo cuyo archivo
+         * y cuyo resultado ya pueden no estar.
+         */
+        $run = ExcelAnalysisRun::where('auth_user_id', $auth_user_id)
+            ->where('created_at', '>=', now()->subDays(2))
+            ->whereNull('visto_at')
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        if (is_null($run)) {
+            return response()->json(['run' => null], 200);
+        }
+
+        return response()->json([
+            'run' => [
+                'uuid'     => $run->uuid,
+                'tipo'     => $run->tipo,
+                'estado'   => $run->estado,
+                'progreso' => $run->progreso,
+                'paso'     => $run->paso,
+                'error'    => $run->error,
+                'contexto' => $run->contexto_para_frontend(),
+            ],
+        ], 200);
+    }
+
+    /**
+     * Marca una corrida como vista, para que no se le vuelva a ofrecer al usuario
+     * en la próxima carga de la SPA.
+     *
+     * Se llama tanto cuando el usuario abre el resultado como cuando descarta el
+     * aviso: en los dos casos ya se enteró, que es de lo único que lleva registro
+     * este campo.
+     *
+     * @param  string  $uuid
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function marcarAnalisisVisto($uuid)
+    {
+        $run = ExcelAnalysisRun::where('uuid', $uuid)
+            ->where('user_id', $this->userId())
+            ->first();
+
+        if (is_null($run)) {
+            return response()->json(['message' => 'No se encontro el analisis'], 404);
+        }
+
+        $run->update(['visto_at' => now()]);
+
+        return response(null, 200);
     }
 
     /**
@@ -352,6 +457,8 @@ class AiExcelImportController extends Controller
             'import_uuid'           => $import_uuid,
             'archivo_excel'         => $excel_full_path,
             'columns'               => $request->input('columns', []),
+            // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
+            'blank_flags'           => $request->input('blank_flags', []),
             'create_and_edit'       => $request->input('create_and_edit', false),
             'start_row'             => $request->input('start_row', 2),
             'finish_row'            => $request->input('finish_row', 1000),
@@ -563,6 +670,8 @@ class AiExcelImportController extends Controller
             $run = ExcelAnalysisRun::create([
                 'uuid'       => Str::uuid()->toString(),
                 'user_id'    => $this->userId(),
+                /* Mismo motivo que en analyze(): a quién le corresponde el aviso. */
+                'auth_user_id' => optional(auth()->user())->id,
                 'tipo'       => 'recomendacion',
                 'estado'     => 'pendiente',
                 'excel_path' => $excel_path,
@@ -570,6 +679,15 @@ class AiExcelImportController extends Controller
                     'provider_id'                 => $provider_id,
                     'provider_code_column_index'  => $provider_code_column_index,
                     'column_mapping'              => $column_mapping,
+                    /*
+                     * uuid de la corrida de análisis de la que salió este paso 2.
+                     * La recomendación sola no alcanza para rearmar el paso 3: la
+                     * pantalla también muestra duplicados, placeholders y cadena de
+                     * identificación, que son del análisis. Guardando el uuid padre,
+                     * el modal puede reconstruir los dos pasos pidiendo primero el
+                     * análisis y después esta recomendación.
+                     */
+                    'analysis_uuid'               => $request->input('analysis_uuid'),
                 ],
             ]);
 

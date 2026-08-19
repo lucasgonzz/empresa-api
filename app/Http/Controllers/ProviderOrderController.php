@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
 use App\Models\ProviderOrder;
+use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -69,6 +70,7 @@ class ProviderOrderController extends Controller
             'days_to_advise'                            => $request->days_to_advise,
             'update_stock'                              => $request->update_stock,
             'update_prices'                             => $request->update_prices,
+            'precios_incluyen_iva'                      => $request->precios_incluyen_iva,
             'moneda_id'                                 => $request->moneda_id,
             'generate_current_acount'                   => $request->generate_current_acount,
             'address_id'                                => $request->address_id,
@@ -80,16 +82,29 @@ class ProviderOrderController extends Controller
         
 
         $helper = new NewProviderOrderHelper($model, $request->articles);
-        
+
+        // Prompt 262: al crear la orden, pre-carga las bonificaciones del proveedor como
+        // descuentos editables de esta orden puntual (si el request no trajo descuentos propios).
+        $helper->precargar_bonificaciones_proveedor();
+
         $helper->attach_articles();
-        
+
         ModoFacturacionHelper::check_modo_facturacion($model, $helper);
 
         $helper->procesar_pedido();
 
+        /**
+         * Evento de la demo (mision 50). Va al final, con la orden ya creada y procesada
+         * (stock y precios incluidos): antes de eso todavia puede tirar y el evento estaria
+         * reportando una compra que no quedo.
+         *
+         * En una instancia de cliente real no cuesta ni una query: la primera guarda del
+         * emisor mira el marcador de sesion de demo y sale.
+         */
+        DemoEventoEmitter::emitir('compra.creada', null, ['id' => $model->id]);
 
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
-    }  
+    }
 
     public function show($id) {
         return response()->json(['model' => $this->fullModel('ProviderOrder', $id)], 200);
@@ -108,9 +123,10 @@ class ProviderOrderController extends Controller
         $model->days_to_advise                              = $request->days_to_advise;
         $model->update_stock                                = $request->update_stock;
         $model->update_prices                               = $request->update_prices;
+        $model->precios_incluyen_iva                        = $request->precios_incluyen_iva;
         $model->generate_current_acount                     = $request->generate_current_acount;
-        $model->numero_comprobante                          = $request->numero_comprobante;        
-        $model->moneda_id                                   = $request->moneda_id;        
+        $model->numero_comprobante                          = $request->numero_comprobante;
+        $model->moneda_id                                   = $request->moneda_id;
         $model->save();
 
 

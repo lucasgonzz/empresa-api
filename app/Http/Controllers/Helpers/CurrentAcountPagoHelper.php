@@ -184,7 +184,9 @@ class CurrentAcountPagoHelper {
 
             if ($payment_method->pivot->caja_id) {
 
-                CurrentAcountCajaHelper::guardar_pago($payment_method->pivot->amount, $payment_method->pivot->caja_id, $model_name, $pago);
+                // Grupo 223 · Prompt 02: se pasa el id del método de pago (ya disponible acá en el
+                // foreach) para que guardar_pago() pueda resolver la cascada de liquidación/comisión.
+                CurrentAcountCajaHelper::guardar_pago($payment_method->pivot->amount, $payment_method->pivot->caja_id, $model_name, $pago, null, $payment_method->id);
 
             // $amount = $payment_method['amount'];
             // $amount_cotizado = isset($payment_method['amount_cotizado']) ? $payment_method['amount_cotizado'] : null;

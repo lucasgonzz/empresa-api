@@ -174,10 +174,29 @@ class GeneralHelper {
                 // Log::info($key.': '.$value);
                 if ($value != '' && $value != -1 && $value != '-1') {
                     $props[strtolower(substr($key, strpos($key, '_')+1))] = (int)$value-1;
-                } 
+                }
             }
         }
         return $props;
+    }
+
+    /**
+     * Prompt 310: extrae del request los flags "permitir_valores_en_blanco" por columna
+     * mapeada, enviados desde el front como campos "blank_<columna>" (mismo esquema que
+     * "prop_<columna>" usado por getImportColumns). Ausente = false (comportamiento seguro
+     * por defecto: celda vacía no pisa el valor actual del artículo).
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @return array<string, bool>  Mapa columna => bool
+     */
+    static function getImportBlankFlags($request) {
+        $flags = [];
+        foreach ($request->all() as $key => $value) {
+            if (strpos($key, 'blank_') !== false) {
+                $flags[strtolower(substr($key, strpos($key, '_')+1))] = filter_var($value, FILTER_VALIDATE_BOOLEAN);
+            }
+        }
+        return $flags;
     }
 
     static function getModelsFromId($model_name, $ids) {

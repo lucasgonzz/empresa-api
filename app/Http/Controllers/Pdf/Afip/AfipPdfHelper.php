@@ -861,10 +861,9 @@ class AfipPdfHelper
      * queda atrás y nadie se entera hasta que un cliente ve el logo equivocado.
      *
      * No valida que el archivo exista: eso lo hace cada punto de impresión, con la guarda
-     * que ya tenía. Y no todos tienen una: los dos puntos de SaleTicketPdf (logo() y
-     * logoFullWidth()) sólo chequean is_null, así que ahí una URL rota corta el ticket.
-     * Es preexistente —pasaba igual con el logo del negocio— y arreglarlo es cambiarle la
-     * guarda a un comprobante, que es otra tarea.
+     * que ya tenía. Y no todos tienen una: SaleTicketPdf::logo() sólo chequea is_null, así
+     * que ahí una URL rota corta el ticket. Es preexistente —pasaba igual con el logo del
+     * negocio— y arreglarlo es cambiarle la guarda a un comprobante, que es otra tarea.
      *
      * @param mixed|null $address Sucursal del comprobante (venta, presupuesto o cliente).
      * @param mixed $user Usuario dueño del negocio (fallback final de la cadena).

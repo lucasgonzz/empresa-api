@@ -9,6 +9,6 @@ class UserConfiguration extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        
+
     }
 }

@@ -195,6 +195,47 @@ class ProcessRow {
     protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
 
     /**
+     * Buffer paralelo a $provider_relations_buffer (mismo molde): ofertas de OTROS
+     * proveedores que la importación descarta o saltea sin tocar el pivot con ellas.
+     * No decide nada del importador; ArticleImport::guardar_articulos() lo vacía al
+     * histórico de precios ofertados (misión sugerencias de compra).
+     * [article_id][provider_id] => ['provider_code'=>..., 'cost'=>..., 'origen'=>'importacion'] — última fila gana
+     * @var array
+     */
+    protected $ofertas_de_precio_buffer = [];
+
+    /**
+     * Cache en memoria de los descuentos estándar (ProviderDiscount) de cada proveedor,
+     * indexado por provider_id, para no repetir la consulta fila a fila del Excel.
+     * Se llena de forma perezosa en get_provider_standard_discount_percentages().
+     */
+    protected $provider_standard_discounts_cache = [];
+
+    /**
+     * Prompt 310: flag "permitir valores en blanco" configurado por columna mapeada.
+     * Mapa columna_del_import (misma clave que $this->columns, ej. 'costo', 'descuentos')
+     * => bool. Default (columna ausente del mapa) = false: celda vacía NO pisa el valor
+     * actual del artículo. Con el flag en true, celda vacía sobrescribe con blanco/cero.
+     */
+    protected $blank_flags = [];
+
+    /**
+     * Prompt 310: claves de $data (prop_key, ej. 'cost', 'stock_min') detectadas en la fila
+     * actual como "forzar blanco/cero" porque la celda vino vacía y el flag de esa columna
+     * está en true. Se resetea al inicio de cada fila (ver procesar(), justo antes del loop
+     * de props_to_add) y lo consume get_modified_fields() para no omitir el campo pese a
+     * venir null.
+     */
+    protected $forced_blank_props = [];
+
+    /**
+     * Prompt 514: hook preparado (sin fuente en la UI aún, ver comentario en el constructor) para
+     * el mismo criterio "precios incluyen IVA" de la compra manual. Default false = comportamiento
+     * idéntico al de siempre (no se toca ningún costo).
+     */
+    protected $precios_incluyen_iva = false;
+
+    /**
      * Identificadores unicos (bar_code/sku) asignados por herencia de escalones
      * superiores durante este chunk (regla de Lucas, 30/7/2026, prompt 08 grupo 265;
      * ver procesar_articulo_ya_creado()). ['bar_code' => ['7799100' => 41], ...] --
@@ -251,6 +292,25 @@ class ProcessRow {
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
 
+        // Prompt 310: flags "permitir valores en blanco" por columna mapeada (default vacío = todas en false).
+        $this->blank_flags = isset($data['blank_flags']) && is_array($data['blank_flags']) ? $data['blank_flags'] : [];
+
+        /*
+         * Prompt 514 — Hook preparado (todavía sin fuente en la UI de import) para el mismo
+         * criterio de "precios incluyen IVA" que ya tiene la compra manual
+         * (ProviderOrder::precios_incluyen_iva, prompt 513, aplicado en
+         * NewProviderOrderHelper::update_cost()/catalogar_costo_proveedor(), prompt 514): si el
+         * Excel importado trae costos CON IVA incluido, hay que sacárselo antes de escribir
+         * articles.cost / article_provider.cost (que son siempre NETOS por convención).
+         *
+         * Hoy ningún llamador de ProcessRow pasa esta clave, así que $this->precios_incluyen_iva
+         * queda siempre en false y back_out_iva_import() es un no-op — el import se comporta
+         * exactamente igual que antes de este prompt. Cuando el import agregue un flag equivalente
+         * (fuera de scope de este prompt, ver prompt 517 para el frontend), alcanza con pasar
+         * 'precios_incluyen_iva' => true/false en el array $data de este constructor.
+         */
+        $this->precios_incluyen_iva = isset($data['precios_incluyen_iva']) ? (bool)$data['precios_incluyen_iva'] : false;
+
         /*
          * 'fila_inicial' (grupo 294, incidente Servian): numero de fila ABSOLUTO del
          * Excel donde arranca el chunk que va a procesar esta instancia (ver
@@ -283,6 +343,19 @@ class ProcessRow {
         $this->set_category_cache();
         $this->set_sub_category_cache();
         $this->set_iva_cache();
+    }
+
+    /**
+     * Prompt 310: indica si la columna del import (misma clave que $this->columns, ej.
+     * 'costo', 'descuentos') tiene habilitado "permitir valores en blanco".
+     *
+     * @param  string $column_key  Clave de la columna en el mapeo de importación.
+     * @return bool                true si una celda vacía debe sobrescribir (borrar/cero) el
+     *                               valor actual; false (default) si debe omitirse sin tocarlo.
+     */
+    protected function permite_valores_en_blanco(string $column_key): bool
+    {
+        return !empty($this->blank_flags[$column_key]);
     }
 
     public function set_taken_slugs(array $slugs): void
@@ -372,6 +445,49 @@ class ProcessRow {
             ->get()
             ->mapWithKeys(fn ($i) => [trim((string)$i->percentage) => (int)$i->id])
             ->toArray();
+    }
+
+    /**
+     * Prompt 514 — Hook de back-out de IVA para el import (ver comentario detallado en el
+     * constructor y en el punto donde se llama, dentro de procesar()).
+     *
+     * Mismo criterio y misma fórmula que ArticlePricesHelper::back_out_iva() (usado por la compra
+     * manual en NewProviderOrderHelper): neto = bruto / (1 + alicuota/100), usando la alícuota
+     * PROPIA del artículo/fila (por `iva_id`), nunca una alícuota global. No usa
+     * ArticlePricesHelper::back_out_iva() directamente porque ese método espera una instancia de
+     * Article (con su relación `iva`) y acá, en el momento en que se arma $data, todavía no existe
+     * necesariamente un Article persistido — solo tenemos el `iva_id` de la fila del Excel.
+     *
+     * Con $this->precios_incluyen_iva en false (hoy siempre, ver constructor) es un no-op.
+     *
+     * @param  mixed    $cost    Costo tal cual lo devolvió get_number() (string numérico o null).
+     * @param  int|null $iva_id  Id de la alícuota de IVA de la fila (columna 'iva' del Excel).
+     * @return mixed             Costo neto (string numérico, mismo formato que get_number()) si
+     *                           corresponde hacer el back-out; si no, $cost sin modificar.
+     */
+    private function back_out_iva_import($cost, $iva_id)
+    {
+        if (!$this->precios_incluyen_iva || is_null($cost) || $cost === '') {
+            return $cost;
+        }
+
+        // Sin alícuota conocida para esta fila no se puede hacer el back-out: se deja el costo
+        // tal cual vino (conservador, evita restar IVA "a ciegas").
+        if (is_null($iva_id)) {
+            return $cost;
+        }
+
+        $iva = Iva::find($iva_id);
+
+        // Mismo criterio que ArticlePricesHelper::hasIva(): sin alícuota real (0/Exento/No
+        // Gravado) no hay IVA que sacar.
+        if (is_null($iva) || in_array((string)$iva->percentage, ['0', 'Exento', 'No Gravado'], true)) {
+            return $cost;
+        }
+
+        $neto = (float)$cost / (1 + ((float)$iva->percentage / 100));
+
+        return number_format($neto, 2, '.', '');
     }
 
     function set_se_importaron_price_types() {
@@ -495,6 +611,10 @@ class ProcessRow {
         $this->terminar('get_provider_id');
 
 
+        // Prompt 310: se resetea por fila; get_modified_fields() lo consulta para saber qué
+        // props deben forzarse a blanco/cero pese a que la celda haya venido vacía.
+        $this->forced_blank_props = [];
+
         $this->iniciar();
         foreach ($props_to_add as $prop_to_add) {
 
@@ -547,6 +667,17 @@ class ProcessRow {
                     ) {
                         continue;
                     }
+                }
+
+                /*
+                 * Prompt 310: celda vacía (excel_value null) + columna mapeada.
+                 * - Flag OFF (default): se deja $data[prop_key] = null; get_modified_fields()
+                 *   omite los valores null y por lo tanto NO pisa el valor actual del artículo.
+                 * - Flag ON: se marca el prop_key para que get_modified_fields() fuerce la
+                 *   sobreescritura en blanco/cero en vez de omitirlo.
+                 */
+                if (is_null($excel_value) && $this->permite_valores_en_blanco($prop_to_add['excel_column'])) {
+                    $this->forced_blank_props[$prop_to_add['prop_key']] = true;
                 }
 
                 $data[$prop_to_add['prop_key']] = $excel_value;
@@ -607,6 +738,16 @@ class ProcessRow {
             $iva_id = $this->get_iva_id($row);
             $data['iva_id'] = $iva_id;
             $this->terminar('set iva_id');
+        }
+
+        /*
+         * Prompt 514 — Back-out de IVA del costo importado (hook, ver comentario en el
+         * constructor). Con $this->precios_incluyen_iva en false (caso de hoy, siempre) esta
+         * llamada es un no-op y $data['cost'] queda intacto. Se ubica acá porque recién en este
+         * punto ya están resueltos $data['cost'] (props_to_add) y $data['iva_id'] de la fila.
+         */
+        if (isset($data['cost'])) {
+            $data['cost'] = $this->back_out_iva_import($data['cost'], $data['iva_id'] ?? null);
         }
 
 
@@ -845,6 +986,16 @@ class ProcessRow {
             $this->contar_fila('bloqueado_otro_proveedor');
             $this->log('No hubo mach (bloqueado por provider_code existente en otro proveedor)');
             $this->articles_repetidos++;
+
+            // La fila se sigue descartando igual que siempre; lo único nuevo es que antes
+            // de tirarla queda registrado que ESTE proveedor ofrecía ese artículo a ese
+            // precio (misión sugerencias de compra).
+            $this->registrar_oferta_de_otro_proveedor(
+                isset($articulo_ya_creado['matched_other_provider_ids']) ? $articulo_ya_creado['matched_other_provider_ids'] : [],
+                $provider_id,
+                $data
+            );
+
             $this->sumar_durations();
             return $this->observations;
         }
@@ -995,6 +1146,11 @@ class ProcessRow {
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
 
                         $this->terminar('procesar_articulo_ya_creado con provider_code repetido');
+                    } else {
+                        // El artículo pertenece a otro proveedor y se sigue salteando igual que
+                        // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
+                        // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
+                        $this->registrar_oferta_de_otro_proveedor([$_articulo_ya_creado->id], $provider_id, $data);
                     }
 
                 }
@@ -1009,6 +1165,11 @@ class ProcessRow {
                     $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row, $identificadores_pendientes);
 
                     $this->terminar('procesar_articulo_ya_creado');
+                } else {
+                    // El artículo pertenece a otro proveedor y se sigue salteando igual que
+                    // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
+                    // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
+                    $this->registrar_oferta_de_otro_proveedor([$articulo_ya_creado->id], $provider_id, $data);
                 }
             }
 
@@ -1037,10 +1198,21 @@ class ProcessRow {
 
             
             $this->iniciar();
-            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-            if (!empty($discounts_diff)) {
-                $data['discounts'] = $discounts_diff;
-            } 
+            // Prompt 307: con provider_id conocido, los descuentos se tagean a ese proveedor
+            // (reusa ArticleProviderDiscountHelper::sync_provider_discounts desde ActualizarBBDD).
+            // Sin provider_id, se mantiene el comportamiento legado (descuentos globales, sin tag).
+            if (empty($provider_id)) {
+                $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+                if (!empty($discounts_diff)) {
+                    $data['discounts'] = $discounts_diff;
+                }
+            } else {
+                $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id);
+                if (!is_null($provider_discounts_to_tag)) {
+                    $data['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                    $data['provider_discounts_to_tag_provider_id'] = $provider_id;
+                }
+            }
             $this->terminar('crear: discounts_diff');
 
             $this->iniciar();
@@ -1247,12 +1419,31 @@ class ProcessRow {
 
 
         $this->iniciar();
-        $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+        // Prompt 307: misma bifurcación que en la creación (ver más arriba en procesar()).
+        $provider_id_para_discounts = isset($merged['provider_id']) ? $merged['provider_id'] : null;
 
-        if (!empty($discounts_diff)) {
-            $merged['discounts'] = $discounts_diff;
+        if (empty($provider_id_para_discounts)) {
+
+            $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+
+            if (!empty($discounts_diff)) {
+                $merged['discounts'] = $discounts_diff;
+            } else {
+                unset($merged['discounts']);
+            }
+
         } else {
+
             unset($merged['discounts']);
+
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_para_discounts, $baseline_para_diffs);
+
+            if (!is_null($provider_discounts_to_tag)) {
+                $merged['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                $merged['provider_discounts_to_tag_provider_id'] = $provider_id_para_discounts;
+            } else {
+                unset($merged['provider_discounts_to_tag'], $merged['provider_discounts_to_tag_provider_id']);
+            }
         }
 
         $this->terminar('merge pendiente: discounts_diff');
@@ -1523,10 +1714,25 @@ class ProcessRow {
 
         
         $this->iniciar();
-        $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-        if (!empty($discounts_diff)) {
-            $cambios['discounts'] = $discounts_diff;
-        } 
+        // Prompt 307: misma bifurcación que en la creación (ver procesar()).
+        $provider_id_de_la_fila = isset($data['provider_id']) ? $data['provider_id'] : null;
+
+        if (empty($provider_id_de_la_fila)) {
+
+            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+            if (!empty($discounts_diff)) {
+                $cambios['discounts'] = $discounts_diff;
+            }
+
+        } else {
+
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_de_la_fila, $articulo_ya_creado);
+
+            if (!is_null($provider_discounts_to_tag)) {
+                $cambios['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                $cambios['provider_discounts_to_tag_provider_id'] = $provider_id_de_la_fila;
+            }
+        }
         $this->terminar('discounts_diff');
 
         $this->iniciar();
@@ -2400,18 +2606,39 @@ class ProcessRow {
             // Valor nuevo normalizado
             $new = $this->normalize_value_for_comparison($value);
 
+            /*
+             * Prompt 310: celda vacía (normalize_value_for_comparison la deja en null) pero la
+             * columna tiene el flag "permitir_valores_en_blanco" activo para este prop_key.
+             * En ese caso NO se omite: se fuerza blanco/cero explícito.
+             */
+            $forzar_blanco = isset($this->forced_blank_props[$key]);
+
             // Si el modelo no tiene esa propiedad, lo tratamos como virtual
 
             if (!array_key_exists($key, $existing->getAttributes())) {
                 if (!is_null($new)) {
                     $modified[$key] = $new;
-                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);  
-                } 
+                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);
+                }
                 continue;
             }
 
             // Valor viejo normalizado
             $old = $this->normalize_value_for_comparison($existing->$key);
+
+            if (is_null($new) && $forzar_blanco) {
+                // Campos numéricos pasan a 0; el resto (texto) queda en blanco (null).
+                $new = is_numeric($old) ? 0 : null;
+
+                if ($old == $new) continue; // ya estaba en blanco/cero, no hay cambio real
+
+                $modified[$key] = $new;
+                $modified["__diff__{$key}"] = [
+                    'old' => $existing->$key,
+                    'new' => $new,
+                ];
+                continue;
+            }
 
             // Si son iguales (tras normalizar), no hay cambio
             if ($old == $new || is_null($new)) continue;
@@ -3616,6 +3843,103 @@ class ProcessRow {
         return $this->provider_relations_buffer;
     }
 
+    public function buffer_oferta_de_precio(int $article_id, int $provider_id, array $oferta): void
+    {
+        if (!isset($this->ofertas_de_precio_buffer[$article_id])) {
+            $this->ofertas_de_precio_buffer[$article_id] = [];
+        }
+
+        // Última fila gana (mismo criterio que buffer_provider_relation()).
+        $this->ofertas_de_precio_buffer[$article_id][$provider_id] = $oferta;
+    }
+
+    public function get_ofertas_de_precio_buffer(): array
+    {
+        return $this->ofertas_de_precio_buffer;
+    }
+
+    /**
+     * Vacía el buffer de ofertas de precio (arreglo A15 post-chequeo).
+     *
+     * ArticleImport::guardar_articulos() llama a get_ofertas_de_precio_buffer()
+     * UNA vez por chunk para volcarlo a OfertasDeProveedorService::registrar_lote(),
+     * pero antes de este arreglo nada lo vaciaba después: el buffer seguía creciendo
+     * y, si esta misma instancia procesa más de un chunk, el chunk N termina
+     * re-mandando TODO lo acumulado desde el chunk 1. La deduplicación de
+     * registrar_lote() lo vuelve inocuo a nivel de filas escritas, pero cada chunk
+     * paga una lectura whereIn() cada vez más grande — en una importación de
+     * decenas de miles de filas eso degrada de verdad. Mismo patrón preexistente
+     * de $provider_relations_buffer (tampoco se limpia), pero fuera del alcance de
+     * este arreglo: acá solo se resuelve el buffer que esta misión introdujo.
+     *
+     * @return void
+     */
+    public function limpiar_ofertas_de_precio_buffer(): void
+    {
+        $this->ofertas_de_precio_buffer = [];
+    }
+
+    /**
+     * Registra que ESTE proveedor ofrecía el/los artículo(s) a $data['cost'], en los dos
+     * puntos donde el importador descarta o saltea la fila sin tocar el pivot con ella
+     * (sugerencias de compra). Captura de solo lectura: no decide nada del importador.
+     * Guardas duras: sin provider_id sale; sin cost o cost<=0 sale -- a propósito MÁS
+     * estricta que update_provider_relation() (:1582), que solo chequea
+     * isset($data['cost']) y NO descarta un costo <= 0 (arreglo A10 post-chequeo: el
+     * comentario original citaba :1560 y decía "misma condición", y ninguna de las dos
+     * cosas era cierta); cada id tiene que ser entero > 0, nunca un fake_id; y nunca
+     * lanza (try/catch con Log::warning).
+     *
+     * @param array $article_ids ids reales (int) o strings 'fake_...' a descartar
+     * @param int|null $provider_id
+     * @param array $data fila armada por procesar(): se leen 'cost', 'provider_code' y 'cost_in_dollars'
+     */
+    protected function registrar_oferta_de_otro_proveedor($article_ids, $provider_id, array $data): void
+    {
+        try {
+            // Guardas 1 y 2: sin provider_id, o sin cost / cost <= 0, no hay nada que registrar.
+            if (empty($provider_id) || !isset($data['cost']) || (float) $data['cost'] <= 0 || empty($article_ids)) {
+                return;
+            }
+
+            // Arreglo de bloqueante de merge (15/8/2026): moneda REAL de esta fila, para
+            // que el histórico no la asuma "en pesos" por default. $data['cost_in_dollars']
+            // ya está resuelto acá (procesar(), ~:776, corre ANTES que los tres call sites
+            // de este método: ~:993, ~:1153 y ~:1172) y sale de la columna "moneda" del
+            // Excel (get_cost_in_dollars(): usd/u$s/dolar/dólar/... = 1, cualquier otra cosa
+            // o columna ausente = 0). Sin esta clave, registrar_lote() completaba con
+            // MONEDA_POR_DEFECTO (1 = Peso) -- el mismo bug que A1 ya había arreglado del
+            // lado de la compra (NewProviderOrderHelper::catalogar_costo_proveedor()), pero
+            // acá sin tocar: una oferta en dólares mal etiquetada como pesos compite en
+            // mejores_ofertas_para() (que solo deja competir moneda_id=1) y le gana a todo
+            // el resto por ~1000x, con el ahorro estimado, el total y la orden de compra
+            // generada arrastrando el mismo desvío.
+            $oferta = [
+                'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
+                'cost'          => $data['cost'],
+                'moneda_id'     => !empty($data['cost_in_dollars']) ? 2 : 1,
+                'origen'        => 'importacion',
+            ];
+
+            foreach ($article_ids as $article_id) {
+                // Guarda 3: nunca un fake_id (artículo todavía sin INSERT en este chunk).
+                if (is_string($article_id) && strncmp($article_id, 'fake_', strlen('fake_')) === 0) {
+                    continue;
+                }
+                $article_id_int = (int) $article_id;
+                if ($article_id_int > 0) {
+                    $this->buffer_oferta_de_precio($article_id_int, (int) $provider_id, $oferta);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Guarda 4: nunca lanza. Un histórico de precios que revienta la importación
+            // sería peor que no tener histórico.
+            Log::warning('ProcessRow: no se pudo registrar oferta de otro proveedor', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
     /**
      * Devuelve los artículos detectados para crear
      */
@@ -4008,10 +4332,23 @@ class ProcessRow {
             }
         }
 
-        // Comparar porcentajes: si la columna está mapeada (no ignorada), siempre comparar aunque esté vacía.
-        // Celda vacía + old con valores → diff con new:[] → dispara el borrado del descuento %.
-        // Si la columna está ignorada se omite para no tocar datos existentes.
-        if (!ImportHelper::isIgnoredColumn('descuentos', $this->columns)) {
+        /*
+         * Prompt 310: Comparar porcentajes solo si corresponde.
+         * - Columna mapeada + celda CON valor: siempre se compara (el Excel manda).
+         * - Columna mapeada + celda VACÍA + flag "permitir_valores_en_blanco" OFF (default):
+         *   se omite la comparación para NO pisar/borrar los descuentos existentes (corrige
+         *   el bug donde una celda vacía borraba los descuentos del artículo).
+         * - Columna mapeada + celda VACÍA + flag ON: se mantiene el comportamiento legado
+         *   (diff con new:[] → dispara el borrado del descuento %, ahora explícito y opcional).
+         * - Columna ignorada: se omite para no tocar datos existentes.
+         */
+        if (
+            !ImportHelper::isIgnoredColumn('descuentos', $this->columns)
+            && (
+                !is_null($discounts_percent_str)
+                || $this->permite_valores_en_blanco('descuentos')
+            )
+        ) {
 
             if ($old_percents != $new_percents) {
                 $diffs[] = [
@@ -4024,9 +4361,14 @@ class ProcessRow {
             }
         }
 
-        // Comparar montos: misma lógica que porcentajes.
-        // Celda vacía + old con valores → diff → borra los montos existentes.
-        if (!ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)) {
+        // Comparar montos: misma lógica que porcentajes (ver comentario arriba).
+        if (
+            !ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)
+            && (
+                !is_null($discounts_amount_str)
+                || $this->permite_valores_en_blanco('descuentos_montos')
+            )
+        ) {
 
             if ($old_amounts != $new_amounts) {
                 $diffs[] = [
@@ -4040,6 +4382,198 @@ class ProcessRow {
         }
 
         return $diffs;
+    }
+
+    /**
+     * Prompt 307: contraparte de ArticleProviderDiscountHelper::sync_provider_discounts()
+     * (prompt 306) para el import de Excel. En lugar de calcular un diff contra TODOS los
+     * article_discounts (que mezclaría descuentos manuales, tagueados de otros proveedores,
+     * etc.), calcula directamente la lista final de descuentos a "tagear" (overwrite total)
+     * con el `provider_id` de esta fila, para pasarla tal cual a `sync_provider_discounts()`.
+     *
+     * Reglas (ver prompt 307):
+     *  - Sin `provider_id` no se puede tagear nada: se devuelve null y el caller conserva el
+     *    comportamiento legado (descuentos globales, sin proveedor) vía get_discounts_diff().
+     *  - Columna "descuentos" (porcentaje) MAPEADA: manda el valor del Excel (aunque venga
+     *    vacío, lo que intencionalmente limpia los descuentos porcentuales tagueados).
+     *  - Columna "descuentos" NO mapeada: si el proveedor tiene descuentos estándar
+     *    (ProviderDiscount.percentage) se materializan esos, tagueados.
+     *  - Columna "descuentos_montos" solo tiene equivalente en el Excel: no existe un monto
+     *    "estándar" de proveedor (ProviderDiscount no tiene columna amount), así que si esa
+     *    columna no está mapeada simplemente no se agregan montos.
+     *  - Si no hay nada que aportar (ninguna columna mapeada y el proveedor no tiene estándar),
+     *    se devuelve null: no se toca lo que ya estuviera tagueado para este artículo.
+     *  - Prompt 310: columna mapeada + celda VACÍA + flag "permitir_valores_en_blanco" OFF
+     *    (default): en lugar de limpiar, se preservan los items ya tagueados (percentage o
+     *    amount, según corresponda) leídos de `$existing_article`. Con el flag ON se mantiene
+     *    el comportamiento legado (celda vacía → sin items → borrado).
+     *
+     * @param  array                     $row              Fila del Excel en proceso.
+     * @param  int|null                  $provider_id      Proveedor de esta fila (columna o el fijo del import).
+     * @param  \App\Models\Article|null  $existing_article Artículo ya persistido (si existe) para
+     *                                                      preservar sus descuentos tagueados cuando
+     *                                                      corresponda. Null si el artículo es nuevo.
+     * @return array|null             Lista de items ['percentage'=>x] / ['amount'=>x] a pasar
+     *                                 a sync_provider_discounts(), o null si no corresponde tocar nada.
+     */
+    private function get_provider_discounts_to_tag($row, $provider_id, $existing_article = null)
+    {
+        // Nunca se tagea un descuento sin proveedor conocido (misma regla que
+        // ArticleProviderDiscountHelper::sync_provider_discounts).
+        if (empty($provider_id)) {
+            return null;
+        }
+
+        $col_percent_ignorada = ImportHelper::isIgnoredColumn('descuentos', $this->columns);
+        $col_amount_ignorada  = ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns);
+
+        // El estándar del proveedor solo aplica cuando la columna de % NO está mapeada:
+        // la columna del Excel siempre manda por sobre el estándar.
+        $estandar_percentages = $col_percent_ignorada
+            ? $this->get_provider_standard_discount_percentages($provider_id)
+            : [];
+
+        // Nada mapeado y sin estándar: no hay nada que tagear, se deja intacto lo existente.
+        if ($col_percent_ignorada && $col_amount_ignorada && empty($estandar_percentages)) {
+            return null;
+        }
+
+        $items = [];
+
+        if (!$col_percent_ignorada) {
+
+            $discounts_percent_str = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
+
+            if (
+                is_null($discounts_percent_str)
+                && !$this->permite_valores_en_blanco('descuentos')
+            ) {
+                // Prompt 310: celda vacía + flag OFF -> se preserva lo tagueado existente
+                // (sync_provider_discounts sobreescribe TODO, por eso hay que traerlo explícito).
+                foreach ($this->get_tagged_discount_percentages($existing_article) as $percentage) {
+                    $items[] = ['percentage' => $percentage];
+                }
+            } else if ($discounts_percent_str) {
+
+                $new_percents = array_filter(array_map(function ($chunk) {
+                    return self::get_number_forgiving($chunk);
+                }, explode('_', $discounts_percent_str)));
+
+                foreach ($new_percents as $percentage) {
+                    $items[] = ['percentage' => $percentage];
+                }
+            }
+            // discounts_percent_str vacío + flag ON -> no agrega nada -> borra (comportamiento legado).
+
+        } else {
+
+            // Columna no mapeada: se materializa el estándar del proveedor (si tiene).
+            foreach ($estandar_percentages as $percentage) {
+                $items[] = ['percentage' => $percentage];
+            }
+        }
+
+        if (!$col_amount_ignorada) {
+
+            $discounts_amount_str = ImportHelper::getColumnValue($row, 'descuentos_montos', $this->columns);
+
+            if (
+                is_null($discounts_amount_str)
+                && !$this->permite_valores_en_blanco('descuentos_montos')
+            ) {
+                foreach ($this->get_tagged_discount_amounts($existing_article) as $amount) {
+                    $items[] = ['amount' => $amount];
+                }
+            } else if ($discounts_amount_str) {
+
+                $new_amounts = array_filter(array_map(function ($chunk) {
+                    return self::get_number_forgiving($chunk);
+                }, explode('_', $discounts_amount_str)));
+
+                foreach ($new_amounts as $amount) {
+                    $items[] = ['amount' => $amount];
+                }
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * Prompt 310: porcentajes de descuentos ya "tagueados" (con provider_id, de cualquier
+     * proveedor) para un artículo persistido. Se usa para preservarlos cuando la celda de
+     * "descuentos" vino vacía y el flag "permitir_valores_en_blanco" está en false.
+     *
+     * @param  \App\Models\Article|null $article  Artículo a consultar; null o sin id -> sin datos.
+     * @return array<float>
+     */
+    private function get_tagged_discount_percentages($article): array
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return [];
+        }
+
+        return \App\Models\ArticleDiscount::where('article_id', $article->id)
+            ->whereNotNull('provider_id')
+            ->whereNotNull('percentage')
+            ->pluck('percentage')
+            ->map(function ($p) {
+                return (float) $p;
+            })
+            ->all();
+    }
+
+    /**
+     * Prompt 310: montos de descuentos ya "tagueados" para un artículo persistido.
+     * Misma finalidad que get_tagged_discount_percentages() pero para la columna "descuentos_montos".
+     *
+     * @param  \App\Models\Article|null $article  Artículo a consultar; null o sin id -> sin datos.
+     * @return array<float>
+     */
+    private function get_tagged_discount_amounts($article): array
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return [];
+        }
+
+        return \App\Models\ArticleDiscount::where('article_id', $article->id)
+            ->whereNotNull('provider_id')
+            ->whereNotNull('amount')
+            ->pluck('amount')
+            ->map(function ($a) {
+                return (float) $a;
+            })
+            ->all();
+    }
+
+    /**
+     * Devuelve los porcentajes estándar (ProviderDiscount.percentage) de un proveedor,
+     * cacheados en memoria por provider_id para no repetir la consulta en cada fila del Excel.
+     *
+     * @param  int $provider_id
+     * @return array<float>
+     */
+    private function get_provider_standard_discount_percentages($provider_id)
+    {
+        if (isset($this->provider_standard_discounts_cache[$provider_id])) {
+            return $this->provider_standard_discounts_cache[$provider_id];
+        }
+
+        $percentages = \App\Models\ProviderDiscount::where('provider_id', $provider_id)
+            ->whereNotNull('percentage')
+            ->pluck('percentage')
+            ->map(function ($p) {
+                return (float) $p;
+            })
+            ->filter(function ($p) {
+                return $p != 0;
+            })
+            ->values()
+            ->all();
+
+        $this->provider_standard_discounts_cache[$provider_id] = $percentages;
+
+        return $percentages;
     }
 
     private function get_surchages_diff($article, $row)
@@ -4131,8 +4665,16 @@ class ProcessRow {
             }
         }
 
+        /*
+         * Prompt 310: mismo criterio que get_discounts_diff(). Columna mapeada + celda vacía +
+         * flag "permitir_valores_en_blanco" OFF (default) -> se omite la comparación para no
+         * borrar los recargos existentes. Flag ON -> comportamiento legado (borra).
+         */
         // 🔹 3. Comparar porcentajes
-        if (!$this->compare_surchages_arrays($old_percents, $new_percents)) {
+        if (
+            (!is_null($surchages_percent_str) || $this->permite_valores_en_blanco('recargos'))
+            && !$this->compare_surchages_arrays($old_percents, $new_percents)
+        ) {
             $diffs[] = [
                 'type' => '%',
                 '__diff__surchages_percent' => [
@@ -4143,7 +4685,10 @@ class ProcessRow {
         }
 
         // 🔹 4. Comparar montos
-        if (!$this->compare_surchages_arrays($old_amounts, $new_amounts)) {
+        if (
+            (!is_null($surchages_amount_str) || $this->permite_valores_en_blanco('recargos_montos'))
+            && !$this->compare_surchages_arrays($old_amounts, $new_amounts)
+        ) {
             $diffs[] = [
                 'type' => 'amount',
                 '__diff__surchages_amount' => [

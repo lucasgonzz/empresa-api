@@ -79,6 +79,8 @@ class UserProfileChangeDescriptionHelper
         'aplicar_iva_al_costo',
         'aplicar_descuentos_de_venta_a_costos',
         'usa_provider_codes_repetidos',
+        'condicion_iva_precios',
+        'usar_condicion_fiscal_en_costeo',
     ];
 
     /**
@@ -137,6 +139,8 @@ class UserProfileChangeDescriptionHelper
         'aplicar_iva_al_costo' => 'Aplicar IVA al costo',
         'aplicar_descuentos_de_venta_a_costos' => 'Aplicar descuentos de venta a costos',
         'usa_provider_codes_repetidos' => 'Permitir códigos de proveedor repetidos',
+        'condicion_iva_precios' => 'Condición de IVA para precios',
+        'usar_condicion_fiscal_en_costeo' => 'Calcular costos según la condición de IVA',
     ];
 
     /**
@@ -358,6 +362,13 @@ class UserProfileChangeDescriptionHelper
             'usa_provider_codes_repetidos',
             'aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia',
             'discount_stock_from_recipe_after_advance_to_next_status',
+            // `usar_condicion_fiscal_en_costeo` es 0/1 (boolish). `condicion_iva_precios` NO entra
+            // aca a proposito: es un enum de texto (RRII/MT), no un booleano — tratarlo como
+            // boolish haria que format_value_for_display muestre "sí"/"sí" para cualquier cambio
+            // de RRII a MT (o viceversa), porque (bool) de cualquier string no vacío es siempre
+            // true. Ese campo ya se muestra correctamente como texto plano vía la rama default de
+            // format_value_for_display.
+            'usar_condicion_fiscal_en_costeo',
         ];
 
         return in_array($field_key, $bool_keys, true);

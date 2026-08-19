@@ -32,33 +32,6 @@ class CurrentAcountHelper {
 
     }
 
-    static function recalculateCurrentAcountsSalesDebe($client_id) {
-        $clients = Client::where('user_id', 121)
-                            ->get();
-
-        foreach ($clients as $client) {
-            $client_id = $client->id;
-            $current_acounts = CurrentAcount::where('client_id', $client_id)
-                                            ->whereNotNull('sale_id')
-                                            ->orderBy('created_at', 'ASC')
-                                            ->get();
-            foreach ($current_acounts as $current_acount) {
-                if (!is_null($current_acount->sale)) {
-                    if (!is_null($current_acount->haber)) {
-                        $current_acount->debe = null;
-                    } else {
-                        $prev_debe = $current_acount->debe; 
-                        $current_acount->debe = $sale->total;
-                        echo 'Se actualizo el debe de la venta N° '.$current_acount->sale->num.' de '.$prev_debe.' a '.$sale->total.' </br>';
-                        echo '--------------------------  </br>';
-                    }
-                    $current_acount->save();
-                } 
-            }
-            Self::checkSaldos('client', $client_id);
-        }
-    }
-
     static function checkCurrentAcountSaldo($credit_account_id) {
 
         $current_acounts = CurrentAcount::where('credit_account_id', $credit_account_id)

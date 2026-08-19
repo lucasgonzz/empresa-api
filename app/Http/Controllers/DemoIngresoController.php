@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Models\User;
+use App\Services\DemoEventoEmitter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -60,6 +61,16 @@ class DemoIngresoController extends Controller
         $request->session()->put('demo_ingreso_token_id', $registro->id);
 
         Log::info('Demo ingreso: sesion iniciada para user_id: '.$user->id);
+
+        /**
+         * Primer evento del roadmap del lead (mision 50). Va DESPUES de poner el marcador
+         * en la sesion, no antes: la primera guarda del emisor es justamente ese marcador,
+         * y emitir antes lo haria salir sin registrar nada.
+         *
+         * Del lado del admin este evento es el que cierra en `completo` el hito de ingreso,
+         * que pulsar el boton habia dejado en `parcial`.
+         */
+        DemoEventoEmitter::emitir('demo.ingreso', null, ['user_id' => $user->id]);
 
         return response()->json(['ok' => true], 200);
     }

@@ -6,8 +6,11 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Http\Controllers\Helpers\caja\CajaCierreHelper;
+use App\Http\Controllers\Helpers\caja\CajaLiquidacionHelper;
 use App\Models\Caja;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class CajaController extends Controller
 {
@@ -22,7 +25,50 @@ class CajaController extends Controller
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->get();
+
+        /*
+         * Grupo 223 · Prompt 02: cada caja expone tres saldos en vez de uno.
+         * `saldo_contable` es el saldo actual sin tocar (no se cambia esa fórmula). Los otros dos
+         * se calculan con una sola query de agregación por caja (sin traer movimientos a memoria,
+         * hay clientes con cajas de decenas de miles de movimientos).
+         */
+        foreach ($models as $model) {
+
+            $model->saldo_contable = $model->saldo;
+
+            $saldos_liquidez = CajaLiquidacionHelper::calcular_saldos_liquidez($model->id);
+
+            $model->saldo_disponible = $saldos_liquidez['saldo_disponible'];
+            $model->saldo_a_liquidar = $saldos_liquidez['saldo_a_liquidar'];
+        }
+
         return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Grupo 223 · Prompt 02 — línea de tiempo de liquidaciones pendientes de una caja: ingresos
+     * cuya `fecha_liquidacion_estimada` todavía no llegó, agrupados por día con el neto de cada uno.
+     * Alimenta la línea de tiempo del prompt 03 y el flujo de caja del grupo 226.
+     *
+     * @param int $id Id de la caja.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function liquidaciones_pendientes($id) {
+
+        /** Fecha de corte: solo ingresos que liquidan después de hoy. */
+        $hoy = Carbon::today()->format('Y-m-d');
+
+        $items = DB::table('movimiento_cajas')
+                    ->where('caja_id', $id)
+                    ->whereNotNull('ingreso')
+                    ->whereNotNull('fecha_liquidacion_estimada')
+                    ->whereDate('fecha_liquidacion_estimada', '>', $hoy)
+                    ->selectRaw('fecha_liquidacion_estimada as fecha, SUM(COALESCE(monto_neto_estimado, ingreso)) as neto')
+                    ->groupBy('fecha_liquidacion_estimada')
+                    ->orderBy('fecha_liquidacion_estimada', 'ASC')
+                    ->get();
+
+        return response()->json(['models' => $items], 200);
     }
 
     /**

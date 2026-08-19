@@ -77,6 +77,19 @@ class HelperController extends Controller
     function callMethod($method, $param = null, $param_2 = null) {
         $this->{$method}($param, $param_2);
     }
+
+    function servian() {
+        \Illuminate\Support\Facades\Auth::loginUsingId(2800);
+
+        try {
+            $helper = new \App\Http\Controllers\Helpers\inventoryPerformance\InventoryPerformanceHelper();
+            $ip = $helper->create();
+            dump($ip);
+        } catch (\Throwable $e) {
+            echo get_class($e) . ': ' . $e->getMessage() . "\n";
+            echo $e->getFile() . ':' . $e->getLine() . "\n";
+        }
+    }
     
 
     /**
@@ -2969,6 +2982,14 @@ class HelperController extends Controller
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $user->id,
         ]);
+
+        // Grupo 231, prompt 01: condicion_iva_precios ya no vive en user_configurations, vive en
+        // users. Toda cuenta nueva nace como Responsable Inscripto y con la dinamica de costeo por
+        // condicion fiscal activada de una: el `0` que trae por default la migracion es solo para
+        // no mover el costeo de las cuentas viejas, no para las que se crean de aca en adelante.
+        $user->condicion_iva_precios = User::CONDICION_RRII;
+        $user->usar_condicion_fiscal_en_costeo = 1;
+        $user->save();
     }
 
     function set_cheques_user_id() {

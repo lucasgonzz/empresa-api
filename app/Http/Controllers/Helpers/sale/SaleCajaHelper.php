@@ -38,6 +38,11 @@ class SaleCajaHelper {
 		            'notas'                         => '',
 		            'sale_id'                       => $sale->id,
 		            'caja_id'                       => $payment_method->pivot->caja_id,
+
+		            // Grupo 223 - Prompt 02: una venta cobrada es un cobro real, aplica liquidacion
+		            // y comision (si la caja/metodo de pago la tiene configurada).
+		            'aplica_liquidacion'                        => true,
+		            'current_acount_payment_method_id'          => $payment_method->id,
 		        ];
 
 		    	$helper->crear_movimiento($data);

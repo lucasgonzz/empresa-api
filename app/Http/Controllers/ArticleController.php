@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
@@ -42,6 +43,7 @@ use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Jobs\SyncProductToMercadoLibre;
 use App\Models\Article;
 use App\Models\PdfColumnProfile;
+use App\Services\DemoEventoEmitter;
 use App\Models\User;
 use App\Services\MercadoLibre\ProductService;
 use App\Services\Pdf\Catalog\CatalogClassic;
@@ -313,6 +315,21 @@ class ArticleController extends Controller
 
         Log::info('se guardo article con id: '.$model->id);
 
+        /**
+         * Evento de la demo (mision 50). Va del lado del servidor y no del SPA porque desde
+         * el front seria falsificable y, peor, se perderia cuando el lead cree el articulo
+         * por un camino distinto al guiado — que es justo lo que la demo quiere permitir
+         * (decision T4 de demo_experiencia.md §9).
+         *
+         * 🔴 En una instancia de cliente real esto es un no-op de costo cero: la primera
+         * guarda de emitir() mira el marcador de sesion de demo y sale sin tocar la base.
+         * Este endpoint es de los mas calientes del sistema y no puede pagar una query mas.
+         *
+         * Va despues del save() y de todo lo que cuelga de el, con el articulo ya escrito:
+         * un evento emitido antes de que la escritura este confirmada le miente al roadmap.
+         */
+        DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 
@@ -507,11 +524,23 @@ class ArticleController extends Controller
         }
         $model->save();
         ArticleHelper::setFinalPrice($model);
+
+        /**
+         * El alta rápida desde vender también es un artículo creado (misión 50). Va acá y no
+         * sólo en store() porque este ES el "camino distinto al guiado" que la decisión T4 de
+         * demo_experiencia.md §9 dice que no se puede perder: el lead que arma una venta y
+         * carga el artículo desde ahí hizo la acción igual, y el roadmap tiene que enterarse.
+         */
+        DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
+
+        // Prompt 310: flags "permitir_valores_en_blanco" por columna mapeada (default false).
+        $blank_flags = GeneralHelper::getImportBlankFlags($request);
 
         // Log::info('columns:');
         // Log::info($columns);
@@ -560,8 +589,9 @@ class ArticleController extends Controller
         $result = $excel->importar([
             'import_uuid'           => $import_uuid, 
             'archivo_excel'         => $archivo_excel, 
-            'columns'               => $columns, 
-            'create_and_edit'       => $request->create_and_edit, 
+            'columns'               => $columns,
+            'blank_flags'           => $blank_flags,
+            'create_and_edit'       => $request->create_and_edit,
             'start_row'             => $request->start_row, 
             'finish_row'            => $request->finish_row, 
             'provider_id'           => $request->provider_id, 
@@ -986,9 +1016,118 @@ class ArticleController extends Controller
         return response()->json(['sales'    => $sales], 200);
     }
 
+    /**
+     * Desglose del calculo del precio final del articulo, para el boton "?" del modal.
+     *
+     * El articulo se resuelve SIEMPRE acotado a la cuenta (userId()), no con un find() suelto, por
+     * dos motivos que aparecieron juntos en el hallazgo
+     * 20260805-final-price-description-500-si-no-existe-el-articulo:
+     *
+     *   1. Con un id inexistente, find() devuelve null y setFinalPrice() reventaba con 500. Un id
+     *      que no existe es un 404, no un error del servidor.
+     *   2. Sin el filtro por cuenta, un id de OTRO cliente devolvia su desglose de precios: costo
+     *      real, margenes y precio final. Es una fuga de datos entre las ~40 cuentas del sistema, y
+     *      el 404 de arriba es justamente lo que la cierra sin decir si el id existe o no.
+     *
+     * @param int $id Id del articulo.
+     * @return \Illuminate\Http\JsonResponse
+     */
     function get_final_price_description($id) {
-        $article = Article::find($id);
+        $article = Article::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
+
+        if (is_null($article)) {
+            return response()->json(['message' => 'No se encontro el articulo'], 404);
+        }
+
         $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
         return response()->json(['description'    => $description], 200);
+    }
+
+    /**
+     * Prompt 357/01 — desglose del calculo del precio de UNA lista de precio, para el boton "?" de
+     * cada tarjeta de lista en el modal del articulo. Devuelve la cadena completa: el costo real y
+     * el precio final unico que ya devolvia get_final_price_description(), mas el tramo propio de
+     * esa lista al final.
+     *
+     * El $guardar_cambios en true es deliberado, igual que en el endpoint de al lado: pedir la
+     * explicacion recalcula y guarda. Ponerlo en false daria la ilusion de una simulacion sin
+     * efectos que igual escribiria, porque aplicar_precios_segun_listas_de_precios() toca los
+     * pivots con syncWithoutDetaching()/updateExistingPivot() sin mirar esa bandera (esta advertido
+     * en el docblock de setFinalPrice).
+     */
+    function get_price_type_description($id, $price_type_id) {
+        // Mismo filtro por cuenta que el metodo hermano de arriba: este endpoint tenia el guard del
+        // 404 pero tampoco acotaba por userId(), asi que devolvia el desglose de precios de un
+        // articulo de otro cliente. Los dos endpoints del boton "?" quedan con el mismo criterio.
+        $article = Article::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
+
+        if (is_null($article)) {
+            return response()->json(['message' => 'No se encontro el articulo'], 404);
+        }
+
+        $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
+        return response()->json(['description'    => $description], 200);
+    }
+
+    /**
+     * Prompt 308: cambio MANUAL de proveedor de un artículo desde el listado, con dos flags
+     * independientes (ver modal del prompt 309):
+     *   - eliminar_descuentos_proveedor_anterior (default true)
+     *   - crear_descuentos_proveedor_nuevo (default true)
+     * La lógica de negocio (qué descuentos borrar/crear, recálculo de costo_real) vive en
+     * ArticleProviderDiscountHelper::change_provider(), no acá.
+     *
+     * @param \Illuminate\Http\Request $request Espera: id (artículo), provider_id (nuevo
+     *                                          proveedor), y los dos flags opcionales.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function change_provider(Request $request) {
+
+        $model = Article::find($request->id);
+
+        // Los dos flags son independientes y ambos activados por defecto (ver prompt 308/309):
+        // si no vienen en el request, se asume que el usuario quiere el comportamiento
+        // "reemplazar" completo (barrer lo viejo + crear lo nuevo).
+        $eliminar_descuentos_proveedor_anterior = $request->has('eliminar_descuentos_proveedor_anterior')
+            ? filter_var($request->eliminar_descuentos_proveedor_anterior, FILTER_VALIDATE_BOOLEAN)
+            : true;
+
+        $crear_descuentos_proveedor_nuevo = $request->has('crear_descuentos_proveedor_nuevo')
+            ? filter_var($request->crear_descuentos_proveedor_nuevo, FILTER_VALIDATE_BOOLEAN)
+            : true;
+
+        $model = ArticleProviderDiscountHelper::change_provider(
+            $model,
+            $request->provider_id,
+            $eliminar_descuentos_proveedor_anterior,
+            $crear_descuentos_proveedor_nuevo
+        );
+
+        $this->attach_provider($model);
+
+        return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
+    }
+
+    /**
+     * Prompt 308 (tarea 4): datos para pre-llenar el modal de cambio de proveedor (prompt 309) —
+     * qué descuentos tagueados tiene HOY el proveedor anterior del artículo (candidatos a
+     * borrarse) y qué bonificaciones estándar (`provider_discounts`) tiene el proveedor destino
+     * (candidatas a crearse). Consulta pura, no modifica nada.
+     *
+     * @param int $id          Id del artículo.
+     * @param int $provider_id Id del proveedor DESTINO (todavía no aplicado al artículo).
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function change_provider_preview($id, $provider_id) {
+
+        $article = Article::find($id);
+
+        $preview = ArticleProviderDiscountHelper::get_change_provider_preview($article, $provider_id);
+
+        return response()->json($preview, 200);
     }
 }

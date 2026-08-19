@@ -288,6 +288,12 @@ class UserSetupHelper
             'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
+
+            /*
+                Defaults del buscador general. El foreach que corre estos seeders es posterior a
+                create_user(), así que el dueño ya existe cuando este llega.
+            */
+            'GlobalSearchDefaultsSeeder',
         ];
     }
 
