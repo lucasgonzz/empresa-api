@@ -242,7 +242,7 @@ class GenerarResumenSugerenciaCompraJob implements ShouldQueue
                  * (la SPA muestra "Nueva conversación") y acá no hay nada que
                  * inferir — la conversación nace con nombre propio.
                  */
-                'titulo'          => 'Sugerencia de compra #' . $suggestion->id,
+                'titulo'          => AiConversation::titulo_con_fecha('Sugerencia de compra', $suggestion->created_at),
                 'origen'          => 'sugerencia_compra',
                 'referencia_id'   => $suggestion->id,
                 'contexto'        => $contexto,
