@@ -26,9 +26,11 @@ class ExtraFiltersHelper
      * Reglas:
      * - Si $extra_filters no es un array, se devuelve $models sin tocar.
      * - Cada filtro sin 'key' u 'operator' se ignora.
-     * - La 'key' se valida SIEMPRE contra el schema real de la tabla antes de usarla en un where
-     *   (excepto el operador legacy 'category', que no usa la key recibida sino que fuerza
-     *   'category_id'). Esto evita interpolar en SQL una key arbitraria que venga del request.
+     * - La 'key' se valida SIEMPRE contra el schema real de la tabla antes de usarla en un where,
+     *   excepto para los operadores que no filtran por una columna del modelo y por lo tanto no
+     *   tienen key que validar: el legacy 'category' (fuerza 'category_id') y
+     *   'address_stock_seteado' (filtra por relación). Ver $operadores_sin_key más abajo. Esto
+     *   evita interpolar en SQL una key arbitraria que venga del request.
      * - Valores que no filtran nada (null, '', 'todos', 'con_o_sin_stock') se ignoran, EXCEPTO
      *   el 0 con operador '=' sobre una columna numérica, que es un filtro legítimo (ej: stock
      *   exactamente 0). El 0 solo se descarta para el operador legacy 'category' (donde significa
@@ -125,10 +127,15 @@ class ExtraFiltersHelper
                 // Filtro por SUCURSAL del listado de artículos: deja pasar solo los artículos a los
                 // que en algún momento se les seteó el stock de esa sucursal, sin mirar el valor.
                 // Una fila en el pivote con amount 0, negativo o null cuenta igual que una con
-                // stock positivo: lo que se pregunta es si la relación existe, no cuánto hay.
+                // stock positivo: lo que se pregunta es si la relación la cargó una persona, no
+                // cuánto hay adentro.
                 //
                 // Por eso es whereHas y NO un where sobre pivot.amount: cualquier comparación
                 // numérica dejaría afuera justo los tres casos que Lucas pidió incluir (19/8/2026).
+                //
+                // Lo que sí hay que elegir con cuidado es CUÁL pivote se mira: ver el bloque de
+                // los artículos con variantes, abajo. No todas las filas de address_article las
+                // escribió una persona.
                 //
                 // El 0 significa "todas las sucursales" y no filtra nada. Se descarta acá adentro y
                 // no en el $sin_filtro de arriba porque aquel deja pasar el 0 a propósito (para '='
@@ -142,33 +149,69 @@ class ExtraFiltersHelper
                     // cualquier otro modelo con addresses() probablemente no).
                     $tiene_variantes = method_exists($model_instance, 'article_variants');
 
-                    // 🔴 El where(function(){}) que envuelve al OR no es decorativo. Sin él, el
-                    // orWhereHas se suelta y se OR-ea contra TODA la query de arriba —el
-                    // where('user_id'), el grupo de coincidencia de texto y los filtros de
-                    // columna—, así que el filtro de sucursal traería artículos de otros usuarios
-                    // y de otras búsquedas. Agrupado, el OR queda contenido y el conjunto entero
-                    // se AND-ea con lo anterior, que es lo que un filtro tiene que hacer.
-                    $models = $models->where(function ($query) use ($value, $tiene_variantes) {
+                    if (!$tiene_variantes) {
 
-                        $query->whereHas('addresses', function ($sub_query) use ($value) {
+                        // Modelo sin variantes: su pivote propio es el único dato que hay.
+                        $models = $models->whereHas('addresses', function ($sub_query) use ($value) {
                             $sub_query->where('addresses.id', $value);
                         });
 
-                        // Un artículo con variantes no guarda su stock por sucursal en
-                        // address_article sino en address_article_variant, una fila por variante.
-                        // La columna "Sucursal X" de la tabla YA los muestra: get_address_stock()
-                        // del mixin payment_method_discounts_addresses_columns.js cae a sumar el
-                        // stock de las variantes cuando el artículo no tiene fila propia.
+                    } else {
+
+                        // 🔴 ACÁ NO SE PUEDE MIRAR `address_article` A SECAS, y este es el hallazgo
+                        // que la Fase 5 encontró el 19/8/2026. Para un artículo cuyas variantes
+                        // tienen sucursales, el pivote del ARTÍCULO es un valor DERIVADO que el
+                        // backend regenera entero, con una fila para CADA sucursal de la cuenta y
+                        // las que no tienen stock en 0:
                         //
-                        // Si este filtro mirara solo address_article, un artículo con un número
-                        // visible en la columna de Sucursal X desaparecería al filtrar por
-                        // Sucursal X. Desde la pantalla eso se lee como un bug, no como una regla.
-                        if ($tiene_variantes) {
-                            $query->orWhereHas('article_variants.addresses', function ($sub_query) use ($value) {
-                                $sub_query->where('addresses.id', $value);
+                        //   ArticleHelper::get_addresses()            -> array con TODAS las
+                        //                                                sucursales del usuario en 0
+                        //   ArticleHelper::actualizar_article_addresses() -> sync([]) + attach de
+                        //                                                cada entrada, ceros incluidos
+                        //
+                        // Se llega ahí desde cualquier movimiento de stock, desde SetArticleStock,
+                        // desde producción y desde la importación de Excel. O sea que preguntar
+                        // "¿existe la fila?" sobre esos artículos devuelve SIEMPRE que sí, para
+                        // TODAS las sucursales, y el filtro no filtraría nada justo en las cuentas
+                        // que usan variantes por sucursal — que son las que tienen sucursales en
+                        // serio. Es exactamente lo contrario de lo que se pidió ("diferenciar a qué
+                        // sucursal pertenece cada artículo").
+                        //
+                        // Entonces el dato que vale es el que cargó una persona, y ese vive en el
+                        // pivote de la VARIANTE (address_article_variant), que nada regenera.
+                        //
+                        // El corte no es "tiene variantes" sino "alguna variante tiene sucursales":
+                        // si ninguna las tiene, actualizar_article_addresses() no corre nunca y el
+                        // pivote del artículo sigue siendo lo que cargó el usuario, así que ahí sí
+                        // es la fuente correcta.
+                        //
+                        // 🔴 El where(function(){}) que envuelve al OR no es decorativo. Sin él, el
+                        // orWhere se suelta y se OR-ea contra TODA la query de arriba —el
+                        // where('user_id'), el grupo de coincidencia de texto y los filtros de
+                        // columna—, así que el filtro traería artículos de otros usuarios y de
+                        // otras búsquedas. El test de aislamiento por usuario lo cubre.
+                        $models = $models->where(function ($query) use ($value) {
+
+                            // Caso A — alguna variante tiene sucursales: manda el pivote de las
+                            // variantes, y el del artículo se ignora por derivado.
+                            $query->where(function ($con_variantes) use ($value) {
+                                $con_variantes->whereHas('article_variants.addresses')
+                                              ->whereHas('article_variants.addresses', function ($sub_query) use ($value) {
+                                                    $sub_query->where('addresses.id', $value);
+                                              });
                             });
-                        }
-                    });
+
+                            // Caso B — ninguna variante tiene sucursales: el pivote del artículo es
+                            // lo que cargó el usuario y es la fuente correcta. Cubre tanto al
+                            // artículo sin variantes como al que tiene variantes sin sucursales.
+                            $query->orWhere(function ($sin_variantes) use ($value) {
+                                $sin_variantes->whereDoesntHave('article_variants.addresses')
+                                              ->whereHas('addresses', function ($sub_query) use ($value) {
+                                                    $sub_query->where('addresses.id', $value);
+                                              });
+                            });
+                        });
+                    }
                 }
             } else if ($operator == 'stock_option') {
                 // Operador legacy: mismos valores que el select de stock del frontend.

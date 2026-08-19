@@ -4,6 +4,7 @@ namespace Tests\Feature\Listado;
 
 use App\Models\Address;
 use App\Models\Article;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\ArticleVariant;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
@@ -78,8 +79,20 @@ class Filtro_De_Sucursal_En_Listado_Test extends BusquedaTestCase
             'user_id' => $user_id,
         ]);
 
-        // Sin fila propia, pero con una variante que si tiene la sucursal A (ver docblock de la
-        // clase). La columna de la tabla ya le muestra el stock de la variante.
+        // Articulo con VARIANTES cuyo stock por sucursal vive solo en la sucursal A.
+        //
+        // 🔴 El escenario se termina de armar pasando por `ArticleHelper::setArticleStockFromAddresses()`,
+        // que es el camino REAL de produccion (lo llaman StockMovementController, SetArticleStock,
+        // ProductionMovementHelper y ArticleImport), y NO se deja con el attach a mano. La
+        // diferencia no es cosmetica: ese metodo REGENERA el pivote del articulo con una fila para
+        // CADA sucursal de la cuenta, las que no tienen stock en 0. O sea que despues de esta
+        // llamada, este articulo tiene fila en address_article para A **y para B**, con B en 0.
+        //
+        // Un test que armara este estado a mano probaria un estado que el sistema nunca produce, y
+        // fue exactamente asi como la primera version de esta suite dio verde sobre un filtro que
+        // en produccion no filtraba nada: preguntar "existe la fila?" devolvia que si para TODAS
+        // las sucursales. El test `el_articulo_con_variantes_no_aparece_en_la_sucursal_que_nunca_le_cargaron`
+        // es el que protege eso.
         $articulos['variante_a'] = Article::create([
             'name'    => self::PREFIJO.' con variante en a',
             'user_id' => $user_id,
@@ -91,6 +104,10 @@ class Filtro_De_Sucursal_En_Listado_Test extends BusquedaTestCase
         ]);
 
         $variante->addresses()->attach($address_a->id, ['amount' => 3]);
+
+        $articulos['variante_a']->load('article_variants.addresses');
+
+        ArticleHelper::setArticleStockFromAddresses($articulos['variante_a'], false, $user_id);
 
         return [
             'address_a' => $address_a,
@@ -308,6 +325,65 @@ class Filtro_De_Sucursal_En_Listado_Test extends BusquedaTestCase
             'la columna "Sucursal A" de la tabla ya le muestra el stock de la variante: si el filtro '.
             'no lo incluyera, desapareceria al filtrar por esa misma sucursal'
         );
+    }
+
+    /**
+     * 🔴 El test que la Fase 5 hizo falta agregar el 19/8/2026, y el que mas duele si se cae.
+     *
+     * `ArticleHelper::setArticleStockFromAddresses()` regenera el pivote del articulo con una fila
+     * para CADA sucursal de la cuenta, las que no tienen stock en 0 (get_addresses() arma el array
+     * con todas en 0, actualizar_article_addresses() hace sync([]) + attach de cada entrada). O sea
+     * que el articulo con variantes de este escenario TIENE fila en address_article para la
+     * sucursal B, con amount 0, sin que nadie le haya cargado nunca stock ahi.
+     *
+     * Con el criterio ingenuo ("existe la fila en address_article?"), ese articulo aparecia al
+     * filtrar por B, y con el todos los articulos con variantes de la cuenta: el filtro no filtraba
+     * NADA justo en los negocios que usan variantes por sucursal, que son los que tienen sucursales
+     * en serio. Por eso el operador mira el pivote de las VARIANTES cuando alguna variante tiene
+     * sucursales, y el del articulo solo cuando ninguna la tiene.
+     *
+     * Este test empieza afirmando la premisa (la fila en 0 existe de verdad) para que, si algun dia
+     * el backend deja de generarla, quede claro que el test cambio de sentido y no que "se arreglo
+     * solo".
+     *
+     * @group listado
+     * @test
+     */
+    public function el_articulo_con_variantes_no_aparece_en_la_sucursal_que_nunca_le_cargaron()
+    {
+        $escenario = $this->sembrar_escenario();
+
+        $articulo = $escenario['articulos']['variante_a'];
+
+        // Premisa: el backend dejo una fila en 0 para la sucursal B, que nadie cargo.
+        $fila_en_b = $articulo->addresses()
+                              ->where('addresses.id', $escenario['address_b']->id)
+                              ->first();
+
+        $this->assertNotNull(
+            $fila_en_b,
+            'premisa del test: setArticleStockFromAddresses tiene que dejar una fila en 0 para TODAS '.
+            'las sucursales. Si esto falla, el backend cambio y hay que revisar el criterio del filtro.'
+        );
+        $this->assertEquals(0, (float) $fila_en_b->pivot->amount);
+
+        // Y aun asi, el articulo NO tiene que aparecer al filtrar por B.
+        $response = $this->buscar_con_sucursal($escenario['address_b']->id);
+
+        $response->assertStatus(200);
+
+        $this->assertNotContains(
+            $articulo->id,
+            $this->ids_de($response),
+            'una fila en 0 que genero el backend solo NO es "se le seteo el stock en esa sucursal"'
+        );
+
+        // La contracara: en la sucursal que si le cargaron, aparece.
+        $response_a = $this->buscar_con_sucursal($escenario['address_a']->id);
+
+        $response_a->assertStatus(200);
+
+        $this->assertContains($articulo->id, $this->ids_de($response_a));
     }
 
     /**
