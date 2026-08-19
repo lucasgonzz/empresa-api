@@ -3,9 +3,15 @@
 namespace App\Services\Traits;
 
 /**
- * Reglas de REGISTRO que comparten todos los textos que la IA le escribe al dueño del
+ * Reglas de REGISTRO que comparten cuatro textos que la IA le escribe al dueño del
  * negocio: los tres resúmenes de sugerencias (stock, compras, ofertas) y el system prompt
  * del asistente del chat.
+ *
+ * ⚠️ NO son todos los que existen. ResumenIaActividadService (resumen de actividad de un
+ * cliente) sigue con su propio "tono cercano y directo" y NO usa este trait: quedó afuera
+ * del alcance que fijó Lucas el 19/8/2026, que nombró stock, compras y ofertas. Se deja
+ * escrito para que el próximo que ajuste el registro sepa que ese archivo no lo sigue, en
+ * vez de darlo por cubierto.
  *
  * -------------------------------------------------------------------------------------
  * POR QUÉ ESTO VIVE EN UN SOLO LUGAR Y NO COPIADO EN CADA PROMPT
