@@ -401,7 +401,11 @@ class Endpoints_resumen_y_chat_Test extends TestCase
         $conversation = $conversaciones[0];
         $this->assertEquals($this->comercio->id, (int) $conversation->user_id);
         $this->assertEquals($this->comercio->id, (int) $conversation->auth_user_id);
-        $this->assertEquals('Sugerencia de compra #' . $suggestion->id, $conversation->titulo);
+        $this->assertEquals(
+            'Sugerencia de compra ' . $suggestion->created_at->format('d/m/Y'),
+            $conversation->titulo,
+            'El titulo lleva la fecha en que se genero la sugerencia, no su id.'
+        );
         $this->assertNotNull($conversation->last_message_at);
 
         $mensajes = AiMessage::where('ai_conversation_id', $conversation->id)->get();

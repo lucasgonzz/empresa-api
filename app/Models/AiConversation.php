@@ -36,6 +36,30 @@ class AiConversation extends Model
     protected $guarded = [];
 
     /**
+     * Titulo de una conversacion que nace de una sugerencia terminada: el nombre del tipo
+     * mas la fecha en que la sugerencia se genero, en dia/mes/anio.
+     *
+     * Antes era "<tipo> #<id>" (pedido de Lucas del 19/8/2026: el id no le dice nada a
+     * nadie; la fecha si). Vive ACA y no copiado en los tres jobs porque el formato es
+     * uno solo para los tres tipos: con una copia por job, el dia que se le agregue la
+     * hora entra en el que se estaba mirando y la bandeja queda con dos formatos.
+     *
+     * 🔴 La fecha sale de created_at de la SUGERENCIA, no de now(): el job corre despues
+     * y una corrida que quedo encolada de un dia para el otro se titularia con la fecha
+     * equivocada. now() es solo la red por si created_at viniera null.
+     *
+     * @param string $prefijo Nombre del tipo, ej. 'Sugerencia de stock'
+     * @param mixed $momento created_at de la sugerencia (Carbon o null)
+     * @return string
+     */
+    public static function titulo_con_fecha($prefijo, $momento)
+    {
+        $fecha = is_null($momento) ? now() : $momento;
+
+        return $prefijo . ' ' . $fecha->format('d/m/Y');
+    }
+
+    /**
      * Mensajes del hilo en orden de llegada. El orden por id alcanza porque
      * los mensajes solo se agregan al final, nunca se reordenan.
      */
