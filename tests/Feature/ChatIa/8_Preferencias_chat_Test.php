@@ -12,8 +12,9 @@ use Tests\TestCase;
  * Misión chat-ia-y-modulo-ia — P8: preferencias de UI del chat POR PERSONA.
  *
  * Lo que protege este archivo es la separación persona/cuenta de D1-D2: la
- * posición del botón y el ancho de la sidebar se guardan en la fila del
- * usuario AUTENTICADO (empleado incluido), nunca en la del dueño — el bug
+ * posición del botón, el ancho de la sidebar y el ancho del modal entero
+ * (19/8/2026) se guardan en la fila del usuario AUTENTICADO (empleado incluido),
+ * nunca en la del dueño — el bug
  * que se está evitando es el de vender_left_width, que por resolverse con el
  * dueño es por cuenta. Y que los valores viajan solos en GET api/user, sin
  * requests extra.
@@ -58,6 +59,7 @@ class Preferencias_chat_Test extends TestCase
     {
         $this->assertTrue(Schema::hasColumn('users', 'chat_ia_fab_position'));
         $this->assertTrue(Schema::hasColumn('users', 'chat_ia_sidebar_width'));
+        $this->assertTrue(Schema::hasColumn('users', 'chat_ia_panel_width'));
     }
 
     /**
@@ -71,21 +73,25 @@ class Preferencias_chat_Test extends TestCase
         $response = $this->putJson('api/user/set-chat-ia-preferencias', [
             'chat_ia_fab_position'  => '24,600',
             'chat_ia_sidebar_width' => 300,
+            'chat_ia_panel_width'   => 1100,
         ]);
 
         $response->assertStatus(200);
         $this->assertEquals('24,600', $response->json('chat_ia_fab_position'));
         $this->assertEquals(300, $response->json('chat_ia_sidebar_width'));
+        $this->assertEquals(1100, $response->json('chat_ia_panel_width'));
 
         // La fila del EMPLEADO tiene los valores...
         $this->empleado->refresh();
         $this->assertEquals('24,600', $this->empleado->chat_ia_fab_position);
         $this->assertEquals(300, (int) $this->empleado->chat_ia_sidebar_width);
+        $this->assertEquals(1100, (int) $this->empleado->chat_ia_panel_width);
 
         // ...y la del dueño quedó intacta: la preferencia es de la persona.
         $this->comercio->refresh();
         $this->assertNull($this->comercio->chat_ia_fab_position);
         $this->assertNull($this->comercio->chat_ia_sidebar_width);
+        $this->assertNull($this->comercio->chat_ia_panel_width);
     }
 
     /**
@@ -107,8 +113,17 @@ class Preferencias_chat_Test extends TestCase
             ['chat_ia_sidebar_width' => 90],
             ['chat_ia_sidebar_width' => 1000],
             ['chat_ia_sidebar_width' => 'ancho'],
+            // Anchos de panel fuera del rango 720..1600 que clampa la SPA, o no enteros.
+            // 🔴 El 500 y el 1700 son los que blindan que este rango NO se pueda relajar
+            // de un lado solo: si la SPA y el endpoint dejan de decir el mismo numero, el
+            // usuario arrastra hasta un ancho que se pierde en silencio al recargar.
+            ['chat_ia_panel_width' => 500],
+            ['chat_ia_panel_width' => 1700],
+            ['chat_ia_panel_width' => 900.5],
+            ['chat_ia_panel_width' => 'ancho'],
             // Una clave válida no salva a la otra: no se guarda nada.
             ['chat_ia_fab_position' => '10,10', 'chat_ia_sidebar_width' => 5000],
+            ['chat_ia_sidebar_width' => 300, 'chat_ia_panel_width' => 5000],
         ];
 
         foreach ($invalidos as $payload) {
@@ -119,6 +134,7 @@ class Preferencias_chat_Test extends TestCase
         $this->empleado->refresh();
         $this->assertNull($this->empleado->chat_ia_fab_position, 'Ningún 422 puede haber persistido una posición.');
         $this->assertNull($this->empleado->chat_ia_sidebar_width, 'Ningún 422 puede haber persistido un ancho.');
+        $this->assertNull($this->empleado->chat_ia_panel_width, 'Ningún 422 puede haber persistido un ancho de panel.');
     }
 
     /**
@@ -146,6 +162,17 @@ class Preferencias_chat_Test extends TestCase
         $this->empleado->refresh();
         $this->assertEquals('0,0', $this->empleado->chat_ia_fab_position);
         $this->assertEquals(260, (int) $this->empleado->chat_ia_sidebar_width, 'Guardar la posición no puede pisar el ancho.');
+
+        // El ancho del MODAL es una tercera medida independiente: guardarlo no puede
+        // tocar ni la posicion del boton ni el ancho de la sidebar de adentro.
+        $this->putJson('api/user/set-chat-ia-preferencias', [
+            'chat_ia_panel_width' => 1240,
+        ])->assertStatus(200);
+
+        $this->empleado->refresh();
+        $this->assertEquals(1240, (int) $this->empleado->chat_ia_panel_width);
+        $this->assertEquals('0,0', $this->empleado->chat_ia_fab_position);
+        $this->assertEquals(260, (int) $this->empleado->chat_ia_sidebar_width, 'El ancho del modal no puede pisar el de la sidebar.');
     }
 
     /**
@@ -160,6 +187,7 @@ class Preferencias_chat_Test extends TestCase
     {
         $this->empleado->chat_ia_fab_position = '40,700';
         $this->empleado->chat_ia_sidebar_width = 320;
+        $this->empleado->chat_ia_panel_width = 1180;
         $this->empleado->save();
 
         // El dueño con otros valores, para probar que viaja la fila correcta.
@@ -173,5 +201,6 @@ class Preferencias_chat_Test extends TestCase
 
         $this->assertEquals('40,700', $response->json('user.chat_ia_fab_position'));
         $this->assertEquals(320, (int) $response->json('user.chat_ia_sidebar_width'));
+        $this->assertEquals(1180, (int) $response->json('user.chat_ia_panel_width'), 'Sin esto la SPA arrancaria con el ancho por defecto en cada recarga.');
     }
 }
