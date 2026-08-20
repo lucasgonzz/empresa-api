@@ -461,4 +461,134 @@ class CostoBrutoEnElAbmTest extends EmpresaTestCase
             $this->restaurar_condicion($previos);
         }
     }
+
+    /**
+     * Test 9 — la declaración explícita le gana a `articles.aplicar_iva` (decisión de Lucas,
+     * 20/8/2026).
+     *
+     * Un Responsable Inscripto marca "el costo que estoy cargando incluye IVA" sobre un artículo
+     * con `aplicar_iva` apagado. Hasta este cambio el toggle no hacía NADA: `back_out_iva()`
+     * cortaba en el guard de `aplicar_iva` y el 1210 se guardaba tal cual en una columna que es
+     * NETA por convención, en silencio. El costo quedaba 21% inflado y `cost_bruto` en null, o sea
+     * que ni siquiera quedaba rastro de que el número traía IVA adentro.
+     *
+     * El criterio: `aplicar_iva` es una decisión sobre la VENTA (si al precio se le suma IVA
+     * encima), no sobre cómo interpretar un número que una persona acaba de tipear.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function el_toggle_explicito_descompone_aunque_aplicar_iva_este_apagado()
+    {
+        $previos = $this->set_condicion('RRII', 0);
+
+        try {
+
+            $article = $this->articulo_con_alicuota('21');
+
+            $this->putJson('api/article/'.$article->id, $this->payload($article, [
+                'cost'             => 1210,
+                'aplicar_iva'      => 0,
+                'cost_incluye_iva' => 1,
+            ]))->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(1000, (float) $article->cost, self::DELTA,
+                'si la persona declara que el número incluye IVA, se descompone aunque aplicar_iva esté en 0');
+
+            $this->assertEqualsWithDelta(1210, (float) $article->cost_bruto, self::DELTA,
+                'y el bruto tipeado queda registrado: hubo descomposición que reconstruir');
+
+        } finally {
+            $this->restaurar_condicion($previos);
+        }
+    }
+
+    /**
+     * Test 10 — el contrapeso del test 9: el DEFAULT de la cuenta no habilita ese bypass.
+     *
+     * Misma cuenta RRII y mismo artículo con `aplicar_iva = 0`, pero acá nadie declaró nada: el
+     * "bruto" sale de `users.costos_cargados_con_iva`, que es una preferencia de la cuenta y no una
+     * afirmación sobre este número. Con `aplicar_iva` apagado el sistema no le saca el IVA a ese
+     * artículo por ningún lado, así que el costo queda en bruto a propósito (para esa cuenta el IVA
+     * de compra de un artículo así es costo, no crédito recuperable) y `cost_bruto` va en null: no
+     * hubo descomposición que reconstruir.
+     *
+     * 🔴 Sin este test, "creerle a la declaración" se podría implementar como "creerle siempre al
+     * flag es_bruto", que le cambiaría el costeo a artículos que nadie tocó.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function el_default_de_la_cuenta_no_pasa_por_encima_de_aplicar_iva()
+    {
+        // La cuenta carga en bruto por default...
+        $previos = $this->set_condicion('RRII', 1);
+
+        try {
+
+            $article = $this->articulo_con_alicuota('21');
+
+            // ...pero el request NO trae `cost_incluye_iva`: nadie afirmó nada sobre este número.
+            $payload = $this->payload($article, [
+                'cost'        => 1210,
+                'aplicar_iva' => 0,
+            ]);
+
+            $this->assertArrayNotHasKey('cost_incluye_iva', $payload,
+                'este test vale sólo si la declaración explícita NO viaja en el request');
+
+            $this->putJson('api/article/'.$article->id, $payload)->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(1210, (float) $article->cost, self::DELTA,
+                'sin declaración explícita, aplicar_iva = 0 sigue bloqueando el back-out');
+
+            $this->assertNull($article->cost_bruto,
+                'sin descomposición no se registra bruto: cost_bruto es null');
+
+        } finally {
+            $this->restaurar_condicion($previos);
+        }
+    }
+
+    /**
+     * Test 11 — el límite de lo que la declaración explícita puede pisar.
+     *
+     * La declaración le gana a `aplicar_iva`, pero NO a `hasIva()`. Un artículo Exento no tiene IVA
+     * adentro del número por más que alguien lo afirme: no hay nada que sacar. Es la razón por la
+     * que el formulario deshabilita el toggle cuando no hay alícuota real (CostInput.vue) — si acá
+     * se descompusiera, la pantalla y la base dirían cosas distintas otra vez.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function la_declaracion_explicita_no_le_gana_a_un_articulo_exento()
+    {
+        $previos = $this->set_condicion('RRII', 0);
+
+        try {
+
+            $article = $this->articulo_con_alicuota('Exento');
+
+            $this->putJson('api/article/'.$article->id, $this->payload($article, [
+                'cost'             => 1000,
+                'aplicar_iva'      => 0,
+                'cost_incluye_iva' => 1,
+            ]))->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(1000, (float) $article->cost, self::DELTA,
+                'un artículo Exento no tiene IVA que sacar, lo declare quien lo declare');
+
+            $this->assertNull($article->cost_bruto,
+                'y sin descomposición no hay bruto que registrar');
+
+        } finally {
+            $this->restaurar_condicion($previos);
+        }
+    }
 }

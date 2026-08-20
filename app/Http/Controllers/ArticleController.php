@@ -214,9 +214,18 @@ class ArticleController extends Controller
 
         $es_bruto = ArticlePricesHelper::costo_tipeado_es_bruto($user, $request->cost_incluye_iva);
 
+        /*
+         * Si la persona AFIRMÓ que el número incluye IVA (el toggle del formulario), esa afirmación
+         * le gana a `articles.aplicar_iva`: es un hecho sobre el número que acaba de tipear, no una
+         * decisión sobre la venta. Sin esto, marcar el toggle sobre un artículo con `aplicar_iva = 0`
+         * no hacía nada y el costo quedaba con el IVA adentro, en silencio, en una columna que es
+         * neta por convención. Decisión de Lucas, 20/8/2026.
+         */
+        $declaracion_explicita = ArticlePricesHelper::la_carga_declara_bruto($request->cost_incluye_iva);
+
         // El par (neto, bruto) sale del resolvedor único: guardar el bruto sólo cuando de verdad
         // hubo descomposición es un criterio que las cuatro vías tienen que compartir.
-        $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($model, $cost, $user, $es_bruto);
+        $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($model, $cost, $user, $es_bruto, $declaracion_explicita);
 
         $model->cost = $resuelto['cost'];
         $model->cost_bruto = $resuelto['cost_bruto'];

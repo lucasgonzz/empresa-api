@@ -247,6 +247,15 @@ class ProcessRow {
     protected $precios_incluyen_iva = false;
 
     /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): ¿el llamador AFIRMÓ que los costos del
+     * Excel vienen con IVA, o `precios_incluyen_iva` salió del default por condición fiscal de la
+     * cuenta? Sólo la afirmación explícita le gana a `articles.aplicar_iva` en el back-out — mismo
+     * criterio que el toggle del ABM (ArticlePricesHelper::la_carga_declara_bruto). Que las dos
+     * vías compartan el criterio es el punto entero de esta misión.
+     */
+    protected $declaracion_explicita_de_bruto = false;
+
+    /**
      * Identificadores unicos (bar_code/sku) asignados por herencia de escalones
      * superiores durante este chunk (regla de Lucas, 30/7/2026, prompt 08 grupo 265;
      * ver procesar_articulo_ya_creado()). ['bar_code' => ['7799100' => 41], ...] --
@@ -336,6 +345,12 @@ class ProcessRow {
         $this->precios_incluyen_iva = isset($data['precios_incluyen_iva'])
             ? (bool)$data['precios_incluyen_iva']
             : ArticlePricesHelper::costo_tipeado_es_bruto($this->user);
+
+        // Sólo cuenta como declaración si el llamador la mandó Y afirma que sí. El default por
+        // condición fiscal no es una afirmación de nadie: no habilita a pasar por encima de
+        // `aplicar_iva`.
+        $this->declaracion_explicita_de_bruto = isset($data['precios_incluyen_iva'])
+            && (bool)$data['precios_incluyen_iva'];
 
         /*
          * 'fila_inicial' (grupo 294, incidente Servian): numero de fila ABSOLUTO del
@@ -592,8 +607,17 @@ class ProcessRow {
          * Para Monotributista `aplicar_iva` se ignora a propósito (prompt 609): el control está
          * oculto en el listado, así que si el costeo dependiera de él una cuenta migrada de RRII a
          * MT se hundiría en silencio.
+         *
+         * 🔴 Y también se ignora cuando el llamador DECLARÓ `precios_incluyen_iva` (decisión de
+         * Lucas, 20/8/2026): esa afirmación es sobre el número que trae el Excel, no sobre si el
+         * artículo participa del IVA en la venta. Es el mismo criterio que el toggle del ABM en
+         * ArticlePricesHelper::back_out_iva(); si las dos vías divergieran, el mismo artículo
+         * volvería a costear distinto según por dónde entrara, que es exactamente de lo que sale
+         * esta misión. El default por condición fiscal NO habilita este bypass.
          */
-        if (!ArticlePricesHelper::es_monotributista_para_costeo($this->user)) {
+        if (!ArticlePricesHelper::es_monotributista_para_costeo($this->user)
+            && !$this->declaracion_explicita_de_bruto
+        ) {
 
             $aplicar_iva = isset($data['aplicar_iva'])
                 ? $data['aplicar_iva']

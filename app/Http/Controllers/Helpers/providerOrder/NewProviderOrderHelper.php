@@ -1035,8 +1035,19 @@ class NewProviderOrderHelper {
         // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta. Un Monotributista
         // trata el costo tipeado SIEMPRE como bruto (se ignora `precios_incluyen_iva` de la
         // compra); un Responsable Inscripto respeta el flag como hasta ahora.
+        //
+        // Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): `precios_incluyen_iva` de la
+        // compra es una DECLARACIÓN de una persona sobre los números que está cargando, así que le
+        // gana a `articles.aplicar_iva` — mismo criterio que el toggle del ABM del listado. Si esta
+        // vía no lo compartiera, el mismo artículo volvería a costear distinto según por dónde
+        // entrara, que es el error del que sale esta misión.
         if ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva) {
-            $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
+            $cost = ArticlePricesHelper::back_out_iva(
+                $article,
+                $cost,
+                $this->user,
+                (bool) $this->provider_order->precios_incluyen_iva
+            );
         }
 
         $pivot_data = [
@@ -1300,7 +1311,21 @@ class NewProviderOrderHelper {
              */
             $es_bruto = ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva);
 
-            $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($article, $cost, $this->user, $es_bruto);
+            /*
+             * `precios_incluyen_iva` de la compra es una declaración explícita (un checkbox que
+             * alguien marcó sobre los números que está cargando), así que le gana a
+             * `articles.aplicar_iva`, igual que el toggle del ABM. El default por condición fiscal
+             * NO: para MT `es_bruto` ya es true por otro motivo, y ese motivo no habilita el bypass.
+             */
+            $declaracion_explicita = (bool) $this->provider_order->precios_incluyen_iva;
+
+            $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto(
+                $article,
+                $cost,
+                $this->user,
+                $es_bruto,
+                $declaracion_explicita
+            );
 
             $cost = $resuelto['cost'];
 

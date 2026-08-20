@@ -834,6 +834,32 @@ class ArticlePricesHelper {
     }
 
     /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — ¿La carga DECLARA explícitamente que
+     * el número que trae lleva el IVA adentro?
+     *
+     * Es distinto de costo_tipeado_es_bruto(), y la diferencia decide un caso de plata: ese devuelve
+     * "hay que descomponer" mirando también el default de la cuenta, o sea que responde `true`
+     * cuando NADIE dijo nada. Este responde `true` sólo cuando alguien lo afirmó — el toggle del
+     * formulario del listado, o el flag `precios_incluyen_iva` del import.
+     *
+     * Sirve para un solo propósito: una afirmación de una persona sobre el número que acaba de
+     * tipear le gana al flag `articles.aplicar_iva`. `aplicar_iva` es una decisión sobre la VENTA
+     * (si al precio se le suma IVA encima), no sobre cómo leer lo que alguien escribió recién. Ver
+     * el bloque del guard en back_out_iva().
+     *
+     * @param  mixed $cost_incluye_iva Lo que vino en el request/import. `null` o `''` = no vino.
+     * @return bool                    true sólo si vino Y afirma que incluye IVA.
+     */
+    static function la_carga_declara_bruto($cost_incluye_iva) {
+
+        if (is_null($cost_incluye_iva) || $cost_incluye_iva === '') {
+            return false;
+        }
+
+        return filter_var($cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
      * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Dado lo que tipeó el usuario, devuelve
      * el par `cost` (neto, lo que se guarda) y `cost_bruto` (el dato de origen).
      *
@@ -851,15 +877,18 @@ class ArticlePricesHelper {
      * @param  mixed                 $cost     Costo tal cual lo tipeó el usuario.
      * @param  \App\Models\User|null $user
      * @param  bool                  $es_bruto Resultado de costo_tipeado_es_bruto().
+     * @param  bool                  $declaracion_explicita Resultado de la_carga_declara_bruto():
+     *                                          si alguien AFIRMÓ que este número incluye IVA, la
+     *                                          descomposición no depende de `articles.aplicar_iva`.
      * @return array{cost: mixed, cost_bruto: mixed}
      */
-    static function resolver_costo_neto_y_bruto($article, $cost, $user, $es_bruto) {
+    static function resolver_costo_neto_y_bruto($article, $cost, $user, $es_bruto, $declaracion_explicita = false) {
 
         if (!$es_bruto || is_null($cost) || $cost === '' || is_null($article)) {
             return ['cost' => $cost, 'cost_bruto' => null];
         }
 
-        $neto = Self::back_out_iva($article, $cost, $user);
+        $neto = Self::back_out_iva($article, $cost, $user, $declaracion_explicita);
 
         /*
          * 🔴 NO alcanza con comparar $neto contra $cost para concluir "lo tipeado ya era el neto".
@@ -869,12 +898,16 @@ class ArticlePricesHelper {
          *   (a) El artículo no tiene alícuota aplicable (0 / Exento / No Gravado). Acá sí: no hay
          *       IVA adentro del número, lo tipeado ES el neto y `cost_bruto` va en null.
          *
-         *   (b) El artículo tiene alícuota real pero `aplicar_iva` apagado, en una cuenta que no es
-         *       Monotributista. Acá el número SÍ puede traer IVA adentro — la persona marcó "el
-         *       costo que cargo incluye IVA" —, pero el sistema no se lo va a sacar nunca porque
-         *       ese artículo no participa del IVA. El costo queda en bruto a propósito (para esa
-         *       cuenta el IVA de compra de un artículo así es costo, no crédito recuperable), y por
+         *   (b) El artículo tiene alícuota real, `aplicar_iva` apagado, la cuenta no es Monotributista
+         *       y NADIE declaró que el número incluyera IVA — o sea, "bruto" salió del default de la
+         *       cuenta (`users.costos_cargados_con_iva`), no de una afirmación. Acá el sistema no le
+         *       saca el IVA a ese artículo por ningún lado: el costo queda en bruto a propósito (para
+         *       esa cuenta el IVA de compra de un artículo así es costo, no crédito recuperable) y por
          *       eso tampoco se registra `cost_bruto`: no hubo descomposición que reconstruir.
+         *
+         *       🔴 Con `$declaracion_explicita = true` este caso NO existe: si la persona marcó "el
+         *       costo que estoy cargando incluye IVA", afirmó un hecho sobre el número y se descompone
+         *       igual. Decisión de Lucas, 20/8/2026.
          *
          * La diferencia importa porque `cost_bruto` es lo que la interfaz muestra. Registrarlo en
          * el caso (b) haría que el campo dijera "Costo con IVA" sobre un número que el sistema
@@ -912,12 +945,17 @@ class ArticlePricesHelper {
      *                                            se descompone SIEMPRE, ignorando `articles.aplicar_iva`
      *                                            (ese control queda oculto para MT en el listado,
      *                                            prompt 612).
+     * @param  bool                  $declaracion_explicita Alguien AFIRMÓ que este número incluye
+     *                                            IVA (toggle del formulario / flag del import). Si
+     *                                            es true, `articles.aplicar_iva` deja de bloquear
+     *                                            el back-out. Ver el bloque del guard.
      * @return float                             Costo neto (sin IVA). Si el artículo no tiene IVA
      *                                            aplicable (sin alícuota, 0%, Exento o No Gravado), o
-     *                                            tiene aplicar_iva desactivado y el usuario no es
-     *                                            Monotributista, devuelve el bruto sin tocar.
+     *                                            tiene aplicar_iva desactivado sin declaración
+     *                                            explícita y el usuario no es Monotributista,
+     *                                            devuelve el bruto sin tocar.
      */
-    static function back_out_iva($article, $cost_bruto, $user = null) {
+    static function back_out_iva($article, $cost_bruto, $user = null, $declaracion_explicita = false) {
 
         $cost_bruto = (float)$cost_bruto;
 
@@ -929,10 +967,25 @@ class ArticlePricesHelper {
         // sin importar el flag articles.aplicar_iva.
         $es_monotributista = Self::es_monotributista_para_costeo($user);
 
-        // Misma condición que aplicar_iva(): el artículo tiene que tener aplicar_iva ON (o el
-        // usuario ser Monotributista) y una alícuota cargada que no sea 0/Exento/No Gravado. Si no,
-        // no hay IVA que sacar.
-        if (!$article->aplicar_iva && !$es_monotributista) {
+        /*
+         * Misma condición que aplicar_iva(): el artículo tiene que tener aplicar_iva ON (o el
+         * usuario ser Monotributista) y una alícuota cargada que no sea 0/Exento/No Gravado. Si no,
+         * no hay IVA que sacar.
+         *
+         * 🔴 La tercera puerta —`$declaracion_explicita`— es de la misión
+         * `costo-bruto-por-condicion-fiscal` (decisión de Lucas, 20/8/2026). Hasta acá, un
+         * Responsable Inscripto que marcaba "el costo que estoy cargando incluye IVA" sobre un
+         * artículo con `aplicar_iva = 0` veía el toggle hacer NADA: el número se guardaba con el
+         * IVA adentro, en una columna que es neta por convención, y en silencio.
+         *
+         * El criterio: `aplicar_iva` es una decisión sobre la VENTA (si al precio se le suma IVA
+         * encima), no sobre cómo interpretar un número que una persona acaba de tipear. Si lo
+         * declaró, es un hecho sobre ese número y hay que creerle.
+         *
+         * Lo que esta puerta NO abre: hasIva(). Un artículo Exento / No Gravado / al 0% no tiene
+         * IVA adentro por más que alguien lo afirme, y ahí no hay nada que sacar.
+         */
+        if (!$article->aplicar_iva && !$es_monotributista && !$declaracion_explicita) {
             return $cost_bruto;
         }
 
