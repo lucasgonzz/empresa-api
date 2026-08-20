@@ -1285,23 +1285,26 @@ class NewProviderOrderHelper {
         // de la configuración del usuario). Un Monotributista SIEMPRE trata el costo tipeado como
         // bruto (se ignora el flag `precios_incluyen_iva` de la compra, forzado a `true`); un
         // Responsable Inscripto respeta el flag como hasta ahora.
-        if (!is_null($cost) && ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva)) {
+        if (!is_null($cost)) {
 
-            // Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): se registra el valor TIPEADO
-            // antes de descomponerlo. El cálculo no cambia en nada — esta vía ya estaba bien y es
-            // la que las otras tres vinieron a imitar. Lo único nuevo es que el dato de origen deja
-            // de perderse, así el listado puede mostrarle al usuario el mismo número que puso en la
-            // compra (y que figura en la factura del proveedor) sin recalcularlo y arriesgar un
-            // centavo de deriva sobre el decimal(22,2).
-            $article->cost_bruto = $cost;
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el cálculo del costo NO cambia
+             * — esta vía ya estaba bien y es la que las otras tres vinieron a imitar. Lo único
+             * nuevo es que el dato de origen deja de perderse, así el listado puede mostrarle al
+             * usuario el mismo número que puso en la compra (y que figura en la factura del
+             * proveedor) sin recalcularlo y arriesgar un centavo de deriva sobre el decimal(22,2).
+             *
+             * Se pasa por el resolvedor único para no repetir acá el criterio de cuándo hay bruto
+             * que registrar: con alícuota Exento / No Gravado / 0% no hay IVA que sacar, el número
+             * tipeado ya era el neto y `cost_bruto` queda en null.
+             */
+            $es_bruto = ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva);
 
-            $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
+            $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($article, $cost, $this->user, $es_bruto);
 
-        } else if (!is_null($cost)) {
+            $cost = $resuelto['cost'];
 
-            // Responsable Inscripto cargando el neto: no hay bruto que registrar. El null es
-            // información — dice "este costo se cargó sin IVA".
-            $article->cost_bruto = null;
+            $article->cost_bruto = $resuelto['cost_bruto'];
         }
 
         $cost_cambio = !is_null($cost) && $article->cost != $cost;

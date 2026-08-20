@@ -212,19 +212,14 @@ class ArticleController extends Controller
 
         $user = UserHelper::user();
 
-        if (!ArticlePricesHelper::costo_tipeado_es_bruto($user, $request->cost_incluye_iva)) {
-            // Se tipeó el neto (Responsable Inscripto con el toggle apagado): entra tal cual y no
-            // hay bruto que guardar. El null es información: dice "este costo se cargó en neto".
-            $model->cost = $cost;
-            $model->cost_bruto = null;
-            return $model;
-        }
+        $es_bruto = ArticlePricesHelper::costo_tipeado_es_bruto($user, $request->cost_incluye_iva);
 
-        // Se tipeó el bruto. Se guarda el valor exacto para que la interfaz lo devuelva sin
-        // recalcularlo (el ida y vuelta sobre un decimal(22,2) puede correr un centavo), y `cost`
-        // sale de la misma función que usa la compra, con la alícuota propia del artículo.
-        $model->cost_bruto = $cost;
-        $model->cost = ArticlePricesHelper::back_out_iva($model, $cost, $user);
+        // El par (neto, bruto) sale del resolvedor único: guardar el bruto sólo cuando de verdad
+        // hubo descomposición es un criterio que las cuatro vías tienen que compartir.
+        $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($model, $cost, $user, $es_bruto);
+
+        $model->cost = $resuelto['cost'];
+        $model->cost_bruto = $resuelto['cost_bruto'];
 
         return $model;
     }

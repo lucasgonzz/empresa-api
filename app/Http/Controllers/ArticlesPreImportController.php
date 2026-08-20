@@ -57,13 +57,15 @@ class ArticlesPreImportController extends Controller
                                                 ->where('articles_pre_import_id', $request->articles_pre_import_id)
                                                 ->first();
 
-            if ($es_bruto) {
-                $article->cost_bruto = $pivot->costo_nuevo;
-                $article->cost = ArticlePricesHelper::back_out_iva($article, $pivot->costo_nuevo, $user);
-            } else {
-                $article->cost = $pivot->costo_nuevo;
-                $article->cost_bruto = null;
-            }
+            $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto(
+                $article,
+                $pivot->costo_nuevo,
+                $user,
+                $es_bruto
+            );
+
+            $article->cost = $resuelto['cost'];
+            $article->cost_bruto = $resuelto['cost_bruto'];
 
             $article->save();
             ArticleHelper::setFinalPrice($article);

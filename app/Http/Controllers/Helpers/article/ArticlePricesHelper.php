@@ -819,6 +819,43 @@ class ArticlePricesHelper {
     }
 
     /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Dado lo que tipeó el usuario, devuelve
+     * el par `cost` (neto, lo que se guarda) y `cost_bruto` (el dato de origen).
+     *
+     * 🔴 Existe para que el criterio de "cuándo se registra el bruto" viva en UN solo lugar. Lo
+     * consumen las cuatro vías de escritura, y esta misión nació justamente de que un criterio de
+     * costeo escrito por separado en cada vía se desincroniza sin que nada avise.
+     *
+     * La sutileza que lo hace necesario: que la cuenta cargue en bruto NO alcanza para que haya un
+     * bruto que registrar. Un artículo Exento, No Gravado o con alícuota 0 no tiene IVA que sacar,
+     * así que el número tipeado ES el neto y `cost_bruto` tiene que quedar en null — que es como el
+     * resto del sistema lee "este costo se cargó sin IVA". Guardar ahí el mismo número haría que la
+     * interfaz mostrara un "costo con IVA" que no tiene IVA adentro.
+     *
+     * @param  \App\Models\Article   $article  Artículo con su `iva_id` ya asignado.
+     * @param  mixed                 $cost     Costo tal cual lo tipeó el usuario.
+     * @param  \App\Models\User|null $user
+     * @param  bool                  $es_bruto Resultado de costo_tipeado_es_bruto().
+     * @return array{cost: mixed, cost_bruto: mixed}
+     */
+    static function resolver_costo_neto_y_bruto($article, $cost, $user, $es_bruto) {
+
+        if (!$es_bruto || is_null($cost) || $cost === '') {
+            return ['cost' => $cost, 'cost_bruto' => null];
+        }
+
+        $neto = Self::back_out_iva($article, $cost, $user);
+
+        // Sin descomposición real (Exento / No Gravado / 0%, o `aplicar_iva` apagado en una cuenta
+        // que no es Monotributista) lo tipeado ya era el neto.
+        if ((float) $neto == (float) $cost) {
+            return ['cost' => $cost, 'cost_bruto' => null];
+        }
+
+        return ['cost' => $neto, 'cost_bruto' => $cost];
+    }
+
+    /**
      * Prompt 514 — "Back-out" de IVA sobre un costo BRUTO, para dejarlo NETO.
      *
      * Convención del sistema (decisión de Lucas, 18/7): `articles.cost` y `article_provider.cost`
