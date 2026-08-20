@@ -219,7 +219,25 @@ class ArticleController extends Controller
             return $model;
         }
 
-        // El input en el que se tipeó es la única fuente de esta decisión.
+        /*
+         * 🔴 Acá manda el formulario y SOLO el formulario. No hay branch por condición fiscal, y
+         * meterlo es un error que esta misión ya cometió y midió.
+         *
+         * El motivo es que este request no siempre trae un número recién tipeado: el formulario del
+         * listado manda el modelo entero en cada guardado, así que corregirle el nombre a un
+         * artículo llega con el `cost` que devolvió el servidor, que YA es neto. Si acá se forzara
+         * "bruto" por ser Monotributista, ese guardado le sacaría el IVA a un número que ya no lo
+         * tiene: 1000 → 826,45 → 683,01, un 21% por guardado, en la acción más común del listado.
+         *
+         * Que el Monotributista no configure nada de IVA se resuelve en la PANTALLA, que es donde
+         * corresponde: a un MT el formulario le muestra un solo campo, el del costo con IVA, y ese
+         * campo declara `cost_incluye_iva = true` cuando alguien escribe en él. El MT no elige nada;
+         * simplemente no existe la otra opción para él.
+         *
+         * La compra y el import sí resuelven por condición fiscal
+         * (ArticlePricesHelper::el_costo_cargado_es_bruto), y pueden hacerlo porque ahí el número
+         * SIEMPRE es uno recién cargado: no existe el caso "me devolvieron lo que ya estaba".
+         */
         $lo_tipeado_es_bruto = filter_var($request->cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
 
         if (!$lo_tipeado_es_bruto) {

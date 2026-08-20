@@ -738,6 +738,44 @@ class ArticlePricesHelper {
     }
 
     /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resolvedor ÚNICO de la pregunta "el
+     * costo que se acaba de cargar, ¿es bruto (con IVA) o neto?".
+     *
+     * Lo consultan las DOS vías donde el número siempre es uno recién cargado: la compra a
+     * proveedor y el import de Excel.
+     *
+     * 🔴 El ABM del listado NO lo usa, y no es un olvido. Ese formulario manda el modelo entero en
+     * cada guardado, así que un guardado que no toca el costo llega con el `cost` que devolvió el
+     * servidor, que ya es NETO. Si ahí se forzara "bruto" por condición fiscal, ese guardado le
+     * sacaría el IVA a un número que ya no lo tiene: 1000 → 826,45 → 683,01, medido por el checker
+     * de la Fase 5. En el ABM manda el formulario, que declara siempre; que el Monotributista no
+     * elija nada se resuelve mostrándole un solo campo. Ver ArticleController::set_costo_desde_request().
+     *
+     * 🔴 **El Monotributista no configura nada de IVA** (decisión de Lucas, 20/8/2026): todo lo que
+     * carga es bruto POR DEFINICIÓN, en las tres vías. No es una preferencia ni un default que se
+     * pueda cambiar — recibe Factura B, donde el IVA no viene discriminado y el neto no figura en
+     * ningún lado. Pedirle que declare cuál de los dos está cargando es pedirle un dato que su
+     * comprobante no tiene. Por eso tampoco se le muestra el flag de la compra ni el de
+     * `aplicar_iva`: no hay nada que elegir.
+     *
+     * El Responsable Inscripto sí elige, porque su Factura A le discrimina el neto: en el listado lo
+     * dice el input en el que tipeó, y en la compra y el import, el flag de esa carga.
+     *
+     * @param  \App\Models\User|null $user      Dueño del artículo.
+     * @param  mixed                 $declarado Lo que declaró esta carga puntual (el input del ABM,
+     *                                          `precios_incluyen_iva` de la compra o de la planilla).
+     * @return bool                             true si hay que sacarle el IVA antes de guardar.
+     */
+    static function el_costo_cargado_es_bruto($user, $declarado)
+    {
+        if (Self::es_monotributista_para_costeo($user)) {
+            return true;
+        }
+
+        return filter_var($declarado, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
      * Prompt 231/02 — Resolver unico de "el IVA entra al costo o despues del margen".
      *
      * Unico lugar del sistema que sabe de la existencia de la bandera de transicion

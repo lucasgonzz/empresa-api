@@ -325,9 +325,9 @@ class ProcessRow {
          * Default false (= los costos de la planilla son netos), que es el comportamiento histórico
          * del import: una importación que hoy anda no cambia de resultado.
          */
-        $this->precios_incluyen_iva = filter_var(
-            $data['precios_incluyen_iva'] ?? false,
-            FILTER_VALIDATE_BOOLEAN
+        $this->precios_incluyen_iva = ArticlePricesHelper::el_costo_cargado_es_bruto(
+            $this->user,
+            $data['precios_incluyen_iva'] ?? false
         );
 
         /*

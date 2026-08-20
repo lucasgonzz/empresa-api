@@ -1037,14 +1037,12 @@ class NewProviderOrderHelper {
          * es el equivalente exacto de los dos inputs del ABM — declara si los costos que la persona
          * está cargando traen el IVA adentro o ya vienen netos. Es la ÚNICA fuente de esa decisión.
          *
-         * 🔴 Ya no se mira la condición fiscal de la cuenta, y sacar ese branching REVIERTE el
-         * prompt 609: hasta acá un Monotributista descomponía SIEMPRE, ignorando el flag. Ahora
-         * manda el flag, para todos. Consecuencia declarada en el informe, no escondida: si un MT
-         * carga una compra y no lo tilda, su costo se toma como neto y queda 21% abajo. La
-         * mitigación propuesta —pre-tildar el flag para cuentas MT— es decisión de Lucas y no está
-         * implementada.
+         * 🔴 Para Monotributista el flag NO se mira, y eso conserva el prompt 609 y el 615: todo lo
+         * que carga un MT es bruto por definición, así que el flag ni se le muestra. Si el costeo
+         * dependiera de él, un MT que no lo tilda guardaría su costo 21% abajo sin que nada lo
+         * denuncie. El resolvedor único es el que sabe esto.
          */
-        if ($this->provider_order->precios_incluyen_iva) {
+        if (ArticlePricesHelper::el_costo_cargado_es_bruto($this->user, $this->provider_order->precios_incluyen_iva)) {
             $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
@@ -1296,7 +1294,9 @@ class NewProviderOrderHelper {
          * misma expresión no es cosmético: si divergieran, `article_provider.cost` y `articles.cost`
          * quedarían con convenciones distintas para el mismo artículo.
          */
-        if (!is_null($cost) && $this->provider_order->precios_incluyen_iva) {
+        if (!is_null($cost)
+            && ArticlePricesHelper::el_costo_cargado_es_bruto($this->user, $this->provider_order->precios_incluyen_iva)
+        ) {
 
             $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
