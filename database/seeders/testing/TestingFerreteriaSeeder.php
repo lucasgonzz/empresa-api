@@ -12,6 +12,7 @@ use App\Models\CurrentAcountPaymentMethod;
 use App\Models\ExpenseConcept;
 use App\Models\Iva;
 use App\Models\IvaCondition;
+use App\Models\Moneda;
 use App\Models\Provider;
 use App\Models\ProviderDiscount;
 use App\Models\SaleChannel;
@@ -23,6 +24,7 @@ use Database\Seeders\CurrentAcountPaymentMethodSeeder;
 use Database\Seeders\DepositSeeder;
 use Database\Seeders\IvaConditionSeeder;
 use Database\Seeders\IvaSeeder;
+use Database\Seeders\MonedaSeeder;
 use Database\Seeders\PriceTypeSeeder;
 use Database\Seeders\ProviderOrderStatusSeeder;
 use Database\Seeders\ProviderSeeder;
@@ -256,6 +258,26 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->call(ProviderOrderStatusSeeder::class);
         $this->call(ConceptoStockMovementSeeder::class);
+
+        // 🔴 Sin monedas sembradas, la lista de proveedores del SPA no se puede usar.
+        //
+        // `credit_accounts` nace con `moneda_id` 1 o 2 (lo hace CurrentAcountHelper al crear la
+        // cuenta corriente de un proveedor), `ProviderController` eager-loadea
+        // `credit_accounts.moneda`, y `components/common/BtnCurrentAcounts.vue` renderiza
+        // `credit_account.moneda.name` sin chequear null. Con la tabla vacia ese render tira
+        // "Cannot read properties of null (reading 'name')" por cada proveedor con cuenta
+        // corriente: el boton C/C nunca aparece y no hay forma de abrir la cuenta corriente desde
+        // la interfaz. Medido el 19/8/2026 en el slot s8, 82 errores de consola en
+        // /proveedores/proveedores despues de cargar una compra con "Generar movimiento en Cuenta
+        // Corriente".
+        //
+        // En una cuenta real `monedas` siempre esta sembrada (DatabaseSeeder la corre): esto es un
+        // hueco del fixture, no del producto. Va detras del chequeo de existencia por el mismo
+        // motivo que IvaConditionSeeder/CAPaymentMethodTypeSeeder de mas arriba: MonedaSeeder usa
+        // create(), no firstOrCreate, y correrlo dos veces duplica Peso y Dolar.
+        if (!Moneda::exists()) {
+            $this->call(MonedaSeeder::class);
+        }
 
         // Guardado por el mismo motivo: `seed_ventas_y_tesoreria()` corre antes que este
         // metodo y ya pudo haberlo sembrado. `UserSeeder` usa create() con id explicito.
