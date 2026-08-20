@@ -562,6 +562,12 @@ class CostoBrutoEnElAbmTest extends EmpresaTestCase
      * que el formulario deshabilita el toggle cuando no hay alícuota real (CostInput.vue) — si acá
      * se descompusiera, la pantalla y la base dirían cosas distintas otra vez.
      *
+     * 🔴 `aplicar_iva` va en **1** a propósito, y cambiarlo a 0 rompe el test sin que se ponga en
+     * rojo. Con `aplicar_iva = 0` el resultado sería idéntico con y sin la lógica que se quiere
+     * probar —el guard de `aplicar_iva` frenaría primero—, así que el test pasaría igual si alguien
+     * borrara el chequeo de `hasIva()`. Con `aplicar_iva = 1`, `hasIva()` queda como ÚNICA puerta y
+     * el test mide lo que dice medir. Lo encontró el checker de la Fase 5.
+     *
      * @group costeo-precios
      * @test
      */
@@ -575,7 +581,7 @@ class CostoBrutoEnElAbmTest extends EmpresaTestCase
 
             $this->putJson('api/article/'.$article->id, $this->payload($article, [
                 'cost'             => 1000,
-                'aplicar_iva'      => 0,
+                'aplicar_iva'      => 1,
                 'cost_incluye_iva' => 1,
             ]))->assertStatus(200);
 

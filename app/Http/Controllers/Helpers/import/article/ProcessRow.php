@@ -624,6 +624,25 @@ class ProcessRow {
                 : ($articulo_ya_creado instanceof \App\Models\Article ? $articulo_ya_creado->aplicar_iva : 1);
 
             if (!$aplicar_iva) {
+
+                /*
+                 * 🔴 `cost_bruto` va a null ANTES de salir, y esto no es cosmético.
+                 *
+                 * Esta es la única salida del método que no pasa por el par (neto, bruto) del
+                 * final, así que era la única vía capaz de escribir un `cost` nuevo dejando el
+                 * `cost_bruto` viejo intacto. Las otras tres vías van por
+                 * ArticlePricesHelper::resolver_costo_neto_y_bruto(), que siempre devuelve las dos
+                 * columnas, y sus llamadores siempre escriben las dos.
+                 *
+                 * Qué pasaba: un artículo con cost = 1000 / cost_bruto = 1210 de una carga
+                 * anterior, importado con costo 2000 por esta rama, quedaba con cost = 2000 y
+                 * cost_bruto = 1210. El formulario del listado le cree a `cost_bruto` y lo prefiere
+                 * sobre recalcular (CostInput.vue, valor_visible), así que mostraba 1210 sobre un
+                 * artículo cuyo costo era 2000. El invariante es: `cost_bruto` es null, o es el
+                 * bruto que corresponde EXACTAMENTE a este `cost`.
+                 */
+                $data['cost_bruto'] = null;
+
                 return $data;
             }
         }
