@@ -37,10 +37,17 @@ class AddCostBrutoPorCondicionFiscal extends Migration
     public function up()
     {
         Schema::table('articles', function (Blueprint $table) {
-            // Misma precisión que `cost` (decimal 22,2, migración 2019_10_24_002337): las dos
-            // guardan la misma magnitud y una diferencia de escala entre ellas haría que el
-            // back-out no cerrara contra el valor tipeado.
-            $table->decimal('cost_bruto', 22, 2)->nullable()->after('cost');
+            // 🔴 decimal(22,6), la MISMA escala que tiene hoy `articles.cost`. Ojo: la migración
+            // original de 2019 lo creó en 22,2, pero `2026_07_30_160000_extend_cost_decimals_on_
+            // articles_table` lo amplió a 22,6 justamente porque los costos importados con más de
+            // dos decimales se truncaban en silencio (ProcessRow declara 'cost' => [16, 6]).
+            //
+            // Dejar `cost_bruto` en 22,2 reintroduciría esa misma truncación por la vía del import:
+            // un costo de 1234,5678 guardaría `cost` con seis decimales y `cost_bruto` redondeado a
+            // 1234,57, y como la interfaz prefiere `cost_bruto` sobre recalcular, al reabrir y
+            // guardar el neto se correría — que es exactamente la deriva que esta columna existe
+            // para evitar.
+            $table->decimal('cost_bruto', 22, 6)->nullable()->after('cost');
         });
 
         Schema::table('users', function (Blueprint $table) {

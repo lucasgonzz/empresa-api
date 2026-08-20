@@ -2725,6 +2725,7 @@ class ProcessRow {
      */
     protected static $numeric_precision = [
         'cost'                   => [16, 6],   // decimal(22,6)
+        'cost_bruto'             => [16, 6],   // decimal(22,6)
         'costo_real'             => [16, 6],   // decimal(22,6)
         'costo_mano_de_obra'     => [16, 6],   // decimal(22,6)
         'price'                  => [20, 2],   // decimal(22,2)

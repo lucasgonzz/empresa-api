@@ -840,14 +840,33 @@ class ArticlePricesHelper {
      */
     static function resolver_costo_neto_y_bruto($article, $cost, $user, $es_bruto) {
 
-        if (!$es_bruto || is_null($cost) || $cost === '') {
+        if (!$es_bruto || is_null($cost) || $cost === '' || is_null($article)) {
             return ['cost' => $cost, 'cost_bruto' => null];
         }
 
         $neto = Self::back_out_iva($article, $cost, $user);
 
-        // Sin descomposición real (Exento / No Gravado / 0%, o `aplicar_iva` apagado en una cuenta
-        // que no es Monotributista) lo tipeado ya era el neto.
+        /*
+         * 🔴 NO alcanza con comparar $neto contra $cost para concluir "lo tipeado ya era el neto".
+         * back_out_iva() devuelve el bruto sin tocar en DOS situaciones que significan cosas
+         * distintas, y tratarlas igual es un error de plata:
+         *
+         *   (a) El artículo no tiene alícuota aplicable (0 / Exento / No Gravado). Acá sí: no hay
+         *       IVA adentro del número, lo tipeado ES el neto y `cost_bruto` va en null.
+         *
+         *   (b) El artículo tiene alícuota real pero `aplicar_iva` apagado, en una cuenta que no es
+         *       Monotributista. Acá el número SÍ puede traer IVA adentro — la persona marcó "el
+         *       costo que cargo incluye IVA" —, pero el sistema no se lo va a sacar nunca porque
+         *       ese artículo no participa del IVA. El costo queda en bruto a propósito (para esa
+         *       cuenta el IVA de compra de un artículo así es costo, no crédito recuperable), y por
+         *       eso tampoco se registra `cost_bruto`: no hubo descomposición que reconstruir.
+         *
+         * La diferencia importa porque `cost_bruto` es lo que la interfaz muestra. Registrarlo en
+         * el caso (b) haría que el campo dijera "Costo con IVA" sobre un número que el sistema
+         * trata como neto, y cada apertura del formulario lo volvería a inflar. El front replica
+         * este mismo criterio en la computed `hay_iva_aplicable` de CostInput.vue, para no prometer
+         * en pantalla una descomposición que acá no va a pasar.
+         */
         if ((float) $neto == (float) $cost) {
             return ['cost' => $cost, 'cost_bruto' => null];
         }
