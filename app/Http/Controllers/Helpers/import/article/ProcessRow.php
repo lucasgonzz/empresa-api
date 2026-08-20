@@ -29,6 +29,25 @@ use Illuminate\Support\Str;
 
 class ProcessRow {
 
+    /**
+     * Alícuota con la que se descompone el costo importado cuando no hay ninguna otra pista: ni la
+     * columna del Excel, ni el `iva_id` del artículo existente.
+     *
+     * Es 21% (`ivas.id = 2`), el mismo default que ya devuelve `get_iva_id()` cuando la celda viene
+     * vacía y el que documenta `LocalImportHelper::getIvaId()`. Decisión de Lucas del 20/8/2026,
+     * que confirma la convención que el sistema ya tenía.
+     */
+    const IVA_ID_POR_DEFECTO = 2;
+
+    /**
+     * Sentinela para pedirle a `get_modified_fields()` que ponga `cost_bruto` en NULL.
+     *
+     * Hace falta porque esa función descarta los valores nulos (`is_null($new) continue`), así que
+     * un null "de verdad" nunca llegaría a la base y `cost_bruto` quedaría con el valor de una
+     * importación anterior. Es un string imposible de confundir con un costo.
+     */
+    const COST_BRUTO_A_LIMPIAR = '__limpiar_cost_bruto__';
+
     protected $columns;
     protected $user;
     protected $ct;
@@ -488,7 +507,9 @@ class ProcessRow {
         }
 
         // Sin alícuota conocida para esta fila no se puede hacer el back-out: se deja el costo
-        // tal cual vino (conservador, evita restar IVA "a ciegas").
+        // tal cual vino (conservador, evita restar IVA "a ciegas"). El llamador
+        // (aplicar_back_out_de_iva) resuelve el id ANTES de llegar acá, así que este guard es una
+        // red y no el camino normal.
         if (is_null($iva_id)) {
             return $cost;
         }
@@ -503,7 +524,107 @@ class ProcessRow {
 
         $neto = (float)$cost / (1 + ((float)$iva->percentage / 100));
 
-        return number_format($neto, 2, '.', '');
+        // Seis decimales, la escala real de `articles.cost` desde la migración del 30/7/2026
+        // (decimal(22,6), declarada en $numeric_precision como 'cost' => [16, 6]). Estuvo en
+        // number_format(..., 2) desde el prompt 514, cuando era código muerto: al activarse el
+        // back-out, truncar acá le comería precisión justo al costo del que salen todos los precios.
+        return number_format($neto, 6, '.', '');
+    }
+
+    /**
+     * Resuelve `cost` (neto) y `cost_bruto` de la fila importada.
+     *
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026). Corre después de que se resolvió
+     * `$articulo_ya_creado`, no antes: la alícuota se busca en tres lugares, por prioridad, y el
+     * segundo necesita el artículo.
+     *
+     *   1. **La columna del Excel**, si el mapeo la trae. Es lo que dijo el usuario para esta fila.
+     *   2. **El `iva_id` que el artículo YA tiene**, si es un artículo existente. Sin este paso, un
+     *      Excel sin columna de IVA le aplicaría 21% a un artículo Exento y le hundiría el costo un
+     *      21% en silencio.
+     *   3. **21% (id 2)**, el default del sistema para artículos nuevos — el mismo que ya usa
+     *      `get_iva_id()` cuando la celda viene vacía y el que documenta `LocalImportHelper`.
+     *      Decisión de Lucas del 20/8/2026: *"si no se indica el IVA de un artículo o directamente
+     *      no se indica la columna, hay que asignarle el IVA del veintiún por ciento"*.
+     *
+     * 🔴 Esto NO escribe `iva_id` en el artículo: sólo elige con qué alícuota descomponer. Pisar el
+     * IVA de un artículo existente desde un Excel que ni siquiera trae esa columna sería destruir un
+     * dato que el usuario nunca pidió tocar.
+     *
+     * @param  array $data              Datos de la fila ya armados.
+     * @param  mixed $articulo_ya_creado Artículo existente que matcheó, o null si es alta nueva.
+     * @return array                    $data con `cost` neto y `cost_bruto` resuelto.
+     */
+    private function aplicar_back_out_de_iva($data, $articulo_ya_creado)
+    {
+        if (!isset($data['cost']) || !$this->precios_incluyen_iva) {
+            return $data;
+        }
+
+        $iva_id = isset($data['iva_id']) ? $data['iva_id'] : null;
+
+        if (is_null($iva_id)
+            && $articulo_ya_creado instanceof \App\Models\Article
+            && !is_null($articulo_ya_creado->iva_id)
+        ) {
+            $iva_id = $articulo_ya_creado->iva_id;
+        }
+
+        if (is_null($iva_id)) {
+            $iva_id = self::IVA_ID_POR_DEFECTO;
+        }
+
+        /*
+         * Mismo guard que ArticlePricesHelper::back_out_iva(): con `aplicar_iva` apagado, y en una
+         * cuenta que no es Monotributista, el sistema no le saca el IVA a ese artículo por ningún
+         * lado. Descomponerlo acá dejaría el costo un 21% abajo del que deja el ABM para el mismo
+         * número, que es justo la divergencia entre vías que esta misión vino a cerrar.
+         *
+         * Para Monotributista `aplicar_iva` se ignora a propósito (prompt 609): el control está
+         * oculto en el listado, así que si el costeo dependiera de él una cuenta migrada de RRII a
+         * MT se hundiría en silencio.
+         */
+        if (!ArticlePricesHelper::es_monotributista_para_costeo($this->user)) {
+
+            $aplicar_iva = isset($data['aplicar_iva'])
+                ? $data['aplicar_iva']
+                : ($articulo_ya_creado instanceof \App\Models\Article ? $articulo_ya_creado->aplicar_iva : 1);
+
+            if (!$aplicar_iva) {
+                return $data;
+            }
+        }
+
+        $cost_tipeado = $data['cost'];
+
+        $data['cost'] = $this->back_out_iva_import($cost_tipeado, $iva_id);
+
+        /*
+         * Sólo se registra el bruto si de verdad hubo descomposición. Si el back-out devolvió el
+         * mismo número (alícuota 0/Exento/No Gravado), el costo tipeado ERA el neto y `cost_bruto`
+         * va en null, que es como el resto del sistema lee "este costo se cargó sin IVA".
+         *
+         * Se compara en float y no en string: el back-out devuelve seis decimales
+         * ("1000.000000") y el valor tipeado puede venir con otro formato ("1000"), así que
+         * compararlos como texto daba distinto siempre y registraba un bruto que no existía.
+         */
+        $hubo_descomposicion = ((float) $data['cost'] !== (float) $cost_tipeado);
+
+        if ($hubo_descomposicion) {
+            $data['cost_bruto'] = $cost_tipeado;
+            return $data;
+        }
+
+        /*
+         * Hay que dejarlo en null. En un alta se pone null derecho; en un update se usa el
+         * sentinela, porque get_modified_fields() descarta los nulos y sin él `cost_bruto` quedaría
+         * con el valor de una importación anterior (ver el bloque de esa función).
+         */
+        $data['cost_bruto'] = ($articulo_ya_creado instanceof \App\Models\Article)
+            ? self::COST_BRUTO_A_LIMPIAR
+            : null;
+
+        return $data;
     }
 
     function set_se_importaron_price_types() {
@@ -757,29 +878,19 @@ class ProcessRow {
         }
 
         /*
-         * Prompt 514 — Back-out de IVA del costo importado. Se ubica acá porque recién en este
-         * punto ya están resueltos $data['cost'] (props_to_add) y $data['iva_id'] de la fila.
+         * Prompt 514 — El back-out de IVA del costo importado NO va acá.
          *
-         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): dejó de ser un no-op. Ahora
-         * $this->precios_incluyen_iva sale de la condición fiscal de la cuenta (ver constructor),
-         * así que para un Monotributista el costo del Excel se trata siempre como bruto y se
-         * descompone, igual que en la compra manual y en el ABM del listado. Se guarda además el
-         * valor original en `cost_bruto`, que es lo que el usuario ve en la interfaz.
+         * 🔴 Estuvo en este punto hasta el 20/8/2026 y era un bug: acá `$data['iva_id']` sólo
+         * existe si el Excel MAPEA una columna de IVA (ver el `if (!ImportHelper::isIgnoredColumn(
+         * 'iva', ...))` de arriba), y la forma más común de lista de proveedor es código + costo,
+         * sin esa columna. Sin `iva_id` el back-out devolvía el costo intacto, así que para un
+         * Monotributista el Excel seguía escribiendo BRUTO en una columna que es NETA por
+         * convención, y `aplicar_iva()` le volvía a sumar el 21%.
+         *
+         * Se movió a `aplicar_back_out_de_iva()`, que corre más abajo, una vez resuelto
+         * `$articulo_ya_creado`: ahí se puede caer al `iva_id` que el artículo YA tiene antes de
+         * usar el default, que es lo que evita descomponerle 21% a un artículo Exento.
          */
-        if (isset($data['cost'])) {
-
-            $cost_tipeado = $data['cost'];
-
-            $data['cost'] = $this->back_out_iva_import($cost_tipeado, $data['iva_id'] ?? null);
-
-            // Solo se registra el bruto si de verdad hubo descomposición: si back_out_iva_import()
-            // devolvió el mismo número (alícuota 0/Exento/No Gravado, o cuenta que carga en neto),
-            // el costo tipeado ERA el neto y `cost_bruto` tiene que quedar null, que es como el
-            // resto del sistema lee "este costo se cargó sin IVA".
-            $data['cost_bruto'] = ((string) $data['cost'] !== (string) $cost_tipeado)
-                ? $cost_tipeado
-                : null;
-        }
 
 
 
@@ -1076,6 +1187,15 @@ class ProcessRow {
         // if ($articulo_ya_creado instanceof \App\Models\Article) {
         //     $this->log('Es instancia de Artlce');
         // }
+
+        /*
+         * Back-out de IVA del costo importado (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026).
+         *
+         * Corre EN ESTE PUNTO y no antes: recién acá está resuelto `$articulo_ya_creado`, que es lo
+         * que permite usar la alícuota que el artículo ya tiene en vez del default. Ver la nota
+         * larga donde estaba antes, arriba.
+         */
+        $data = $this->aplicar_back_out_de_iva($data, $articulo_ya_creado);
 
         // Marca si esta fila ya quedo resuelta (match, fake pendiente o creacion encolada);
         // si llega al final sin pasar por ninguna de esas ramas, cuenta 'sin_match_no_creado'.
@@ -2667,6 +2787,30 @@ class ProcessRow {
                 $modified["__diff__{$key}"] = [
                     'old' => $existing->$key,
                     'new' => $new,
+                ];
+                continue;
+            }
+
+            /*
+             * `cost_bruto` es el único campo que necesita poder volver a null desde el import
+             * (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026). El `is_null($new) continue`
+             * de abajo lo hacía imposible, y eso dejaba el dato rancio con consecuencias reales:
+             * un artículo con cost=826,45 / cost_bruto=1000 al que un import posterior le escribe
+             * cost=900 sin descomponer quedaba con el cost_bruto viejo. Como la interfaz PREFIERE
+             * cost_bruto sobre recalcular, al reabrir mostraba 1000 y al guardar dejaba 826,45: el
+             * costo importado se destruía solo.
+             *
+             * El invariante que esto sostiene es "cost_bruto es null, o es el bruto que corresponde
+             * a este cost". Sin poder limpiarlo, no se puede garantizar.
+             */
+            if ($key === 'cost_bruto' && $new === self::COST_BRUTO_A_LIMPIAR) {
+
+                if (is_null($existing->cost_bruto)) continue; // ya estaba limpio
+
+                $modified[$key] = null;
+                $modified["__diff__{$key}"] = [
+                    'old' => $existing->cost_bruto,
+                    'new' => null,
                 ];
                 continue;
             }

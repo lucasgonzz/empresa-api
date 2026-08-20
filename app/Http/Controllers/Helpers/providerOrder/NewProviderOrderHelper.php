@@ -1328,7 +1328,17 @@ class NewProviderOrderHelper {
          * 1000 de costo neto no mueve `cost`, así que con la condición vieja no se llamaba a save()
          * y el dato de origen se perdía en silencio. `isDirty()` lo detecta sin agregar una query.
          */
-        if ($cost_cambio || $article->isDirty('cost_bruto')) {
+        /*
+         * 🔴 La comparación va en float, NO con isDirty(). `originalIsEquivalent()` de Eloquent
+         * termina en `strcmp((string) $nuevo, (string) $original)`, y el pivot manda `1210` (JSON)
+         * contra un `"1210.000000"` que viene de un decimal de la base: strings distintos, mismo
+         * número. Con isDirty(), reguardar una compra sin cambiar ningún costo escribía una fila
+         * por artículo y le movía el `updated_at` — que después alimenta el `updated_after` del
+         * índice offline y el `needs_sync_with_tn`.
+         */
+        $bruto_cambio = ((float) $article->cost_bruto !== (float) $article->getOriginal('cost_bruto'));
+
+        if ($cost_cambio || $bruto_cambio) {
 
             $article->save();
         }
