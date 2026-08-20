@@ -586,6 +586,56 @@ class SaleController extends Controller
 
         if (!is_null($sale)) {
 
+            /** @var mixed $monto Importe personalizado que pidio el usuario, en pesos. */
+            $monto = $request->monto_a_facturar;
+
+            /**
+             * Tope del importe personalizado. La validacion del front es una guarda de UX;
+             * la autoridad es este 422, porque un POST directo llega igual hasta aca.
+             * Se valida ANTES de instanciar MakeAfipTicket, asi que un rechazo no toca ARCA.
+             */
+            if (!is_null($monto) && $monto !== '' && (float) $monto > 0) {
+
+                /** @var float $tope Total en pesos que se facturaria sin importe personalizado. */
+                $tope = MakeAfipTicket::get_tope_en_pesos(
+                    $sale,
+                    (int) $request->ventas_afip_information_id,
+                    (int) $request->afip_tipo_comprobante_id
+                );
+
+                /**
+                 * El + 0.01 de tolerancia es a proposito: el total que muestra el front
+                 * (sale.total x valor_dolar) y el del AfipHelper (suma de items con back-out)
+                 * pueden diferir en centavos. Sin tolerancia se rechazaria el caso mas comun,
+                 * que es "facturar exactamente el total".
+                 */
+                if ((float) $monto > $tope + 0.01) {
+
+                    return response()->json([
+                        'message' => 'El importe a facturar ($'.number_format((float) $monto, 2, ',', '.').') no puede superar el total de la venta en pesos ($'.number_format($tope, 2, ',', '.').').',
+                    ], 422);
+                }
+
+                /** @var mixed $filas Reparto por alicuota, opcional. */
+                $filas = $request->importe_personalizado_ivas;
+
+                if (is_array($filas) && count($filas) >= 1) {
+
+                    /** @var float $suma Suma de los importes del reparto. */
+                    $suma = 0;
+                    foreach ($filas as $fila) {
+                        $suma += isset($fila['importe']) ? (float) $fila['importe'] : 0;
+                    }
+
+                    if (abs($suma - (float) $monto) > 0.01) {
+
+                        return response()->json([
+                            'message' => 'La suma del reparto por alicuota no coincide con el importe a facturar.',
+                        ], 422);
+                    }
+                }
+            }
+
             $afip = new MakeAfipTicket();
 
             $afip->make_afip_ticket([
@@ -594,6 +644,7 @@ class SaleController extends Controller
                 'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
                 'afip_fecha_emision'                => $request->afip_fecha_emision,
                 'facturar_importe_personalizado'    => $request->monto_a_facturar,
+                'importe_personalizado_ivas'        => $request->importe_personalizado_ivas,
                 'forma_de_pago'                     => $request->forma_de_pago,
                 'permiso_existente'                 => $request->permiso_existente,
                 'incoterms'                         => $request->incoterms,
@@ -1188,10 +1239,13 @@ class SaleController extends Controller
      *   - afip_tipo_comprobante_id   (int, requerido)
      *   - agrupar_items              (bool, opcional, default false)
      *   - afip_fecha_emision         (string Y-m-d, opcional)
-     *   - monto_a_facturar           (float, opcional)
      *   - forma_de_pago              (string, opcional)
      *   - permiso_existente          (string, opcional)
      *   - incoterms                  (string, opcional)
+     *
+     * NO se acepta `monto_a_facturar`: por decision de Lucas del 20/8/2026, si se consolidan
+     * varias ventas en una sola factura no se puede informar ningun importe personalizado.
+     * `ConsolidarFacturacionHelper::build_afip_ticket_data()` lo fuerza a null y lo loguea.
      *
      * @param  Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -1201,7 +1255,6 @@ class SaleController extends Controller
             /** Construye el array de datos AFIP extra a partir del request. */
             $afip_data = [
                 'afip_fecha_emision'             => $request->afip_fecha_emision,
-                'monto_a_facturar'               => $request->monto_a_facturar,
                 'forma_de_pago'                  => $request->forma_de_pago,
                 'permiso_existente'              => $request->permiso_existente,
                 'incoterms'                      => $request->incoterms,
