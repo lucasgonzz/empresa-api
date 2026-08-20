@@ -228,7 +228,30 @@ class ArticleController extends Controller
         $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($model, $cost, $user, $es_bruto, $declaracion_explicita);
 
         $model->cost = $resuelto['cost'];
-        $model->cost_bruto = $resuelto['cost_bruto'];
+
+        /*
+         * 🔴 `cost_bruto` se toca SÓLO si el costo cambió de verdad.
+         *
+         * El formulario del listado manda el modelo entero en cada guardado, así que corregirle el
+         * nombre a un artículo llega acá con el mismo `cost` de siempre y `cost_incluye_iva` en
+         * false (nadie tipeó). El resolvedor, correctamente, devuelve `cost_bruto => null` para esa
+         * carga — pero escribirlo **borraba** el bruto que la compra a proveedor se había tomado el
+         * trabajo de registrar. El dato de origen moría en el primer guardado del listado que
+         * cambiara cualquier otra cosa. Medido por el checker de la Fase 5 sobre 18 combinaciones.
+         *
+         * La regla que sostiene el invariante: `cost_bruto` es una propiedad DEL `cost` guardado. Si
+         * el `cost` no se movió, el bruto que lo acompaña sigue siendo válido y no se toca.
+         *
+         * Comparación en float y no con `!=` sobre los strings: la columna es decimal(22,6), así que
+         * lo guardado viene como "1000.000000" y lo tipeado como "1000". Compararlos como texto da
+         * distinto siempre, que es el mismo error que ya se corrigió en el `isDirty('cost_bruto')`
+         * de la compra.
+         */
+        $el_costo_cambio = !$model->exists || (float) $model->getOriginal('cost') !== (float) $resuelto['cost'];
+
+        if ($el_costo_cambio) {
+            $model->cost_bruto = $resuelto['cost_bruto'];
+        }
 
         return $model;
     }

@@ -579,7 +579,31 @@ class ProcessRow {
             return $data;
         }
 
-        if (!isset($data['cost']) || !$this->precios_incluyen_iva) {
+        /*
+         * Sin costo en la fila no hay nada que hacer: el artículo conserva su `cost`, así que su
+         * `cost_bruto` sigue siendo el que corresponde y NO se toca.
+         */
+        if (!isset($data['cost'])) {
+            return $data;
+        }
+
+        /*
+         * 🔴 Acá sí se escribe un `cost` nuevo (el de la fila, tomado como NETO porque la carga no
+         * declara que incluya IVA), así que `cost_bruto` tiene que irse a null: el bruto viejo ya no
+         * corresponde a este costo.
+         *
+         * Es el camino MÁS FRECUENTE del import — toda cuenta Responsable Inscripto con
+         * `costos_cargados_con_iva = 0`, que es el default de la migración y por lo tanto el de
+         * todas las cuentas de hoy. Medido por el checker de la Fase 5: un artículo con
+         * `cost = 1000` / `cost_bruto = 1210` importado con costo 900 quedaba en `cost = 900` con el
+         * `cost_bruto = 1210` intacto. El bruto que corresponde a 900 es 1089. El formulario del
+         * listado prefiere `cost_bruto` sobre recalcular, así que mostraba 1210 sobre un artículo
+         * que costaba 900, y confirmar ese número lo dejaba en 1000: el costo subía 11,1% solo.
+         */
+        if (!$this->precios_incluyen_iva) {
+
+            $data['cost_bruto'] = null;
+
             return $data;
         }
 
@@ -628,9 +652,11 @@ class ProcessRow {
                 /*
                  * 🔴 `cost_bruto` va a null ANTES de salir, y esto no es cosmético.
                  *
-                 * Esta es la única salida del método que no pasa por el par (neto, bruto) del
-                 * final, así que era la única vía capaz de escribir un `cost` nuevo dejando el
-                 * `cost_bruto` viejo intacto. Las otras tres vías van por
+                 * Toda salida de este método que escriba un `cost` nuevo tiene que dejar
+                 * `cost_bruto` consistente con él. Son dos: ésta y la de `!precios_incluyen_iva`,
+                 * más arriba. (Una versión anterior de este comentario decía que ésta era la
+                 * única; era falso, y el checker de la Fase 5 lo midió sobre la otra, que además
+                 * es la más frecuente.) Las otras tres vías van por
                  * ArticlePricesHelper::resolver_costo_neto_y_bruto(), que siempre devuelve las dos
                  * columnas, y sus llamadores siempre escriben las dos.
                  *

@@ -597,4 +597,102 @@ class CostoBrutoEnElAbmTest extends EmpresaTestCase
             $this->restaurar_condicion($previos);
         }
     }
+
+    /**
+     * Test 12 — guardar cualquier otra cosa del artículo no puede borrar `cost_bruto`.
+     *
+     * El formulario del listado manda el modelo entero en cada guardado, así que corregirle el
+     * nombre a un artículo llega al backend con el mismo `cost` de siempre y `cost_incluye_iva` en
+     * `false`, porque nadie tipeó en el campo de costo. El resolvedor devuelve `cost_bruto => null`
+     * para esa carga —lo cual es correcto para esa carga—, y escribirlo **borraba** el bruto que la
+     * compra a proveedor había registrado. El dato de origen moría en el primer guardado del
+     * listado que cambiara cualquier otra cosa.
+     *
+     * El invariante que fija este test: `cost_bruto` es una propiedad DEL `cost` guardado. Si el
+     * `cost` no se movió, el bruto que lo acompaña sigue siendo válido.
+     *
+     * Lo encontró el checker de la Fase 5, midiéndolo sobre 18 combinaciones.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function guardar_otra_cosa_del_articulo_no_borra_el_bruto_registrado()
+    {
+        $previos = $this->set_condicion('RRII', 0);
+
+        try {
+
+            $article = $this->articulo_con_alicuota('21');
+
+            // Estado de partida: un bruto ya registrado, como lo deja una compra a proveedor.
+            $article->cost = 1000;
+            $article->cost_bruto = 1210;
+            $article->save();
+
+            /*
+             * El payload del formulario cuando alguien cambia el nombre y no toca el costo: `cost`
+             * es el mismo de la base y `cost_incluye_iva` viaja en false (lo manda siempre la SPA).
+             */
+            $this->putJson('api/article/'.$article->id, $this->payload($article, [
+                'name'             => 'Nombre corregido a mano',
+                'cost'             => $article->cost,
+                'cost_incluye_iva' => 0,
+            ]))->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(1000, (float) $article->cost, self::DELTA,
+                'el costo no se movió, que es la premisa del test');
+
+            $this->assertNotNull($article->cost_bruto,
+                'el bruto registrado por la compra no puede morir en un guardado que ni tocó el costo');
+
+            $this->assertEqualsWithDelta(1210, (float) $article->cost_bruto, self::DELTA,
+                'y sigue siendo el mismo bruto');
+
+        } finally {
+            $this->restaurar_condicion($previos);
+        }
+    }
+
+    /**
+     * Test 13 — el contrapeso del 12: si el costo SÍ cambia, el bruto viejo no puede quedar.
+     *
+     * Es la otra mitad del invariante. Un `cost_bruto` que no corresponde al `cost` actual es peor
+     * que no tener ninguno: el formulario del listado lo prefiere sobre recalcular, así que muestra
+     * un número que no es el costo del artículo, y confirmarlo lo mueve.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function cambiar_el_costo_en_neto_limpia_el_bruto_viejo()
+    {
+        $previos = $this->set_condicion('RRII', 0);
+
+        try {
+
+            $article = $this->articulo_con_alicuota('21');
+
+            $article->cost = 1000;
+            $article->cost_bruto = 1210;
+            $article->save();
+
+            // Ahora sí se tipea un costo nuevo, en neto (el toggle apagado).
+            $this->putJson('api/article/'.$article->id, $this->payload($article, [
+                'cost'             => 900,
+                'cost_incluye_iva' => 0,
+            ]))->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(900, (float) $article->cost, self::DELTA,
+                'el costo nuevo entra tal cual: se cargó en neto');
+
+            $this->assertNull($article->cost_bruto,
+                'el bruto de 1000 no puede quedar colgado de un costo de 900');
+
+        } finally {
+            $this->restaurar_condicion($previos);
+        }
+    }
 }
