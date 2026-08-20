@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
@@ -309,7 +310,22 @@ class ProcessRow {
          * (fuera de scope de este prompt, ver prompt 517 para el frontend), alcanza con pasar
          * 'precios_incluyen_iva' => true/false en el array $data de este constructor.
          */
-        $this->precios_incluyen_iva = isset($data['precios_incluyen_iva']) ? (bool)$data['precios_incluyen_iva'] : false;
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el fallback dejó de ser `false`
+         * duro y pasa a resolverse por condición fiscal de la cuenta, igual que las otras tres vías
+         * que escriben `articles.cost`. Mientras estuvo en `false`, back_out_iva_import() era un
+         * no-op y el import escribía costos BRUTOS en una columna que es neta por convención: para
+         * un Monotributista, aplicar_iva() le volvía a sumar el 21% y el costo real quedaba ~21%
+         * inflado. Es el hallazgo 4 de informes/20260815-motor-de-ofertas-por-cliente.md, y hacía
+         * que un proveedor entrado por importación compitiera ~21% más caro que el mismo proveedor
+         * entrado por una compra real.
+         *
+         * Si el llamador pasa la clave explícitamente, manda el llamador: eso deja lugar al flag
+         * por importación que preveía el prompt 517, sin que el default quede mal.
+         */
+        $this->precios_incluyen_iva = isset($data['precios_incluyen_iva'])
+            ? (bool)$data['precios_incluyen_iva']
+            : ArticlePricesHelper::costo_tipeado_es_bruto($this->user);
 
         /*
          * 'fila_inicial' (grupo 294, incidente Servian): numero de fila ABSOLUTO del
@@ -741,13 +757,28 @@ class ProcessRow {
         }
 
         /*
-         * Prompt 514 — Back-out de IVA del costo importado (hook, ver comentario en el
-         * constructor). Con $this->precios_incluyen_iva en false (caso de hoy, siempre) esta
-         * llamada es un no-op y $data['cost'] queda intacto. Se ubica acá porque recién en este
+         * Prompt 514 — Back-out de IVA del costo importado. Se ubica acá porque recién en este
          * punto ya están resueltos $data['cost'] (props_to_add) y $data['iva_id'] de la fila.
+         *
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): dejó de ser un no-op. Ahora
+         * $this->precios_incluyen_iva sale de la condición fiscal de la cuenta (ver constructor),
+         * así que para un Monotributista el costo del Excel se trata siempre como bruto y se
+         * descompone, igual que en la compra manual y en el ABM del listado. Se guarda además el
+         * valor original en `cost_bruto`, que es lo que el usuario ve en la interfaz.
          */
         if (isset($data['cost'])) {
-            $data['cost'] = $this->back_out_iva_import($data['cost'], $data['iva_id'] ?? null);
+
+            $cost_tipeado = $data['cost'];
+
+            $data['cost'] = $this->back_out_iva_import($cost_tipeado, $data['iva_id'] ?? null);
+
+            // Solo se registra el bruto si de verdad hubo descomposición: si back_out_iva_import()
+            // devolvió el mismo número (alícuota 0/Exento/No Gravado, o cuenta que carga en neto),
+            // el costo tipeado ERA el neto y `cost_bruto` tiene que quedar null, que es como el
+            // resto del sistema lee "este costo se cargó sin IVA".
+            $data['cost_bruto'] = ((string) $data['cost'] !== (string) $cost_tipeado)
+                ? $cost_tipeado
+                : null;
         }
 
 

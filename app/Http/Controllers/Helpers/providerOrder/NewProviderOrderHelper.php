@@ -1286,13 +1286,27 @@ class NewProviderOrderHelper {
         // bruto (se ignora el flag `precios_incluyen_iva` de la compra, forzado a `true`); un
         // Responsable Inscripto respeta el flag como hasta ahora.
         if (!is_null($cost) && ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva)) {
+
+            // Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): se registra el valor TIPEADO
+            // antes de descomponerlo. El cálculo no cambia en nada — esta vía ya estaba bien y es
+            // la que las otras tres vinieron a imitar. Lo único nuevo es que el dato de origen deja
+            // de perderse, así el listado puede mostrarle al usuario el mismo número que puso en la
+            // compra (y que figura en la factura del proveedor) sin recalcularlo y arriesgar un
+            // centavo de deriva sobre el decimal(22,2).
+            $article->cost_bruto = $cost;
+
             $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
+
+        } else if (!is_null($cost)) {
+
+            // Responsable Inscripto cargando el neto: no hay bruto que registrar. El null es
+            // información — dice "este costo se cargó sin IVA".
+            $article->cost_bruto = null;
         }
 
-        if (!is_null($cost)
+        $cost_cambio = !is_null($cost) && $article->cost != $cost;
 
-            && $article->cost != $cost) {
-
+        if ($cost_cambio) {
 
             $article->cost = $cost;
 
@@ -1303,9 +1317,25 @@ class NewProviderOrderHelper {
 
                 $article->cost_in_dollars = $new_article['pivot']['cost_in_dollars'];
             }
+        }
 
+        /*
+         * El save cubre además el caso en que SOLO cambió `cost_bruto` (misión
+         * `costo-bruto-por-condicion-fiscal`, 20/8/2026): comprar a 1210 un artículo que ya tenía
+         * 1000 de costo neto no mueve `cost`, así que con la condición vieja no se llamaba a save()
+         * y el dato de origen se perdía en silencio. `isDirty()` lo detecta sin agregar una query.
+         */
+        if ($cost_cambio || $article->isDirty('cost_bruto')) {
 
             $article->save();
+        }
+
+        /*
+         * 🔴 setFinalPrice() queda atado a que haya cambiado el COSTO, no el bruto. Recalcular
+         * precios porque se registró un dato informativo sería un efecto lateral que nadie pidió:
+         * el pipeline de precios no lee `cost_bruto` en ningún lado.
+         */
+        if ($cost_cambio) {
 
             Log::info('update_cost con '. $article->cost);
 
