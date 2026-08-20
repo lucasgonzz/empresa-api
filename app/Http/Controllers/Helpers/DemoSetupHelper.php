@@ -185,6 +185,8 @@ class DemoSetupHelper
 
         self::assign_pdf_whatsapp_defaults_for_owner($user->id);
 
+        self::set_default_sale_factura_print_option($user);
+
         self::crear_client_con_mail_del_user_demo($data);
 
         // Reportes pre-calculados que usa el dashboard de ventas
@@ -330,6 +332,26 @@ class DemoSetupHelper
     private static function assign_pdf_whatsapp_defaults_for_owner($owner_id)
     {
         PdfColumnProfileWhatsappDefaultHelper::apply_whatsapp_defaults_for_owner($owner_id, false);
+    }
+
+    /**
+     * Preferencia por defecto del dueño para el botón "Imprimir" de la factura ARCA (tarjetita en
+     * Ventas): PDF A4 fiscal en vez del ticket común. Reutiliza el mismo perfil "Factura comun"
+     * que ya se resuelve para el default de WhatsApp (PdfColumnProfileSeeder lo siembra antes de
+     * llegar acá). Si no se encuentra un perfil válido, no se toca la preferencia (queda en el
+     * default null = ticket común).
+     *
+     * @param User $user
+     * @return void
+     */
+    private static function set_default_sale_factura_print_option($user)
+    {
+        $factura_profile = PdfColumnProfileWhatsappDefaultHelper::resolve_factura_whatsapp_profile($user->id);
+
+        if ($factura_profile) {
+            $user->sale_factura_print_option = 'factura_a4:'.$factura_profile->id;
+            $user->save();
+        }
     }
 
     static function crear_client_con_mail_del_user_demo($data) {
