@@ -221,6 +221,24 @@ class UserController extends Controller
         }
 
         /**
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): default de la cuenta para saber si,
+         * al cargar un costo, un Responsable Inscripto está tipeando el bruto (con IVA) o el neto.
+         * Se ignora para Monotributista, que siempre carga bruto.
+         *
+         * Va con el mismo guard `has()` que los tres campos de costeo de arriba, y por el mismo
+         * motivo: sin él, cualquier guardado de configuración que no mande la clave lo apagaría en
+         * silencio.
+         *
+         * 🔴 A diferencia de los otros tres, este NO entra en check_actualizar_articulos() y no debe
+         * entrar: no cambia el costo de ningún artículo ya cargado, solo cómo se interpreta el
+         * próximo número que alguien tipee. Meterlo ahí dispararía un recálculo masivo de precios
+         * sin ninguna razón.
+         */
+        if ($request->has('costos_cargados_con_iva') && !is_null($request->costos_cargados_con_iva)) {
+            $model->costos_cargados_con_iva = (int) $request->costos_cargados_con_iva;
+        }
+
+        /**
          * Permite `provider_code` repetido en artículos.
          * Esta configuración se usa desde el front solo por el owner, por eso se persiste en el auth_user.
          */
