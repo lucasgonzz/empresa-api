@@ -1011,6 +1011,16 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->
     Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen');
 });
 
+// Cotización del dólar al iniciar sesión. Gateado por Sanctum + la extensión
+// 'costo_en_dolares' (ExtencionSeeder, índice 33, tabla extencion_empresas).
+// El gate por rol (is_admin) va adentro del controller: la extensión es de la
+// EMPRESA y el rol es de la PERSONA, y son dos preguntas distintas.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:costo_en_dolares'])->group(function () {
+    Route::get('dolar-cotizacion', 'DolarCotizacionController@show');
+    Route::post('dolar-cotizacion', 'DolarCotizacionController@store');
+    Route::put('dolar-cotizacion/preferencias', 'DolarCotizacionController@preferencias');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
