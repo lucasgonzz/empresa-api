@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
@@ -175,6 +176,59 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
     }
 
+    /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resuelve `cost` y `cost_bruto` a
+     * partir de lo que tipeó el usuario en el ABM del listado.
+     *
+     * Hasta esta misión el ABM hacía `$model->cost = $request->cost` literal, o sea daba por hecho
+     * que el número tipeado ya venía NETO. La compra a proveedor, en cambio, siempre trató ese
+     * número como bruto para Monotributista y le sacó el IVA (NewProviderOrderHelper:1039). El
+     * mismo artículo costeaba distinto según por dónde entrara: un MT que cargaba 1000 desde el
+     * listado terminaba costeando 1210, porque aplicar_descuentos_e_iva() le suma el IVA encima de
+     * un número que ya lo tenía adentro.
+     *
+     * 🔴 `articles.cost` sigue siendo NETO siempre — eso no cambia y no se negocia: hay 176
+     * lecturas de `->cost` en 62 archivos que lo asumen, y `articles` es tabla compartida con
+     * tienda. Lo que cambia es que ahora es DERIVADO: lo calcula el sistema, no se tipea.
+     *
+     * 🔴 Se llama DESPUES de asignar `iva_id` y `aplicar_iva`, nunca antes. Si el usuario cambió la
+     * alícuota y el costo en el mismo submit, el back-out tiene que usar la alícuota NUEVA: por eso
+     * back_out_iva() fuerza `load('iva')` en vez de `loadMissing()`, y por eso acá el orden importa.
+     *
+     * @param  \App\Models\Article $model
+     * @param  Request             $request
+     * @return \App\Models\Article
+     */
+    private function set_costo_desde_request($model, Request $request)
+    {
+        $cost = $request->cost;
+
+        // Costo vacío: no hay nada que descomponer y tampoco un bruto que registrar.
+        if (is_null($cost) || $cost === '') {
+            $model->cost = $cost;
+            $model->cost_bruto = null;
+            return $model;
+        }
+
+        $user = UserHelper::user();
+
+        if (!ArticlePricesHelper::costo_tipeado_es_bruto($user, $request->cost_incluye_iva)) {
+            // Se tipeó el neto (Responsable Inscripto con el toggle apagado): entra tal cual y no
+            // hay bruto que guardar. El null es información: dice "este costo se cargó en neto".
+            $model->cost = $cost;
+            $model->cost_bruto = null;
+            return $model;
+        }
+
+        // Se tipeó el bruto. Se guarda el valor exacto para que la interfaz lo devuelva sin
+        // recalcularlo (el ida y vuelta sobre un decimal(22,2) puede correr un centavo), y `cost`
+        // sale de la misma función que usa la compra, con la alícuota propia del artículo.
+        $model->cost_bruto = $cost;
+        $model->cost = ArticlePricesHelper::back_out_iva($model, $cost, $user);
+
+        return $model;
+    }
+
     function store(Request $request) {
         $model = new Article();
         // $model->num                               = $this->num('articles');
@@ -187,7 +241,8 @@ class ArticleController extends Controller
         $model->brand_id                          = $request->brand_id;
         $model->name                              = ucfirst($request->name);
         $model->slug                              = ArticleHelper::slug($request->name);
-        $model->cost                              = $request->cost;
+        // `cost` NO se asigna acá: lo resuelve set_costo_desde_request() más abajo, después de
+        // `iva_id` y `aplicar_iva`, porque el back-out del IVA necesita la alícuota ya seteada.
         $model->cost_in_dollars                   = $request->cost_in_dollars;
         $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
@@ -205,6 +260,9 @@ class ArticleController extends Controller
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->iva_id                            = $request->iva_id;
         $model->aplicar_iva                       = $request->aplicar_iva;
+
+        // Con `iva_id` y `aplicar_iva` ya asignados, recién ahora se puede descomponer el costo.
+        $model = $this->set_costo_desde_request($model, $request);
 
         // $model->stock                             = $request->stock;
         $model->stock_min                         = $request->stock_min;
@@ -378,13 +436,17 @@ class ArticleController extends Controller
         $model->provider_id                       = $request->provider_id;
         $model->category_id                       = $request->category_id;
         $model->sub_category_id                   = $request->sub_category_id;
-        $model->cost                              = $request->cost;
+        // `cost`: ver la nota en store(). Se resuelve después de `iva_id` / `aplicar_iva`.
         $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->cost_in_dollars                   = $request->cost_in_dollars;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
         $model->brand_id                          = $request->brand_id;
         $model->iva_id                            = $request->iva_id;
         $model->aplicar_iva                       = $request->aplicar_iva;
+
+        // Con `iva_id` y `aplicar_iva` ya asignados, recién ahora se puede descomponer el costo.
+        $model = $this->set_costo_desde_request($model, $request);
+
         /* Mision 44: mismo criterio que en store(), ver el comentario de alla. */
         $model->percentage_gain                   = CriterioDePrecioHelper::normalizar($request->percentage_gain);
         $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;

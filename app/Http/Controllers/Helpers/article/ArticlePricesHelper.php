@@ -772,6 +772,53 @@ class ArticlePricesHelper {
     }
 
     /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resolvedor UNICO de la pregunta
+     * "lo que el usuario acaba de tipear, ¿es un costo bruto (con IVA) o neto (sin IVA)?".
+     *
+     * Es la unica pieza del sistema que decide esto. Lo consultan las cuatro vias que escriben
+     * `articles.cost` a partir de un numero que tipeo una persona: el ABM del listado
+     * (ArticleController::store/update), el import de Excel (ProcessRow), el pre-import
+     * (ArticlesPreImportController) y la compra a proveedor (NewProviderOrderHelper). Si el
+     * criterio queda escrito en cada una por separado, se desincronizan sin que nada avise —
+     * que es exactamente el estado del que sale esta mision: la compra hacia el back-out y las
+     * otras tres no, asi que el mismo articulo costeaba distinto segun por donde entrara.
+     *
+     * 🔴 Monotributista SIEMPRE carga bruto, sin opcion. No es una preferencia: recibe Factura B
+     * del proveedor, donde el IVA no viene discriminado y el neto no figura en ningun lado. Pedirle
+     * el neto es pedirle un dato que su comprobante no tiene.
+     *
+     * Responsable Inscripto elige, porque su Factura A si le discrimina el neto: manda el default
+     * de la cuenta (`users.costos_cargados_con_iva`), y el formulario puede pisarlo por carga con
+     * `$cost_incluye_iva` — que es una decision DE ENTRADA ("lo que estoy tipeando ahora incluye
+     * IVA"), no un estado que se guarde en el articulo. Sin usuario se devuelve false, mismo
+     * criterio conservador que usan es_monotributista_para_costeo() e iva_va_al_costo().
+     *
+     * @param  \App\Models\User|null $user            Dueño del articulo.
+     * @param  mixed                 $cost_incluye_iva Override puntual de esta carga (el toggle del
+     *                                                 formulario). `null` = no vino, manda la cuenta.
+     * @return bool                                    true si hay que descomponer el IVA antes de
+     *                                                 escribir `articles.cost`.
+     */
+    static function costo_tipeado_es_bruto($user, $cost_incluye_iva = null) {
+
+        if (is_null($user)) {
+            return false;
+        }
+
+        // Monotributista: no participa de la eleccion.
+        if (Self::es_monotributista_para_costeo($user)) {
+            return true;
+        }
+
+        // Responsable Inscripto: el toggle de la carga pisa al default de la cuenta.
+        if (!is_null($cost_incluye_iva) && $cost_incluye_iva !== '') {
+            return filter_var($cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        return (bool) $user->costos_cargados_con_iva;
+    }
+
+    /**
      * Prompt 514 — "Back-out" de IVA sobre un costo BRUTO, para dejarlo NETO.
      *
      * Convención del sistema (decisión de Lucas, 18/7): `articles.cost` y `article_provider.cost`
