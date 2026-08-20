@@ -157,8 +157,13 @@ class AfipImportesCalculator
                     continue;
                 }
 
-                /** @var float $importe Total de esa alicuota CON IVA. */
-                $importe = isset($fila['importe']) ? (float) $fila['importe'] : 0;
+                /**
+                 * @var float $importe Total de esa alicuota CON IVA, cuantizado a 2 decimales.
+                 * El redondeo se re-fuerza aca y no se asume: el reparto viaja en un `longText`,
+                 * asi que una fila con 3 decimales (de un llamador que saltee el controller, o de
+                 * una fila vieja en base) rompe el invariante (a) y puede dejar un BaseImp negativo.
+                 */
+                $importe = isset($fila['importe']) && is_numeric($fila['importe']) ? round((float) $fila['importe'], 2) : 0;
 
                 // Una fila en 0 (o negativa) no genera bucket: ensucia los logs y AfipWsfeHelper
                 // la filtraria igual antes de mandarla.
@@ -188,8 +193,13 @@ class AfipImportesCalculator
      * Invariantes que este metodo garantiza (y que blindan los tests del grupo `facturacion`):
      *
      * (a) POR FILA: el IVA se calcula por RESTA (`importe_fila - base`), jamas como
-     *     `base * pct / 100`. Como `importe_fila` y `base` tienen 2 decimales, la resta tiene
-     *     exactamente 2 decimales y `base + iva_fila == importe_fila` es EXACTO, sin residuo.
+     *     `base * pct / 100`. `importe_fila` viene cuantizado a 2 decimales — el redondeo se
+     *     FUERZA en `MakeAfipTicket::validar_filas_importe_personalizado()` al guardar y se
+     *     vuelve a forzar en `get_filas_importe_personalizado()` al leer, no se asume — y `base`
+     *     sale de un `round(..., 2)`, asi que la resta tiene exactamente 2 decimales y
+     *     `base + iva_fila == importe_fila` es EXACTO, sin residuo.
+     *     Sin esa cuantizacion, una fila de 3 decimales dejaba `ImpTotal` distinto del importe
+     *     autorizado y podia generar un `BaseImp` NEGATIVO al absorber el descuadre.
      *
      * (b) GLOBAL: el ajuste del descuadre corre ANTES del back-out, asi que
      *     `suma(importe_fila) == importe_personalizado` exacto. Con (a), eso da
@@ -203,8 +213,14 @@ class AfipImportesCalculator
      *     que ARCA valida por fila.
      *
      * (d) Este metodo NUNCA lanza excepcion: su contrato es devolver siempre importes coherentes.
-     *     Un descuadre grande (mas de un centavo) se loguea y se reparte igual; ese caso se
-     *     rechaza antes con 422 en `SaleController::makeAfipTicket()`.
+     *     Un descuadre grande (mas de un centavo) se loguea y se reparte igual.
+     *
+     *     🔴 Ojo con el 422 de `SaleController::makeAfipTicket()`: valida la suma del reparto
+     *     contra el importe ANTES de guardar, pero NO puede impedir un descuadre aca. Si un
+     *     descuadre grande llega a este metodo, el 422 ya paso — por un llamador que saltea el
+     *     controller, o por un reparto viejo en base. Por eso el warning es la unica senal, y
+     *     por eso las dos capas comparten el criterio de validacion (ver
+     *     `MakeAfipTicket::validar_filas_importe_personalizado()`).
      *
      * @param array $ivas Acumulador de alicuotas (estructura de default_ivas()).
      * @param float $importe_personalizado Importe total a facturar, en pesos.
