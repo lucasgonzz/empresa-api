@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
+use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -27,6 +28,8 @@ use Illuminate\Support\Facades\Log;
  */
 class AsistenteIaService
 {
+    use TonoDeRedaccionIa;
+
     /** Máximo de iteraciones del loop de tool use, para evitar bucles infinitos. */
     const MAX_TOOL_ITERATIONS = 5;
 
@@ -226,13 +229,18 @@ class AsistenteIaService
 
         $fecha = now()->format('d/m/Y');
 
+        // El bloque de registro sale del trait compartido para que el chat y los tres
+        // resumenes de sugerencias suenen igual: es la MISMA IA para el que la lee, y un
+        // ajuste de tono aplicado en un solo lado deja los otros hablando distinto.
+        $tono = $this->reglas_de_tono();
+
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
 adentro del sistema de gestión de ese negocio y le hablás a la persona que lo usa.
 
 Cómo hablás:
-- Español rioplatense, tuteando, tono cercano y directo. Nada de solemnidad ni de
-  "estimado usuario".
+- Español rioplatense, tuteando. Nada de solemnidad ni de "estimado usuario".
+{$tono}
 - Respuestas cortas: hasta 6 oraciones, salvo que te pidan explícitamente el detalle.
 - No saludes ni te presentes en cada mensaje: la conversación ya está empezada.
 

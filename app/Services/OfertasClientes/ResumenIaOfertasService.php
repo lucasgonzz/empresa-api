@@ -4,6 +4,7 @@ namespace App\Services\OfertasClientes;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\OfferSuggestionLine;
+use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -28,6 +29,8 @@ use Illuminate\Support\Facades\Http;
  */
 class ResumenIaOfertasService
 {
+    use TonoDeRedaccionIa;
+
     /** Techo de tokens: más alto que el de compras (700) porque la respuesta trae una decisión por línea. */
     const MAX_TOKENS = 2500;
 
@@ -116,8 +119,10 @@ class ResumenIaOfertasService
             . "- Dale mas descuento a lo que esta mas parado (vendibilidad alta) y menos a lo que sale solo.\n"
             . "- dias_vigencia tiene que ser un entero entre " . self::DIAS_VIGENCIA_MINIMOS
             . " y " . OfertaSugeridaService::tope_de_vigencia($vigencia) . ".\n"
-            . "- El motivo de cada oferta: una frase corta, tuteando en rioplatense.\n"
-            . "- El resumen: maximo 6 oraciones, tuteando en rioplatense, texto corrido, sin listas ni markdown, y sin saludar ni presentarte. Deci cuantos clientes quedaron afuera por tener ventas sin cobrar.\n\n"
+            . "- El motivo de cada oferta: una frase corta, tuteando.\n"
+            . "- El resumen: maximo 6 oraciones, tuteando, texto corrido, sin listas ni markdown, y sin saludar ni presentarte. Deci cuantos clientes quedaron afuera por tener ventas sin cobrar.\n"
+            . "- Las reglas de tono de abajo valen para las dos cosas: el motivo de cada linea y el resumen.\n"
+            . $this->reglas_de_tono() . "\n\n"
             . "Responde SOLO con un JSON, sin ningun texto alrededor y sin cercas de codigo, con esta forma exacta:\n"
             . '{"resumen":"texto corrido","lineas":[{"id":123,"porcentaje":18,"dias_vigencia":12,"motivo":"texto corto"}]}';
     }

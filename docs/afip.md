@@ -5,17 +5,34 @@
 > descargables por HTTP y, además, quedaban en un repositorio público. Ahora viven fuera del docroot,
 > en `storage/app/afip/`, y **no se commitean nunca** (ver `.gitignore`).
 
-## ⚠️ Aviso de deploy — este cambio rompe la facturación si no se hace antes del deploy
+## 🔴 Los instala el admin — ya no es un paso manual (20/8/2026)
 
-Este cambio **rompe la facturación AFIP** en cualquier servidor donde los certificados no hayan sido
-copiados a la ruta nueva (`storage/app/afip/...`) **antes o junto con** el deploy de este código. El
-código ya no busca los certificados en `public/afip/production` / `public/afip/testing`, así que si el
-servidor no tiene los archivos en la ubicación nueva, `AfipWSAAHelper` va a lanzar una excepción
-explícita en vez de facturar.
+**Esto cambió.** Hasta el 20/8/2026 este documento decía que los certificados se copiaban a mano a
+cada servidor. Ese paso manual no lo hacía nadie, y el resultado era que **todo cliente instalado
+después del 26/7/2026 no podía facturar**: el ZIP de instalación sale del clon de git, donde los
+certificados están gitignoreados, y el ZIP de actualización excluye `storage/` a propósito, así que
+tampoco se reponían solos nunca.
 
-## Qué copiar a mano al provisionar un servidor (o antes de este deploy)
+Ahora los instala el admin, desde su propio servidor, en dos momentos:
 
-Estos archivos **nunca van al repositorio** — se copian a mano, por fuera de git, a cada servidor:
+- **Al instalar** un sistema (`InstallationService::step_finalize_api`). Además, la verificación de
+  integridad de la instalación **los exige**: si faltan, la instalación se marca fallida en vez de
+  entregarse sin facturación.
+- **Al actualizar** un cliente (`DeploymentService::step_run_migrations`), después de arrastrar lo
+  que el cliente ya tenía en la carpeta de la versión anterior. Solo repone lo que falte, nunca pisa
+  un archivo existente.
+
+La fuente es `admin-api`, y se cargan desde el panel: **Configuración fiscal → Certificados de
+AFIP**. Es el mismo certificado de ComercioCity que el admin usa para facturar sus mensualidades.
+
+Para reponer los clientes ya instalados sin esperar a que les toque una actualización, en `admin-api`:
+
+```
+php artisan afip:certificados-clientes            # solo informa quién está sin certificados
+php artisan afip:certificados-clientes --instalar  # se los repone
+```
+
+## Dónde tienen que estar los archivos en el servidor del cliente
 
 | Archivo | Ruta destino | Variable `.env` (opcional, si el nombre real difiere) |
 |---|---|---|
@@ -25,8 +42,14 @@ Estos archivos **nunca van al repositorio** — se copian a mano, por fuera de g
 | Clave privada de testing/homologación | `storage/app/afip/testing/afip_private.key` | `AFIP_KEY_PATH_TESTING` |
 
 Las rutas están definidas en `config/services.php` (bloque `afip`), con esos nombres de archivo como
-default. Si en un servidor puntual el archivo real tiene otro nombre, no hace falta renombrarlo: basta
-con setear la variable de entorno correspondiente apuntando al archivo real.
+default. **Esos cuatro nombres son el contrato con `admin-api`**: son exactamente los que instala
+`AfipCertificateProvisionService`. Si acá se cambian, hay que cambiarlos también allá — el test
+`AfipCertificateProvisionServiceTest::test_las_rutas_destino_son_las_que_espera_empresa_api` está
+puesto justamente para que eso no pase en silencio.
+
+Si en un servidor puntual el archivo real tiene otro nombre, no hace falta renombrarlo: basta con
+setear la variable de entorno correspondiente apuntando al archivo real. El admin igual va a dejar
+los suyos en la ruta default, sin pisar nada; el `.env` del cliente sigue mandando.
 
 ## Directorio de trabajo de WSAA
 
@@ -42,9 +65,21 @@ cada web service (`wsfe`, `wsfex`, `wsci`, etc.) a medida que se usan.
 - `public/afip/logo.jpg` — lo usan `AfipQrPdf` y `AfipPdfHelper` para el QR de los comprobantes fiscales.
 - `public/afip/logo.png` — referenciado (comentado) en `AfipTicketPdf`.
 
+## Si un servidor igual quedó sin certificados
+
+Pasa si el admin todavía no los tenía cargados cuando se corrió la instalación. Se arregla cargándolos
+en el panel del admin y corriendo `php artisan afip:certificados-clientes --instalar` desde `admin-api`.
+Copiarlos a mano por SFTP a las rutas de la tabla también funciona: el admin no los pisa.
+
 ## Si una clave se filtra
 
 Si un certificado o clave privada de AFIP quedó expuesto (por ejemplo, por haber estado commiteado en
 este repositorio antes de este cambio), hay que **revocarlo en AFIP y generar uno nuevo** — sacarlo del
 repositorio no invalida un secreto que ya se filtró, y el histórico de git sigue teniendo las versiones
 viejas. Esa rotación la hace Lucas a mano; no es algo que resuelva este cambio de código.
+
+Después de rotarlo, se sube el nuevo al panel del admin y se corre
+`php artisan afip:certificados-clientes --instalar`. 🔴 Ojo: ese comando **no pisa** lo que el cliente
+ya tiene, así que para reemplazar un certificado viejo en todos los clientes hay que borrar el anterior
+en cada servidor primero. Es a propósito: el default no destructivo es lo que protege a un cliente con
+certificado propio.

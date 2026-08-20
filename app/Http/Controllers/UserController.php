@@ -599,15 +599,23 @@ class UserController extends Controller
      * `chat_ia_fab_position` viaja como string "left,top" en px (D3 del plan:
      * string corto en vez de JSON; parse con explode y guard de dos enteros
      * 0..20000). `chat_ia_sidebar_width` en px, mismo rango 180..420 que la
-     * SPA permite arrastrar. Las dos claves son opcionales: se persiste solo
-     * lo que llega con valor, y un valor inválido corta con 422 SIN guardar
-     * nada (por eso se valida todo antes de escribir).
+     * SPA permite arrastrar. `chat_ia_panel_width` es el ancho del MODAL
+     * ENTERO (19/8/2026), también en px y con el mismo rango 720..1600 que
+     * clampa la SPA. Las tres claves son opcionales: se persiste solo lo que
+     * llega con valor, y un valor inválido corta con 422 SIN guardar nada
+     * (por eso se valida todo antes de escribir).
+     *
+     * 🔴 Los rangos de acá y los de la SPA tienen que decir el MISMO número.
+     * Si divergen, el usuario arrastra hasta un ancho que la SPA acepta y este
+     * endpoint rechaza, y como savePreferences() se traga el 422 en un
+     * console.log, el ancho se pierde en silencio recién al recargar.
      */
     function set_chat_ia_preferencias(Request $request) {
         $model = Auth::user();
 
-        $tiene_posicion = $request->has('chat_ia_fab_position') && !is_null($request->chat_ia_fab_position);
-        $tiene_ancho    = $request->has('chat_ia_sidebar_width') && !is_null($request->chat_ia_sidebar_width);
+        $tiene_posicion     = $request->has('chat_ia_fab_position') && !is_null($request->chat_ia_fab_position);
+        $tiene_ancho        = $request->has('chat_ia_sidebar_width') && !is_null($request->chat_ia_sidebar_width);
+        $tiene_ancho_panel  = $request->has('chat_ia_panel_width') && !is_null($request->chat_ia_panel_width);
 
         if ($tiene_posicion && !$this->es_posicion_de_fab_valida($request->chat_ia_fab_position)) {
             return response()->json([
@@ -616,15 +624,18 @@ class UserController extends Controller
             ], 422);
         }
 
-        if ($tiene_ancho) {
-            $ancho = $request->chat_ia_sidebar_width;
+        if ($tiene_ancho && !$this->es_ancho_valido($request->chat_ia_sidebar_width, 180, 420)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_sidebar_width invalido: se espera un entero entre 180 y 420.',
+            ], 422);
+        }
 
-            if (!is_numeric($ancho) || (int) $ancho != $ancho || (int) $ancho < 180 || (int) $ancho > 420) {
-                return response()->json([
-                    'error'   => true,
-                    'message' => 'chat_ia_sidebar_width invalido: se espera un entero entre 180 y 420.',
-                ], 422);
-            }
+        if ($tiene_ancho_panel && !$this->es_ancho_valido($request->chat_ia_panel_width, 720, 1600)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_panel_width invalido: se espera un entero entre 720 y 1600.',
+            ], 422);
         }
 
         if ($tiene_posicion) {
@@ -635,6 +646,10 @@ class UserController extends Controller
             $model->chat_ia_sidebar_width = (int) $request->chat_ia_sidebar_width;
         }
 
+        if ($tiene_ancho_panel) {
+            $model->chat_ia_panel_width = (int) $request->chat_ia_panel_width;
+        }
+
         $model->save();
 
         UserHelper::set_sessions($model);
@@ -642,7 +657,28 @@ class UserController extends Controller
         return response()->json([
             'chat_ia_fab_position'  => $model->chat_ia_fab_position,
             'chat_ia_sidebar_width' => is_null($model->chat_ia_sidebar_width) ? null : (int) $model->chat_ia_sidebar_width,
+            'chat_ia_panel_width'   => is_null($model->chat_ia_panel_width) ? null : (int) $model->chat_ia_panel_width,
         ], 200);
+    }
+
+    /**
+     * true si el valor es un entero (o su string) adentro del rango cerrado [$min, $max].
+     *
+     * La comparacion `(int) $valor != $valor` es la que voltea los decimales: sin ella,
+     * "300.7" pasaria como 300. Es floja (!=) a proposito, porque el valor llega del
+     * request como string y "300" tiene que valer igual que 300.
+     *
+     * @param mixed $valor Valor recibido desde el request.
+     * @param int $min
+     * @param int $max
+     * @return bool
+     */
+    private function es_ancho_valido($valor, $min, $max) {
+        if (!is_numeric($valor) || (int) $valor != $valor) {
+            return false;
+        }
+
+        return (int) $valor >= $min && (int) $valor <= $max;
     }
 
     /**

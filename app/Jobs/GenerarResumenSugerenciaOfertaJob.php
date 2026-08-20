@@ -259,7 +259,7 @@ class GenerarResumenSugerenciaOfertaJob implements ShouldQueue
                 'auth_user_id' => $owner->id,
                 // Título fijo y no null: null significa "se está infiriendo" (la SPA muestra "Nueva
                 // conversación") y acá no hay nada que inferir.
-                'titulo'          => 'Ofertas sugeridas #' . $suggestion->id,
+                'titulo'          => AiConversation::titulo_con_fecha('Ofertas sugeridas', $suggestion->created_at),
                 'origen'          => 'sugerencia_oferta',
                 'referencia_id'   => $suggestion->id,
                 'contexto'        => $contexto,
