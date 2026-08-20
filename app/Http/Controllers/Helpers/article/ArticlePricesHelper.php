@@ -805,14 +805,29 @@ class ArticlePricesHelper {
             return false;
         }
 
-        // Monotributista: no participa de la eleccion.
-        if (Self::es_monotributista_para_costeo($user)) {
-            return true;
-        }
-
-        // Responsable Inscripto: el toggle de la carga pisa al default de la cuenta.
+        /*
+         * 🔴 El override explicito gana SIEMPRE, incluido Monotributista, y este orden no es
+         * negociable.
+         *
+         * "El MT carga siempre en bruto" es una regla sobre lo que una PERSONA tipea, no sobre
+         * cualquier numero que llegue en un request. El formulario del listado manda `cost` con el
+         * NETO que devolvio el servidor cada vez que alguien guarda sin tocar el campo de costo
+         * (cambiar el nombre, la categoria, el stock minimo), y lo declara con
+         * `cost_incluye_iva = false`. Si esa declaracion no ganara, el back-out correria sobre un
+         * numero que ya era neto y el costo se hundiria un 21% en cada guardado: 1000 -> 826,45 ->
+         * 683,01. Medido por el checker de la Fase 5 antes de este cambio.
+         *
+         * El default por condicion fiscal sigue mandando cuando la clave NO viene, que es el caso
+         * del import, del pre-import y de cualquier cliente de API que no la conozca: ahi el numero
+         * si es lo que alguien tipeo en un Excel, y para un MT eso es bruto.
+         */
         if (!is_null($cost_incluye_iva) && $cost_incluye_iva !== '') {
             return filter_var($cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        // Sin declaracion explicita manda la condicion fiscal: el MT no elige.
+        if (Self::es_monotributista_para_costeo($user)) {
+            return true;
         }
 
         return (bool) $user->costos_cargados_con_iva;

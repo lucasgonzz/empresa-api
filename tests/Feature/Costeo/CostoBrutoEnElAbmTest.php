@@ -320,9 +320,66 @@ class CostoBrutoEnElAbmTest extends EmpresaTestCase
     }
 
     /**
-     * Test 6 — idempotencia, que es la trampa central del diseño. Abrir un artículo, no tocar nada
-     * y guardar tiene que dejar el mismo costo. El formulario devuelve el bruto y el backend lo
-     * descompone: si alguna de las dos puntas fallara, el costo se hundiría un 21% por guardado.
+     * Test 6b — EL payload real del formulario cuando nadie toca el campo de costo.
+     *
+     * 🔴 Este es el test que faltaba y el que atrapa el bug más caro de la misión. La SPA manda
+     * `cost` con el NETO que devolvió el servidor (porque `valor_visible` es una computed de
+     * display y el store nunca se muta al abrir) y `cost_incluye_iva` en false. Si el backend
+     * descompusiera igual —que es lo que pasa cuando la clave NO viaja, porque
+     * `costo_tipeado_es_bruto()` cae al default de la cuenta, y para MT ese default es "bruto"
+     * incondicional— entonces cambiarle el nombre a un artículo le hundiría el costo un 21%:
+     * 1000 → 826,45 → 683,01, sin necesidad de tocar nunca el campo de costo.
+     *
+     * Lo encontró el segundo checker de la Fase 5, midiéndolo, después de que un fix anterior
+     * sacara la escritura del flag junto con la del costo. Los otros siete tests seguían en verde
+     * porque validaban un contrato que el formulario ya no cumplía.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function guardar_sin_tocar_el_costo_no_lo_descompone()
+    {
+        $previos = $this->set_condicion('MT');
+
+        try {
+
+            $article = $this->articulo_con_alicuota('21');
+
+            // Estado de partida: un artículo ya cargado en bruto (cost neto 1000, bruto 1210).
+            $this->putJson('api/article/'.$article->id, $this->payload($article, [
+                'cost'             => 1210,
+                'cost_incluye_iva' => 1,
+            ]))->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(1000, (float) $article->cost, self::DELTA);
+
+            // Ahora el guardado que NO toca el costo: el formulario manda el neto del store y el
+            // flag apagado. Se cambia otra cosa (el nombre) para que sea un update real.
+            $this->putJson('api/article/'.$article->id, $this->payload($article, [
+                'cost'             => $article->cost,
+                'cost_incluye_iva' => 0,
+                'name'             => $article->name.' editado',
+            ]))->assertStatus(200);
+
+            $article->refresh();
+
+            $this->assertEqualsWithDelta(
+                1000,
+                (float) $article->cost,
+                self::DELTA,
+                'guardar sin tocar el costo no puede descomponerlo: con el flag apagado el numero que llega YA es el neto'
+            );
+
+        } finally {
+            $this->restaurar_condicion($previos);
+        }
+    }
+
+    /**
+     * Test 6 — idempotencia sobre el camino en que la persona SÍ tipea. Reguardar el bruto que el
+     * formulario muestra no puede mover el neto.
      *
      * @group costeo-precios
      * @test
@@ -336,15 +393,18 @@ class CostoBrutoEnElAbmTest extends EmpresaTestCase
             $article = $this->articulo_con_alicuota('21');
 
             $this->putJson('api/article/'.$article->id, $this->payload($article, [
-                'cost' => 1210,
+                'cost'             => 1210,
+                'cost_incluye_iva' => 1,
             ]))->assertStatus(200);
 
             $article->refresh();
             $primer_neto = (float) $article->cost;
 
-            // Segundo guardado con lo que el formulario mostraría: el bruto registrado.
+            // Segundo guardado con lo que el formulario mostraría al tipear de nuevo: el bruto
+            // registrado, con el flag prendido (es el camino "la persona toca el campo").
             $this->putJson('api/article/'.$article->id, $this->payload($article, [
-                'cost' => $article->cost_bruto,
+                'cost'             => $article->cost_bruto,
+                'cost_incluye_iva' => 1,
             ]))->assertStatus(200);
 
             $article->refresh();

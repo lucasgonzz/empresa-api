@@ -39,15 +39,6 @@ class ProcessRow {
      */
     const IVA_ID_POR_DEFECTO = 2;
 
-    /**
-     * Sentinela para pedirle a `get_modified_fields()` que ponga `cost_bruto` en NULL.
-     *
-     * Hace falta porque esa función descarta los valores nulos (`is_null($new) continue`), así que
-     * un null "de verdad" nunca llegaría a la base y `cost_bruto` quedaría con el valor de una
-     * importación anterior. Es un string imposible de confundir con un costo.
-     */
-    const COST_BRUTO_A_LIMPIAR = '__limpiar_cost_bruto__';
-
     protected $columns;
     protected $user;
     protected $ct;
@@ -557,9 +548,27 @@ class ProcessRow {
      */
     private function aplicar_back_out_de_iva($data, $articulo_ya_creado)
     {
+        /*
+         * 🔴 Idempotente a propósito, y hace falta. `procesar()` tiene varias salidas tempranas
+         * ANTERIORES al punto donde este método corre normalmente, y dos de ellas escriben el costo:
+         * el merge de filas repetidas por bar_code/sku/provider_code y el registro del histórico de
+         * ofertas de proveedor. Si no se llamara ahí, esas filas guardarían el BRUTO en una columna
+         * que es neta — o sea el bug original de la misión, restaurado sólo para las filas
+         * duplicadas, que el sistema soporta a propósito ("la última fila gana").
+         *
+         * La marca viaja en `$data` con prefijo `__`, que es el que ya usan `__bar_code` y los
+         * `__diff__X`: tanto ActualizarBBDD como get_modified_fields los filtran, así que nunca
+         * llega a la base.
+         */
+        if (isset($data['__back_out_aplicado'])) {
+            return $data;
+        }
+
         if (!isset($data['cost']) || !$this->precios_incluyen_iva) {
             return $data;
         }
+
+        $data['__back_out_aplicado'] = true;
 
         $iva_id = isset($data['iva_id']) ? $data['iva_id'] : null;
 
@@ -610,19 +619,19 @@ class ProcessRow {
          */
         $hubo_descomposicion = ((float) $data['cost'] !== (float) $cost_tipeado);
 
-        if ($hubo_descomposicion) {
-            $data['cost_bruto'] = $cost_tipeado;
-            return $data;
-        }
-
         /*
-         * Hay que dejarlo en null. En un alta se pone null derecho; en un update se usa el
-         * sentinela, porque get_modified_fields() descarta los nulos y sin él `cost_bruto` quedaría
-         * con el valor de una importación anterior (ver el bloque de esa función).
+         * Sin descomposición, `cost_bruto` va a null: el costo tipeado ERA el neto, y así es como
+         * el resto del sistema lee "este costo se cargó sin IVA".
+         *
+         * 🔴 Va null DE VERDAD, no un sentinela. La primera versión de este fix usaba un string
+         * centinela para saltear el descarte de nulos de get_modified_fields(), y eso se filtraba
+         * hasta el INSERT por el camino del artículo "fake" pendiente de creación —que también es
+         * `instanceof Article`—, donde MySQL lo rechazaba con un 1366 y se llevaba puesto el chunk
+         * entero de la importación. El descarte de nulos se resolvió donde correspondía: en
+         * get_modified_fields() y en ActualizarBBDD, los dos con una excepción explícita para esta
+         * columna.
          */
-        $data['cost_bruto'] = ($articulo_ya_creado instanceof \App\Models\Article)
-            ? self::COST_BRUTO_A_LIMPIAR
-            : null;
+        $data['cost_bruto'] = $hubo_descomposicion ? $cost_tipeado : null;
 
         return $data;
     }
@@ -1048,6 +1057,17 @@ class ProcessRow {
             if (in_array($campo, ['bar_code', 'sku', 'provider_code'], true)) {
                 // Fila repetida por bar_code/sku/provider_code: se hace merge sobre la fila anterior en cola.
                 $this->contar_fila('merge_fila_repetida');
+
+                /*
+                 * El merge escribe el costo y sale de procesar() por el return de abajo, sin pasar
+                 * por el back-out del final. Sin esta llamada, una fila repetida guardaba el BRUTO
+                 * en una columna neta mientras la fila normal de al lado guardaba el neto: el bug
+                 * original de la mision, vivo solo para las duplicadas. Todavia no hay articulo
+                 * resuelto en este punto, asi que la alicuota sale de la columna del Excel o del
+                 * default; la llamada es idempotente, no vuelve a descomponer mas adelante.
+                 */
+                $data = $this->aplicar_back_out_de_iva($data, null);
+
                 $this->merge_fila_duplicada($data, $row, $campo);
                 $this->sumar_durations();
                 return $this->observations;
@@ -1132,6 +1152,14 @@ class ProcessRow {
             // La fila se sigue descartando igual que siempre; lo único nuevo es que antes
             // de tirarla queda registrado que ESTE proveedor ofrecía ese artículo a ese
             // precio (misión sugerencias de compra).
+            /*
+             * Este call site corre ANTES del back-out normal, y los otros dos (mas abajo) despues.
+             * Sin esta linea, el historico de ofertas guardaba BRUTO por un camino y NETO por los
+             * otros dos, y de ahi salen las sugerencias de compra: un 21% decide que proveedor
+             * gana. Idempotente, no descompone dos veces.
+             */
+            $data = $this->aplicar_back_out_de_iva($data, null);
+
             $this->registrar_oferta_de_otro_proveedor(
                 isset($articulo_ya_creado['matched_other_provider_ids']) ? $articulo_ya_creado['matched_other_provider_ids'] : [],
                 $provider_id,
@@ -2803,9 +2831,23 @@ class ProcessRow {
              * El invariante que esto sostiene es "cost_bruto es null, o es el bruto que corresponde
              * a este cost". Sin poder limpiarlo, no se puede garantizar.
              */
-            if ($key === 'cost_bruto' && $new === self::COST_BRUTO_A_LIMPIAR) {
+            /*
+             * `cost_bruto` es la única columna que necesita poder volver a NULL desde el import
+             * (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026). Para el resto, "no vino en el
+             * Excel" no significa "borralo" y por eso el `is_null($new) continue` de abajo; para
+             * esta sí, porque es un dato DERIVADO de si el costo de ESTA importación se descompuso.
+             *
+             * Sin esto quedaba rancio: un artículo con cost=826,45 / cost_bruto=1000 al que un
+             * import posterior le escribe cost=900 sin descomponer se quedaba con el 1000 viejo, y
+             * como la interfaz PREFIERE cost_bruto sobre recalcular, al reabrir mostraba 1000 y al
+             * guardar dejaba 826,45. El costo importado se destruía solo.
+             *
+             * Va acá, después de resolver $old, y no antes del escape de "campo virtual" de arriba:
+             * si el modelo ni siquiera tiene el atributo cargado, no hay nada que limpiar.
+             */
+            if ($key === 'cost_bruto' && is_null($new)) {
 
-                if (is_null($existing->cost_bruto)) continue; // ya estaba limpio
+                if (is_null($old)) continue; // ya estaba limpio
 
                 $modified[$key] = null;
                 $modified["__diff__{$key}"] = [
@@ -4080,8 +4122,8 @@ class ProcessRow {
 
             // Arreglo de bloqueante de merge (15/8/2026): moneda REAL de esta fila, para
             // que el histórico no la asuma "en pesos" por default. $data['cost_in_dollars']
-            // ya está resuelto acá (procesar(), ~:776, corre ANTES que los tres call sites
-            // de este método: ~:993, ~:1153 y ~:1172) y sale de la columna "moneda" del
+            // ya está resuelto acá (se arma en procesar(), antes de los tres call sites de este
+            // método) y sale de la columna "moneda" del
             // Excel (get_cost_in_dollars(): usd/u$s/dolar/dólar/... = 1, cualquier otra cosa
             // o columna ausente = 0). Sin esta clave, registrar_lote() completaba con
             // MONEDA_POR_DEFECTO (1 = Peso) -- el mismo bug que A1 ya había arreglado del
