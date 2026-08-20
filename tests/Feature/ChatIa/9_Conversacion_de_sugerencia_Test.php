@@ -276,7 +276,11 @@ class Conversacion_de_sugerencia_Test extends TestCase
         // D25: la conversación es del DUEÑO (la sugerencia no sabe de personas).
         $this->assertEquals($this->comercio->id, (int) $conversation->user_id);
         $this->assertEquals($this->comercio->id, (int) $conversation->auth_user_id);
-        $this->assertEquals('Sugerencia de stock #' . $suggestion->id, $conversation->titulo);
+        $this->assertEquals(
+            'Sugerencia de stock ' . $suggestion->created_at->format('d/m/Y'),
+            $conversation->titulo,
+            'El titulo lleva la fecha en que se genero la sugerencia, no su id.'
+        );
         $this->assertNotNull($conversation->last_message_at, 'Sin actividad la sidebar la mandaría al fondo.');
 
         // El primer (y único) mensaje es el resumen, ya 'listo'.

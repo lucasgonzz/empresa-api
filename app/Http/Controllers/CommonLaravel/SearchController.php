@@ -291,10 +291,14 @@ class SearchController extends Controller
      *                   'like' (contains), '>' / '<' / '>=' / '<=' (comparación numérica, solo si la
      *                   columna es numérica y el valor también lo es), 'numeric_presence' (solo
      *                   columnas numéricas; valores 'con_valor' = no nula, 'positivo' = mayor a
-     *                   cero, 'todos' = sin filtro), y los legacy 'category' (fuerza category_id) y
-     *                   'stock_option' (con_stock / hayan_tenido_stock / sin_stock / con_o_sin_stock).
-     *                   Cualquier otro operador, o una key que no sea columna de la tabla, se ignora
-     *                   en silencio.
+     *                   cero, 'todos' = sin filtro), 'address_stock_seteado' (filtra por RELACIÓN y
+     *                   no por columna: deja pasar los modelos a los que se les cargó la sucursal
+     *                   indicada, cualquiera sea el valor del pivote; valor 0 = todas), y los legacy
+     *                   'category' (fuerza category_id) y 'stock_option' (con_stock /
+     *                   hayan_tenido_stock / sin_stock / con_o_sin_stock).
+     *                   Cualquier otro operador se ignora en silencio. La key se valida contra el
+     *                   schema de la tabla salvo para 'category' y 'address_stock_seteado', que no
+     *                   filtran por una columna del modelo y por lo tanto no tienen key que validar.
      * - filters         (array)  Filtros de columna del listado (los de la lupa de cada header),
      *                   misma forma exacta que recibe `search`. Delegado en
      *                   `ColumnFiltersHelper::apply`, el mismo helper que usa `search` — nunca
@@ -404,8 +408,8 @@ class SearchController extends Controller
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
-        // comparación numérica '>','<','>=','<=', 'numeric_presence', y los legacy 'category' y
-        // 'stock_option'). Cualquier operador fuera de la whitelist se ignora en silencio (no se
+        // comparación numérica '>','<','>=','<=', 'numeric_presence', 'address_stock_seteado', y los
+        // legacy 'category' y 'stock_option'). Cualquier operador fuera de la whitelist se ignora en silencio (no se
         // ejecuta SQL arbitrario con la key/valor que venga del request).
         $models = ExtraFiltersHelper::apply($models, $table, $extra_filters);
 
