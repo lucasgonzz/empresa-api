@@ -246,14 +246,6 @@ class ProcessRow {
      */
     protected $precios_incluyen_iva = false;
 
-    /**
-     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): ¿el llamador AFIRMÓ que los costos del
-     * Excel vienen con IVA, o `precios_incluyen_iva` salió del default por condición fiscal de la
-     * cuenta? Sólo la afirmación explícita le gana a `articles.aplicar_iva` en el back-out — mismo
-     * criterio que el toggle del ABM (ArticlePricesHelper::la_carga_declara_bruto). Que las dos
-     * vías compartan el criterio es el punto entero de esta misión.
-     */
-    protected $declaracion_explicita_de_bruto = false;
 
     /**
      * Identificadores unicos (bar_code/sku) asignados por herencia de escalones
@@ -316,41 +308,27 @@ class ProcessRow {
         $this->blank_flags = isset($data['blank_flags']) && is_array($data['blank_flags']) ? $data['blank_flags'] : [];
 
         /*
-         * Prompt 514 — Hook preparado (todavía sin fuente en la UI de import) para el mismo
-         * criterio de "precios incluyen IVA" que ya tiene la compra manual
-         * (ProviderOrder::precios_incluyen_iva, prompt 513, aplicado en
-         * NewProviderOrderHelper::update_cost()/catalogar_costo_proveedor(), prompt 514): si el
-         * Excel importado trae costos CON IVA incluido, hay que sacárselo antes de escribir
-         * articles.cost / article_provider.cost (que son siempre NETOS por convención).
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla vienen
+         * con el IVA adentro. Lo declara la pantalla de importación, y es la ÚNICA fuente de esa
+         * decisión: no hay fallback por condición fiscal de la cuenta ni por configuración.
          *
-         * Hoy ningún llamador de ProcessRow pasa esta clave, así que $this->precios_incluyen_iva
-         * queda siempre en false y back_out_iva_import() es un no-op — el import se comporta
-         * exactamente igual que antes de este prompt. Cuando el import agregue un flag equivalente
-         * (fuera de scope de este prompt, ver prompt 517 para el frontend), alcanza con pasar
-         * 'precios_incluyen_iva' => true/false en el array $data de este constructor.
-         */
-        /*
-         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el fallback dejó de ser `false`
-         * duro y pasa a resolverse por condición fiscal de la cuenta, igual que las otras tres vías
-         * que escriben `articles.cost`. Mientras estuvo en `false`, back_out_iva_import() era un
-         * no-op y el import escribía costos BRUTOS en una columna que es neta por convención: para
-         * un Monotributista, aplicar_iva() le volvía a sumar el 21% y el costo real quedaba ~21%
-         * inflado. Es el hallazgo 4 de informes/20260815-motor-de-ofertas-por-cliente.md, y hacía
-         * que un proveedor entrado por importación compitiera ~21% más caro que el mismo proveedor
-         * entrado por una compra real.
+         * 🔴 Que no haya fallback es deliberado, y una versión anterior de esta misma misión lo tuvo
+         * y salió mal: cuando el criterio se deduce de la cuenta en vez de declararse por carga, el
+         * mismo número termina costeando distinto según por dónde entre —el ABM lo descomponía y el
+         * import no—, y ninguna pantalla lo denuncia. Ahora las tres vías declaran: el ABM con el
+         * input en el que se tipeó, la compra con `provider_orders.precios_incluyen_iva`, y el
+         * import con esta clave.
          *
-         * Si el llamador pasa la clave explícitamente, manda el llamador: eso deja lugar al flag
-         * por importación que preveía el prompt 517, sin que el default quede mal.
+         * Viaja desde ArticleController::import() por el mismo carril que `blank_flags`:
+         * InitExcelImport -> ProcessArticleChunk -> ArticleImport -> acá.
+         *
+         * Default false (= los costos de la planilla son netos), que es el comportamiento histórico
+         * del import: una importación que hoy anda no cambia de resultado.
          */
-        $this->precios_incluyen_iva = isset($data['precios_incluyen_iva'])
-            ? (bool)$data['precios_incluyen_iva']
-            : ArticlePricesHelper::costo_tipeado_es_bruto($this->user);
-
-        // Sólo cuenta como declaración si el llamador la mandó Y afirma que sí. El default por
-        // condición fiscal no es una afirmación de nadie: no habilita a pasar por encima de
-        // `aplicar_iva`.
-        $this->declaracion_explicita_de_bruto = isset($data['precios_incluyen_iva'])
-            && (bool)$data['precios_incluyen_iva'];
+        $this->precios_incluyen_iva = filter_var(
+            $data['precios_incluyen_iva'] ?? false,
+            FILTER_VALIDATE_BOOLEAN
+        );
 
         /*
          * 'fila_inicial' (grupo 294, incidente Servian): numero de fila ABSOLUTO del
@@ -499,7 +477,8 @@ class ProcessRow {
      * Article (con su relación `iva`) y acá, en el momento en que se arma $data, todavía no existe
      * necesariamente un Article persistido — solo tenemos el `iva_id` de la fila del Excel.
      *
-     * Con $this->precios_incluyen_iva en false (hoy siempre, ver constructor) es un no-op.
+     * Con $this->precios_incluyen_iva en false es un no-op: la planilla declaró que sus costos ya
+     * vienen netos.
      *
      * @param  mixed    $cost    Costo tal cual lo devolvió get_number() (string numérico o null).
      * @param  int|null $iva_id  Id de la alícuota de IVA de la fila (columna 'iva' del Excel).
@@ -538,77 +517,59 @@ class ProcessRow {
     }
 
     /**
-     * Resuelve `cost` (neto) y `cost_bruto` de la fila importada.
+     * Deja `cost` en NETO cuando la planilla declaró que sus costos vienen con IVA.
      *
-     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026). Corre después de que se resolvió
-     * `$articulo_ya_creado`, no antes: la alícuota se busca en tres lugares, por prioridad, y el
-     * segundo necesita el artículo.
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026). `articles.cost` es neto por convención
+     * del sistema; si la importación declara que la columna de costo trae el IVA adentro, hay que
+     * sacárselo ANTES de escribir. Sin esto, un costo bruto entraba tal cual en una columna neta y
+     * el pipeline de precios le volvía a sumar el IVA encima: el costo real quedaba ~21% inflado, y
+     * un proveedor entrado por importación competía más caro que el mismo proveedor entrado por una
+     * compra real (hallazgo 4 de `informes/20260815-motor-de-ofertas-por-cliente.md`).
      *
-     *   1. **La columna del Excel**, si el mapeo la trae. Es lo que dijo el usuario para esta fila.
-     *   2. **El `iva_id` que el artículo YA tiene**, si es un artículo existente. Sin este paso, un
-     *      Excel sin columna de IVA le aplicaría 21% a un artículo Exento y le hundiría el costo un
-     *      21% en silencio.
-     *   3. **21% (id 2)**, el default del sistema para artículos nuevos — el mismo que ya usa
-     *      `get_iva_id()` cuando la celda viene vacía y el que documenta `LocalImportHelper`.
-     *      Decisión de Lucas del 20/8/2026: *"si no se indica el IVA de un artículo o directamente
-     *      no se indica la columna, hay que asignarle el IVA del veintiún por ciento"*.
+     * 🔴 NO mira `articles.aplicar_iva` ni la condición fiscal de la cuenta, igual que
+     * ArticlePricesHelper::back_out_iva(). `aplicar_iva` es una decisión sobre la VENTA y es
+     * ortogonal a si el número de la planilla trae el IVA adentro. Que las tres vías compartan este
+     * criterio es el punto entero de la misión: si divergen, el mismo importe cuesta distinto según
+     * por dónde entre.
      *
-     * 🔴 Esto NO escribe `iva_id` en el artículo: sólo elige con qué alícuota descomponer. Pisar el
-     * IVA de un artículo existente desde un Excel que ni siquiera trae esa columna sería destruir un
-     * dato que el usuario nunca pidió tocar.
+     * 🔴 Es IDEMPOTENTE, y tiene que serlo: hay cuatro puntos del flujo que escriben costo y llaman
+     * acá (el alta, la actualización, el merge de filas repetidas y el histórico de ofertas de
+     * proveedor). Cuando el bloque vivía en un solo lugar, dos de esos caminos lo salteaban: el
+     * merge de duplicadas dejaba el bug original vivo sólo para las filas repetidas, y el histórico
+     * de ofertas quedaba mezclando bruto por un call site y neto por los otros dos — y de ahí salen
+     * las sugerencias de compra, donde un 21% decide qué proveedor gana. Lo encontró un checker de
+     * la Fase 5.
      *
-     * @param  array $data              Datos de la fila ya armados.
-     * @param  mixed $articulo_ya_creado Artículo existente que matcheó, o null si es alta nueva.
-     * @return array                    $data con `cost` neto y `cost_bruto` resuelto.
+     * @param  array $data                 Fila ya mapeada.
+     * @param  \App\Models\Article|null $articulo_ya_creado Artículo existente, si lo hay: se usa
+     *                                     sólo para heredar su `iva_id` cuando la planilla no trae
+     *                                     la columna.
+     * @return array                       $data con `cost` en neto.
      */
     private function aplicar_back_out_de_iva($data, $articulo_ya_creado)
     {
-        /*
-         * 🔴 Idempotente a propósito, y hace falta. `procesar()` tiene varias salidas tempranas
-         * ANTERIORES al punto donde este método corre normalmente, y dos de ellas escriben el costo:
-         * el merge de filas repetidas por bar_code/sku/provider_code y el registro del histórico de
-         * ofertas de proveedor. Si no se llamara ahí, esas filas guardarían el BRUTO en una columna
-         * que es neta — o sea el bug original de la misión, restaurado sólo para las filas
-         * duplicadas, que el sistema soporta a propósito ("la última fila gana").
-         *
-         * La marca viaja en `$data` con prefijo `__`, que es el que ya usan `__bar_code` y los
-         * `__diff__X`: tanto ActualizarBBDD como get_modified_fields los filtran, así que nunca
-         * llega a la base.
-         */
+        // Guard de idempotencia: si ya se aplicó sobre esta fila, no se vuelve a aplicar.
         if (isset($data['__back_out_aplicado'])) {
             return $data;
         }
 
-        /*
-         * Sin costo en la fila no hay nada que hacer: el artículo conserva su `cost`, así que su
-         * `cost_bruto` sigue siendo el que corresponde y NO se toca.
-         */
-        if (!isset($data['cost'])) {
-            return $data;
-        }
-
-        /*
-         * 🔴 Acá sí se escribe un `cost` nuevo (el de la fila, tomado como NETO porque la carga no
-         * declara que incluya IVA), así que `cost_bruto` tiene que irse a null: el bruto viejo ya no
-         * corresponde a este costo.
-         *
-         * Es el camino MÁS FRECUENTE del import — toda cuenta Responsable Inscripto con
-         * `costos_cargados_con_iva = 0`, que es el default de la migración y por lo tanto el de
-         * todas las cuentas de hoy. Medido por el checker de la Fase 5: un artículo con
-         * `cost = 1000` / `cost_bruto = 1210` importado con costo 900 quedaba en `cost = 900` con el
-         * `cost_bruto = 1210` intacto. El bruto que corresponde a 900 es 1089. El formulario del
-         * listado prefiere `cost_bruto` sobre recalcular, así que mostraba 1210 sobre un artículo
-         * que costaba 900, y confirmar ese número lo dejaba en 1000: el costo subía 11,1% solo.
-         */
-        if (!$this->precios_incluyen_iva) {
-
-            $data['cost_bruto'] = null;
-
+        if (!isset($data['cost']) || !$this->precios_incluyen_iva) {
             return $data;
         }
 
         $data['__back_out_aplicado'] = true;
 
+        /*
+         * Con qué alícuota descomponer, por prioridad. Decisión de Lucas (20/8/2026): *"si no se
+         * indica el IVA de un artículo o directamente no se indica la columna, hay que asignarle el
+         * IVA del veintiún por ciento"*. Implementado por prioridad y no a ciegas, porque asignar
+         * 21% derecho rompía un caso: un Excel sin columna de IVA le hundía el costo a un artículo
+         * Exento.
+         *
+         * 🔴 NO escribe `iva_id` en el artículo: sólo elige con qué descomponer. Pisar el IVA de un
+         * artículo desde un Excel que ni siquiera trae esa columna sería destruir un dato que nadie
+         * pidió tocar.
+         */
         $iva_id = isset($data['iva_id']) ? $data['iva_id'] : null;
 
         if (is_null($iva_id)
@@ -622,85 +583,7 @@ class ProcessRow {
             $iva_id = self::IVA_ID_POR_DEFECTO;
         }
 
-        /*
-         * Mismo guard que ArticlePricesHelper::back_out_iva(): con `aplicar_iva` apagado, y en una
-         * cuenta que no es Monotributista, el sistema no le saca el IVA a ese artículo por ningún
-         * lado. Descomponerlo acá dejaría el costo un 21% abajo del que deja el ABM para el mismo
-         * número, que es justo la divergencia entre vías que esta misión vino a cerrar.
-         *
-         * Para Monotributista `aplicar_iva` se ignora a propósito (prompt 609): el control está
-         * oculto en el listado, así que si el costeo dependiera de él una cuenta migrada de RRII a
-         * MT se hundiría en silencio.
-         *
-         * 🔴 Y también se ignora cuando el llamador DECLARÓ `precios_incluyen_iva` (decisión de
-         * Lucas, 20/8/2026): esa afirmación es sobre el número que trae el Excel, no sobre si el
-         * artículo participa del IVA en la venta. Es el mismo criterio que el toggle del ABM en
-         * ArticlePricesHelper::back_out_iva(); si las dos vías divergieran, el mismo artículo
-         * volvería a costear distinto según por dónde entrara, que es exactamente de lo que sale
-         * esta misión. El default por condición fiscal NO habilita este bypass.
-         */
-        if (!ArticlePricesHelper::es_monotributista_para_costeo($this->user)
-            && !$this->declaracion_explicita_de_bruto
-        ) {
-
-            $aplicar_iva = isset($data['aplicar_iva'])
-                ? $data['aplicar_iva']
-                : ($articulo_ya_creado instanceof \App\Models\Article ? $articulo_ya_creado->aplicar_iva : 1);
-
-            if (!$aplicar_iva) {
-
-                /*
-                 * 🔴 `cost_bruto` va a null ANTES de salir, y esto no es cosmético.
-                 *
-                 * Toda salida de este método que escriba un `cost` nuevo tiene que dejar
-                 * `cost_bruto` consistente con él. Son dos: ésta y la de `!precios_incluyen_iva`,
-                 * más arriba. (Una versión anterior de este comentario decía que ésta era la
-                 * única; era falso, y el checker de la Fase 5 lo midió sobre la otra, que además
-                 * es la más frecuente.) Las otras tres vías van por
-                 * ArticlePricesHelper::resolver_costo_neto_y_bruto(), que siempre devuelve las dos
-                 * columnas, y sus llamadores siempre escriben las dos.
-                 *
-                 * Qué pasaba: un artículo con cost = 1000 / cost_bruto = 1210 de una carga
-                 * anterior, importado con costo 2000 por esta rama, quedaba con cost = 2000 y
-                 * cost_bruto = 1210. El formulario del listado le cree a `cost_bruto` y lo prefiere
-                 * sobre recalcular (CostInput.vue, valor_visible), así que mostraba 1210 sobre un
-                 * artículo cuyo costo era 2000. El invariante es: `cost_bruto` es null, o es el
-                 * bruto que corresponde EXACTAMENTE a este `cost`.
-                 */
-                $data['cost_bruto'] = null;
-
-                return $data;
-            }
-        }
-
-        $cost_tipeado = $data['cost'];
-
-        $data['cost'] = $this->back_out_iva_import($cost_tipeado, $iva_id);
-
-        /*
-         * Sólo se registra el bruto si de verdad hubo descomposición. Si el back-out devolvió el
-         * mismo número (alícuota 0/Exento/No Gravado), el costo tipeado ERA el neto y `cost_bruto`
-         * va en null, que es como el resto del sistema lee "este costo se cargó sin IVA".
-         *
-         * Se compara en float y no en string: el back-out devuelve seis decimales
-         * ("1000.000000") y el valor tipeado puede venir con otro formato ("1000"), así que
-         * compararlos como texto daba distinto siempre y registraba un bruto que no existía.
-         */
-        $hubo_descomposicion = ((float) $data['cost'] !== (float) $cost_tipeado);
-
-        /*
-         * Sin descomposición, `cost_bruto` va a null: el costo tipeado ERA el neto, y así es como
-         * el resto del sistema lee "este costo se cargó sin IVA".
-         *
-         * 🔴 Va null DE VERDAD, no un sentinela. La primera versión de este fix usaba un string
-         * centinela para saltear el descarte de nulos de get_modified_fields(), y eso se filtraba
-         * hasta el INSERT por el camino del artículo "fake" pendiente de creación —que también es
-         * `instanceof Article`—, donde MySQL lo rechazaba con un 1366 y se llevaba puesto el chunk
-         * entero de la importación. El descarte de nulos se resolvió donde correspondía: en
-         * get_modified_fields() y en ActualizarBBDD, los dos con una excepción explícita para esta
-         * columna.
-         */
-        $data['cost_bruto'] = $hubo_descomposicion ? $cost_tipeado : null;
+        $data['cost'] = $this->back_out_iva_import($data['cost'], $iva_id);
 
         return $data;
     }
@@ -2888,43 +2771,6 @@ class ProcessRow {
                 continue;
             }
 
-            /*
-             * `cost_bruto` es el único campo que necesita poder volver a null desde el import
-             * (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026). El `is_null($new) continue`
-             * de abajo lo hacía imposible, y eso dejaba el dato rancio con consecuencias reales:
-             * un artículo con cost=826,45 / cost_bruto=1000 al que un import posterior le escribe
-             * cost=900 sin descomponer quedaba con el cost_bruto viejo. Como la interfaz PREFIERE
-             * cost_bruto sobre recalcular, al reabrir mostraba 1000 y al guardar dejaba 826,45: el
-             * costo importado se destruía solo.
-             *
-             * El invariante que esto sostiene es "cost_bruto es null, o es el bruto que corresponde
-             * a este cost". Sin poder limpiarlo, no se puede garantizar.
-             */
-            /*
-             * `cost_bruto` es la única columna que necesita poder volver a NULL desde el import
-             * (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026). Para el resto, "no vino en el
-             * Excel" no significa "borralo" y por eso el `is_null($new) continue` de abajo; para
-             * esta sí, porque es un dato DERIVADO de si el costo de ESTA importación se descompuso.
-             *
-             * Sin esto quedaba rancio: un artículo con cost=826,45 / cost_bruto=1000 al que un
-             * import posterior le escribe cost=900 sin descomponer se quedaba con el 1000 viejo, y
-             * como la interfaz PREFIERE cost_bruto sobre recalcular, al reabrir mostraba 1000 y al
-             * guardar dejaba 826,45. El costo importado se destruía solo.
-             *
-             * Va acá, después de resolver $old, y no antes del escape de "campo virtual" de arriba:
-             * si el modelo ni siquiera tiene el atributo cargado, no hay nada que limpiar.
-             */
-            if ($key === 'cost_bruto' && is_null($new)) {
-
-                if (is_null($old)) continue; // ya estaba limpio
-
-                $modified[$key] = null;
-                $modified["__diff__{$key}"] = [
-                    'old' => $existing->cost_bruto,
-                    'new' => null,
-                ];
-                continue;
-            }
 
             // Si son iguales (tras normalizar), no hay cambio
             if ($old == $new || is_null($new)) continue;
@@ -2980,7 +2826,6 @@ class ProcessRow {
      */
     protected static $numeric_precision = [
         'cost'                   => [16, 6],   // decimal(22,6)
-        'cost_bruto'             => [16, 6],   // decimal(22,6)
         'costo_real'             => [16, 6],   // decimal(22,6)
         'costo_mano_de_obra'     => [16, 6],   // decimal(22,6)
         'price'                  => [20, 2],   // decimal(22,2)

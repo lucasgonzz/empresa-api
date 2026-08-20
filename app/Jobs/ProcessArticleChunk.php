@@ -47,6 +47,12 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $filas_repetidas_del_archivo;
 
+    /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla vienen
+     * con IVA adentro. Viaja hasta ProcessRow, que es quien hace el back-out.
+     */
+    protected $precios_incluyen_iva = false;
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -73,7 +79,14 @@ class ProcessArticleChunk implements ShouldQueue
             $actualizar_por_provider_code,
 
             $interpretacion_punto = 'auto',
-            $filas_repetidas_del_archivo = 'ultima_gana'
+            $filas_repetidas_del_archivo = 'ultima_gana',
+
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla
+             * vienen con IVA adentro. Va último y con default para no romper los jobs que ya
+             * estuvieran encolados y serializados sin esta clave.
+             */
+            $precios_incluyen_iva = false
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -99,6 +112,7 @@ class ProcessArticleChunk implements ShouldQueue
 
         $this->interpretacion_punto                                 = $interpretacion_punto;
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
+        $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
 
         $this->observations = '';
 
@@ -419,6 +433,7 @@ class ProcessArticleChunk implements ShouldQueue
 
                 $this->interpretacion_punto,
                 $this->filas_repetidas_del_archivo,
+                $this->precios_incluyen_iva,
             );
 
         } catch (\Throwable $e) {

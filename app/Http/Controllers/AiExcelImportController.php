@@ -459,6 +459,23 @@ class AiExcelImportController extends Controller
             'columns'               => $request->input('columns', []),
             // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
             'blank_flags'           => $request->input('blank_flags', []),
+
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus
+             * costos vienen con el IVA adentro.
+             *
+             * 🔴 Este flujo NO pasa por ArticleController::import(): arma su propio array y llama
+             * derecho a InitExcelImport, así que cualquier clave que no se agregue acá llega con el
+             * default del backend. Sin esta línea, una importación por IA de una planilla con
+             * costos brutos los guardaría como netos y el costo quedaría 21% inflado, en silencio,
+             * mientras el import clásico hace lo correcto con la misma planilla.
+             *
+             * `boolean()` y no `(bool)`: el flujo de IA manda JSON con un booleano real, pero
+             * `(bool) 'false'` en PHP da TRUE, así que el cast crudo prendería el desglose justo
+             * cuando el usuario no lo pidió. `boolean()` tolera 1/0, "1"/"0", true/false y
+             * "true"/"false".
+             */
+            'precios_incluyen_iva'  => $request->boolean('precios_incluyen_iva'),
             'create_and_edit'       => $request->input('create_and_edit', false),
             'start_row'             => $request->input('start_row', 2),
             'finish_row'            => $request->input('finish_row', 1000),

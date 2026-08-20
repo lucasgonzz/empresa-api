@@ -177,22 +177,32 @@ class ArticleController extends Controller
     }
 
     /**
-     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resuelve `cost` y `cost_bruto` a
-     * partir de lo que tipeó el usuario en el ABM del listado.
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resuelve `articles.cost` a partir de
+     * lo que tipeó el usuario en el ABM del listado.
+     *
+     * El formulario tiene DOS inputs: uno para el costo NETO (sin IVA) y otro para el BRUTO (con
+     * IVA). El request trae el número tipeado en `cost` y, en `cost_incluye_iva`, en cuál de los dos
+     * lo tipeó. Si fue en el de bruto, acá se le saca el IVA.
+     *
+     * 🔴 **Siempre se guarda el neto.** Es la convención del sistema y no se negocia: hay 176
+     * lecturas de `->cost` en 62 archivos que la asumen, y `articles` es tabla compartida con
+     * tienda. Lo que cambia con esta misión es que `cost` pasa a ser DERIVADO — lo calcula el
+     * sistema — en vez de ser lo que alguien tipeó.
      *
      * Hasta esta misión el ABM hacía `$model->cost = $request->cost` literal, o sea daba por hecho
-     * que el número tipeado ya venía NETO. La compra a proveedor, en cambio, siempre trató ese
-     * número como bruto para Monotributista y le sacó el IVA (NewProviderOrderHelper:1039). El
-     * mismo artículo costeaba distinto según por dónde entrara: un MT que cargaba 1000 desde el
-     * listado terminaba costeando 1210, porque aplicar_descuentos_e_iva() le suma el IVA encima de
-     * un número que ya lo tenía adentro.
+     * que el número ya venía neto, mientras la compra a proveedor sí le sacaba el IVA. El mismo
+     * artículo costeaba distinto según por dónde entrara: un Monotributista que cargaba 1000 desde
+     * el listado terminaba costeando 1210, porque aplicar_descuentos_e_iva() le suma el IVA encima
+     * de un número que ya lo tenía adentro.
      *
-     * 🔴 `articles.cost` sigue siendo NETO siempre — eso no cambia y no se negocia: hay 176
-     * lecturas de `->cost` en 62 archivos que lo asumen, y `articles` es tabla compartida con
-     * tienda. Lo que cambia es que ahora es DERIVADO: lo calcula el sistema, no se tipea.
+     * 🔴 `cost_incluye_iva` viaja SIEMPRE, aunque sea en `false`, y acá no hay ningún fallback por
+     * condición fiscal ni por configuración de la cuenta. Si la clave no llegara y esto asumiera
+     * algo, un guardado que ni toca el costo —corregir el nombre, cambiar la categoría— terminaría
+     * descomponiendo un número que YA era neto: 1000 → 826,45 → 683,01, un 21% por guardado. Lo
+     * midió el checker de la Fase 5 sobre una versión anterior de esta misma misión.
      *
-     * 🔴 Se llama DESPUES de asignar `iva_id` y `aplicar_iva`, nunca antes. Si el usuario cambió la
-     * alícuota y el costo en el mismo submit, el back-out tiene que usar la alícuota NUEVA: por eso
+     * 🔴 Se llama DESPUES de asignar `iva_id`, nunca antes. Si el usuario cambió la alícuota y el
+     * costo en el mismo submit, el back-out tiene que usar la alícuota NUEVA: por eso
      * back_out_iva() fuerza `load('iva')` en vez de `loadMissing()`, y por eso acá el orden importa.
      *
      * @param  \App\Models\Article $model
@@ -203,55 +213,21 @@ class ArticleController extends Controller
     {
         $cost = $request->cost;
 
-        // Costo vacío: no hay nada que descomponer y tampoco un bruto que registrar.
+        // Costo vacío: no hay nada que descomponer.
         if (is_null($cost) || $cost === '') {
             $model->cost = $cost;
-            $model->cost_bruto = null;
             return $model;
         }
 
-        $user = UserHelper::user();
+        // El input en el que se tipeó es la única fuente de esta decisión.
+        $lo_tipeado_es_bruto = filter_var($request->cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
 
-        $es_bruto = ArticlePricesHelper::costo_tipeado_es_bruto($user, $request->cost_incluye_iva);
-
-        /*
-         * Si la persona AFIRMÓ que el número incluye IVA (el toggle del formulario), esa afirmación
-         * le gana a `articles.aplicar_iva`: es un hecho sobre el número que acaba de tipear, no una
-         * decisión sobre la venta. Sin esto, marcar el toggle sobre un artículo con `aplicar_iva = 0`
-         * no hacía nada y el costo quedaba con el IVA adentro, en silencio, en una columna que es
-         * neta por convención. Decisión de Lucas, 20/8/2026.
-         */
-        $declaracion_explicita = ArticlePricesHelper::la_carga_declara_bruto($request->cost_incluye_iva);
-
-        // El par (neto, bruto) sale del resolvedor único: guardar el bruto sólo cuando de verdad
-        // hubo descomposición es un criterio que las cuatro vías tienen que compartir.
-        $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto($model, $cost, $user, $es_bruto, $declaracion_explicita);
-
-        $model->cost = $resuelto['cost'];
-
-        /*
-         * 🔴 `cost_bruto` se toca SÓLO si el costo cambió de verdad.
-         *
-         * El formulario del listado manda el modelo entero en cada guardado, así que corregirle el
-         * nombre a un artículo llega acá con el mismo `cost` de siempre y `cost_incluye_iva` en
-         * false (nadie tipeó). El resolvedor, correctamente, devuelve `cost_bruto => null` para esa
-         * carga — pero escribirlo **borraba** el bruto que la compra a proveedor se había tomado el
-         * trabajo de registrar. El dato de origen moría en el primer guardado del listado que
-         * cambiara cualquier otra cosa. Medido por el checker de la Fase 5 sobre 18 combinaciones.
-         *
-         * La regla que sostiene el invariante: `cost_bruto` es una propiedad DEL `cost` guardado. Si
-         * el `cost` no se movió, el bruto que lo acompaña sigue siendo válido y no se toca.
-         *
-         * Comparación en float y no con `!=` sobre los strings: la columna es decimal(22,6), así que
-         * lo guardado viene como "1000.000000" y lo tipeado como "1000". Compararlos como texto da
-         * distinto siempre, que es el mismo error que ya se corrigió en el `isDirty('cost_bruto')`
-         * de la compra.
-         */
-        $el_costo_cambio = !$model->exists || (float) $model->getOriginal('cost') !== (float) $resuelto['cost'];
-
-        if ($el_costo_cambio) {
-            $model->cost_bruto = $resuelto['cost_bruto'];
+        if (!$lo_tipeado_es_bruto) {
+            $model->cost = $cost;
+            return $model;
         }
+
+        $model->cost = ArticlePricesHelper::back_out_iva($model, $cost);
 
         return $model;
     }
@@ -680,6 +656,17 @@ class ArticleController extends Controller
             'archivo_excel'         => $archivo_excel, 
             'columns'               => $columns,
             'blank_flags'           => $blank_flags,
+
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus
+             * costos vienen con IVA adentro, igual que la compra lo declara con
+             * `provider_orders.precios_incluyen_iva`. Es la ÚNICA fuente de esa decisión para el
+             * import: no hay fallback por condición fiscal ni por configuración de la cuenta.
+             *
+             * Default `false` (= los costos de la planilla son netos), que es el comportamiento
+             * histórico del import: una importación que hoy anda no cambia de resultado.
+             */
+            'precios_incluyen_iva'  => filter_var($request->precios_incluyen_iva, FILTER_VALIDATE_BOOLEAN),
             'create_and_edit'       => $request->create_and_edit,
             'start_row'             => $request->start_row, 
             'finish_row'            => $request->finish_row, 

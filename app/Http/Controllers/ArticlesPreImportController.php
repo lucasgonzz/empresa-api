@@ -39,16 +39,18 @@ class ArticlesPreImportController extends Controller
         $articulos_actualizados = 0;
 
         /*
-         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el `costo_nuevo` del pre-import es
-         * un costo tipeado por una persona, igual que el del ABM o el de una compra, así que sigue
-         * el mismo criterio que las otras tres vías. Antes entraba literal a `articles.cost`, que
-         * es NETO por convención: para un Monotributista eso significaba escribir un bruto en una
-         * columna neta, y que aplicar_iva() le sumara el IVA una segunda vez.
+         * 🔴 Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el pre-import NO descompone, y
+         * es a propósito.
          *
-         * El usuario se resuelve una sola vez, fuera del loop: es el mismo para todas las filas.
+         * `costo_nuevo` sale de una fila que ya pasó por ProcessRow, que dejó el costo en NETO si la
+         * planilla declaró que venía con IVA. Sacarle el IVA otra vez acá sería un segundo back-out
+         * sobre el mismo número, y el costo caería un 21% dos veces.
+         *
+         * Una versión anterior de esta misión sí descomponía acá, y quedó declarada en el informe
+         * como "bomba de tiempo": no explotaba sólo porque el único llamador de add_article() es
+         * código muerto. Esta versión la cierra por diseño — el que declara si un número es bruto o
+         * neto es el que lo carga, y el pre-import no carga nada: recibe algo ya resuelto.
          */
-        $user = UserHelper::user();
-        $es_bruto = ArticlePricesHelper::costo_tipeado_es_bruto($user);
 
         foreach ($request->articles_id as $article_id) {
 
@@ -57,15 +59,7 @@ class ArticlesPreImportController extends Controller
                                                 ->where('articles_pre_import_id', $request->articles_pre_import_id)
                                                 ->first();
 
-            $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto(
-                $article,
-                $pivot->costo_nuevo,
-                $user,
-                $es_bruto
-            );
-
-            $article->cost = $resuelto['cost'];
-            $article->cost_bruto = $resuelto['cost_bruto'];
+            $article->cost = $pivot->costo_nuevo;
 
             $article->save();
             ArticleHelper::setFinalPrice($article);

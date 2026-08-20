@@ -1032,22 +1032,20 @@ class NewProviderOrderHelper {
         // "articles.cost / article_provider.cost siempre netos" y no inflar la comparación entre
         // proveedores.
         //
-        // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta. Un Monotributista
-        // trata el costo tipeado SIEMPRE como bruto (se ignora `precios_incluyen_iva` de la
-        // compra); un Responsable Inscripto respeta el flag como hasta ahora.
-        //
-        // Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): `precios_incluyen_iva` de la
-        // compra es una DECLARACIÓN de una persona sobre los números que está cargando, así que le
-        // gana a `articles.aplicar_iva` — mismo criterio que el toggle del ABM del listado. Si esta
-        // vía no lo compartiera, el mismo artículo volvería a costear distinto según por dónde
-        // entrara, que es el error del que sale esta misión.
-        if ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva) {
-            $cost = ArticlePricesHelper::back_out_iva(
-                $article,
-                $cost,
-                $this->user,
-                (bool) $this->provider_order->precios_incluyen_iva
-            );
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): `precios_incluyen_iva` de la compra
+         * es el equivalente exacto de los dos inputs del ABM — declara si los costos que la persona
+         * está cargando traen el IVA adentro o ya vienen netos. Es la ÚNICA fuente de esa decisión.
+         *
+         * 🔴 Ya no se mira la condición fiscal de la cuenta, y sacar ese branching REVIERTE el
+         * prompt 609: hasta acá un Monotributista descomponía SIEMPRE, ignorando el flag. Ahora
+         * manda el flag, para todos. Consecuencia declarada en el informe, no escondida: si un MT
+         * carga una compra y no lo tilda, su costo se toma como neto y queda 21% abajo. La
+         * mitigación propuesta —pre-tildar el flag para cuentas MT— es decisión de Lucas y no está
+         * implementada.
+         */
+        if ($this->provider_order->precios_incluyen_iva) {
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
         $pivot_data = [
@@ -1292,44 +1290,15 @@ class NewProviderOrderHelper {
         // la alícuota propia del artículo (ArticlePricesHelper::back_out_iva). Con el flag OFF (o
         // sin cargar) el comportamiento queda idéntico al de siempre: se guarda el valor tal cual.
         //
-        // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta (`condicion_iva_precios`
-        // de la configuración del usuario). Un Monotributista SIEMPRE trata el costo tipeado como
-        // bruto (se ignora el flag `precios_incluyen_iva` de la compra, forzado a `true`); un
-        // Responsable Inscripto respeta el flag como hasta ahora.
-        if (!is_null($cost)) {
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): mismo criterio, misma fuente única
+         * que catalogar_costo_proveedor(). Que las dos escrituras de la compra usen exactamente la
+         * misma expresión no es cosmético: si divergieran, `article_provider.cost` y `articles.cost`
+         * quedarían con convenciones distintas para el mismo artículo.
+         */
+        if (!is_null($cost) && $this->provider_order->precios_incluyen_iva) {
 
-            /*
-             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el cálculo del costo NO cambia
-             * — esta vía ya estaba bien y es la que las otras tres vinieron a imitar. Lo único
-             * nuevo es que el dato de origen deja de perderse, así el listado puede mostrarle al
-             * usuario el mismo número que puso en la compra (y que figura en la factura del
-             * proveedor) sin recalcularlo y arriesgar un centavo de deriva sobre el decimal(22,2).
-             *
-             * Se pasa por el resolvedor único para no repetir acá el criterio de cuándo hay bruto
-             * que registrar: con alícuota Exento / No Gravado / 0% no hay IVA que sacar, el número
-             * tipeado ya era el neto y `cost_bruto` queda en null.
-             */
-            $es_bruto = ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva);
-
-            /*
-             * `precios_incluyen_iva` de la compra es una declaración explícita (un checkbox que
-             * alguien marcó sobre los números que está cargando), así que le gana a
-             * `articles.aplicar_iva`, igual que el toggle del ABM. El default por condición fiscal
-             * NO: para MT `es_bruto` ya es true por otro motivo, y ese motivo no habilita el bypass.
-             */
-            $declaracion_explicita = (bool) $this->provider_order->precios_incluyen_iva;
-
-            $resuelto = ArticlePricesHelper::resolver_costo_neto_y_bruto(
-                $article,
-                $cost,
-                $this->user,
-                $es_bruto,
-                $declaracion_explicita
-            );
-
-            $cost = $resuelto['cost'];
-
-            $article->cost_bruto = $resuelto['cost_bruto'];
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
         $cost_cambio = !is_null($cost) && $article->cost != $cost;
@@ -1347,32 +1316,11 @@ class NewProviderOrderHelper {
             }
         }
 
-        /*
-         * El save cubre además el caso en que SOLO cambió `cost_bruto` (misión
-         * `costo-bruto-por-condicion-fiscal`, 20/8/2026): comprar a 1210 un artículo que ya tenía
-         * 1000 de costo neto no mueve `cost`, así que con la condición vieja no se llamaba a save()
-         * y el dato de origen se perdía en silencio. `isDirty()` lo detecta sin agregar una query.
-         */
-        /*
-         * 🔴 La comparación va en float, NO con isDirty(). `originalIsEquivalent()` de Eloquent
-         * termina en `strcmp((string) $nuevo, (string) $original)`, y el pivot manda `1210` (JSON)
-         * contra un `"1210.000000"` que viene de un decimal de la base: strings distintos, mismo
-         * número. Con isDirty(), reguardar una compra sin cambiar ningún costo escribía una fila
-         * por artículo y le movía el `updated_at` — que después alimenta el `updated_after` del
-         * índice offline y el `needs_sync_with_tn`.
-         */
-        $bruto_cambio = ((float) $article->cost_bruto !== (float) $article->getOriginal('cost_bruto'));
-
-        if ($cost_cambio || $bruto_cambio) {
+        if ($cost_cambio) {
 
             $article->save();
         }
 
-        /*
-         * 🔴 setFinalPrice() queda atado a que haya cambiado el COSTO, no el bruto. Recalcular
-         * precios porque se registró un dato informativo sería un efecto lateral que nadie pidió:
-         * el pipeline de precios no lee `cost_bruto` en ningún lado.
-         */
         if ($cost_cambio) {
 
             Log::info('update_cost con '. $article->cost);

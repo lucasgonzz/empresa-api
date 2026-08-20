@@ -358,23 +358,7 @@ class ActualizarBBDD {
                             /* Excluir campos internos de tracking (prefijo __): __bar_code, __diff__X, etc. */
                             || strncmp($column, '__', 2) === 0
 
-                            /*
-                             * 🔴 `cost_bruto` es la excepción al descarte de nulos, y necesita
-                             * serlo (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026).
-                             *
-                             * El resto de las columnas se saltean en null porque "no vino en el
-                             * Excel" no significa "borralo". Para `cost_bruto` sí: es un dato
-                             * DERIVADO de si el costo de esta importación se descompuso o no, y
-                             * tiene que poder volver a NULL. Si no, queda rancio — un artículo con
-                             * cost=826,45 / cost_bruto=1000 al que un import posterior le escribe
-                             * cost=900 sin descomponer se quedaba con el 1000 viejo, y como la
-                             * interfaz PREFIERE cost_bruto sobre recalcular, al reabrir mostraba
-                             * 1000 y al guardar dejaba 826,45. El costo importado se destruía solo.
-                             *
-                             * El invariante que esto sostiene es "cost_bruto es null, o es el bruto
-                             * que corresponde a este cost".
-                             */
-                            || (is_null($value) && $column !== 'cost_bruto')
+                            || is_null($value)
                             || $value === ''
                         ) continue;
 
