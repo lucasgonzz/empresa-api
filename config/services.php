@@ -291,4 +291,18 @@ return [
         'token' => env('GITHUB_ERROR_REPORTER_TOKEN'),
     ],
 
+    /**
+     * Cotizaciones del dólar (misión cotizacion-dolar). Endpoint público de dolarapi.com, sin
+     * credenciales: devuelve las siete casas del día en un array de objetos.
+     * CotizacionDolarService se queda con tres — oficial, blue y bolsa (que es el MEP; la casa
+     * 'mep' NO existe en esa API).
+     *
+     * Va en config y no leído con env() adentro del servicio por el mismo motivo que
+     * github_error_reporter de acá arriba: con `config:cache` corrido en producción, un env()
+     * dentro del código devuelve null y el servicio se apaga sin avisar.
+     */
+    'dolar_api' => [
+        'url' => env('DOLAR_API_URL', 'https://dolarapi.com/v1/dolares'),
+    ],
+
 ];
