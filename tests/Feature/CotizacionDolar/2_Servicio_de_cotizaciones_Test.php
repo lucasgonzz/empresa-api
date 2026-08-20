@@ -281,4 +281,52 @@ class Servicio_de_cotizaciones_Test extends TestCase
 
         Http::assertSentCount(2);
     }
+
+    /**
+     * 🔴 UNA PUNTA EN CERO NO ES UNA COTIZACIÓN. Es el test del bug más caro de esta funcionalidad.
+     *
+     * `is_numeric(0)` es true, así que la guarda original —que solo pedía `is_numeric`— dejaba
+     * pasar un cero derecho hasta `users.dollar`, y de ahí a `ProcessSetFinalPrices`, que
+     * recalculaba a precio CERO todos los artículos con costo en dólares. Y después la
+     * funcionalidad se apagaba sola: con la referencia en 0, `comparar()` devuelve null y el modal
+     * no vuelve a aparecer. El comercio quedaba costeando en cero sin que nada le avisara, y el
+     * único síntoma visible era un guioncito en un botón del modal (porque `price(0)` da '-').
+     *
+     * No es hipotético: dolarapi devuelve `compra: 0` para las casas sin punta compradora y para
+     * cualquier casa cuya fuente de arriba falle.
+     *
+     * @group cotizacion-dolar
+     * @test
+     */
+    public function una_punta_en_cero_o_negativa_es_proveedor_caido_y_no_una_cotizacion_valida()
+    {
+        $casos = [
+            'compra en cero'    => ['blue' => ['compra' => 0]],
+            'venta en cero'     => ['blue' => ['venta' => 0]],
+            'compra negativa'   => ['blue' => ['compra' => -5]],
+            'venta negativa'    => ['blue' => ['venta' => -5]],
+            'las dos en cero'   => ['oficial' => ['compra' => 0, 'venta' => 0]],
+        ];
+
+        foreach ($casos as $nombre => $override) {
+
+            Cache::forget(CotizacionDolarService::CACHE_KEY);
+            $this->fakear(Http::response($this->payload($override), 200));
+
+            $resultado = CotizacionDolarService::obtener();
+
+            $this->assertEquals(
+                'proveedor_caido',
+                $resultado['estado'],
+                'Con ' . $nombre . ' el servicio devolvió una cotización usable.'
+            );
+            $this->assertEquals('payload_invalido', $resultado['error']['motivo'], $nombre);
+
+            /*
+             * Y las cotizaciones van VACÍAS: devolver las otras dos casas dejaría al usuario
+             * eligiendo entre las que quedaron, creyendo que son todas.
+             */
+            $this->assertEquals([], $resultado['cotizaciones'], $nombre);
+        }
+    }
 }

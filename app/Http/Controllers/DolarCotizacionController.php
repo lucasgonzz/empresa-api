@@ -90,6 +90,21 @@ class DolarCotizacionController extends Controller
             ? CotizacionDolarService::comparar($owner, $resultado['cotizaciones'])
             : null;
 
+        /*
+         * 🔴 `pospuesto` marca que de ESTE valor el usuario ya se enteró y dijo "ahora no".
+         *
+         * Va como una clave más de la medición y NO borrando la medición: el modal abierto a mano
+         * desde Configuración tiene que seguir mostrando la variación con todas las letras. Lo
+         * único que cambia es que el arranque no lo abre solo. Es la misma regla que ya rige para
+         * el umbral: filtra si el modal aparece solo, no lo que se dice cuando el usuario pregunta.
+         */
+        if (!is_null($comparacion)) {
+            $pospuesto = $owner->dolar_aviso_pospuesto_valor;
+
+            $comparacion['pospuesto'] = !is_null($pospuesto)
+                && round((float) $pospuesto, 2) === round((float) $comparacion['valor_nuevo'], 2);
+        }
+
         return response()->json([
             'estado'             => $resultado['estado'],
             'cotizaciones'       => $resultado['cotizaciones'],
@@ -121,8 +136,22 @@ class DolarCotizacionController extends Controller
             'casa'             => 'required|in:blue,oficial,mep',
             'punta'            => 'required|in:compra,venta',
             'valor_manual'     => 'required_if:origen,manual|nullable|numeric|min:0.01|max:99999999.99',
-            'avisar_cambios'   => 'required|boolean',
-            'variacion_minima' => 'required|numeric|min:0.01|max:100',
+            /*
+             * 🔴 Las dos preferencias son OPCIONALES, no requeridas, y solo se escriben si vienen.
+             *
+             * Eran `required`, y eso las convertía en un campo que el modal tenía que mandar
+             * siempre, incluso en las pantallas donde el checkbox y el umbral ni se dibujan (la de
+             * proveedor caído). Ahí el modal mandaba su copia local, que tras un fallo de red son
+             * los defaults del store (avisar=true, umbral=1): un comercio que había APAGADO el
+             * aviso y puesto el umbral en 5% lo veía volver a prenderse en 1% por guardar un valor
+             * a mano, sin haber tocado ningún control y sin que nada se lo dijera.
+             *
+             * Es la misma trampa que UserController@update ya tiene documentada para ModelForm
+             * ("un cliente que entra a cambiarse el teléfono pisaría sus preferencias de aviso"),
+             * entrando por la otra puerta. Quien no manda el campo, no lo cambia.
+             */
+            'avisar_cambios'   => 'sometimes|boolean',
+            'variacion_minima' => 'sometimes|numeric|min:0.01|max:100',
             'disparo'          => 'nullable|in:login,configuracion',
         ]);
 
@@ -221,8 +250,25 @@ class DolarCotizacionController extends Controller
         $owner->dolar_cotizacion_punta          = $punta_guardada;
         $owner->dolar_cotizacion_valor          = $valor_cotizacion;
         $owner->dolar_cotizacion_actualizada_at = Carbon::now();
-        $owner->dolar_avisar_cambios            = $request->boolean('avisar_cambios') ? 1 : 0;
-        $owner->dolar_variacion_minima          = round((float) $request->variacion_minima, 2);
+
+        /*
+         * Adoptar una cotización borra lo pospuesto: la referencia cambió, así que "de ese valor
+         * ya me enteré" quedó viejo y el próximo movimiento tiene que volver a avisar.
+         */
+        $owner->dolar_aviso_pospuesto_valor = null;
+
+        /*
+         * Solo se pisan las preferencias que el request trajo de verdad (ver el comentario de la
+         * validación). Sin `has()`, un POST que no las manda las dejaba en el default del store.
+         */
+        if ($request->has('avisar_cambios')) {
+            $owner->dolar_avisar_cambios = $request->boolean('avisar_cambios') ? 1 : 0;
+        }
+
+        if ($request->has('variacion_minima')) {
+            $owner->dolar_variacion_minima = round((float) $request->variacion_minima, 2);
+        }
+
         $owner->save();
 
         /*
@@ -287,6 +333,11 @@ class DolarCotizacionController extends Controller
         $request->validate([
             'avisar_cambios'   => 'required|boolean',
             'variacion_minima' => 'required|numeric|min:0.01|max:100',
+            /*
+             * El valor de la cotización que el usuario acaba de ver y decidió NO adoptar. Opcional:
+             * solo lo manda el "Ahora no" del modal, no el guardado de preferencias a secas.
+             */
+            'pospuesto_valor'  => 'sometimes|nullable|numeric|min:0.01|max:99999999.99',
         ]);
 
         /** @var \App\Models\User $owner Fila del DUEÑO. */
@@ -294,6 +345,22 @@ class DolarCotizacionController extends Controller
 
         $owner->dolar_avisar_cambios   = $request->boolean('avisar_cambios') ? 1 : 0;
         $owner->dolar_variacion_minima = round((float) $request->variacion_minima, 2);
+
+        /*
+         * 🔴 "Ahora no" deja anotado DE QUÉ valor ya se enteró.
+         *
+         * Sin esto, la comparación se hace siempre contra `dolar_cotizacion_valor` —que solo se
+         * mueve cuando el usuario ACEPTA—, así que el mismo modal, con los mismos dos números,
+         * volvía a abrirse en cada inicio de sesión y en cada F5. Lucas pidió que se avise
+         * "cuando se detecte un NUEVO cambio", y repetir el aviso viejo entrena al usuario a
+         * cerrarlo sin leer.
+         */
+        if ($request->has('pospuesto_valor')) {
+            $owner->dolar_aviso_pospuesto_valor = is_null($request->pospuesto_valor)
+                ? null
+                : round((float) $request->pospuesto_valor, 2);
+        }
+
         $owner->save();
 
         return response()->json([

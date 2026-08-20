@@ -44,12 +44,22 @@ class DolarCotizacionRegistro extends Model
      * de historial correspondiente. Lo llama `UserController@update` cuando el dueño cambió
      * `users.dollar` desde el form de perfil.
      *
-     * 🔴 `casa`, `punta` y `valor` quedan en NULL a propósito: desde ese formulario no hay ninguna
-     * casa de referencia elegida, y no se sale a la API externa desde un PUT de perfil. Sin
-     * referencia no hay comparación posible, así que el modal del login NO va a aparecer hasta que
-     * el usuario elija una casa desde el botón de Configuración. Eso es correcto y es explícito:
-     * inventarle una referencia acá haría que la próxima variación se mida contra algo que el
-     * usuario nunca eligió.
+     * 🔴 El origen pasa a 'manual', pero la REFERENCIA que el comercio ya tenía elegida
+     * (`casa`, `punta`, `valor`) SE CONSERVA. No se sale a la API externa desde un PUT de perfil,
+     * así que no hay forma de refrescar el valor de referencia acá — pero pisarlo con null era
+     * peor: apagaba los avisos para siempre y en silencio.
+     *
+     * El caso real: el comercio elige Blue/venta desde el modal, y semanas después entra a
+     * Configuración a corregir el valor a mano (que es como se hacía antes de esta funcionalidad).
+     * Con la referencia en null, `comparar()` devuelve null, `debe_avisar` da false para siempre y
+     * el modal no vuelve a aparecer nunca — mientras el checkbox "Avisarme cuando cambie" le
+     * sigue apareciendo tildado. Lucas pidió explícitamente que el aviso funcione también cuando
+     * la cotización se cargó a mano, así que apagarlo en silencio contradice el pedido.
+     *
+     * Conservándola, la próxima medición dice cuánto se movió esa casa desde la última vez que el
+     * usuario la eligió, que es una afirmación cierta y verificable. Y si nunca eligió una casa,
+     * las tres quedan en null igual que antes: ahí sí no hay nada contra qué medir, y la salida es
+     * el botón de Configuración (que ahora sí funciona, ver `sembrar_defaults_de_referencia()`).
      *
      * Vive acá y no en un helper nuevo porque es una fila de esta tabla más las cinco columnas que
      * la acompañan: un archivo aparte para dos escrituras no agrega nada.
@@ -61,9 +71,6 @@ class DolarCotizacionRegistro extends Model
     public static function marcar_manual_desde_formulario($owner, $dolar_anterior)
     {
         $owner->dolar_cotizacion_origen         = 'manual';
-        $owner->dolar_cotizacion_casa           = null;
-        $owner->dolar_cotizacion_punta          = null;
-        $owner->dolar_cotizacion_valor          = null;
         $owner->dolar_cotizacion_actualizada_at = Carbon::now();
         $owner->save();
 
@@ -83,10 +90,11 @@ class DolarCotizacionRegistro extends Model
             /* El gancho solo corre cuando el autenticado ES el dueño, así que son el mismo id. */
             'auth_user_id'         => $owner->id,
             'origen'               => 'manual',
-            'casa'                 => null,
-            'punta'                => null,
+            /* La referencia que se conserva es la que queda vigente: el historial la refleja. */
+            'casa'                 => $owner->dolar_cotizacion_casa,
+            'punta'                => $owner->dolar_cotizacion_punta,
             'valor_dolar'          => round((float) $owner->dollar, 2),
-            'valor_cotizacion'     => null,
+            'valor_cotizacion'     => $owner->dolar_cotizacion_valor,
             'valor_dolar_anterior' => $dolar_anterior,
             'variacion_porcentaje' => $variacion,
             'disparo'              => 'formulario',

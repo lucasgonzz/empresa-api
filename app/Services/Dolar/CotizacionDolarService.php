@@ -314,14 +314,29 @@ class CotizacionDolarService
             $item = $por_casa[$casa_api];
 
             /*
-             * 🔴 `compra` y `venta` numéricas o no hay cotización: un "1.540,00" con formato
-             * argentino, un null o un texto darían 0 al castear, y un dólar en 0 recalcularía el
-             * catálogo entero a precio cero.
+             * 🔴 `compra` y `venta` numéricas Y MAYORES A CERO, o no hay cotización.
+             *
+             * El `is_numeric` solo atrapa el "1.540,00" con formato argentino, el null y el texto.
+             * NO atrapa el caso que de verdad hace daño: `is_numeric(0)` es true y `is_numeric(-5)`
+             * también, así que un cero pasaba derecho, se guardaba en `users.dollar` y
+             * `ProcessSetFinalPrices` recalculaba a precio cero todos los artículos con costo en
+             * dólares. Y después la funcionalidad se apagaba sola, porque con la referencia en 0
+             * `comparar()` devuelve null y el modal no vuelve a aparecer: el comercio quedaba
+             * costeando en cero sin que nada le avisara.
+             *
+             * No es hipotético: dolarapi devuelve `compra: 0` para las casas que no tienen punta
+             * compradora (la tarjeta, por ejemplo) y para cualquier casa cuya fuente de arriba
+             * falle. Y el único síntoma visible era un guioncito en el botón del modal, porque
+             * `price(0)` renderiza '-'.
+             *
+             * Es el mismo chequeo que ya hace la rama del dólar del proveedor en ArticleHelper
+             * (`(float) $article->provider->dolar > 0`); la del dólar global era la que faltaba.
              */
             if (!isset($item['compra']) || !isset($item['venta'])
-                || !is_numeric($item['compra']) || !is_numeric($item['venta'])) {
+                || !is_numeric($item['compra']) || !is_numeric($item['venta'])
+                || (float) $item['compra'] <= 0 || (float) $item['venta'] <= 0) {
 
-                Log::warning('CotizacionDolarService: la casa ' . $casa_api . ' vino sin compra/venta numéricas.');
+                Log::warning('CotizacionDolarService: la casa ' . $casa_api . ' vino con compra/venta no numéricas o <= 0.');
 
                 return self::caido('payload_invalido', 'El servicio de cotizaciones devolvió datos que no pudimos interpretar.');
             }
