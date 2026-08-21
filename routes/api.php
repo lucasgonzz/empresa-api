@@ -1026,6 +1026,37 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:costo_en_dolares'])-
     Route::put('dolar-cotizacion/preferencias', 'DolarCotizacionController@preferencias');
 });
 
+// Sistema de puntos para clientes (misión puntos-clientes). Gateado por Sanctum + la extensión
+// 'puntos_clientes' (ExtencionPuntosClientesSeeder), que viene APAGADA por default: sin ella todo
+// este grupo responde 403 y las pantallas de la SPA ni se montan.
+//
+// La extensión es de la EMPRESA; el scope por comercio va adentro de cada controller, que son dos
+// preguntas distintas: el middleware dice "este comercio compró el módulo" y el controller dice
+// "este cliente/este programa es de este comercio". Sin lo segundo, un client_id de otra instancia
+// devolvería el saldo de un desconocido.
+//
+// 🔴 NO hay endpoint de canje, y no es un olvido. El canje viaja adentro del POST/PUT de
+// /api/sale, en `puntos_canjeados` y `descuento_puntos`: un endpoint aparte permitiría canjear sin
+// vender y dejaría el descuento de la venta y el movimiento del libro en dos transacciones
+// distintas, o sea con dos formas de quedar a medio hacer.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:puntos_clientes'])->group(function () {
+    // ABM de la configuración. El nombre en guiones lo espera `routeString('sistema_de_puntos')`
+    // de la SPA (src/common-vue/mixins/generals.js:1521), que reemplaza los guiones bajos.
+    // `except` de create/edit: son las dos rutas de formulario de Blade que Route::resource arma
+    // sola y que este controller no implementa. Sin el except quedan publicadas y contestan un 500
+    // (BadMethodCallException) en vez de un 404, que es lo que corresponde a una ruta que no
+    // existe. Mismo recurso que usa MovimientoCajaController con su `except`.
+    Route::resource('sistema-de-puntos', 'SistemaDePuntosController')->except(['create', 'edit']);
+    Route::get('puntos/cliente/{client_id}',    'PuntoController@cliente');
+    Route::get('puntos/disponible/{client_id}', 'PuntoController@disponible');
+    Route::post('puntos/ajuste',                'PuntoController@ajuste');
+    // El detalle se declara ANTES que el reporte. Hoy son dos rutas literales distintas y el
+    // orden da igual, pero el día que alguien convierta 'puntos/reporte' en 'puntos/reporte/{algo}'
+    // el parámetro se comería el detalle en silencio. Declarado en el orden que sobrevive a eso.
+    Route::get('puntos/reporte/detalle',        'PuntoController@reporte_detalle');
+    Route::get('puntos/reporte',                'PuntoController@reporte');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
