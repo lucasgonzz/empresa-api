@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
@@ -275,10 +276,25 @@ class SaleHelper extends Controller {
         if ($from_store && !$model->to_check && !$model->checked) {
             
             Self::create_current_acount($model);
-            
+
             Self::crear_comision($model);
 
             SaleCajaHelper::check_caja($model);
+
+            /*
+             * Puntos para clientes. Lo que se cubre acá es la VENTA DE MOSTRADOR, que nunca
+             * pasa por la cuenta corriente y por lo tanto nunca dispara checkPagos(): sin esta
+             * línea, un comercio que no usa cuenta corriente no acumularía un solo punto.
+             *
+             * Para la venta de cuenta corriente esto es un no-op barato: create_current_acount()
+             * ya llamó a CurrentAcountFromSaleHelper, que llama a checkPagos(), que ya
+             * reconcilió esta misma venta. Correrlo dos veces no duplica nada — el
+             * reconciliador compara contra lo que ya escribió y no toca la base si no cambió.
+             *
+             * Va DESPUÉS de check_caja() y no antes, para que si algo del cobro en el acto
+             * revienta, la venta no quede con puntos otorgados por una venta que no se guardó.
+             */
+            PuntosAcumulacionHelper::reconciliar_venta($model);
 
         } else {
 

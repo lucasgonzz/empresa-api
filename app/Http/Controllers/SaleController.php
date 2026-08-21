@@ -21,6 +21,8 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
@@ -171,6 +173,21 @@ class SaleController extends Controller
             return response()->json($error_limite_credito, 422);
         }
 
+        /**
+         * Canje de puntos (misión del 22/8/2026). Mismo lugar y mismo criterio que el límite de
+         * crédito: la validación de VENDER es guarda de UX, la autoridad es este 422 porque un
+         * POST directo a /sale llega igual hasta acá. Va ANTES de DB::beginTransaction() para
+         * que un rechazo no toque la base ni consuma número de venta.
+         *
+         * Sin `puntos_canjeados` en el request sale en la primera línea, sin una sola query.
+         */
+        $error_canje_puntos = PuntosCanjeHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_canje_puntos)) {
+
+            return response()->json($error_canje_puntos, 422);
+        }
+
         DB::beginTransaction();
 
         Log::info($this->user(false)->name.' va a crear venta');
@@ -242,6 +259,19 @@ class SaleController extends Controller
             }
 
             SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
+
+            /**
+             * El canje se escribe ANTES de attachProperies() a propósito. Adentro de
+             * attachProperies() corre el reconciliador que le OTORGA los puntos de esta misma
+             * venta, y si el canje corriera después, el FIFO podría llegar a comerse el lote
+             * que la propia venta acaba de generar: el cliente estaría pagando con puntos que
+             * ganó en la compra que está pagando. La validación de más arriba midió el saldo
+             * anterior a esta venta, así que el orden de acá es el que la respeta.
+             *
+             * `sales.total` ya viene neteado por el front; lo que escribe aplicar() son las dos
+             * columnas que explican esa diferencia y el movimiento negativo con su consumo FIFO.
+             */
+            PuntosCanjeHelper::aplicar($model, $request);
 
             SaleHelper::attachProperies($model, $request);
 
@@ -488,9 +518,51 @@ class SaleController extends Controller
                 return response()->json($error_limite_credito, 422);
             }
 
+            /**
+             * Canje de puntos, lado update(). Son tres pasos y el orden es todo:
+             *
+             *  1. DESHACER el canje anterior de esta venta. Tiene que ir primero porque el
+             *     saldo del cliente todavía incluye el movimiento negativo del canje viejo: si
+             *     validáramos antes de deshacer, editar una venta SIN tocarle el canje se
+             *     rechazaría a sí misma por saldo insuficiente. Es el mismo razonamiento por el
+             *     que LimiteCreditoHelper::validar_venta_actualizada() resta el movimiento
+             *     actual de la cuenta corriente antes de comparar contra el límite.
+             *  2. VALIDAR contra el saldo ya limpio. Corre adentro de la transacción abierta,
+             *     así que el rechazo hace DB::rollBack() explícito — y ese rollback es también
+             *     lo que devuelve el canje viejo a su lugar.
+             *  3. APLICAR el canje nuevo (o ninguno, si la venta se editó sacándolo).
+             *
+             * Va antes de updateCurrentAcountsAndCommissions() porque ese helper recrea el
+             * movimiento de la cuenta corriente leyendo `sales.total`, que es el total que el
+             * front ya mandó neteado por el canje.
+             */
+            PuntosCanjeHelper::deshacer($model);
+
+            $error_canje_puntos = PuntosCanjeHelper::validar_venta_actualizada($model, $request);
+
+            if (!is_null($error_canje_puntos)) {
+
+                DB::rollBack();
+                return response()->json($error_canje_puntos, 422);
+            }
+
+            PuntosCanjeHelper::aplicar($model, $request);
+
             if ($model->client_id && !$model->to_check && !$model->checked) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
             }
+
+            /**
+             * Reconciliación de los puntos GANADOS por esta venta. Va acá y no adentro de
+             * attachProperies() porque en el update attachProperies corre con
+             * $from_store = false y el débito de la cuenta corriente todavía no está en su
+             * estado final: preguntar antes daría "no corresponde" y revertiría puntos buenos.
+             *
+             * Corre SIEMPRE, también cuando la venta no entra a la cuenta corriente: es lo que
+             * cubre la venta de mostrador editada y la que dejó de corresponder (se le sacó el
+             * cliente, se la pasó a to_check, se le devolvió todo). El reconciliador decide.
+             */
+            PuntosAcumulacionHelper::reconciliar_venta($model);
 
 
             $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
@@ -598,6 +670,23 @@ class SaleController extends Controller
                 $this->sendAddModelNotification('client', $model->client_id, false);
             }
         }
+
+        /**
+         * Puntos para clientes. Los dos lados de la venta se deshacen ANTES del delete, por
+         * orden explícito y no dependiendo de que Sale use SoftDeletes: si mañana el borrado
+         * pasara a ser físico, un reconciliador que corriera después no tendría venta que leer.
+         *
+         *  - deshacer() devuelve los puntos que el cliente había canjeado en esta venta a los
+         *    lotes exactos de los que salieron (por eso existe movimiento_punto_consumos).
+         *  - revertir_venta() anula los lotes que esta venta otorgó y deja su movimiento
+         *    'revertidos'. No pregunta si corresponde: una venta borrada no otorga nada.
+         *
+         * Los dos salen sin tocar la base si el comercio no tiene la extensión.
+         */
+        PuntosCanjeHelper::deshacer($model);
+
+        PuntosAcumulacionHelper::revertir_venta($model);
+
         $model->delete();
 
         if ($compensar_caja && ! is_null($payment_methods_para_compensacion) && $payment_methods_para_compensacion->count()) {
