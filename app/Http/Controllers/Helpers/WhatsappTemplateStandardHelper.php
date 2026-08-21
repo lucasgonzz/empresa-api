@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\WhatsappTemplate;
 
 /**
- * Catálogo de las 5 plantillas estándar de WhatsApp que precarga ComercioCity para todas
+ * Catálogo de las 6 plantillas estándar de WhatsApp que precarga ComercioCity para todas
  * las empresas con el bot configurado (grupo 137, Prompt 04). Nacen `is_system` = true
  * (no editables ni borrables desde el ERP) y `status` = `pendiente_meta`: el equipo de
  * ComercioCity las da de alta a mano en Meta y recién ahí las marca `aprobada`.
@@ -18,7 +18,7 @@ use App\Models\WhatsappTemplate;
 class WhatsappTemplateStandardHelper
 {
     /**
-     * Definición de las 5 plantillas estándar `cc_cli_*`. El orden de `variables` es el
+     * Definición de las 6 plantillas estándar `cc_cli_*`. El orden de `variables` es el
      * mismo orden en que aparecen los placeholders `{{1}}`, `{{2}}`... en `body_preview`.
      *
      * @var array<int, array<string, mixed>>
@@ -59,6 +59,36 @@ class WhatsappTemplateStandardHelper
             'body_preview' => 'Hola {{1}}, te enviamos el comprobante {{2}} de tu compra en {{3}}. Cualquier consulta, respondé este mensaje. ¡Gracias por tu compra!',
             'variables' => ['Nombre', 'Nº de comprobante', 'Negocio'],
         ],
+        [
+            // Misión recordatorio-cobro-whatsapp: la plantilla del recordatorio de cobro que
+            // sale desde el módulo de alertas cuando la ventana de 24 h del cliente está
+            // cerrada. El header DOCUMENT lo arma `RecordatorioCobroSenderService` con el PDF
+            // de la cuenta corriente, así que acá solo van las variables del body.
+            //
+            // 🔴 La lista de ventas NO puede ser una variable de plantilla: Meta rechaza los
+            // parámetros con saltos de línea, tabulaciones o 4 espacios seguidos. Por eso el
+            // detalle una-por-renglón existe sólo en el camino de texto libre y acá viaja
+            // apenas la cantidad de ventas y el total pendiente.
+            //
+            // 🔴 DOS COSAS DEL TEXTO QUE NO SE PUEDEN CAMBIAR DESPUÉS. Una vez que Meta aprueba
+            // la plantilla, el body es inmutable: cualquier retoque obliga a darla de alta de
+            // nuevo y a esperar otra revisión. Por eso están resueltas acá y no "más adelante":
+            //
+            // 1. {{3}} LLEVA EL SUSTANTIVO ("1 venta" / "7 ventas") y el body dice "Tenés {{3}}
+            //    pendientes de pago". Si {{3}} fuera sólo el número sobre un body que dijera
+            //    "{{3}} ventas pendientes", un cliente con una sola venta leería "Tenés 1 ventas
+            //    pendientes de pago". El singular no se puede resolver desde texto fijo.
+            // 2. EL BODY NO PROMETE EL ADJUNTO. Decía "Te adjuntamos el resumen de tu cuenta
+            //    corriente", y el header DOCUMENT no siempre puede armarse (owner sin `api_url`,
+            //    cliente sin movimientos en la cuenta). Prometerle al cliente un archivo que no
+            //    llega es peor que no mencionarlo: ahora se lo ofrece por respuesta, que es algo
+            //    que siempre se puede cumplir.
+            'name' => 'Recordatorio de cobro',
+            'meta_template_name' => 'cc_cli_recordatorio_cobro',
+            'category' => 'utility',
+            'body_preview' => 'Hola {{1}}, te escribimos de {{2}}. Tenés {{3}} pendientes de pago por un total de {{4}}. Si necesitás el resumen de tu cuenta corriente o querés coordinar el pago, respondé este mensaje. ¡Gracias!',
+            'variables' => ['Nombre', 'Negocio', 'Cantidad de ventas (ej: "7 ventas")', 'Montos pendientes'],
+        ],
     ];
 
     /**
@@ -97,7 +127,30 @@ class WhatsappTemplateStandardHelper
     }
 
     /**
-     * Nombres técnicos (`meta_template_name`) de las 5 plantillas estándar.
+     * El `body_preview` del catálogo para un `meta_template_name`, o cadena vacía si ese nombre
+     * no es de ninguna plantilla estándar.
+     *
+     * 🔴 EXISTE PARA QUE EL TEXTO DE UNA PLANTILLA VIVA EN UN SOLO ARCHIVO.
+     * `RecordatorioCobroSenderService` lo necesita para previsualizar el mensaje cuando el owner
+     * todavía no tiene la plantilla dada de alta: si lo tuviera copiado, la pantalla mostraría un
+     * texto y a Meta se le daría de alta otro apenas alguien tocara uno de los dos.
+     *
+     * @param  string  $meta_template_name
+     * @return string
+     */
+    public static function body_preview_de($meta_template_name)
+    {
+        foreach (self::$standard_templates as $template) {
+            if ($template['meta_template_name'] === $meta_template_name) {
+                return $template['body_preview'];
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Nombres técnicos (`meta_template_name`) de las 6 plantillas estándar.
      *
      * @return array<int, string>
      */

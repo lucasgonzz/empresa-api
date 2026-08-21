@@ -1022,7 +1022,19 @@ class SaleController extends Controller
         return response()->json(['charts' => $charts], 200);
     }
 
-    function ventas_sin_cobrar() {
+    /**
+     * Las ventas sin cobrar, agrupadas por cliente, para el modulo de alertas.
+     *
+     * El umbral de antiguedad en dias sale de la cascada por rol de siempre (dueño ->
+     * administradores, empleado con columna propia -> la suya, admin sin columna propia ->
+     * administradores). Desde esta mision se le puede pasar un `?dias=N` por query string: si
+     * viene y es valido, PISA el resultado de la cascada. Sin `dias` en el query string el
+     * endpoint se comporta exactamente como antes.
+     *
+     * @param \Illuminate\Http\Request $request Puede traer `dias` por query string.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function ventas_sin_cobrar(Request $request) {
 
         $owner = $this->user();
 
@@ -1038,6 +1050,14 @@ class SaleController extends Controller
             $dias = $user->dias_alertar_empleados_ventas_no_cobradas;
         }
 
+        // El input del usuario pisa la cascada, no la reemplaza: si no vino (o vino basura),
+        // `dias_del_input()` devuelve null y queda el $dias que resolvio la cascada de arriba.
+        $dias_input = VentasSinCobrarHelper::dias_del_input($request->query('dias'));
+
+        if (!is_null($dias_input)) {
+            $dias = $dias_input;
+        }
+
         $ver_solo_las_ventas_suyas = true;
 
         if ($this->is_owner()) {
@@ -1046,32 +1066,15 @@ class SaleController extends Controller
             $ver_solo_las_ventas_suyas = false;
         }
 
-        $sales = Sale::where('user_id', $this->userId())
-                        ->whereHas('current_acount', function($q) {
-                            return $q->where('debe', '>', 0)
-                                        ->where('status', 'sin_pagar')
-                                        ->orWhere('status', 'pagandose')
-                                        ->where(function ($query) {
-                                            $query->whereNull('pagandose')
-                                            ->orWhereRaw('debe - pagandose > 300');
-                                        });
-                        })
-                        // ->whereHas('client', function ($query) {
-                        //     $query->whereHas(function ($q) {
-                        //         $q->whereHas('credit_account', function($q_c_a) {
-                        //             $q_c_a->where('saldo', '>', 300);
-                        //         })
-                        //     });
-                        //     // $query->where('saldo', '>', 300);
-                        // })
-                        ->whereRaw(
-                            'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
-                            [$dias]
-                        );
+        // El recorte vive ahora en el helper: una sola implementacion de la query, compartida
+        // con el recordatorio de cobro por WhatsApp. Es la misma de siempre, extraida tal cual.
+        $employee_id = null;
 
         if ($ver_solo_las_ventas_suyas) {
-            $sales = $sales->where('employee_id', $user->id);
+            $employee_id = $user->id;
         }
+
+        $sales = VentasSinCobrarHelper::query_de_ventas($this->userId(), $employee_id, $dias);
 
         // Log::info('ventas_sin_cobrar de hace '.$dias.' dias');
         // Log::info('ver_solo_las_ventas_suyas: '.$ver_solo_las_ventas_suyas);

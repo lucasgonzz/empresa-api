@@ -346,11 +346,31 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionSugerenciasComprasSeeder::class);
         /* Extensión del motor de ofertas personalizadas por cliente (misión motor-de-ofertas-por-cliente). */
         $this->call(ExtencionMotorDeOfertasSeeder::class);
+        /* Extensión del escaneo de facturas de compra con IA (misión escaneo-factura-compra). */
+        $this->call(ExtencionEscaneoFacturaCompraSeeder::class);
         /* Extensión + permisos del módulo de chats de WhatsApp con clientes (grupo 137). */
         $this->call(ExtencionEmpresaWhatsappSeeder::class);
         $this->call(PermissionEmpresaWhatsappSeeder::class);
         /* Plantillas estándar `cc_cli_*` para las empresas con el bot ya configurado (grupo 137, Prompt 04). */
         $this->call(WhatsappTemplateStandardSeeder::class);
+        /*
+         * 🔴 `PermissionEmpresaRecordatorioCobroSeeder` NO VA ACÁ, Y NO ES UN OLVIDO (misión
+         * recordatorio-cobro-whatsapp). El permiso `alerts.recordatorio_cobro` ya lo siembra
+         * `PermissionSeeder`, que se llama unas líneas más abajo. Llamar también al seeder suelto
+         * dejaba DOS filas con el mismo slug en toda base nueva: `permission_empresas.slug` no
+         * tiene índice único y ningún seeder trunca la tabla, así que el permiso aparecía
+         * duplicado en la pantalla de empleados.
+         *
+         * El seeder suelto SIGUE EXISTIENDO y es el que hay que correr a mano sobre las bases de
+         * producción que ya están creadas (usa `firstOrCreate`, es idempotente):
+         *   php artisan db:seed --class=PermissionEmpresaRecordatorioCobroSeeder
+         *
+         * ⚠️ Y la entrada que se saca es ESTA, no la de `PermissionSeeder`:
+         * `UserSetupHelper::base_seeders()` incluye `'PermissionSeeder'` pero ninguno de los
+         * seeders sueltos, así que un negocio creado desde la app recibe sus permisos SÓLO por
+         * `PermissionSeeder`. Sacándolo de allá, el permiso no le llegaría nunca a un negocio
+         * nuevo.
+         */
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);

@@ -904,6 +904,19 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
     Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
 
+    // Recordatorio de cobro por WhatsApp desde el módulo de alertas, solapa Cobros (misión
+    // recordatorio-cobro-whatsapp). Van adentro de ESTE grupo y no sueltas: el recordatorio es
+    // del módulo de WhatsApp, así que si la empresa no tiene la extensión no tiene por dónde
+    // mandarlo. Las cuatro piden además el permiso `alerts.recordatorio_cobro` (403 sin él),
+    // que se chequea adentro del controller.
+    //
+    // 🔴 Ninguna recibe `sale_ids`: reciben `client_id` y `dias`, y el backend recalcula la
+    // query con el recorte del usuario autenticado.
+    Route::get('recordatorio-cobro/preview/{client_id}', 'RecordatorioCobroController@preview');
+    Route::post('recordatorio-cobro/enviar', 'RecordatorioCobroController@enviar');
+    Route::post('recordatorio-cobro/enviar-masivo', 'RecordatorioCobroController@enviar_masivo');
+    Route::get('recordatorio-cobro/lote/{lote_uuid}', 'RecordatorioCobroController@estado_lote');
+
     // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
     Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
     Route::post('whatsapp-templates', 'WhatsappTemplateController@store');
@@ -1105,3 +1118,20 @@ Route::middleware('admin.api.key')
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
+
+// Escaneo de facturas de compra con IA (misión escaneo-factura-compra), gateado por auth
+// Sanctum + la extensión 'escaneo_factura_compra' (ver ExtencionEscaneoFacturaCompraSeeder).
+// 🔴 'pendientes' y 'en-curso' van ANTES de '{uuid}': son segmentos fijos y si se declaran
+// después, /provider-order-scan/pendientes matchea el patrón {uuid} y devuelve 404 con un
+// mensaje que no dice nada. Mismo motivo por el que 'analysis-en-curso' va antes de
+// 'analysis/{uuid}' en el bloque de ai-excel-import.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_compra'])->group(function () {
+    Route::get('provider-order-scan/pendientes', 'ProviderOrderScanController@pendientes');
+    Route::get('provider-order-scan/en-curso',   'ProviderOrderScanController@en_curso');
+    Route::post('provider-order-scan',           'ProviderOrderScanController@store');
+    Route::get('provider-order-scan/{uuid}',     'ProviderOrderScanController@show');
+    Route::get('provider-order-scan/{uuid}/imagen/{orden}', 'ProviderOrderScanController@imagen');
+    Route::post('provider-order-scan/{uuid}/visto',     'ProviderOrderScanController@marcar_visto');
+    Route::post('provider-order-scan/{uuid}/confirmar', 'ProviderOrderScanController@confirmar');
+    Route::post('provider-order-scan/{uuid}/descartar', 'ProviderOrderScanController@descartar');
+});

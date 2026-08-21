@@ -252,6 +252,15 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Alertas',
                 'en'            => 'alerts.problemas_al_facturar',
             ],
+            // Mision recordatorio-cobro-whatsapp. Ojo que NO es "ver la alerta de cobros": la
+            // solapa Cobros se sigue viendo sin este permiso. Lo que habilita es MANDAR el
+            // recordatorio por WhatsApp -de a un cliente o a todos los deudores del filtro-,
+            // que es una capacidad distinta: le escribe al cliente final en nombre del negocio.
+            [
+                'singular'      => 'Mandar recordatorios de cobro por WhatsApp',
+                'plural'        => 'Alertas',
+                'en'            => 'alerts.recordatorio_cobro',
+            ],
 
 
             // Reportes
