@@ -731,10 +731,18 @@ class ArticlePricesHelper {
                     // Se llaman "recargos" pero RESTAN: el codigo hace -=, y es intencional
                     // (decision de Lucas del 4/7, ver refactor_empresa/precios_costos.md). El texto
                     // tiene que decir que resta, o el desglose miente.
+                    //
+                    // 🔴 Por eso el tipo es DEDUCCION y no RECARGO, aunque el nombre del modelo diga
+                    // recargo: RECARGO se dibuja con un icono de signo mas, que es correcto para los
+                    // recargos del articulo (esos SI suman) y seria exactamente lo contrario de lo
+                    // que hace esta cuenta. En el texto viejo lo primero que se leia era "Menos ";
+                    // en el layout nuevo lo primero que entra por el ojo es el icono, asi que es el
+                    // icono el que tiene que decir la verdad. El nombre que cargo el usuario va de
+                    // etiqueta, que es lo que identifica de que recargo se trata.
                     $des[] = DesglosePrecioHelper::linea(
-                        DesglosePrecioHelper::RECARGO,
-                        'Recargo de la lista',
-                        $price_type_surchage->name.' — resta '.$price_type_surchage->percentage.'%',
+                        DesglosePrecioHelper::DEDUCCION,
+                        $price_type_surchage->name,
+                        'Recargo de la lista: resta '.$price_type_surchage->percentage.'%',
                         Numbers::price($precio_luego_de_recargos, true),
                         'Menos '.$price_type_surchage->name.' ('.$price_type_surchage->percentage.'%) = '.Numbers::price($precio_luego_de_recargos, true)
                     );
@@ -745,10 +753,11 @@ class ArticlePricesHelper {
                 $precio_luego_de_recargos -= $price_type_surchage->amount;
 
                 if ($describir) {
+                    // Mismo motivo que el de arriba: resta, asi que va DEDUCCION.
                     $des[] = DesglosePrecioHelper::linea(
-                        DesglosePrecioHelper::RECARGO,
-                        'Recargo de la lista',
-                        $price_type_surchage->name.' — resta '.Numbers::price($price_type_surchage->amount, true),
+                        DesglosePrecioHelper::DEDUCCION,
+                        $price_type_surchage->name,
+                        'Recargo de la lista: resta '.Numbers::price($price_type_surchage->amount, true),
                         Numbers::price($precio_luego_de_recargos, true),
                         'Menos '.$price_type_surchage->name.' ('.Numbers::price($price_type_surchage->amount, true).') = '.Numbers::price($precio_luego_de_recargos, true)
                     );
@@ -961,7 +970,11 @@ class ArticlePricesHelper {
                     $des[] = DesglosePrecioHelper::linea(
                         DesglosePrecioHelper::DESCUENTO,
                         'Descuento',
-                        '$'.$discount->amount,
+                        // Formateado con Numbers::price y no con el '$'.$amount crudo del texto
+                        // historico: en el layout nuevo este numero queda al lado de un monto que si
+                        // esta formateado, y "$1500.00" contra "$8.500,00" se lee como un error. El
+                        // `texto` de abajo sigue con el crudo, que es lo que no se puede tocar.
+                        Numbers::price($discount->amount, true),
                         Numbers::price($price, true),
                         'Menos descuento de $'.$discount->amount.' = '.Numbers::price($price, true)
                     );

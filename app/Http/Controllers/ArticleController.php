@@ -1044,6 +1044,13 @@ class ArticleController extends Controller
 
         $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
 
+        // Un articulo sin costo NI precio hace que setFinalPrice() corte antes de armar nada y
+        // devuelva el MODELO en vez de un array. Se normaliza aca, en el borde: el modal ahora abre
+        // al instante, asi que sin esto el usuario ve girar el spinner y despues un cuadro vacio.
+        if (!is_array($detalle)) {
+            $detalle = DesglosePrecioHelper::sin_calculo();
+        }
+
         // `description` se DERIVA de `detalle`: una sola emision, dos vistas de lo mismo. Sigue
         // siendo array de strings a proposito, para que un bundle viejo de la PWA -que pinta cada
         // renglon tal cual- no reciba objetos y muestre '[object Object]'.
@@ -1078,6 +1085,11 @@ class ArticleController extends Controller
         }
 
         $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
+
+        // Mismo guard que el endpoint hermano de arriba, por el mismo motivo.
+        if (!is_array($detalle)) {
+            $detalle = DesglosePrecioHelper::sin_calculo();
+        }
 
         // Mismo criterio que el endpoint hermano de arriba: `description` se DERIVA de `detalle`
         // (una sola emision, dos vistas) y se mantiene como array de strings para no romperle el

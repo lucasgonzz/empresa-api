@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Exports\SimulacionCosteoExport;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Models\Article;
 use App\Models\User;
 use Carbon\Carbon;
@@ -122,7 +123,13 @@ class SimularCosteoCondicionFiscal extends Command
                 // el segundo recorrido de mas abajo necesita poder recuperar esta descripcion
                 // puntual por articulo, no la del ultimo item de ESTE bucle.
                 if ($es_ejemplo) {
-                    $des_actual_por_articulo[$article->id] = ArticleHelper::setFinalPrice($article, $user->id, $user, null, true, null, true);
+                    // solo_textos(): desde el 21/8/2026 setFinalPrice() devuelve el desglose como
+                    // entradas estructuradas, y esto termina en una celda de Excel. Sin esto, el
+                    // value binder de Laravel Excel json_encodea el array y la columna "Paso a paso"
+                    // queda con {"tipo":"iva","clave":null,...} en vez del renglon.
+                    $des_actual_por_articulo[$article->id] = DesglosePrecioHelper::solo_textos(
+                        ArticleHelper::setFinalPrice($article, $user->id, $user, null, true, null, true)
+                    );
                 }
 
                 $index++;
@@ -165,7 +172,10 @@ class SimularCosteoCondicionFiscal extends Command
                 if ($es_ejemplo) {
 
                     // Calculo paso a paso de la dinamica NUEVA, ya con la bandera activada en memoria.
-                    $des_nuevo = ArticleHelper::setFinalPrice($article, $user->id, $user, null, true, null, true);
+                    // Mismo motivo que arriba: esto va a una celda de Excel, no a la pantalla.
+                    $des_nuevo = DesglosePrecioHelper::solo_textos(
+                        ArticleHelper::setFinalPrice($article, $user->id, $user, null, true, null, true)
+                    );
 
                     $des_actual = isset($des_actual_por_articulo[$article->id]) ? $des_actual_por_articulo[$article->id] : null;
 

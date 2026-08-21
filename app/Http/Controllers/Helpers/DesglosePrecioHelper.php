@@ -38,6 +38,14 @@ class DesglosePrecioHelper {
     const IVA           = 'iva';
     const DESCUENTO     = 'descuento';
     const RECARGO       = 'recargo';
+    /*
+        Lo que RESTA del precio sin ser un descuento comercial: hoy, los price_type_surchages
+        de una lista, que se llaman "recargos" en el modelo pero el codigo les hace -= (es
+        intencional, decision de Lucas del 4/7). Tienen tipo propio y no RECARGO porque el
+        front dibuja RECARGO con un signo mas: usarlo aca pondria el icono diciendo lo
+        contrario de lo que hace la cuenta.
+    */
+    const DEDUCCION     = 'deduccion';
     const IMPUESTO      = 'impuesto';
     const COTIZACION    = 'cotizacion';
     const UNIDADES      = 'unidades';
@@ -72,6 +80,7 @@ class DesglosePrecioHelper {
             Self::IVA,
             Self::DESCUENTO,
             Self::RECARGO,
+            Self::DEDUCCION,
             Self::IMPUESTO,
             Self::COTIZACION,
             Self::UNIDADES,
@@ -128,6 +137,32 @@ class DesglosePrecioHelper {
             'detalle'  => null,
             'valor'    => null,
             'texto'    => $texto,
+        ];
+    }
+
+    /**
+     * Desglose de un articulo que no tiene nada que explicar todavia.
+     *
+     * ArticleHelper::setFinalPrice() tiene un early return al principio: si el articulo no tiene ni
+     * costo ni precio (y la cuenta no usa listas ni ventas en dolares), no hay cadena que recorrer y
+     * devuelve el MODELO, no un array -- aunque se le haya pedido la descripcion. Eso siempre fue
+     * asi, pero antes casi no se notaba: el modal recien se abria cuando llegaba la respuesta.
+     * Desde que abre al instante, el usuario se come un cuadro vacio despues del spinner.
+     *
+     * Una nota que diga que falta cargar el costo es la respuesta correcta a "por que este precio",
+     * y es mejor que un modal en blanco o que un error que no lo es.
+     *
+     * @return array
+     */
+    static function sin_calculo() {
+        return [
+            Self::linea(
+                Self::NOTA,
+                'Todavia no hay calculo para mostrar',
+                'Cargale un costo o un precio al articulo y el desglose aparece solo',
+                null,
+                'Todavia no hay calculo para mostrar: cargale un costo o un precio al articulo'
+            ),
         ];
     }
 

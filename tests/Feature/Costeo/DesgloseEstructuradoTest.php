@@ -3,6 +3,7 @@
 namespace Tests\Feature\Costeo;
 
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
+use App\Models\Article;
 use App\Models\PriceType;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -245,6 +246,57 @@ class DesgloseEstructuradoTest extends EmpresaTestCase
             DesglosePrecioHelper::SECCION,
             $encabezado['tipo'],
             'el encabezado de una lista con nombre acentuado tiene que seguir siendo una seccion'
+        );
+    }
+
+    /**
+     * Test 6 - un articulo sin costo ni precio devuelve una nota, no un cuadro vacio.
+     *
+     * ArticleHelper::setFinalPrice() tiene un early return al principio: sin costo, sin precio y en
+     * una cuenta que no usa listas ni ventas en dolares, no hay cadena que recorrer y devuelve el
+     * MODELO en vez de un array, aunque se le haya pedido la descripcion.
+     *
+     * Antes casi no se notaba, porque el modal recien se abria cuando llegaba la respuesta. Desde
+     * que abre al instante, ese camino dejaba al usuario mirando un spinner y despues un cuadro
+     * vacio, sin error ni explicacion. El endpoint normaliza y devuelve una nota.
+     *
+     * @group costeo
+     * @test
+     */
+    public function un_articulo_sin_costo_ni_precio_devuelve_una_nota()
+    {
+        $user = $this->user_del_fixture();
+
+        // La guarda del early return exige las tres cosas: sin costo, sin precio, y una cuenta que
+        // no usa listas de precio (si no, la cadena corre igual y el desglose sale normal).
+        $listas_de_precio_original = $user->listas_de_precio;
+        $user->listas_de_precio = 0;
+        $user->save();
+
+        $articulo = Article::create([
+            'name'    => 'Articulo sin costo ni precio '.uniqid(),
+            'user_id' => $user->id,
+            'status'  => 'active',
+        ]);
+
+        $response = $this->getJson('api/article/final-price-description/'.$articulo->id);
+
+        $user->listas_de_precio = $listas_de_precio_original;
+        $user->save();
+        $articulo->delete();
+
+        $response->assertStatus(200);
+
+        $detalle = $response->json('detalle');
+
+        $this->assertIsArray($detalle, 'detalle tiene que ser un array aunque no haya calculo');
+        $this->assertNotEmpty($detalle, 'el modal se abre siempre: no puede quedar sin nada que decir');
+        $this->assertSame(DesglosePrecioHelper::NOTA, $detalle[0]['tipo']);
+
+        $this->assertSame(
+            $response->json('description'),
+            array_column($detalle, 'texto'),
+            'description tiene que seguir derivandose de detalle tambien en este camino'
         );
     }
 
