@@ -104,16 +104,18 @@ class CreditAccountController extends Controller
             return response()->json(['message' => 'No existe la cuenta corriente de esa moneda.'], 404);
         }
 
-        $limite = $request->limite_credito;
+        // 🔴 Redondear ANTES de comparar contra 0, no después: un input como "0.001" no es <= 0,
+        // así que con el orden viejo caía al else y se guardaba round(0.001, 2) = 0.00 — el mismo
+        // "límite en 0 sin querer" que el comentario de abajo dice que hay que evitar.
+        $limite = (is_null($request->limite_credito) || $request->limite_credito === '')
+            ? null
+            : round((float) $request->limite_credito, 2);
 
-        // Un límite en 0 o negativo se guarda como null, no como 0: "sin límite" y "no puede deber
-        // ni un peso" son cosas distintas, y un 0 escrito por accidente frenaría todas las ventas
-        // de ese cliente.
-        if (is_null($limite) || $limite === '' || (float) $limite <= 0) {
-            $model->limite_credito = null;
-        } else {
-            $model->limite_credito = round((float) $limite, 2);
-        }
+        // Un límite en 0 o negativo (ya redondeado) se guarda como null, no como 0: "sin límite" y
+        // "no puede deber ni un peso" son cosas distintas, y un 0 escrito por accidente frenaría
+        // todas las ventas de ese cliente. Un valor no numérico ("abc") cae acá también: (float)
+        // lo interpreta como 0, y 0 se guarda como null igual que cualquier otro valor <= 0.
+        $model->limite_credito = (is_null($limite) || $limite <= 0) ? null : $limite;
 
         $model->save();
 

@@ -468,7 +468,26 @@ class SaleController extends Controller
             $model->save();
 
             $model = Sale::find($model->id);
-            
+
+            /**
+             * Límite de crédito del cliente (misión 160), lado update(). A diferencia de store(),
+             * acá corre DENTRO de la transacción (ya viene abierta desde el principio del método,
+             * y para este punto ya se hicieron detachItems, dos $model->save() y attachProperies),
+             * así que un rechazo tiene que hacer DB::rollBack() explícito antes de responder: si
+             * no, la transacción queda abierta y nadie la cierra en este camino.
+             *
+             * Cubre el caso que store() no puede ver: una venta to_check que se confirma editando
+             * (to_check pasa a 0) y recién ahí entra a la cuenta corriente, o una venta que ya
+             * estaba y le suben el total. Ver LimiteCreditoHelper::validar_venta_actualizada().
+             */
+            $error_limite_credito = LimiteCreditoHelper::validar_venta_actualizada($model);
+
+            if (!is_null($error_limite_credito)) {
+
+                DB::rollBack();
+                return response()->json($error_limite_credito, 422);
+            }
+
             if ($model->client_id && !$model->to_check && !$model->checked) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
             }

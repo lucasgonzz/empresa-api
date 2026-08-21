@@ -7,16 +7,23 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Client;
 use App\Models\CreditAccount;
+use App\Models\CurrentAcount;
 use App\Models\Moneda;
 use App\Models\Sale;
 
 /**
- * Chequeo del límite de crédito del cliente al guardar una venta nueva (misión 160).
+ * Chequeo del límite de crédito del cliente al guardar o actualizar una venta (misión 160).
  *
- * No reescribe las reglas de "¿esta venta entra a la cuenta corriente?": arma una `Sale`
- * hipotética (sin guardarla) con los mismos datos del request y le pregunta a
+ * No reescribe las reglas de "¿esta venta entra a la cuenta corriente?": le pregunta a
  * `SaleHelper::va_a_volver_a_la_cuenta_corriente()`, que es la misma función que usa el flujo
- * real al guardar. Si mañana esa regla cambia, este chequeo cambia con ella.
+ * real (tanto al crear como al actualizar). Si mañana esa regla cambia, este chequeo cambia con
+ * ella.
+ *
+ * Dos entradas, una por cada lugar donde `SaleController` hace que una venta impacte la cuenta
+ * corriente:
+ *  - `validar_venta_nueva()` — `SaleController::store()`, ANTES de `DB::beginTransaction()`.
+ *  - `validar_venta_actualizada()` — `SaleController::update()`, DENTRO de la transacción ya
+ *    abierta, justo antes de `SaleHelper::updateCurrentAcountsAndCommissions()`.
  */
 class LimiteCreditoHelper {
 
@@ -60,13 +67,8 @@ class LimiteCreditoHelper {
             'moneda_id'                  => $moneda_id,
         ]);
 
-        // Misma condición exacta que SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar(),
-        // llamando al mismo helper que ella llama. 🔴 No hacer $sale->save() acá: es hipotética.
-        if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
-            && !SaleHelper::al_cliente_se_le_factura_en_el_acto($sale)) {
-
-            $sale->save_current_acount = 0;
-        }
+        // 🔴 No hacer $sale->save() acá: es hipotética. Ver aplicar_bandera_facturar_primero().
+        Self::aplicar_bandera_facturar_primero($sale);
 
         if (!SaleHelper::va_a_volver_a_la_cuenta_corriente($sale)) {
             return null;
@@ -96,6 +98,160 @@ class LimiteCreditoHelper {
             return null;
         }
 
+        return Self::armar_respuesta_422(
+            $client->id,
+            $client->name,
+            $credit_account->id,
+            $moneda_id,
+            $saldo_actual,
+            $total,
+            $saldo_resultante,
+            $limite
+        );
+    }
+
+    /**
+     * Mismo chequeo que validar_venta_nueva(), pero para una venta que YA existe y se está
+     * actualizando (`SaleController::update()`).
+     *
+     * `SaleHelper::updateCurrentAcountsAndCommissions()` SIEMPRE borra el movimiento de cuenta
+     * corriente de esta venta (si tenía uno) y lo vuelve a crear si corresponde — el mismo
+     * mecanismo cubre tanto "una venta to_check que se confirma y recién ahora entra a la cuenta
+     * corriente" como "una venta que ya estaba y le suben el total". Por eso acá hay que restar el
+     * movimiento actual del saldo antes de sumar el total nuevo: si no, un total que NO cambió se
+     * compararía contra un saldo que ya lo incluye, y el sistema se rechazaría a sí mismo.
+     *
+     * @param  \App\Models\Sale  $sale  Venta ya guardada y refrescada (el $model de
+     *                                  SaleController::update(), después del Sale::find() que
+     *                                  sigue al segundo $model->save()).
+     * @return array|null  null = la actualización puede seguir. Array = cuerpo del 422.
+     */
+    static function validar_venta_actualizada($sale) {
+
+        // Mismo criterio que SaleController::update() para decidir si llama a
+        // SaleHelper::updateCurrentAcountsAndCommissions(): sin cliente, o con to_check/checked,
+        // no hay cuenta corriente que se pueda excender en esta actualización.
+        if (is_null($sale->client_id) || !$sale->client_id) {
+            return null;
+        }
+
+        if ($sale->to_check || $sale->checked) {
+            return null;
+        }
+
+        $client = Client::find($sale->client_id);
+
+        if (is_null($client)) {
+            return null;
+        }
+
+        /*
+            🔴 A propósito NO se llama acá a aplicar_bandera_facturar_primero() (a diferencia de
+            validar_venta_nueva()).
+
+            Esa función fuerza save_current_acount = 0 replicando lo que
+            SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar() hace en el momento de
+            CREAR la venta — necesario en validar_venta_nueva() porque ahí se arma una Sale
+            hipotética desde cero, que nunca pasó por ese forzado real.
+
+            Acá $sale es la venta YA PERSISTIDA (SaleController::update() la vuelve a leer con
+            Sale::find() antes de este chequeo). Su save_current_acount es el valor real que quedó
+            grabado cuando se CREÓ (update() nunca reasigna esa columna — verificado, no aparece en
+            SaleController::update()), y es exactamente ESE valor el que
+            va_a_volver_a_la_cuenta_corriente() usa para decidir si
+            updateCurrentAcountsAndCommissions() recrea el movimiento. Forzarlo de nuevo acá según
+            el estado ACTUAL de la extensión podría desalinearse de lo que la actualización real
+            hace si la extensión (o la bandera del cliente) cambió después de que la venta se creó:
+            dejaría pasar sin chequeo una venta que en los hechos sí vuelve a la cuenta corriente
+            con el total nuevo. Por eso se usa directamente el valor persistido.
+        */
+        if (!SaleHelper::va_a_volver_a_la_cuenta_corriente($sale)) {
+            return null;
+        }
+
+        // update() nunca reasigna moneda_id (no está entre los campos que reescribe): en una venta
+        // ya persistida siempre viene seteado, pero se normaliza igual por las dudas.
+        $moneda_id = !is_null($sale->moneda_id) ? (int) $sale->moneda_id : 1;
+
+        $credit_account = CreditAccount::where('model_name', 'client')
+                                        ->where('model_id', $client->id)
+                                        ->where('moneda_id', $moneda_id)
+                                        ->first();
+
+        if (is_null($credit_account) || is_null($credit_account->limite_credito)) {
+            return null;
+        }
+
+        $saldo_actual = (float) CurrentAcountHelper::getSaldo($credit_account->id);
+
+        // El movimiento que esta MISMA venta ya tiene en esta cuenta (si tiene uno): hay que
+        // restarlo antes de sumar el total nuevo, porque updateCurrentAcountsAndCommissions() lo
+        // va a borrar y recrear. whereNull('haber') lo distingue de un pago/cobro imputado a esta
+        // venta (mismo filtro que usa SaleHelper::deleteCurrentAcountFromSale()).
+        $movimiento_actual = CurrentAcount::where('sale_id', $sale->id)
+                                        ->where('credit_account_id', $credit_account->id)
+                                        ->whereNull('haber')
+                                        ->first();
+
+        $saldo_sin_este_movimiento = $saldo_actual - (!is_null($movimiento_actual) ? (float) $movimiento_actual->debe : 0);
+
+        $total            = (float) $sale->total;
+        $saldo_resultante = $saldo_sin_este_movimiento + $total;
+        $limite           = (float) $credit_account->limite_credito;
+
+        if ($saldo_resultante <= $limite + 0.01) {
+            return null;
+        }
+
+        return Self::armar_respuesta_422(
+            $client->id,
+            $client->name,
+            $credit_account->id,
+            $moneda_id,
+            $saldo_sin_este_movimiento,
+            $total,
+            $saldo_resultante,
+            $limite
+        );
+    }
+
+    /**
+     * Fuerza save_current_acount a 0 en una Sale HIPOTÉTICA (sin persistir) cuando la extensión
+     * "guardad_cuenta_corriente_despues_de_facturar" está activa y el cliente no tiene la bandera
+     * de saltearla. Replica la condición exacta de
+     * SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar() (llamando al mismo helper
+     * que ella llama), sin el $sale->save() — acá $sale nunca se persiste.
+     *
+     * Sólo la usa validar_venta_nueva(). Ver el comentario dentro de validar_venta_actualizada()
+     * sobre por qué esa otra función NO la necesita (y no debe usarla).
+     *
+     * @param  \App\Models\Sale  $sale  Sale hipotética, mutada in-place.
+     * @return void
+     */
+    private static function aplicar_bandera_facturar_primero($sale) {
+
+        if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
+            && !SaleHelper::al_cliente_se_le_factura_en_el_acto($sale)) {
+
+            $sale->save_current_acount = 0;
+        }
+    }
+
+    /**
+     * Arma el cuerpo del 422, compartido por validar_venta_nueva() y validar_venta_actualizada().
+     *
+     * @param  int     $client_id
+     * @param  string  $client_name
+     * @param  int     $credit_account_id
+     * @param  int     $moneda_id
+     * @param  float   $saldo_actual
+     * @param  float   $total
+     * @param  float   $saldo_resultante
+     * @param  float   $limite
+     * @return array
+     */
+    private static function armar_respuesta_422($client_id, $client_name, $credit_account_id, $moneda_id, $saldo_actual, $total, $saldo_resultante, $limite) {
+
         $moneda = Moneda::find($moneda_id);
         $moneda_name = !is_null($moneda) ? $moneda->name : 'Peso';
 
@@ -103,15 +259,15 @@ class LimiteCreditoHelper {
 
         return [
             'error_limite_credito' => true,
-            'message'              => 'El cliente '.$client->name.' superaría su límite de crédito en '.$moneda_name.'. '.
+            'message'              => 'El cliente '.$client_name.' superaría su límite de crédito en '.$moneda_name.'. '.
                 'Saldo actual: '.Self::formato($saldo_actual).'. '.
                 'Total de esta venta: '.Self::formato($total).'. '.
                 'Saldo resultante: '.Self::formato($saldo_resultante).'. '.
                 'Límite: '.Self::formato($limite).'.',
             'limite_credito'        => [
-                'client_id'         => $client->id,
-                'client_name'       => $client->name,
-                'credit_account_id' => $credit_account->id,
+                'client_id'         => $client_id,
+                'client_name'       => $client_name,
+                'credit_account_id' => $credit_account_id,
                 'moneda_id'         => $moneda_id,
                 'moneda_name'       => $moneda_name,
                 'saldo_actual'      => round($saldo_actual, 2),
