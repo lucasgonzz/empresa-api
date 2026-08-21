@@ -333,7 +333,13 @@ class EscaneoFacturaCompraService
         $timeout    = (int) config('services.escaneo_factura_compra.timeout');
         $max_tokens = (int) config('services.escaneo_factura_compra.max_tokens');
 
-        $model      = $model !== '' ? $model : 'claude-sonnet-4-5';
+        /*
+         * Fallback por si config() viene vacío. Tiene que decir lo MISMO que el default de
+         * config/services.php ('escaneo_factura_compra.model') y que el .env.example: son tres
+         * lugares con el mismo valor, y desincronizarlos hace que el modelo real dependa de cuál
+         * de los tres ganó, que es lo peor de los dos mundos.
+         */
+        $model      = $model !== '' ? $model : 'claude-sonnet-5';
         $timeout    = $timeout > 0 ? $timeout : 180;
         $max_tokens = $max_tokens > 0 ? $max_tokens : 8000;
 
