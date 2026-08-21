@@ -523,6 +523,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Antes usaba esta ruta para obtener los current_acounts, ahora llamo al controlador de CreditAccount
     // Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
     Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CreditAccountController@index');
+    Route::post('/credit-account/limite-credito', 'CreditAccountController@update_limite_credito');
 
     Route::post('/current-acount/pago', 'CurrentAcountController@pago');
     Route::post('/current-acount/nota-credito', 'CurrentAcountController@notaCredito');
