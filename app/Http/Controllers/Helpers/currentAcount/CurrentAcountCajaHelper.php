@@ -20,6 +20,51 @@ class CurrentAcountCajaHelper {
 	 *        que entró la plata, para resolver la cascada de liquidación/comisión. Último parámetro
 	 *        opcional para no romper a los llamadores existentes (ChequeController no lo manda).
 	 */
+	/**
+	 * Nombres de las cajas CERRADAS entre los metodos de pago que vienen en el request, para poder
+	 * frenar el pago ANTES de crear nada.
+	 *
+	 * Existe aparte de DeleteCajaCompensacionHelper::verificar_cajas_abiertas() porque aquel
+	 * recorre la relacion ya attachada (objetos con ->pivot) y este recorre el array crudo del
+	 * request, que es lo unico que hay disponible antes de guardar. El criterio es el mismo:
+	 * sin caja_id (null o 0) no hay impacto en caja y no se valida nada; una caja que no existe se
+	 * saltea; el fallback del nombre es "Caja N° {num}".
+	 *
+	 * @param array|null $payment_methods Array crudo `current_acount_payment_methods` del request.
+	 * @return array Nombres de las cajas cerradas, sin repetir.
+	 */
+	static function cajas_cerradas_en_payload($payment_methods) {
+
+		$cerradas_por_id = [];
+
+		if (!is_array($payment_methods)) {
+
+			return [];
+		}
+
+		foreach ($payment_methods as $payment_method) {
+
+			if (!isset($payment_method['caja_id']) || (int)$payment_method['caja_id'] === 0) {
+
+				continue;
+			}
+
+			$caja = Caja::find($payment_method['caja_id']);
+
+			if (is_null($caja)) {
+
+				continue;
+			}
+
+			if ((int)$caja->abierta !== 1) {
+
+				$cerradas_por_id[$caja->id] = $caja->name ? $caja->name : ('Caja N° '.$caja->num);
+			}
+		}
+
+		return array_values($cerradas_por_id);
+	}
+
 	static function guardar_pago($pago_amount, $caja_id, $model_name, $pago, $notas = null, $current_acount_payment_method_id = null) {
 
         $ingreso = null;

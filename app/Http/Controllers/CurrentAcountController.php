@@ -6,6 +6,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
@@ -64,6 +65,28 @@ class CurrentAcountController extends Controller
     public function pago(Request $request) {
 
         // CurrentAcountHelper::eliminar_pagos_provisorios($request->credit_account_id, $request->is_provisorio);
+
+        /*
+         * 🔴 Las cajas destino se validan ACA, antes de crear absolutamente nada.
+         *
+         * Un pago se puede repartir entre varias cajas (tipico con la extension de ventas en
+         * dolares: efectivo en dolares a la caja en dolares + efectivo en pesos a la caja en
+         * pesos). Los movimientos se crean uno por uno mas abajo, en attachPaymentMethods(), y si
+         * la segunda caja no tenia apertura el flujo se cortaba ahi: el primer movimiento ya
+         * estaba hecho, el pago ya estaba creado, y no llegaban a correr ni el saldo ni la
+         * imputacion. Quedaba un pago huerfano y una caja sin la plata (reportado el 21/8/2026).
+         *
+         * Validar despues no alcanza: para cuando falla, la mitad del trabajo ya esta persistida.
+         * Es la misma convencion que ya usa delete() de este mismo controlador para el borrado.
+         */
+        $cajas_cerradas = CurrentAcountCajaHelper::cajas_cerradas_en_payload($request->current_acount_payment_methods);
+
+        if (count($cajas_cerradas)) {
+
+            return response()->json([
+                'message' => 'Las siguientes cajas estan cerradas: '.implode(', ', $cajas_cerradas).'. Debe abrirlas para poder registrar el pago.',
+            ], 422);
+        }
 
         $pago = CurrentAcount::create([
             'haber'                             => $this->get_haber($request),

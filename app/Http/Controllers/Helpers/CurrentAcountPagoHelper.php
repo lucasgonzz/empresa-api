@@ -188,6 +188,20 @@ class CurrentAcountPagoHelper {
                 // foreach) para que guardar_pago() pueda resolver la cascada de liquidación/comisión.
                 CurrentAcountCajaHelper::guardar_pago($payment_method->pivot->amount, $payment_method->pivot->caja_id, $model_name, $pago, null, $payment_method->id);
 
+            } else if (!is_null($payment_method->pivot->amount) && (float)$payment_method->pivot->amount > 0) {
+
+                /*
+                 * Un metodo de pago con monto pero SIN caja destino no impacta en ninguna caja, y
+                 * hasta el 21/8/2026 eso pasaba sin dejar ningun rastro: la respuesta era 201, el
+                 * pago aparecia cargado y la plata no estaba en ninguna caja. Es exactamente el
+                 * modo de falla que reporto el usuario del pago en dos monedas.
+                 *
+                 * NO se lanza excepcion: hay metodos que legitimamente no tocan caja (un cheque
+                 * entra por ChequeHelper, no por aca). Lo que no puede seguir pasando es que sea
+                 * invisible cuando NO es intencional.
+                 */
+                Log::warning('attachPaymentMethods: el metodo de pago '.$payment_method->id.' del pago '.$pago->id.' tiene monto '.$payment_method->pivot->amount.' pero no tiene caja destino, asi que no impacta en ninguna caja.');
+
             // $amount = $payment_method['amount'];
             // $amount_cotizado = isset($payment_method['amount_cotizado']) ? $payment_method['amount_cotizado'] : null;
             // $cotizacion = isset($payment_method['cotizacion']) ? $payment_method['cotizacion'] : null;
