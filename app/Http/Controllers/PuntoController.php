@@ -33,12 +33,19 @@ use Illuminate\Support\Facades\DB;
  * 🔴 EL SALDO NO SE CALCULA ACÁ. SE PIDE.
  * -------------------------------------------------------------------------------------------
  *
- * Los tres lugares que muestran saldo (VENDER, la ficha y el reporte) lo sacan de
- * `PuntosSaldoHelper::saldo()`, que es `SUM(movimiento_puntos.puntos)` y nada más. Si este
- * controller le agregara su propia exclusión de vencidos o de revertidos, el mismo invariante
- * quedaría decidido con dos criterios distintos y la primera pantalla que se olvide uno muestra
- * otro número (APRENDER_NO_PARCHEAR.md:997). Los vencidos y los revertidos ya son filas
- * negativas del libro.
+ * Los dos lugares que le muestran un saldo AL USUARIO (VENDER y la ficha del cliente) lo sacan
+ * de `PuntosSaldoHelper::saldo()`, que es EL SALDO DISPONIBLE: lo que el cliente puede gastar
+ * hoy. El reporte de pasivo pide la otra pregunta, `saldo_del_libro()`, que es el `SUM(puntos)`
+ * crudo. Son dos números distintos a propósito y el docblock de PuntosSaldoHelper explica por
+ * qué (el disponible descuenta los lotes ya vencidos que el barrido de `puntos:vencer` todavía
+ * no convirtió en fila negativa, así que no se mueve cuando pasa el cron).
+ *
+ * 🔴 LO QUE ESTE CONTROLLER NO PUEDE HACER ES ARMAR SU PROPIO SELECT. Si le agregara su propia
+ * exclusión de vencidos, el mismo invariante quedaría decidido con dos criterios distintos y la
+ * primera pantalla que se olvide uno muestra otro número (APRENDER_NO_PARCHEAR.md:997) — que es
+ * exactamente el bug que hubo entre la validación del canje y el FIFO, y que se arregló
+ * poniendo la regla UNA vez, adentro de `saldo()`. Los revertidos sí siguen siendo filas
+ * negativas del libro y no una condición de ningún SELECT.
  *
  * -------------------------------------------------------------------------------------------
  * 🔴 TODA QUERY FILTRA POR user_id, Y EL client_id SE VERIFICA ANTES DE DEVOLVER NADA

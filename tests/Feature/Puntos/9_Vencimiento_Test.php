@@ -14,11 +14,17 @@ use Database\Seeders\testing\TestingFerreteriaSeeder;
  *  🔴 POR QUÉ ES UN COMANDO Y NO UN CÁLCULO PEREZOSO AL LEER EL SALDO
  * ─────────────────────────────────────────────────────────────────────────────
  *
- *  El saldo lo leen tres lugares distintos —VENDER al elegir el cliente, la ficha del cliente y el
- *  reporte de pasivo—. Si "vencido" fuera una condición del SELECT, los tres tendrían que
- *  implementar la misma exclusión y el primero que se la olvide muestra otro número. Con el
- *  comando, el vencimiento es una FILA NEGATIVA del libro y el saldo sigue siendo
- *  `SUM(movimiento_puntos.puntos)`, una sola frase imposible de implementar mal.
+ *  El vencimiento tiene que quedar ESCRITO en el libro como una FILA NEGATIVA, con su fecha: el
+ *  reporte de pasivo necesita "cuántos puntos vencieron en tal período" como un dato contable, y
+ *  con la fila escrita el pasivo del programa sigue siendo `SUM(movimiento_puntos.puntos)` a
+ *  secas — que es `PuntosSaldoHelper::saldo_del_libro()`.
+ *
+ *  ⚠️ Lo que NO es `SUM(puntos)` a secas es el SALDO DISPONIBLE (`PuntosSaldoHelper::saldo()`),
+ *  el que ven VENDER, la ficha del cliente y la validación del canje: desde el 22/8/2026
+ *  descuenta el remanente de los lotes ya vencidos que el comando todavía no barrió, así que el
+ *  número que ve el cliente no se mueve cuando pasa el cron. Esa exclusión vive en UN solo
+ *  lugar, adentro de `saldo()`, para que ninguna pantalla la implemente por su cuenta. El
+ *  archivo 15 la mide.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  🔴 LO QUE VENCE ES EL REMANENTE, NO LOS PUNTOS QUE EL LOTE OTORGÓ

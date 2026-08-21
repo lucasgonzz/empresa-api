@@ -8,6 +8,7 @@ use App\Models\CurrentAcount;
 use App\Models\MovimientoPunto;
 use App\Models\Sale;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -53,8 +54,11 @@ use Illuminate\Support\Facades\Log;
  *  Entonces el invariante es: para cada (venta, lista) hay A LO SUMO UNA fila 'ganados' y A LO
  *  SUMO UNA fila 'revertidos', y la de 'revertidos' existe SOLO mientras la de 'ganados' está
  *  anulada. Recalcular = escribir el número nuevo en la fila que ya está; revivir = sacarle el
- *  `anulado_at` y borrar su reverso. El saldo sigue siendo SUM(puntos) sin ninguna condición
- *  extra, que es lo único que hace que los tres lugares que lo leen no puedan discrepar.
+ *  `anulado_at` y borrar su reverso. El PASIVO del programa sigue siendo `SUM(puntos)` sin
+ *  ninguna condición extra (`PuntosSaldoHelper::saldo_del_libro()`), que es lo que hace que un
+ *  lote anulado y su reverso sumen exactamente cero sin que nadie tenga que acordarse de
+ *  excluirlos. (El SALDO DISPONIBLE que ve el cliente sí descuenta además los lotes ya
+ *  vencidos: es otra pregunta y vive en `PuntosSaldoHelper::saldo()`.)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 class PuntosAcumulacionHelper {
@@ -69,6 +73,15 @@ class PuntosAcumulacionHelper {
 
     const TIPO_GANADOS    = 'ganados';
     const TIPO_REVERTIDOS = 'revertidos';
+
+    /**
+     * El `tipo` con el que el comando `puntos:vencer` escribe la fila NEGATIVA del vencimiento.
+     *
+     * Se usa para distinguir, en `movimiento_punto_consumos`, qué pedazo de un lote se lo comió
+     * un vencimiento (que ya restó del saldo por su cuenta) y qué pedazo se lo comió un canje
+     * (que no). Ver `revertir_lote()`.
+     */
+    const TIPO_VENCIDOS = 'vencidos';
 
     /**
      * El `status` con el que `CurrentAcountHelper::notaCredito()` escribe el haber de una nota
@@ -106,9 +119,14 @@ class PuntosAcumulacionHelper {
      * coincide con lo que corresponde, NO ESCRIBE NADA.
      *
      * @param  \App\Models\Sale  $sale
+     * @param  array|null        $contexto  Datos ya leídos de a muchos por
+     *                                      `reconciliar_cuenta_corriente()`, para que esta
+     *                                      venta no vuelva a pedir uno por uno lo que ya está
+     *                                      en memoria. `null` = camino de una sola venta, que
+     *                                      lee todo por su cuenta. Ver `ventas_a_reconciliar()`.
      * @return void
      */
-    static function reconciliar_venta($sale) {
+    static function reconciliar_venta($sale, $contexto = null) {
 
         if (is_null($sale) || is_null($sale->id)) {
             return;
@@ -152,7 +170,7 @@ class PuntosAcumulacionHelper {
             return;
         }
 
-        $corresponde = self::corresponde_acumular($sale);
+        $corresponde = self::corresponde_acumular($sale, $contexto);
 
         /*
          * 🔴 `calcular_grupos()` devuelve SOLO los grupos con puntos > 0. Un array vacío
@@ -179,21 +197,32 @@ class PuntosAcumulacionHelper {
              * 22/8/2026 llega hasta acá en vez de salirse arriba— no pague los artículos
              * además del mapa de movimientos.
              */
-            $sale->load('articles');
+            /*
+             * `discounts` y `surchages` van junto con `articles` y no aparte: desde el
+             * 22/8/2026 el monto base aplica también las tres capas de descuento del
+             * ENCABEZADO (ver PuntosBaseHelper::factor_descuentos_de_venta()), y sin
+             * precargarlas cada venta pagaría dos lazy loads más. Son dos consultas nuevas por
+             * venta en el camino de guardar; en el camino de la cuenta corriente no cuestan
+             * nada porque reconciliar_cuenta_corriente() las trae de a muchas.
+             */
+            if (!self::articles_ya_frescos($contexto)) {
+                $sale->load('articles', 'discounts', 'surchages');
+            }
 
-            $grupos = PuntosBaseHelper::calcular_grupos($sale, $sistema);
+            $grupos = PuntosBaseHelper::calcular_grupos($sale, $sistema, self::factor_nc_del_contexto($sale, $contexto));
         }
 
-        self::aplicar_grupos($sale, $sistema, $grupos);
+        self::aplicar_grupos($sale, $sistema, $grupos, $contexto);
     }
 
     /**
      * ¿A esta venta le corresponde tener puntos hoy?
      *
      * @param  \App\Models\Sale  $sale
+     * @param  array|null        $contexto  Ver reconciliar_venta().
      * @return bool
      */
-    static function corresponde_acumular($sale) {
+    static function corresponde_acumular($sale, $contexto = null) {
 
         if (is_null($sale->client_id) || !$sale->client_id) {
             return false;
@@ -218,9 +247,7 @@ class PuntosAcumulacionHelper {
              * Normalmente hay uno solo, pero un cliente con cuentas en dos monedas puede tener
              * más de uno, y "saldada" tiene que significar saldada entera.
              */
-            $debitos = CurrentAcount::where('sale_id', $sale->id)
-                                    ->whereNull('haber')
-                                    ->get();
+            $debitos = self::debitos_del_contexto($sale, $contexto);
 
             if (!count($debitos)) {
                 return false;
@@ -422,17 +449,238 @@ class PuntosAcumulacionHelper {
                                     ->whereNotNull('debe')
                                     ->whereNotNull('sale_id')
                                     ->distinct()
-                                    ->pluck('sale_id');
+                                    ->pluck('sale_id')
+                                    ->all();
 
         if (!count($sale_ids)) {
             return;
         }
 
-        $sales = Sale::whereIn('id', $sale_ids)->get();
+        /*
+         * TODOS los débitos de esas ventas, con sus imputaciones ya cargadas. Dos consultas
+         * fijas, no dos por venta.
+         *
+         * 🔴 Se busca por `sale_id` y NO por `credit_account_id`: una venta puede tener débito
+         * en más de una cuenta (el cliente con cuentas en dos monedas), y `corresponde_acumular()`
+         * exige que estén TODOS saldados. Filtrar por la cuenta que disparó el cobro le
+         * escondería la mitad y le haría decir que sí cuando la otra moneda sigue impaga.
+         */
+        $debitos = CurrentAcount::whereIn('sale_id', $sale_ids)
+                                ->whereNull('haber')
+                                ->with('pagado_por')
+                                ->get();
+
+        $debitos_por_venta = [];
+
+        foreach ($debitos as $debito) {
+
+            $sale_id = (int) $debito->sale_id;
+
+            if (!array_key_exists($sale_id, $debitos_por_venta)) {
+                $debitos_por_venta[$sale_id] = [];
+            }
+
+            $debitos_por_venta[$sale_id][] = $debito;
+        }
+
+        /*
+         * El estado ESCRITO de las mismas ventas, en una sola consulta. Es la otra mitad de la
+         * comparación que decide a quién hay que visitar.
+         */
+        $movimientos_por_venta = self::mapas_de_movimientos($sale_ids);
+
+        $candidatas = self::ventas_a_reconciliar($sale_ids, $debitos_por_venta, $movimientos_por_venta);
+
+        if (!count($candidatas)) {
+            return;
+        }
+
+        /*
+         * Recién acá se leen las ventas, y solo las candidatas. `articles`, `discounts` y
+         * `surchages` van eager para que calcular_grupos() no pague un lazy load por venta:
+         * son tres consultas fijas para todo el lote, no tres por venta.
+         */
+        $sales = Sale::whereIn('id', $candidatas)
+                        ->with('articles', 'discounts', 'surchages')
+                        ->get();
+
+        $totales = [];
 
         foreach ($sales as $sale) {
-            self::reconciliar_venta($sale);
+            $totales[(int) $sale->id] = (float) $sale->total;
         }
+
+        $factores_nc = PuntosBaseHelper::factores_nota_credito(array_keys($totales), $totales);
+
+        foreach ($sales as $sale) {
+
+            $sale_id = (int) $sale->id;
+
+            self::reconciliar_venta($sale, [
+                'articles_frescos' => true,
+                'debitos'          => array_key_exists($sale_id, $debitos_por_venta) ? $debitos_por_venta[$sale_id] : [],
+                'mapa'             => array_key_exists($sale_id, $movimientos_por_venta) ? $movimientos_por_venta[$sale_id] : self::mapa_vacio(),
+                'factor_nc'        => array_key_exists($sale_id, $factores_nc) ? $factores_nc[$sale_id] : 1,
+            ]);
+        }
+    }
+
+    /**
+     * De todas las ventas con débito en la cuenta, cuáles PUEDE haber tocado este pago.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 EL N+1 SIN TECHO QUE ESTO ARREGLA.
+     *
+     *  Hasta el 22/8/2026 acá se traían TODOS los `sale_id` con débito en la cuenta —sin filtro
+     *  de fecha ni de estado— y se llamaba a `reconciliar_venta()` por cada uno. Cada visita
+     *  pagaba `load('articles')`, la consulta de débitos, las dos de `factor_nota_credito()` y
+     *  la de `mapa_de_movimientos()`. Medido con un cliente de 21 ventas de historia: 112
+     *  consultas con la extensión contra 25 sin ella, o sea ~4,1 consultas EXTRA por venta
+     *  histórica, y creciendo para siempre. Esto cuelga del final de
+     *  `CurrentAcountPagoHelper::init()` —el cobro de todos los días— y de `checkPagos()`, que
+     *  corre en `ProcessCheckSaldosChunk` y `ProcessRecalculateCurrentAcounts` sobre TODAS las
+     *  cuentas de TODOS los clientes. Un mayorista con 2.000 ventas pagaba ~8.000 consultas por
+     *  cobro. Lo que los tests medían hasta ese día era el costo del comercio SIN la extensión;
+     *  el del que COMPRÓ el módulo no lo miraba nadie.
+     *
+     *  ⚠️ "Reconciliar sólo la venta del pago" es DEMASIADO ANGOSTO y por eso no se hizo: la
+     *  imputación FIFO de `CurrentAcountPagoHelper` cascadea, así que un solo pago puede saldar
+     *  tres ventas de una. Y `checkPagos()` borra las imputaciones de la cuenta entera y las
+     *  vuelve a repartir, con lo que una venta vieja puede DESALDARSE por un pago de hoy.
+     *
+     *  EL CONJUNTO MÍNIMO Y CORRECTO. Como `reconciliar_venta()` es idempotente —no escribe si
+     *  lo que corresponde coincide con lo escrito—, alcanza con visitar las ventas donde los dos
+     *  pueden discrepar. Y las dos mitades se calculan de a muchas, con dos consultas fijas:
+     *
+     *   (1) EL ESTADO QUE CORRESPONDE contra EL ESCRITO. `deberia` = todos los débitos de la
+     *       venta en 'pagado' y con plata de verdad adentro (la misma pregunta que hace
+     *       `hubo_cobro_real()`, sobre las mismas filas de `pagado_por`). `tiene_lote_vivo` = hay
+     *       una fila 'ganados' sin `anulado_at`. Si los dos coinciden, este pago no pudo cambiar
+     *       nada: una venta saldada hace tres años, con su lote vivo escrito, sigue saldada y con
+     *       el mismo lote. Si discrepan, hay algo que otorgar o algo que revertir.
+     *
+     *   (2) LAS VENTAS CON UNA NOTA DE CRÉDITO IMPUTADA. Son la única excepción donde el MONTO
+     *       puede cambiar sin que se mueva ninguno de los dos booleanos: el monto base se achica
+     *       en proporción a lo que las NC le imputaron a ese débito
+     *       (`PuntosBaseHelper::factor_nota_credito()`), y `checkPagos()` puede repartir la misma
+     *       NC distinto después de que le borren un pago al cliente. Se sacan de las mismas filas
+     *       de `pagado_por` que ya se leyeron para (1), así que no cuestan una consulta más.
+     *
+     *  QUÉ QUEDA AFUERA, Y POR QUÉ ES CORRECTO: una venta cuyo lote ya está escrito y cuyo
+     *  débito sigue pagado con plata. Su monto base sólo puede cambiar si cambian sus renglones
+     *  o el encabezado —o sea, si alguien EDITA la venta—, y ese camino no pasa por acá:
+     *  `SaleController@update` llama a `reconciliar_venta()` derecho sobre la venta editada.
+     *
+     *  ⚠️ LO QUE SÍ SIGUE ENTRANDO DE MÁS, dicho para que nadie lo descubra midiendo: una venta
+     *  saldada que NO otorga puntos por una razón que este filtro no ve (el programa filtra por
+     *  lista de precio y la venta es de otra, o se devolvió entera) tiene `deberia = true` y
+     *  ningún lote, así que queda de candidata en cada cobro. No se puede evitar sin recalcular
+     *  el monto base, que es justo lo caro. Pero ya no importa: las candidatas se leen TODAS
+     *  JUNTAS, así que N candidatas cuestan las mismas ~6 consultas que una.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     * @param  array  $sale_ids
+     * @param  array  $debitos_por_venta      sale_id => lista de débitos con pagado_por cargado.
+     * @param  array  $movimientos_por_venta  sale_id => el mapa de mapa_de_movimientos().
+     * @return array  Los sale_id a visitar.
+     */
+    private static function ventas_a_reconciliar($sale_ids, $debitos_por_venta, $movimientos_por_venta) {
+
+        $candidatas = [];
+
+        foreach ($sale_ids as $sale_id) {
+
+            $sale_id = (int) $sale_id;
+
+            $debitos = array_key_exists($sale_id, $debitos_por_venta) ? $debitos_por_venta[$sale_id] : [];
+
+            $deberia         = self::deberia_tener_lote_vivo($debitos);
+            $tiene_lote_vivo = self::tiene_lote_vivo($sale_id, $movimientos_por_venta);
+
+            if ($deberia != $tiene_lote_vivo || self::tiene_nota_credito_imputada($debitos)) {
+                $candidatas[] = $sale_id;
+            }
+        }
+
+        return $candidatas;
+    }
+
+    /**
+     * La mitad barata de `corresponde_acumular()`: ¿los débitos dicen que esta venta tendría que
+     * tener puntos vivos?
+     *
+     * A propósito NO mira `client_id`, `to_check`/`checked` ni el filtro por lista de precio: eso
+     * exigiría leer la venta, que es justo lo que este filtro existe para no hacer. Al no mirarlos
+     * se equivoca SIEMPRE PARA EL MISMO LADO —de más, nunca de menos—, que es el único error que
+     * este filtro puede permitirse: una candidata de más cuesta cero consultas extra (se leen
+     * todas juntas) y una de menos sería un punto que no se otorga.
+     *
+     * @param  array  $debitos
+     * @return bool
+     */
+    private static function deberia_tener_lote_vivo($debitos) {
+
+        if (!count($debitos)) {
+            return false;
+        }
+
+        foreach ($debitos as $debito) {
+
+            if ($debito->status != 'pagado') {
+                return false;
+            }
+
+            if (!self::hubo_cobro_real($debito)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  int    $sale_id
+     * @param  array  $movimientos_por_venta
+     * @return bool
+     */
+    private static function tiene_lote_vivo($sale_id, $movimientos_por_venta) {
+
+        if (!array_key_exists($sale_id, $movimientos_por_venta)) {
+            return false;
+        }
+
+        foreach ($movimientos_por_venta[$sale_id]['lotes'] as $lote) {
+
+            if (is_null($lote->anulado_at)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿Alguna nota de crédito le imputó algo a alguno de los débitos de esta venta?
+     *
+     * Ver el punto (2) de `ventas_a_reconciliar()`: es el único caso donde el monto base puede
+     * moverse sin que cambie el estado del débito.
+     *
+     * @param  array  $debitos
+     * @return bool
+     */
+    private static function tiene_nota_credito_imputada($debitos) {
+
+        foreach ($debitos as $debito) {
+
+            foreach ($debito->pagado_por as $haber) {
+
+                if ($haber->status == self::STATUS_NOTA_CREDITO) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -505,9 +753,9 @@ class PuntosAcumulacionHelper {
      * @param  array                            $grupos
      * @return void
      */
-    private static function aplicar_grupos($sale, $sistema, $grupos) {
+    private static function aplicar_grupos($sale, $sistema, $grupos, $contexto = null) {
 
-        $mapa = self::mapa_de_movimientos($sale);
+        $mapa = self::mapa_del_contexto($sale, $contexto);
 
         /*
          * 🔴 VA PRIMERO, ANTES DE TOCAR NINGÚN PUNTO. El reverso que puede escribirse más abajo
@@ -559,25 +807,133 @@ class PuntosAcumulacionHelper {
      */
     private static function mapa_de_movimientos($sale) {
 
-        $movimientos = MovimientoPunto::where('sale_id', $sale->id)
+        $mapas = self::mapas_de_movimientos([$sale->id]);
+
+        $sale_id = (int) $sale->id;
+
+        return array_key_exists($sale_id, $mapas) ? $mapas[$sale_id] : self::mapa_vacio();
+    }
+
+    /**
+     * Lo mismo que `mapa_de_movimientos()` pero para MUCHAS ventas y con UNA sola consulta.
+     *
+     * Es la forma que usa `reconciliar_cuenta_corriente()`, y la de una venta sola delega acá
+     * para que la definición de "el mapa" exista una vez y no dos.
+     *
+     * @param  array  $sale_ids
+     * @return array  sale_id => ['lotes' => [...], 'reversos' => [...]]
+     */
+    private static function mapas_de_movimientos($sale_ids) {
+
+        $mapas = [];
+
+        if (!count($sale_ids)) {
+            return $mapas;
+        }
+
+        $movimientos = MovimientoPunto::whereIn('sale_id', $sale_ids)
                                         ->whereIn('tipo', [self::TIPO_GANADOS, self::TIPO_REVERTIDOS])
                                         ->get();
 
-        $lotes    = [];
-        $reversos = [];
-
         foreach ($movimientos as $movimiento) {
 
-            $lista = (int) $movimiento->price_type_id;
+            $sale_id = (int) $movimiento->sale_id;
+            $lista   = (int) $movimiento->price_type_id;
+
+            if (!array_key_exists($sale_id, $mapas)) {
+                $mapas[$sale_id] = self::mapa_vacio();
+            }
 
             if ($movimiento->tipo == self::TIPO_GANADOS) {
-                $lotes[$lista] = $movimiento;
+                $mapas[$sale_id]['lotes'][$lista] = $movimiento;
             } else {
-                $reversos[$lista] = $movimiento;
+                $mapas[$sale_id]['reversos'][$lista] = $movimiento;
             }
         }
 
-        return ['lotes' => $lotes, 'reversos' => $reversos];
+        return $mapas;
+    }
+
+    /**
+     * @return array
+     */
+    private static function mapa_vacio() {
+        return ['lotes' => [], 'reversos' => []];
+    }
+
+    /*
+     * ---------------------------------------------------------------------------------------
+     *  El contexto precargado
+     *
+     *  Cuatro lecturas que el camino de UNA venta hace por su cuenta y que el de la cuenta
+     *  corriente ya resolvió de a muchas. Cada una tiene la misma forma: si el contexto la
+     *  trae, se usa; si no, se lee como siempre. Así el camino de una sola venta
+     *  (SaleController, la papelera, la nota de crédito) no cambia una línea.
+     * ---------------------------------------------------------------------------------------
+     */
+
+    /**
+     * ¿La venta llega con `articles`, `discounts` y `surchages` recién leídos de la base?
+     *
+     * @param  array|null  $contexto
+     * @return bool
+     */
+    private static function articles_ya_frescos($contexto) {
+
+        return is_array($contexto)
+                && array_key_exists('articles_frescos', $contexto)
+                && $contexto['articles_frescos'];
+    }
+
+    /**
+     * Los débitos de la venta, con sus imputaciones.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array|null        $contexto
+     * @return array|\Illuminate\Support\Collection
+     */
+    private static function debitos_del_contexto($sale, $contexto) {
+
+        if (is_array($contexto) && array_key_exists('debitos', $contexto) && !is_null($contexto['debitos'])) {
+            return $contexto['debitos'];
+        }
+
+        return CurrentAcount::where('sale_id', $sale->id)
+                            ->whereNull('haber')
+                            ->with('pagado_por')
+                            ->get();
+    }
+
+    /**
+     * El mapa de movimientos escritos de la venta.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array|null        $contexto
+     * @return array
+     */
+    private static function mapa_del_contexto($sale, $contexto) {
+
+        if (is_array($contexto) && array_key_exists('mapa', $contexto) && !is_null($contexto['mapa'])) {
+            return $contexto['mapa'];
+        }
+
+        return self::mapa_de_movimientos($sale);
+    }
+
+    /**
+     * El factor de nota de crédito de la venta, o null para que lo calcule PuntosBaseHelper.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array|null        $contexto
+     * @return float|null
+     */
+    private static function factor_nc_del_contexto($sale, $contexto) {
+
+        if (is_array($contexto) && array_key_exists('factor_nc', $contexto)) {
+            return $contexto['factor_nc'];
+        }
+
+        return null;
     }
 
     /**
@@ -723,11 +1079,38 @@ class PuntosAcumulacionHelper {
     /**
      * Anula un lote y deja su movimiento compensatorio.
      *
-     * 🔴 Se revierte EL TOTAL OTORGADO, no el remanente, aunque el cliente ya haya canjeado
-     * esos puntos y el saldo quede negativo. La alternativa —perdonar la diferencia— es un
-     * agujero: se le anula la venta al que ya se llevó el descuento y el negocio paga dos
-     * veces. Un saldo negativo bloquea el canje solo (nunca llega al mínimo) y se ve en la
-     * ficha del cliente.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 SE REVIERTE LO QUE EL LOTE TODAVÍA APORTA AL SALDO, NO SIEMPRE EL TOTAL OTORGADO.
+     *
+     *  Lo que hay que cancelar es exactamente lo que el lote sigue sumando en el libro. Y hay
+     *  un consumo que YA salió del saldo por su cuenta: EL VENCIMIENTO. `puntos:vencer` escribe
+     *  una fila 'vencidos' NEGATIVA, así que esos puntos ya están restados. Revertirlos otra vez
+     *  los resta dos veces.
+     *
+     *  Medido contra la base antes del arreglo del 22/8/2026 (venta de 100 puntos):
+     *
+     *      saldo con la venta      : 100
+     *      saldo despues de vencer :   0
+     *      saldo despues de anular : -100   ← el mismo punto restado dos veces
+     *         ganados    100.00
+     *         vencidos  -100.00
+     *         revertidos -100.00
+     *
+     *  Ese -100 le queda al cliente PARA SIEMPRE y además le bloquea el canje: nunca vuelve a
+     *  llegar al mínimo del programa.
+     *
+     *  🔴 EL CANJE ES EL CASO CONTRARIO Y NO SE TOCA. Ahí revertir el total ES lo correcto y
+     *  está decidido: el cliente ya se llevó el descuento en pesos, así que si después se le
+     *  anula la venta que le dio esos puntos, el saldo tiene que quedar negativo. Perdonar la
+     *  diferencia sería que el negocio pague dos veces. Un saldo negativo bloquea el canje solo
+     *  y se ve en la ficha del cliente.
+     *
+     *  La señal que separa los dos casos es `movimiento_punto_consumos`, que dice QUÉ movimiento
+     *  se comió cada pedazo del lote: si fue un 'vencidos', no se vuelve a restar; si fue un
+     *  'canjeados' (o un 'ajuste' negativo), sí. Es la misma tabla que ya existía para deshacer
+     *  un canje devolviéndole los puntos al lote del que salieron — no hace falta ninguna
+     *  columna nueva.
+     * ─────────────────────────────────────────────────────────────────────────────
      *
      * @param  \App\Models\Sale                  $sale
      * @param  \App\Models\MovimientoPunto       $lote
@@ -736,7 +1119,7 @@ class PuntosAcumulacionHelper {
      */
     private static function revertir_lote($sale, $lote, $reverso) {
 
-        $puntos = (float) $lote->puntos;
+        $puntos = self::puntos_a_revertir($lote);
 
         /*
          * Ya estaba revertido: no se vuelve a escribir. Es la mitad de la idempotencia que
@@ -781,6 +1164,65 @@ class PuntosAcumulacionHelper {
             'Puntos revertidos. Venta id '.$sale->id.' (N° '.$sale->num.'), cliente '.$lote->client_id.
             ', lista '.$lote->price_type_id.', puntos '.$puntos
         );
+    }
+
+    /**
+     * Cuántos puntos de este lote hay que compensar con la fila 'revertidos'.
+     *
+     * Es lo que el lote TODAVÍA aporta al saldo: los puntos que otorgó menos lo que ya se
+     * restó por vencimiento. Ver el docblock de `revertir_lote()` por qué el vencimiento se
+     * descuenta y el canje no.
+     *
+     * 🔴 LA SALIDA BARATA ES LA REGLA, NO LA EXCEPCIÓN. Un lote con `consumido = 0` no puede
+     * tener ni un consumo de vencimiento, así que se contesta sin ir a la base. Eso deja el
+     * caso normal —anular una venta cuyos puntos nadie tocó— en cero consultas nuevas, que
+     * importa porque `aplicar_grupos()` pasa por acá en cada reconciliación de una venta que
+     * dejó de corresponder.
+     *
+     * @param  \App\Models\MovimientoPunto  $lote
+     * @return float  Nunca negativo.
+     */
+    private static function puntos_a_revertir($lote) {
+
+        $puntos = (float) $lote->puntos;
+
+        if ((float) $lote->consumido <= self::DELTA) {
+            return $puntos;
+        }
+
+        $a_revertir = $puntos - self::consumido_por_vencimiento($lote);
+
+        if ($a_revertir <= 0) {
+            return 0;
+        }
+
+        return round($a_revertir, 2);
+    }
+
+    /**
+     * Cuánto de este lote se lo comió un VENCIMIENTO.
+     *
+     * `movimiento_punto_consumos` guarda el detalle por lote de cada consumo, y el `tipo` del
+     * movimiento que consumió es lo que distingue un vencimiento de un canje. Se pregunta por
+     * el tipo del CONSUMIDOR y no por el del lote, que es 'ganados' en los dos casos.
+     *
+     * @param  \App\Models\MovimientoPunto  $lote
+     * @return float
+     */
+    private static function consumido_por_vencimiento($lote) {
+
+        $total = DB::table('movimiento_punto_consumos')
+                    ->join(
+                        'movimiento_puntos',
+                        'movimiento_puntos.id',
+                        '=',
+                        'movimiento_punto_consumos.movimiento_consumo_id'
+                    )
+                    ->where('movimiento_punto_consumos.movimiento_origen_id', $lote->id)
+                    ->where('movimiento_puntos.tipo', self::TIPO_VENCIDOS)
+                    ->sum('movimiento_punto_consumos.puntos');
+
+        return round((float) $total, 2);
     }
 
     /**

@@ -17,17 +17,24 @@ use Illuminate\Support\Facades\Log;
  * ─────────────────────────────────────────────────────────────────────────────
  *  🔴 POR QUÉ ES UN COMANDO Y NO UN CÁLCULO PEREZOSO AL LEER EL SALDO.
  *
- *  El saldo lo leen TRES lugares distintos —VENDER al elegir el cliente, la ficha del
- *  cliente y el reporte de pasivo—. Si "vencido" fuera una condición del SELECT, los tres
- *  tendrían que implementar la misma regla de exclusión y el primero que se la olvide
- *  muestra un número distinto: es la clase "el mismo invariante decidido con dos criterios
- *  distintos" (contexto/APRENDER_NO_PARCHEAR.md:997).
+ *  El vencimiento tiene que quedar ESCRITO en el libro, como un hecho con fecha, y no
+ *  derivarse al vuelo cada vez que alguien pide un saldo. Dos razones:
  *
- *  Con este comando el vencimiento es una FILA NEGATIVA del libro, y el saldo queda siendo
- *  `SUM(movimiento_puntos.puntos)`, una sola frase imposible de implementar mal (ver el
- *  docblock de PuntosSaldoHelper). De paso, el reporte de pasivo necesita "cuántos puntos
- *  vencieron" como un hecho con fecha, no como una derivación que se recalcula distinto
- *  cada vez que alguien cambia la configuración del programa.
+ *   1. El reporte de pasivo necesita "cuántos puntos vencieron en tal período" como un dato
+ *      contable, no como una derivación que se recalcula distinto cada vez que alguien cambia
+ *      la configuración del programa.
+ *   2. Con la fila negativa escrita, el pasivo del programa sigue siendo `SUM(puntos)` a
+ *      secas — que es `PuntosSaldoHelper::saldo_del_libro()` — sin ninguna condición extra.
+ *
+ *  ⚠️ Y OJO CON ESTO, QUE CAMBIÓ EL 22/8/2026: el SALDO DISPONIBLE que ven VENDER, la ficha
+ *  del cliente y la validación del canje —`PuntosSaldoHelper::saldo()`— ya NO es `SUM(puntos)`
+ *  a secas: descuenta el remanente de los lotes que ya vencieron y que este comando todavía no
+ *  barrió. Es lo que hace que el número que ve el cliente no cambie cuando pasa el cron, y lo
+ *  que arregló un bug real (el canje pasaba la validación contra el SUM, no consumía ningún
+ *  lote —porque el FIFO ya excluía los vencidos— y después este comando vencía el lote entero:
+ *  el mismo punto restado dos veces). La regla de exclusión vive en UN solo lugar, adentro de
+ *  `saldo()`, justamente para que ninguna pantalla la implemente por su cuenta
+ *  (contexto/APRENDER_NO_PARCHEAR.md:997). Ver el docblock de PuntosSaldoHelper.
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * 🔴 ES IDEMPOTENTE, y no por una marca aparte: lo que vence es el REMANENTE del lote
