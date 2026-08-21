@@ -71,6 +71,28 @@ class PuntosAcumulacionHelper {
     const TIPO_REVERTIDOS = 'revertidos';
 
     /**
+     * Cuántas veces se pidió suspender el enganche automático que cuelga del final de
+     * `CurrentAcountPagoHelper::init()`.
+     *
+     * 🔴 QUÉ PROBLEMA RESUELVE, ANTES DE QUE ALGUIEN LO BORRE POR "GLOBAL FEO".
+     *
+     * El enganche de la cuenta corriente vive en `init()` porque ése es el ÚNICO lugar por el
+     * que pasan todos los caminos que dejan un débito en 'pagado' (ver el comentario de allá).
+     * Pero `CurrentAcountHelper::checkPagos()` llama a `init()` UNA VEZ POR CADA PAGO de la
+     * cuenta, y después reconcilia la cuenta entera él mismo, al final. Sin esto, una cuenta con
+     * 30 pagos reconciliaría todas sus ventas 31 veces en vez de una: no duplicaría un punto
+     * (el reconciliador compara contra lo escrito y no escribe si no cambió nada), pero le
+     * multiplicaría por 31 el costo en consultas a los dos jobs de fondo que barren todas las
+     * cuentas de todos los clientes.
+     *
+     * Es un CONTADOR y no una bandera para que un flujo suspendido que llame a otro flujo
+     * suspendido no se destape solo al reanudar el de adentro.
+     *
+     * @var int
+     */
+    private static $suspensiones = 0;
+
+    /**
      * Deja los movimientos 'ganados' de UNA venta en el estado que le corresponde hoy.
      *
      * Es el único punto de entrada por venta y es idempotente: si lo que ya está escrito
@@ -86,19 +108,30 @@ class PuntosAcumulacionHelper {
         }
 
         /*
-         * Salidas baratas, en orden de costo creciente. Este método corre adentro del camino
-         * de guardar una venta y adentro de dos jobs que barren todas las cuentas de todos los
-         * clientes: un comercio SIN la extensión tiene que pagar CERO consultas por venta.
+         * 🔴 LA SALIDA BARATA ES LA DEL PROGRAMA, Y ES LA ÚNICA. NO VUELVAS A PONER UN
+         *    `if (is_null($sale->client_id)) return;` ACÁ ARRIBA.
          *
-         * 1. Sin cliente no hay a quién darle puntos. Cero consultas.
-         * 2. El programa activo lo resuelve PuntosConfigHelper, que memoiza por user_id: la
-         *    primera venta del request paga las dos queries y todas las demás responden de
-         *    memoria. Sin extensión ni siquiera mira `sistemas_de_puntos`.
+         * Hasta el 22/8/2026 esta salida existía y era el bug: una venta a la que le SACAN el
+         * cliente (o se lo cambian) se iba del helper sin reconciliar nada, así que el lote
+         * quedaba vivo y el cliente viejo se quedaba con los puntos de una venta que ya no es
+         * suya. "Sin cliente no acumula" es una regla sobre lo que CORRESPONDE, no sobre si hay
+         * que mirar: quien la aplica es `corresponde_acumular()`, que devuelve false y hace que
+         * `aplicar_grupos()` revierta lo que hubiera de antes. Es la misma forma con la que ya
+         * se resuelve "el programa filtró la lista" o "se devolvió todo": el que decide es el
+         * reconciliador, no una puerta en la entrada.
+         *
+         * Y el ahorro de queries del comercio SIN la extensión se conserva entero igual, porque
+         * lo que lo daba nunca fue el cliente: lo da PuntosConfigHelper, que memoiza por user_id
+         * y sin extensión ni siquiera mira `sistemas_de_puntos`. La primera venta del request
+         * paga las dos consultas del gate y todas las demás responden de memoria — es lo que
+         * mide `11_Costo_cero_sin_extencion_Test`.
+         *
+         * Lo que sí cuesta esta decisión, dicho para que nadie lo descubra midiendo: en un
+         * comercio CON el programa prendido, una venta sin cliente ahora paga UNA consulta a
+         * `movimiento_puntos` (la de `mapa_de_movimientos()`) para poder contestar "no hay nada
+         * que revertir". No hay forma de saltearla sin saber de quién ERA la venta antes, que
+         * es justo el dato que este helper no tiene.
          */
-        if (is_null($sale->client_id) || !$sale->client_id) {
-            return;
-        }
-
         $sistema = PuntosConfigHelper::programa_activo($sale->user_id);
 
         if (is_null($sistema)) {
@@ -112,19 +145,6 @@ class PuntosAcumulacionHelper {
             return;
         }
 
-        /*
-         * Se recargan los artículos SIEMPRE, y es una query que se paga a propósito. La venta
-         * llega acá desde cinco lugares distintos (alta, edición, checkPagos, nota de crédito,
-         * borrado) y en algunos de ellos la relación ya viene cargada de ANTES de que
-         * attachArticles() tocara los pivots: `returned_amount`, `price_sin_iva` y `discount`
-         * estarían viejos y el monto base saldría mal. Confiar en lo que cada llamador haya
-         * dejado cargado sería hacer que el mismo helper calcule distinto según de dónde lo
-         * llamen, que es exactamente la clase de error que hay que no escribir.
-         * Solo la paga el comercio que tiene el programa prendido: la salida barata de arriba
-         * ya filtró a todos los demás.
-         */
-        $sale->load('articles');
-
         $corresponde = self::corresponde_acumular($sale);
 
         /*
@@ -132,7 +152,30 @@ class PuntosAcumulacionHelper {
          * significa "esta venta no otorga nada", NO "no hacer nada": hay que revertir lo que
          * hubiera de antes. Por eso el array vacío entra igual a aplicar_grupos().
          */
-        $grupos = $corresponde ? PuntosBaseHelper::calcular_grupos($sale, $sistema) : [];
+        $grupos = [];
+
+        if ($corresponde) {
+
+            /*
+             * Se recargan los artículos SIEMPRE, y es una query que se paga a propósito. La
+             * venta llega acá desde cinco lugares distintos (alta, edición, checkPagos, nota de
+             * crédito, borrado) y en algunos de ellos la relación ya viene cargada de ANTES de
+             * que attachArticles() tocara los pivots: `returned_amount`, `price_sin_iva` y
+             * `discount` estarían viejos y el monto base saldría mal. Confiar en lo que cada
+             * llamador haya dejado cargado sería hacer que el mismo helper calcule distinto
+             * según de dónde lo llamen, que es exactamente la clase de error que hay que no
+             * escribir.
+             *
+             * Va adentro del `if` y no antes: si la venta no corresponde no hay ningún monto
+             * base que calcular, y la única razón de existir de esta consulta es alimentar a
+             * `calcular_grupos()`. Es lo que hace que la venta sin cliente —que desde el
+             * 22/8/2026 llega hasta acá en vez de salirse arriba— no pague los artículos
+             * además del mapa de movimientos.
+             */
+            $sale->load('articles');
+
+            $grupos = PuntosBaseHelper::calcular_grupos($sale, $sistema);
+        }
 
         self::aplicar_grupos($sale, $sistema, $grupos);
     }
@@ -211,9 +254,12 @@ class PuntosAcumulacionHelper {
             return;
         }
 
-        if (is_null($sale->client_id) || !$sale->client_id) {
-            return;
-        }
+        /*
+         * 🔴 Tampoco acá se sale por `client_id`, y por la misma razón que en reconciliar_venta():
+         * los movimientos se buscan por `sale_id`, no por cliente. Una venta a la que le sacaron
+         * el cliente y que después se borra tiene igual sus lotes escritos, y salirse antes los
+         * dejaría vivos para siempre.
+         */
 
         /*
          * Gate por extensión y no por programa activo: acá hay que revertir aunque el programa
@@ -238,9 +284,15 @@ class PuntosAcumulacionHelper {
     /**
      * Reconcilia todas las ventas con débito en una cuenta corriente.
      *
-     * Es el enganche del final de `CurrentAcountHelper::checkPagos()`, o sea el que cubre el
-     * camino de cuenta corriente entero: alta y baja de pagos, alta y baja de ventas,
-     * restaurar de la papelera y los dos jobs de fondo.
+     * Es el enganche del camino de cuenta corriente entero, y tiene DOS lugares de llamada a
+     * propósito (ver el comentario de self::$suspensiones):
+     *
+     *   1. el final de `CurrentAcountPagoHelper::init()`, que es por donde pasan TODOS los
+     *      caminos que dejan un débito en 'pagado' — incluido el cobro de todos los días
+     *      (`CurrentAcountController@pago` con current_date = 1, el default de la SPA);
+     *   2. el final de `CurrentAcountHelper::checkPagos()`, que suspende el primero mientras
+     *      re-imputa la cuenta entera y reconcilia una sola vez acá — alta y baja de pagos,
+     *      alta y baja de ventas, restaurar de la papelera y los dos jobs de fondo.
      *
      * @param  \App\Models\CreditAccount|int|null  $credit_account  El modelo si el llamador ya
      *                                                              lo tiene (checkPagos lo
@@ -248,6 +300,15 @@ class PuntosAcumulacionHelper {
      * @return void
      */
     static function reconciliar_cuenta_corriente($credit_account) {
+
+        /*
+         * El llamador de afuera avisó que él reconcilia la cuenta entera una sola vez al final
+         * (hoy el único es checkPagos(), que llama a init() una vez por pago). Ver el comentario
+         * de self::$suspensiones.
+         */
+        if (self::$suspensiones > 0) {
+            return;
+        }
 
         if (is_null($credit_account)) {
             return;
@@ -297,6 +358,35 @@ class PuntosAcumulacionHelper {
     }
 
     /**
+     * Apaga el enganche automático de `CurrentAcountPagoHelper::init()` hasta el `reanudar()`.
+     *
+     * La usa UN solo llamador —`CurrentAcountHelper::checkPagos()`—, que corre `init()` una vez
+     * por cada pago de la cuenta y después reconcilia la cuenta entera él mismo. Si aparece un
+     * segundo llamador, que sea porque también reconcilia al final: suspender sin reconciliar
+     * después es dejar el módulo apagado en ese camino.
+     *
+     * Se usa SIEMPRE con try/finally. Si se saltea el reanudar() por una excepción, el módulo
+     * queda mudo para el resto del request.
+     *
+     * @return void
+     */
+    static function suspender() {
+        self::$suspensiones++;
+    }
+
+    /**
+     * Vuelve a prender el enganche automático.
+     *
+     * @return void
+     */
+    static function reanudar() {
+
+        if (self::$suspensiones > 0) {
+            self::$suspensiones--;
+        }
+    }
+
+    /**
      * Reconcilia una venta de la que solo se tiene el id, sin pagar la lectura si el comercio
      * no tiene el módulo.
      *
@@ -340,6 +430,13 @@ class PuntosAcumulacionHelper {
     private static function aplicar_grupos($sale, $sistema, $grupos) {
 
         $mapa = self::mapa_de_movimientos($sale);
+
+        /*
+         * 🔴 VA PRIMERO, ANTES DE TOCAR NINGÚN PUNTO. El reverso que puede escribirse más abajo
+         * copia el `client_id` del lote: si el titular se sincronizara después, el reverso
+         * nacería con el cliente viejo y le dejaría el saldo en -100.
+         */
+        self::sincronizar_titular($sale, $mapa);
 
         $listas_vigentes = [];
 
@@ -403,6 +500,56 @@ class PuntosAcumulacionHelper {
         }
 
         return ['lotes' => $lotes, 'reversos' => $reversos];
+    }
+
+    /**
+     * El lote SIGUE al `client_id` de la venta.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 POR QUÉ EL LOTE TIENE QUE SEGUIR AL CLIENTE DE LA VENTA.
+     *
+     *  `movimiento_puntos.client_id` no es un dato del movimiento: es una COPIA del titular de
+     *  la venta que lo originó, y el saldo del cliente se lee como SUM(puntos) filtrando por esa
+     *  copia (PuntosSaldoHelper y la ficha del cliente leen así). O sea que si la venta cambia
+     *  de cliente y la copia no, el saldo de los dos queda mal a la vez: el cliente viejo cobra
+     *  puntos de una venta que ya no es suya y el nuevo no cobra los de la que sí lo es. Y no se
+     *  arregla solo nunca, porque el reconciliador indexa por `sale_id` y encuentra el lote
+     *  igual: lo mira, ve los mismos puntos y el mismo monto base, y no escribe nada.
+     *
+     *  Se mueven TAMBIÉN los reversos, y no solo los lotes vivos: un lote anulado y su reverso
+     *  suman cero, así que dejar uno de cada lado le clavaría +100 a uno y -100 al otro.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array             $mapa  El de mapa_de_movimientos().
+     * @return void
+     */
+    private static function sincronizar_titular($sale, $mapa) {
+
+        /*
+         * 🔴 Venta que se quedó SIN cliente: el lote NO se pone en null, se deja con su dueño
+         * viejo y se revierte (de eso se encarga aplicar_grupos(), porque corresponde_acumular()
+         * devuelve false sin cliente). Ponerlo en null sería peor que no hacer nada: el reverso
+         * de -100 quedaría con el cliente viejo y el lote de +100 sin dueño, y el saldo del que
+         * ya no tiene la venta pasaría de 100 a -100 en vez de a 0.
+         */
+        if (is_null($sale->client_id) || !$sale->client_id) {
+            return;
+        }
+
+        $client_id = (int) $sale->client_id;
+
+        $movimientos = array_merge(array_values($mapa['lotes']), array_values($mapa['reversos']));
+
+        foreach ($movimientos as $movimiento) {
+
+            if ((int) $movimiento->client_id == $client_id) {
+                continue;
+            }
+
+            $movimiento->client_id = $client_id;
+            $movimiento->save();
+        }
     }
 
     /**

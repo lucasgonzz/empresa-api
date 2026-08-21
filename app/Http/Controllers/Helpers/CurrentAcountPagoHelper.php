@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Models\Check;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -118,6 +119,50 @@ class CurrentAcountPagoHelper {
         }
         Log::info('Ya no entro en procesar pago');
         $this->setModelPagosCheckeados();
+
+        /*
+         * ─────────────────────────────────────────────────────────────────────────────
+         *  🔴 PUNTOS PARA CLIENTES. EL ENGANCHE VA ACÁ Y NO PUEDE VIVIR SOLO EN checkPagos().
+         * ─────────────────────────────────────────────────────────────────────────────
+         *
+         *  Hasta el 22/8/2026 el único enganche de la cuenta corriente estaba al final de
+         *  `CurrentAcountHelper::checkPagos()`. El problema es que checkPagos() NO es el único
+         *  camino por el que un débito llega a 'pagado': es uno de varios. Todos los demás
+         *  arman este helper a mano y llaman a init() derecho, y el más importante de todos es
+         *  EL COBRO DE TODOS LOS DÍAS — `CurrentAcountController@pago` se bifurca por
+         *  `current_date`, y con `current_date = 1`, que es lo que la SPA manda por default,
+         *  toma la rama que NO pasa por checkPagos(). O sea que el enganche de allá cubría la
+         *  excepción (el pago con fecha pasada) y se perdía la regla: un comercio con cuenta
+         *  corriente casi no acumulaba nada, y los puntos aparecían de rebote cuando cualquier
+         *  otra cosa disparaba checkPagos() más tarde.
+         *
+         *  La familia entera que llega a 'pagado' es la de los llamadores de `init()`:
+         *    - CurrentAcountController@pago       (cobro con current_date = 1)  ← el bug
+         *    - CurrentAcountHelper::checkPagos()  (una vez por pago; ver más abajo)
+         *    - CurrentAcountHelper::notaCredito() (la NC imputada al débito de la venta)
+         *    - ChequeController                   (cheque de proveedor)
+         *    - los helpers de baja (DeleteSale, DeleteNotaDebito), CheckSaldosHelper y las
+         *      semillas.
+         *
+         *  Copiar la llamada en cada uno de esos lugares sería arreglar las instancias que el
+         *  test nombró y no la familia: el próximo camino que se escriba nace roto y nada lo
+         *  denuncia. `init()` es el punto por donde pasan TODOS —es el único método que corre
+         *  procesarPago(), que es la línea que escribe `status = 'pagado'`—, así que puesto acá
+         *  el enganche queda cubierto POR CONSTRUCCIÓN.
+         *
+         *  🔴 Y NO por eso se saca el del final de checkPagos(): checkPagos() re-imputa la
+         *  cuenta entera y llama a init() UNA VEZ POR PAGO, así que reconciliar desde acá le
+         *  costaría N pasadas por las mismas ventas. Por eso checkPagos() suspende este
+         *  enganche mientras corre su loop y reconcilia una sola vez al final. No duplica
+         *  puntos ni con suspensión ni sin ella (el reconciliador compara contra lo escrito),
+         *  lo que se cuida es el costo en consultas de los dos jobs de fondo.
+         *
+         *  Costo para el comercio SIN la extensión: CERO consultas. `credit_account` ya está en
+         *  memoria acá (lo cargó el constructor) y reconciliar_cuenta_corriente() corta con la
+         *  respuesta memoizada de PuntosConfigHelper antes de leer una sola fila. Para una
+         *  cuenta de PROVEEDOR corta antes todavía, por `model_name`.
+         */
+        PuntosAcumulacionHelper::reconciliar_cuenta_corriente($this->credit_account);
     }
 
     function setModelPagosCheckeados() {

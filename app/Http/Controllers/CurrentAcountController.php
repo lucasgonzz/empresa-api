@@ -125,6 +125,27 @@ class CurrentAcountController extends Controller
             // Sincroniza saldo de la cuenta corriente y saldo por moneda en el model asociado.
             CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
 
+            /*
+             * 🔴 LAS DOS RAMAS SALDAN EL MISMO DÉBITO, ASÍ QUE LAS DOS TIENEN QUE DEJAR TODO
+             *    LO QUE DEPENDE DE QUE UN DÉBITO QUEDE SALDADO.
+             *
+             * `current_date` NO es una bandera de negocio: es una optimización. Con fecha pasada
+             * hay que recalcular la cuenta entera porque el pago se mete en el medio del orden
+             * cronológico; con la fecha de hoy alcanza con imputar el pago nuevo contra los
+             * débitos pendientes. El hecho económico es el mismo.
+             *
+             * Y el default de la SPA es `current_date = 1`, o sea que la rama de abajo es EL
+             * COBRO DE TODOS LOS DÍAS, no el caso raro. Cualquier efecto que se enganche a "el
+             * débito quedó pagado" y viva solo del lado del recálculo completo va a andar en la
+             * excepción y fallar en la regla — es exactamente lo que pasó con los puntos para
+             * clientes hasta el 22/8/2026.
+             *
+             * Por eso acá NO hay ninguna llamada al módulo de puntos, ni la tiene que haber:
+             * el enganche está al final de `CurrentAcountPagoHelper::init()`, que es el único
+             * método por el que pasan las DOS ramas (check_saldos_y_pagos() también termina
+             * llamándolo, una vez por pago). Si mañana aparece otro efecto de ese tipo, el lugar
+             * es ése y no una copia en cada rama de este if.
+             */
             if (!$request->current_date) {
                 // Pago con fecha pasada: el recálculo completo ya se encarga
                 // de recalcular saldos e imputar todos los pagos (incluyendo este)

@@ -629,12 +629,37 @@ class CurrentAcountHelper {
                                     ->where($credit_account->model_name.'_id', $credit_account->model_id)
                                     ->get();
 
-        foreach ($pagos as $pago) {
-            // El detach de pagando_a es un no-op: ya se eliminaron todas las filas
-            // de pagado_por en el batch delete anterior (por debe_id)
-            // Se pasa $credit_account para evitar un CreditAccount::find por cada pago
-            $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago, $credit_account);
-            $pago_helper->init();
+        /*
+         * Puntos para clientes: se SUSPENDE el enganche que cuelga del final de
+         * CurrentAcountPagoHelper::init() mientras dura este loop, y se reconcilia una sola vez
+         * al final de esta función (más abajo).
+         *
+         * El enganche de init() es el que cubre todos los caminos que dejan un débito en
+         * 'pagado' sin pasar por acá —el cobro de todos los días, entre ellos—, pero esta
+         * función llama a init() UNA VEZ POR PAGO de la cuenta: sin suspenderlo, una cuenta con
+         * 30 pagos reconciliaría todas sus ventas 31 veces. No duplicaría un punto (el
+         * reconciliador compara contra lo escrito y no escribe si no cambió nada), pero le
+         * multiplicaría el costo en consultas a los dos jobs de fondo que barren todas las
+         * cuentas de todos los clientes.
+         *
+         * El try/finally no es decorativo: si un pago tira una excepción, el enganche tiene que
+         * volver a prenderse igual, o el módulo queda mudo para el resto del request.
+         */
+        PuntosAcumulacionHelper::suspender();
+
+        try {
+
+            foreach ($pagos as $pago) {
+                // El detach de pagando_a es un no-op: ya se eliminaron todas las filas
+                // de pagado_por en el batch delete anterior (por debe_id)
+                // Se pasa $credit_account para evitar un CreditAccount::find por cada pago
+                $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago, $credit_account);
+                $pago_helper->init();
+            }
+
+        } finally {
+
+            PuntosAcumulacionHelper::reanudar();
         }
 
         // Grupo 268 · Prompt 02, bug D: los debitos ya quedaron con su estado definitivo (los dos
@@ -643,12 +668,20 @@ class CurrentAcountHelper {
         SellerCommissionHelper::revertirComisionesNoSaldadas($credit_account_id);
 
         /*
-         * Puntos para clientes (misión del 22/8/2026). Va acá, al final y no adentro de
-         * CurrentAcountPagoHelper, porque esta función RE-IMPUTA la cuenta entera: borra las
+         * Puntos para clientes (misión del 22/8/2026). Va acá, al final, y UNA SOLA VEZ para
+         * toda la función, porque esta función RE-IMPUTA la cuenta entera: borra las
          * imputaciones, resetea todos los débitos a 'sin_pagar' y vuelve a correr el pago por
          * cada pago. O sea que la transición "el débito llegó a pagado" se dispara N veces por
-         * UN solo hecho económico, y engancharse ahí le regalaría los puntos de todas sus
-         * ventas saldadas a cualquier cliente al que le borren un pago viejo.
+         * UN solo hecho económico. Por eso el loop de arriba corre con el enganche de
+         * CurrentAcountPagoHelper::init() suspendido y la reconciliación se hace acá, con los
+         * débitos ya en su estado definitivo.
+         *
+         * 🔴 Y esta llamada NO reemplaza a la de init(): checkPagos() es UNO de los caminos por
+         * los que un débito llega a 'pagado', no el único. El cobro de todos los días
+         * (CurrentAcountController@pago con current_date = 1, el default de la SPA) no pasa por
+         * acá — hasta el 22/8/2026 ése era justamente el bug: los puntos aparecían recién de
+         * rebote, cuando alguna otra cosa disparaba checkPagos(). Las dos llamadas son la misma
+         * regla vista desde los dos lados: init() cubre la familia, esta cubre el costo.
          *
          * PuntosAcumulacionHelper compara contra lo que ya está escrito y no escribe si no
          * cambió nada, así que correr esto en cada una de las once llamadas a checkPagos() no
