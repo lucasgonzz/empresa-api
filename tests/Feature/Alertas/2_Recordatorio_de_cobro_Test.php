@@ -2,23 +2,28 @@
 
 namespace Tests\Feature\Alertas;
 
+use App\Exceptions\RecordatorioCobroException;
 use App\Jobs\SendRecordatorioCobroJob;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\ExtencionEmpresa;
+use App\Models\PermissionEmpresa;
 use App\Models\Sale;
 use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Models\WhatsappTemplate;
+use App\Http\Controllers\Helpers\WhatsappTemplateStandardHelper;
 use App\Services\RecordatorioCobroSenderService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Mockery;
 use ReflectionProperty;
 use Tests\EmpresaTestCase;
@@ -245,8 +250,12 @@ class Recordatorio_de_cobro_Test extends EmpresaTestCase
             'meta_template_name' => RecordatorioCobroSenderService::TEMPLATE_META_NAME,
             'category'           => 'utility',
             'language'           => 'es_AR',
-            'body_preview'       => 'Hola {{1}}, te escribimos de {{2}}. Tenés {{3}} ventas pendientes de pago por un total de {{4}}.',
-            'variables'          => ['Nombre', 'Negocio', 'Cantidad de ventas', 'Montos pendientes'],
+            // 🔴 El MISMO texto que declara `WhatsappTemplateStandardHelper`, que es el que se le
+            // da de alta a Meta. Ojo con {{3}}: lleva el sustantivo adentro ("1 venta" / "7
+            // ventas") y el body dice "Tenés {{3}} pendientes de pago", porque el singular no se
+            // puede resolver desde el texto fijo de una plantilla aprobada.
+            'body_preview'       => WhatsappTemplateStandardHelper::body_preview_de(RecordatorioCobroSenderService::TEMPLATE_META_NAME),
+            'variables'          => ['Nombre', 'Negocio', 'Cantidad de ventas (ej: "7 ventas")', 'Montos pendientes'],
             'status'             => 'aprobada',
             'is_system'          => true,
         ]);
@@ -556,6 +565,14 @@ class Recordatorio_de_cobro_Test extends EmpresaTestCase
     {
         $this->dar_extension();
 
+        // 🔴 Los dos clientes limpios NO tienen chat, asi que su ventana de 24 h esta CERRADA y
+        // les toca el camino de plantilla. Sin la plantilla aprobada, el masivo los saltea a los
+        // dos con `plantilla_no_aprobada` y no encola nada: es exactamente lo que tiene que pasar
+        // (`cc_cli_recordatorio_cobro` nace `pendiente_meta`). Este test mide OTRA cosa —que la
+        // unidad del masivo sea el cliente y no la venta—, asi que se le da el escenario en el
+        // que el envio si puede salir.
+        $this->plantilla_aprobada();
+
         // Los dos limpios. Al primero se le cargan SEIS ventas vencidas a proposito: si la unidad
         // fuera la venta, este solo generaria seis jobs.
         $limpio_con_seis_ventas = $this->crear_cliente('Deudor con seis ventas', '5493416004444');
@@ -626,5 +643,467 @@ class Recordatorio_de_cobro_Test extends EmpresaTestCase
             RecordatorioCobroSenderService::CODE_SIN_TELEFONO,
             $motivos[(int) $sin_telefono->id]
         );
+    }
+
+    /**
+     * TEST 8 — 🔴 UN NULL DE KAPSO NO PERSISTE NINGUNA FILA, en los DOS caminos.
+     *
+     * Es la invariante mas cara del modulo y hasta ahora no tenia ni una red. `send_text()` y
+     * `send_template()` se tragan sus errores y devuelven null: ese null significa que el mensaje
+     * NO salio. Si igual se persistiera la fila, pasan tres cosas juntas y ninguna se ve: el
+     * cliente se queda sin aviso, la pantalla muestra un mensaje enviado que nunca existio, y —lo
+     * peor— la fila con `source = 'recordatorio_cobro'` ARMA EL FRENO DE 24 H, asi que el
+     * siguiente intento tampoco sale. Es el bug que se cerro el 15/8/2026 en
+     * `SaleWhatsappSenderService` y que el docblock de la clase promete que no se reabre.
+     *
+     * @test
+     * @return void
+     */
+    public function un_null_de_kapso_no_persiste_ninguna_fila()
+    {
+        // Kapso caido: 500 en todo. `WhatsappBotSendService` loguea y devuelve null.
+        Http::fake([
+            'api.kapso.ai/*' => Http::response(['error' => 'algo se rompio en Kapso'], 500),
+            '*' => Http::response([], 200),
+        ]);
+
+        // ---------- (a) TEXTO LIBRE ----------
+
+        $chat_abierto = $this->chat_con_ventana_abierta($this->cliente);
+        $venta = $this->venta_sin_cobrar($this->cliente, 45, 4000);
+
+        $exploto = null;
+
+        try {
+            (new RecordatorioCobroSenderService())->enviar($this->owner->id, $this->cliente, [$venta], null);
+        } catch (RecordatorioCobroException $e) {
+            $exploto = $e;
+        }
+
+        $this->assertNotNull($exploto, 'Un envio que Kapso no confirmo tiene que lanzar, no devolver un mensaje como si hubiera salido.');
+        $this->assertSame(RecordatorioCobroSenderService::CODE_ENVIO_NO_CONFIRMADO, $exploto->error_code());
+
+        $this->assertSame(
+            0,
+            $this->mensajes_salientes($chat_abierto->id)->count(),
+            '🔴 Kapso no confirmo el envio: no puede quedar NI UNA fila diciendo que el mensaje salio.'
+        );
+
+        // Y el freno de 24 h NO quedo armado: el proximo intento tiene que poder salir.
+        $this->assertFalse(
+            RecordatorioCobroSenderService::ya_recibio_recordatorio($chat_abierto->fresh()),
+            'Una fila fantasma ademas activaria el freno de 24 h y el reintento tampoco saldria.'
+        );
+
+        // ---------- (b) PLANTILLA ----------
+
+        $otro_cliente = $this->crear_cliente('Ana Lopez', '5493416007766');
+        $chat_cerrado = $this->chat_fuera_de_ventana($otro_cliente);
+        $this->plantilla_aprobada();
+
+        $venta_de_ana = $this->venta_sin_cobrar($otro_cliente, 60, 2500);
+
+        $exploto_plantilla = null;
+
+        try {
+            (new RecordatorioCobroSenderService())->enviar($this->owner->id, $otro_cliente, [$venta_de_ana], null);
+        } catch (RecordatorioCobroException $e) {
+            $exploto_plantilla = $e;
+        }
+
+        $this->assertNotNull($exploto_plantilla);
+        $this->assertSame(RecordatorioCobroSenderService::CODE_ENVIO_NO_CONFIRMADO, $exploto_plantilla->error_code());
+
+        $this->assertSame(
+            0,
+            $this->mensajes_salientes($chat_cerrado->id)->count(),
+            '🔴 El camino de plantilla tiene exactamente la misma garantia: tapar uno solo deja el agujero abierto la mitad de las veces.'
+        );
+
+        $this->assertFalse(RecordatorioCobroSenderService::ya_recibio_recordatorio($chat_cerrado->fresh()));
+    }
+
+    /**
+     * TEST 9 — el job revalida el freno de 24 h justo antes de mandar.
+     *
+     * El escenario es real y no de laboratorio: dos operadores mirando la misma pantalla de
+     * cobros. El primero dispara el masivo, los jobs se encolan; el segundo, mientras la cola
+     * todavia no llego a ese cliente, le manda el recordatorio de a uno. Cuando el job arranca, el
+     * cliente YA recibio el mensaje. El chequeo del controller es informativo y quedo viejo: el
+     * unico que puede frenar esto es el job, consultando el mismo `ya_recibio_recordatorio()`
+     * estatico un instante antes de enviar.
+     *
+     * @test
+     * @return void
+     */
+    public function el_job_revalida_el_freno_de_24_horas_antes_de_mandar()
+    {
+        Http::fake([
+            'api.kapso.ai/*' => Http::response(['messages' => [['id' => 'wamid.NO_DEBERIA_SALIR']]], 200),
+            '*' => Http::response([], 200),
+        ]);
+
+        $chat = $this->chat_con_ventana_abierta($this->cliente);
+        $this->venta_sin_cobrar($this->cliente, 40, 1000);
+
+        // El job queda "encolado": construido, todavia sin correr.
+        $job = new SendRecordatorioCobroJob($this->owner->id, $this->cliente->id, 0, $this->owner->id, null);
+
+        // Y recien AHORA otro operador le manda el recordatorio de a uno.
+        $anterior = $this->recordatorio_ya_enviado($chat, 0);
+
+        $job->handle();
+
+        $salientes = $this->mensajes_salientes($chat->id);
+
+        $this->assertCount(1, $salientes, 'El job tiene que frenarse solo: la unica fila saliente es la que dejo el otro operador.');
+        $this->assertSame(
+            $anterior->wa_message_id,
+            $salientes->first()->wa_message_id,
+            'La fila que quedo es la del envio anterior, no una nueva.'
+        );
+
+        // Y no salio nada a Kapso: el freno corta ANTES de gastar un mensaje de Meta.
+        Http::assertNotSent(function ($request) {
+            return strpos($request->url(), 'api.kapso.ai') !== false;
+        });
+    }
+
+    /**
+     * TEST 10 — el 403 por permiso y el aislamiento entre empresas.
+     *
+     * Dos cosas distintas en el mismo test porque las dos responden a la misma pregunta: quien
+     * puede tocar QUE. Mandar un WhatsApp a todos los deudores del negocio no es lo mismo que ver
+     * la solapa de cobros, y el progreso de un lote no puede leerse desde otra empresa aunque se
+     * adivine el uuid.
+     *
+     * 🔴 El 403 se afirma por el `code` del cuerpo y no solo por el status: el middleware
+     * `check_extencion_empresa` tambien contesta 403, asi que un test que mirara nada mas el
+     * numero pasaria igual con el permiso completamente roto.
+     *
+     * @test
+     * @return void
+     */
+    public function sin_permiso_da_403_y_un_lote_no_se_lee_desde_otra_empresa()
+    {
+        $this->dar_extension();
+
+        $this->venta_sin_cobrar($this->cliente, 40, 1000);
+
+        $empleado = User::create([
+            'name'         => 'Empleado sin permiso',
+            'company_name' => 'Ferreteria Norte',
+            'email'        => 'recordatorio-cobro-empleado-'.uniqid().'@test.local',
+            'password'     => Hash::make('secret'),
+            'owner_id'     => $this->owner->id,
+            'admin_access' => 0,
+            'ver_alertas_de_todos_los_empleados' => 1,
+        ]);
+
+        $this->actuar_como($empleado);
+
+        // Los cuatro endpoints, uno por uno: el permiso no puede estar puesto en tres de cuatro.
+        $rutas = [
+            $this->getJson('api/recordatorio-cobro/preview/'.$this->cliente->id.'?dias=0'),
+            $this->postJson('api/recordatorio-cobro/enviar', ['client_id' => $this->cliente->id, 'dias' => 0]),
+            $this->postJson('api/recordatorio-cobro/enviar-masivo', ['dias' => 0]),
+            $this->getJson('api/recordatorio-cobro/lote/'.(string) Str::uuid()),
+        ];
+
+        foreach ($rutas as $respuesta) {
+            $respuesta->assertStatus(403);
+            $respuesta->assertJsonPath('code', 'sin_permiso');
+        }
+
+        // Con el permiso puesto, el MISMO empleado ya no recibe 403. Sin esta mitad, el test
+        // pasaria igual si `check_permiso()` devolviera false siempre.
+        // `forceCreate` y no `create`: `PermissionEmpresa` no declara `$fillable`, asi que fuera de
+        // `db:seed` (que corre todo adentro de `Model::unguarded()`) un `create()` masivo tira
+        // `MassAssignmentException`. Mismo tratamiento que `dar_extension()`.
+        $permiso = PermissionEmpresa::where('slug', 'alerts.recordatorio_cobro')->first();
+
+        if (is_null($permiso)) {
+            $permiso = PermissionEmpresa::forceCreate([
+                'slug'       => 'alerts.recordatorio_cobro',
+                'name'       => 'Mandar recordatorios de cobro por WhatsApp',
+                'model_name' => 'Alertas',
+            ]);
+        }
+
+        $empleado->permissions()->attach($permiso->id);
+
+        $this->actuar_como($empleado->fresh());
+
+        $con_permiso = $this->getJson('api/recordatorio-cobro/preview/'.$this->cliente->id.'?dias=0');
+
+        $this->assertNotSame(403, $con_permiso->getStatusCode(), 'Con el permiso puesto el empleado tiene que pasar el gate.');
+
+        // ---------- Aislamiento entre empresas ----------
+
+        $this->actuar_como($this->owner);
+
+        // (a) Un cliente de OTRA empresa no se previsualiza: 404, no el mensaje de otro negocio.
+        $otro_owner = User::create([
+            'name'         => 'Dueño de otra empresa',
+            'company_name' => 'Otro negocio',
+            'email'        => 'recordatorio-cobro-otro-'.uniqid().'@test.local',
+            'password'     => Hash::make('secret'),
+        ]);
+
+        $cliente_ajeno = Client::create([
+            'name'    => 'Cliente de otra empresa',
+            'user_id' => $otro_owner->id,
+            'phone'   => '5493416000001',
+        ]);
+
+        $this->getJson('api/recordatorio-cobro/preview/'.$cliente_ajeno->id.'?dias=0')
+            ->assertStatus(404)
+            ->assertJsonPath('code', 'cliente_no_encontrado');
+
+        // (b) El lote de otra empresa no se lee, aunque se sepa el uuid exacto. 🔴 El guard es el
+        // `owner_id` adentro de la clave de Cache, y esto es lo que lo prueba: el MISMO uuid
+        // devuelve 404 bajo la empresa ajena y 200 bajo la propia.
+        $uuid = (string) Str::uuid();
+
+        $lote = ['uuid' => $uuid, 'total' => 3, 'procesados' => 3, 'enviados' => 3, 'fallidos' => 0, 'terminado' => true];
+
+        Cache::put(SendRecordatorioCobroJob::cache_key($otro_owner->id, $uuid), $lote, now()->addHour());
+
+        $this->getJson('api/recordatorio-cobro/lote/'.$uuid)
+            ->assertStatus(404)
+            ->assertJsonPath('code', 'lote_no_encontrado');
+
+        Cache::put(SendRecordatorioCobroJob::cache_key($this->owner->id, $uuid), $lote, now()->addHour());
+
+        $this->getJson('api/recordatorio-cobro/lote/'.$uuid)
+            ->assertStatus(200)
+            ->assertJsonPath('lote.uuid', $uuid);
+    }
+
+    /**
+     * TEST 11 — la previsualizacion dice POR CUAL DE LOS DOS CAMINOS va a salir, y a QUE numero.
+     *
+     * Es la decision 2 de Lucas y es lo unico que el operador lee antes de apretar "Enviar". Tres
+     * mitades:
+     *
+     * (a) Ventana abierta -> `texto_libre`, sin plantilla: el mensaje lleva la lista de ventas.
+     * (b) Ventana cerrada -> `plantilla`, con el nombre tecnico y el adjunto resueltos: ahi el
+     *     detalle una-por-renglon no existe, y la pantalla tiene que decirlo.
+     * (c) 🔴 El `phone` que muestra la pantalla es AL QUE VA A SALIR EL MENSAJE. El envio manda a
+     *     `$chat->phone`, no al de la ficha del cliente: si la pantalla mostrara el de la ficha,
+     *     estaria afirmando un numero al que el mensaje no llega. Y de paso clava que el chat se
+     *     encuentra aunque la ficha tenga el telefono escrito a mano ("0341 600-9911") y el chat
+     *     lo tenga como lo manda Meta ("5493416009911"): con comparacion exacta no matchean, se
+     *     crearia un chat duplicado y el envio saldria por plantilla en vez de texto libre.
+     *
+     * @test
+     * @return void
+     */
+    public function la_previsualizacion_dice_por_cual_de_los_dos_caminos_va_a_salir()
+    {
+        $this->dar_extension();
+        $this->plantilla_aprobada();
+
+        // ---------- (a) Ventana abierta ----------
+
+        $this->chat_con_ventana_abierta($this->cliente);
+        $venta = $this->venta_sin_cobrar($this->cliente, 45, 4000);
+
+        $abierta = $this->getJson('api/recordatorio-cobro/preview/'.$this->cliente->id.'?dias=0');
+
+        $abierta->assertStatus(200);
+        $abierta->assertJsonPath('preview.canal', 'texto_libre');
+        $abierta->assertJsonPath('preview.ventana_abierta', true);
+        $abierta->assertJsonPath('preview.template_meta_name', null);
+        $abierta->assertJsonPath('preview.puede_enviar', true);
+
+        $this->assertNotFalse(
+            strpos($abierta->json('preview.body'), '/sale/pdf/'.$venta->id),
+            'El texto libre es el unico camino que lleva la lista de ventas una por renglon.'
+        );
+
+        // ---------- (b) Ventana cerrada ----------
+
+        $cliente_cerrado = $this->crear_cliente('Ana Lopez', '5493416007766');
+        $this->chat_fuera_de_ventana($cliente_cerrado);
+        $this->venta_sin_cobrar($cliente_cerrado, 60, 2500);
+
+        $cerrada = $this->getJson('api/recordatorio-cobro/preview/'.$cliente_cerrado->id.'?dias=0');
+
+        $cerrada->assertStatus(200);
+        $cerrada->assertJsonPath('preview.canal', 'plantilla');
+        $cerrada->assertJsonPath('preview.ventana_abierta', false);
+        $cerrada->assertJsonPath('preview.template_meta_name', RecordatorioCobroSenderService::TEMPLATE_META_NAME);
+        $cerrada->assertJsonPath('preview.puede_enviar', true);
+
+        $this->assertNotNull(
+            $cerrada->json('preview.documento_url'),
+            'Con la ventana cerrada la plantilla va con header DOCUMENT: sin adjunto, Meta la rechaza y el envio se saltea.'
+        );
+
+        // ---------- (c) El telefono que se muestra es el del chat ----------
+
+        $con_telefono_a_mano = $this->crear_cliente('Carlos con telefono a mano', '0341 600-9911');
+
+        // El chat lo abrio el webhook de Kapso: sin `client_id` vinculado y con el numero como lo
+        // manda Meta.
+        WhatsappChat::create([
+            'user_id'         => $this->owner->id,
+            'client_id'       => null,
+            'phone'           => '5493416009911',
+            'ai_enabled'      => false,
+            'unread_count'    => 0,
+            'last_message_at' => now(),
+            'last_inbound_at' => now(),
+        ]);
+
+        $this->venta_sin_cobrar($con_telefono_a_mano, 50, 1500);
+
+        $del_chat = $this->getJson('api/recordatorio-cobro/preview/'.$con_telefono_a_mano->id.'?dias=0');
+
+        $del_chat->assertStatus(200);
+        $del_chat->assertJsonPath('preview.phone', '5493416009911');
+        $del_chat->assertJsonPath(
+            'preview.canal',
+            'texto_libre'
+        );
+    }
+
+    /**
+     * TEST 12 — multimoneda: UN mensaje con los dos montos SEPARADOS.
+     *
+     * Decision 3 de Lucas. Sumar $12.500 y USD 300 da 12.800 de nada: un numero que no existe en
+     * ninguna moneda y que el cliente no puede pagar. Y tampoco son dos mensajes: dos WhatsApp
+     * seguidos al mismo numero por la misma deuda son spam, y Meta los trata como tal.
+     *
+     * @test
+     * @return void
+     */
+    public function multimoneda_un_solo_mensaje_con_los_montos_separados()
+    {
+        Http::fake([
+            'api.kapso.ai/*' => Http::response(['messages' => [['id' => 'wamid.MULTIMONEDA']]], 200),
+            '*' => Http::response([], 200),
+        ]);
+
+        $chat = $this->chat_con_ventana_abierta($this->cliente);
+
+        $en_pesos = $this->venta_sin_cobrar($this->cliente, 45, 12500, 1);
+        $en_dolares = $this->venta_sin_cobrar($this->cliente, 30, 300, 2);
+
+        $mensaje = (new RecordatorioCobroSenderService())
+            ->enviar($this->owner->id, $this->cliente, [$en_pesos, $en_dolares], null);
+
+        // UN mensaje, no dos.
+        $this->assertCount(1, $this->mensajes_salientes($chat->id));
+
+        // Los dos montos, cada uno con su simbolo.
+        $this->assertNotFalse(strpos($mensaje->body, '$12.500'), 'Tiene que decir el total en pesos.');
+        $this->assertNotFalse(strpos($mensaje->body, 'USD 300'), 'Y el total en dolares, aparte.');
+
+        // 🔴 Y NO la suma. 12500 + 300 = 12800 no es plata de ninguna moneda.
+        $this->assertFalse(strpos($mensaje->body, '12.800'), 'Los montos de monedas distintas NO se suman.');
+
+        // La pantalla recibe lo mismo: dos renglones, uno por moneda.
+        $preview = (new RecordatorioCobroSenderService())
+            ->previsualizar($this->owner->id, $this->cliente, [$en_pesos, $en_dolares], null);
+
+        $this->assertCount(2, $preview['totales_por_moneda']);
+
+        $etiquetas = [];
+
+        foreach ($preview['totales_por_moneda'] as $total) {
+            $etiquetas[(int) $total['moneda_id']] = $total['etiqueta'];
+        }
+
+        $this->assertSame('$12.500', $etiquetas[1]);
+        $this->assertSame('USD 300', $etiquetas[2]);
+    }
+
+    /**
+     * TEST 13 — el lote queda CONTADO aunque los jobs corran inline, y los fallos dicen por que.
+     *
+     * Dos defectos en el mismo escenario porque los dos se ven en la misma pantalla:
+     *
+     * (a) 🔴 EL ORDEN. `QUEUE_CONNECTION` es `sync` por default (`config/queue.php`) y es lo que
+     *     corre en los tests: en sync el job se ejecuta INLINE adentro del `dispatch()`. Con el
+     *     lote escrito en Cache DESPUES del `foreach` de despachos, cada job hacia su
+     *     `Cache::get()`, no encontraba nada, se iba sin contar, y despues el `put` pisaba todo
+     *     con ceros. El operador mandaba 20 recordatorios, los 20 salian, y el modal mostraba
+     *     "0 de 20" cinco minutos para terminar diciendo que se seguian mandando solos.
+     * (b) Los motivos de fallo. Cuatro casos se detectan recien adentro del job, o sea despues de
+     *     que el 202 ya contesto. Si solo fueran a un `Log`, en pantalla salen como un numero
+     *     pelado y el operador no tiene con que accionar.
+     *
+     * @test
+     * @return void
+     */
+    public function el_lote_cuenta_los_jobs_inline_y_guarda_el_motivo_de_cada_fallo()
+    {
+        $this->dar_extension();
+
+        $bien_1 = $this->crear_cliente('Recibe bien uno', '5493416001111');
+        $bien_2 = $this->crear_cliente('Recibe bien dos', '5493416002222');
+        $rechazado = $this->crear_cliente('Kapso lo rechaza', '5493416008888');
+
+        // Ventana abierta para los tres: asi el camino es texto libre y lo unico que cambia entre
+        // ellos es lo que contesta Kapso.
+        $this->chat_con_ventana_abierta($bien_1);
+        $this->chat_con_ventana_abierta($bien_2);
+        $chat_rechazado = $this->chat_con_ventana_abierta($rechazado);
+
+        $this->venta_sin_cobrar($bien_1, 40, 1000);
+        $this->venta_sin_cobrar($bien_2, 40, 2000);
+        $this->venta_sin_cobrar($rechazado, 40, 3000);
+
+        // 🔴 UN SOLO `Http::fake()` con stub-closure: llamarlo dos veces los MERGEA y el primero
+        // sigue ganando. El stub decide por el numero destino, que es lo unico que distingue a los
+        // tres envios.
+        Http::fake([
+            'api.kapso.ai/*' => function ($request) {
+                $body = json_decode($request->body(), true);
+
+                $destino = isset($body['to']) ? (string) $body['to'] : '';
+
+                if (strpos($destino, '8888') !== false) {
+                    return Http::response(['error' => 'numero rechazado por Meta'], 500);
+                }
+
+                return Http::response(['messages' => [['id' => 'wamid.LOTE.'.$destino]]], 200);
+            },
+            '*' => Http::response([], 200),
+        ]);
+
+        $respuesta = $this->postJson('api/recordatorio-cobro/enviar-masivo', ['dias' => 0]);
+
+        $respuesta->assertStatus(202);
+        $this->assertSame(3, $respuesta->json('encolados'));
+
+        // Con `sync` los tres jobs YA corrieron, adentro del dispatch.
+        $estado = $this->getJson('api/recordatorio-cobro/lote/'.$respuesta->json('lote_uuid'));
+
+        $estado->assertStatus(200);
+
+        $lote = $estado->json('lote');
+
+        $this->assertSame(3, $lote['total']);
+        $this->assertSame(3, $lote['procesados'], '🔴 Los tres jobs corrieron inline: el lote tiene que haberlos contado a los tres, no quedar en cero.');
+        $this->assertSame(2, $lote['enviados']);
+        $this->assertSame(1, $lote['fallidos']);
+        $this->assertTrue($lote['terminado']);
+
+        // (b) Y el fallido dice POR QUE, agrupado por motivo y con nombre.
+        $this->assertSame(
+            1,
+            $lote['motivos_fallo'][RecordatorioCobroSenderService::CODE_ENVIO_NO_CONFIRMADO],
+            'Un fallido sin motivo es un numero que el operador no puede accionar.'
+        );
+
+        $this->assertCount(1, $lote['fallos']);
+        $this->assertSame((int) $rechazado->id, (int) $lote['fallos'][0]['client_id']);
+        $this->assertSame('Kapso lo rechaza', $lote['fallos'][0]['client_name']);
+
+        // Y el que Kapso rechazo NO tiene fila: la garantia del test 8, ahora por el masivo.
+        $this->assertSame(0, $this->mensajes_salientes($chat_rechazado->id)->count());
     }
 }

@@ -69,11 +69,25 @@ class WhatsappTemplateStandardHelper
             // parámetros con saltos de línea, tabulaciones o 4 espacios seguidos. Por eso el
             // detalle una-por-renglón existe sólo en el camino de texto libre y acá viaja
             // apenas la cantidad de ventas y el total pendiente.
+            //
+            // 🔴 DOS COSAS DEL TEXTO QUE NO SE PUEDEN CAMBIAR DESPUÉS. Una vez que Meta aprueba
+            // la plantilla, el body es inmutable: cualquier retoque obliga a darla de alta de
+            // nuevo y a esperar otra revisión. Por eso están resueltas acá y no "más adelante":
+            //
+            // 1. {{3}} LLEVA EL SUSTANTIVO ("1 venta" / "7 ventas") y el body dice "Tenés {{3}}
+            //    pendientes de pago". Si {{3}} fuera sólo el número sobre un body que dijera
+            //    "{{3}} ventas pendientes", un cliente con una sola venta leería "Tenés 1 ventas
+            //    pendientes de pago". El singular no se puede resolver desde texto fijo.
+            // 2. EL BODY NO PROMETE EL ADJUNTO. Decía "Te adjuntamos el resumen de tu cuenta
+            //    corriente", y el header DOCUMENT no siempre puede armarse (owner sin `api_url`,
+            //    cliente sin movimientos en la cuenta). Prometerle al cliente un archivo que no
+            //    llega es peor que no mencionarlo: ahora se lo ofrece por respuesta, que es algo
+            //    que siempre se puede cumplir.
             'name' => 'Recordatorio de cobro',
             'meta_template_name' => 'cc_cli_recordatorio_cobro',
             'category' => 'utility',
-            'body_preview' => 'Hola {{1}}, te escribimos de {{2}}. Tenés {{3}} ventas pendientes de pago por un total de {{4}}. Te adjuntamos el resumen de tu cuenta corriente. Cualquier consulta, respondé este mensaje. ¡Gracias!',
-            'variables' => ['Nombre', 'Negocio', 'Cantidad de ventas', 'Montos pendientes'],
+            'body_preview' => 'Hola {{1}}, te escribimos de {{2}}. Tenés {{3}} pendientes de pago por un total de {{4}}. Si necesitás el resumen de tu cuenta corriente o querés coordinar el pago, respondé este mensaje. ¡Gracias!',
+            'variables' => ['Nombre', 'Negocio', 'Cantidad de ventas (ej: "7 ventas")', 'Montos pendientes'],
         ],
     ];
 
@@ -110,6 +124,29 @@ class WhatsappTemplateStandardHelper
                 'is_system' => true,
             ]);
         }
+    }
+
+    /**
+     * El `body_preview` del catálogo para un `meta_template_name`, o cadena vacía si ese nombre
+     * no es de ninguna plantilla estándar.
+     *
+     * 🔴 EXISTE PARA QUE EL TEXTO DE UNA PLANTILLA VIVA EN UN SOLO ARCHIVO.
+     * `RecordatorioCobroSenderService` lo necesita para previsualizar el mensaje cuando el owner
+     * todavía no tiene la plantilla dada de alta: si lo tuviera copiado, la pantalla mostraría un
+     * texto y a Meta se le daría de alta otro apenas alguien tocara uno de los dos.
+     *
+     * @param  string  $meta_template_name
+     * @return string
+     */
+    public static function body_preview_de($meta_template_name)
+    {
+        foreach (self::$standard_templates as $template) {
+            if ($template['meta_template_name'] === $meta_template_name) {
+                return $template['body_preview'];
+            }
+        }
+
+        return '';
     }
 
     /**

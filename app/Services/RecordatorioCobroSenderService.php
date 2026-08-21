@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\RecordatorioCobroException;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
+use App\Http\Controllers\Helpers\WhatsappTemplateStandardHelper;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\User;
@@ -21,7 +22,7 @@ use Carbon\Carbon;
  * 24 h abierta) y la plantilla `cc_cli_recordatorio_cobro` con header DOCUMENT (ventana
  * cerrada).
  *
- * Tres cosas que definen este archivo y conviene tener presentes antes de tocarlo:
+ * Cuatro cosas que definen este archivo y conviene tener presentes antes de tocarlo:
  *
  * 1. 🔴 `previsualizar()` Y `enviar()` COMPARTEN `armar_contenido()`. Ese es todo el punto de
  *    que el armado sea un método privado y no código repetido: el modal de previsualización
@@ -42,6 +43,11 @@ use Carbon\Carbon;
  *    condiciones esperables del negocio (`Log::info`). Misma partición que documenta
  *    `SendSaleWhatsappJob`, y por el mismo motivo: si un cliente sin teléfono cargado
  *    generara un error, el canal se llena de ruido y el fallo de verdad deja de verse.
+ *
+ * 4. 🔴 `motivo_de_salteo()` Y `buscar_chat()` SON DE ACÁ Y LOS USA TAMBIÉN EL CONTROLLER. El
+ *    masivo tiene que poder decir por qué NO le va a mandar a un cliente antes de encolar nada, y
+ *    tiene que decir lo mismo que dijo la previsualización. Cuando cada uno resolvía lo suyo, la
+ *    pantalla mostraba "se encolaron 40" y los 40 morían adentro de un `Log::info` del job.
  *
  * ⚠️ El texto libre pasa por `WhatsappBotSendService::send_text()`, que tiene el freno de la
  * simulación. Corresponde que lo lleve: el texto libre se apoya en la ventana de 24 h, que es
@@ -108,6 +114,19 @@ class RecordatorioCobroSenderService
     const CODE_SIN_VENTAS = 'sin_ventas';
 
     /**
+     * Ventana cerrada y el cliente no tiene ningún resumen de cuenta corriente que adjuntar.
+     *
+     * 🔴 ES UN SALTEO Y NO UN INTENTO, a propósito. Con la ventana cerrada el único camino es la
+     * plantilla, y la plantilla está registrada en Meta con header DOCUMENT: si se manda sin el
+     * componente `header`, Meta la rechaza, `send_template()` devuelve null y termina como un
+     * "fallido" mudo que nadie puede accionar. Un salteo explicado ("este cliente no tiene
+     * movimientos en su cuenta corriente") le dice al operador exactamente qué pasó.
+     *
+     * @var string
+     */
+    const CODE_SIN_RESUMEN_DE_CUENTA = 'sin_resumen_de_cuenta';
+
+    /**
      * Arma la previsualización del recordatorio sin mandar nada ni crear ninguna fila.
      *
      * 🔴 NO LANZA por las condiciones del negocio, a diferencia de `enviar()`: devuelve
@@ -129,37 +148,27 @@ class RecordatorioCobroSenderService
     {
         $config = WhatsappBotConfig::getForUser((int) $owner_id);
 
-        $phone = WhatsappPhoneHelper::normalize($client->phone);
-
-        $chat = ($phone === '') ? null : $this->buscar_chat((int) $owner_id, $client, $phone);
+        $chat = self::buscar_chat((int) $owner_id, $client);
 
         $ventana_abierta = ! is_null($chat) && $chat->is_within_service_window();
 
         $contenido = $this->armar_contenido((int) $owner_id, $client, $ventas, $ventana_abierta, $config);
 
-        // El motivo se resuelve en el mismo orden en que `enviar()` va a cortar, para que la
-        // pantalla y el envío nunca discrepen sobre por qué no se puede.
-        $motivo = null;
-        $mensaje_motivo = null;
-
-        if (is_null($config)) {
-            $motivo = self::CODE_SIN_CONFIGURACION;
-            $mensaje_motivo = 'No hay una configuración de WhatsApp activa para esta empresa.';
-        } elseif ($phone === '') {
-            $motivo = self::CODE_SIN_TELEFONO;
-            $mensaje_motivo = 'El cliente no tiene teléfono cargado.';
-        } elseif (! is_null($chat) && self::ya_recibio_recordatorio($chat)) {
-            $motivo = self::CODE_YA_ENVIADO;
-            $mensaje_motivo = 'Ya recibió el recordatorio en las últimas 24 horas.';
-        } elseif (! $ventana_abierta && is_null($this->plantilla_aprobada((int) $owner_id))) {
-            $motivo = self::CODE_PLANTILLA_NO_APROBADA;
-            $mensaje_motivo = 'La ventana de 24 horas está cerrada y la plantilla de recordatorio todavía no está aprobada en Meta.';
-        }
+        // 🔴 EL MISMO `motivo_de_salteo()` QUE USA EL MASIVO. Antes la pantalla resolvía el motivo
+        // por su cuenta y el controller por la suya, así que las dos podían decir cosas distintas
+        // del mismo cliente. Una regla, un lugar.
+        $motivo = $this->motivo_de_salteo((int) $owner_id, $client, $config, $chat);
 
         return [
             'client_id'          => (int) $client->id,
             'client_name'        => $this->nombre_cliente($client),
-            'phone'              => ($phone === '') ? null : $phone,
+            // 🔴 EL TELÉFONO QUE SE MUESTRA ES EL QUE VA A RECIBIR EL MENSAJE, no el de la ficha
+            // del cliente. `enviar()` manda a `$chat->phone`: si alguien corrigió el teléfono en
+            // la ficha y el chat quedó con el viejo, mostrar el de la ficha sería afirmar en
+            // pantalla un número al que el mensaje NO va a llegar (y hoy puede ser de otra
+            // persona). Sin chat todavía, el que se va a usar es el normalizado de la ficha,
+            // porque es con ese que `resolve_chat()` va a crearlo.
+            'phone'              => $this->phone_de_destino($client, $chat),
             'canal'              => $ventana_abierta ? 'texto_libre' : 'plantilla',
             'ventana_abierta'    => $ventana_abierta,
             'body'               => $contenido['body'],
@@ -172,9 +181,128 @@ class RecordatorioCobroSenderService
             'ventas_total'       => $contenido['ventas_total'],
             'totales_por_moneda' => $contenido['totales_por_moneda'],
             'puede_enviar'       => is_null($motivo),
-            'motivo'             => $motivo,
-            'mensaje_motivo'     => $mensaje_motivo,
+            'motivo'             => is_null($motivo) ? null : $motivo['motivo'],
+            'mensaje_motivo'     => is_null($motivo) ? null : $motivo['mensaje'],
         ];
+    }
+
+    /**
+     * Por qué NO se le puede mandar el recordatorio a este cliente, o null si sí se le puede.
+     *
+     * 🔴 UNA SOLA IMPLEMENTACIÓN PARA LA PANTALLA Y PARA EL MASIVO. La previsualización y
+     * `RecordatorioCobroController@encolar` la consultan igual, así que el motivo que lee el
+     * operador en el modal es el mismo que va a salir en la lista de `salteados` del 202. Cuando
+     * cada uno resolvía lo suyo, un chat existente sin `client_id` vinculado no aparecía como
+     * salteado, se encolaba, y el job lo tiraba como `ya_recibio_hoy` sin que nadie lo viera.
+     *
+     * El orden es el mismo en que `enviar()` corta, para que nunca discrepen.
+     *
+     * ⚠️ Es INFORMATIVO: la autoridad la tiene `enviar()`, que revalida todo justo antes de
+     * mandar. Entre el POST y el job puede pasar un rato y la respuesta puede cambiar.
+     *
+     * @param  int     $owner_id
+     * @param  Client  $client
+     * @param  WhatsappBotConfig|null  $config  Config del bot de la empresa; null si no hay.
+     * @param  WhatsappChat|null       $chat    El chat ya resuelto por el caller (`buscar_chat()`).
+     * @return array|null  ['motivo' => string, 'mensaje' => string] o null si se le puede mandar.
+     */
+    public function motivo_de_salteo($owner_id, Client $client, $config, $chat)
+    {
+        if (is_null($config)) {
+            return [
+                'motivo'  => self::CODE_SIN_CONFIGURACION,
+                'mensaje' => 'No hay una configuración de WhatsApp activa para esta empresa.',
+            ];
+        }
+
+        if (WhatsappPhoneHelper::normalize($client->phone) === '') {
+            return [
+                'motivo'  => self::CODE_SIN_TELEFONO,
+                'mensaje' => 'No tiene teléfono cargado.',
+            ];
+        }
+
+        if (! is_null($chat) && self::ya_recibio_recordatorio($chat)) {
+            return [
+                'motivo'  => self::CODE_YA_ENVIADO,
+                'mensaje' => 'Ya recibió el recordatorio en las últimas 24 horas.',
+            ];
+        }
+
+        // Con la ventana de 24 h abierta sale por texto libre: no necesita ni la plantilla ni el
+        // adjunto, así que los dos motivos que siguen no le corresponden.
+        if (! is_null($chat) && $chat->is_within_service_window()) {
+            return null;
+        }
+
+        // 🔴 ESTE ES EL CASO DEL DÍA 1, no un borde raro: `cc_cli_recordatorio_cobro` nace
+        // `pendiente_meta` y se queda así hasta que ComercioCity la apruebe a mano en Meta. Sin
+        // esta rama, todos los clientes que no escribieron en las últimas 24 h se encolaban, el
+        // toast decía "se encolaron 40 recordatorios" y los 40 morían adentro de un `Log::info`.
+        if (is_null($this->plantilla_aprobada($owner_id))) {
+            return [
+                'motivo'  => self::CODE_PLANTILLA_NO_APROBADA,
+                'mensaje' => 'La ventana de 24 horas está cerrada y la plantilla de recordatorio todavía no está aprobada en Meta.',
+            ];
+        }
+
+        if (! $this->hay_resumen_de_cuenta($owner_id, $client, $config)) {
+            return [
+                'motivo'  => self::CODE_SIN_RESUMEN_DE_CUENTA,
+                'mensaje' => 'La ventana de 24 horas está cerrada y el cliente no tiene movimientos en su cuenta corriente para adjuntar.',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿Hay algún PDF de cuenta corriente que se le pueda adjuntar a la plantilla?
+     *
+     * Es el mismo dato que resuelve `documento_principal()` pero sin necesitar las ventas, para
+     * que el masivo pueda evaluarlo cliente por cliente antes de encolar nada. Los dos se apoyan
+     * en `build_current_acount_pdf_url()`, así que no pueden contestar distinto.
+     *
+     * @param  int     $owner_id
+     * @param  Client  $client
+     * @param  WhatsappBotConfig|null  $config
+     * @return bool
+     */
+    public function hay_resumen_de_cuenta($owner_id, Client $client, $config)
+    {
+        $owner = $this->owner_de((int) $owner_id, $config);
+
+        $api_url = rtrim((string) (is_null($owner) ? '' : $owner->api_url), '/');
+
+        if ($api_url === '') {
+            return false;
+        }
+
+        foreach ($this->credit_accounts_ordenadas($client) as $credit_account) {
+            if (! is_null($this->build_current_acount_pdf_url($credit_account, $api_url))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * El teléfono al que efectivamente va a salir el mensaje.
+     *
+     * @param  Client  $client
+     * @param  WhatsappChat|null  $chat
+     * @return string|null
+     */
+    private function phone_de_destino(Client $client, $chat)
+    {
+        if (! is_null($chat)) {
+            return $chat->phone;
+        }
+
+        $phone = WhatsappPhoneHelper::normalize($client->phone);
+
+        return ($phone === '') ? null : $phone;
     }
 
     /**
@@ -243,6 +371,17 @@ class RecordatorioCobroSenderService
 
         if (is_null($template)) {
             throw new RecordatorioCobroException('La plantilla de recordatorio de cobro todavía no está aprobada en Meta.', self::CODE_PLANTILLA_NO_APROBADA);
+        }
+
+        // 🔴 NO SE MANDA UNA PLANTILLA CONDENADA. La plantilla está registrada en Meta con header
+        // DOCUMENT: sin `documento_url`, `send_template()` arma el payload sin el componente
+        // `header` y Meta la rechaza -> null -> `envio_no_confirmado`, un "fallido" mudo que el
+        // operador no puede accionar. Frenar acá con un motivo propio le dice qué pasó.
+        if (is_null($contenido['documento_url'])) {
+            throw new RecordatorioCobroException(
+                'La ventana de 24 horas está cerrada y el cliente no tiene movimientos en su cuenta corriente para adjuntar a la plantilla.',
+                self::CODE_SIN_RESUMEN_DE_CUENTA
+            );
         }
 
         $wa_message_id = $send_service->send_template(
@@ -378,7 +517,13 @@ class RecordatorioCobroSenderService
 
         // Mismo orden que declara `WhatsappTemplateStandardHelper` para `cc_cli_recordatorio_cobro`:
         // [Nombre, Negocio, Cantidad de ventas, Montos pendientes].
-        $variables = [$nombre_cliente, $nombre_negocio, (string) $total_ventas, $etiqueta_totales];
+        //
+        // 🔴 LA VARIABLE {{3}} LLEVA EL SUSTANTIVO ADENTRO ("1 venta" / "7 ventas") y el body dice
+        // "Tenés {{3}} pendientes de pago". El singular no se puede resolver desde el body de una
+        // plantilla de Meta —es texto fijo—, así que si {{3}} fuera sólo el número, un cliente con
+        // una sola venta leería "Tenés 1 ventas pendientes de pago". El camino de texto libre ya
+        // conjuga bien (`body_texto_libre()`); esto lo empareja.
+        $variables = [$nombre_cliente, $nombre_negocio, $this->cantidad_de_ventas_en_palabras($total_ventas), $etiqueta_totales];
 
         $template = $this->plantilla_aprobada($owner_id);
 
@@ -422,8 +567,8 @@ class RecordatorioCobroSenderService
         $renglones[] = 'Hola '.$nombre_cliente.', te escribimos de '.$nombre_negocio.'.';
         $renglones[] = '';
 
-        $sustantivo = ($total_ventas === 1) ? '1 venta pendiente de pago' : $total_ventas.' ventas pendientes de pago';
-        $renglones[] = 'Tenés '.$sustantivo.' por un total de '.$etiqueta_totales.':';
+        $sustantivo = ($total_ventas === 1) ? '1 venta pendiente' : $total_ventas.' ventas pendientes';
+        $renglones[] = 'Tenés '.$sustantivo.' de pago por un total de '.$etiqueta_totales.':';
         $renglones[] = '';
 
         foreach ($listadas as $venta) {
@@ -482,11 +627,12 @@ class RecordatorioCobroSenderService
      * existe. El orden es por `moneda_id` para que el mensaje salga siempre igual.
      *
      * @param  array  $ventas
-     * @return array<int, array>  [['moneda_id' => 1, 'monto' => 12500.0, 'etiqueta' => '$12.500'], ...]
+     * @return array<int, array>  [['moneda_id' => 1, 'monto' => 12500.0, 'cantidad' => 3, 'etiqueta' => '$12.500'], ...]
      */
     private function montos_por_moneda(array $ventas)
     {
         $acumulado = [];
+        $cantidades = [];
 
         foreach ($ventas as $venta) {
 
@@ -494,9 +640,11 @@ class RecordatorioCobroSenderService
 
             if (! isset($acumulado[$moneda_id])) {
                 $acumulado[$moneda_id] = 0;
+                $cantidades[$moneda_id] = 0;
             }
 
             $acumulado[$moneda_id] += $this->falta_pagarse($venta);
+            $cantidades[$moneda_id]++;
         }
 
         ksort($acumulado);
@@ -507,6 +655,9 @@ class RecordatorioCobroSenderService
             $totales[] = [
                 'moneda_id' => (int) $moneda_id,
                 'monto'     => (float) $monto,
+                // La cantidad de ventas de esa moneda. La usa `documento_principal()` para elegir
+                // qué resumen adjuntar sin comparar montos de monedas distintas.
+                'cantidad'  => (int) $cantidades[$moneda_id],
                 'etiqueta'  => $this->formatear_monto($monto, (int) $moneda_id),
             ];
         }
@@ -649,8 +800,19 @@ class RecordatorioCobroSenderService
 
     /**
      * El único documento que puede viajar en el header de la plantilla: el PDF de cuenta
-     * corriente de la moneda con MAYOR monto pendiente. Desempate por `moneda_id` (gana el 1,
-     * pesos), para que dos corridas iguales manden el mismo archivo.
+     * corriente de la moneda con MÁS VENTAS VENCIDAS en el filtro. Desempate: el `moneda_id` más
+     * chico (pesos), para que dos corridas iguales manden el mismo archivo.
+     *
+     * 🔴 EL CRITERIO ES LA CANTIDAD DE VENTAS Y NO EL MONTO, y no es un detalle: comparar
+     * `12500 > 300` para elegir entre pesos y dólares es comparar dos unidades distintas como si
+     * fueran la misma. Un cliente que debe USD 300 y $500 terminaba recibiendo el resumen en
+     * pesos porque 500 > 300. La cantidad de ventas es un número sin unidad, así que se puede
+     * comparar entre monedas sin inventar una cotización que este módulo no tiene por qué
+     * conocer.
+     *
+     * ⚠️ Sólo se consideran las cuentas que tienen un PDF armable (con movimientos). Si la moneda
+     * "ganadora" no tiene ninguno, se cae a la que sí, en vez de mandar la plantilla sin adjunto:
+     * un resumen de la otra moneda es un dato real; una plantilla sin header la rechaza Meta.
      *
      * @param  Client  $client
      * @param  array   $totales
@@ -659,41 +821,45 @@ class RecordatorioCobroSenderService
      */
     private function documento_principal(Client $client, array $totales, $api_url)
     {
-        $vacio = ['url' => null, 'filename' => null];
+        $cantidad_por_moneda = [];
 
-        if ($totales === []) {
-            return $vacio;
+        foreach ($totales as $total) {
+            $cantidad_por_moneda[(int) $total['moneda_id']] = (int) $total['cantidad'];
         }
 
         $elegida = null;
+        $elegida_url = null;
+        $elegida_cantidad = -1;
 
-        foreach ($totales as $total) {
-            if (is_null($elegida)
-                || $total['monto'] > $elegida['monto']
-                || ($total['monto'] == $elegida['monto'] && $total['moneda_id'] < $elegida['moneda_id'])) {
-                $elegida = $total;
-            }
-        }
-
+        // `credit_accounts_ordenadas()` viene ordenada por `moneda_id` ascendente, así que con el
+        // `>` estricto el desempate se lo lleva sola la moneda de id más chico.
         foreach ($this->credit_accounts_ordenadas($client) as $credit_account) {
-
-            if ((int) $credit_account->moneda_id !== (int) $elegida['moneda_id']) {
-                continue;
-            }
 
             $url = $this->build_current_acount_pdf_url($credit_account, $api_url);
 
             if (is_null($url)) {
-                return $vacio;
+                continue;
             }
 
-            return [
-                'url'      => $url,
-                'filename' => 'cuenta-corriente-'.$this->etiqueta_moneda((int) $credit_account->moneda_id).'.pdf',
-            ];
+            $moneda_id = (int) $credit_account->moneda_id;
+
+            $cantidad = isset($cantidad_por_moneda[$moneda_id]) ? $cantidad_por_moneda[$moneda_id] : 0;
+
+            if ($cantidad > $elegida_cantidad) {
+                $elegida = $credit_account;
+                $elegida_url = $url;
+                $elegida_cantidad = $cantidad;
+            }
         }
 
-        return $vacio;
+        if (is_null($elegida)) {
+            return ['url' => null, 'filename' => null];
+        }
+
+        return [
+            'url'      => $elegida_url,
+            'filename' => 'cuenta-corriente-'.$this->etiqueta_moneda((int) $elegida->moneda_id).'.pdf',
+        ];
     }
 
     /**
@@ -806,15 +972,33 @@ class RecordatorioCobroSenderService
     }
 
     /**
-     * Busca el `WhatsappChat` del cliente SIN crearlo. Lo usa `previsualizar()`: mirar el
-     * mensaje que se le mandaría a un cliente no puede dejarle una conversación vacía abierta.
+     * Busca el `WhatsappChat` del cliente SIN crearlo. Primero por `client_id` y, si no hay, por
+     * teléfono (el cliente pudo haber escrito antes de que alguien vinculara la conversación).
+     *
+     * 🔴 ES ESTÁTICO Y PÚBLICO PORQUE `RecordatorioCobroController` USA EXACTAMENTE ESTA MISMA
+     * BÚSQUEDA. El controller antes buscaba sólo por `client_id`: un chat existente sin vincular
+     * no aparecía como salteado, se encolaba igual, y el job lo tiraba como `ya_recibio_hoy` sin
+     * que la pantalla dijera nada. Una regla, un lugar.
+     *
+     * ⚠️ EL MATCH POR TELÉFONO NO ES POR IGUALDAD EXACTA, a diferencia de
+     * `SaleWhatsappSenderService::resolve_chat()`. Ese patrón es preexistente, tiene otros
+     * callers y no se toca desde acá, pero acá NO se copia: `clients.phone` lo carga una persona
+     * ("0341 600-9988") y el chat lo crea el webhook de Kapso con lo que manda Meta
+     * ("5493416009988"). Comparados con `=` no matchean, así que se crearía un chat duplicado, la
+     * ventana daría cerrada, saldría por plantilla en vez de texto libre, y el número que se le
+     * pasa a Kapso lo terminaría rechazando Meta. Por eso se compara con
+     * `WhatsappPhoneHelper::matches()`, que es la función que existe justamente para esto: los
+     * últimos 10 dígitos, absorbiendo `54`, `549`, el `0` y el `15`.
+     *
+     * ⚠️ El match por teléfono sólo mira chats SIN cliente vinculado. Un chat ya vinculado a otro
+     * cliente que casualmente comparte el teléfono no se toma: escribirle el recordatorio de un
+     * cliente adentro de la conversación de otro es peor que abrirle una conversación nueva.
      *
      * @param  int     $owner_id
      * @param  Client  $client
-     * @param  string  $phone  Ya normalizado.
      * @return WhatsappChat|null
      */
-    private function buscar_chat($owner_id, Client $client, $phone)
+    public static function buscar_chat($owner_id, Client $client)
     {
         $chat = WhatsappChat::where('user_id', $owner_id)
             ->where('client_id', $client->id)
@@ -824,9 +1008,28 @@ class RecordatorioCobroSenderService
             return $chat;
         }
 
-        return WhatsappChat::where('user_id', $owner_id)
-            ->where('phone', $phone)
-            ->first();
+        $phone = WhatsappPhoneHelper::normalize($client->phone);
+
+        if ($phone === '') {
+            return null;
+        }
+
+        // El `like` por los últimos 10 dígitos acota la búsqueda en la base (no se traen todos
+        // los chats de la empresa a memoria) y `matches()` decide de verdad sobre esos pocos.
+        // Con menos de 10 dígitos no hay "últimos 10" confiables y se busca exacto, igual que
+        // hace el helper.
+        $candidatos = WhatsappChat::where('user_id', $owner_id)
+            ->whereNull('client_id')
+            ->where('phone', (strlen($phone) < 10) ? '=' : 'like', (strlen($phone) < 10) ? $phone : '%'.substr($phone, -10))
+            ->get();
+
+        foreach ($candidatos as $candidato) {
+            if (WhatsappPhoneHelper::matches($candidato->phone, $phone)) {
+                return $candidato;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -848,7 +1051,7 @@ class RecordatorioCobroSenderService
             throw new RecordatorioCobroException('El cliente no tiene teléfono cargado.', self::CODE_SIN_TELEFONO);
         }
 
-        $chat = $this->buscar_chat($owner_id, $client, $phone);
+        $chat = self::buscar_chat($owner_id, $client);
 
         if (is_null($chat)) {
             return WhatsappChat::create([
@@ -889,16 +1092,32 @@ class RecordatorioCobroSenderService
     }
 
     /**
+     * "1 venta" / "7 ventas", para que la variable `{{3}}` de la plantilla lleve el sustantivo
+     * conjugado y el body de Meta pueda ser texto fijo.
+     *
+     * @param  int  $total_ventas
+     * @return string
+     */
+    private function cantidad_de_ventas_en_palabras($total_ventas)
+    {
+        return ((int) $total_ventas === 1) ? '1 venta' : (int) $total_ventas.' ventas';
+    }
+
+    /**
      * Renderiza el cuerpo estándar de la plantilla cuando el owner todavía no la tiene dada de
      * alta. Sólo se usa para PREVISUALIZAR: el envío corta antes con
      * `CODE_PLANTILLA_NO_APROBADA`.
+     *
+     * 🔴 El texto se lee del catálogo (`WhatsappTemplateStandardHelper`) y NO se repite acá. Es
+     * el mismo cuerpo que se le da de alta a Meta: tenerlo escrito en dos archivos garantizaba
+     * que tarde o temprano la previsualización mostrara un texto y saliera otro.
      *
      * @param  array  $variables
      * @return string
      */
     private function render_plantilla_estandar(array $variables)
     {
-        $body = 'Hola {{1}}, te escribimos de {{2}}. Tenés {{3}} ventas pendientes de pago por un total de {{4}}. Te adjuntamos el resumen de tu cuenta corriente. Cualquier consulta, respondé este mensaje. ¡Gracias!';
+        $body = WhatsappTemplateStandardHelper::body_preview_de(self::TEMPLATE_META_NAME);
 
         foreach ($variables as $index => $valor) {
             $body = str_replace('{{'.($index + 1).'}}', (string) $valor, $body);

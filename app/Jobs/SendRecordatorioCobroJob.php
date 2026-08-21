@@ -61,6 +61,15 @@ class SendRecordatorioCobroJob implements ShouldQueue
      */
     public $timeout = 120;
 
+    /**
+     * Cuántos fallos se guardan con nombre y apellido adentro del lote. El resto sigue contado en
+     * `motivos_fallo`. El tope existe para que el lote no crezca sin techo con un masivo grande:
+     * la pantalla muestra los primeros y explica el resto por motivo.
+     *
+     * @var int
+     */
+    const MAX_FALLOS_DETALLADOS = 50;
+
     /** @var int Dueño de la empresa (`sales.user_id`). */
     protected $owner_id;
 
@@ -120,6 +129,8 @@ class SendRecordatorioCobroJob implements ShouldQueue
     public function handle()
     {
         $enviado = false;
+        $motivo = null;
+        $client_name = null;
 
         try {
 
@@ -134,9 +145,11 @@ class SendRecordatorioCobroJob implements ShouldQueue
                     'owner_id'  => $this->owner_id,
                 ]);
 
-                $this->marcar_procesado(false);
+                $this->marcar_procesado(false, 'cliente_no_encontrado', null);
                 return;
             }
+
+            $client_name = $client->name;
 
             $ventas = VentasSinCobrarHelper::query_de_ventas($this->owner_id, $this->employee_id_del_recorte(), $this->dias)
                 ->where('client_id', $this->client_id)
@@ -151,7 +164,7 @@ class SendRecordatorioCobroJob implements ShouldQueue
                     'client_id' => $this->client_id,
                 ]);
 
-                $this->marcar_procesado(false);
+                $this->marcar_procesado(false, RecordatorioCobroSenderService::CODE_SIN_VENTAS, $client_name);
                 return;
             }
 
@@ -172,6 +185,14 @@ class SendRecordatorioCobroJob implements ShouldQueue
             ]);
 
         } catch (RecordatorioCobroException $e) {
+
+            // 🔴 EL MOTIVO SE GUARDA, NO SÓLO SE LOGUEA. Estos cuatro casos (la plantilla que no
+            // está aprobada, las ventas que se cobraron mientras el job esperaba, el envío que
+            // Kapso no confirmó y el freno de 24 h revalidado) se detectan recién acá, o sea
+            // después de que el 202 ya contestó. Si sólo fueran a un `Log`, en pantalla salen como
+            // un número pelado —"3 fallidos"— y el operador no tiene con qué accionar. La decisión
+            // de Lucas es que los salteados y los fallidos se muestren AGRUPADOS POR MOTIVO.
+            $motivo = $e->error_code();
 
             if ($e->error_code() === RecordatorioCobroSenderService::CODE_ENVIO_NO_CONFIRMADO) {
                 // NO es una condición esperable del negocio: el recordatorio tenía que salir y no
@@ -196,13 +217,15 @@ class SendRecordatorioCobroJob implements ShouldQueue
 
         } catch (\Throwable $e) {
 
+            $motivo = 'error_inesperado';
+
             Log::error('SendRecordatorioCobroJob: error inesperado al enviar el recordatorio.', [
                 'client_id' => $this->client_id,
                 'error'     => $e->getMessage(),
             ]);
         }
 
-        $this->marcar_procesado($enviado);
+        $this->marcar_procesado($enviado, $motivo, $client_name);
     }
 
     /**
@@ -219,7 +242,7 @@ class SendRecordatorioCobroJob implements ShouldQueue
             'error'     => $e->getMessage(),
         ]);
 
-        $this->marcar_procesado(false);
+        $this->marcar_procesado(false, 'fallo_definitivo', null);
     }
 
     /**
@@ -260,17 +283,26 @@ class SendRecordatorioCobroJob implements ShouldQueue
     }
 
     /**
-     * Mueve los contadores del lote en Cache. Sin `lote_uuid` (o con el lote ya vencido) no hace
-     * nada: el envío en sí no depende del progreso.
+     * Mueve los contadores del lote en Cache y, si el recordatorio no salió, deja escrito POR QUÉ.
+     * Sin `lote_uuid` (o con el lote ya vencido) no hace nada: el envío en sí no depende del
+     * progreso.
+     *
+     * 🔴 `motivos_fallo` ES UN MAPA `motivo => cantidad` y no una lista de todo lo que pasó, para
+     * que el lote no crezca con el tamaño del masivo: son cinco o seis claves como mucho, mande a
+     * 3 clientes o a 300. `fallos` sí guarda el nombre del cliente, porque "a quién no le llegó"
+     * es lo primero que pregunta el operador, pero está TOPEADO: pasado el tope quedan los
+     * contadores, que es lo que la pantalla necesita para explicar el resto.
      *
      * ⚠️ Con `CACHE_DRIVER=file` esto es read-modify-write y dos jobs en paralelo pueden pisarse
      * un tick. Hoy no pasa (un worker, serial). Si algún día se levantan varios, la barra puede
      * no llegar al 100%: por eso el front corta también por timeout y no sólo por `terminado`.
      *
-     * @param  bool  $enviado
+     * @param  bool         $enviado
+     * @param  string|null  $motivo       Código del fallo; null si salió bien.
+     * @param  string|null  $client_name  Nombre del cliente, para que el fallo se pueda leer.
      * @return void
      */
-    private function marcar_procesado($enviado)
+    private function marcar_procesado($enviado, $motivo = null, $client_name = null)
     {
         if (is_null($this->lote_uuid)) {
             return;
@@ -292,6 +324,8 @@ class SendRecordatorioCobroJob implements ShouldQueue
                 $lote['enviados'] = (int) $lote['enviados'] + 1;
             } else {
                 $lote['fallidos'] = (int) $lote['fallidos'] + 1;
+
+                $lote = $this->anotar_fallo($lote, $motivo, $client_name);
             }
 
             $lote['terminado'] = $lote['procesados'] >= (int) $lote['total'];
@@ -306,5 +340,47 @@ class SendRecordatorioCobroJob implements ShouldQueue
                 'error'     => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Suma un fallo al lote: una unidad en el contador de su motivo y, mientras haya lugar, un
+     * renglón con el nombre del cliente.
+     *
+     * Los `isset()` de arriba no son paranoia: un lote escrito por la versión anterior del
+     * controller puede seguir vivo en Cache (viven una hora) sin ninguna de las dos claves, y
+     * este job no puede tumbarse por eso.
+     *
+     * @param  array        $lote
+     * @param  string|null  $motivo
+     * @param  string|null  $client_name
+     * @return array
+     */
+    private function anotar_fallo(array $lote, $motivo, $client_name)
+    {
+        if (is_null($motivo)) {
+            $motivo = 'desconocido';
+        }
+
+        if (! isset($lote['motivos_fallo']) || ! is_array($lote['motivos_fallo'])) {
+            $lote['motivos_fallo'] = [];
+        }
+
+        if (! isset($lote['fallos']) || ! is_array($lote['fallos'])) {
+            $lote['fallos'] = [];
+        }
+
+        $lote['motivos_fallo'][$motivo] = isset($lote['motivos_fallo'][$motivo])
+            ? (int) $lote['motivos_fallo'][$motivo] + 1
+            : 1;
+
+        if (count($lote['fallos']) < self::MAX_FALLOS_DETALLADOS) {
+            $lote['fallos'][] = [
+                'client_id'   => $this->client_id,
+                'client_name' => $client_name,
+                'motivo'      => $motivo,
+            ];
+        }
+
+        return $lote;
     }
 }

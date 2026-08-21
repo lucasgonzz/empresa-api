@@ -6,7 +6,6 @@ use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendRecordatorioCobroJob;
 use App\Models\Client;
 use App\Models\WhatsappBotConfig;
-use App\Models\WhatsappChat;
 use App\Services\RecordatorioCobroSenderService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -171,6 +170,12 @@ class RecordatorioCobroController extends Controller
      * 🔴 La clave de Cache lleva el `owner_id` adentro, así que un lote de otra empresa no se
      * puede leer aunque se adivine el uuid.
      *
+     * Devuelve el lote tal cual está en Cache, con los contadores Y los `motivos_fallo` /
+     * `fallos` que fueron cargando los jobs. Sin eso, los cuatro motivos que sólo el job puede
+     * detectar (la plantilla que no está aprobada, las ventas que se cobraron mientras el job
+     * esperaba, el envío que Kapso no confirmó y el freno de 24 h revalidado) terminaban en
+     * pantalla como un número pelado, "3 fallidos", que no le dice al operador qué hacer.
+     *
      * @param  string  $lote_uuid
      * @return \Illuminate\Http\JsonResponse
      */
@@ -201,10 +206,15 @@ class RecordatorioCobroController extends Controller
      * 🔴 UN JOB POR CLIENTE, NUNCA UNO POR VENTA. Un cliente con seis ventas vencidas recibe UN
      * mensaje con las cinco más viejas y una línea "y 1 venta más".
      *
-     * Los dos motivos de salteo que se evalúan acá son INFORMATIVOS: sirven para que el operador
-     * vea a quién no se le va a mandar y por qué. La autoridad la tiene el job, que revalida el
-     * freno de 24 h justo antes de enviar con el mismo `ya_recibio_recordatorio()` estático.
-     * Entre el POST y la corrida puede pasar un rato y otro operador pudo mandar lo mismo.
+     * 🔴 DOS PASADAS, Y EL LOTE SE ESCRIBE EN EL MEDIO. Primero se resuelve quién se saltea y
+     * quién se encola, después se escribe el lote en Cache, y recién en la segunda pasada se
+     * despacha. El motivo está escrito adentro del método, donde se hace.
+     *
+     * Los motivos de salteo que se evalúan acá son INFORMATIVOS y los resuelve
+     * `RecordatorioCobroSenderService::motivo_de_salteo()`, el MISMO que usa la
+     * previsualización: lo que el operador leyó en el modal es lo que va a salir en `salteados`.
+     * La autoridad la tiene el job, que revalida todo justo antes de enviar. Entre el POST y la
+     * corrida puede pasar un rato y otro operador pudo mandar lo mismo.
      *
      * @param  array  $clientes
      * @param  int    $dias
@@ -220,14 +230,19 @@ class RecordatorioCobroController extends Controller
         // Sin configuración activa del bot no puede salir nada. No es un 422: se devuelve el 202
         // de siempre con todos los clientes salteados y el motivo escrito, para que la pantalla
         // lo muestre igual que cualquier otro salteo en vez de dibujar un error de servidor.
-        $hay_config = ! is_null(WhatsappBotConfig::getForUser($owner_id));
+        $config = WhatsappBotConfig::getForUser($owner_id);
+
+        $service = new RecordatorioCobroSenderService();
 
         $salteados = [];
-        $encolados = 0;
+        $a_encolar = [];
 
+        // ---------- PRIMERA PASADA: se decide, no se despacha ----------
         foreach ($clientes as $client) {
 
-            $motivo = $this->motivo_de_salteo($owner_id, $client, $hay_config);
+            $chat = RecordatorioCobroSenderService::buscar_chat($owner_id, $client);
+
+            $motivo = $service->motivo_de_salteo($owner_id, $client, $config, $chat);
 
             if (! is_null($motivo)) {
                 $salteados[] = [
@@ -239,69 +254,47 @@ class RecordatorioCobroController extends Controller
                 continue;
             }
 
-            SendRecordatorioCobroJob::dispatch($owner_id, (int) $client->id, $dias, $sent_by_user_id, $lote_uuid);
-
-            $encolados++;
+            $a_encolar[] = (int) $client->id;
         }
 
+        // ---------- EL LOTE SE ESCRIBE ANTES DE DESPACHAR ----------
+        //
+        // 🔴 EL ORDEN DE ESTAS DOS COSAS ES EL BUG QUE ARREGLA ESTE MÉTODO, no una preferencia de
+        // estilo. `QUEUE_CONNECTION` es `sync` por default (`config/queue.php`), y en sync el job
+        // corre INLINE adentro del `dispatch()`. Con el `Cache::put` después del `foreach`, cada
+        // job hacía su `Cache::get()` en `marcar_procesado()`, no encontraba nada, se iba sin
+        // contar, y recién ahí el `put` pisaba todo con ceros: el operador mandaba 20
+        // recordatorios, los 20 salían, y el modal mostraba "0 de 20" durante cinco minutos para
+        // terminar diciendo que se seguían mandando en segundo plano.
         Cache::put(
             SendRecordatorioCobroJob::cache_key($owner_id, $lote_uuid),
             [
-                'uuid'       => $lote_uuid,
-                'total'      => $encolados,
-                'procesados' => 0,
-                'enviados'   => 0,
-                'fallidos'   => 0,
+                'uuid'          => $lote_uuid,
+                'total'         => count($a_encolar),
+                'procesados'    => 0,
+                'enviados'      => 0,
+                'fallidos'      => 0,
+                // Los fallos que sólo el job puede detectar, agrupados por motivo. Ver el
+                // docblock de `SendRecordatorioCobroJob::marcar_procesado()`.
+                'motivos_fallo' => [],
+                'fallos'        => [],
                 // Sin nada encolado no hay job que mueva un contador: el lote ya terminó.
-                'terminado'  => $encolados === 0,
+                'terminado'     => count($a_encolar) === 0,
             ],
             now()->addMinutes(self::MINUTOS_DE_VIDA_DEL_LOTE)
         );
 
+        // ---------- SEGUNDA PASADA: recién ahora se despacha ----------
+        foreach ($a_encolar as $client_id) {
+            SendRecordatorioCobroJob::dispatch($owner_id, $client_id, $dias, $sent_by_user_id, $lote_uuid);
+        }
+
         return response()->json([
             'lote_uuid'      => $lote_uuid,
             'total_clientes' => count($clientes),
-            'encolados'      => $encolados,
+            'encolados'      => count($a_encolar),
             'salteados'      => $salteados,
         ], 202);
-    }
-
-    /**
-     * Por qué NO se le manda el recordatorio a este cliente, o null si sí se le manda.
-     *
-     * @param  int     $owner_id
-     * @param  Client  $client
-     * @param  bool    $hay_config
-     * @return array|null  ['motivo' => string, 'mensaje' => string]
-     */
-    private function motivo_de_salteo($owner_id, Client $client, $hay_config)
-    {
-        if (! $hay_config) {
-            return [
-                'motivo'  => RecordatorioCobroSenderService::CODE_SIN_CONFIGURACION,
-                'mensaje' => 'No hay una configuración de WhatsApp activa para esta empresa.',
-            ];
-        }
-
-        if (is_null($client->phone) || trim((string) $client->phone) === '') {
-            return [
-                'motivo'  => RecordatorioCobroSenderService::CODE_SIN_TELEFONO,
-                'mensaje' => 'No tiene teléfono cargado.',
-            ];
-        }
-
-        $chat = WhatsappChat::where('user_id', $owner_id)
-            ->where('client_id', $client->id)
-            ->first();
-
-        if (! is_null($chat) && RecordatorioCobroSenderService::ya_recibio_recordatorio($chat)) {
-            return [
-                'motivo'  => RecordatorioCobroSenderService::CODE_YA_ENVIADO,
-                'mensaje' => 'Ya recibió el recordatorio en las últimas 24 horas.',
-            ];
-        }
-
-        return null;
     }
 
     /**

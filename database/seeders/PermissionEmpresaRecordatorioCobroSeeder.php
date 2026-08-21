@@ -20,6 +20,13 @@ use Illuminate\Database\Seeder;
  * catálogo de una base nueva; este usa `firstOrCreate()` y es el que se corre suelto sobre
  * una base de producción que ya existe, sin duplicar filas:
  *   php artisan db:seed --class=PermissionEmpresaRecordatorioCobroSeeder
+ *
+ * 🔴 POR ESO MISMO NO ESTÁ REGISTRADO EN `DatabaseSeeder`, y no es un olvido: no lo agregues.
+ * `permission_empresas.slug` no tiene índice único y ningún seeder trunca la tabla, así que si
+ * este corriera además de `PermissionSeeder` —que ya siembra `alerts.recordatorio_cobro`— toda
+ * base nueva nacería con el permiso DUPLICADO y el empleado lo vería dos veces en pantalla.
+ * `DatabaseSeeder` tiene el comentario largo, con el detalle de por qué la entrada que se saca es
+ * esa y no la de `PermissionSeeder`.
  */
 class PermissionEmpresaRecordatorioCobroSeeder extends Seeder
 {
