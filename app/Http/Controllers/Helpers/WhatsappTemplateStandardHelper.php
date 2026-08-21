@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\WhatsappTemplate;
 
 /**
- * Catálogo de las 5 plantillas estándar de WhatsApp que precarga ComercioCity para todas
+ * Catálogo de las 6 plantillas estándar de WhatsApp que precarga ComercioCity para todas
  * las empresas con el bot configurado (grupo 137, Prompt 04). Nacen `is_system` = true
  * (no editables ni borrables desde el ERP) y `status` = `pendiente_meta`: el equipo de
  * ComercioCity las da de alta a mano en Meta y recién ahí las marca `aprobada`.
@@ -18,7 +18,7 @@ use App\Models\WhatsappTemplate;
 class WhatsappTemplateStandardHelper
 {
     /**
-     * Definición de las 5 plantillas estándar `cc_cli_*`. El orden de `variables` es el
+     * Definición de las 6 plantillas estándar `cc_cli_*`. El orden de `variables` es el
      * mismo orden en que aparecen los placeholders `{{1}}`, `{{2}}`... en `body_preview`.
      *
      * @var array<int, array<string, mixed>>
@@ -59,6 +59,22 @@ class WhatsappTemplateStandardHelper
             'body_preview' => 'Hola {{1}}, te enviamos el comprobante {{2}} de tu compra en {{3}}. Cualquier consulta, respondé este mensaje. ¡Gracias por tu compra!',
             'variables' => ['Nombre', 'Nº de comprobante', 'Negocio'],
         ],
+        [
+            // Misión recordatorio-cobro-whatsapp: la plantilla del recordatorio de cobro que
+            // sale desde el módulo de alertas cuando la ventana de 24 h del cliente está
+            // cerrada. El header DOCUMENT lo arma `RecordatorioCobroSenderService` con el PDF
+            // de la cuenta corriente, así que acá solo van las variables del body.
+            //
+            // 🔴 La lista de ventas NO puede ser una variable de plantilla: Meta rechaza los
+            // parámetros con saltos de línea, tabulaciones o 4 espacios seguidos. Por eso el
+            // detalle una-por-renglón existe sólo en el camino de texto libre y acá viaja
+            // apenas la cantidad de ventas y el total pendiente.
+            'name' => 'Recordatorio de cobro',
+            'meta_template_name' => 'cc_cli_recordatorio_cobro',
+            'category' => 'utility',
+            'body_preview' => 'Hola {{1}}, te escribimos de {{2}}. Tenés {{3}} ventas pendientes de pago por un total de {{4}}. Te adjuntamos el resumen de tu cuenta corriente. Cualquier consulta, respondé este mensaje. ¡Gracias!',
+            'variables' => ['Nombre', 'Negocio', 'Cantidad de ventas', 'Montos pendientes'],
+        ],
     ];
 
     /**
@@ -97,7 +113,7 @@ class WhatsappTemplateStandardHelper
     }
 
     /**
-     * Nombres técnicos (`meta_template_name`) de las 5 plantillas estándar.
+     * Nombres técnicos (`meta_template_name`) de las 6 plantillas estándar.
      *
      * @return array<int, string>
      */

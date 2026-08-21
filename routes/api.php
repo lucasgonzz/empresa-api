@@ -904,6 +904,19 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
     Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
 
+    // Recordatorio de cobro por WhatsApp desde el módulo de alertas, solapa Cobros (misión
+    // recordatorio-cobro-whatsapp). Van adentro de ESTE grupo y no sueltas: el recordatorio es
+    // del módulo de WhatsApp, así que si la empresa no tiene la extensión no tiene por dónde
+    // mandarlo. Las cuatro piden además el permiso `alerts.recordatorio_cobro` (403 sin él),
+    // que se chequea adentro del controller.
+    //
+    // 🔴 Ninguna recibe `sale_ids`: reciben `client_id` y `dias`, y el backend recalcula la
+    // query con el recorte del usuario autenticado.
+    Route::get('recordatorio-cobro/preview/{client_id}', 'RecordatorioCobroController@preview');
+    Route::post('recordatorio-cobro/enviar', 'RecordatorioCobroController@enviar');
+    Route::post('recordatorio-cobro/enviar-masivo', 'RecordatorioCobroController@enviar_masivo');
+    Route::get('recordatorio-cobro/lote/{lote_uuid}', 'RecordatorioCobroController@estado_lote');
+
     // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
     Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
     Route::post('whatsapp-templates', 'WhatsappTemplateController@store');
