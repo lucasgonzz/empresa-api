@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCuotaHelper;
 use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
@@ -64,6 +65,33 @@ class CurrentAcountController extends Controller
     public function pago(Request $request) {
 
         // CurrentAcountHelper::eliminar_pagos_provisorios($request->credit_account_id, $request->is_provisorio);
+
+        /*
+         * 🔴 Las cajas destino se validan ACA, antes de crear absolutamente nada.
+         *
+         * Un pago se puede repartir entre varias cajas (tipico con la extension de ventas en
+         * dolares: efectivo en dolares a la caja en dolares + efectivo en pesos a la caja en
+         * pesos). Los movimientos se crean uno por uno mas abajo, en attachPaymentMethods(), y si
+         * la segunda caja no tenia apertura el flujo se cortaba ahi: el primer movimiento ya
+         * estaba hecho, el pago ya estaba creado, y no llegaban a correr ni el saldo ni la
+         * imputacion. Quedaba un pago huerfano y una caja sin la plata (reportado el 21/8/2026).
+         *
+         * Validar despues no alcanza: para cuando falla, la mitad del trabajo ya esta persistida.
+         *
+         * 🔴 Lo que se valida es que la caja tenga ALGUNA apertura, no que este abierta ahora. Una
+         * caja cerrada con aperturas previas registra el movimiento sin problema (se cuelga de la
+         * ultima) y asi funciona hoy en todos los flujos: rechazarla seria romperle el cobro a
+         * cualquier comercio que cierra la caja a la noche. Ver el detalle del criterio en
+         * CurrentAcountCajaHelper::cajas_sin_apertura_en_payload().
+         */
+        $cajas_sin_apertura = CurrentAcountCajaHelper::cajas_sin_apertura_en_payload($request->current_acount_payment_methods);
+
+        if (count($cajas_sin_apertura)) {
+
+            return response()->json([
+                'message' => 'Las siguientes cajas nunca se abrieron: '.implode(', ', $cajas_sin_apertura).'. Hay que abrirlas para poder registrar el pago.',
+            ], 422);
+        }
 
         $pago = CurrentAcount::create([
             'haber'                             => $this->get_haber($request),

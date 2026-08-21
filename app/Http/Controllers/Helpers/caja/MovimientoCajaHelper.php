@@ -56,11 +56,36 @@ class MovimientoCajaHelper {
 		return $current_aperutra_caja_id;
 	}
 
+	/**
+	 * Ultima apertura de la caja donde va a impactar el movimiento.
+	 *
+	 * 🔴 Una caja SIN ninguna apertura no puede recibir movimientos: el movimiento nace colgado de
+	 * una apertura y de ahi salen el arqueo y el cierre. Hasta el 21/8/2026 aca se hacia
+	 * `$current_aperutra_caja->id` derecho, y con una caja nunca abierta eso tiraba
+	 * "Trying to get property 'id' of non-object" -- un notice de PHP convertido en 500 que no le
+	 * decia a nadie cual era el problema real. El caso que lo destapo: un pago de cuenta corriente
+	 * repartido entre una caja en dolares (abierta, todos los dias) y una en pesos (nunca abierta);
+	 * el primer metodo impactaba, el segundo reventaba, y el pago quedaba a medias.
+	 *
+	 * NO se devuelve null para "seguir igual": el flujo se rompia igual dos lineas mas abajo, en
+	 * set_apertura_caja_ingresos_egresos(). Lo que cambia es el mensaje, no el desenlace.
+	 *
+	 * @return int Id de la apertura vigente.
+	 * @throws \Exception Si la caja no tiene ninguna apertura registrada.
+	 */
 	function get_current_aperutra_caja() {
 
 		$current_aperutra_caja = AperturaCaja::where('caja_id', $this->caja_id)
 												->orderBy('created_at', 'DESC')
 												->first();
+
+		if (is_null($current_aperutra_caja)) {
+
+			$caja = Caja::find($this->caja_id);
+			$nombre_caja = !is_null($caja) && $caja->name ? $caja->name : ('N° '.$this->caja_id);
+
+			throw new \Exception('La caja '.$nombre_caja.' no tiene ninguna apertura registrada, asi que no puede recibir movimientos. Hay que abrirla primero.');
+		}
 
 		return $current_aperutra_caja->id;
 	}
