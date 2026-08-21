@@ -486,6 +486,69 @@ class Esquema_y_extencion_Test extends TestCase
     }
 
     /**
+     * 8 bis — 🔴 El scope y el método de instancia tienen que decir SIEMPRE lo mismo.
+     *
+     * El criterio del botón rojo está escrito dos veces por necesidad: una en SQL
+     * (scopePendientesDeRevisar(), que es lo que consulta el endpoint de pendientes) y otra en
+     * memoria (esta_pendiente_de_revisar(), que responde sobre una fila ya cargada). Dos
+     * escrituras del mismo criterio se desincronizan solas, y la falla es silenciosa: el botón
+     * rojo se prende cuando no corresponde, o no se prende nunca, sin ninguna excepción que lo
+     * delate.
+     *
+     * Este test recorre las ocho combinaciones de estado × gestionado_at y exige que las dos
+     * implementaciones coincidan una por una.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     */
+    public function el_scope_y_el_metodo_dicen_lo_mismo()
+    {
+        /* user_id propio para que el scope no vea escaneos de otros tests del archivo. */
+        $owner_id = 555111;
+
+        $esperados_pendientes = [];
+
+        foreach (['pendiente', 'procesando', 'listo', 'error'] as $estado) {
+
+            foreach ([null, now()] as $gestionado_at) {
+
+                $scan = ProviderOrderScan::create([
+                    'uuid'              => 'scope-' . $estado . '-' . uniqid(),
+                    'user_id'           => $owner_id,
+                    'auth_user_id'      => 987655,
+                    'provider_order_id' => 123456,
+                    'estado'            => $estado,
+                    'gestionado_at'     => $gestionado_at,
+                ]);
+
+                if ($scan->esta_pendiente_de_revisar()) {
+                    $esperados_pendientes[] = $scan->id;
+                }
+            }
+        }
+
+        $this->assertCount(
+            1,
+            $esperados_pendientes,
+            "De las ocho combinaciones, una sola es 'pendiente de revisar': listo + sin gestionar."
+        );
+
+        $del_scope = ProviderOrderScan::where('user_id', $owner_id)
+                                        ->pendientesDeRevisar()
+                                        ->pluck('id')
+                                        ->all();
+
+        sort($esperados_pendientes);
+        sort($del_scope);
+
+        $this->assertEquals(
+            $esperados_pendientes,
+            $del_scope,
+            'El scope (SQL) y esta_pendiente_de_revisar() (memoria) tienen que seleccionar exactamente las mismas filas.'
+        );
+    }
+
+    /**
      * 9 — Los casts: lo que se guarda como array vuelve como array, y las dos fechas vuelven
      * como Carbon.
      *

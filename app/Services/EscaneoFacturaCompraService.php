@@ -113,6 +113,17 @@ class EscaneoFacturaCompraService
     ];
 
     /**
+     * Memoria de la resolución de alícuotas dentro de un mismo escaneo: texto del porcentaje
+     * ('21', '10.5') → id de `ivas`, o null si esa alícuota no existe en la tabla.
+     *
+     * Una factura de 80 renglones tiene, con suerte, dos alícuotas distintas: sin esta memoria
+     * serían 80 SELECT idénticos contra una tabla global que no cambia durante la corrida.
+     *
+     * @var array
+     */
+    protected $ivas_por_porcentaje = [];
+
+    /**
      * Escanea las fotos de un ProviderOrderScan y devuelve el array del contrato §2.
      *
      * @param  \App\Models\ProviderOrderScan  $scan
@@ -175,6 +186,7 @@ class EscaneoFacturaCompraService
 
         /* Lo que agrega el backend: match contra el catálogo e iva_id de cada alícuota. */
         $parseado['articulos'] = $this->matchear_articulos($parseado['articulos'], $scan);
+        $parseado['articulos'] = $this->resolver_iva_id_de_articulos($parseado['articulos']);
         $parseado['factura']   = $this->resolver_iva_ids($parseado['factura']);
 
         $usage = isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [];
@@ -993,6 +1005,68 @@ class EscaneoFacturaCompraService
     }
 
     /**
+     * Resuelve el `iva_id` de CADA RENGLÓN a partir del `iva_porcentaje` que leyó la IA, con el
+     * mismo criterio que la cabecera del comprobante (resolver_iva_ids(), acá abajo).
+     *
+     * 🔴 Por qué el renglón necesita su propia alícuota y no alcanza con la del artículo del
+     * catálogo: el `iva_id` de la línea es lo que termina en el pivot de la compra y, para los
+     * artículos que el usuario manda crear, en el alta del artículo. Un artículo nuevo sin
+     * alícuota entra con iva_id null, y a partir de ahí
+     * NewProviderOrderHelper::get_total_article() no le calcula IVA (pide iva_id no nulo y
+     * distinto de 0) y ModoFacturacionHelper::get_ivas() lo saltea entero: en modo automático
+     * ese renglón aporta $0 de IVA aunque el comprobante diga 21%.
+     *
+     * Va en el contrato para que el modal de revisión lo pueda mostrar y corregir antes de
+     * confirmar: si la IA leyó mal la columna de IVA, el usuario lo arregla ahí.
+     *
+     * Null cuando la línea no trajo porcentaje o cuando ese porcentaje no existe en `ivas`; en
+     * ese caso el controlador cae a la alícuota del artículo del catálogo, que es el
+     * comportamiento de siempre.
+     *
+     * @param  array  $articulos
+     * @return array
+     */
+    protected function resolver_iva_id_de_articulos(array $articulos): array
+    {
+        foreach ($articulos as $indice => $articulo) {
+
+            $porcentaje = isset($articulo['iva_porcentaje']) ? $articulo['iva_porcentaje'] : null;
+
+            $articulos[$indice]['iva_id'] = $this->buscar_iva_id($porcentaje);
+        }
+
+        return $articulos;
+    }
+
+    /**
+     * Id de la fila de `ivas` cuyo porcentaje coincide con el leído, o null.
+     *
+     * Punto único de la búsqueda: lo usan la cabecera del comprobante y cada renglón, y las dos
+     * tienen que resolver igual. Memoriza por porcentaje (ver $ivas_por_porcentaje).
+     *
+     * @param  mixed  $porcentaje
+     * @return int|null
+     */
+    protected function buscar_iva_id($porcentaje)
+    {
+        if (is_null($porcentaje) || $porcentaje === '') {
+            return null;
+        }
+
+        $texto = $this->porcentaje_como_texto($porcentaje);
+
+        if (array_key_exists($texto, $this->ivas_por_porcentaje)) {
+            return $this->ivas_por_porcentaje[$texto];
+        }
+
+        $encontrado = Iva::where('percentage', $texto)->first();
+
+        $this->ivas_por_porcentaje[$texto] = is_null($encontrado) ? null : (int) $encontrado->id;
+
+        return $this->ivas_por_porcentaje[$texto];
+    }
+
+    /**
      * Resuelve el `iva_id` de cada alícuota del comprobante contra la tabla `ivas`.
      *
      * Ojo con dos cosas: la tabla `ivas` es GLOBAL (no tiene user_id, no se filtra por
@@ -1026,15 +1100,16 @@ class EscaneoFacturaCompraService
 
             $texto = $this->porcentaje_como_texto($porcentaje);
 
-            $encontrado = Iva::where('percentage', $texto)->first();
+            /* Misma búsqueda memorizada que usan los renglones: un solo criterio para los dos. */
+            $iva_id = $this->buscar_iva_id($porcentaje);
 
-            if (is_null($encontrado)) {
+            if (is_null($iva_id)) {
                 $factura['ivas'][$indice]['iva_id'] = null;
                 $campos_dudosos[]                   = 'iva ' . $texto . '%';
                 continue;
             }
 
-            $factura['ivas'][$indice]['iva_id'] = (int) $encontrado->id;
+            $factura['ivas'][$indice]['iva_id'] = $iva_id;
         }
 
         $factura['campos_dudosos'] = array_values(array_unique($campos_dudosos));

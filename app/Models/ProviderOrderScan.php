@@ -27,6 +27,14 @@ class ProviderOrderScan extends Model
     /* Sin restricciones de asignación masiva: se inserta/actualiza vía array. */
     protected $guarded = [];
 
+    /**
+     * Estado con el que un escaneo terminó bien y ya tiene resultado para revisar.
+     *
+     * Es la mitad del criterio del botón rojo, y está en una constante justamente para que el
+     * scope (SQL) y el método de instancia (memoria) no puedan escribir el literal distinto.
+     */
+    const ESTADO_LISTO = 'listo';
+
     /*
      * `resultado` y `aplicado` se guardan como JSON y se leen como arrays PHP.
      * `visto_at` y `gestionado_at` como Carbon, para poder compararlos y serializarlos sin
@@ -77,21 +85,49 @@ class ProviderOrderScan extends Model
     }
 
     /**
-     * 🔴 LA definición de "escaneo pendiente de revisar": lo que enciende el botón rojo
-     * "Revisar escaneo" en el listado de compras.
+     * 🔴 LA definición de "escaneo pendiente de revisar" — versión SQL: lo que enciende el
+     * botón rojo "Revisar escaneo" en el listado de compras.
      *
-     * Vive en UN SOLO lugar, que es este método. No es "no visto" (mirar el aviso no asienta
+     * `estado = 'listo'` Y `gestionado_at IS NULL`. No es "no visto" (mirar el aviso no asienta
      * nada) y no es "sin confirmar" (un escaneo descartado tampoco tiene que encender el
      * botón): es que la lectura haya terminado bien Y que el usuario todavía no la haya
      * resuelto ni por confirmar ni por descartar.
      *
-     * Si algún día hay que cambiar el criterio, se cambia acá y en ningún otro lado.
+     * 🔴 El criterio vive en ESTE PAR de métodos hermanos y en ningún otro lado: este scope es
+     * la condición escrita en SQL (la usa ProviderOrderScanController::pendientes()) y
+     * esta_pendiente_de_revisar(), acá abajo, es la MISMA condición evaluada en memoria sobre
+     * una fila ya cargada. Están pegados a propósito y comparten self::ESTADO_LISTO: si alguna
+     * vez hay que cambiar el criterio, se cambian los dos juntos, se ven de una sola mirada, y
+     * ningún controlador tiene que reimplementarlo inline.
+     *
+     * Se apoya en el índice `pos_pendientes_idx` (user_id, estado, gestionado_at), así que el
+     * filtro por owner va afuera, en el llamador, y este scope solo agrega las dos condiciones
+     * del criterio.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    function scopePendientesDeRevisar($query)
+    {
+        return $query->where('estado', self::ESTADO_LISTO)
+                        ->whereNull('gestionado_at');
+    }
+
+    /**
+     * 🔴 EL MISMO criterio del scope de arriba, evaluado en memoria sobre una fila ya cargada.
+     *
+     * Lo usa ProviderOrderScanController::show(), que ya tiene el escaneo en la mano y no va a
+     * volver a la base solo para preguntar algo que puede responder con dos campos.
+     *
+     * Si tocás este método, tocá scopePendientesDeRevisar() en el mismo commit: son la misma
+     * condición y tienen que dar siempre lo mismo (lo blinda
+     * 1_Esquema_y_extencion_Test::el_scope_y_el_metodo_dicen_lo_mismo).
      *
      * @return bool
      */
     function esta_pendiente_de_revisar()
     {
-        return $this->estado === 'listo' && is_null($this->gestionado_at);
+        return $this->estado === self::ESTADO_LISTO && is_null($this->gestionado_at);
     }
 
     /**

@@ -2,8 +2,10 @@
 
 namespace Tests\Feature\EscaneoFacturaCompra;
 
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Jobs\RunProviderOrderScanJob;
 use App\Models\Article;
+use App\Models\CurrentAcount;
 use App\Models\ExtencionEmpresa;
 use App\Models\Iva;
 use App\Models\ProviderOrder;
@@ -13,7 +15,10 @@ use App\Models\ProviderOrderScan;
 use App\Models\ProviderOrderScanImage;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
@@ -1146,5 +1151,436 @@ class Endpoints_y_confirmacion_Test extends EmpresaTestCase
         $this->assertCount(2, $listo->json('resultado.articulos'));
         $this->assertEquals(1, $listo->json('imagenes.0.orden'));
         $this->assertEquals('pagina1.jpg', $listo->json('imagenes.0.nombre_original'));
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 16 — 🔴 La factura tiene que existir ANTES de que se calculen los    */
+    /*      totales, o la deuda del proveedor queda mal                    */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 EL test que blinda el orden del paso 8.
+     *
+     * `procesar_pedido()` → `set_totales()` arma `provider_order.total_iva` sumando
+     * `provider_order_afip_tickets.total_iva`, y después `set_current_acount()` escribe
+     * `current_acount.debe = provider_order.total`. Si la factura se guarda DESPUÉS de
+     * `procesar_pedido()`, todo eso se calcula con una factura que todavía no existe: la compra
+     * queda con `total_iva = 0` y el proveedor con la deuda de menos.
+     *
+     * Escenario medido: 1 artículo (3 u. × $1.000 = $3.000) + factura con $21.000 de IVA, con
+     * `total_with_iva = 1`. El proveedor tiene que quedar debiendo $24.000, no $3.000.
+     *
+     * ⚠️ A diferencia del resto del archivo, esta compra va con `generate_current_acount = 1` y
+     * `total_with_iva = 1` a propósito: con los efectos apagados el defecto no se ve, que es
+     * exactamente por qué pasó en verde la primera vez.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function confirmar_deja_el_iva_y_la_deuda_del_proveedor_con_los_importes_de_la_factura()
+    {
+        $this->dar_extension($this->comercio());
+
+        /*
+         * El total solo suma el IVA por encima si el comercio no es Monotributista (ver
+         * NewProviderOrderHelper::set_totales + get_condicion_iva_precios). Se fija explícito
+         * para que la cuenta del test no dependa de cómo quedó el fixture.
+         */
+        $comercio = $this->comercio();
+        $comercio->condicion_iva_precios = 'RRII';
+        $comercio->save();
+
+        $compra = $this->crear_compra([
+            'modo_facturacion'        => 'manual',
+            'generate_current_acount' => 1,
+            'total_with_iva'          => 1,
+            'precios_incluyen_iva'    => 0,
+        ]);
+
+        /*
+         * Sin credit_account del proveedor para esta moneda, set_current_acount() no tiene dónde
+         * asentar la deuda. En producción la crea el alta del proveedor; acá se fuerza porque la
+         * compra del test se inserta directo. Es idempotente.
+         */
+        CreditAccountHelper::crear_credit_accounts('provider', $compra->provider_id, $comercio->id);
+
+        $articulo = $this->crear_articulo('ART DEUDA PROVEEDOR ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $iva = Iva::first();
+
+        $this->assertNotNull($iva, 'La base de testing tiene que tener alícuotas de IVA sembradas.');
+
+        $respuesta = $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 3, 1000)],
+            'factura'   => [
+                'guardar'             => true,
+                'pasar_a_manual'      => false,
+                'code'                => '0003-00077777',
+                'issued_at'           => '2026-08-14',
+                'emisor_cuit'         => '30712345678',
+                'emisor_razon_social' => 'DISTRIBUIDORA DEL SUR S.A.',
+                'total'               => 124300,
+                'ivas'                => [
+                    ['iva_id' => $iva->id, 'neto' => 100000, 'iva_importe' => 21000],
+                ],
+            ],
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertEquals('completa', $respuesta->json('resumen.factura_guardada'));
+
+        $compra->refresh();
+
+        $this->assertEquals(
+            21000,
+            (float) $compra->total_iva,
+            'set_totales() suma el total_iva de las facturas: si la factura nace después, la compra queda en 0.'
+        );
+
+        $this->assertEquals(
+            24000,
+            (float) $compra->total,
+            'Total = $3.000 de artículos + $21.000 de IVA de la factura.'
+        );
+
+        $current_acount = CurrentAcount::where('provider_order_id', $compra->id)->first();
+
+        $this->assertNotNull(
+            $current_acount,
+            'Con generate_current_acount = 1 la compra tiene que dejar su movimiento de cuenta corriente.'
+        );
+
+        $this->assertEquals(
+            24000,
+            (float) $current_acount->debe,
+            'La deuda del proveedor es el total de la compra CON el IVA de la factura adentro.'
+        );
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 17 — 🔴 Descuento e IVA por renglón                                 */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 La bonificación de cada renglón ("Bonif. 10%") tiene que llegar al pivot como
+     * `discount`, que es la columna que NewProviderOrderHelper::get_total_article() usa de
+     * verdad. Leerla en la foto y no mandarla al pivot es cargar el renglón por su precio de
+     * lista: 12 u. a $2.450,50 con 10% entraban como $29.406 en vez de $26.465,40.
+     *
+     * Y la alícuota del renglón tiene que llegar al pivot Y al artículo que se crea: un artículo
+     * nuevo con `iva_id` null no aporta IVA en modo automático aunque el comprobante diga 21%.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function el_descuento_y_el_iva_de_cada_renglon_llegan_al_pivot_y_al_articulo_creado()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra = $this->crear_compra([
+            'modo_facturacion' => 'manual',
+            'total_with_iva'   => 0,
+        ]);
+
+        $articulo = $this->crear_articulo('ART BONIFICADO ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $iva = Iva::first();
+
+        $this->assertNotNull($iva, 'La base de testing tiene que tener alícuotas de IVA sembradas.');
+
+        $nombre_nuevo = 'ART NUEVO CON IVA ESCANEO';
+
+        $item_bonificado = $this->item_existente($articulo, 12, 2450.50);
+
+        $item_bonificado['descuento_porcentaje'] = 10;
+        $item_bonificado['iva_id']               = $iva->id;
+
+        $respuesta = $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [
+                $item_bonificado,
+                [
+                    'article_id'           => null,
+                    'crear_en_catalogo'    => true,
+                    'bar_code'             => null,
+                    'codigo_proveedor'     => 'ESC-IVA',
+                    'nombre'               => $nombre_nuevo,
+                    'cantidad'             => 2,
+                    'costo_unitario'       => 100,
+                    'descuento_porcentaje' => null,
+                    'iva_id'               => $iva->id,
+                    'notas'                => null,
+                ],
+            ],
+            'factura' => ['guardar' => false],
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $compra->load('articles');
+
+        $pivot = $compra->articles->firstWhere('id', $articulo->id)->pivot;
+
+        $this->assertEquals(
+            10,
+            (float) $pivot->discount,
+            'El descuento por renglón que leyó la IA tiene que quedar en el pivot: es la columna que usa el costeo.'
+        );
+
+        $this->assertEquals(
+            $iva->id,
+            (int) $pivot->iva_id,
+            'La alícuota del renglón manda sobre la del catálogo: la factura es el dato fiscal de esta compra.'
+        );
+
+        /*
+         * La plata. El renglón bonificado son 12 u. × $2.450,50 = $29.406 de lista, menos el 10%
+         * = $26.465,40; el renglón nuevo son 2 u. × $100 = $200. Total de la compra: $26.665,40.
+         * Sin el `discount` en el pivot la compra registraría $29.606 — $2.940,60 de más en la
+         * cuenta corriente del proveedor por un solo renglón.
+         */
+        $compra->refresh();
+
+        $this->assertEquals(
+            2940.60,
+            round((float) $compra->descuentos_individuales, 2),
+            'El 10% de bonificación tiene que aparecer como descuento individual de la compra.'
+        );
+
+        $this->assertEquals(
+            26465.40 + 200,
+            round((float) $compra->total, 2),
+            'Sin el discount en el pivot, el renglón bonificado entra por su precio de lista.'
+        );
+
+        /* Y el artículo creado nace con su alícuota, no en null. */
+        $creado = Article::where('name', $nombre_nuevo)->first();
+
+        $this->assertNotNull($creado);
+        $this->assertEquals(
+            $iva->id,
+            (int) $creado->iva_id,
+            'Un artículo nuevo sin iva_id no aporta IVA en modo automático, aunque el comprobante diga 21%.'
+        );
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 18 — pasar_a_manual sin factura que guardar                         */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Tildar "pasar a manual" no puede cambiar la configuración de facturación de la compra si
+     * no se va a guardar ninguna factura.
+     *
+     * Es el caso del remito: `es_factura_afip = false`, así que el modal no manda `guardar`. Si
+     * el cambio de modo no mira eso, la compra queda en 'manual' para siempre —con la factura
+     * automática que el sistema venía recalculando congelada— a cambio de nada.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function pasar_a_manual_no_cambia_la_compra_si_no_hay_factura_para_guardar()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra(['modo_facturacion' => 'sin factura']);
+        $articulo = $this->crear_articulo('ART REMITO ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $respuesta = $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 2, 500)],
+            'factura'   => [
+                'guardar'        => false,
+                'pasar_a_manual' => true,
+            ],
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $compra->refresh();
+
+        $this->assertEquals(
+            'sin factura',
+            $compra->modo_facturacion,
+            'Sin factura que guardar, el cambio de modo_facturacion no se paga: es un efecto permanente a cambio de nada.'
+        );
+
+        $this->assertEquals(
+            0,
+            ProviderOrderAfipTicket::where('provider_order_id', $compra->id)->count(),
+            'Y no puede quedar ningún comprobante, porque no se pidió guardar ninguno.'
+        );
+
+        /* Los artículos del remito entran igual: eso es lo que sí se pidió. */
+        $compra->load('articles');
+
+        $this->assertContains($articulo->id, $compra->articles->pluck('id')->all());
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 19 — El bloqueo del 409 vence                                       */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Un escaneo trabado en 'pendiente' no puede bloquear esa compra para siempre.
+     *
+     * El único desatascador es `failed()` del job, que solo corre si el job llegó a ejecutarse:
+     * con el worker caído al despachar, o con el job perdido, la fila queda en 'pendiente' sin
+     * vencimiento. Y no hay salida por la interfaz — 'descartar' solo se alcanza desde el modal
+     * de revisión, que solo se abre con el botón rojo, que solo se enciende con estado 'listo'.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function un_escaneo_viejo_en_pendiente_no_bloquea_la_compra_para_siempre()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra = $this->crear_compra();
+
+        /* Un escaneo abandonado hace tres horas: el job tiene timeout de 10 minutos. */
+        $viejo = now()->subHours(3);
+
+        $this->crear_escaneo($compra, [
+            'estado'     => 'pendiente',
+            'progreso'   => 0,
+            'resultado'  => null,
+            'created_at' => $viejo,
+            'updated_at' => $viejo,
+        ]);
+
+        $respuesta = $this->post('api/provider-order-scan', [
+            'provider_order_id' => $compra->id,
+            'imagenes'          => [UploadedFile::fake()->image('pagina1.jpg', 400, 500)],
+        ], ['Accept' => 'application/json']);
+
+        $respuesta->assertStatus(
+            202,
+            'Un escaneo en pendiente más viejo que la ventana está abandonado: no puede tapiar la compra.'
+        );
+
+        $nuevo = ProviderOrderScan::where('provider_order_id', $compra->id)
+                                    ->where('estado', 'pendiente')
+                                    ->orderBy('id', 'DESC')
+                                    ->first();
+
+        $this->carpetas_a_limpiar[] = 'provider_order_scans/' . $nuevo->user_id . '/' . $nuevo->uuid;
+
+        $this->assertEquals(
+            2,
+            ProviderOrderScan::where('provider_order_id', $compra->id)->count(),
+            'El escaneo nuevo tiene que haberse creado igual.'
+        );
+
+        Queue::assertPushed(RunProviderOrderScanJob::class);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 20 — 🔴 La carrera de la doble confirmación                         */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 El chequeo de `gestionado_at` de afuera de la transacción no alcanza: entre ese SELECT
+     * y el UPDATE final pasa toda la confirmación (movimientos de stock de N artículos), y dos
+     * requests concurrentes —dos pestañas, o un reintento después de un timeout— pasan los dos.
+     * Sin lock, los artículos con `crear_en_catalogo` se crean dos veces y se crean DOS
+     * comprobantes con el mismo `code`.
+     *
+     * Cómo se simula la carrera sin dos procesos: se escucha `TransactionBeginning`, que es
+     * exactamente la ventana entre el chequeo de afuera (ya pasado) y la relectura de adentro.
+     * Cuando arranca la transacción, otro "request" deja el escaneo gestionado; la relectura con
+     * lockForUpdate() lo tiene que ver y salir por 409 sin tocar nada.
+     *
+     * La aserción de que la consulta con `for update` existe es la que distingue este camino del
+     * chequeo rápido de afuera: si el 409 hubiera salido antes de abrir la transacción, no
+     * habría ninguna consulta bloqueante en el log.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function confirmar_revalida_el_escaneo_con_lock_adentro_de_la_transaccion()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra();
+        $articulo = $this->crear_articulo('ART CARRERA ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $consultas = [];
+
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = strtolower($query->sql);
+        });
+
+        $ya_disparado = false;
+
+        Event::listen(TransactionBeginning::class, function () use ($scan, &$ya_disparado) {
+
+            if ($ya_disparado) {
+                return;
+            }
+
+            $ya_disparado = true;
+
+            /* El otro request gana la carrera justo acá. */
+            DB::table('provider_order_scans')
+                ->where('id', $scan->id)
+                ->update([
+                    'gestionado_at'     => now(),
+                    'resultado_gestion' => 'confirmado',
+                ]);
+        });
+
+        $respuesta = $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [
+                [
+                    'article_id'        => null,
+                    'crear_en_catalogo' => true,
+                    'bar_code'          => null,
+                    'codigo_proveedor'  => 'ESC-CARRERA',
+                    'nombre'            => 'ART FANTASMA DE LA CARRERA ESCANEO',
+                    'cantidad'          => 4,
+                    'costo_unitario'    => 90,
+                    'notas'             => null,
+                ],
+                $this->item_existente($articulo, 3, 150),
+            ],
+            'factura' => ['guardar' => false],
+        ]);
+
+        $respuesta->assertStatus(
+            409,
+            'El request que perdió la carrera no puede asentar nada: tiene que salir por 409.'
+        );
+
+        $hubo_lock = false;
+
+        foreach ($consultas as $sql) {
+            if (strpos($sql, 'provider_order_scans') !== false && strpos($sql, 'for update') !== false) {
+                $hubo_lock = true;
+            }
+        }
+
+        $this->assertTrue(
+            $hubo_lock,
+            'La confirmación tiene que releer el escaneo con lockForUpdate() adentro de la transacción.'
+        );
+
+        /* Y el rollback tiene que haber dejado la compra y el catálogo como estaban. */
+        $compra->load('articles');
+
+        $this->assertCount(0, $compra->articles, 'La confirmación perdedora no puede adjuntar artículos.');
+
+        $this->assertEquals(
+            0,
+            Article::where('name', 'ART FANTASMA DE LA CARRERA ESCANEO')->count(),
+            'Sin el lock, los artículos con crear_en_catalogo se crean dos veces en el catálogo del cliente.'
+        );
     }
 }
