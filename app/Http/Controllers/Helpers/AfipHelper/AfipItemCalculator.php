@@ -11,6 +11,22 @@ class AfipItemCalculator
     public $afip_helper;
 
     /**
+     * @var float|null $porcentaje_descuento_puntos Canje de puntos ya convertido a porcentaje
+     * sobre el bruto facturable de la venta. `null` = todavía no se calculó. Se cachea porque el
+     * cálculo recorre TODOS los renglones de la venta y este método se llama una vez por ítem.
+     */
+    private $porcentaje_descuento_puntos = null;
+
+    /**
+     * @var bool $calculando_bruto_de_la_venta Guard de reentrada. El bruto se arma llamando a
+     * `get_article_price_with_discounts()` renglón por renglón, y ese método vuelve a pedir el
+     * porcentaje del canje: sin este flag sería recursión infinita. Mientras está prendido, el
+     * canje vale 0 — que es justamente lo que hace falta, porque el bruto es el total ANTES del
+     * canje.
+     */
+    private $calculando_bruto_de_la_venta = false;
+
+    /**
      * Inicializa el calculador de ítems con el helper principal.
      *
      * @param AfipHelper $afip_helper Instancia que contiene venta, ticket e ítem actual.
@@ -241,9 +257,209 @@ class AfipItemCalculator
             if ($this->afip_helper->sale->descuento > 0) {
                 $price -= $price * $this->afip_helper->sale->descuento / 100;
             }
+
+            /**
+             * El canje por puntos (`sales.descuento_puntos`) entra ACÁ, último y sobre el precio
+             * que ya tiene todos los descuentos y recargos de venta encima.
+             *
+             * 🔴 POR QUÉ JUSTO EN ESTE PUNTO Y NO ANTES. Es el mismo orden que arma el front en
+             * `empresa-spa/src/mixins/vender_set_total.js::aplicar_canje_de_puntos()`:
+             *
+             *     bruto = (artículos + servicios + combos + promos) ya con descuentos y recargos
+             *     total = bruto - descuento_puntos
+             *
+             * Si el canje se aplicara antes de los descuentos de venta, el porcentaje de esos
+             * descuentos caería también sobre el canje y el importe facturado dejaría de bajar
+             * exactamente lo que se le descontó al cliente.
+             */
+            $porcentaje_puntos = $this->get_porcentaje_descuento_puntos();
+
+            if ($porcentaje_puntos > 0) {
+                $price -= $price * $porcentaje_puntos / 100;
+            }
         // }
 
         return $price;
+    }
+
+    /**
+     * Convierte el canje por puntos —que está en PESOS— al porcentaje equivalente sobre el bruto
+     * facturable de la venta.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 POR QUÉ UN PORCENTAJE Y NO UNA RESTA AL FINAL.
+     *
+     *  `sales.descuento` ya es un porcentaje y se aplica renglón por renglón (ver arriba, en
+     *  `get_article_price_with_discounts()`). Al hacer lo mismo con el canje:
+     *
+     *   1. El descuento se PRORRATEA solo entre las alícuotas, en proporción a lo que cada
+     *      renglón aporta al total. El desglose que ARCA valida (neto gravado por alícuota,
+     *      IVA por alícuota, exento, no gravado) sigue sumando el total porque cada bucket se
+     *      achica en el mismo porcentaje. Restar los pesos al final del cálculo, en cambio,
+     *      obligaría a decidir a mano de qué alícuota salen, y ahí es donde el desglose deja de
+     *      cerrar y ARCA rechaza el comprobante.
+     *
+     *   2. Una nota de crédito PARCIAL queda bien sin escribir una línea extra: se factura el
+     *      subconjunto de renglones devueltos y cada uno viene con su porcentaje de canje ya
+     *      restado. Con una resta en pesos, una NC por la mitad de la mercadería devolvería el
+     *      canje ENTERO.
+     *
+     *   3. Todo lo que ya consume este calculador —`get_importe_gravado()`, `get_importe_iva()`,
+     *      `sub_total()`, `get_article_price()`, y por lo tanto los PDF y tickets— queda
+     *      consistente sin tocarse, igual que con `sales.descuento`.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     * Alcance: el canje cae sobre los MISMOS renglones que `sales.descuento` (artículos, combos,
+     * servicios y promociones) y NO sobre las descripciones, que no pasan por este método.
+     * Como el bruto se calcula sobre ese mismo conjunto, la resta en pesos da EXACTA:
+     * `porcentaje * bruto == descuento_puntos`.
+     *
+     * @return float Porcentaje a restar (0 si la venta no canjeó puntos).
+     */
+    public function get_porcentaje_descuento_puntos()
+    {
+        if ($this->calculando_bruto_de_la_venta) {
+            return 0.0;
+        }
+
+        if (!is_null($this->porcentaje_descuento_puntos)) {
+            return $this->porcentaje_descuento_puntos;
+        }
+
+        // Se cachea el 0 primero: casi ninguna venta canjea puntos y ese es el camino barato.
+        $this->porcentaje_descuento_puntos = 0.0;
+
+        /** @var \App\Models\Sale|null $sale Venta sobre la que se está facturando. */
+        $sale = $this->afip_helper->sale;
+
+        if (is_null($sale)) {
+            return 0.0;
+        }
+
+        /** @var float $descuento Pesos que canjeó el cliente, tal como los recalculó el servidor. */
+        $descuento = isset($sale->descuento_puntos) ? (float) $sale->descuento_puntos : 0.0;
+
+        if ($descuento <= 0) {
+            return 0.0;
+        }
+
+        /**
+         * El canje viaja en la MONEDA DE LA VENTA (el front hace `total -= descuento_puntos`
+         * sobre el total en esa moneda), mientras que el bruto que se arma abajo ya viene
+         * cotizado a pesos por `get_article_price_raw()`. Sin cotizar el canje, el cociente
+         * mezclaría dólares con pesos y el porcentaje saldría ridículamente chico.
+         */
+        if ($sale->moneda_id == 2 && $sale->valor_dolar) {
+            $descuento *= (float) $sale->valor_dolar;
+        }
+
+        /** @var float $bruto Total facturable de la venta ANTES del canje, en pesos. */
+        $bruto = $this->get_bruto_facturable_de_la_venta();
+
+        if ($bruto <= 0) {
+            Log::warning(
+                'AfipItemCalculator: la venta '.$sale->id.' tiene descuento_puntos ('.$descuento.
+                ') pero su bruto facturable es '.$bruto.'. No se puede prorratear el canje: se factura sin descontarlo.'
+            );
+
+            return 0.0;
+        }
+
+        /** @var float $porcentaje Equivalente porcentual del canje sobre el bruto. */
+        $porcentaje = $descuento / $bruto * 100;
+
+        /**
+         * Piso en cero del comprobante. El tope del programa de puntos (20 % por defecto) hace
+         * que no se llegue nunca, pero un comercio puede configurarlo en 100 y, con descuentos de
+         * venta encima, el canje puede superar al bruto. Un comprobante con importes negativos
+         * lo rechaza ARCA; con total 0, `AfipWsfeHelper::solicitar_cae()` ya corta antes de
+         * pedir el CAE.
+         */
+        if ($porcentaje > 100) {
+            Log::warning(
+                'AfipItemCalculator: en la venta '.$sale->id.' el canje por puntos ('.$descuento.
+                ') supera al bruto facturable ('.$bruto.'). Se factura en 0 en vez de mandar importes negativos.'
+            );
+
+            $porcentaje = 100.0;
+        }
+
+        $this->porcentaje_descuento_puntos = $porcentaje;
+
+        return $porcentaje;
+    }
+
+    /**
+     * Suma el total facturable de la venta ENTERA antes del canje, en pesos.
+     *
+     * 🔴 SIEMPRE la venta entera, nunca `$afip_helper->articles`. En una nota de crédito parcial,
+     * `$afip_helper->articles` son solo los renglones devueltos: sacar el porcentaje de ahí
+     * devolvería el canje completo por una devolución parcial.
+     *
+     * 🔴 EL RECORRIDO ES EL MISMO QUE `AfipImportesCalculator::calculate_from_sale_items()`, EN EL
+     * MISMO ORDEN (artículos, combos, servicios, promociones), y a propósito NO se le setea
+     * `$afip_helper->article` a los combos ni a las promociones: allá tampoco se les setea, así
+     * que su renglón se liquida con el precio del ÚLTIMO ítem del bloque anterior. Es una rareza
+     * preexistente y está fuera del alcance de este arreglo — pero replicarla acá es lo que
+     * garantiza que `porcentaje * bruto` sea exactamente los pesos que se descuentan del total
+     * que sale hacia ARCA. Si algún día se corrige allá, hay que corregirla acá en el mismo
+     * commit.
+     *
+     * Las descripciones quedan afuera porque `get_description_iva()` no pasa por
+     * `get_article_price_with_discounts()`: tampoco reciben `sales.descuento`.
+     *
+     * @return float
+     */
+    private function get_bruto_facturable_de_la_venta()
+    {
+        /** @var \App\Models\Sale $sale Venta completa. */
+        $sale = $this->afip_helper->sale;
+
+        /** @var object|null $article_original Ítem que estaba en curso; se restaura antes de salir. */
+        $article_original = $this->afip_helper->article;
+
+        $this->calculando_bruto_de_la_venta = true;
+
+        /** @var float $bruto Acumulador del total facturable sin canje. */
+        $bruto = 0;
+
+        foreach ($sale->articles as $item) {
+            $item->is_article = true;
+            $this->afip_helper->article = $item;
+            $bruto += $this->get_article_price_with_discounts() * $this->get_article_amount();
+        }
+
+        foreach ($sale->combos as $combo) {
+            // Sin reasignar `article`: ver la nota de arriba. El guard es para no convertir en un
+            // fatal un flujo que hoy no lo es: una venta de solo combos ya revienta en
+            // `calculate_from_sale_items()` por este mismo motivo, y no es este el lugar donde
+            // tiene que aparecer el error.
+            if (is_null($this->afip_helper->article)) {
+                continue;
+            }
+
+            $bruto += $this->get_article_price_with_discounts() * $combo->pivot->amount;
+        }
+
+        foreach ($sale->services as $item) {
+            $item->is_service = true;
+            $this->afip_helper->article = $item;
+            $bruto += $this->get_article_price_with_discounts() * $this->get_article_amount();
+        }
+
+        foreach ($sale->promocion_vinotecas as $promo) {
+            // Sin reasignar `article`: ver la nota de arriba (y el mismo guard que en combos).
+            if (is_null($this->afip_helper->article)) {
+                continue;
+            }
+
+            $bruto += $this->get_article_price_with_discounts() * $promo->pivot->amount;
+        }
+
+        $this->calculando_bruto_de_la_venta = false;
+        $this->afip_helper->article = $article_original;
+
+        return $bruto;
     }
 
     /**
