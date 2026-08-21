@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
 use App\Jobs\ProcessSetFinalPrices;
+use App\Models\DolarCotizacionRegistro;
 use App\Models\OnlineConfiguration;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
@@ -305,6 +306,28 @@ class UserController extends Controller
             $owner_user->save();
         }
 
+
+        /**
+         * Marca de cotización manual cuando el dólar se cambió a mano desde el formulario de
+         * configuración (misión cotizacion-dolar).
+         *
+         * 🔴 Solo cuando el auth_user ES el owner. Este método escribe `dollar` en `Auth()->user()`,
+         * que para un empleado admin es SU PROPIA FILA y no la del dueño (bug preexistente de
+         * develop; esta misión NO lo arregla). Escribir el marcador en la fila del owner mientras
+         * `dollar` se guardó en la del empleado dejaría las dos filas contando historias distintas.
+         *
+         * 🔴 El guard de null es aparte del `!=`: un PUT parcial sin `dollar` deja `$model->dollar`
+         * en null, que es "distinto" del anterior y marcaría una cotización manual sin valor.
+         *
+         * 🔴 PROHIBIDO asignar acá `dolar_avisar_cambios` ni `dolar_variacion_minima` desde el
+         * request: `ModelForm` postea el modelo ENTERO, así que un cliente que entra a cambiarse el
+         * teléfono pisaría sus preferencias de aviso con lo que el front tenga en memoria. Es el
+         * mismo agujero que ya documentan `ofertas_ultima_generacion_at` y sus hermanas.
+         */
+        if ($owner_user && $model->id === $owner_user->id
+            && !is_null($model->dollar) && $model->dollar != $current_dolar) {
+            DolarCotizacionRegistro::marcar_manual_desde_formulario($model, $current_dolar);
+        }
 
         UserHelper::set_sessions($model);
 

@@ -177,16 +177,12 @@ class ConsolidarFacturacionHelper extends Controller
             /** Emite el comprobante AFIP sobre la venta consolidada si se indica. */
             if ($emitir_afip) {
                 $afip = new MakeAfipTicket();
-                $afip->make_afip_ticket([
-                    'sale_id'                        => $venta_consolidada->id,
-                    'afip_information_id'            => $afip_information_id,
-                    'afip_tipo_comprobante_id'       => $afip_tipo_comprobante_id,
-                    'afip_fecha_emision'             => $afip_data['afip_fecha_emision'] ?? null,
-                    'facturar_importe_personalizado' => $afip_data['monto_a_facturar'] ?? null,
-                    'forma_de_pago'                  => $afip_data['forma_de_pago'] ?? null,
-                    'permiso_existente'              => $afip_data['permiso_existente'] ?? null,
-                    'incoterms'                      => $afip_data['incoterms'] ?? null,
-                ]);
+                $afip->make_afip_ticket(self::build_afip_ticket_data(
+                    $afip_data,
+                    $venta_consolidada->id,
+                    $afip_information_id,
+                    $afip_tipo_comprobante_id
+                ));
             }
 
             /** Recarga la venta con todas sus relaciones para devolverla completa. */
@@ -197,6 +193,45 @@ class ConsolidarFacturacionHelper extends Controller
             Log::error("ConsolidarFacturacion error: " . $e->getMessage());
             throw $e;
         }
+    }
+
+    /**
+     * Arma el payload del ticket AFIP de la venta consolidada.
+     *
+     * `facturar_importe_personalizado` va SIEMPRE en null: por decision de Lucas del
+     * 20/8/2026, si se consolidan varias ventas en una sola factura no se puede informar
+     * ningun importe personalizado (ni su reparto por alicuota). Si el request igual trae
+     * uno, se descarta y se loguea.
+     *
+     * Esta extraido a un static publico para poder testear el payload sin salir a la red:
+     * `make_afip_ticket()` dispara AfipWsController contra ARCA.
+     *
+     * @param array $afip_data Datos AFIP extra que llegaron en el request.
+     * @param int $sale_id Id de la venta consolidada.
+     * @param int $afip_information_id Configuracion fiscal elegida.
+     * @param int $afip_tipo_comprobante_id Tipo de comprobante elegido.
+     * @return array Payload listo para MakeAfipTicket::make_afip_ticket().
+     */
+    public static function build_afip_ticket_data(array $afip_data, int $sale_id, int $afip_information_id, int $afip_tipo_comprobante_id): array
+    {
+        if (isset($afip_data['monto_a_facturar']) && (float) $afip_data['monto_a_facturar'] > 0) {
+            Log::warning(
+                'ConsolidarFacturacion: se descarto el importe personalizado ('.$afip_data['monto_a_facturar'].') '.
+                'de la venta consolidada id='.$sale_id.'. En una factura consolidada no se admite.'
+            );
+        }
+
+        return [
+            'sale_id'                        => $sale_id,
+            'afip_information_id'            => $afip_information_id,
+            'afip_tipo_comprobante_id'       => $afip_tipo_comprobante_id,
+            'afip_fecha_emision'             => $afip_data['afip_fecha_emision'] ?? null,
+            'facturar_importe_personalizado' => null,
+            'importe_personalizado_ivas'     => null,
+            'forma_de_pago'                  => $afip_data['forma_de_pago'] ?? null,
+            'permiso_existente'              => $afip_data['permiso_existente'] ?? null,
+            'incoterms'                      => $afip_data['incoterms'] ?? null,
+        ];
     }
 
     /**

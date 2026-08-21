@@ -586,6 +586,102 @@ class SaleController extends Controller
 
         if (!is_null($sale)) {
 
+            /** @var mixed $monto Importe personalizado que pidio el usuario, en pesos. */
+            $monto = $request->monto_a_facturar;
+
+            /**
+             * Validacion del importe personalizado. La del front es una guarda de UX; la
+             * autoridad es este 422, porque un POST directo llega igual hasta aca. Se valida
+             * ANTES de instanciar MakeAfipTicket, asi que un rechazo no toca ARCA.
+             */
+            if (!is_null($monto) && $monto !== '' && (float) $monto > 0) {
+
+                /**
+                 * Reparto por alicuota. Se valida con el MISMO criterio que despues usa
+                 * `MakeAfipTicket::normalizar_importe_personalizado_ivas()` para guardarlo:
+                 * si las dos capas filtraran distinto, una fila descartada en silencio dejaria
+                 * un reparto que ya no suma, y el calculador le encajaria toda la diferencia a
+                 * la alicuota mas baja. Una fila invalida se RECHAZA, nunca se descarta.
+                 */
+                $validacion = MakeAfipTicket::validar_filas_importe_personalizado($request->importe_personalizado_ivas);
+
+                if (!is_null($validacion['error'])) {
+
+                    return response()->json(['message' => $validacion['error']], 422);
+                }
+
+                /** @var array $filas Reparto ya validado, con los importes redondeados a 2 decimales. */
+                $filas = $validacion['filas'];
+
+                if (count($filas) >= 1) {
+
+                    /** @var float $suma Suma del reparto, sobre los importes YA redondeados. */
+                    $suma = 0;
+                    foreach ($filas as $fila) {
+                        $suma += (float) $fila['importe'];
+                    }
+
+                    if (abs($suma - (float) $monto) > 0.01) {
+
+                        return response()->json([
+                            'message' => 'La suma del reparto por alicuota no coincide con el importe a facturar.',
+                        ], 422);
+                    }
+                }
+
+                /**
+                 * 🔴 El tope NO se valida si la venta tiene `descuento`: el sistema calcula ese
+                 * campo de dos maneras incompatibles y el techo sale mal. `SaleHelper.php:1714`
+                 * lo resta como MONTO ABSOLUTO (`$total_articles -= $sale->descuento`) y
+                 * `AfipItemCalculator.php:241` lo aplica como PORCENTAJE
+                 * (`$price -= $price * $descuento / 100`). Sobre una venta de $375 con
+                 * `descuento = 10`, el usuario ve un total de 365,00 y el tope da 337,50: no se
+                 * podria facturar nada. Con `descuento = 100` el tope da 0,00 y con 375 da
+                 * NEGATIVO. Resolver esa inconsistencia esta fuera del alcance de esta mision;
+                 * hasta entonces, no se bloquea con un numero que no es confiable.
+                 */
+                if (!is_null($sale->descuento) && (float) $sale->descuento != 0) {
+
+                    Log::warning(
+                        'makeAfipTicket sale id '.$sale->id.': se saltea la validacion del tope del importe '.
+                        'personalizado porque la venta tiene descuento ('.$sale->descuento.') y ese campo se '.
+                        'interpreta como monto absoluto en SaleHelper::getTotal() y como porcentaje en '.
+                        'AfipItemCalculator::get_article_price_with_discounts(). El tope no es determinable.'
+                    );
+
+                } else {
+
+                    /** @var float|null $tope Total en pesos que se facturaria sin importe personalizado. */
+                    $tope = MakeAfipTicket::get_tope_en_pesos(
+                        $sale,
+                        (int) $request->ventas_afip_information_id,
+                        (int) $request->afip_tipo_comprobante_id
+                    );
+
+                    if (is_null($tope) || $tope <= 0) {
+
+                        // Sin configuracion fiscal valida, o con un tope no positivo, el numero no
+                        // sirve como techo: bloquear con el saldria siempre en 422.
+                        Log::warning(
+                            'makeAfipTicket sale id '.$sale->id.': tope no determinable ('.
+                            (is_null($tope) ? 'null' : $tope).'). Se saltea la validacion del importe personalizado.'
+                        );
+
+                    } else if ((float) $monto > $tope + 0.01) {
+
+                        /**
+                         * El + 0.01 de tolerancia es a proposito: el total que muestra el front
+                         * (sale.total x valor_dolar) y el del AfipHelper (suma de items con
+                         * back-out) pueden diferir en centavos. Sin tolerancia se rechazaria el
+                         * caso mas comun, que es "facturar exactamente el total".
+                         */
+                        return response()->json([
+                            'message' => 'El importe a facturar ($'.number_format((float) $monto, 2, ',', '.').') no puede superar el total de la venta en pesos ($'.number_format($tope, 2, ',', '.').').',
+                        ], 422);
+                    }
+                }
+            }
+
             $afip = new MakeAfipTicket();
 
             $afip->make_afip_ticket([
@@ -594,6 +690,7 @@ class SaleController extends Controller
                 'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
                 'afip_fecha_emision'                => $request->afip_fecha_emision,
                 'facturar_importe_personalizado'    => $request->monto_a_facturar,
+                'importe_personalizado_ivas'        => $request->importe_personalizado_ivas,
                 'forma_de_pago'                     => $request->forma_de_pago,
                 'permiso_existente'                 => $request->permiso_existente,
                 'incoterms'                         => $request->incoterms,
@@ -1188,10 +1285,13 @@ class SaleController extends Controller
      *   - afip_tipo_comprobante_id   (int, requerido)
      *   - agrupar_items              (bool, opcional, default false)
      *   - afip_fecha_emision         (string Y-m-d, opcional)
-     *   - monto_a_facturar           (float, opcional)
      *   - forma_de_pago              (string, opcional)
      *   - permiso_existente          (string, opcional)
      *   - incoterms                  (string, opcional)
+     *
+     * NO se acepta `monto_a_facturar`: por decision de Lucas del 20/8/2026, si se consolidan
+     * varias ventas en una sola factura no se puede informar ningun importe personalizado.
+     * `ConsolidarFacturacionHelper::build_afip_ticket_data()` lo fuerza a null y lo loguea.
      *
      * @param  Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -1201,7 +1301,6 @@ class SaleController extends Controller
             /** Construye el array de datos AFIP extra a partir del request. */
             $afip_data = [
                 'afip_fecha_emision'             => $request->afip_fecha_emision,
-                'monto_a_facturar'               => $request->monto_a_facturar,
                 'forma_de_pago'                  => $request->forma_de_pago,
                 'permiso_existente'              => $request->permiso_existente,
                 'incoterms'                      => $request->incoterms,
