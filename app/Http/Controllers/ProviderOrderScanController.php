@@ -63,8 +63,22 @@ class ProviderOrderScanController extends Controller
      */
     const CODIGO_YA_GESTIONADO = 4090;
 
-    /** Extensiones de imagen aceptadas al subir las páginas de la factura. */
-    const EXTENSIONES_PERMITIDAS = ['jpg', 'jpeg', 'png', 'webp', 'heic'];
+    /**
+     * Extensiones de imagen aceptadas al subir las páginas de la factura.
+     *
+     * 🔴 `heic` NO está en la lista, y sacarlo fue deliberado. GD —la librería que usa
+     * Intervention para redimensionar— no lo decodifica (verificalo con `gd_info()`: no hay
+     * ninguna clave HEIC), así que aceptarlo solo servía para que el archivo pasara la
+     * validación y muriera dos pasos después con un "no se pudo procesar, probá con otra
+     * foto" que le iba a fallar igual las tres veces que lo intentara.
+     *
+     * Es el formato por default de la cámara del iPhone, o sea justo el aparato con el que se
+     * van a sacar estas fotos. Lo que salva el caso normal es que Safari convierte a JPEG solo
+     * cuando la foto se elige con un <input type="file">; el HEIC crudo llega únicamente si el
+     * usuario lo sube a mano desde la app Archivos. Para ese caso, el mensaje de abajo le dice
+     * qué hacer en vez de dejarlo probando.
+     */
+    const EXTENSIONES_PERMITIDAS = ['jpg', 'jpeg', 'png', 'webp'];
 
     /**
      * POST /api/provider-order-scan
@@ -126,6 +140,22 @@ class ProviderOrderScanController extends Controller
             $extension       = strtolower((string) $imagen->getClientOriginalExtension());
 
             if (!in_array($extension, self::EXTENSIONES_PERMITIDAS)) {
+
+                /*
+                 * El HEIC se nombra aparte porque es el default de la cámara del iPhone: decirle
+                 * "se aceptan jpg, jpeg, png, webp" a alguien que subió una foto de su teléfono
+                 * no le dice qué hacer. Sacarla otra vez con el botón de la cámara sí, porque
+                 * ahí el navegador la entrega ya convertida a JPEG.
+                 */
+                if ($extension === 'heic' || $extension === 'heif') {
+                    return response()->json([
+                        'message' => 'El archivo "' . $nombre_original . '" está en formato HEIC, que es el que usa ' .
+                                     'la cámara del iPhone por defecto y el sistema todavía no puede leer. ' .
+                                     'Sacá la foto con el botón "Tomar foto" en vez de subirla desde Archivos, ' .
+                                     'o convertila a JPG antes de subirla.',
+                    ], 422);
+                }
+
                 return response()->json([
                     'message' => 'El archivo "' . $nombre_original . '" no es una imagen soportada. ' .
                                  'Se aceptan: ' . implode(', ', self::EXTENSIONES_PERMITIDAS) . '.',

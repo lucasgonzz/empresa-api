@@ -126,9 +126,19 @@ return [
      * 'anthropic' de arriba; estas claves son propias de este flujo.
      */
     'escaneo_factura_compra' => [
-        // Modelo de Claude. Acá NO se usa uno económico: leer una tabla impresa chica y
-        // sacar códigos exactos es la parte cara de la funcionalidad.
-        'model'         => env('ESCANEO_FACTURA_MODEL', 'claude-sonnet-4-5'),
+        /*
+         * Modelo de Claude. Acá NO se usa uno económico: leer una tabla impresa chica y sacar
+         * códigos exactos es la parte cara de la funcionalidad.
+         *
+         * ⚠️ El id va SIN sufijo de fecha, y no es un descuido: los ids vigentes de Anthropic
+         * son completos así como están. Los otros dos bloques de este archivo
+         * (article_image_validation, anthropic) llevan fecha porque se escribieron cuando esa
+         * era la convención, no porque haga falta. No le agregues una.
+         *
+         * Se puede cambiar por .env sin tocar código (ESCANEO_FACTURA_MODEL), que es la salida
+         * si algún cliente necesita otro modelo o si aparece uno mejor para leer facturas.
+         */
+        'model'         => env('ESCANEO_FACTURA_MODEL', 'claude-sonnet-5'),
         // Timeout en segundos de la request a Anthropic. Varias páginas tardan.
         'timeout'       => (int) env('ESCANEO_FACTURA_TIMEOUT', 180),
         // Lado mayor (px) al que se redimensiona cada foto. 1568 es el máximo que Anthropic
