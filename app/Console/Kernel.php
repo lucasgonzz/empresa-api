@@ -125,6 +125,21 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(30);
         }
 
+        // Vencimiento de puntos de clientes, solo con la extensión puntos_clientes. Mismo patrón
+        // que ofertas:generar: el comando decide adentro si hay programa activo y si vence algo (o
+        // sale en una línea), y ese doble gate es a propósito -- el de acá evita el SELECT, el de
+        // adentro cubre la corrida a mano. 04:30 y no 03:30/04:00/05:00/05:30/06:00: no se pisa con
+        // ninguno de los cinco comandos ya agendados del mismo comercio.
+        //
+        // Costo permanente en los ~40 clientes reales sin el módulo: CERO consultas a la base. El
+        // gate de este if corta antes de que el comando arranque y el $company_owner ya está
+        // resuelto arriba (:34) para el resto del schedule.
+        if ($company_owner && UserHelper::hasExtencion('puntos_clientes', $company_owner)) {
+            $schedule->command('puntos:vencer')
+                ->dailyAt('04:30')
+                ->withoutOverlapping(30);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
