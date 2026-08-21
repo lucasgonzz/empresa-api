@@ -380,7 +380,11 @@ class CascadaDePreciosTest extends TestCase
      *
      *   1000 x 1.40 x 1.21 = 1000 x 1.21 x 1.40 = 1694
      *
-     * Por eso los DOCE casos dan 1694. No es un test flojo ni casualidad: es la propiedad que
+     * 🔴 Por eso los casos de RRII y legacy dan 1694 — OCHO de los doce. Los cuatro de MT dan 1400
+     * desde el 21/8/2026: para un Monotributista migrado el IVA ya no participa del precio en ningún
+     * punto, así que no hay ningún 1,21 que conmutar. Ver el bloque de `$esperado` en el cuerpo.
+     *
+     * Para los ocho que siguen dando 1694, no es un test flojo ni casualidad: es la propiedad que
      * demuestra que los cuatro caminos -con sus cuatro implementaciones de codigo distintas- llegan
      * al mismo resultado economico. Si alguno rompe su logica de IVA (la duplica, la omite, o la
      * aplica en el orden equivocado respecto del margen), ESE numero puntual se despega de 1694

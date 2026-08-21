@@ -76,8 +76,10 @@ class ArticlePriceTypeMonedaHelper {
         Con las relaciones y valores ya almacenados por attach_price_type_monedas, calculo y guardo el precio final.
         Recibo el costo SEGUN LA CONDICION FISCAL de la cuenta, no "con IVA" (prompt 379/02: hasta ese
         prompt el docblock decia "con iva", literalmente falso desde el grupo 231 para las cuentas
-        migradas). Ver ArticlePricesHelper::iva_va_al_costo(): para una cuenta migrada RRII el costo
-        llega NETO; para MT o una cuenta legacy con aplicar_iva_al_costo=1 llega CON el IVA ya adentro
+        migradas). Ver ArticlePricesHelper::iva_va_al_costo(): para una cuenta MIGRADA (RRII o MT) el
+        costo llega NETO de este paso; para una cuenta legacy con aplicar_iva_al_costo=1 llega CON el
+        IVA ya adentro. Ojo: desde el 21/8/2026 el costo de un MT migrado ya trae el IVA que pago
+        adentro por otro motivo -se guarda tal cual se cargo- pero el pipeline no le suma ninguno
         (se lo suma antes ArticleHelper::aplicar_descuentos_e_iva(), al calcular costo_real). Por eso
         el parametro se llama `$cost_base` (generico), no `$cost_sin_iva` ni `$cost_con_iva`:
         ninguno de esos dos nombres es cierto siempre, y un nombre que miente en la mitad de los

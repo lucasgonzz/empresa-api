@@ -6,17 +6,26 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\Iva;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
+use App\Models\ArticleSurchage;
+use App\Models\ProviderOrderExtraCost;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 
 /**
  * Tests de costeo Monotributista (MT) y casos borde de alicuota del modulo de compras
  * (Grupo 184, Prompt 615).
  *
- * Regla de negocio (Grupo 183): un MT ignora `precios_incluyen_iva` (el costo tipeado se trata
- * SIEMPRE como bruto), su costo real SIEMPRE incorpora el IVA (no lo recupera como credito
- * fiscal, sin importar `articles.aplicar_iva`), pero el TOTAL de la compra no suma IVA por
- * encima (ya esta "adentro" de lo que tipeo/pago). La factura automatica de un MT muestra solo
- * el total, sin desglose de IVA.
+ * 🔴 REGLA VIGENTE desde el 21/8/2026 (mision `iva-fuera-del-costeo-monotributista`, decision de
+ * Lucas): para un MT con la cuenta MIGRADA (`usar_condicion_fiscal_en_costeo = 1`), **el IVA no
+ * participa del precio en ningun punto**. Carga el costo que le pasa su proveedor, ese numero se
+ * guarda TAL CUAL en `articles.cost`, y su costo real es ese costo mas descuentos y recargos. El
+ * total de la compra no suma IVA por encima, y la factura automatica muestra solo el total.
+ *
+ * Sigue siendo cierto que `precios_incluyen_iva` se ignora para un MT — pero al reves que antes:
+ * NO se descompone nunca, en vez de descomponerse siempre.
+ *
+ * (Regla anterior, Grupo 183 / prompt 615: el costo tipeado se trataba siempre como bruto y el
+ * costo real incorporaba el IVA. Los dos caminos daban el mismo precio final; el viejo dejaba
+ * guardado en `articles.cost` un numero que la persona nunca tipeo.)
  *
  * IMPORTANTE (grupo 231, prompt 01): la condicion fiscal vive en `users.condicion_iva_precios`
  * (movida desde `user_configurations`). `ComprasTestCase::set_condicion_iva('MT')` sigue teniendo
@@ -528,6 +537,89 @@ class Costeo_MT_Test extends ComprasTestCase
             self::DELTA,
             'costo base de Pintura para cama en MT (alicuota 0: el back-out no tiene que dividir por cero ni dar 0)'
         );
+    }
+
+    /**
+     * Test 7b — 🔴 el flete facturado de un MT se prorratea ENTERO, con su IVA adentro.
+     *
+     * Es el agujero que dejo abierto la mision `iva-fuera-del-costeo-monotributista` y que ningun
+     * test veia: los cinco casos de `4_Costos_Extra_Test` corren en RRII.
+     *
+     * Que paso. El prorrateo de costos extra decidia con `iva_va_al_costo()`, usandolo como
+     * sinonimo de "esta cuenta recupera el IVA". Cuando esa mision hizo que ese metodo devolviera
+     * false para TODA cuenta migrada —porque paso a responder solo DONDE se suma el IVA, no si se
+     * suma—, el `if` dejo de distinguir y empezo a prorratear el NETO tambien para el
+     * Monotributista. Sobre un flete facturado de 1210 al 21%, al costo llegaban 1000: −21 de costo
+     * unitario y −29,40 de precio final. Esos 210 son IVA que el MT pago y no recupera.
+     *
+     * La regla, entonces: **si el MT no recupera el IVA de la mercaderia, tampoco recupera el del
+     * flete**. El predicado correcto es `el_iva_participa_del_precio()`, no `iva_va_al_costo()`.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_flete_facturado_de_un_mt_se_prorratea_entero()
+    {
+        $this->set_condicion_iva('MT');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $snap = $this->snapshot_articulo($pinza);
+
+        try {
+
+            // Compra: 10 Pinzas a 1000. Para un MT eso se guarda tal cual.
+            $payload = $this->payload_compra([
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                ],
+            ]);
+
+            $response = $this->postJson('api/provider-order', $payload);
+            $response->assertStatus(201);
+
+            $order_id = $response->json('model.id');
+
+            // Flete FACTURADO de 1210, con IVA propio del 21%.
+            $iva21 = Iva::where('percentage', '21')->first();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete facturado',
+                'value'             => 1210,
+                'tipo'              => 'transporte',
+                'facturado'         => 1,
+                'iva_id'            => $iva21->id,
+            ]);
+
+            // Se reguarda la compra para que el prorrateo corra con el costo extra ya cargado.
+            $this->putJson('api/provider-order/'.$order_id, $this->payload_compra([
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                ],
+            ]))->assertStatus(200);
+
+            $pinza->refresh();
+
+            $this->assertEqualsWithDelta(
+                1121,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'costo real de un MT: 1000 de costo + 121 de flete (1210 / 10 unidades, ENTERO). '.
+                'Si diera 1100 es que se le saco el IVA al flete, que es plata que el MT pago y no recupera'
+            );
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap);
+
+            // El recargo de transporte que dejo el prorrateo se limpia a mano: en esta base las
+            // tablas son MyISAM y DatabaseTransactions no revierte nada de verdad (ver docblock
+            // de la clase), asi que sin esto Pinza queda con un recargo permanente que rompe los
+            // tests que corren despues.
+            ArticleSurchage::where('article_id', $pinza->id)
+                            ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                            ->delete();
+        }
     }
 
     /**

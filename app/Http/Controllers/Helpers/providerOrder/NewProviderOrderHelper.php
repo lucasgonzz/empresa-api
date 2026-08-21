@@ -247,21 +247,30 @@ class NewProviderOrderHelper {
                 continue;
             }
 
-            // Prompt 516: consistencia neto/bruto al costo (Capa 1), mismo criterio que el
-            // back-out de costo del prompt 514. Si el costo extra vino FACTURADO con alícuota
-            // propia (`iva_id`) y el usuario es Responsable Inscripto (IVA recuperable ->
-            // `iva_va_al_costo()` false), el IVA de ese costo extra es crédito fiscal, no costo:
-            // se prorratea el NETO (se le saca el IVA con SU propia alícuota, no la de los
-            // artículos). Si es Monotributista (`iva_va_al_costo()` true) o el costo extra no
-            // está facturado, se prorratea el monto entero (comportamiento actual, sin cambios).
-            //
-            // Prompt 231/02: esta condición ya resuelve por el resolver único
-            // `ArticlePricesHelper::iva_va_al_costo()`, igual que el resto del pipeline de
-            // costeo/precios. Antes usaba el campo legacy `aplicar_iva_al_costo` directo a
-            // propósito (ver historial), porque la columna real de condición fiscal
-            // (`usar_condicion_fiscal_en_costeo`) todavía no existía; ya aterrizó, así que este
-            // punto queda unificado con `update_cost()` y `catalogar_costo_proveedor()`.
-            if ($extra_cost->facturado && (int)$extra_cost->iva_id > 0 && !ArticlePricesHelper::iva_va_al_costo($this->user)) {
+            /*
+             * Prompt 516: consistencia neto/bruto al costo (Capa 1), mismo criterio que el back-out
+             * de costo del prompt 514. Si el costo extra vino FACTURADO con alícuota propia
+             * (`iva_id`) y la cuenta RECUPERA el IVA (Responsable Inscripto), el IVA de ese costo
+             * extra es crédito fiscal y no costo: se prorratea el NETO, sacándole el IVA con SU
+             * propia alícuota, no la de los artículos. Si la cuenta NO lo recupera
+             * (Monotributista), o el costo extra no está facturado, se prorratea el monto entero.
+             *
+             * 🔴 La pregunta acá es SI la cuenta recupera el IVA, así que el predicado correcto es
+             * `el_iva_participa_del_precio()`, NO `iva_va_al_costo()`.
+             *
+             * Hasta la misión `iva-fuera-del-costeo-monotributista` (21/8/2026) los dos daban lo
+             * mismo y este call site usaba el segundo. Cuando esa misión hizo que
+             * `iva_va_al_costo()` devolviera false para TODA cuenta migrada —porque pasó a
+             * responder sólo DÓNDE se suma el IVA, no si se suma—, este `if` dejó de distinguir
+             * nada y empezó a prorratear el neto también para el Monotributista.
+             *
+             * Medido por el checker antes de que llegara a `develop`: en una compra de un MT con un
+             * flete facturado de $1.210 al 21%, al costo llegaban $1.000 en vez de $1.210 — el
+             * costo unitario bajaba $21 y el precio final $29,40 (−1,87%). Esos $210 son IVA que el
+             * monotributista pagó y no recupera: su costo es 1.210. Era la regla de la misión
+             * aplicada a los artículos y no al flete de la misma compra.
+             */
+            if ($extra_cost->facturado && (int)$extra_cost->iva_id > 0 && ArticlePricesHelper::el_iva_participa_del_precio($this->user)) {
 
                 $iva_costo_extra = $this->get_iva($extra_cost->iva_id);
 
