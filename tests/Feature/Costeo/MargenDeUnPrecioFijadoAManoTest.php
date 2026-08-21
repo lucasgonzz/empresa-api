@@ -3,6 +3,7 @@
 namespace Tests\Feature\Costeo;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Models\Article;
 use App\Models\Iva;
@@ -322,7 +323,16 @@ class MargenDeUnPrecioFijadoAManoTest extends TestCase
 
     /**
      * Parte 3: el desglose de una lista no cuenta el precio final unico. Se testea el corte, que es
-     * lo unico que esta mision cambia del desglose — el calculo no se toca.
+     * lo unico que esa mision cambiaba del desglose — el calculo no se toca.
+     *
+     * ⚠️ La ENTRADA de este test cambio el 21/8/2026, no sus aserciones. El desglose dejo de ser un
+     * array de strings planos y paso a ser un array de entradas estructuradas
+     * (DesglosePrecioHelper), asi que el corte ya no busca la prosa 'CALCULO DEL PRECIO FINAL' sino
+     * la clave estable `precio_final`. Lo que este test verifica sigue siendo exactamente lo mismo:
+     * donde corta, que conserva y que descarta.
+     *
+     * El fixture se arma con el propio DesglosePrecioHelper y no a mano, para que no pueda quedar
+     * describiendo una forma de dato que produccion ya no produce.
      *
      * @group costeo-precios
      * @test
@@ -330,21 +340,23 @@ class MargenDeUnPrecioFijadoAManoTest extends TestCase
     public function el_corte_saca_la_seccion_del_precio_final_y_deja_la_del_costo_real()
     {
         $des = [
-            'CALCULO DEL COSTO REAL',
-            'Comienza con costo de $1.000',
-            'Costo Real queda en = $1.000',
-            'CALCULO DEL PRECIO FINAL',
-            'Comienza con costo real en = $1.000',
-            'Mas margen del articulo del 100.00%',
-            'Mas IVA de 21% = $2.420',
+            DesglosePrecioHelper::seccion(DesglosePrecioHelper::CLAVE_COSTO_REAL, 'Calculo del costo real', 'CALCULO DEL COSTO REAL'),
+            DesglosePrecioHelper::linea(DesglosePrecioHelper::COSTO, 'Costo', null, '$1.000', 'Comienza con costo de $1.000'),
+            DesglosePrecioHelper::linea(DesglosePrecioHelper::TOTAL, 'Costo real', null, '$1.000', 'Costo Real queda en = $1.000'),
+            DesglosePrecioHelper::seccion(DesglosePrecioHelper::CLAVE_PRECIO_FINAL, 'Calculo del precio final', 'CALCULO DEL PRECIO FINAL'),
+            DesglosePrecioHelper::linea(DesglosePrecioHelper::COSTO, 'Costo real', null, '$1.000', 'Comienza con costo real en = $1.000'),
+            DesglosePrecioHelper::linea(DesglosePrecioHelper::MARGEN, 'Margen del articulo', '100.00%', null, 'Mas margen del articulo del 100.00%'),
+            DesglosePrecioHelper::linea(DesglosePrecioHelper::IVA, 'IVA', '21%', '$2.420', 'Mas IVA de 21% = $2.420'),
         ];
 
         $cortado = ArticleHelper::quitar_seccion_del_precio_final_unico($des);
 
+        $textos = array_column($cortado, 'texto');
+
         $this->assertCount(3, $cortado);
-        $this->assertEquals('CALCULO DEL COSTO REAL', $cortado[0]);
-        $this->assertNotContains('CALCULO DEL PRECIO FINAL', $cortado);
-        $this->assertNotContains('Mas IVA de 21% = $2.420', $cortado);
+        $this->assertEquals('CALCULO DEL COSTO REAL', $textos[0]);
+        $this->assertNotContains('CALCULO DEL PRECIO FINAL', $textos);
+        $this->assertNotContains('Mas IVA de 21% = $2.420', $textos);
     }
 
     /**
@@ -357,8 +369,8 @@ class MargenDeUnPrecioFijadoAManoTest extends TestCase
     public function el_corte_no_toca_un_desglose_que_no_tiene_esa_seccion()
     {
         $sin_la_seccion = [
-            'CALCULO DEL COSTO REAL',
-            'Comienza con costo de $1.000',
+            DesglosePrecioHelper::seccion(DesglosePrecioHelper::CLAVE_COSTO_REAL, 'Calculo del costo real', 'CALCULO DEL COSTO REAL'),
+            DesglosePrecioHelper::linea(DesglosePrecioHelper::COSTO, 'Costo', null, '$1.000', 'Comienza con costo de $1.000'),
         ];
 
         $this->assertEquals(
@@ -367,14 +379,44 @@ class MargenDeUnPrecioFijadoAManoTest extends TestCase
         );
 
         $con_claves_salteadas = [
-            5 => 'CALCULO DEL COSTO REAL',
-            9 => 'CALCULO DEL PRECIO FINAL',
-            11 => 'Mas IVA de 21% = $2.420',
+            5  => DesglosePrecioHelper::seccion(DesglosePrecioHelper::CLAVE_COSTO_REAL, 'Calculo del costo real', 'CALCULO DEL COSTO REAL'),
+            9  => DesglosePrecioHelper::seccion(DesglosePrecioHelper::CLAVE_PRECIO_FINAL, 'Calculo del precio final', 'CALCULO DEL PRECIO FINAL'),
+            11 => DesglosePrecioHelper::linea(DesglosePrecioHelper::IVA, 'IVA', '21%', '$2.420', 'Mas IVA de 21% = $2.420'),
         ];
 
         $cortado = ArticleHelper::quitar_seccion_del_precio_final_unico($con_claves_salteadas);
 
         $this->assertCount(1, $cortado);
-        $this->assertEquals('CALCULO DEL COSTO REAL', $cortado[0]);
+        $this->assertEquals('CALCULO DEL COSTO REAL', $cortado[0]['texto']);
+    }
+
+    /**
+     * Un desglose de strings planos NO se corta, y eso es correcto.
+     *
+     * Los desgloses guardados en sales.price_description y provider_orders.price_description siguen
+     * siendo arrays de strings, pero nunca pasan por este corte: el unico llamador en produccion es
+     * ArticleHelper::setFinalPrice(), que desde el 21/8/2026 siempre arma entradas estructuradas.
+     *
+     * Este test existe para dejar escrito que la tolerancia es deliberada --el helper devuelve el
+     * array tal cual en vez de romper-- y para que, si algun dia alguien le enchufa strings a esta
+     * funcion esperando que corte, el rojo aparezca aca y no en el modal de un cliente.
+     *
+     * @group costeo-precios
+     * @test
+     */
+    public function el_corte_deja_intacto_un_desglose_de_strings_planos()
+    {
+        $des_viejo = [
+            'CALCULO DEL COSTO REAL',
+            'Comienza con costo de $1.000',
+            'CALCULO DEL PRECIO FINAL',
+            'Mas IVA de 21% = $2.420',
+        ];
+
+        $this->assertEquals(
+            $des_viejo,
+            ArticleHelper::quitar_seccion_del_precio_final_unico($des_viejo),
+            'un desglose de strings no tiene la clave estable con la que se corta: se devuelve entero'
+        );
     }
 }

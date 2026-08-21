@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -105,8 +106,16 @@ class ArticleHelper {
      * $des_lista y recien se pegan DESPUES de este filtro, con el array_merge de setFinalPrice().
      * Si algun dia se agrega otra seccion despues de esta, hay que cambiar el corte.
      *
-     * El titulo se busca por su texto exacto y no por "esta todo en mayusculas": esa heuristica ya
-     * fallo una vez con las listas de nombre acentuado (hallazgo del 5/8/2026).
+     * El titulo se busca por su IDENTIFICADOR de seccion (DesglosePrecioHelper::CLAVE_PRECIO_FINAL)
+     * y no por su texto. Antes se comparaba contra el string exacto 'CALCULO DEL PRECIO FINAL', que
+     * ya era mejor que la heuristica de "esta todo en mayusculas" -esa fallo con las listas de
+     * nombre acentuado, hallazgo del 5/8/2026-, pero seguia siendo prosa: el titulo lo emiten TRES
+     * sitios distintos de setFinalPrice(), asi que una tilde, un espacio de mas o una correccion de
+     * ortografia en uno solo de esos tres dejaba el corte sin funcionar EN ESA RAMA UNICAMENTE, en
+     * silencio y sin que ningun test de los otros caminos se enterara.
+     *
+     * Con la clave, el texto visible pasa a ser lo que es -texto- y se puede cambiar sin tocar
+     * comportamiento.
      *
      * @param array $des
      * @return array
@@ -128,7 +137,7 @@ class ArticleHelper {
         $corte = null;
 
         foreach ($des as $posicion => $linea) {
-            if (is_string($linea) && trim($linea) === 'CALCULO DEL PRECIO FINAL') {
+            if (DesglosePrecioHelper::es_seccion($linea, DesglosePrecioHelper::CLAVE_PRECIO_FINAL)) {
                 $corte = $posicion;
                 break;
             }
@@ -145,16 +154,34 @@ class ArticleHelper {
 
         $cost = $article->costo_real;
 
-        $des[] = 'Comienza con costo real en = '.Numbers::price($cost, true);
+        $des[] = DesglosePrecioHelper::linea(
+            DesglosePrecioHelper::COSTO,
+            'Costo real',
+            null,
+            Numbers::price($cost, true),
+            'Comienza con costo real en = '.Numbers::price($cost, true)
+        );
 
         if (!is_null($user->percentage_gain)) {
             $cost += $cost * $user->percentage_gain / 100;
-            $des[] = 'Mas ganancia del usuario del '.$user->percentage_gain.'% = '.Numbers::price($cost, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::MARGEN,
+                'Ganancia general de la cuenta',
+                $user->percentage_gain.'%',
+                Numbers::price($cost, true),
+                'Mas ganancia del usuario del '.$user->percentage_gain.'% = '.Numbers::price($cost, true)
+            );
         }
 
         if ($article->unidades_individuales) {
             $cost = $cost / $article->unidades_individuales;
-            $des[] = 'Dividido en '.$article->unidades_individuales.' unidades individuales = '.Numbers::price($cost, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::UNIDADES,
+                'Dividido en unidades individuales',
+                $article->unidades_individuales.' unidades individuales',
+                Numbers::price($cost, true),
+                'Dividido en '.$article->unidades_individuales.' unidades individuales = '.Numbers::price($cost, true)
+            );
         }
 
         $price = $cost;
@@ -193,7 +220,13 @@ class ArticleHelper {
 
             } else if ((!is_null($article->provider) && $article->provider->percentage_gain)) {
                 $price = $price + ($price * $article->provider->percentage_gain / 100);
-                $des[] = 'Mas margen del proveedor del '.$article->provider->percentage_gain.'% = '.Numbers::price($price, true);
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::MARGEN,
+                    'Margen del proveedor',
+                    $article->provider->percentage_gain.'%',
+                    Numbers::price($price, true),
+                    'Mas margen del proveedor del '.$article->provider->percentage_gain.'% = '.Numbers::price($price, true)
+                );
 
                 // Log::info('Aplicando margen del proveedor de '.$article->provider->percentage_gain.', quedo en '.$price);
 
@@ -276,8 +309,18 @@ class ArticleHelper {
 
         if ($article->cost) {
 
-            $des[] = 'CALCULO DEL COSTO REAL';
-            $des[] = 'Comienza con costo de '.Numbers::price($article->cost, true);
+            $des[] = DesglosePrecioHelper::seccion(
+                DesglosePrecioHelper::CLAVE_COSTO_REAL,
+                'Cálculo del costo real',
+                'CALCULO DEL COSTO REAL'
+            );
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::COSTO,
+                'Costo de compra',
+                null,
+                Numbers::price($article->cost, true),
+                'Comienza con costo de '.Numbers::price($article->cost, true)
+            );
 
             $res = Self::aplicar_descuentos_e_iva($article, $article->cost, $user, $des);
 
@@ -295,7 +338,13 @@ class ArticleHelper {
                 $article->save();
             }
 
-            $des[] = 'Costo Real queda en = '.Numbers::price($costo_real, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::TOTAL,
+                'Costo real',
+                null,
+                Numbers::price($costo_real, true),
+                'Costo Real queda en = '.Numbers::price($costo_real, true)
+            );
 
         }
 
@@ -350,8 +399,18 @@ class ArticleHelper {
                 // PRECIO DE VENTA = PRECIO LISTA (cost) + IVA
                 $cost = (float) $article->cost;
 
-                $des[] = 'CALCULO DEL PRECIO FINAL';
-                $des[] = 'Comienza con el costo de lista = '.Numbers::price($cost, true);
+                $des[] = DesglosePrecioHelper::seccion(
+                    DesglosePrecioHelper::CLAVE_PRECIO_FINAL,
+                    'Cálculo del precio final',
+                    'CALCULO DEL PRECIO FINAL'
+                );
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::COSTO,
+                    'Costo de lista',
+                    'del proveedor',
+                    Numbers::price($cost, true),
+                    'Comienza con el costo de lista = '.Numbers::price($cost, true)
+                );
 
                 if ($article->unidades_individuales) {
                     $cost = $cost / $article->unidades_individuales;
@@ -410,7 +469,11 @@ class ArticleHelper {
 
                 // MODO NORMAL (actual): PRECIO = costo_real + margen + etc
 
-                $des[] = 'CALCULO DEL PRECIO FINAL';
+                $des[] = DesglosePrecioHelper::seccion(
+                    DesglosePrecioHelper::CLAVE_PRECIO_FINAL,
+                    'Cálculo del precio final',
+                    'CALCULO DEL PRECIO FINAL'
+                );
 
                 $res = Self::calcular_base_antes_de_listas($article, $user, $des);
                 $final_price = $res['price'];
@@ -468,7 +531,13 @@ class ArticleHelper {
                     // Log::info('Sumando percentage_gain, va en '.$final_price);
                     
                     $final_price += $final_price * $article->percentage_gain / 100;
-                    $des[] = 'Mas margen del articulo del '.$article->percentage_gain.'% = '.Numbers::price($final_price, true);
+                    $des[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::MARGEN,
+                        'Margen del artículo',
+                        $article->percentage_gain.'%',
+                        Numbers::price($final_price, true),
+                        'Mas margen del articulo del '.$article->percentage_gain.'% = '.Numbers::price($final_price, true)
+                    );
                     // Log::info('Y quedo en '.$final_price);
                 }
 
@@ -483,9 +552,19 @@ class ArticleHelper {
             // Log::info('final_price: '.$final_price);
         } else {
 
-            $des[] = 'CALCULO DEL PRECIO FINAL';
+            $des[] = DesglosePrecioHelper::seccion(
+                DesglosePrecioHelper::CLAVE_PRECIO_FINAL,
+                'Cálculo del precio final',
+                'CALCULO DEL PRECIO FINAL'
+            );
             $final_price = $article->price;
-            $des[] = 'Usando el precio manual de '.Numbers::price($final_price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::PRECIO_MANUAL,
+                'Precio fijado a mano',
+                null,
+                Numbers::price($final_price, true),
+                'Usando el precio manual de '.Numbers::price($final_price, true)
+            );
 
             // El precio manual manda y no se toca, pero la base se calcula igual: es lo que el
             // front necesita para mostrar que margen implica ese precio (prompt 357/02). Los $des
@@ -499,7 +578,16 @@ class ArticleHelper {
 
                 if ((float) $article->base_margen != 0.0) {
                     $margen_implicito = ($final_price - $article->base_margen) / $article->base_margen * 100;
-                    $des[] = 'Ese precio implica un margen del '.round($margen_implicito, 2).'% sobre la base de '.Numbers::price($article->base_margen, true);
+                    $des[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::MARGEN,
+                        'Margen implícito',
+                        // El monto de la base va en el detalle y el porcentaje en el valor, y no al
+                        // reves: lo que este renglon informa es el margen, la base es contra que se
+                        // lo midio.
+                        'sobre una base de '.Numbers::price($article->base_margen, true),
+                        round($margen_implicito, 2).'%',
+                        'Ese precio implica un margen del '.round($margen_implicito, 2).'% sobre la base de '.Numbers::price($article->base_margen, true)
+                    );
                 }
 
             } else {
@@ -645,10 +733,22 @@ class ArticleHelper {
         ) {
             if (!is_null($article->provider) && !is_null($article->provider->dolar) && (float)$article->provider->dolar > 0) {
                 $price = $price * $article->provider->dolar;
-                $des[] = 'Cotizando al dolar del proveedor '.Numbers::price($article->provider->dolar, true).' = '.Numbers::price($price, true);
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::COTIZACION,
+                    'Cotización del dólar',
+                    'dólar del proveedor '.Numbers::price($article->provider->dolar, true),
+                    Numbers::price($price, true),
+                    'Cotizando al dolar del proveedor '.Numbers::price($article->provider->dolar, true).' = '.Numbers::price($price, true)
+                );
             } else if ($article->cost_in_dollars > 0) {
                 $price = $price * $user->dollar;
-                $des[] = 'Cotizando al dolar global '.Numbers::price($user->dollar, true).' = '.Numbers::price($price, true);
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::COTIZACION,
+                    'Cotización del dólar',
+                    'dólar global '.Numbers::price($user->dollar, true),
+                    Numbers::price($price, true),
+                    'Cotizando al dolar global '.Numbers::price($user->dollar, true).' = '.Numbers::price($price, true)
+                );
             }
             Log::info('Costo cotizado: '.$price);
         }
@@ -697,7 +797,13 @@ class ArticleHelper {
 
         if ($user->redondear_miles_en_vender) {
             $price = round($price / 1000) * 1000;
-            $des[] = 'Redondeando por mil = '.Numbers::price($price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::REDONDEO,
+                'Redondeo',
+                'por mil',
+                Numbers::price($price, true),
+                'Redondeando por mil = '.Numbers::price($price, true)
+            );
         }
 
         if ($user->redondear_centenas_en_vender) {
@@ -705,23 +811,47 @@ class ArticleHelper {
             if ($price > 100) {
                 
                 $price = round($price, -2);
-                $des[] = 'Redondeando por centenas = '.Numbers::price($price, true);
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::REDONDEO,
+                    'Redondeo',
+                    'por centenas',
+                    Numbers::price($price, true),
+                    'Redondeando por centenas = '.Numbers::price($price, true)
+                );
             }
         }
 
         if ($user->redondear_precios_en_decenas) {
             $price = round($price, -1);
-            $des[] = 'Redondeando por decenas = '.Numbers::price($price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::REDONDEO,
+                'Redondeo',
+                'por decenas',
+                Numbers::price($price, true),
+                'Redondeando por decenas = '.Numbers::price($price, true)
+            );
         }
 
         if ($user->redondear_de_a_50) {
             $price = ceil($price / 50) * 50;
-            $des[] = 'Redondeando de a 50 = '.Numbers::price($price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::REDONDEO,
+                'Redondeo',
+                'de a 50',
+                Numbers::price($price, true),
+                'Redondeando de a 50 = '.Numbers::price($price, true)
+            );
         }
 
         if ($user->redondear_precios_en_centavos) {
             $price = round($price);
-            $des[] = 'Redondeando centavos = '.Numbers::price($price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::REDONDEO,
+                'Redondeo',
+                'de centavos',
+                Numbers::price($price, true),
+                'Redondeando centavos = '.Numbers::price($price, true)
+            );
         }
         return [
             'price' => $price,

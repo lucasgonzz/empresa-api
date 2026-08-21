@@ -11,6 +11,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
+use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -1041,8 +1042,15 @@ class ArticleController extends Controller
             return response()->json(['message' => 'No se encontro el articulo'], 404);
         }
 
-        $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
-        return response()->json(['description'    => $description], 200);
+        $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true);
+
+        // `description` se DERIVA de `detalle`: una sola emision, dos vistas de lo mismo. Sigue
+        // siendo array de strings a proposito, para que un bundle viejo de la PWA -que pinta cada
+        // renglon tal cual- no reciba objetos y muestre '[object Object]'.
+        return response()->json([
+            'description'    => DesglosePrecioHelper::solo_textos($detalle),
+            'detalle'        => $detalle,
+        ], 200);
     }
 
     /**
@@ -1069,8 +1077,15 @@ class ArticleController extends Controller
             return response()->json(['message' => 'No se encontro el articulo'], 404);
         }
 
-        $description = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
-        return response()->json(['description'    => $description], 200);
+        $detalle = ArticleHelper::setFinalPrice($article, null, null, null, true, null, true, $price_type_id);
+
+        // Mismo criterio que el endpoint hermano de arriba: `description` se DERIVA de `detalle`
+        // (una sola emision, dos vistas) y se mantiene como array de strings para no romperle el
+        // desglose a una PWA que todavia no actualizo su bundle.
+        return response()->json([
+            'description'    => DesglosePrecioHelper::solo_textos($detalle),
+            'detalle'        => $detalle,
+        ], 200);
     }
 
     /**

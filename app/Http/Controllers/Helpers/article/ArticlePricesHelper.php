@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
@@ -194,7 +195,13 @@ class ArticlePricesHelper {
             // Log::info('La categoria tiene margen de ganancia del '.$article->category->percentage_gain);
             // Log::info('price: '.$price);
             $price += $price * $article->category->percentage_gain / 100;
-            $des[] = 'Mas margen de la categoria del '.$article->category->percentage_gain.'% = '.Numbers::price($price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::MARGEN,
+                'Margen de la categoría',
+                $article->category->percentage_gain.'%',
+                Numbers::price($price, true),
+                'Mas margen de la categoria del '.$article->category->percentage_gain.'% = '.Numbers::price($price, true)
+            );
             // Log::info('price luego: '.$price);
         } else {
             // Log::info('La categoria NO tiene margen de ganancia');
@@ -350,13 +357,24 @@ class ArticlePricesHelper {
                         && $price_type->id == $price_type_id_para_descripcion;
 
             if ($describir) {
-                // mb_strtoupper y no strtoupper: strtoupper() no toca los acentos, asi que una lista
-                // llamada "Publico" con tilde salia como 'LISTA PúBLICO'. No es solo cosmetico:
-                // PriceDescription.vue decide que una linea es titulo comparando des === des.toUpperCase(),
-                // y JS SI convierte la u con tilde, asi que la comparacion daba false y el encabezado se
-                // renderizaba como un renglon mas del desglose (hallazgo
-                // 20260805-desglose-por-lista-margen-propio-y-acentos, punto 2).
-                $des_lista[] = 'CALCULO DEL PRECIO DE LA LISTA '.mb_strtoupper($price_type->name, 'UTF-8');
+                // El front ya NO decide por mayusculas cual renglon es titulo. Esa heuristica
+                // (PriceDescription.vue comparando des === des.toUpperCase()) fallaba con las listas
+                // de nombre acentuado: 'LISTA PúBLICO' no es igual a su propio toUpperCase() en JS, y
+                // el encabezado se pintaba como un renglon mas del desglose (hallazgo
+                // 20260805-desglose-por-lista-margen-propio-y-acentos, punto 2). Ahora la
+                // clasificacion viene por `tipo`: esta entrada es una SECCION y lo dice explicito,
+                // sin que nadie tenga que adivinarlo del texto.
+                //
+                // El mb_strtoupper se conserva UNICAMENTE porque `texto` tiene que quedar identico al
+                // string historico, caracter por caracter: de ahi sale la clave `description` que
+                // siguen leyendo el front viejo y los desgloses ya guardados en base. La `etiqueta`,
+                // que es lo que se muestra, va con el nombre de la lista tal cual lo escribio la
+                // persona.
+                $des_lista[] = DesglosePrecioHelper::seccion(
+                    DesglosePrecioHelper::CLAVE_LISTA,
+                    'Precio de la lista '.$price_type->name,
+                    'CALCULO DEL PRECIO DE LA LISTA '.mb_strtoupper($price_type->name, 'UTF-8')
+                );
             }
 
 
@@ -400,7 +418,13 @@ class ArticlePricesHelper {
             $percentage = is_null($percentage) ? 0 : (float) $percentage;
 
             if ($describir) {
-                $des_lista[] = 'Costo de partida (costo real ya calculado arriba) = '.Numbers::price($cost, true);
+                $des_lista[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::COSTO,
+                    'Costo de partida',
+                    'el costo real ya calculado arriba',
+                    Numbers::price($cost, true),
+                    'Costo de partida (costo real ya calculado arriba) = '.Numbers::price($cost, true)
+                );
             }
 
             if ($cost !== 0.0) {
@@ -425,13 +449,31 @@ class ArticlePricesHelper {
                     if ($describir) {
                         // El precio lo fijo el usuario a mano (setear_precio_final en el pivot): no se
                         // aplica ningun margen, el porcentaje se calcula al reves, a partir del precio.
-                        $des_lista[] = 'El precio de esta lista lo fijaste vos a mano = '.Numbers::price($final_price, true);
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::PRECIO_MANUAL,
+                            'Precio fijado a mano',
+                            'lo fijaste vos para esta lista',
+                            Numbers::price($final_price, true),
+                            'El precio de esta lista lo fijaste vos a mano = '.Numbers::price($final_price, true)
+                        );
 
                         if (abs($base_del_margen - (float) $final_price) > 0.00001) {
-                            $des_lista[] = 'Sacandole el IVA y los impuestos sobre ventas queda '.Numbers::price($base_del_margen, true).', que es lo comparable con el costo';
+                            $des_lista[] = DesglosePrecioHelper::linea(
+                                DesglosePrecioHelper::NOTA,
+                                'Neto de IVA e impuestos sobre ventas',
+                                'es lo comparable con el costo: '.Numbers::price($base_del_margen, true),
+                                null,
+                                'Sacandole el IVA y los impuestos sobre ventas queda '.Numbers::price($base_del_margen, true).', que es lo comparable con el costo'
+                            );
                         }
 
-                        $des_lista[] = 'El margen de '.round($percentage, 2).'% es el que resulta de ese precio contra el costo, no al reves';
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::PRECIO_MANUAL,
+                            'Margen resultante',
+                            'sale de ese precio contra el costo, no al revés',
+                            round($percentage, 2).'%',
+                            'El margen de '.round($percentage, 2).'% es el que resulta de ese precio contra el costo, no al reves'
+                        );
                     }
 
                 } else {
@@ -459,16 +501,34 @@ class ArticlePricesHelper {
                         $percentage_por_defecto = is_null($price_type->percentage) ? 0 : (float) $price_type->percentage;
 
                         if (abs($percentage - $percentage_por_defecto) > 0.00001) {
-                            $des_lista[] = 'Margen propio del articulo en esta lista: '.$percentage.'%';
+                            $des_lista[] = DesglosePrecioHelper::linea(
+                                DesglosePrecioHelper::MARGEN,
+                                'Margen',
+                                'propio del artículo en esta lista',
+                                $percentage.'%',
+                                'Margen propio del articulo en esta lista: '.$percentage.'%'
+                            );
                         } else {
-                            $des_lista[] = 'Margen por defecto de la lista: '.$percentage.'%';
+                            $des_lista[] = DesglosePrecioHelper::linea(
+                                DesglosePrecioHelper::MARGEN,
+                                'Margen',
+                                'por defecto de la lista',
+                                $percentage.'%',
+                                'Margen por defecto de la lista: '.$percentage.'%'
+                            );
                         }
                     }
 
                     $final_price = $cost + ($cost * (float)$percentage / 100);
 
                     if ($describir) {
-                        $des_lista[] = 'Precio con el margen aplicado = '.Numbers::price($final_price, true);
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::MARGEN,
+                            'Precio con el margen aplicado',
+                            null,
+                            Numbers::price($final_price, true),
+                            'Precio con el margen aplicado = '.Numbers::price($final_price, true)
+                        );
                     }
 
                     // Capa 2 (Prompt 261): sale_taxes con formula de division, despues del margen
@@ -499,16 +559,34 @@ class ArticlePricesHelper {
                         // tilde vieja prendida. Si este renglon no separa los dos casos, el diagnostico
                         // equivocado vuelve.
                         if ($user->usar_condicion_fiscal_en_costeo) {
-                            $des_lista[] = 'No se suma IVA aca: sos Monotributista, asi que el IVA no se recupera y ya viene incluido dentro del costo real';
+                            $des_lista[] = DesglosePrecioHelper::linea(
+                                DesglosePrecioHelper::NOTA,
+                                'Acá no se suma IVA',
+                                'sos Monotributista: el IVA no se recupera y ya viene incluido dentro del costo real',
+                                null,
+                                'No se suma IVA aca: sos Monotributista, asi que el IVA no se recupera y ya viene incluido dentro del costo real'
+                            );
                         } else {
-                            $des_lista[] = 'No se suma IVA aca: esta cuenta tiene la configuracion vieja "aplicar IVA al costo" prendida, asi que el IVA ya viene incluido dentro del costo real (no depende de tu condicion fiscal)';
+                            $des_lista[] = DesglosePrecioHelper::linea(
+                                DesglosePrecioHelper::NOTA,
+                                'Acá no se suma IVA',
+                                'esta cuenta tiene prendida la configuración vieja "aplicar IVA al costo", así que el IVA ya viene incluido dentro del costo real (no depende de tu condición fiscal)',
+                                null,
+                                'No se suma IVA aca: esta cuenta tiene la configuracion vieja "aplicar IVA al costo" prendida, asi que el IVA ya viene incluido dentro del costo real (no depende de tu condicion fiscal)'
+                            );
                         }
                     }
 
                 }
             } else if ($describir) {
 
-                $des_lista[] = 'El costo es cero, asi que no se calcula ningun margen para esta lista';
+                $des_lista[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::NOTA,
+                    'Sin margen',
+                    'el costo es cero, así que no se calcula ningún margen para esta lista',
+                    null,
+                    'El costo es cero, asi que no se calcula ningun margen para esta lista'
+                );
             }
 
 
@@ -518,8 +596,20 @@ class ArticlePricesHelper {
 
             if ($describir) {
                 $des_lista = array_merge($des_lista, $res['des']);
-                $des_lista[] = 'Precio final de la lista = '.Numbers::price($res['precio_luego_de_recargos'], true);
-                $des_lista[] = 'Ganancia sobre el costo = '.Numbers::price($res['monto_ganancia'], true);
+                $des_lista[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::TOTAL,
+                    'Precio final de la lista',
+                    null,
+                    Numbers::price($res['precio_luego_de_recargos'], true),
+                    'Precio final de la lista = '.Numbers::price($res['precio_luego_de_recargos'], true)
+                );
+                $des_lista[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::MARGEN,
+                    'Ganancia sobre el costo',
+                    'neta de IVA y de impuestos sobre ventas',
+                    Numbers::price($res['monto_ganancia'], true),
+                    'Ganancia sobre el costo = '.Numbers::price($res['monto_ganancia'], true)
+                );
             }
 
 
@@ -641,7 +731,13 @@ class ArticlePricesHelper {
                     // Se llaman "recargos" pero RESTAN: el codigo hace -=, y es intencional
                     // (decision de Lucas del 4/7, ver refactor_empresa/precios_costos.md). El texto
                     // tiene que decir que resta, o el desglose miente.
-                    $des[] = 'Menos '.$price_type_surchage->name.' ('.$price_type_surchage->percentage.'%) = '.Numbers::price($precio_luego_de_recargos, true);
+                    $des[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::RECARGO,
+                        'Recargo de la lista',
+                        $price_type_surchage->name.' — resta '.$price_type_surchage->percentage.'%',
+                        Numbers::price($precio_luego_de_recargos, true),
+                        'Menos '.$price_type_surchage->name.' ('.$price_type_surchage->percentage.'%) = '.Numbers::price($precio_luego_de_recargos, true)
+                    );
                 }
 
             } else if (!is_null($price_type_surchage->amount)) {
@@ -649,7 +745,13 @@ class ArticlePricesHelper {
                 $precio_luego_de_recargos -= $price_type_surchage->amount;
 
                 if ($describir) {
-                    $des[] = 'Menos '.$price_type_surchage->name.' ('.Numbers::price($price_type_surchage->amount, true).') = '.Numbers::price($precio_luego_de_recargos, true);
+                    $des[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::RECARGO,
+                        'Recargo de la lista',
+                        $price_type_surchage->name.' — resta '.Numbers::price($price_type_surchage->amount, true),
+                        Numbers::price($precio_luego_de_recargos, true),
+                        'Menos '.$price_type_surchage->name.' ('.Numbers::price($price_type_surchage->amount, true).') = '.Numbers::price($precio_luego_de_recargos, true)
+                    );
                 }
 
             }
@@ -702,7 +804,13 @@ class ArticlePricesHelper {
 
                 $precio_con_iva += $importe_iva;
 
-                $des[] = 'Mas IVA de '.$article->iva->percentage.'% = '.Numbers::price($precio_con_iva, true);
+                $des[] = DesglosePrecioHelper::linea(
+                    DesglosePrecioHelper::IVA,
+                    'IVA',
+                    $article->iva->percentage.'%',
+                    Numbers::price($precio_con_iva, true),
+                    'Mas IVA de '.$article->iva->percentage.'% = '.Numbers::price($precio_con_iva, true)
+                );
             }
         }
 
@@ -841,10 +949,22 @@ class ArticlePricesHelper {
 
                 if (!is_null($discount->percentage)) {
                     $price -= $price * $discount->percentage / 100;
-                    $des[] = 'Menos descuento de '.$discount->percentage.'% = '.Numbers::price($price, true);
+                    $des[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::DESCUENTO,
+                        'Descuento',
+                        $discount->percentage.'%',
+                        Numbers::price($price, true),
+                        'Menos descuento de '.$discount->percentage.'% = '.Numbers::price($price, true)
+                    );
                 } else if (!is_null($discount->amount)) {
                     $price -= $discount->amount;
-                    $des[] = 'Menos descuento de $'.$discount->amount.' = '.Numbers::price($price, true);
+                    $des[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::DESCUENTO,
+                        'Descuento',
+                        '$'.$discount->amount,
+                        Numbers::price($price, true),
+                        'Menos descuento de $'.$discount->amount.' = '.Numbers::price($price, true)
+                    );
                 }
 
             }
@@ -923,7 +1043,13 @@ class ArticlePricesHelper {
             // Formula de division: se despeja el precio neto sabiendo que el impuesto se traslada
             // sobre el precio final (no es un descuento sobre el costo, es un impuesto sobre la venta)
             $price = $price / (1 - $sale_tax->percentage / 100);
-            $des[] = 'Mas '.$sale_tax->name.' ('.$sale_tax->percentage.'%) por division = '.Numbers::price($price, true);
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::IMPUESTO,
+                'Impuesto sobre ventas',
+                $sale_tax->name.' ('.$sale_tax->percentage.'%), por división',
+                Numbers::price($price, true),
+                'Mas '.$sale_tax->name.' ('.$sale_tax->percentage.'%) por division = '.Numbers::price($price, true)
+            );
         }
 
         return [
@@ -1084,10 +1210,22 @@ class ArticlePricesHelper {
                     // Log::info('luego_del_precio_final param: '.$luego_del_precio_final);
                     if (!is_null($surchage->percentage)) {
                         $price += $price * $surchage->percentage / 100;
-                        $des[] = 'Mas recargo de '.$surchage->percentage.'% = '.Numbers::price($price, true);
+                        $des[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::RECARGO,
+                            'Recargo del artículo',
+                            $surchage->percentage.'%',
+                            Numbers::price($price, true),
+                            'Mas recargo de '.$surchage->percentage.'% = '.Numbers::price($price, true)
+                        );
                     } else if (!is_null($surchage->amount)) {
                         $price += $surchage->amount;
-                        $des[] = 'Mas recargo de '.Numbers::price($surchage->amount, true).' = '.Numbers::price($price, true);
+                        $des[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::RECARGO,
+                            'Recargo del artículo',
+                            Numbers::price($surchage->amount, true),
+                            Numbers::price($price, true),
+                            'Mas recargo de '.Numbers::price($surchage->amount, true).' = '.Numbers::price($price, true)
+                        );
                     }
                 } 
 
