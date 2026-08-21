@@ -495,6 +495,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('service', 'ServiceController@store');
     // Route::resource('budget', 'BudgetController')->except(['index']);
     Route::post('budget/{id}/duplicate', 'BudgetController@duplicate');
+    // Van antes del resource, igual que duplicate: acciones explicitas en vez de confirmar/anular
+    // colando el cambio de estado adentro de un update completo.
+    Route::post('budget/{id}/confirmar', 'BudgetController@confirmar');
+    Route::post('budget/{id}/anular', 'BudgetController@anular');
     Route::resource('budget', 'BudgetController');
     Route::get('budget/from-date/{from_date}/{until_date?}', 'BudgetController@index');
     Route::resource('budget-status', 'BudgetStatusController');
