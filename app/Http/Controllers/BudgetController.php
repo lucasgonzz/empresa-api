@@ -292,39 +292,80 @@ class BudgetController extends Controller
      */
     public function confirmar($id) {
 
-        $model = Budget::find($id);
+        DB::beginTransaction();
 
-        if (is_null($model)) {
-            return response()->json(['message' => 'El presupuesto no existe.'], 404);
-        }
+        try {
 
-        /*
-            Sin withTrashed: una venta borrada por una anulacion anterior no cuenta como venta
-            existente, justamente para que se pueda volver a confirmar despues de anular.
-        */
-        $venta_existente = Sale::where('budget_id', $model->id)->first();
+            /*
+                lockForUpdate ademas del filtro por usuario: sin el, dos POST simultaneos —dos
+                pestañas, el modal abierto sobre el listado (que monta DOS instancias del boton,
+                cada una con su propio `loading`), o un reintento del cliente HTTP— leen los dos
+                "no hay venta" y crean DOS. Y despues no se puede arreglar desde la interfaz,
+                porque anular() borra una sola con ->first() y deja la otra viva.
 
-        if ($model->budget_status_id == Self::ESTADO_CONFIRMADO && !is_null($venta_existente)) {
+                El chequeo de `loading` del boton es por instancia: no coordina nada entre
+                pestañas. La exclusion tiene que estar acá.
+            */
+            $model = Budget::where('id', $id)
+                            ->where('user_id', $this->userId())
+                            ->lockForUpdate()
+                            ->first();
+
+            if (is_null($model)) {
+                DB::rollBack();
+                return response()->json(['message' => 'El presupuesto no existe.'], 404);
+            }
+
+            /*
+                Sin withTrashed: una venta borrada por una anulacion anterior no cuenta como venta
+                existente, justamente para que se pueda volver a confirmar despues de anular.
+            */
+            $venta_existente = Sale::where('budget_id', $model->id)->first();
+
+            if ($model->budget_status_id == Self::ESTADO_CONFIRMADO && !is_null($venta_existente)) {
+
+                DB::commit();
+
+                return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+            }
+
+            $model->budget_status_id = Self::ESTADO_CONFIRMADO;
+            $model->save();
+
+            /*
+                saveSale() tiene su propio guard `is_null($budget->sale)`, asi que un presupuesto que
+                quedo confirmado sin venta (estado inconsistente) se repara al confirmarlo de nuevo.
+
+                El segundo parametro es $previus_articles, que checkStatus/saveSale/attachSaleArticles
+                se pasan entre si y ninguno lee. Se manda la coleccion actual para no cambiar la firma,
+                que la usan tambien store() y update().
+            */
+            BudgetHelper::saveSale($this->fullModel('Budget', $model->id), $model->articles);
+
+            DB::commit();
+
+            $this->sendAddModelNotification('Budget', $model->id);
 
             return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+
+        } catch(\Throwable $e) {
+
+            DB::rollBack();
+
+            /*
+                Sin transaccion, un fallo a mitad de saveSale() dejaba la venta creada, el stock ya
+                descontado y el presupuesto en estado 2, con un 500 en la cara del usuario. El caso
+                concreto que lo dispara: un cliente sin `credit_accounts` para la moneda del
+                presupuesto hace que CurrentAcountFromSaleHelper reviente en su linea 54, DESPUES de
+                haber creado la venta y descontado el stock.
+
+                report() a mano por el mismo motivo que en store(): el reporter global solo corre
+                para excepciones NO manejadas, y esta la capturamos nosotros.
+            */
+            report($e);
+
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
         }
-
-        $model->budget_status_id = Self::ESTADO_CONFIRMADO;
-        $model->save();
-
-        /*
-            saveSale() tiene su propio guard `is_null($budget->sale)`, asi que un presupuesto que
-            quedo confirmado sin venta (estado inconsistente) se repara al confirmarlo de nuevo.
-
-            El segundo parametro es $previus_articles, que checkStatus/saveSale/attachSaleArticles
-            se pasan entre si y ninguno lee. Se manda la coleccion actual para no cambiar la firma,
-            que la usan tambien store() y update().
-        */
-        BudgetHelper::saveSale($this->fullModel('Budget', $model->id), $model->articles);
-
-        $this->sendAddModelNotification('Budget', $model->id);
-
-        return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
     }
 
     /**
@@ -339,50 +380,81 @@ class BudgetController extends Controller
      */
     public function anular($id) {
 
-        $model = Budget::find($id);
+        DB::beginTransaction();
 
-        if (is_null($model)) {
-            return response()->json(['message' => 'El presupuesto no existe.'], 404);
-        }
+        try {
 
-        if ($model->budget_status_id != Self::ESTADO_CONFIRMADO) {
+            $model = Budget::where('id', $id)
+                            ->where('user_id', $this->userId())
+                            ->lockForUpdate()
+                            ->first();
 
-            return response()->json(['message' => 'El presupuesto no esta confirmado.'], 422);
-        }
-
-        $sale = Sale::where('budget_id', $model->id)->first();
-
-        /*
-            🔴 Se valida ANTES de tocar nada. Un 422 no puede dejar el presupuesto desconfirmado con
-            la venta viva: quedarian los dos estados peleados.
-
-            Se pregunta por la regla completa y no solo por la factura (decision de Lucas,
-            21/8/2026). El motivo es que BudgetHelper::deleteSale() llama a
-            SaleController::destroy() con un Request vacio, o sea con compensar_caja en false: si la
-            venta ya movio una caja, borrarla descuadra el arqueo sin dejar movimiento compensatorio.
-            La regla de motivo_por_el_que_no_se_puede_editar() ya cubre ese caso y varios mas
-            (facturada, cerrada, mas de un metodo de pago), y esta centralizada desde el 3/8/2026
-            justamente para no duplicarla en cada controlador.
-        */
-        if (!is_null($sale)) {
-
-            $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale);
-
-            if (!is_null($motivo)) {
-
-                return response()->json(['message' => $motivo], 422);
+            if (is_null($model)) {
+                DB::rollBack();
+                return response()->json(['message' => 'El presupuesto no existe.'], 404);
             }
 
+            if ($model->budget_status_id != Self::ESTADO_CONFIRMADO) {
+                DB::rollBack();
+                return response()->json(['message' => 'El presupuesto no esta confirmado.'], 422);
+            }
+
+            $sale = Sale::where('budget_id', $model->id)->first();
+
+            /*
+                🔴 Se valida ANTES de tocar nada. Un 422 no puede dejar el presupuesto desconfirmado
+                con la venta viva: quedarian los dos estados peleados.
+
+                Se pregunta por la regla completa y no solo por la factura (decision de Lucas,
+                21/8/2026). El motivo es que BudgetHelper::deleteSale() llama a
+                SaleController::destroy() con un Request vacio, o sea con compensar_caja en false: si
+                la venta ya movio una caja, borrarla descuadra el arqueo sin dejar movimiento
+                compensatorio. La regla de motivo_por_el_que_no_se_puede_editar() ya cubre ese caso y
+                varios mas (facturada, cerrada, mas de un metodo de pago), y esta centralizada desde
+                el 3/8/2026 justamente para no duplicarla en cada controlador.
+            */
+            if (!is_null($sale)) {
+
+                $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale);
+
+                if (!is_null($motivo)) {
+                    DB::rollBack();
+                    return response()->json(['message' => $motivo], 422);
+                }
+
+                BudgetHelper::deleteSale($model);
+            }
+
+            /*
+                Va FUERA del `if ($sale)`: el movimiento de cuenta corriente se busca por budget_id,
+                no depende de que exista la venta. Hoy es un no-op porque nadie llama a
+                BudgetHelper::saveCurrentAcount() desde presupuestos, pero si esas filas vuelven a
+                existir, un presupuesto confirmado SIN venta tiene que poder limpiarlas igual.
+            */
             BudgetHelper::deleteCurrentAcount($model);
-            BudgetHelper::deleteSale($model);
+
+            $model->budget_status_id = Self::ESTADO_SIN_CONFIRMAR;
+            $model->save();
+
+            DB::commit();
+
+            $this->sendAddModelNotification('Budget', $model->id);
+
+            return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+
+        } catch(\Throwable $e) {
+
+            DB::rollBack();
+
+            /*
+                Sin transaccion, si deleteSale() reventaba a mitad quedaba el presupuesto todavia
+                confirmado, sin su movimiento de cuenta corriente y con la venta viva. Mismo criterio
+                que store() y duplicate(), que ya envolvian todo.
+            */
+            report($e);
+
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
         }
-
-        $model->budget_status_id = Self::ESTADO_SIN_CONFIRMAR;
-        $model->save();
-
-        $this->sendAddModelNotification('Budget', $model->id);
-
-        return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
     }
 
     public function destroy($id) {

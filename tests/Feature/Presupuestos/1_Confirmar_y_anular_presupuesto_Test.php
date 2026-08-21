@@ -357,6 +357,42 @@ class Confirmar_y_anular_presupuesto_Test extends TestCase
     }
 
     /**
+     * 🔴 Los dos endpoints nuevos estan acotados al dueño.
+     *
+     * El resto del controlador (`update`, `show`, `destroy`) usa `Budget::find($id)` pelado y queda
+     * alcanzable entre comercios con la sesion abierta. Es preexistente y va al informe, pero no
+     * habia razon para ampliar la superficie con dos endpoints nuevos, y uno de ellos borra ventas.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function no_se_puede_confirmar_ni_anular_el_presupuesto_de_otro_comercio()
+    {
+        $this->autenticar();
+
+        $otro = User::where('id', '!=', 500)->first();
+
+        if (is_null($otro)) {
+            $this->markTestSkipped('La base de testing no tiene un segundo usuario para el caso cruzado.');
+        }
+
+        $ajeno = $this->crear_presupuesto([
+            'user_id'          => $otro->id,
+            'budget_status_id' => Self::ESTADO_CONFIRMADO,
+        ]);
+
+        $this->post('api/budget/'.$ajeno->id.'/confirmar')->assertStatus(404);
+        $this->post('api/budget/'.$ajeno->id.'/anular')->assertStatus(404);
+
+        $ajeno->refresh();
+        $this->assertEquals(
+            Self::ESTADO_CONFIRMADO,
+            $ajeno->budget_status_id,
+            'El presupuesto ajeno no se tiene que haber tocado.'
+        );
+    }
+
+    /**
      * 🔴 El test del arreglo destructivo: hasta esta mision, cualquier update de un presupuesto
      * confirmado borraba su venta y creaba otra con numero nuevo. Ahora el update se rechaza.
      *
