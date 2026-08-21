@@ -71,6 +71,13 @@ class PuntosAcumulacionHelper {
     const TIPO_REVERTIDOS = 'revertidos';
 
     /**
+     * El `status` con el que `CurrentAcountHelper::notaCredito()` escribe el haber de una nota
+     * de crédito. Es lo que la distingue de un cobro de verdad ('pago_from_client') cuando se
+     * mira quién saldó un débito.
+     */
+    const STATUS_NOTA_CREDITO = 'nota_credito';
+
+    /**
      * Cuántas veces se pidió suspender el enganche automático que cuelga del final de
      * `CurrentAcountPagoHelper::init()`.
      *
@@ -220,7 +227,40 @@ class PuntosAcumulacionHelper {
             }
 
             foreach ($debitos as $debito) {
+
                 if ($debito->status != 'pagado') {
+                    return false;
+                }
+
+                /*
+                 * 🔴 "SUMA AL COBRAR". UNA NOTA DE CRÉDITO NO ES UN COBRO.
+                 *
+                 * `status = 'pagado'` NO significa "el cliente pagó": significa "el débito
+                 * quedó saldado". Y hay un haber que lo salda sin que entre un peso: la nota
+                 * de crédito. La de `POST api/devoluciones` viene atada a la venta (`sale_id`)
+                 * y la tapa `PuntosBaseHelper::factor_nota_credito()`, pero la de monto libre
+                 * de `CurrentAcountController@notaCredito` NACE SIN `sale_id` —el request no
+                 * trae ninguno, es un ajuste a la cuenta del cliente y puede no corresponder a
+                 * ninguna venta—, así que cae en la cola FIFO, salda el débito más viejo y
+                 * llega hasta acá disfrazada de cobro. Medido: venta impaga + NC de monto
+                 * libre por el total = puntos regalados a un cliente que no pagó nada.
+                 *
+                 * 🔴 EL ARREGLO NO ES INVENTARLE UN `sale_id` A LA NC. Es no confundir
+                 * "saldado" con "cobrado", y la señal que los separa está en `pagado_por` —la
+                 * tabla que dice QUÉ haberes saldaron este débito— cruzada con el `status` de
+                 * cada haber: 'nota_credito' contra cualquier otro ('pago_from_client').
+                 *
+                 * La condición es "no entró NADA de plata", y no "tocó una nota de crédito",
+                 * a propósito: una devolución PARCIAL de una venta de cuenta corriente sí
+                 * mezcla plata y NC, y ahí los puntos tienen que bajar en proporción —de eso
+                 * se encarga el factor de PuntosBaseHelper— y no desaparecer. Esta guarda
+                 * contesta "¿se cobró?"; el factor contesta "¿sobre cuánto?". Son dos
+                 * preguntas distintas y por eso viven en dos lugares distintos.
+                 *
+                 * Un débito sin ninguna fila en `pagado_por` pasa: no hay NC involucrada, así
+                 * que no hay nada que esta regla tenga que decir sobre él.
+                 */
+                if (!self::hubo_cobro_real($debito)) {
                     return false;
                 }
             }
@@ -236,6 +276,44 @@ class PuntosAcumulacionHelper {
          * puntos, igual que una de cuenta corriente que todavía no se pagó.
          */
         return (bool) $sale->terminada;
+    }
+
+    /**
+     * ¿Entró PLATA a saldar este débito, o lo saldó únicamente una nota de crédito?
+     *
+     * Devuelve `false` solo cuando hay al menos una nota de crédito imputada y la suma de lo
+     * que aportaron los haberes que NO son nota de crédito es cero. En cualquier otro caso
+     * —cobro normal, mezcla de plata y NC, o un débito sin imputaciones— devuelve `true` y la
+     * proporción la decide `PuntosBaseHelper::factor_nota_credito()`.
+     *
+     * El status del haber es la única señal disponible: 'nota_credito' lo escribe
+     * `CurrentAcountHelper::notaCredito()` y 'pago_from_client' los cobros de verdad
+     * (`CurrentAcountController@pago`, `ChequeController`, el saldo inicial).
+     *
+     * @param  \App\Models\CurrentAcount  $debito
+     * @return bool
+     */
+    private static function hubo_cobro_real($debito) {
+
+        $plata         = 0;
+        $notas_credito = 0;
+
+        foreach ($debito->pagado_por as $haber) {
+
+            $pagado = (float) $haber->pivot->pagado;
+
+            if ($haber->status == self::STATUS_NOTA_CREDITO) {
+                $notas_credito += $pagado;
+            } else {
+                $plata += $pagado;
+            }
+        }
+
+        if ($notas_credito <= self::DELTA) {
+            return true;
+        }
+
+        return $plata > self::DELTA;
     }
 
     /**

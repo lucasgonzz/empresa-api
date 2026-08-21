@@ -51,6 +51,12 @@ class SistemaDePuntosController extends Controller
     /** Mensaje del 404 cuando el id pedido no es de este comercio. */
     const MENSAJE_NO_ENCONTRADO = 'No se encontró el sistema de puntos.';
 
+    /**
+     * Los meses de vencimiento que se aplican cuando el request NO trae la clave. Es el mismo
+     * default de la migración y el que prellena el ABM de la SPA. Ver vencimiento_del_request().
+     */
+    const VENCIMIENTO_MESES_DEFAULT = 12;
+
     public function index()
     {
         $models = SistemaDePuntos::where('user_id', $this->userId())
@@ -344,15 +350,35 @@ class SistemaDePuntosController extends Controller
     /**
      * Los meses de vencimiento, o null si los puntos no vencen.
      *
-     * 🔴 Vacío y cero NO son lo mismo que "12 meses": `null` es "no vencen nunca" y es una
-     * configuración legítima que el comando `puntos:vencer` sabe leer. Por eso este campo no usa
-     * `decimal_del_request()` con un default.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 SON TRES INTENCIONES, NO DOS, Y HAY QUE PODER EXPRESAR LAS TRES.
+     *
+     *    | el request NO trae la clave        | el dueño no dijo nada  | 12 meses (el default) |
+     *    | la clave llega vacía ('' o null)   | "que no venzan nunca"  | null                  |
+     *    | la clave llega con un número       | lo que pidió           | ese número            |
+     *
+     *  Hasta el 22/8/2026 las dos primeras filas caían en la misma respuesta (`null`), y ése
+     *  era el bug: era el ÚNICO de los seis campos del programa sin default —los otros cinco
+     *  tienen 1000 / 1 / 10 / 500 / 20—, así que un POST que no mandara `vencimiento_meses`
+     *  dejaba el programa emitiendo puntos QUE NO VENCEN NUNCA, que es exactamente el pasivo
+     *  que el vencimiento existe para cerrar. Por la pantalla no se veía porque la SPA
+     *  prellena 12; se veía desde cualquier otro cliente del endpoint.
+     *
+     *  "Sin vencimiento" SIGUE SIENDO una configuración legítima, y por eso no alcanza con
+     *  ponerle un default a secas: hay que separar "no mandó nada" de "mandó vacío a
+     *  propósito". La separación es `has()`, que pregunta si la CLAVE está en el request y no
+     *  qué valor trae — es lo único que distingue el silencio de la decisión.
+     * ─────────────────────────────────────────────────────────────────────────────
      *
      * @param  \Illuminate\Http\Request  $request
      * @return int|null
      */
     private function vencimiento_del_request(Request $request)
     {
+        if (!$request->has('vencimiento_meses')) {
+            return self::VENCIMIENTO_MESES_DEFAULT;
+        }
+
         $valor = $request->input('vencimiento_meses');
 
         if (is_null($valor) || $valor === '') {

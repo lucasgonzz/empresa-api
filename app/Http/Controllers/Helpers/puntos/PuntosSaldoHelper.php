@@ -5,23 +5,52 @@ namespace App\Http\Controllers\Helpers\puntos;
 use App\Models\MovimientoPunto;
 use App\Models\MovimientoPuntoConsumo;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * El saldo de puntos de un cliente y el FIFO sobre los lotes.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- *  🔴 EL SALDO ES `SUM(movimiento_puntos.puntos)`, Y NADA MÁS.
+ *  🔴 HAY DOS PREGUNTAS DISTINTAS Y NO SON EL MISMO NÚMERO. NO LAS UNIFIQUES.
  *
- *  No hay una segunda regla ("...menos los vencidos", "...menos los revertidos") en ningún
- *  lado, y eso es deliberado. El saldo lo leen TRES lugares distintos —VENDER al elegir el
- *  cliente, la ficha del cliente y el reporte de pasivo—, y si la regla tuviera exclusiones,
- *  los tres tendrían que implementarlas igual: el primero que se olvide una muestra un
- *  número distinto. Es la clase "el mismo invariante decidido con dos criterios distintos"
- *  (APRENDER_NO_PARCHEAR.md:997).
+ *  1. EL PASIVO DEL PROGRAMA ("¿cuánto le debo hoy a mis clientes?"). Es `SUM(puntos)` de
+ *     todo el libro, sin ninguna condición, y vive en el reporte
+ *     (`PuntoController::saldo_vivo()`, que lo calcula hasta una fecha de corte). Es un
+ *     número CONTABLE: mientras el barrido de `puntos:vencer` todavía no pasó, los puntos
+ *     vencidos siguen siendo un pasivo, porque la fila negativa que los mata todavía no se
+ *     escribió. Acá eso es `saldo_del_libro()`.
  *
- *  Por eso los vencidos y los revertidos son FILAS NEGATIVAS del libro, escritas por el
- *  comando `puntos:vencer` y por el reconciliador, y no una condición del SELECT. El saldo
- *  es una sola frase, imposible de implementar mal.
+ *  2. EL SALDO DISPONIBLE ("¿cuántos puntos puede gastar este cliente HOY?"). Es el que
+ *     muestran VENDER y la ficha del cliente, y el que valida el canje. Eso es `saldo()`.
+ *
+ *  Hasta el 22/8/2026 las dos eran la misma frase (`SUM(puntos)`) y ESO ERA EL BUG: el
+ *  consumo FIFO sale de `lotes_para_canje()`, que EXCLUYE los lotes vencidos, mientras que
+ *  la validación medía contra el SUM, que los incluye hasta que el cron los barre. Con un
+ *  lote vencido y el barrido todavía sin correr, el canje pasaba la validación, escribía el
+ *  movimiento negativo, NO consumía un solo lote, y después `puntos:vencer` vencía el lote
+ *  entero: el mismo punto se descontaba dos veces y el saldo quedaba negativo. Y de paso, la
+ *  ficha del cliente le mostraba como disponibles puntos que ya estaban muertos.
+ *
+ *  🔴 LA CORRECCIÓN VA ACÁ Y EN UN SOLO LUGAR. `saldo()` es la única frase que leen los tres
+ *  consumidores (VENDER, la ficha y el canje), así que la exclusión de vencidos se escribe
+ *  UNA vez. Si mañana aparece un cuarto consumidor, hereda la regla por construcción. Lo que
+ *  no se puede volver a hacer es que cada pantalla arme su propio SELECT: es la clase "el
+ *  mismo invariante decidido con dos criterios distintos" (APRENDER_NO_PARCHEAR.md:997), que
+ *  es exactamente lo que pasó entre la validación del canje y el FIFO.
+ *
+ *  La definición elegida —`saldo_del_libro()` menos el remanente de los lotes YA VENCIDOS
+ *  que el barrido todavía no se llevó— tiene una propiedad que es la que la hace correcta:
+ *  **es invariante frente a `puntos:vencer`**. Antes del barrido, el vencido se resta acá;
+ *  después, ya lo restó la fila negativa del libro y el remanente del lote es 0. El número
+ *  que ve el cliente no cambia por el paso del cron, que es justo lo que se rompió.
+ *
+ *  Y se define contra los LOTES y no contra "lo que el cron va a barrer" a propósito: si el
+ *  comercio apaga el vencimiento, `puntos:vencer` no toca nada, pero `lotes_para_canje()`
+ *  sigue dejando afuera los lotes con un `vence_at` viejo. Esos puntos no se pueden gastar,
+ *  así que tampoco se muestran como disponibles.
+ *
+ *  Los revertidos siguen siendo FILAS NEGATIVAS del libro y no una condición del SELECT: esa
+ *  parte de la doctrina original no cambió.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 class PuntosSaldoHelper {
@@ -43,7 +72,12 @@ class PuntosSaldoHelper {
     const TIPOS_LOTE = ['ganados', 'ajuste'];
 
     /**
-     * El saldo de puntos del cliente.
+     * EL SALDO DISPONIBLE del cliente: lo que puede gastar hoy.
+     *
+     * Es `saldo_del_libro()` menos el remanente de los lotes que ya vencieron y que el
+     * barrido de `puntos:vencer` todavía no se llevó. Ver el docblock de la clase: es la
+     * única frase que leen VENDER, la ficha del cliente y la validación del canje, y es
+     * invariante frente al paso del cron.
      *
      * @param  int  $user_id
      * @param  int  $client_id
@@ -55,9 +89,62 @@ class PuntosSaldoHelper {
             return 0;
         }
 
-        return (float) MovimientoPunto::where('user_id', $user_id)
-                                        ->where('client_id', $client_id)
-                                        ->sum('puntos');
+        $disponible = self::saldo_del_libro($user_id, $client_id)
+                        - self::vencidos_sin_barrer($user_id, $client_id);
+
+        return round($disponible, 2);
+    }
+
+    /**
+     * `SUM(movimiento_puntos.puntos)` y nada más: el PASIVO del programa para este cliente.
+     *
+     * 🔴 No la uses para decidir si un canje entra ni para mostrarle un número al cliente:
+     * para eso está `saldo()`. Esta es la mitad contable, la que incluye los puntos vencidos
+     * que el barrido todavía no convirtió en fila negativa.
+     *
+     * @param  int  $user_id
+     * @param  int  $client_id
+     * @return float
+     */
+    static function saldo_del_libro($user_id, $client_id) {
+
+        if (is_null($user_id) || is_null($client_id)) {
+            return 0;
+        }
+
+        return round((float) MovimientoPunto::where('user_id', $user_id)
+                                            ->where('client_id', $client_id)
+                                            ->sum('puntos'), 2);
+    }
+
+    /**
+     * Los puntos del cliente que YA VENCIERON y que el barrido todavía no se llevó.
+     *
+     * Es el remanente vivo de los lotes con `vence_at` en el pasado, o sea exactamente el
+     * complemento de lo que `lotes_para_canje()` deja consumir. Cuando `puntos:vencer` corre,
+     * este número se va a cero y la misma cantidad aparece como fila negativa del libro: por
+     * eso `saldo()` no se mueve cuando pasa el cron.
+     *
+     * Se suma en SQL y no recorriendo la colección porque `query_lotes_vivos()` ya filtra
+     * `(puntos - consumido) > DELTA`: todas las filas que entran aportan un remanente
+     * positivo, así que el piso de `remanente_de_lote()` no puede cambiar el resultado.
+     *
+     * @param  int  $user_id
+     * @param  int  $client_id
+     * @return float
+     */
+    static function vencidos_sin_barrer($user_id, $client_id) {
+
+        if (is_null($user_id) || is_null($client_id)) {
+            return 0;
+        }
+
+        $total = self::query_lotes_vivos($user_id, $client_id)
+                    ->whereNotNull('vence_at')
+                    ->where('vence_at', '<=', Carbon::now())
+                    ->sum(DB::raw('`puntos` - `consumido`'));
+
+        return round((float) $total, 2);
     }
 
     /**

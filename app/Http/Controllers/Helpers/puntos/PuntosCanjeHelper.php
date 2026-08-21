@@ -134,6 +134,17 @@ class PuntosCanjeHelper {
             return self::error('Hacen falta al menos '.self::formato($minimo).' puntos para canjear.');
         }
 
+        /*
+         * 🔴 SE MIDE CONTRA `saldo()`, QUE ES EL SALDO DISPONIBLE, NO CONTRA `SUM(puntos)`.
+         *
+         * Tiene que ser exactamente el mismo conjunto del que después consume `aplicar()` vía
+         * `PuntosSaldoHelper::consumir_fifo()` -> `lotes_para_canje()`, que deja afuera los
+         * lotes vencidos. Cuando las dos frases discrepaban (hasta el 22/8/2026 esta línea
+         * usaba el SUM crudo), un lote vencido con el barrido de `puntos:vencer` todavía sin
+         * correr dejaba pasar el canje, no consumía ningún lote, y el cron después vencía el
+         * lote entero: el mismo punto se descontaba dos veces y el saldo quedaba negativo.
+         * La regla vive en PuntosSaldoHelper y se lee de un solo lado; no la reimplementes acá.
+         */
         $saldo = PuntosSaldoHelper::saldo($user_id, $client_id);
 
         if ($puntos > $saldo + self::DELTA) {
@@ -211,6 +222,24 @@ class PuntosCanjeHelper {
         $sale->descuento_puntos = $descuento;
         $sale->save();
 
+        self::escribir_canje($sale, $sistema, $puntos, $descuento);
+    }
+
+    /**
+     * Escribe el movimiento negativo del canje y consume los lotes.
+     *
+     * Está separado de `aplicar()` porque hay un segundo llamador que NO tiene un request y
+     * que no tiene que recalcular el descuento: la restauración desde la papelera, que
+     * re-aplica exactamente el canje que la venta ya tenía guardado en sus columnas.
+     *
+     * @param  \App\Models\Sale                 $sale
+     * @param  \App\Models\SistemaDePuntos      $sistema
+     * @param  float                            $puntos     Siempre POSITIVO.
+     * @param  float                            $descuento  Los pesos que ese canje descuenta.
+     * @return void
+     */
+    private static function escribir_canje($sale, $sistema, $puntos, $descuento) {
+
         /*
          * `price_type_id` va en el centinela SIN_LISTA y no en la lista de la venta: el canje
          * no se otorga por lista, se gasta del saldo entero del cliente. Y con el centinela la
@@ -255,10 +284,32 @@ class PuntosCanjeHelper {
      * La usan `SaleController@update` (antes de aplicar el canje nuevo) y
      * `SaleController@destroy` (antes del delete). Es idempotente: sin canje no hace nada.
      *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 `$conservar_columnas` NO ES UN ADORNO: ES LO ÚNICO QUE HACE RESTAURABLE UNA VENTA.
+     *
+     *  `sales.puntos_canjeados` y `sales.descuento_puntos` son las DOS columnas que explican
+     *  por qué `sales.total` está $X más abajo. El movimiento de puntos se BORRA (no es
+     *  soft-delete) y sus filas de consumo también, así que en cuanto se limpian esas dos
+     *  columnas no queda en ningún lado cuánto se había canjeado.
+     *
+     *  `update()` las limpia y hace bien: ahí la venta sigue viva y el canje nuevo (o la falta
+     *  de canje) las va a pisar en la línea siguiente; dejarlas viejas sería una venta que
+     *  dice una cosa y cobra otra.
+     *
+     *  `destroy()` es el caso contrario y hasta el 22/8/2026 usaba el mismo camino, que era el
+     *  bug: la venta se va a la PAPELERA con su `total` neteado intacto, y al restaurarla el
+     *  cliente se quedaba con los puntos (que le habían vuelto al borrar) Y con el descuento
+     *  (que nunca se sacó del total), porque las columnas que lo explicaban estaban en NULL y
+     *  no había forma de saber qué había pasado. Con `true`, la venta borrada conserva el
+     *  registro de su propio canje y `restaurar()` puede volver a aplicarlo.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
      * @param  \App\Models\Sale  $sale
+     * @param  bool              $conservar_columnas  true = deja `puntos_canjeados` y
+     *                                                `descuento_puntos` como están (borrado).
      * @return void
      */
-    static function deshacer($sale) {
+    static function deshacer($sale, $conservar_columnas = false) {
 
         if (is_null($sale) || is_null($sale->id)) {
             return;
@@ -284,6 +335,10 @@ class PuntosCanjeHelper {
             $movimiento->delete();
         }
 
+        if ($conservar_columnas) {
+            return;
+        }
+
         if (is_null($sale->puntos_canjeados) && is_null($sale->descuento_puntos)) {
             return;
         }
@@ -291,6 +346,117 @@ class PuntosCanjeHelper {
         $sale->puntos_canjeados = null;
         $sale->descuento_puntos = null;
         $sale->save();
+    }
+
+    /**
+     * Vuelve a poner en pie el canje de una venta que sale de la PAPELERA.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 LA DECISIÓN: SE RE-APLICA EL CANJE, Y SI NO SE PUEDE, SE LE DEVUELVE EL DESCUENTO
+     *     AL TOTAL. LO QUE NO PUEDE QUEDAR ES UN TOTAL QUE SUS PROPIAS COLUMNAS NO EXPLIQUEN.
+     *
+     *  Al borrar la venta, `deshacer()` le devolvió al cliente los puntos que había canjeado.
+     *  Al restaurarla, la venta vuelve con su `total` YA NETEADO por ese canje — el descuento
+     *  está adentro del número que el usuario ve en la papelera. Hay dos salidas coherentes:
+     *  re-cobrarle los puntos (y el total sigue siendo el que era) o devolverle el descuento
+     *  al total (y el cliente se queda con los puntos). Las dos cierran; la que NO cierra es
+     *  la que había hasta el 22/8/2026, donde la venta volvía con el total descontado y las
+     *  columnas en NULL: el cliente se quedaba con los puntos Y con el descuento, y ningún
+     *  número del sistema explicaba por qué esa venta valía $5.000 menos.
+     *
+     *  Se elige RE-APLICAR porque es lo que deja la venta restaurada IDÉNTICA a como estaba
+     *  antes de borrarse, que es lo único que un usuario espera de un botón que se llama
+     *  "restaurar". Cambiarle el total sería restaurar otra venta.
+     *
+     *  El caso en que no se puede es real y hay que resolverlo, no ignorarlo: entre el borrado
+     *  y la restauración el cliente pudo gastar esos puntos en otra venta, o vencérsele, o el
+     *  comercio pudo apagar el programa. Ahí no se le puede cobrar dos veces el mismo punto,
+     *  así que se toma la otra salida —total al bruto, columnas en NULL— y queda en el log.
+     *  Nunca se deja el canje escrito sin lotes que lo respalden.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     * 🔴 Va ANTES de que `RestoreSaleFromPapeleraHelper` recree el débito de cuenta corriente:
+     * ese débito se arma con `sales.total`, así que si el total se corrige, hay que corregirlo
+     * primero o la cuenta corriente nace con el número viejo.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return void
+     */
+    static function restaurar($sale) {
+
+        if (is_null($sale) || is_null($sale->id)) {
+            return;
+        }
+
+        /*
+         * Gate por extensión, igual que deshacer(): sin la extensión no puede haber un solo
+         * movimiento de puntos, así que la pregunta memoizada alcanza y no cuesta una query.
+         */
+        if (!PuntosConfigHelper::tiene_extencion($sale->user_id)) {
+            return;
+        }
+
+        $puntos    = self::a_float($sale->puntos_canjeados);
+        $descuento = self::a_float($sale->descuento_puntos);
+
+        if ($puntos <= self::DELTA) {
+            return;
+        }
+
+        /*
+         * Si el movimiento sigue vivo, esta venta ya está restaurada (o nunca se deshizo el
+         * canje) y volver a escribirlo violaría el unique (sale_id, tipo, price_type_id).
+         */
+        $existente = MovimientoPunto::where('sale_id', $sale->id)
+                                        ->where('tipo', self::TIPO_CANJEADOS)
+                                        ->first();
+
+        if (!is_null($existente)) {
+            return;
+        }
+
+        $sistema = PuntosConfigHelper::programa_activo($sale->user_id);
+
+        $sin_cliente = is_null($sale->client_id) || !$sale->client_id;
+
+        $saldo = $sin_cliente ? 0 : PuntosSaldoHelper::saldo($sale->user_id, $sale->client_id);
+
+        if (is_null($sistema) || $sin_cliente || $puntos > $saldo + self::DELTA) {
+
+            self::devolver_descuento_al_total($sale, $puntos, $descuento, $saldo);
+
+            return;
+        }
+
+        self::escribir_canje($sale, $sistema, $puntos, $descuento);
+    }
+
+    /**
+     * La salida del canje que no se pudo re-aplicar: el descuento vuelve al total y las dos
+     * columnas quedan en NULL, o sea que la venta pasa a valer lo que valía sin puntos.
+     *
+     * Se toca `total` y NO `sub_total`: el canje siempre fue un descuento sobre el total (es
+     * como lo manda VENDER y como lo lee `sales.descuento_puntos`), y `sub_total` es la suma
+     * de los renglones, que el canje nunca movió.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  float             $puntos
+     * @param  float             $descuento
+     * @param  float             $saldo
+     * @return void
+     */
+    private static function devolver_descuento_al_total($sale, $puntos, $descuento, $saldo) {
+
+        $sale->total            = round((float) $sale->total + $descuento, 2);
+        $sale->puntos_canjeados = null;
+        $sale->descuento_puntos = null;
+        $sale->save();
+
+        Log::info(
+            'Restaurar venta de la papelera: no se pudo re-aplicar el canje de puntos. Venta id '.$sale->id.
+            ', cliente '.$sale->client_id.', pedidos '.$puntos.', saldo disponible '.$saldo.
+            '. Se le devolvieron $'.$descuento.' al total.'
+        );
     }
 
     /**

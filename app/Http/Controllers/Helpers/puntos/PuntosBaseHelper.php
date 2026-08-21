@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\puntos;
 
 use App\Models\CurrentAcount;
+use Illuminate\Support\Facades\DB;
 
 /**
  * El cálculo del monto base y de los puntos de una venta. Clase sin estado: se le pasa la
@@ -304,6 +305,28 @@ class PuntosBaseHelper {
      *   2. este factor, para las NC de monto libre SIN items, que crea
      *      CurrentAcountController@notaCredito y que no tocan ningún `article_current_acount`.
      *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 UNA NC LLEGA A LA VENTA POR DOS CAMINOS, Y HAY QUE MIRAR LOS DOS.
+     *
+     *  Hasta el 22/8/2026 acá se buscaba únicamente por `current_acounts.sale_id`, y eso
+     *  dejaba afuera justo la mitad que este factor decía tapar: la NC de monto libre de
+     *  `CurrentAcountController@notaCredito` NACE SIN `sale_id` (el request de la SPA manda
+     *  monto, descripción y cliente, y nada más — es un ajuste a la cuenta, que puede no
+     *  corresponder a ninguna venta). Esa NC llega igual a la venta, pero por el otro camino:
+     *  entra a la cola FIFO de `CurrentAcountPagoHelper`, salda el débito de la venta y queda
+     *  registrada en `pagado_por` con lo que efectivamente le imputó.
+     *
+     *  Por eso el total de NC de esta venta es la unión de los dos:
+     *    - las que se declaran suyas (`sale_id`), por su `haber` entero, como siempre;
+     *    - las que la saldaron sin declararse (imputación FIFO), por lo que `pagado_por` dice
+     *      que le imputaron A ESTE DÉBITO — no por su `haber`, que puede haberse repartido
+     *      entre varias ventas.
+     *
+     *  Y se excluyen del segundo camino las que ya se contaron en el primero: la NC de
+     *  `POST api/devoluciones` aparece en los dos lados (tiene `sale_id` Y se imputa dirigida
+     *  por `to_pay_id`), y sumarla dos veces le comería a la venta el doble de lo devuelto.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
      * @param  \App\Models\Sale  $sale
      * @return float  Entre 0 y 1.
      */
@@ -316,6 +339,8 @@ class PuntosBaseHelper {
         $nc_total = (float) CurrentAcount::where('sale_id', $sale->id)
                                         ->where('status', 'nota_credito')
                                         ->sum('haber');
+
+        $nc_total += self::notas_credito_imputadas_sin_sale_id($sale);
 
         /*
          * Sin nota de crédito no hay nada que descontar, y se devuelve 1 SIN mirar el total de
@@ -341,6 +366,36 @@ class PuntosBaseHelper {
         }
 
         return $factor;
+    }
+
+    /**
+     * Lo que las notas de crédito AJENAS a la venta terminaron imputándole a su débito.
+     *
+     * Son las de monto libre: nacen sin `sale_id` y el motor de imputación las manda a saldar
+     * la deuda más vieja del cliente, que puede ser esta venta. `pagado_por.pagado` es cuánto
+     * de esa NC cayó en ESTE débito; el resto cascadeó a otros y no tiene nada que ver acá.
+     *
+     * Se descartan las que tienen el `sale_id` de esta venta porque el `sum('haber')` de
+     * arriba ya las contó.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return float
+     */
+    private static function notas_credito_imputadas_sin_sale_id($sale) {
+
+        $total = DB::table('pagado_por')
+                    ->join('current_acounts as haber', 'haber.id', '=', 'pagado_por.haber_id')
+                    ->join('current_acounts as debe', 'debe.id', '=', 'pagado_por.debe_id')
+                    ->where('debe.sale_id', $sale->id)
+                    ->whereNull('debe.haber')
+                    ->where('haber.status', 'nota_credito')
+                    ->where(function ($q) use ($sale) {
+                        $q->whereNull('haber.sale_id')
+                            ->orWhere('haber.sale_id', '!=', $sale->id);
+                    })
+                    ->sum('pagado_por.pagado');
+
+        return round((float) $total, 2);
     }
 
     /**

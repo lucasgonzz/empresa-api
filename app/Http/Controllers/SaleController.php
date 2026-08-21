@@ -682,8 +682,15 @@ class SaleController extends Controller
          *    'revertidos'. No pregunta si corresponde: una venta borrada no otorga nada.
          *
          * Los dos salen sin tocar la base si el comercio no tiene la extensión.
+         *
+         * 🔴 `true` = CONSERVAR `sales.puntos_canjeados` y `sales.descuento_puntos`. Esta venta
+         * se va a la papelera con su `total` YA neteado por el canje, y esas dos columnas son
+         * lo único que explica ese número: el movimiento de puntos se borra de verdad, no es un
+         * soft-delete. Limpiarlas acá dejaba una venta restaurable cuyo descuento no se podía
+         * reconstruir, y el cliente terminaba con los puntos Y con el descuento. Ver el
+         * docblock de PuntosCanjeHelper::deshacer() y su contraparte, restaurar().
          */
-        PuntosCanjeHelper::deshacer($model);
+        PuntosCanjeHelper::deshacer($model, true);
 
         PuntosAcumulacionHelper::revertir_venta($model);
 
@@ -849,6 +856,22 @@ class SaleController extends Controller
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
+
+        /*
+         * Puntos para clientes. Cambiar los precios de los renglones cambia el monto base de la
+         * venta, así que los puntos que otorgó dejaron de ser los que corresponden.
+         *
+         * 🔴 VA EXPLÍCITO Y NO POR REBOTE. Una venta de cuenta corriente se reconciliaba igual
+         * porque `updateCurrentAcountsAndCommissions()` termina tocando la cuenta y el enganche
+         * de `CurrentAcountPagoHelper::init()` la agarra de paso; una venta de MOSTRADOR no
+         * pasa por ninguna cuenta corriente y se quedaba con el `monto_base` y los puntos
+         * viejos para siempre. Depender del rebote es depender de un camino que la mitad de las
+         * ventas no recorre.
+         *
+         * Es idempotente y sale sin tocar la base si el comercio no tiene el módulo.
+         */
+        PuntosAcumulacionHelper::reconciliar_venta($model);
+
         // $this->sendAddModelNotification('Sale', $id);
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }

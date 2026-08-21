@@ -189,6 +189,28 @@ class CurrentAcountController extends Controller
         return $total;
     }
 
+    /**
+     * Nota de crédito de MONTO LIBRE sobre la cuenta corriente del cliente.
+     *
+     * 🔴 ACÁ NO SE PASA `sale_id`, Y NO ES UN OLVIDO. El request de la SPA
+     * (`components/common/current-acounts/NotaCredito.vue`) manda monto, descripción y
+     * modelo, y nada más: esta NC es un ajuste a la CUENTA del cliente y puede no
+     * corresponder a ninguna venta. Inventarle una acá —la más vieja sin saldar, por
+     * ejemplo— sería escribir en `current_acounts.sale_id` un dato que nadie declaró, y ese
+     * campo es el que después usan los comprobantes y el módulo de puntos para decir "esta NC
+     * es de esta venta".
+     *
+     * La consecuencia para los puntos está resuelta del otro lado y hay que dejarla dicha,
+     * porque es la parte que no se ve desde acá: esta NC entra a la cola FIFO y puede saldar
+     * el débito de una venta. Que un débito quede saldado por una NC NO es un cobro, y quien
+     * lo distingue es `PuntosAcumulacionHelper::corresponde_acumular()` mirando `pagado_por`
+     * y el `status` de los haberes; cuánto de la venta anula, lo decide
+     * `PuntosBaseHelper::factor_nota_credito()`. El enganche que vuelve a preguntar cuelga de
+     * `CurrentAcountPagoHelper::init()`, por el que esta NC pasa sí o sí.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function notaCredito(Request $request) {
         $nota_credito = CurrentAcountHelper::notaCredito($request->credit_account_id, $request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
         CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
