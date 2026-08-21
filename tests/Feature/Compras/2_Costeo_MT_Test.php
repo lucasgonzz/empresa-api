@@ -6,17 +6,26 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\Iva;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
+use App\Models\ArticleSurchage;
+use App\Models\ProviderOrderExtraCost;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 
 /**
  * Tests de costeo Monotributista (MT) y casos borde de alicuota del modulo de compras
  * (Grupo 184, Prompt 615).
  *
- * Regla de negocio (Grupo 183): un MT ignora `precios_incluyen_iva` (el costo tipeado se trata
- * SIEMPRE como bruto), su costo real SIEMPRE incorpora el IVA (no lo recupera como credito
- * fiscal, sin importar `articles.aplicar_iva`), pero el TOTAL de la compra no suma IVA por
- * encima (ya esta "adentro" de lo que tipeo/pago). La factura automatica de un MT muestra solo
- * el total, sin desglose de IVA.
+ * 🔴 REGLA VIGENTE desde el 21/8/2026 (mision `iva-fuera-del-costeo-monotributista`, decision de
+ * Lucas): para un MT con la cuenta MIGRADA (`usar_condicion_fiscal_en_costeo = 1`), **el IVA no
+ * participa del precio en ningun punto**. Carga el costo que le pasa su proveedor, ese numero se
+ * guarda TAL CUAL en `articles.cost`, y su costo real es ese costo mas descuentos y recargos. El
+ * total de la compra no suma IVA por encima, y la factura automatica muestra solo el total.
+ *
+ * Sigue siendo cierto que `precios_incluyen_iva` se ignora para un MT — pero al reves que antes:
+ * NO se descompone nunca, en vez de descomponerse siempre.
+ *
+ * (Regla anterior, Grupo 183 / prompt 615: el costo tipeado se trataba siempre como bruto y el
+ * costo real incorporaba el IVA. Los dos caminos daban el mismo precio final; el viejo dejaba
+ * guardado en `articles.cost` un numero que la persona nunca tipeo.)
  *
  * IMPORTANTE (grupo 231, prompt 01): la condicion fiscal vive en `users.condicion_iva_precios`
  * (movida desde `user_configurations`). `ComprasTestCase::set_condicion_iva('MT')` sigue teniendo
@@ -36,14 +45,21 @@ class Costeo_MT_Test extends ComprasTestCase
     const DELTA = 0.01;
 
     /**
-     * Test 1 — un MT trata el costo tipeado como bruto AUNQUE `precios_incluyen_iva` venga en 0
-     * (deliberadamente apagado): el flag de la compra se ignora por completo para un MT, que
-     * siempre le saca el IVA al costo tipeado antes de guardarlo en `articles.cost`.
+     * Test 1 — el costo que un MT carga en una compra se guarda TAL CUAL, y el flag
+     * `precios_incluyen_iva` se sigue ignorando para el (pero ahora al reves que antes: no se
+     * descompone nunca, en vez de descomponerse siempre).
+     *
+     * 🔴 CAMBIO DE ESPECIFICACION, decision de Lucas del 21/8/2026 (mision
+     * `iva-fuera-del-costeo-monotributista`). Este test codificaba el prompt 615: "el MT ignora el
+     * flag de la compra y trata el costo SIEMPRE como bruto". Lucas redefinio la regla: *"el
+     * monotributista simplemente carga el costo que su proveedor le pasa"* y *"el IVA no tiene que
+     * cambiar nada del precio en un monotributista"*. Los numeros de abajo salen de esa regla, NO se
+     * ajustaron a lo que devuelve el sistema.
      *
      * @group compras
      * @test
      */
-    public function mt_ignora_precios_incluyen_iva_y_trata_el_costo_como_bruto()
+    public function el_costo_que_carga_un_mt_en_la_compra_se_guarda_tal_cual()
     {
         $this->set_condicion_iva('MT');
         $this->quitar_bonificaciones_de_buenos_aires();
@@ -64,10 +80,10 @@ class Costeo_MT_Test extends ComprasTestCase
         $pinza = $this->articulo('Pinza');
 
         $this->assertEqualsWithDelta(
-            1000,
+            1210,
             (float) $pinza->cost,
             self::DELTA,
-            'costo base de Pinza en MT: se ignora precios_incluyen_iva=0, el costo tipeado (1210) se trata igual como bruto y se guarda neto (1000)'
+            'costo base de Pinza en MT: lo que se cargo (1210) es lo que se guarda; para un MT no hay bruto ni neto'
         );
 
         $provider_order = ProviderOrder::find($response->json('model.id'));
@@ -194,7 +210,7 @@ class Costeo_MT_Test extends ComprasTestCase
      * @group compras
      * @test
      */
-    public function el_costo_real_de_un_mt_incorpora_el_iva_aunque_aplicar_iva_este_apagado()
+    public function el_costo_real_de_un_mt_es_el_costo_que_cargo()
     {
         $this->set_condicion_iva('MT');
         $this->quitar_bonificaciones_de_buenos_aires();
@@ -224,17 +240,17 @@ class Costeo_MT_Test extends ComprasTestCase
             $pinza->refresh();
 
             $this->assertEqualsWithDelta(
-                1000,
+                1210,
                 (float) $pinza->cost,
                 self::DELTA,
-                'costo base de Pinza (siempre neto, sin importar aplicar_iva)'
+                'costo base de Pinza en MT: lo cargado, tal cual, sin importar aplicar_iva'
             );
 
             $this->assertEqualsWithDelta(
                 1210,
                 (float) $pinza->costo_real,
                 self::DELTA,
-                'costo real de Pinza en MT: incorpora el IVA (1000 + 21%) aunque aplicar_iva este en 0'
+                'costo real de Pinza en MT: es el costo que cargo. El IVA no participa en ningun punto'
             );
 
         } finally {
@@ -252,9 +268,15 @@ class Costeo_MT_Test extends ComprasTestCase
      * Test 5 — misma compra corrida primero en RRII y despues en MT: documenta en un solo lugar
      * que cambia realmente entre las dos condiciones.
      *
-     * Invariante que NO se rompe nunca: `articles.cost` (costo base) y el total de la compra son
-     * iguales en las dos condiciones. Lo que difiere es el costo real: el del MT es mayor, porque
-     * incorpora el IVA que un MT no recupera.
+     * 🔴 Lo que cambio el 21/8/2026 (mision `iva-fuera-del-costeo-monotributista`): `articles.cost`
+     * ya NO es igual en las dos condiciones. Sobre el mismo costo cargado de 1210, el RRII guarda el
+     * neto (1000, porque su Factura A le discrimina el IVA y lo recupera como credito) y el MT
+     * guarda 1210, que es lo que efectivamente paga. Es la diferencia de fondo entre las dos
+     * condiciones, y ahora esta a la vista en la columna de costo en vez de escondida detras de un
+     * ida y vuelta.
+     *
+     * Lo que NO cambio: el total de la compra es el mismo (12100), y el costo real del MT sigue
+     * siendo mayor que el del RRII.
      *
      * @group compras
      * @test
@@ -307,14 +329,14 @@ class Costeo_MT_Test extends ComprasTestCase
             1000,
             $cost_rrii,
             self::DELTA,
-            'costo base en RRII (invariante que no cambia entre condiciones)'
+            'costo base en RRII: el neto (1000), porque el IVA se lo recupera como credito fiscal'
         );
 
         $this->assertEqualsWithDelta(
-            1000,
+            1210,
             $cost_mt,
             self::DELTA,
-            'costo base en MT (invariante que no cambia entre condiciones)'
+            'costo base en MT: lo que pago (1210). El RRII guarda el neto porque recupera el IVA; el MT no lo recupera, asi que su costo ES el bruto'
         );
 
         $this->assertEqualsWithDelta(
@@ -518,6 +540,89 @@ class Costeo_MT_Test extends ComprasTestCase
     }
 
     /**
+     * Test 7b — 🔴 el flete facturado de un MT se prorratea ENTERO, con su IVA adentro.
+     *
+     * Es el agujero que dejo abierto la mision `iva-fuera-del-costeo-monotributista` y que ningun
+     * test veia: los cinco casos de `4_Costos_Extra_Test` corren en RRII.
+     *
+     * Que paso. El prorrateo de costos extra decidia con `iva_va_al_costo()`, usandolo como
+     * sinonimo de "esta cuenta recupera el IVA". Cuando esa mision hizo que ese metodo devolviera
+     * false para TODA cuenta migrada —porque paso a responder solo DONDE se suma el IVA, no si se
+     * suma—, el `if` dejo de distinguir y empezo a prorratear el NETO tambien para el
+     * Monotributista. Sobre un flete facturado de 1210 al 21%, al costo llegaban 1000: −21 de costo
+     * unitario y −29,40 de precio final. Esos 210 son IVA que el MT pago y no recupera.
+     *
+     * La regla, entonces: **si el MT no recupera el IVA de la mercaderia, tampoco recupera el del
+     * flete**. El predicado correcto es `el_iva_participa_del_precio()`, no `iva_va_al_costo()`.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_flete_facturado_de_un_mt_se_prorratea_entero()
+    {
+        $this->set_condicion_iva('MT');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $snap = $this->snapshot_articulo($pinza);
+
+        try {
+
+            // Compra: 10 Pinzas a 1000. Para un MT eso se guarda tal cual.
+            $payload = $this->payload_compra([
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                ],
+            ]);
+
+            $response = $this->postJson('api/provider-order', $payload);
+            $response->assertStatus(201);
+
+            $order_id = $response->json('model.id');
+
+            // Flete FACTURADO de 1210, con IVA propio del 21%.
+            $iva21 = Iva::where('percentage', '21')->first();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete facturado',
+                'value'             => 1210,
+                'tipo'              => 'transporte',
+                'facturado'         => 1,
+                'iva_id'            => $iva21->id,
+            ]);
+
+            // Se reguarda la compra para que el prorrateo corra con el costo extra ya cargado.
+            $this->putJson('api/provider-order/'.$order_id, $this->payload_compra([
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                ],
+            ]))->assertStatus(200);
+
+            $pinza->refresh();
+
+            $this->assertEqualsWithDelta(
+                1121,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'costo real de un MT: 1000 de costo + 121 de flete (1210 / 10 unidades, ENTERO). '.
+                'Si diera 1100 es que se le saco el IVA al flete, que es plata que el MT pago y no recupera'
+            );
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap);
+
+            // El recargo de transporte que dejo el prorrateo se limpia a mano: en esta base las
+            // tablas son MyISAM y DatabaseTransactions no revierte nada de verdad (ver docblock
+            // de la clase), asi que sin esto Pinza queda con un recargo permanente que rompe los
+            // tests que corren despues.
+            ArticleSurchage::where('article_id', $pinza->id)
+                            ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                            ->delete();
+        }
+    }
+
+    /**
      * Test 8 — deriva por alicuota editada (comportamiento documentado, NO un bug): si se cambia
      * el `iva_id` de un articulo despues de una compra, sin hacer una compra nueva, el costo base
      * (`articles.cost`) no se mueve, pero el costo real SI se recalcula con la alicuota nueva
@@ -551,7 +656,7 @@ class Costeo_MT_Test extends ComprasTestCase
      * @group compras
      * @test
      */
-    public function deriva_por_alicuota_editada_es_comportamiento_documentado_no_bug()
+    public function editar_la_alicuota_ya_no_mueve_el_costo_real_de_un_mt()
     {
         $this->set_condicion_iva('MT');
         $this->quitar_bonificaciones_de_buenos_aires();
@@ -598,11 +703,23 @@ class Costeo_MT_Test extends ComprasTestCase
                 'costo base (articles.cost) NO se mueve al cambiar el iva_id sin una compra nueva: se corrige solo en la proxima compra (decision documentada, no un bug)'
             );
 
-            $this->assertNotEqualsWithDelta(
+            /*
+             * 🔴 ACA SE INVIRTIO LA ASERCION, y es la mejor noticia de la mision del 21/8/2026.
+             *
+             * La "deriva por alicuota editada" que este test documentaba **ya no existe en ninguna
+             * condicion fiscal**. En RRII habia dejado de existir en el grupo 231 (el IVA es credito
+             * fiscal y no entra al costo). En MT deja de existir ahora, porque el IVA salio del
+             * pipeline: el costo real de un MT es el costo que cargo, y la alicuota del articulo no
+             * participa.
+             *
+             * O sea que cambiarle el IVA a un articulo ya no le mueve el costo por la ventana. Se
+             * deja el test, invertido, para que si alguien reintroduce esa dependencia salte acá.
+             */
+            $this->assertEqualsWithDelta(
                 $costo_real_antes,
                 (float) $pinza->costo_real,
                 self::DELTA,
-                'costo real SI se recalcula con la alicuota nueva apenas corre ArticleHelper::setFinalPrice(), aunque el costo base no se haya movido'
+                'cambiarle la alicuota a un articulo NO le mueve el costo real a un MT: el IVA ya no participa del costeo'
             );
 
         } finally {
