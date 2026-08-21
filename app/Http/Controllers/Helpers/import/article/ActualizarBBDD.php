@@ -186,18 +186,30 @@ class ActualizarBBDD {
                        columnas de articles. */
                     'provider_discounts_to_tag',
                     'provider_discounts_to_tag_provider_id',
+                ])->reject(function ($valor, $columna) {
                     /*
-                     * Marcadores en memoria de ProcessRow (prompt 03, grupo 265), no
-                     * columnas de articles: __match_key identifica por qué campo se
-                     * encoló la entrada (para que una repetición posterior la
-                     * encuentre) y __fila_origen guarda qué fila del Excel la generó
-                     * (para reportar conflictos de sobrescritura encadenados). Si
-                     * cualquiera de las dos llega al INSERT, revienta con
-                     * "Unknown column" en TODAS las importaciones que crean artículos.
+                     * 🔴 Los marcadores en memoria de ProcessRow se descartan por PREFIJO `__`, no
+                     * por lista. Ninguno es columna de `articles`, y si uno llega al INSERT revienta
+                     * con "Unknown column" y se cae **el lote entero** de la importación, no la fila.
+                     *
+                     * Estuvo como lista explícita (`__match_key`, `__fila_origen`) desde el prompt
+                     * 03 del grupo 265, y esa lista es una trampa: el día que alguien agrega un
+                     * marcador nuevo, el import se rompe y ningún test lo ve. Pasó exactamente eso —
+                     * la misión `costo-bruto-por-condicion-fiscal` (20/8/2026) agregó
+                     * `__back_out_aplicado` para hacer idempotente el back-out, y con la lista vieja
+                     * toda importación que CREARA artículos con costo se caía: para cualquier cuenta
+                     * Monotributista sin tocar nada, y para un Responsable Inscripto que tildara "los
+                     * costos de esta planilla son brutos".
+                     *
+                     * Reproducido con un Excel real contra `empresa_testing_s1`:
+                     *   PDOException: SQLSTATE[42S22]: Unknown column '__back_out_aplicado'
+                     *   in 'field list' — ActualizarBBDD.php:264, job ProcessArticleChunk fallido.
+                     *
+                     * El camino de ACTUALIZACIÓN ya filtraba por prefijo (más abajo en este mismo
+                     * archivo). Que los dos usen el mismo criterio es lo que evita que vuelva.
                      */
-                    '__match_key',
-                    '__fila_origen',
-                ])->merge([
+                    return strncmp($columna, '__', 2) === 0;
+                })->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
                     'chunk_number'  => $this->chunk_number,
@@ -362,7 +374,11 @@ class ActualizarBBDD {
                             || $value === ''
                         ) continue;
 
-                        $quotedValue = is_null($value) ? 'NULL' : DB::getPdo()->quote($value);
+                        // El `continue` de arriba ya descartó los nulos, así que acá $value nunca
+                        // lo es. (El ternario que contemplaba NULL era un resto del sentinela con el
+                        // que la misión `costo-bruto-por-condicion-fiscal` intentó, y descartó,
+                        // limpiar una columna desde el import.)
+                        $quotedValue = DB::getPdo()->quote($value);
 
                         if (!isset($casesByColumn[$column])) {
                             $casesByColumn[$column] = "`$column` = CASE `id`";
