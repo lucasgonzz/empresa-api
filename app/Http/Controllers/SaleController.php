@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\LimiteCreditoHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
@@ -152,6 +153,23 @@ class SaleController extends Controller
     }
 
     public function store(Request $request) {
+
+        /**
+         * Límite de crédito del cliente (misión 160). La validación de la SPA es guarda de UX; la
+         * autoridad es este 422, porque un POST directo a /sale llega igual hasta acá. Es el mismo
+         * criterio que ya aplica makeAfipTicket() con el tope del importe personalizado.
+         *
+         * Va ANTES de DB::beginTransaction() a propósito: no escribe nada, no consume número de
+         * venta y no deja transacción abierta que después haya que cerrar en el camino del rechazo.
+         * Mismo razonamiento que allá ("se valida ANTES de instanciar MakeAfipTicket, así que un
+         * rechazo no toca ARCA"): un rechazo acá no toca la base.
+         */
+        $error_limite_credito = LimiteCreditoHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_limite_credito)) {
+
+            return response()->json($error_limite_credito, 422);
+        }
 
         DB::beginTransaction();
 
@@ -450,7 +468,26 @@ class SaleController extends Controller
             $model->save();
 
             $model = Sale::find($model->id);
-            
+
+            /**
+             * Límite de crédito del cliente (misión 160), lado update(). A diferencia de store(),
+             * acá corre DENTRO de la transacción (ya viene abierta desde el principio del método,
+             * y para este punto ya se hicieron detachItems, dos $model->save() y attachProperies),
+             * así que un rechazo tiene que hacer DB::rollBack() explícito antes de responder: si
+             * no, la transacción queda abierta y nadie la cierra en este camino.
+             *
+             * Cubre el caso que store() no puede ver: una venta to_check que se confirma editando
+             * (to_check pasa a 0) y recién ahí entra a la cuenta corriente, o una venta que ya
+             * estaba y le suben el total. Ver LimiteCreditoHelper::validar_venta_actualizada().
+             */
+            $error_limite_credito = LimiteCreditoHelper::validar_venta_actualizada($model);
+
+            if (!is_null($error_limite_credito)) {
+
+                DB::rollBack();
+                return response()->json($error_limite_credito, 422);
+            }
+
             if ($model->client_id && !$model->to_check && !$model->checked) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
             }
