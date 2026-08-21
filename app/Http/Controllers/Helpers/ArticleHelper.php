@@ -639,6 +639,30 @@ class ArticleHelper {
         $final_price = $res['price'];
         $des = $res['des'];
 
+        /**
+         * Renglon de cierre de la seccion del precio final unico.
+         *
+         * Es el unico renglon NUEVO que esta mision agrega al desglose; todos los demas son la misma
+         * emision de siempre, ahora estructurada. Se agrega porque el desglose ahora tiene un estilo
+         * de cierre (tipo TOTAL: monto grande, en color, con linea divisoria) y las otras dos
+         * secciones ya cerraban con el suyo -- 'Costo Real queda en' y 'Precio final de la lista'--,
+         * mientras que esta terminaba en el ultimo paso que hubiera tocado. O sea que el numero que
+         * la persona fue a buscar quedaba gris, pintado como "Redondeo", y era el menos destacado de
+         * la lista entera.
+         *
+         * Va DESPUES de redondear() a proposito: es el precio final de verdad, el que se guarda en
+         * la columna, no un valor intermedio. Y queda adentro de la seccion, asi que
+         * quitar_seccion_del_precio_final_unico() se lo lleva junto con el resto cuando lo que se
+         * pidio es el desglose de una lista.
+         */
+        $des[] = DesglosePrecioHelper::linea(
+            DesglosePrecioHelper::TOTAL,
+            'Precio final',
+            null,
+            Numbers::price($final_price, true),
+            'Precio final queda en = '.Numbers::price($final_price, true)
+        );
+
         $article->final_price = $final_price;
 
 
