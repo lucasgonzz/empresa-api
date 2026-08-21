@@ -1087,3 +1087,20 @@ Route::middleware('admin.api.key')
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
+
+// Escaneo de facturas de compra con IA (misión escaneo-factura-compra), gateado por auth
+// Sanctum + la extensión 'escaneo_factura_compra' (ver ExtencionEscaneoFacturaCompraSeeder).
+// 🔴 'pendientes' y 'en-curso' van ANTES de '{uuid}': son segmentos fijos y si se declaran
+// después, /provider-order-scan/pendientes matchea el patrón {uuid} y devuelve 404 con un
+// mensaje que no dice nada. Mismo motivo por el que 'analysis-en-curso' va antes de
+// 'analysis/{uuid}' en el bloque de ai-excel-import.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_compra'])->group(function () {
+    Route::get('provider-order-scan/pendientes', 'ProviderOrderScanController@pendientes');
+    Route::get('provider-order-scan/en-curso',   'ProviderOrderScanController@en_curso');
+    Route::post('provider-order-scan',           'ProviderOrderScanController@store');
+    Route::get('provider-order-scan/{uuid}',     'ProviderOrderScanController@show');
+    Route::get('provider-order-scan/{uuid}/imagen/{orden}', 'ProviderOrderScanController@imagen');
+    Route::post('provider-order-scan/{uuid}/visto',     'ProviderOrderScanController@marcar_visto');
+    Route::post('provider-order-scan/{uuid}/confirmar', 'ProviderOrderScanController@confirmar');
+    Route::post('provider-order-scan/{uuid}/descartar', 'ProviderOrderScanController@descartar');
+});

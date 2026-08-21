@@ -61,6 +61,18 @@ class GlobalNotification extends Notification
      */
     public $excel_analysis;
 
+    /**
+     * Datos del escaneo de una factura de compra que terminó, para el modal
+     * provider_order_scan_ready (opcional). Mismo tratamiento que excel_analysis.
+     *
+     * A propósito NO lleva el `resultado` del escaneo: el aviso solo dice que terminó, de
+     * qué compra y cuántos artículos salieron. El detalle se pide después, y solo si el
+     * usuario decide ir a revisarlo.
+     *
+     * @var array|null
+     */
+    public $provider_order_scan;
+
     public function __construct($data)
     {
         $this->message_text             = $data['message_text'];
@@ -74,6 +86,7 @@ class GlobalNotification extends Notification
         $this->import_options           = $data['import_options'] ?? null;
         $this->price_stats              = $data['price_stats'] ?? null;
         $this->excel_analysis           = $data['excel_analysis'] ?? null;
+        $this->provider_order_scan      = $data['provider_order_scan'] ?? null;
     }
 
     /**
@@ -105,6 +118,7 @@ class GlobalNotification extends Notification
             'import_options'            => $this->import_options,
             'price_stats'               => $this->price_stats,
             'excel_analysis'            => $this->excel_analysis,
+            'provider_order_scan'       => $this->provider_order_scan,
         ]);
     }
 }
