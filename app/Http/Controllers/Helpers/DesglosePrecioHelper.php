@@ -66,7 +66,7 @@ class DesglosePrecioHelper {
     const CLAVE_LISTA        = 'lista';
 
     /**
-     * Los trece tipos validos. Lo usa el test que verifica que ningun sitio invento un tipo suelto:
+     * Los catorce tipos validos. Lo usa el test que verifica que ningun sitio invento un tipo suelto:
      * un tipo desconocido no explota en el front (cae en neutro), asi que sin este test se pintaria
      * gris para siempre sin que nadie se entere.
      *
