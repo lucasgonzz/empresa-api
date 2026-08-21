@@ -17,6 +17,14 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
 
+	/*
+	 * Cache de los renglones de puntos del ticket. Se declara e inicializa en null ACA, y no
+	 * se lee con isset(), porque leer una propiedad dinamica de $this antes de su primera
+	 * asignacion es la familia de error que rompio produccion el 4/8/2026 con total_bruto en
+	 * NewSalePdf. tests/Unit/Pdf/PropiedadesDePdfInicializadasTest la vigila.
+	 */
+	public $puntos_renglones = null;
+
 	function __construct($sale, $afip_ticket = null) {
 		$this->line_height = 5;
 		$this->user = UserHelper::getFullModel();
@@ -563,7 +571,7 @@ class SaleTicketPdf extends fpdf {
 	 */
 	function get_puntos_renglones() {
 
-		if (!isset($this->puntos_renglones)) {
+		if (is_null($this->puntos_renglones)) {
 			/*
 			 * $this->user viene de UserHelper::getFullModel() (el comercio de la sesion). El
 			 * helper lo acepta solo si coincide con sales.user_id; si no, resuelve por la venta.
