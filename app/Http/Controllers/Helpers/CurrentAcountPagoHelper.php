@@ -188,7 +188,7 @@ class CurrentAcountPagoHelper {
                 // foreach) para que guardar_pago() pueda resolver la cascada de liquidación/comisión.
                 CurrentAcountCajaHelper::guardar_pago($payment_method->pivot->amount, $payment_method->pivot->caja_id, $model_name, $pago, null, $payment_method->id);
 
-            } else if (!is_null($payment_method->pivot->amount) && (float)$payment_method->pivot->amount > 0) {
+            } else if (Self::deberia_haber_impactado_caja($payment_method)) {
 
                 /*
                  * Un metodo de pago con monto pero SIN caja destino no impacta en ninguna caja, y
@@ -196,9 +196,8 @@ class CurrentAcountPagoHelper {
                  * pago aparecia cargado y la plata no estaba en ninguna caja. Es exactamente el
                  * modo de falla que reporto el usuario del pago en dos monedas.
                  *
-                 * NO se lanza excepcion: hay metodos que legitimamente no tocan caja (un cheque
-                 * entra por ChequeHelper, no por aca). Lo que no puede seguir pasando es que sea
-                 * invisible cuando NO es intencional.
+                 * NO se lanza excepcion: el metodo igual queda guardado y el pago es valido; lo
+                 * unico que falta es el movimiento de caja, y eso se arregla desde Tesoreria.
                  */
                 Log::warning('attachPaymentMethods: el metodo de pago '.$payment_method->id.' del pago '.$pago->id.' tiene monto '.$payment_method->pivot->amount.' pero no tiene caja destino, asi que no impacta en ninguna caja.');
 
@@ -250,6 +249,31 @@ class CurrentAcountPagoHelper {
 
 
         }
+    }
+
+    /**
+     * Si un metodo de pago que quedo sin caja destino TENIA que haber impactado en una.
+     *
+     * Un cheque no toca caja al cargarse: entra por ChequeHelper y recien mueve plata cuando se
+     * cobra (ChequeController, que ahi si manda su caja). Avisar por cada cheque seria un warning
+     * por cobro, o sea ruido que tapa justo el caso que interesa ver.
+     *
+     * @param \App\Models\CurrentAcountPaymentMethod $payment_method Metodo con su pivot cargado.
+     * @return bool
+     */
+    static function deberia_haber_impactado_caja($payment_method) {
+
+        if (is_null($payment_method->pivot->amount) || (float)$payment_method->pivot->amount <= 0) {
+
+            return false;
+        }
+
+        if (!is_null($payment_method->type) && $payment_method->type->slug == 'cheque') {
+
+            return false;
+        }
+
+        return true;
     }
 
     static function get_check_status($payment_method) {

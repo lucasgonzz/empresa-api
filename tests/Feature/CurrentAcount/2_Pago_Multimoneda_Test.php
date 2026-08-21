@@ -236,8 +236,8 @@ class Pago_Multimoneda_Test extends EmpresaTestCase
     }
 
     /**
-     * Si una de las cajas destino esta CERRADA, el pago se rechaza entero con 422 y un mensaje que
-     * nombra la caja, ANTES de crear nada.
+     * Si una de las cajas destino NUNCA se abrio, el pago se rechaza entero con 422 y un mensaje
+     * que nombra la caja, ANTES de crear nada.
      *
      * Antes de esto el flujo se cortaba a la mitad: el primer metodo ya habia impactado, el pago ya
      * estaba creado, y reventaba al buscar la apertura de la segunda caja. Quedaba un pago sin
@@ -246,14 +246,14 @@ class Pago_Multimoneda_Test extends EmpresaTestCase
      * @group current-acount
      * @test
      */
-    public function una_caja_destino_cerrada_rechaza_el_pago_entero_y_no_crea_nada()
+    public function una_caja_destino_sin_apertura_rechaza_el_pago_entero_y_no_crea_nada()
     {
         $cliente = $this->resolver_cliente_por_nombre(TestingFerreteriaSeeder::CLIENTE_CC);
         $metodo_efectivo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
         $credit_account = $this->credit_account_en_dolares($cliente);
 
-        // Caja de pesos que NO se abre.
-        $caja_cerrada = $this->caja_de_moneda('Caja Pesos Cerrada Test', 1, false);
+        // Caja de pesos que NUNCA se abrio.
+        $caja_sin_apertura = $this->caja_de_moneda('Caja Pesos Nunca Abierta Test', 1, false);
 
         $pagos_antes = CurrentAcount::where('credit_account_id', $credit_account->id)->count();
         $antes = $this->max_id_movimiento_caja();
@@ -271,7 +271,7 @@ class Pago_Multimoneda_Test extends EmpresaTestCase
                 'moneda_id'                        => 1,
                 'cotizacion'                       => 1200,
                 'amount_cotizado'                  => 100,
-                'caja_id'                          => $caja_cerrada->id,
+                'caja_id'                          => $caja_sin_apertura->id,
             ],
         ]);
 
@@ -280,22 +280,80 @@ class Pago_Multimoneda_Test extends EmpresaTestCase
         $response->assertStatus(422);
 
         $this->assertStringContainsString(
-            'Caja Pesos Cerrada Test',
+            'Caja Pesos Nunca Abierta Test',
             $response->json('message'),
-            'El mensaje de error no nombra la caja cerrada.'
+            'El mensaje de error no nombra la caja sin apertura.'
         );
 
-        // Nada quedo a medias: ni el pago ni el movimiento de la caja que si estaba abierta.
+        // Nada quedo a medias: ni el pago ni el movimiento de la caja que si tenia apertura.
         $this->assertEquals(
             $pagos_antes,
             CurrentAcount::where('credit_account_id', $credit_account->id)->count(),
-            'Se creo el pago a pesar de que una caja estaba cerrada.'
+            'Se creo el pago a pesar de que una caja no tenia apertura.'
         );
 
         $this->assertEquals(
             0,
             MovimientoCaja::where('id', '>', $antes)->count(),
             'Se creo algun movimiento de caja a pesar de que el pago se rechazo.'
+        );
+    }
+
+    /**
+     * 🔴 Una caja CERRADA pero que ya tuvo aperturas tiene que seguir aceptando el cobro.
+     *
+     * Es el caso del comercio que abre la caja a la manana y la cierra a la noche: el movimiento se
+     * cuelga de la ultima apertura y el pago entra sin problema. Asi funciona hoy en todos los
+     * flujos (las ventas ni siquiera validan esto), y medido el 21/8/2026 devuelve 201.
+     *
+     * Este test existe porque la primera version de la validacion miraba `cajas.abierta` en vez de
+     * la existencia de aperturas, y le habria devuelto un 422 a todo el que cobra despues del
+     * cierre. Si alguien vuelve a confundir "cerrada" con "sin apertura", este test se pone rojo.
+     *
+     * @group current-acount
+     * @test
+     */
+    public function una_caja_cerrada_con_apertura_previa_sigue_aceptando_el_cobro()
+    {
+        $cliente = $this->resolver_cliente_por_nombre(TestingFerreteriaSeeder::CLIENTE_CC);
+        $metodo_efectivo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $credit_account = $this->credit_account_en_dolares($cliente);
+
+        // Se abre (queda con AperturaCaja) y despues se cierra, como al final de la jornada.
+        $caja = $this->caja_de_moneda('Caja Pesos Cerrada De Noche Test', 1);
+        $caja->abierta = 0;
+        $caja->save();
+
+        $antes = $this->max_id_movimiento_caja();
+
+        $payload = $this->payload_de_pago($cliente, $credit_account, [
+            [
+                'current_acount_payment_method_id' => $metodo_efectivo->id,
+                'amount'                           => 50000,
+                'moneda_id'                        => 1,
+                'cotizacion'                       => 1200,
+                'amount_cotizado'                  => 41.67,
+                'caja_id'                          => $caja->id,
+            ],
+        ]);
+
+        $response = $this->postJson('api/current-acount/pago', $payload);
+
+        $response->assertStatus(201);
+
+        $pago_id = $this->extraer_id_de_respuesta(
+            $response,
+            'api/current-acount/pago',
+            null,
+            ['current_acount', 'model']
+        );
+
+        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
+        $this->registrar_movimientos_caja_nuevos($antes);
+
+        $this->assertNotNull(
+            MovimientoCaja::where('caja_id', $caja->id)->where('id', '>', $antes)->first(),
+            'Una caja cerrada con apertura previa dejo de registrar el movimiento.'
         );
     }
 

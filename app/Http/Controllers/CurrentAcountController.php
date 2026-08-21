@@ -78,13 +78,19 @@ class CurrentAcountController extends Controller
          *
          * Validar despues no alcanza: para cuando falla, la mitad del trabajo ya esta persistida.
          * Es la misma convencion que ya usa delete() de este mismo controlador para el borrado.
+         *
+         * 🔴 Lo que se valida es que la caja tenga ALGUNA apertura, no que este abierta ahora. Una
+         * caja cerrada con aperturas previas registra el movimiento sin problema (se cuelga de la
+         * ultima) y asi funciona hoy en todos los flujos: rechazarla seria romperle el cobro a
+         * cualquier comercio que cierra la caja a la noche. Ver el detalle del criterio en
+         * CurrentAcountCajaHelper::cajas_sin_apertura_en_payload().
          */
-        $cajas_cerradas = CurrentAcountCajaHelper::cajas_cerradas_en_payload($request->current_acount_payment_methods);
+        $cajas_sin_apertura = CurrentAcountCajaHelper::cajas_sin_apertura_en_payload($request->current_acount_payment_methods);
 
-        if (count($cajas_cerradas)) {
+        if (count($cajas_sin_apertura)) {
 
             return response()->json([
-                'message' => 'Las siguientes cajas estan cerradas: '.implode(', ', $cajas_cerradas).'. Debe abrirlas para poder registrar el pago.',
+                'message' => 'Las siguientes cajas nunca se abrieron: '.implode(', ', $cajas_sin_apertura).'. Hay que abrirlas para poder registrar el pago.',
             ], 422);
         }
 
