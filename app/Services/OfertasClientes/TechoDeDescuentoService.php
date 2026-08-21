@@ -245,10 +245,15 @@ class TechoDeDescuentoService
 
         /*
          * Paso 6, borde "cuenta Monotributista": NO excluye, se MARCA. 🔴 Riesgo medido: con costo
-         * importado el IVA se cuenta DOS VECES. ProcessRow.php:306-312 nunca hace el back-out
-         * (precios_incluyen_iva queda siempre en false porque ningún llamador pasa la clave) mientras
-         * que la compra manual sí lo hace en NewProviderOrderHelper.php:1038-1039. Entonces
-         * articles.cost queda BRUTO —con el IVA del Excel del proveedor adentro— y
+         * importado el IVA se cuenta DOS VECES. 🔴 DESACTUALIZADO desde la misión
+         * `costo-bruto-por-condicion-fiscal` (20/8/2026): ProcessRow AHORA sí hace el back-out cuando
+         * la planilla declara que sus costos vienen con IVA, y siempre para una cuenta
+         * Monotributista. Lo que sigue describe el estado ANTERIOR, y por esa vía el riesgo ya no
+         * aplica; se deja porque el resto del razonamiento del paso 6 sigue valiendo.
+         *
+         * Antes: ProcessRow nunca hacía el back-out (precios_incluyen_iva quedaba siempre en false
+         * porque ningún llamador pasaba la clave) mientras que la compra manual sí lo hacía en
+         * NewProviderOrderHelper. Entonces articles.cost quedaba BRUTO —con el IVA del Excel del proveedor adentro— y
          * aplicar_descuentos_e_iva() le suma el 21% otra vez, porque para MT iva_va_al_costo() da true
          * (ArticlePricesHelper.php:754-772): costo_real queda ~21% INFLADO.
          *
