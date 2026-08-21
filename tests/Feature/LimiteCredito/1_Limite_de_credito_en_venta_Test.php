@@ -228,6 +228,70 @@ class Limite_de_credito_en_venta_Test extends EmpresaTestCase
         return $this->postJson('api/sale', $payload);
     }
 
+    /**
+     * Payload mínimo de PUT api/sale/{id} (Route::resource('sale', ...) → SaleController::update()),
+     * calcado del que usa tests/Feature/Sales/9_Update_no_pisa_omitir_en_cuenta_corriente_Test.php:
+     * to_check/checked/confirmed/discounts_in_services/surchages_in_services son NOT NULL en la
+     * tabla y update() los asigna a secas desde el request, así que faltar cualquiera revienta el
+     * update con una violación de integridad, no con el 422 que estos tests quieren provocar.
+     *
+     * items/discounts/surchages/returned_items van vacíos a propósito: el total que compara
+     * LimiteCreditoHelper es el que viaja en 'total', no uno recalculado de los ítems (update()
+     * hace `$model->total = $request->total;` directo, sin recalcular).
+     *
+     * @param \App\Models\Sale $sale
+     * @param float $total
+     * @param array<string,mixed> $overrides
+     * @return array<string,mixed>
+     */
+    protected function payload_actualizar($sale, $total, $overrides = [])
+    {
+        $payload = [
+            'client_id'                  => $sale->client_id,
+            'save_current_acount'        => $sale->save_current_acount,
+            'omitir_en_cuenta_corriente' => $sale->omitir_en_cuenta_corriente,
+            'to_check'                   => 0,
+            'checked'                    => 0,
+            'confirmed'                  => 0,
+            'discounts_in_services'      => 1,
+            'surchages_in_services'      => 1,
+            'sub_total'                  => $total,
+            'total'                      => $total,
+            'items'                      => [],
+            'discounts'                  => [],
+            'surchages'                  => [],
+            'returned_items'             => [],
+        ];
+
+        return array_merge($payload, $overrides);
+    }
+
+    /**
+     * @param \App\Models\Sale $sale
+     * @param array<string,mixed> $payload
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function actualizar_venta($sale, $payload)
+    {
+        return $this->putJson('api/sale/'.$sale->id, $payload);
+    }
+
+    /**
+     * El movimiento de cuenta corriente (el "debe", no un pago) que esta venta tiene hoy en la
+     * credit_account indicada, o null si no tiene ninguno.
+     *
+     * @param \App\Models\Sale $sale
+     * @param \App\Models\CreditAccount $cuenta
+     * @return \App\Models\CurrentAcount|null
+     */
+    protected function movimiento_de_la_venta($sale, $cuenta)
+    {
+        return CurrentAcount::where('sale_id', $sale->id)
+            ->where('credit_account_id', $cuenta->id)
+            ->whereNull('haber')
+            ->first();
+    }
+
     // ---------------------------------------------------------------------
     // Tests
     // ---------------------------------------------------------------------
@@ -450,6 +514,163 @@ class Limite_de_credito_en_venta_Test extends EmpresaTestCase
             201,
             'Con la extensión activa y el cliente sin la bandera, la venta no entra a la C/C al '.
             'guardarse, así que el límite no se tiene que disparar.'
+        );
+    }
+
+    /**
+     * El hallazgo crítico del chequeo independiente: una venta `to_check` (exenta al CREARSE, ver
+     * el test de arriba con to_check) que se confirma EDITÁNDOLA (to_check pasa a 0) recién ahí
+     * entra a la cuenta corriente, vía SaleController::update() → updateCurrentAcountsAndCommissions().
+     * Si el total supera el límite, tiene que rechazarse igual que al crear — y como esto corre
+     * DENTRO de la transacción del update, el rollback tiene que dejar la venta sin ningún
+     * movimiento de cuenta corriente (no a medio aplicar).
+     *
+     * @group limite_credito
+     * @test
+     */
+    public function venta_to_check_que_se_confirma_editando_supera_el_limite_devuelve_422()
+    {
+        $client = $this->cliente(TestingFerreteriaSeeder::CLIENTE_CC);
+        $cuenta = $this->credit_account($client, 1);
+
+        $baseline = $this->saldo_actual($cuenta);
+        $limite = round($baseline + 100000, 2);
+
+        $this->fijar_limite($client, 1, $limite);
+
+        // Se crea to_check=1: no entra a la cuenta corriente al guardarse (aunque el total ya
+        // superaría el límite), exactamente el camino que prueba el test de la extensión de arriba
+        // pero por el motivo de to_check en vez de la extensión.
+        $creacion = $this->postear_venta($this->payload_venta($client->id, 150000, ['to_check' => 1]));
+        $creacion->assertStatus(201);
+
+        $sale_id = json_decode($creacion->getContent(), true)['model']['id'];
+        $sale = Sale::find($sale_id);
+
+        $this->assertNull(
+            $this->movimiento_de_la_venta($sale, $cuenta),
+            'Una venta to_check no tiene que tener movimiento de cuenta corriente al crearse.'
+        );
+
+        // Se confirma editándola: to_check pasa a 0, mismo total (150.000 > límite de baseline+100.000).
+        $respuesta = $this->actualizar_venta($sale, $this->payload_actualizar($sale, 150000, ['to_check' => 0]));
+
+        $respuesta->assertStatus(422);
+
+        $body = json_decode($respuesta->getContent(), true);
+        $this->assertTrue($body['error_limite_credito']);
+
+        $sale->refresh();
+
+        $this->assertNull(
+            $this->movimiento_de_la_venta($sale, $cuenta),
+            'El 422 tiene que haber revertido la transacción: la venta rechazada no puede quedar con movimiento de cuenta corriente.'
+        );
+
+        $this->assertEquals(
+            1,
+            (int) $sale->to_check,
+            'El rollback tiene que haber devuelto to_check a su valor original: el update entero se revirtió.'
+        );
+    }
+
+    /**
+     * Una venta que YA está en la cuenta corriente (dentro del límite) y se actualiza subiéndole
+     * el total a un valor que ahora sí lo supera: 422, y el movimiento VIEJO de esa venta sigue
+     * existiendo sin cambios (el rollback deshace el borrado que hace
+     * updateCurrentAcountsAndCommissions() antes de recrearlo).
+     *
+     * @group limite_credito
+     * @test
+     */
+    public function venta_en_cuenta_corriente_que_sube_el_total_y_supera_el_limite_devuelve_422()
+    {
+        $client = $this->cliente(TestingFerreteriaSeeder::CLIENTE_CC);
+        $cuenta = $this->credit_account($client, 1);
+
+        $baseline = $this->saldo_actual($cuenta);
+        $limite = round($baseline + 100000, 2);
+
+        $this->fijar_limite($client, 1, $limite);
+
+        $creacion = $this->postear_venta($this->payload_venta($client->id, 50000));
+        $creacion->assertStatus(201);
+
+        $sale_id = json_decode($creacion->getContent(), true)['model']['id'];
+        $sale = Sale::find($sale_id);
+
+        $movimiento_previo = $this->movimiento_de_la_venta($sale, $cuenta);
+        $this->assertNotNull($movimiento_previo, 'La venta de 50.000 tiene que haber entrado a la cuenta corriente al crearse.');
+        $id_movimiento_previo = $movimiento_previo->id;
+
+        Carbon::setTestNow(Carbon::now()->addSeconds(10));
+
+        // Sube el total a baseline+200.000: bien por encima del límite (baseline+100.000).
+        $respuesta = $this->actualizar_venta($sale, $this->payload_actualizar($sale, 200000));
+
+        $respuesta->assertStatus(422);
+
+        $movimiento_despues = $this->movimiento_de_la_venta($sale, $cuenta);
+
+        $this->assertNotNull(
+            $movimiento_despues,
+            'El rollback tiene que haber dejado el movimiento viejo: el update rechazado no puede sacar a la venta de la cuenta corriente.'
+        );
+        $this->assertEquals(
+            $id_movimiento_previo,
+            $movimiento_despues->id,
+            'Tiene que seguir siendo el MISMO movimiento (mismo id): si cambió, es que el borrado se llegó a confirmar.'
+        );
+        $this->assertEqualsWithDelta(
+            50000,
+            (float) $movimiento_despues->debe,
+            0.01,
+            'El movimiento viejo tiene que seguir reflejando el total original (50.000), no el que se intentó guardar.'
+        );
+
+        $sale->refresh();
+        $this->assertEqualsWithDelta(50000, (float) $sale->total, 0.01, 'El rollback tiene que haber devuelto el total original de la venta.');
+    }
+
+    /**
+     * Contraste con el test anterior: una venta que ya está en la cuenta corriente se actualiza
+     * BAJANDO el total (sin superar el límite) y sigue en 200, con el movimiento reflejando el
+     * total nuevo. Confirma que el chequeo nuevo no le cambió el comportamiento a un update normal.
+     *
+     * @group limite_credito
+     * @test
+     */
+    public function venta_en_cuenta_corriente_que_no_supera_el_limite_al_actualizar_sigue_en_200()
+    {
+        $client = $this->cliente(TestingFerreteriaSeeder::CLIENTE_CC);
+        $cuenta = $this->credit_account($client, 1);
+
+        $baseline = $this->saldo_actual($cuenta);
+        $limite = round($baseline + 100000, 2);
+
+        $this->fijar_limite($client, 1, $limite);
+
+        $creacion = $this->postear_venta($this->payload_venta($client->id, 50000));
+        $creacion->assertStatus(201);
+
+        $sale_id = json_decode($creacion->getContent(), true)['model']['id'];
+        $sale = Sale::find($sale_id);
+
+        Carbon::setTestNow(Carbon::now()->addSeconds(10));
+
+        // Baja el total a 30.000: sigue muy por debajo del límite.
+        $respuesta = $this->actualizar_venta($sale, $this->payload_actualizar($sale, 30000));
+
+        $respuesta->assertStatus(200);
+
+        $movimiento = $this->movimiento_de_la_venta($sale, $cuenta);
+
+        $this->assertNotNull($movimiento, 'La venta actualizada sigue en la cuenta corriente.');
+        $this->assertEqualsWithDelta(
+            30000,
+            (float) $movimiento->debe,
+            0.01,
+            'El movimiento tiene que reflejar el total nuevo (30.000): un update normal, sin bloqueo.'
         );
     }
 }
