@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
@@ -176,6 +177,80 @@ class ArticleController extends Controller
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
     }
 
+    /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resuelve `articles.cost` a partir de
+     * lo que tipeó el usuario en el ABM del listado.
+     *
+     * El formulario tiene DOS inputs: uno para el costo NETO (sin IVA) y otro para el BRUTO (con
+     * IVA). El request trae el número tipeado en `cost` y, en `cost_incluye_iva`, en cuál de los dos
+     * lo tipeó. Si fue en el de bruto, acá se le saca el IVA.
+     *
+     * 🔴 **Siempre se guarda el neto.** Es la convención del sistema y no se negocia: hay 176
+     * lecturas de `->cost` en 62 archivos que la asumen, y `articles` es tabla compartida con
+     * tienda. Lo que cambia con esta misión es que `cost` pasa a ser DERIVADO — lo calcula el
+     * sistema — en vez de ser lo que alguien tipeó.
+     *
+     * Hasta esta misión el ABM hacía `$model->cost = $request->cost` literal, o sea daba por hecho
+     * que el número ya venía neto, mientras la compra a proveedor sí le sacaba el IVA. El mismo
+     * artículo costeaba distinto según por dónde entrara: un Monotributista que cargaba 1000 desde
+     * el listado terminaba costeando 1210, porque aplicar_descuentos_e_iva() le suma el IVA encima
+     * de un número que ya lo tenía adentro.
+     *
+     * 🔴 `cost_incluye_iva` viaja SIEMPRE, aunque sea en `false`, y acá no hay ningún fallback por
+     * condición fiscal ni por configuración de la cuenta. Si la clave no llegara y esto asumiera
+     * algo, un guardado que ni toca el costo —corregir el nombre, cambiar la categoría— terminaría
+     * descomponiendo un número que YA era neto: 1000 → 826,45 → 683,01, un 21% por guardado. Lo
+     * midió el checker de la Fase 5 sobre una versión anterior de esta misma misión.
+     *
+     * 🔴 Se llama DESPUES de asignar `iva_id`, nunca antes. Si el usuario cambió la alícuota y el
+     * costo en el mismo submit, el back-out tiene que usar la alícuota NUEVA: por eso
+     * back_out_iva() fuerza `load('iva')` en vez de `loadMissing()`, y por eso acá el orden importa.
+     *
+     * @param  \App\Models\Article $model
+     * @param  Request             $request
+     * @return \App\Models\Article
+     */
+    private function set_costo_desde_request($model, Request $request)
+    {
+        $cost = $request->cost;
+
+        // Costo vacío: no hay nada que descomponer.
+        if (is_null($cost) || $cost === '') {
+            $model->cost = $cost;
+            return $model;
+        }
+
+        /*
+         * 🔴 Acá manda el formulario y SOLO el formulario. No hay branch por condición fiscal, y
+         * meterlo es un error que esta misión ya cometió y midió.
+         *
+         * El motivo es que este request no siempre trae un número recién tipeado: el formulario del
+         * listado manda el modelo entero en cada guardado, así que corregirle el nombre a un
+         * artículo llega con el `cost` que devolvió el servidor, que YA es neto. Si acá se forzara
+         * "bruto" por ser Monotributista, ese guardado le sacaría el IVA a un número que ya no lo
+         * tiene: 1000 → 826,45 → 683,01, un 21% por guardado, en la acción más común del listado.
+         *
+         * Que el Monotributista no configure nada de IVA se resuelve en la PANTALLA, que es donde
+         * corresponde: a un MT el formulario le muestra un solo campo, el del costo con IVA, y ese
+         * campo declara `cost_incluye_iva = true` cuando alguien escribe en él. El MT no elige nada;
+         * simplemente no existe la otra opción para él.
+         *
+         * La compra y el import sí resuelven por condición fiscal
+         * (ArticlePricesHelper::el_costo_cargado_es_bruto), y pueden hacerlo porque ahí el número
+         * SIEMPRE es uno recién cargado: no existe el caso "me devolvieron lo que ya estaba".
+         */
+        $lo_tipeado_es_bruto = filter_var($request->cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
+
+        if (!$lo_tipeado_es_bruto) {
+            $model->cost = $cost;
+            return $model;
+        }
+
+        $model->cost = ArticlePricesHelper::back_out_iva($model, $cost);
+
+        return $model;
+    }
+
     function store(Request $request) {
         $model = new Article();
         // $model->num                               = $this->num('articles');
@@ -188,7 +263,8 @@ class ArticleController extends Controller
         $model->brand_id                          = $request->brand_id;
         $model->name                              = ucfirst($request->name);
         $model->slug                              = ArticleHelper::slug($request->name);
-        $model->cost                              = $request->cost;
+        // `cost` NO se asigna acá: lo resuelve set_costo_desde_request() más abajo, después de
+        // `iva_id` y `aplicar_iva`, porque el back-out del IVA necesita la alícuota ya seteada.
         $model->cost_in_dollars                   = $request->cost_in_dollars;
         $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
@@ -206,6 +282,9 @@ class ArticleController extends Controller
         $model->provider_price_list_id            = $request->provider_price_list_id;
         $model->iva_id                            = $request->iva_id;
         $model->aplicar_iva                       = $request->aplicar_iva;
+
+        // Con `iva_id` y `aplicar_iva` ya asignados, recién ahora se puede descomponer el costo.
+        $model = $this->set_costo_desde_request($model, $request);
 
         // $model->stock                             = $request->stock;
         $model->stock_min                         = $request->stock_min;
@@ -379,13 +458,17 @@ class ArticleController extends Controller
         $model->provider_id                       = $request->provider_id;
         $model->category_id                       = $request->category_id;
         $model->sub_category_id                   = $request->sub_category_id;
-        $model->cost                              = $request->cost;
+        // `cost`: ver la nota en store(). Se resuelve después de `iva_id` / `aplicar_iva`.
         $model->costo_mano_de_obra                = $request->costo_mano_de_obra;
         $model->cost_in_dollars                   = $request->cost_in_dollars;
         $model->provider_cost_in_dollars          = $request->provider_cost_in_dollars;
         $model->brand_id                          = $request->brand_id;
         $model->iva_id                            = $request->iva_id;
         $model->aplicar_iva                       = $request->aplicar_iva;
+
+        // Con `iva_id` y `aplicar_iva` ya asignados, recién ahora se puede descomponer el costo.
+        $model = $this->set_costo_desde_request($model, $request);
+
         /* Mision 44: mismo criterio que en store(), ver el comentario de alla. */
         $model->percentage_gain                   = CriterioDePrecioHelper::normalizar($request->percentage_gain);
         $model->percentage_gain_blanco                   = $request->percentage_gain_blanco;
@@ -592,6 +675,17 @@ class ArticleController extends Controller
             'archivo_excel'         => $archivo_excel, 
             'columns'               => $columns,
             'blank_flags'           => $blank_flags,
+
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus
+             * costos vienen con IVA adentro, igual que la compra lo declara con
+             * `provider_orders.precios_incluyen_iva`. Es la ÚNICA fuente de esa decisión para el
+             * import: no hay fallback por condición fiscal ni por configuración de la cuenta.
+             *
+             * Default `false` (= los costos de la planilla son netos), que es el comportamiento
+             * histórico del import: una importación que hoy anda no cambia de resultado.
+             */
+            'precios_incluyen_iva'  => filter_var($request->precios_incluyen_iva, FILTER_VALIDATE_BOOLEAN),
             'create_and_edit'       => $request->create_and_edit,
             'start_row'             => $request->start_row, 
             'finish_row'            => $request->finish_row, 

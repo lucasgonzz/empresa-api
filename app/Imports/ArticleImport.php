@@ -71,7 +71,13 @@ class ArticleImport implements ToCollection
          * 04, grupo 265): 'ultima_gana' | 'productos_distintos'. Default 'ultima_gana'
          * para no romper llamadores viejos que todavía no lo mandan (cambio aditivo).
          */
-        $filas_repetidas_del_archivo = 'ultima_gana'
+        $filas_repetidas_del_archivo = 'ultima_gana',
+
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla vienen
+         * con IVA adentro. Va último y con default por la misma razón que en ProcessArticleChunk.
+         */
+        $precios_incluyen_iva = false
     ) {
 
         $this->log_activado = false;
@@ -96,6 +102,7 @@ class ArticleImport implements ToCollection
         $this->actualizar_por_provider_code                         = $actualizar_por_provider_code;
         $this->interpretacion_punto                                 = $interpretacion_punto;
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
+        $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
 
 
         $this->columns = $columns;
@@ -155,6 +162,7 @@ class ArticleImport implements ToCollection
             'actualizar_por_provider_code'                          => $this->actualizar_por_provider_code,
             'interpretacion_punto'                                  => $this->interpretacion_punto,
             'filas_repetidas_del_archivo'                           => $this->filas_repetidas_del_archivo,
+            'precios_incluyen_iva'                                  => $this->precios_incluyen_iva,
         ]);
 
         $this->nombres_proveedores = [];

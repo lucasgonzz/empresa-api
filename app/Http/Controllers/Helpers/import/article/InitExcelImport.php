@@ -75,6 +75,18 @@ class InitExcelImport
             $data['filas_repetidas_del_archivo'] ?? null
         );
 
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus costos
+         * vienen con el IVA adentro. Es la ÚNICA fuente de esa decisión para el import — no hay
+         * fallback por condición fiscal ni por configuración de la cuenta —, igual que la compra la
+         * declara con `provider_orders.precios_incluyen_iva` y el ABM con el input en el que se
+         * tipeó. Default false (= netos), que es el comportamiento histórico del import.
+         */
+        $this->precios_incluyen_iva = filter_var(
+            $data['precios_incluyen_iva'] ?? false,
+            FILTER_VALIDATE_BOOLEAN
+        );
+
         $this->chunkSize    = config('app.ARTICLE_EXCEL_CHUNK_SIZE');
         $this->start        = $this->start_row;
         $this->jobs         = [];
@@ -441,7 +453,8 @@ class InitExcelImport
                 $this->permitir_provider_code_repetido_en_multi_providers,
                 $this->actualizar_por_provider_code,
                 $this->interpretacion_punto,
-                $this->filas_repetidas_del_archivo
+                $this->filas_repetidas_del_archivo,
+                $this->precios_incluyen_iva
             );
 
             $this->chunk_number++;

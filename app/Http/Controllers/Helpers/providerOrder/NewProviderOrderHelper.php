@@ -1032,11 +1032,18 @@ class NewProviderOrderHelper {
         // "articles.cost / article_provider.cost siempre netos" y no inflar la comparación entre
         // proveedores.
         //
-        // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta. Un Monotributista
-        // trata el costo tipeado SIEMPRE como bruto (se ignora `precios_incluyen_iva` de la
-        // compra); un Responsable Inscripto respeta el flag como hasta ahora.
-        if ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva) {
-            $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): `precios_incluyen_iva` de la compra
+         * es el equivalente exacto de los dos inputs del ABM — declara si los costos que la persona
+         * está cargando traen el IVA adentro o ya vienen netos. Es la ÚNICA fuente de esa decisión.
+         *
+         * 🔴 Para Monotributista el flag NO se mira, y eso conserva el prompt 609 y el 615: todo lo
+         * que carga un MT es bruto por definición, así que el flag ni se le muestra. Si el costeo
+         * dependiera de él, un MT que no lo tilda guardaría su costo 21% abajo sin que nada lo
+         * denuncie. El resolvedor único es el que sabe esto.
+         */
+        if (ArticlePricesHelper::el_costo_cargado_es_bruto($this->user, $this->provider_order->precios_incluyen_iva)) {
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
         $pivot_data = [
@@ -1281,18 +1288,22 @@ class NewProviderOrderHelper {
         // la alícuota propia del artículo (ArticlePricesHelper::back_out_iva). Con el flag OFF (o
         // sin cargar) el comportamiento queda idéntico al de siempre: se guarda el valor tal cual.
         //
-        // Prompt 609 - Tarea 3: branching por condición de IVA de la cuenta (`condicion_iva_precios`
-        // de la configuración del usuario). Un Monotributista SIEMPRE trata el costo tipeado como
-        // bruto (se ignora el flag `precios_incluyen_iva` de la compra, forzado a `true`); un
-        // Responsable Inscripto respeta el flag como hasta ahora.
-        if (!is_null($cost) && ($this->get_condicion_iva_precios() == 'MT' || $this->provider_order->precios_incluyen_iva)) {
-            $cost = ArticlePricesHelper::back_out_iva($article, $cost, $this->user);
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): mismo criterio, misma fuente única
+         * que catalogar_costo_proveedor(). Que las dos escrituras de la compra usen exactamente la
+         * misma expresión no es cosmético: si divergieran, `article_provider.cost` y `articles.cost`
+         * quedarían con convenciones distintas para el mismo artículo.
+         */
+        if (!is_null($cost)
+            && ArticlePricesHelper::el_costo_cargado_es_bruto($this->user, $this->provider_order->precios_incluyen_iva)
+        ) {
+
+            $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
-        if (!is_null($cost)
+        $cost_cambio = !is_null($cost) && $article->cost != $cost;
 
-            && $article->cost != $cost) {
-
+        if ($cost_cambio) {
 
             $article->cost = $cost;
 
@@ -1303,9 +1314,14 @@ class NewProviderOrderHelper {
 
                 $article->cost_in_dollars = $new_article['pivot']['cost_in_dollars'];
             }
+        }
 
+        if ($cost_cambio) {
 
             $article->save();
+        }
+
+        if ($cost_cambio) {
 
             Log::info('update_cost con '. $article->cost);
 

@@ -362,8 +362,7 @@ class ActualizarBBDD {
                             || $value === ''
                         ) continue;
 
-                            
-                        $quotedValue = DB::getPdo()->quote($value);
+                        $quotedValue = is_null($value) ? 'NULL' : DB::getPdo()->quote($value);
 
                         if (!isset($casesByColumn[$column])) {
                             $casesByColumn[$column] = "`$column` = CASE `id`";
