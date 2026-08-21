@@ -391,20 +391,45 @@ class CascadaDePreciosTest extends TestCase
      */
     public function doce_casos_de_la_cascada_de_precios()
     {
-        $esperado = 1694.0;
+        /*
+         * 🔴 CAMBIO DE ESPECIFICACION, decision de Lucas del 21/8/2026 (mision
+         * `iva-fuera-del-costeo-monotributista`). Hasta esa fecha las doce celdas daban 1694 y este
+         * bloque era un solo numero.
+         *
+         * Lo que cambio: para un **Monotributista migrado el IVA no participa del precio en ningun
+         * punto** -- ni entra al costo ni se suma al vender. Textual: *"el IVA no tiene que cambiar
+         * nada del precio en un monotributista"*. Entonces la conmutatividad que hacia que las doce
+         * dieran el mismo numero deja de aplicar para MT: no es que el IVA se movio de lugar, es que
+         * para esa condicion fiscal no esta.
+         *
+         * 🔴 Estos numeros NO se ajustaron a lo que devuelve el sistema: salen de la regla. Para MT,
+         * costo 1000 y margen 40% dan 1400, sin ningun 1,21 en el medio. Para RRII y legacy no
+         * cambia nada: 1000 x 1,40 x 1,21 = 1694.
+         *
+         * 🔴 Y esto es exactamente la consecuencia sobre datos existentes que hay que tener a la
+         * vista: para una cuenta MT **ya migrada**, un articulo con `cost` 1000 guardado pasa a
+         * valer 1400 en vez de 1694. El costo guardado no cambia de numero, cambia de significado.
+         * Por eso el interruptor `usar_condicion_fiscal_en_costeo` queda apagado para los clientes
+         * que ya usan el sistema.
+         */
+        $esperado = [
+            'RRII'   => 1694.0,
+            'MT'     => 1400.0,
+            'legacy' => 1694.0,
+        ];
 
-        // costo_real (Capa 1, ArticleHelper::aplicar_descuentos_e_iva()) es lo UNICO que distingue
-        // las tres configuraciones fiscales -- el precio final da 1694 en las doce por la
-        // conmutatividad explicada arriba, asi que sin esta asercion el eje "configuracion fiscal"
-        // no discrimina nada (un bug que ignorara iva_va_al_costo() por completo y aplicara SIEMPRE
-        // el IVA al vender dejaria las doce celdas en 1694 igual). RRII: costo neto (1000). MT y
-        // legacy: costo con el IVA ya adentro (1000 x 1.21 = 1210), aunque por motivos DISTINTOS
-        // (condicion_iva_precios='MT' vs aplicar_iva_al_costo=1 con usar_condicion_fiscal_en_costeo
-        // apagado) -- exactamente la distincion que costo un dia el 5/8/2026 (ver comentario de
-        // ArticlePricesHelper.php ~linea 277).
+        // costo_real (Capa 1, ArticleHelper::aplicar_descuentos_e_iva()) distingue las tres
+        // configuraciones fiscales. RRII: costo neto (1000), el IVA se suma al vender. MT: el costo
+        // ES lo que se cargo (1000), el IVA no participa. legacy: costo con el IVA ya adentro
+        // (1000 x 1.21 = 1210), por la tilde historica `aplicar_iva_al_costo`.
+        //
+        // 🔴 Que MT y legacy hayan dejado de coincidir es el punto: hasta el 21/8/2026 los dos daban
+        // 1210 por motivos DISTINTOS (condicion fiscal vs tilde vieja), y confundirlos costo un dia
+        // el 5/8/2026 (ver comentario de ArticlePricesHelper.php ~linea 277). Ahora la diferencia
+        // esta a la vista en la tabla.
         $costo_real_esperado = [
             'RRII'   => 1000.0,
-            'MT'     => 1210.0,
+            'MT'     => 1000.0,
             'legacy' => 1210.0,
         ];
 
@@ -446,10 +471,11 @@ class CascadaDePreciosTest extends TestCase
                 "camino $camino / $condicion: no se encontro el pivote/precio esperado (revisar el dispatch de setFinalPrice() o el fixture de este test)"
             );
             $this->assertEqualsWithDelta(
-                $esperado,
+                $esperado[$condicion],
                 $resultado,
                 self::DELTA,
-                "camino $camino / $condicion: esperaba $esperado (1000 x 1.40 x 1.21, ver docblock de este test), dio $resultado"
+                "camino $camino / $condicion: esperaba ".$esperado[$condicion].
+                " (RRII y legacy: 1000 x 1.40 x 1.21; MT: 1000 x 1.40, sin IVA), dio $resultado"
             );
         }
     }

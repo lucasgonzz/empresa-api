@@ -221,25 +221,21 @@ class ArticleController extends Controller
         }
 
         /*
-         * 🔴 Acá manda el formulario y SOLO el formulario. No hay branch por condición fiscal, y
-         * meterlo es un error que esta misión ya cometió y midió.
+         * Para un Responsable Inscripto manda el formulario: declara en cuál de los dos inputs se
+         * tipeó. Para un Monotributista migrado no se descompone nunca y el resolvedor ignora lo
+         * declarado — ver el bloque en ArticlePricesHelper::el_costo_cargado_es_bruto().
          *
-         * El motivo es que este request no siempre trae un número recién tipeado: el formulario del
-         * listado manda el modelo entero en cada guardado, así que corregirle el nombre a un
-         * artículo llega con el `cost` que devolvió el servidor, que YA es neto. Si acá se forzara
-         * "bruto" por ser Monotributista, ese guardado le sacaría el IVA a un número que ya no lo
-         * tiene: 1000 → 826,45 → 683,01, un 21% por guardado, en la acción más común del listado.
-         *
-         * Que el Monotributista no configure nada de IVA se resuelve en la PANTALLA, que es donde
-         * corresponde: a un MT el formulario le muestra un solo campo, el del costo con IVA, y ese
-         * campo declara `cost_incluye_iva = true` cuando alguien escribe en él. El MT no elige nada;
-         * simplemente no existe la otra opción para él.
-         *
-         * La compra y el import sí resuelven por condición fiscal
-         * (ArticlePricesHelper::el_costo_cargado_es_bruto), y pueden hacerlo porque ahí el número
-         * SIEMPRE es uno recién cargado: no existe el caso "me devolvieron lo que ya estaba".
+         * 🔴 Que para el MT la respuesta sea SIEMPRE "no descomponer" es lo que hace seguro usar el
+         * resolvedor acá. Con la regla anterior (MT ⇒ siempre bruto) esto no se podía: el formulario
+         * manda el modelo entero en cada guardado, así que corregirle el nombre a un artículo llega
+         * con el `cost` que devolvió el servidor, y forzar "bruto" le sacaba el IVA a un número que
+         * ya no lo tenía — 1000 → 826,45 → 683,01, un 21% por guardado, medido por el checker de la
+         * Fase 5 de la misión anterior. "No descomponer" no tiene ese riesgo: es idempotente.
          */
-        $lo_tipeado_es_bruto = filter_var($request->cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
+        $lo_tipeado_es_bruto = ArticlePricesHelper::el_costo_cargado_es_bruto(
+            UserHelper::user(),
+            $request->cost_incluye_iva
+        );
 
         if (!$lo_tipeado_es_bruto) {
             $model->cost = $cost;
