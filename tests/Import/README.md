@@ -19,7 +19,7 @@ php tests/Import/fixtures/generar.php
 
 El script (`tests/Import/fixtures/generar.php`) es la documentación viva de qué hay en cada celda y, sobre todo, de qué **tipo** es cada celda (string PHP = celda de texto, pasa por el parseo; float/int = celda numérica, lo saltea).
 
-Los fixtures `12_` a `16_` (hojas múltiples, cabecera fusionada, encabezado corrido, `.xls` viejo) se generan con **otro** script:
+Los fixtures `12_` a `17_` (hojas múltiples, cabecera fusionada, encabezado corrido, `.xls` viejo, lista de proveedor realista) se generan con **otro** script:
 
 ```
 php tests/Import/fixtures/generar_hojas_y_fusiones.php
@@ -43,7 +43,8 @@ Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout
 | `10_escalon_nombre.xlsx` | 5 | El escalón `name` como punto de llegada de la cascada: match único por nombre, nombre ambiguo, herencia de un bar_code pendiente hasta el escalón 5, el corte de cadena cuando un `provider_code` no matchea (no baja a name), y la normalización de `normalize_name_for_match()` (mayúsculas/espacios). |
 | `12_tres_hojas.xlsx` | 7 (hoja 0) | **Tres hojas**: `"Lista de precios"` (8 filas), `"Notas"` (3 filas de texto libre, sin forma de tabla de artículos a propósito, para que elegir mal se note) y `"Resumen"` (2 filas). Es el fixture que prueba que el `break` de "siempre la primera hoja" murió. |
 | `13_cabecera_fusionada.xlsx` | 4 | Una hoja con `E1:F1` **fusionada** y `"PRECIOS"` en E1 (F1 vacía en el XML). Las 4 filas de datos tienen E (costo) y F (precio) llenas: es el caso caro de T3, dos propiedades del sistema debajo de un mismo nombre de columna. |
-| `14_encabezado_corrido.xlsx` | 5 | Una hoja con título en la fila 1, razón social en la 2, la 3 vacía y el **encabezado real en la fila 4**. El defecto 3. |
+| `14_encabezado_corrido.xlsx` | 5 | Una hoja con título **y fecha de vigencia** en la fila 1, razón social **y CUIT** en la 2, la 3 vacía y el **encabezado real en la fila 4**. El defecto 3. ⚠️ El CUIT y la fecha no son decorado: sin ellos el fixture pasaba el test mientras la regla se caía con cualquier lista de proveedor real (el corte por fila de datos se disparaba con dos celdas si una era numérica). Y van sobre filas que **ya tenían contenido** a propósito: `AnalyzerHojaYEncabezadoTest` asierta números de fila físicos (5 a 9) y el conteo de la rama vieja (7), así que agregar un renglón nuevo los correría. |
+| `17_lista_proveedor_real.xlsx` | 4 | **El caso completo, el que se ve en cámara al filmar la demo**: título **fusionado** sobre A1:F1, razón social con CUIT en la 2, `"Vigencia desde:"` con una celda de **fecha real** en la 3, y el encabezado en la fila 4 **corrido y además fusionado** (`E4:F4` con `"PRECIOS"` en E4). Los tres rasgos rompían la regla por motivos distintos y cada arreglo desactivaba al otro; medido antes de arreglarlo daba `fila=1, sin_candidata_clara`, con lo cual el mapeo se armaba con cinco columnas vacías y se importaban la razón social y el encabezado como si fueran artículos. |
 | `15_una_sola_hoja.xlsx` | 7 | El fixture de **no regresión**: mismo contenido celda por celda que `01_codigos_de_proveedor.xlsx`, pero escrito con PhpSpreadsheet en vez de OpenSpout. Si los dos se leen idéntico, la lectura no depende de quién escribió el archivo. |
 | `16_viejo.xls` | 2 | Un `.xls` **BIFF de verdad** (writer `Xls` de PhpSpreadsheet, no un `.xlsx` renombrado): no es un zip, así que `ZipArchive::open()` falla y se ejercita el mensaje limpio de `ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE`. |
 
@@ -74,10 +75,28 @@ veces — y esta suite ya necesita `memory_limit=-1` para terminar).
 
 **Qué fila es el encabezado.** `ExcelHeaderDetector` mira las primeras 20 filas físicas con las
 fusiones ya propagadas y elige la fila con más celdas llenas que además cumpla: al menos 2 celdas
-llenas, ninguna numérica ni fecha, ninguna de más de 40 caracteres y todas distintas entre sí.
-Frena en la primera fila que ya son datos (>= 2 celdas llenas y al menos una numérica o fecha):
-el encabezado no puede estar debajo de los datos. Si no hay candidata, cae a la regla vieja
-(primera fila con algún contenido) con `motivo = 'sin_candidata_clara'` y `confianza = 'baja'`.
+llenas **que vengan del archivo** (las que llenó la propagación de una fusión no cuentan), ninguna
+numérica ni fecha, ninguna de más de 40 caracteres y todas distintas entre sí **evaluando sólo las
+que vienen del archivo**. Frena en la primera fila que ya son datos: al menos una celda numérica o
+fecha y al menos **la mitad de las columnas de la tabla** llenas, con un piso de 3. Si no hay
+candidata, cae a la regla vieja (primera fila con algún contenido) con
+`motivo = 'sin_candidata_clara'` y `confianza = 'baja'`.
+
+⚠️ **Las dos condiciones marcadas arriba se calibraron así después de medir, y las dos parecen de
+más.** El umbral de corte era `>= 2 celdas`, y con eso cortaba ante cualquier renglón de membrete:
+`"Distribuidora Bianchi S.A. | 30712345679"` son dos celdas con un número (el CUIT), igual que
+`"Vigencia desde: | 2026-08-01"`. Las listas de proveedor más comunes que existen daban `fila=1,
+sin_candidata_clara`. Y "todas distintas" contaba las celdas propagadas, así que propagar
+`"PRECIOS"` sobre `E:F` —que es el arreglo de las cabeceras fusionadas— dejaba un duplicado que
+sacaba al encabezado de candidato: **un arreglo desactivaba al otro.** Los fixtures `14_` y `17_`
+son los que fijan las dos cosas.
+
+**Cuándo sale la alerta amarilla de `columnas_sin_nombre`.** Sólo por un agujero adentro del
+encabezado, o por una columna que las **filas de datos** usan de verdad (llena en al menos la mitad
+de las filas debajo del encabezado). Medía contra cualquiera de las 20 filas, y una nota suelta en
+J3 (`"Promo hasta fin de mes"`) alcanzaba para que la alerta saliera sobre una planilla impecable —
+con la nota en AD2, 27 letras de columna. **Una alerta que sale sin motivo es peor que no tener
+alerta:** a la tercera vez el usuario deja de leer las amarillas, incluida la que sí importa.
 
 🔴 **La misma regla está implementada dos veces**, en PHP acá y en JavaScript en
 `empresa-spa/src/components/listado/modals/ai-excel-import/Index.vue`, método
@@ -87,11 +106,18 @@ mapeo armado con la fila 4 y la importación arrancando en la fila 2, sin ningú
 `test_los_once_fixtures_existentes_siguen_teniendo_el_encabezado_en_la_fila_1` es la red que
 detecta cualquier cambio de esa regla sobre el parque de fixtures existente.
 
-⚠️ **Cuatro tests de `EncabezadoDetectadoTest.php` se saltean solos** mientras
-`AiExcelAnalyzer::analyze()` no tenga su tercer parámetro `array $opciones = []`: prueban el
-efecto de la regla sobre el analyzer, que se entregó en otra unidad de la misma misión. No hay
-ninguna aserción aflojada — se saltea el test entero, y se prende solo cuando la dependencia está
-en el árbol. Ver `saltear_si_la_unidad_2_no_aterrizo()`.
+**Cuántas filas dice tener cada hoja.** `ExcelSheetInspector` lee `<dimension>`, que es O(1), pero
+**no le cree siempre**: un `ref="A1:A1"` (o `ref="A1"`) decía "1 fila" sobre una hoja de 6, y una
+hoja vacía decía "1 filas" en el selector. Con un `ref` de una sola celda se recorren los `<row>`.
+Y como también hay `<dimension>` que declaran de **menos** (`ref="A1:D2"` con 6 filas reales), en
+las hojas chicas (hasta `BYTES_PARA_VERIFICAR_DIMENSION`, 64 KB de XML sin comprimir) se recorre
+igual y gana el número más grande. En las hojas grandes se le cree al archivo: recorrer una hoja de
+20.000 filas son **~800 ms medidos**, y esa cantidad de filas es sólo un rótulo del selector.
+Se aclara acá porque es una decisión, no un olvido.
+
+ℹ️ `EncabezadoDetectadoTest.php` tiene un `saltear_si_la_unidad_2_no_aterrizo()` que **hoy no
+saltea nada**: la unidad 2 aterrizó y `AiExcelAnalyzer::analyze()` ya tiene su tercer parámetro
+`array $opciones = []`. Queda como guarda por si alguien vuelve a partir el trabajo en unidades.
 
 ## Estabilidad de orden de ejecución (Grupo 289, 31/7/2026)
 
@@ -112,14 +138,21 @@ trait aparte porque hubiera sido el mismo reset duplicado en otro archivo. Tambi
 `$this->app = null` — así que no persiste entre tests) y Mockery (`tearDown()` de Laravel ya llama
 `Mockery::close()` siempre): ninguno de los dos es fuente real de fuga acá.
 
-🔴 **Ese baseline de 90 tests y 9 rojos quedó viejo. No lo uses.** Medición del **22/8/2026** en el
-slot `s8`, con `php -d memory_limit=-1 vendor/bin/phpunit tests/Import`:
+🔴 **Ese baseline de 90 tests y 9 rojos quedó viejo. No lo uses.** Las dos mediciones vigentes, las
+dos del **22/8/2026** en el slot `s8` y las dos con
+`php -d memory_limit=-1 vendor/bin/phpunit tests/Import`:
 
-```
-122 tests, 1457 assertions, 3 failures
-```
+| Cuándo | Resultado | Para qué sirve |
+|---|---|---|
+| **Antes** de la misión de importación de Excel (hoja elegida, cabecera fusionada, encabezado corrido) | `122 tests, 1457 assertions, 3 failures` | referencia histórica: es contra esto que se midió que la misión no metió regresiones |
+| **Hoy**, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | **éste es el baseline: el que tiene que dar una corrida limpia hoy** |
 
-Los tres rojos vigentes, con nombre y todo:
+⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
+entres en pánico: **lo que es baseline son los 3 rojos, con estos nombres exactos.** Un cuarto rojo,
+o un nombre distinto, es una regresión — salvo que se te haya solapado otra corrida, ver el bloque
+de abajo.
+
+Los tres rojos vigentes son los mismos en las dos mediciones, con nombre y todo:
 
 1. `IncidenteServianTest::test_no_se_crean_dos_articulos_con_el_mismo_bar_code`
 2. `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos`
@@ -127,8 +160,23 @@ Los tres rojos vigentes, con nombre y todo:
 
 **Los otros seis rojos que listaba este README se arreglaron en el medio** (los dos restantes de
 `RollbackTest`, los otros dos de `IncidenteServianTest` —incluido el `array_map()` que era el único
-error, no failure— y los dos de `CascadaHerenciaTest`). La suite también creció de 90 a 122 tests.
-Un cuarto rojo, o un nombre distinto de esos tres, es una regresión nueva.
+error, no failure— y los dos de `CascadaHerenciaTest`). La suite creció de 90 a 122 tests, y de 122
+a lo que dice la tabla de arriba con la misión de importación de Excel. Un cuarto rojo, o un nombre
+distinto de esos tres, es una regresión nueva.
+
+## 🔴 Una corrida por vez. La suite NO es segura en paralelo contra la misma base
+
+Dos corridas simultáneas de `tests/Import` contra `empresa_testing_s8` **producen un rojo distinto
+cada vez**. Medido el 22/8/2026: apareció un cuarto rojo en
+`CodigosDeBarraRepetidosTest::test_el_merge_deja_los_valores_de_la_ultima_fila` que **desapareció al
+correr la suite sola** — se le había solapado otra corrida contra la misma base. Los tests usan
+`DatabaseTransactions` sobre un mismo esquema y un mismo tenant sembrado: dos procesos a la vez se
+pisan las filas.
+
+El síntoma es traicionero justamente porque el rojo **cambia de nombre en cada corrida**, así que
+parece un bug de concurrencia del código y no del entorno de test. **Si ves un rojo raro, volvé a
+correr esa clase sola antes de creerle.** Y si hay varias sesiones trabajando sobre el mismo slot,
+una corre la suite y las otras esperan. Costó una corrida entera aprenderlo.
 
 El detalle de abajo es la foto del 31/7/2026 y se deja como historia de la medición de estabilidad,
 no como baseline.

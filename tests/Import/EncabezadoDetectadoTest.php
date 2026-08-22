@@ -91,11 +91,12 @@ class EncabezadoDetectadoTest extends TestCase
     /**
      * "PRECIOS" fusionado sobre E1:F1 tiene que llegar como nombre de las DOS columnas.
      *
-     * Ojo con el motivo: una cabecera con dos nombres iguales no puede ser candidata (falla
-     * "todas distintas"), así que la regla cae al fallback de la regla vieja —primera fila
-     * con contenido— y devuelve confianza baja. Está bien y es deliberado: elige la misma
-     * fila que elegía antes, y la confianza baja es lo que hace que la SPA muestre el campo
-     * de fila de encabezado abierto para que lo revise el usuario.
+     * 🔴 Y TIENE QUE GANAR POR LA REGLA, NO DE CASUALIDAD. Al principio este caso devolvía
+     * `sin_candidata_clara` con confianza baja: el duplicado que deja la propagación sacaba
+     * a la fila 1 de candidata, no quedaba ninguna, y el fallback —"primera fila con
+     * contenido"— la elegía igual. Acertaba la fila por el camino equivocado, y en cuanto el
+     * mismo encabezado fusionado estaba corrido (fixture 17) el fallback devolvía la fila 1
+     * y erraba. Por eso acá se asierta el motivo y la confianza, no sólo el número de fila.
      *
      * @return void
      */
@@ -104,6 +105,8 @@ class EncabezadoDetectadoTest extends TestCase
         $resultado = ExcelHeaderDetector::detectar_en($this->fixture('13_cabecera_fusionada.xlsx'), 0);
 
         $this->assertSame(1, $resultado['fila']);
+        $this->assertSame('primera_fila_con_contenido', $resultado['motivo']);
+        $this->assertSame('alta', $resultado['confianza']);
 
         $this->assertSame(
             ['codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'PRECIOS', 'PRECIOS'],
@@ -190,6 +193,12 @@ class EncabezadoDetectadoTest extends TestCase
     /**
      * Con título y razón social arriba, el encabezado de verdad está en la fila 4.
      *
+     * 14_encabezado_corrido.xlsx trae, además del título y la razón social, el CUIT al lado
+     * de la razón social y una fecha de vigencia al lado del título — que es como viene una
+     * lista de proveedor de verdad. Sin esas dos celdas el fixture medía menos de lo que
+     * decía medir: la regla pasaba este test y se caía con cualquier lista real, porque el
+     * corte por fila de datos se disparaba con dos celdas si una era numérica. No las saques.
+     *
      * @return void
      */
     public function test_con_titulo_y_razon_social_arriba_se_detecta_el_encabezado_real()
@@ -204,6 +213,159 @@ class EncabezadoDetectadoTest extends TestCase
             ['codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock_actual', 'iva'],
             $resultado['columnas']
         );
+
+        $this->assertSame([], $resultado['columnas_sin_nombre']);
+    }
+
+    /**
+     * El caso completo, el que se ve en cámara al filmar la demo con una lista de verdad:
+     * título FUSIONADO sobre seis columnas, razón social con CUIT, fila de vigencia con
+     * fecha, y el encabezado corrido Y ADEMÁS fusionado ("PRECIOS" sobre E4:F4).
+     *
+     * Los tres rasgos rompían la regla por motivos distintos y cada arreglo desactivaba al
+     * otro, que es lo que hace que este fixture valga como test:
+     *
+     *   - el CUIT y la fecha disparaban el corte por fila de datos en la fila 2, así que el
+     *     encabezado de la fila 4 no se miraba nunca;
+     *   - el encabezado fusionado deja "PRECIOS" duplicado y eso lo sacaba de candidato;
+     *   - el título fusionado, al propagarse, queda con seis celdas llenas y le ganaría por
+     *     cantidad al encabezado si las celdas propagadas contaran como evidencia.
+     *
+     * Antes de arreglarlo, medido: `fila=1, sin_candidata_clara`. Con eso el mapeo se armaba
+     * con `["LISTA DE PRECIOS AGOSTO 2026","","","","",""]`, cinco vacíos viajaban a Claude y
+     * se importaban la razón social y la fila del encabezado como si fueran artículos.
+     *
+     * @return void
+     */
+    public function test_una_lista_de_proveedor_real_completa_se_detecta_entera()
+    {
+        $resultado = ExcelHeaderDetector::detectar_en($this->fixture('17_lista_proveedor_real.xlsx'), 0);
+
+        $this->assertSame(4, $resultado['fila']);
+        $this->assertSame('encabezado_corrido', $resultado['motivo']);
+        $this->assertSame('alta', $resultado['confianza']);
+
+        $this->assertSame(
+            ['codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'PRECIOS', 'PRECIOS'],
+            $resultado['columnas'],
+            'El encabezado fusionado tiene que llegar con las dos columnas nombradas.'
+        );
+
+        $this->assertSame([], $resultado['columnas_sin_nombre']);
+
+        $this->assertNotContains(
+            'LISTA DE PRECIOS AGOSTO 2026',
+            $resultado['columnas'],
+            'El título fusionado se coló como nombre de columna.'
+        );
+    }
+
+    /**
+     * Los dos renglones de membrete que tumbaban la regla, uno por uno y aislados de todo lo
+     * demás: la razón social con el CUIT al lado, y el "Vigencia desde:" con la fecha.
+     *
+     * Cada uno son dos celdas con un número o una fecha adentro. El corte por fila de datos
+     * los tomaba por datos y frenaba la búsqueda antes de llegar al encabezado. Lo que los
+     * separa de una fila de datos de verdad no es tener números: es cuántas columnas de la
+     * tabla llenan.
+     *
+     * @dataProvider renglones_de_membrete
+     *
+     * @param  array  $renglon
+     * @param  string $descripcion
+     * @return void
+     */
+    public function test_un_renglon_de_membrete_no_corta_la_busqueda_del_encabezado($renglon, $descripcion)
+    {
+        $cabecera = ['codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock_actual', 'iva'];
+
+        $ventana = [
+            1 => ['LISTA DE PRECIOS AGOSTO 2026'],
+            2 => $renglon,
+            3 => [],
+            4 => $cabecera,
+        ];
+
+        for ($fila = 5; $fila <= 9; $fila++) {
+            $ventana[$fila] = ['779950' . $fila, 'SKU-C-' . $fila, 'PC-C-' . $fila, 'Articulo ' . $fila, '100', '200', '10', '21'];
+        }
+
+        $resultado = ExcelHeaderDetector::detectar($ventana);
+
+        $this->assertSame(4, $resultado['fila'], 'Cortó en el membrete: ' . $descripcion);
+        $this->assertSame('encabezado_corrido', $resultado['motivo']);
+        $this->assertSame($cabecera, $resultado['columnas']);
+    }
+
+    /**
+     * @return array
+     */
+    public function renglones_de_membrete()
+    {
+        return [
+            'razon social + CUIT'  => [['Distribuidora Bianchi S.A.', '30712345679'], 'razón social con el CUIT al lado'],
+            'vigencia + fecha ISO' => [['Vigencia desde:', '2026-08-01'], '"Vigencia desde:" con la fecha al lado'],
+            'telefono'             => [['Tel:', '3541445566'], 'un teléfono'],
+            'tres celdas'          => [['Lista', 'Vigencia', '2026-08-01'], 'tres celdas de membrete con una fecha'],
+        ];
+    }
+
+    /* ---------------------------------------------------------------------
+     * La alerta amarilla de columnas sin nombre: cuándo NO tiene que salir.
+     * ------------------------------------------------------------------- */
+
+    /**
+     * 🔴 UNA ALERTA QUE SALE SIN MOTIVO ES PEOR QUE NO TENER ALERTA. A la tercera vez que la
+     * amarilla aparece sobre un archivo perfecto, el usuario deja de leer las amarillas —
+     * incluida la que sí importa.
+     *
+     * El ancho contra el que se decide "esta columna no tiene nombre" se medía contra
+     * CUALQUIERA de las 20 primeras filas. Una nota suelta en J3 ("Promo hasta fin de mes"),
+     * que aparece en media planilla de proveedor, corría el ancho hasta la columna J y la
+     * alerta salía con `columnas_sin_nombre=[8,9]` sobre una planilla impecable. Con la nota
+     * en AD2 eran 27 letras de columna en la alerta.
+     *
+     * @dataProvider notas_sueltas
+     *
+     * @param  int $columna_de_la_nota  0-based
+     * @param  int $fila_de_la_nota     1-based
+     * @return void
+     */
+    public function test_una_nota_suelta_a_la_derecha_no_dispara_la_alerta($columna_de_la_nota, $fila_de_la_nota)
+    {
+        $ventana = [
+            1 => ['codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock_actual', 'iva'],
+        ];
+
+        for ($fila = 2; $fila <= 8; $fila++) {
+            $ventana[$fila] = ['779950' . $fila, 'SKU-' . $fila, 'PC-' . $fila, 'Articulo ' . $fila, '100', '200', '10', '21'];
+        }
+
+        $ventana[$fila_de_la_nota][$columna_de_la_nota] = 'Promo hasta fin de mes';
+
+        $resultado = ExcelHeaderDetector::detectar($ventana);
+
+        $this->assertSame(1, $resultado['fila']);
+
+        $this->assertSame(
+            [],
+            $resultado['columnas_sin_nombre'],
+            'La nota suelta se contó como una columna que el encabezado no nombra.'
+        );
+
+        $this->assertCount(8, $resultado['columnas'], 'La tabla tiene 8 columnas, no más.');
+    }
+
+    /**
+     * @return array
+     */
+    public function notas_sueltas()
+    {
+        return [
+            'nota en J3'  => [9, 3],
+            'nota en AD2' => [29, 2],
+            'nota en I5'  => [8, 5],
+        ];
     }
 
     /**
@@ -327,6 +489,11 @@ class EncabezadoDetectadoTest extends TestCase
      * IOException de OpenSpout: es lo que hace que RunExcelAnalysisJob caiga en el
      * catch (\RuntimeException) y guarde el mensaje limpio en vez de concatenar la ruta.
      *
+     * 🔴 EL MENSAJE SE ASIERTA, NO ALCANZA CON EL TIPO. Antes esto era un `expectException`
+     * pelado: pasaba con CUALQUIER \RuntimeException, incluida una que hubiera venido de
+     * otro lado con la ruta del servidor adentro — que es exactamente lo que el test dice
+     * estar evitando. Por eso se captura a mano y se revisa el texto.
+     *
      * @return void
      */
     public function test_el_analisis_de_un_xls_viejo_llega_al_usuario_como_runtime_exception()
@@ -335,8 +502,24 @@ class EncabezadoDetectadoTest extends TestCase
 
         $analyzer = new AiExcelAnalyzer(1);
 
-        $this->expectException(\RuntimeException::class);
+        $archivo = $this->fixture('16_viejo.xls');
 
-        $analyzer->analyze($this->fixture('16_viejo.xls'), '16_viejo.xls');
+        try {
+            $analyzer->analyze($archivo, '16_viejo.xls');
+
+            $this->fail('Analizar un .xls viejo tenía que lanzar RuntimeException.');
+        } catch (\RuntimeException $e) {
+            $mensaje = $e->getMessage();
+
+            $this->assertSame(
+                ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE,
+                $mensaje,
+                'El usuario tiene que recibir el mensaje limpio, no cualquier RuntimeException.'
+            );
+
+            $this->assertStringNotContainsString($archivo, $mensaje);
+            $this->assertStringNotContainsString(':\\', $mensaje);
+            $this->assertStringNotContainsString('/var/', $mensaje);
+        }
     }
 }

@@ -31,6 +31,12 @@ class ExcelHeaderDetector
     const LARGO_MAXIMO_DE_CELDA = 40;
 
     /**
+     * Piso del umbral de corte por fila de datos: por debajo de esta cantidad de celdas
+     * llenas, una fila NO alcanza para cortar la busqueda por mas numeros que traiga.
+     */
+    const MINIMO_DE_CELDAS_PARA_CORTAR = 3;
+
+    /**
      * Primeras $limite filas fisicas de la hoja, con las fusiones ya propagadas.
      *
      * Las filas se leen con preservar_filas_vacias = true a proposito: la clave del array
@@ -55,20 +61,27 @@ class ExcelHeaderDetector
     /**
      * Aplica la regla de deteccion sobre una ventana ya leida.
      *
-     * @param  array $ventana  [numero_fila_1based => [valores...]]
+     * @param  array $ventana     [numero_fila_1based => [valores...]]
+     * @param  array $propagadas  [numero_fila_1based => [indice_columna => true]] celdas
+     *                            que NO estaban en el archivo y las lleno propagar_fusiones()
      * @return array ['fila'=>int, 'motivo'=>string, 'confianza'=>'alta'|'baja',
      *                'columnas'=>[string...], 'columnas_sin_nombre'=>[int...]]
      */
-    public static function detectar(array $ventana)
+    public static function detectar(array $ventana, array $propagadas = [])
     {
         ksort($ventana, SORT_NUMERIC);
+
+        $umbral_de_corte = self::umbral_de_corte($ventana, $propagadas);
 
         $primera_con_contenido = null;
         $mejor_fila            = null;
         $mejor_cantidad        = 0;
 
         foreach ($ventana as $numero_fila => $valores) {
-            $no_vacias = self::celdas_no_vacias($valores);
+            $de_la_fila = isset($propagadas[$numero_fila]) ? $propagadas[$numero_fila] : [];
+
+            $no_vacias  = self::celdas_no_vacias($valores);
+            $originales = self::celdas_no_vacias($valores, $de_la_fila);
 
             if (count($no_vacias) > 0 && $primera_con_contenido === null) {
                 $primera_con_contenido = (int) $numero_fila;
@@ -79,15 +92,23 @@ class ExcelHeaderDetector
              * que a alguien le va a dar ganas de sacar por "innecesaria": sin este corte,
              * una planilla donde una fila de datos tenga mas celdas llenas que el
              * encabezado gana por cantidad y se elige una fila de datos como encabezado.
-             * Con el corte, en cuanto aparece la primera fila que ya son datos (>= 2
-             * celdas llenas y al menos una numerica o una fecha) dejamos de mirar: el
-             * encabezado no puede estar debajo de los datos.
+             * Con el corte, en cuanto aparece la primera fila que ya son datos dejamos de
+             * mirar: el encabezado no puede estar debajo de los datos.
+             *
+             * 🔴 EL UMBRAL ES RELATIVO AL ANCHO DE LA TABLA, NO ">= 2 CELDAS". Parece de mas
+             * y no lo es: con ">= 2" cortaba cualquier renglon de membrete de una lista de
+             * proveedor. "Distribuidora Bianchi S.A. | 30712345679" son dos celdas y una es
+             * numerica (el CUIT); "Vigencia desde: | 2026-08-01", idem con la fecha. Los dos
+             * mataban la busqueda en la fila 2 y el encabezado real de la fila 4 no se
+             * miraba nunca — medido, daba fila=1 / sin_candidata_clara en las listas de
+             * proveedor mas comunes que existen. Una fila de datos de verdad llena media
+             * tabla; un membrete, dos o tres celdas sueltas. Eso es lo que separa el umbral.
              */
-            if (count($no_vacias) >= 2 && self::alguna_es_numerica_o_fecha($no_vacias)) {
+            if (count($originales) >= $umbral_de_corte && self::alguna_es_numerica_o_fecha($originales)) {
                 break;
             }
 
-            if (!self::es_candidata($no_vacias)) {
+            if (!self::es_candidata($no_vacias, $originales)) {
                 continue;
             }
 
@@ -133,7 +154,7 @@ class ExcelHeaderDetector
     {
         $detalle = self::leer_ventana_con_detalle($excel_path, $indice_hoja, self::VENTANA);
 
-        $resultado = self::detectar($detalle['ventana']);
+        $resultado = self::detectar($detalle['ventana'], $detalle['propagadas']);
 
         $resultado['fusiones_aplicadas'] = $detalle['fusiones_aplicadas'];
 
@@ -202,7 +223,7 @@ class ExcelHeaderDetector
      * @param  int    $indice_hoja
      * @param  array  $ventana
      * @param  int    $limite
-     * @return array  ['ventana' => array, 'fusiones_aplicadas' => int]
+     * @return array  ['ventana' => array, 'fusiones_aplicadas' => int, 'propagadas' => array]
      */
     protected static function propagar_fusiones($excel_path, $indice_hoja, array $ventana, $limite)
     {
@@ -210,10 +231,11 @@ class ExcelHeaderDetector
 
         if ($todas === null || !isset($todas[$indice_hoja])) {
             /* Sin fusiones legibles se sigue igual: las columnas vacias se reportan despues. */
-            return ['ventana' => $ventana, 'fusiones_aplicadas' => 0];
+            return ['ventana' => $ventana, 'fusiones_aplicadas' => 0, 'propagadas' => []];
         }
 
-        $aplicadas = 0;
+        $aplicadas  = 0;
+        $propagadas = [];
 
         foreach ($todas[$indice_hoja] as $rango) {
             if ($rango['fila_desde'] > $limite) {
@@ -260,11 +282,18 @@ class ExcelHeaderDetector
 
                     $ventana[$fila][$col] = $ancla;
                     $aplicadas++;
+
+                    /*
+                     * Se anota QUE celda se lleno propagando, no solo cuantas. Sin esa marca
+                     * no hay forma de que es_candidata() distinga un duplicado que trae el
+                     * archivo de uno que generamos nosotros dos lineas mas arriba.
+                     */
+                    $propagadas[$fila][$col] = true;
                 }
             }
         }
 
-        return ['ventana' => $ventana, 'fusiones_aplicadas' => $aplicadas];
+        return ['ventana' => $ventana, 'fusiones_aplicadas' => $aplicadas, 'propagadas' => $propagadas];
     }
 
     /**
@@ -279,19 +308,33 @@ class ExcelHeaderDetector
      */
     protected static function armar_resultado(array $ventana, $fila, $motivo, $confianza)
     {
-        $ancho = self::ancho_de_la_ventana($ventana);
+        $valores = isset($ventana[$fila]) ? $ventana[$fila] : [];
+
+        $ancho_del_encabezado = self::extension_de_la_fila($valores);
+        $usadas_por_los_datos = self::columnas_usadas_por_los_datos($ventana, $fila);
+
+        $ancho = $ancho_del_encabezado;
+
+        foreach ($usadas_por_los_datos as $indice => $si) {
+            if (($indice + 1) > $ancho) {
+                $ancho = $indice + 1;
+            }
+        }
 
         $columnas            = [];
         $columnas_sin_nombre = [];
 
-        $valores = isset($ventana[$fila]) ? $ventana[$fila] : [];
-
         for ($i = 0; $i < $ancho; $i++) {
-            $valor = isset($valores[$i]) ? trim((string) $valores[$i]) : '';
+            $valor = isset($valores[$i]) ? self::texto_de($valores[$i]) : '';
 
             $columnas[] = $valor;
 
-            if ($valor === '') {
+            /*
+             * Una columna se denuncia como "sin nombre" solo si es un agujero ADENTRO del
+             * encabezado o si las filas de datos la usan de verdad. Ver
+             * columnas_usadas_por_los_datos().
+             */
+            if ($valor === '' && ($i < $ancho_del_encabezado || isset($usadas_por_los_datos[$i]))) {
                 $columnas_sin_nombre[] = $i;
             }
         }
@@ -306,26 +349,50 @@ class ExcelHeaderDetector
     }
 
     /**
-     * Ancho util de la ventana: la ultima columna con contenido en CUALQUIER fila, + 1.
+     * Cantidad de celdas llenas de la fila mas ancha de la ventana, contando SOLO las
+     * celdas que trae el archivo (las propagadas no cuentan).
      *
-     * Se mide contra toda la ventana y no contra la fila del encabezado porque el caso
-     * que hay que detectar es justamente el contrario: el encabezado tiene menos columnas
-     * llenas que los datos (una cabecera fusionada que no se pudo leer deja la columna F
-     * vacia mientras las filas de datos la usan). Midiendo solo el encabezado, esa columna
-     * no existiria y no habria nada que avisar.
+     * Las propagadas se excluyen a proposito: un titulo fusionado sobre A1:T1 propaga 20
+     * celdas y, si contaran, el umbral de corte se iria a 10 en una tabla de 5 columnas y
+     * ninguna fila de datos alcanzaria para cortar. El ancho que interesa es el de la
+     * tabla, no el del membrete.
      *
      * @param  array $ventana
+     * @param  array $propagadas
      * @return int
      */
-    protected static function ancho_de_la_ventana(array $ventana)
+    protected static function umbral_de_corte(array $ventana, array $propagadas)
     {
         $ancho = 0;
 
-        foreach ($ventana as $valores) {
-            foreach ($valores as $indice => $valor) {
-                if (trim((string) $valor) !== '' && ($indice + 1) > $ancho) {
-                    $ancho = $indice + 1;
-                }
+        foreach ($ventana as $numero_fila => $valores) {
+            $de_la_fila = isset($propagadas[$numero_fila]) ? $propagadas[$numero_fila] : [];
+
+            $cantidad = count(self::celdas_no_vacias($valores, $de_la_fila));
+
+            if ($cantidad > $ancho) {
+                $ancho = $cantidad;
+            }
+        }
+
+        $mitad = (int) ceil($ancho / 2);
+
+        return ($mitad > self::MINIMO_DE_CELDAS_PARA_CORTAR) ? $mitad : self::MINIMO_DE_CELDAS_PARA_CORTAR;
+    }
+
+    /**
+     * Ultima columna con contenido de una fila, + 1.
+     *
+     * @param  array $valores
+     * @return int
+     */
+    protected static function extension_de_la_fila(array $valores)
+    {
+        $ancho = 0;
+
+        foreach ($valores as $indice => $valor) {
+            if (self::texto_de($valor) !== '' && ($indice + 1) > $ancho) {
+                $ancho = $indice + 1;
             }
         }
 
@@ -333,14 +400,82 @@ class ExcelHeaderDetector
     }
 
     /**
+     * Columnas que las FILAS DE DATOS usan de verdad: las que estan llenas en al menos la
+     * mitad de las filas que hay debajo del encabezado, dentro de la ventana.
+     *
+     * 🔴 POR QUE "LA MITAD DE LAS FILAS DE DATOS" Y NO "CUALQUIER FILA DE LA VENTANA".
+     * Este ancho es lo que decide `columnas_sin_nombre`, o sea la alerta amarilla del paso 2.
+     * Midiendolo contra cualquier fila, una nota suelta en J3 ("Promo hasta fin de mes") —que
+     * aparece en media planilla de proveedor— corria el ancho hasta la columna J y la alerta
+     * salia con "Las columnas I, J no tienen nombre en el encabezado" sobre un archivo
+     * perfecto (con la nota en AD2 eran 27 letras). A la tercera alerta amarilla sin motivo
+     * el usuario deja de leer las alertas amarillas, incluida la que si importa. Una columna
+     * que los datos no usan no es una columna: es una celda perdida a la derecha.
+     *
+     * @param  array $ventana
+     * @param  int   $fila_encabezado
+     * @return array  [indice_columna => true]
+     */
+    protected static function columnas_usadas_por_los_datos(array $ventana, $fila_encabezado)
+    {
+        $filas_de_datos = 0;
+        $veces          = [];
+
+        foreach ($ventana as $numero_fila => $valores) {
+            if ((int) $numero_fila <= (int) $fila_encabezado) {
+                continue;
+            }
+
+            $indices = [];
+
+            foreach ($valores as $indice => $valor) {
+                if (self::texto_de($valor) !== '') {
+                    $indices[] = $indice;
+                }
+            }
+
+            if (count($indices) === 0) {
+                continue;
+            }
+
+            $filas_de_datos++;
+
+            foreach ($indices as $indice) {
+                $veces[$indice] = isset($veces[$indice]) ? ($veces[$indice] + 1) : 1;
+            }
+        }
+
+        if ($filas_de_datos === 0) {
+            return [];
+        }
+
+        $minimo = (int) ceil($filas_de_datos / 2);
+
+        if ($minimo < 1) {
+            $minimo = 1;
+        }
+
+        $usadas = [];
+
+        foreach ($veces as $indice => $cantidad) {
+            if ($cantidad >= $minimo) {
+                $usadas[$indice] = true;
+            }
+        }
+
+        return $usadas;
+    }
+
+    /**
      * Las cuatro condiciones de candidata de la regla.
      *
-     * @param  array $no_vacias
+     * @param  array $no_vacias   celdas llenas, propagadas incluidas
+     * @param  array $originales  celdas llenas que trae el archivo, sin las propagadas
      * @return bool
      */
-    protected static function es_candidata(array $no_vacias)
+    protected static function es_candidata(array $no_vacias, array $originales)
     {
-        if (count($no_vacias) < 2) {
+        if (count($originales) < 2) {
             return false;
         }
 
@@ -348,16 +483,31 @@ class ExcelHeaderDetector
             return false;
         }
 
-        $normalizadas = [];
-
         foreach ($no_vacias as $valor) {
-            $texto = trim((string) $valor);
-
-            if (mb_strlen($texto) > self::LARGO_MAXIMO_DE_CELDA) {
+            if (mb_strlen(self::texto_de($valor)) > self::LARGO_MAXIMO_DE_CELDA) {
                 return false;
             }
+        }
 
-            $normalizadas[] = mb_strtolower($texto);
+        /*
+         * 🔴 "TODAS DISTINTAS" SE EVALUA SOBRE LAS CELDAS ORIGINALES, NO SOBRE LAS
+         * PROPAGADAS. Parece una excepcion caprichosa y es lo que hace que los dos arreglos
+         * convivan: una cabecera fusionada "PRECIOS" sobre E1:F1 se propaga a las dos
+         * columnas —eso es justamente lo que arregla el defecto de las fusionadas— y deja el
+         * encabezado con un duplicado que lo sacaba de candidato. O sea que el arreglo de
+         * las fusionadas desactivaba el del encabezado corrido. Y ese duplicado lo generamos
+         * nosotros al propagar: no viene del archivo, asi que no puede ser evidencia de
+         * nada.
+         *
+         * La otra mitad de la regla es el `count($originales) < 2` de arriba, y tampoco se
+         * puede sacar: un titulo fusionado sobre A1:F1 propaga seis celdas iguales, y sin
+         * ese piso quedaria como candidato con seis celdas llenas y le ganaria por cantidad
+         * al encabezado de verdad.
+         */
+        $normalizadas = [];
+
+        foreach ($originales as $valor) {
+            $normalizadas[] = mb_strtolower(self::texto_de($valor));
         }
 
         return count(array_unique($normalizadas)) === count($normalizadas);
@@ -365,25 +515,50 @@ class ExcelHeaderDetector
 
     /**
      * @param  array $valores
+     * @param  array $excluidas  [indice_columna => true] celdas a saltear (las propagadas)
      * @return array  solo las celdas con contenido
      */
-    protected static function celdas_no_vacias(array $valores)
+    protected static function celdas_no_vacias(array $valores, array $excluidas = [])
     {
         $no_vacias = [];
 
-        foreach ($valores as $valor) {
+        foreach ($valores as $indice => $valor) {
+            if (isset($excluidas[$indice])) {
+                continue;
+            }
+
             if ($valor instanceof \DateTime) {
                 $no_vacias[] = $valor;
 
                 continue;
             }
 
-            if (trim((string) $valor) !== '') {
+            if (self::texto_de($valor) !== '') {
                 $no_vacias[] = $valor;
             }
         }
 
         return $no_vacias;
+    }
+
+    /**
+     * Texto recortado de una celda. Un \DateTime no se puede castear a string en PHP 7.4
+     * (fatal), asi que se lo trata aparte donde hace falta y aca devuelve ''.
+     *
+     * @param  mixed $valor
+     * @return string
+     */
+    protected static function texto_de($valor)
+    {
+        if ($valor instanceof \DateTime) {
+            return $valor->format('Y-m-d');
+        }
+
+        if (is_array($valor) || is_object($valor)) {
+            return '';
+        }
+
+        return trim((string) $valor);
     }
 
     /**
@@ -411,7 +586,7 @@ class ExcelHeaderDetector
             return true;
         }
 
-        $texto = trim((string) $valor);
+        $texto = self::texto_de($valor);
 
         if ($texto === '') {
             return false;

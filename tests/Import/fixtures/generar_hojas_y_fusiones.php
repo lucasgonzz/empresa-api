@@ -1,8 +1,8 @@
 <?php
 
 /**
- * Genera los fixtures 12 a 16: varias hojas, cabecera fusionada, encabezado corrido,
- * libro de una sola hoja y un .xls viejo.
+ * Genera los fixtures 12 a 17: varias hojas, cabecera fusionada, encabezado corrido,
+ * libro de una sola hoja, un .xls viejo y una lista de proveedor realista.
  *
  * Se corre desde la raiz de empresa-api:
  *
@@ -226,8 +226,8 @@ guardar($libro, '13_cabecera_fusionada.xlsx', '1 hoja, E1:F1 fusionada, 4 filas 
  *
  * Una hoja, tal como sale de la imprenta de cualquier distribuidora:
  *
- *   F1  A1 = "LISTA DE PRECIOS AGOSTO 2026"   (titulo, una sola celda)
- *   F2  A2 = "Distribuidora Bianchi S.A."     (razon social, una sola celda)
+ *   F1  A1 = "LISTA DE PRECIOS AGOSTO 2026"  B1 = "Vigencia desde:"  C1 = "2026-08-01"
+ *   F2  A2 = "Distribuidora Bianchi S.A."    B2 = "30712345679"  (CUIT)
  *   F3  vacia
  *   F4  cabecera comun de 8 columnas          <- EL ENCABEZADO DE VERDAD
  *   F5-F9  5 filas de datos
@@ -237,14 +237,30 @@ guardar($libro, '13_cabecera_fusionada.xlsx', '1 hoja, E1:F1 fusionada, 4 filas 
  * que se le muestran al usuario (columnas detectadas, filas a importar, fila de inicio)
  * salian mal a la vez, y ninguno con un error.
  *
+ * 🔴 EL CUIT Y LA FECHA DE VIGENCIA NO SON DECORADO. Este fixture nacio sin ellos —titulo
+ * solo en A1, razon social sola en A2, ni un numero arriba de la fila 4— y con esa forma
+ * pasaba el test mientras la regla se caia con cualquier lista de proveedor de verdad: el
+ * corte por fila de datos se disparaba con dos celdas si una era numerica, y un CUIT al
+ * lado de la razon social, o un "Vigencia desde: | fecha", son exactamente eso. O sea que
+ * el fixture medía menos de lo que decia medir. Si alguien los saca "porque no aportan", el
+ * test vuelve a pasar y el defecto vuelve a existir.
+ *
+ * El CUIT va como TEXTO con 11 digitos a proposito: is_numeric() lo ve numerico igual, que
+ * es lo que dispara la condicion, y es como lo escribe media planilla real.
+ *
+ * ⚠️ Las dos celdas nuevas van sobre las filas 1 y 2, QUE YA TENIAN CONTENIDO: la ventana
+ * fisica (1 y 2 llenas, 3 vacia, encabezado en la 4, datos en 5..9) no se mueve ni un
+ * renglon. AnalyzerHojaYEncabezadoTest asierta contra esos numeros fisicos (filas 5 a 9, y
+ * 7 filas de datos en la rama vieja); agregar un renglon nuevo los correria.
+ *
  * Las 5 filas de datos son lo que hace que count_data_rows() tenga que dar 5 y no 8.
  * -------------------------------------------------------------------------- */
 $libro = new Spreadsheet();
 $hoja  = $libro->getActiveSheet();
 $hoja->setTitle('Lista');
 
-escribir_fila($hoja, 1, ['LISTA DE PRECIOS AGOSTO 2026']);
-escribir_fila($hoja, 2, ['Distribuidora Bianchi S.A.']);
+escribir_fila($hoja, 1, ['LISTA DE PRECIOS AGOSTO 2026', 'Vigencia desde:', '2026-08-01']);
+escribir_fila($hoja, 2, ['Distribuidora Bianchi S.A.', '30712345679']);
 /* La fila 3 se deja vacia a proposito: no se escribe ninguna celda. */
 escribir_fila($hoja, 4, $cabecera);
 
@@ -255,6 +271,66 @@ escribir_fila($hoja, 8, ['7799504', 'SKU-C-4', 'PC-C-4', 'Articulo corrido 4', 4
 escribir_fila($hoja, 9, ['7799505', 'SKU-C-5', 'PC-C-5', 'Articulo corrido 5', 500.0, 1000.0, 50.0, '21']);
 
 guardar($libro, '14_encabezado_corrido.xlsx', '1 hoja, encabezado en la fila 4, 5 filas de datos');
+
+/* --------------------------------------------------------------------------
+ * 17 - La lista de proveedor REAL: todo junto.
+ *
+ * Es el caso que se ve en camara al filmar la demo con una lista de verdad, y el que la
+ * regla original erraba: titulo FUSIONADO arriba, membrete con CUIT, fila de vigencia con
+ * fecha, y el encabezado corrido Y ADEMAS fusionado.
+ *
+ *   F1  A1 = "LISTA DE PRECIOS AGOSTO 2026", fusionado A1:F1
+ *   F2  A2 = "Distribuidora Bianchi S.A."   B2 = "30712345679" (CUIT)
+ *   F3  A3 = "Vigencia desde:"              B3 = fecha REAL (celda de fecha, no texto)
+ *   F4  encabezado de 6 columnas con E4:F4 fusionadas y "PRECIOS" en E4
+ *   F5-F8  4 filas de datos con E (costo) y F (precio) llenas
+ *
+ * Los tres rasgos se pisan entre si a proposito, porque asi vienen en la vida real y
+ * porque cada uno rompia la regla por un motivo distinto:
+ *
+ *   - el titulo fusionado, al propagarse sobre seis columnas, queda con seis celdas llenas
+ *     y le ganaria por cantidad al encabezado si no fuera porque una sola de esas celdas
+ *     viene del archivo;
+ *   - el CUIT y la fecha son los que disparaban el corte antes de tiempo;
+ *   - el encabezado fusionado deja un duplicado ("PRECIOS" dos veces) que lo sacaba de
+ *     candidato.
+ *
+ * La fecha va como CELDA DE FECHA de verdad (no como texto ISO) para que el detector reciba
+ * un \DateTime y no un string: es el otro camino de la comprobacion "es numerica o fecha",
+ * y el 14 ya cubre el de texto.
+ * -------------------------------------------------------------------------- */
+$libro = new Spreadsheet();
+$hoja  = $libro->getActiveSheet();
+$hoja->setTitle('Lista de precios');
+
+escribir_fila($hoja, 1, ['LISTA DE PRECIOS AGOSTO 2026']);
+$hoja->mergeCells('A1:F1');
+
+escribir_fila($hoja, 2, ['Distribuidora Bianchi S.A.', '30712345679']);
+
+escribir_fila($hoja, 3, ['Vigencia desde:']);
+$hoja->setCellValue('B3', \PhpOffice\PhpSpreadsheet\Shared\Date::PHPToExcel(new \DateTime('2026-08-01')));
+$hoja->getStyle('B3')->getNumberFormat()->setFormatCode(
+    \PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2
+);
+
+escribir_fila($hoja, 4, [
+    'codigo_de_barras',
+    'sku',
+    'codigo_de_proveedor',
+    'nombre',
+    'PRECIOS',
+    null,          // F4 vacia: la cubre la fusion E4:F4
+]);
+
+$hoja->mergeCells('E4:F4');
+
+escribir_fila($hoja, 5, ['7799701', 'SKU-R-1', 'PC-R-1', 'Articulo real 1', 100.0, 200.0]);
+escribir_fila($hoja, 6, ['7799702', 'SKU-R-2', 'PC-R-2', 'Articulo real 2', 300.0, 600.0]);
+escribir_fila($hoja, 7, ['7799703', 'SKU-R-3', 'PC-R-3', 'Articulo real 3', 500.0, 900.0]);
+escribir_fila($hoja, 8, ['7799704', 'SKU-R-4', 'PC-R-4', 'Articulo real 4', 700.0, 1400.0]);
+
+guardar($libro, '17_lista_proveedor_real.xlsx', '1 hoja, titulo fusionado, CUIT, vigencia, encabezado fusionado en la fila 4');
 
 /* --------------------------------------------------------------------------
  * 16 - Un .xls VIEJO de verdad (BIFF, no es un zip).

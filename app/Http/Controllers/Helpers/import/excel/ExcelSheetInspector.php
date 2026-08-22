@@ -37,6 +37,12 @@ class ExcelSheetInspector
     const TIPO_RELACION_WORKSHEET = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
 
     /**
+     * Tamano (bytes sin comprimir) hasta el cual la hoja se recorre igual para verificar
+     * el <dimension>. Ver ultima_fila_de_la_hoja().
+     */
+    const BYTES_PARA_VERIFICAR_DIMENSION = 65536;
+
+    /**
      * Ultima fila declarada por el archivo, por hoja.
      *
      * OJO CON QUE SIGNIFICA ESTE NUMERO: es "hasta que fila dice el archivo que llega
@@ -58,15 +64,53 @@ class ExcelSheetInspector
             return null;
         }
 
+        $tamanos = self::tamanos_de_hojas($excel_path, $rutas);
+
         $filas = [];
 
         foreach ($rutas as $indice => $ruta_interna) {
             $filas[$indice] = ($ruta_interna === null)
                 ? 0
-                : self::ultima_fila_de_la_hoja($excel_path, $ruta_interna);
+                : self::ultima_fila_de_la_hoja(
+                    $excel_path,
+                    $ruta_interna,
+                    isset($tamanos[$indice]) ? $tamanos[$indice] : 0
+                );
         }
 
         return $filas;
+    }
+
+    /**
+     * Tamano sin comprimir de la XML de cada hoja, en una sola apertura del zip.
+     *
+     * @param  string $excel_path
+     * @param  array  $rutas  [indice_hoja => string|null]
+     * @return array  [indice_hoja => int bytes]
+     */
+    protected static function tamanos_de_hojas($excel_path, array $rutas)
+    {
+        $tamanos = [];
+
+        $zip = new \ZipArchive();
+
+        if ($zip->open($excel_path) !== true) {
+            return $tamanos;
+        }
+
+        foreach ($rutas as $indice => $ruta_interna) {
+            if ($ruta_interna === null) {
+                continue;
+            }
+
+            $dato = $zip->statName($ruta_interna);
+
+            $tamanos[$indice] = ($dato !== false && isset($dato['size'])) ? (int) $dato['size'] : 0;
+        }
+
+        $zip->close();
+
+        return $tamanos;
     }
 
     /**
@@ -243,9 +287,10 @@ class ExcelSheetInspector
      *
      * @param  string $excel_path
      * @param  string $ruta_interna
+     * @param  int    $tamano  bytes sin comprimir de la XML de la hoja
      * @return int
      */
-    protected static function ultima_fila_de_la_hoja($excel_path, $ruta_interna)
+    protected static function ultima_fila_de_la_hoja($excel_path, $ruta_interna, $tamano = 0)
     {
         $lector = self::abrir_hoja($excel_path, $ruta_interna);
 
@@ -253,11 +298,12 @@ class ExcelSheetInspector
             return 0;
         }
 
+        $declarada   = 0;
         $ultima_fila = 0;
 
         /*
-         * En el esquema OOXML <dimension> va ANTES de <sheetData>, asi que si esta,
-         * salimos sin haber tocado una sola celda: O(1) por hoja.
+         * En el esquema OOXML <dimension> va ANTES de <sheetData>, asi que si esta y le
+         * creemos, salimos sin haber tocado una sola celda: O(1) por hoja.
          */
         while (@$lector->read()) {
             if ($lector->nodeType !== \XMLReader::ELEMENT) {
@@ -268,13 +314,35 @@ class ExcelSheetInspector
                 $ref = (string) $lector->getAttribute('ref');
                 $fila = self::fila_final_del_rango($ref);
 
-                if ($fila > 0) {
+                /*
+                 * 🔴 AL <dimension> NO SE LE CREE SIEMPRE, Y NO ES DESCONFIANZA GRATIS.
+                 * Esta cantidad de filas es el UNICO dato numerico que el usuario tiene para
+                 * reconocer su lista en el selector de hoja: si le decimos "Lista (1 filas)"
+                 * y "Notas (3 filas)", elige mal y ni se entera.
+                 *
+                 * Dos formas medidas de mentir:
+                 *   - `ref="A1:A1"` (y `ref="A1"`): una sola celda. Es lo que escriben varios
+                 *     generadores que no llevan la cuenta. Devolvia 1 sobre una hoja de 6
+                 *     filas. Por eso el corte es `> 1` y no `> 0`: una hoja de una sola fila
+                 *     igual sale bien del recorrido de abajo, y una hoja VACIA sale 0 en vez
+                 *     de "1 filas".
+                 *   - declarar de MENOS (`ref="A1:D2"` con 6 filas reales). Eso solo se
+                 *     detecta recorriendo, y recorrer no es gratis: medido, una hoja de
+                 *     20.000 filas tarda ~800 ms. Asi que se verifica solo cuando la hoja es
+                 *     chica (BYTES_PARA_VERIFICAR_DIMENSION), que es donde recorrer cuesta
+                 *     milisegundos. En una hoja grande se le cree al archivo. Si algun dia
+                 *     aparece un generador que declara de menos en hojas grandes, el que lo
+                 *     encuentre va a leer esto y va a saber que fue una decision, no un
+                 *     olvido.
+                 */
+                if ($fila > 1 && $tamano > self::BYTES_PARA_VERIFICAR_DIMENSION) {
                     $lector->close();
 
                     return $fila;
                 }
 
-                /* <dimension ref="A1"> de una sola celda no dice nada: seguimos al fallback. */
+                $declarada = ($fila > 1) ? $fila : 0;
+
                 continue;
             }
 
@@ -298,7 +366,8 @@ class ExcelSheetInspector
 
         $lector->close();
 
-        return $ultima_fila;
+        /* Gana el mas grande: si el <dimension> declaro de menos, manda lo que se recorrio. */
+        return ($declarada > $ultima_fila) ? $declarada : $ultima_fila;
     }
 
     /**
