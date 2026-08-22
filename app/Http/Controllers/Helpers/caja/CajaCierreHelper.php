@@ -44,7 +44,23 @@ class CajaCierreHelper {
 
 		$apertura_caja->cerrada_at 				= Carbon::now();
 		$apertura_caja->saldo_cierre 			= $this->caja->saldo;
-		$apertura_caja->apertura_employee_id 	= UserHelper::userId(false);
+
+		/*
+			🔴 Acá va `cierre_employee_id`, NO `apertura_employee_id`.
+
+			Hasta agosto de 2026 esta línea escribía `apertura_employee_id`, y el daño era doble:
+			`cierre_employee_id` quedaba SIEMPRE en null (nunca se supo quién cerró una caja) y
+			además se pisaba el id de quien la había abierto.
+
+			La tentación de "simplificarlo" de vuelta está en que las dos columnas guardan la
+			misma expresión. Son distintas a propósito: `apertura_employee_id` es de
+			`CajaAperturaHelper` y en el caso normal lo escribe otra persona, en otro momento.
+			`AperturaCajaController::reabrir()` lo confirma: limpia SOLO el cierre.
+
+			Y el `false` de `userId(false)` pide el usuario logueado, no el dueño de la cuenta:
+			sin él todos los cierres quedarían a nombre del owner y la columna no serviría.
+		*/
+		$apertura_caja->cierre_employee_id 		= UserHelper::userId(false);
 
 		$apertura_caja->save();
 	}
