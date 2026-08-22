@@ -11,25 +11,92 @@ use Carbon\Carbon;
 class CreateSaleOrderHelper {
 
     static function save_sale($order, $instance, $from_tienda_nube = false, $from_meli = false, $user = null) {
-        if (
-            $from_tienda_nube
-            || $from_meli
-            || (
-                $order->order_status->name != 'Sin confirmar' 
-                && Self::saveSaleAfterFinishOrder()
-            )
-        ) {
+        if (Self::va_a_crear_venta($order, $from_tienda_nube, $from_meli)) {
 
             Log::info('Entro a save sale');
 
-            $to_check = UserHelper::hasExtencion('check_sales', $user);
-            
+            $to_check = Self::get_to_check($user);
+
             $sale = Self::createSale($order, $instance, $to_check, $from_tienda_nube, $from_meli, $user);
 
             Self::attach_sale_properties($order, $sale, $from_tienda_nube, $from_meli);
 
             Log::info('se guardo venta para el pedido online, sale_id: '.$sale->id);
         }
+    }
+
+    /**
+     * ¿Esta confirmación va a crear una venta?
+     *
+     * Es la condición que hasta el prompt 610 estaba inline en save_sale(). Se extrajo porque
+     * LimiteCreditoHelper::validar_pedido_confirmado() necesita hacerse exactamente la misma
+     * pregunta ANTES de que se escriba nada: si el chequeo de límite corriera bajo un criterio
+     * propio, tarde o temprano se desalinearía del que decide de verdad si hay venta.
+     *
+     * ⚠️ Lee el estado DEL MODELO, así que quien la llame tiene que hacerlo con el pedido ya
+     * pasado al estado nuevo (después del `$model->load('order_status')` de
+     * `OrderController::update()`). Llamarla antes vería todavía 'Sin confirmar' y devolvería
+     * false siempre.
+     *
+     * @param  \App\Models\Order  $order
+     * @param  bool  $from_tienda_nube
+     * @param  bool  $from_meli
+     * @return bool
+     */
+    static function va_a_crear_venta($order, $from_tienda_nube = false, $from_meli = false) {
+
+        if ($from_tienda_nube || $from_meli) {
+            return true;
+        }
+
+        $order_status_name = !is_null($order->order_status) ? $order->order_status->name : null;
+
+        return $order_status_name != 'Sin confirmar' && Self::saveSaleAfterFinishOrder();
+    }
+
+    /**
+     * La venta que nace de un pedido es `to_check` cuando el comercio tiene la extensión
+     * `check_sales`. Importa para el límite de crédito: SaleHelper::attachProperies() no llama a
+     * create_current_acount() en una venta to_check, así que esa venta no mueve el saldo y no hay
+     * límite que se pueda exceder.
+     *
+     * @param  \App\Models\User|null  $user
+     * @return bool
+     */
+    static function get_to_check($user = null) {
+        return UserHelper::hasExtencion('check_sales', $user);
+    }
+
+    /**
+     * Cliente de ComercioCity al que se le imputa la venta, o null.
+     *
+     * Los pedidos de Tienda Nube y de Mercado Libre nacen SIN cliente a propósito: su comprador
+     * no es un `Client` del ERP. Sin cliente no hay cuenta corriente, así que esas ventas nunca
+     * tocan un saldo ni pueden exceder un límite.
+     *
+     * @param  \App\Models\Order  $order
+     * @param  bool  $from_tienda_nube
+     * @param  bool  $from_meli
+     * @return int|null
+     */
+    static function get_client_id($order, $from_tienda_nube, $from_meli) {
+
+        if ($from_tienda_nube || $from_meli) {
+            return null;
+        }
+
+        // Pedido de invitado: buyer_id es NOT NULL en la tabla, pero el comprador puede haber sido
+        // borrado. Sin esta guarda, PHP 7.4 tira notice y devuelve null igual — que es el
+        // resultado correcto, pero por accidente.
+        if (is_null($order->buyer)) {
+            return null;
+        }
+
+        if (is_null($order->buyer->comercio_city_client)) {
+            return null;
+        }
+
+        return $order->buyer->comercio_city_client_id;
     }
 
     static function attach_sale_properties($order, $sale, $from_tienda_nube, $from_meli) {
@@ -77,25 +144,17 @@ class CreateSaleOrderHelper {
 
         SaleHelper::attachProperies($sale, $request);
     }
-    
+
 
     static function createSale($order, $instance, $to_check = false, $from_tienda_nube, $from_meli, $user) {
-        $client_id = null;
-
 
         if ($user) {
             $num = $instance->num('sales', $user->id, 'user_id', $user->id);
         } else {
             $num = $instance->num('sales');
         }
-        
-        if (
-            !$from_tienda_nube
-            && !$from_meli
-            && !is_null($order->buyer->comercio_city_client)
-        ) {
-            $client_id = $order->buyer->comercio_city_client_id;
-        }
+
+        $client_id = Self::get_client_id($order, $from_tienda_nube, $from_meli);
 
         $terminada = Self::is_terminada($order, $to_check);
 
@@ -155,7 +214,12 @@ class CreateSaleOrderHelper {
 
     static function saveSaleAfterFinishOrder() {
         $user = UserHelper::getFullModel();
-        return $user->online_configuration->save_sale_after_finish_order;
+
+        if (is_null($user) || is_null($user->online_configuration)) {
+            return false;
+        }
+
+        return (bool) $user->online_configuration->save_sale_after_finish_order;
     }
 
     // static function attach_articles($sale, $articles) {
@@ -167,7 +231,7 @@ class CreateSaleOrderHelper {
     //                                                     : null,
     //                                         'price' => $article->pivot->price,
     //                                     ]);
-            
+
     //     }
     // }
 
