@@ -84,6 +84,15 @@ class UserSetupHelper
         // El ExtencionSeeder debe existir antes del sync para tener los registros
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
+        /*
+            'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder standalone
+            (pensado justamente para correr aparte en bases existentes). Sin esta linea, el
+            whereIn('slug', $extencions) de mas abajo no encuentra la fila y el sync() la
+            omite en silencio, aunque 'whatsapp' este en base_extencions(). Mismo fix que ya
+            tiene DemoSetupHelper.
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
+
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
@@ -247,6 +256,26 @@ class UserSetupHelper
             'comerciocity_interno',
             'ask_save_current_acount',
             'enviar_mail_a_clientes',
+
+            /*
+                Sin estas 4 extensiones encendidas, los modulos de sugerencias de stock,
+                sugerencias de compra, motor de ofertas y tracking de compradores quedan con
+                las rutas en 403. Mismo fix que ya tiene DemoSetupHelper.
+            */
+            'sugerencias_inteligentes',
+            'sugerencias_compras',
+            'motor_de_ofertas',
+            'tracking_buyers',
+
+            /*
+                El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js),
+                no 'whatsapp_ia'. Sin 'whatsapp' el modulo no aparece nunca en el menu, aunque se
+                asigne 'whatsapp_ia' a mano. Van las dos juntas: 'whatsapp_ia' sola no tiene ningun
+                efecto visible porque el modulo que la usa ni se muestra. Mismo fix que ya tiene
+                DemoSetupHelper.
+            */
+            'whatsapp',
+            'whatsapp_ia',
         ];
     }
 
@@ -316,6 +345,14 @@ class UserSetupHelper
                 create_user(), así que el dueño ya existe cuando este llega.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                Respaldo idempotente: para cuando las 4 extensiones de IA (agregadas en
+                base_extencions()) ya esten enganchadas al usuario por el sync de mas arriba.
+                Si ya estan, las salta (ver su propio PHPDoc). Mismo fix que ya tiene
+                DemoSetupHelper.
+            */
+            'ExtencionesIaUserSeeder',
         ];
     }
 
