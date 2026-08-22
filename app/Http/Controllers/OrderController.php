@@ -200,10 +200,12 @@ class OrderController extends Controller
 
             DB::rollBack();
 
-            // Igual que en SaleController::store(): como la excepción se captura acá, el handler
-            // global no la ve y hay que empujarla a mano para que quede registrada.
-            report($e);
-
+            /*
+                Se re-lanza y NO se llama a report(). El patrón de SaleController::store() sí lo
+                llama, pero porque allá la excepción se come y se responde un 500 armado a mano:
+                sin ese report() el fallo no llegaría a errores/. Acá la excepción sigue viaje al
+                handler global, que la reporta él. Agregar report() la dejaría dos veces.
+            */
             throw $e;
         }
 
