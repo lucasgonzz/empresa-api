@@ -498,7 +498,7 @@ class Costos_Extra_Test extends ComprasTestCase
     }
 
     /**
-     * Test 5 (Prompt 609) — un costo extra de tipo `otro` NO crea ningun recargo, ni siquiera con
+     * Test 6 (Prompt 609) — un costo extra de tipo `otro` NO crea ningun recargo, ni siquiera con
      * `update_prices = 1`. Es la contracara exacta del test 2: mismo escenario, mismo costo extra,
      * unico cambio el `tipo`.
      *
@@ -595,7 +595,7 @@ class Costos_Extra_Test extends ComprasTestCase
     }
 
     /**
-     * Test 6 (Prompt 609) — la base del prorrateo es el subtotal BRUTO de la compra, antes de todo
+     * Test 7 (Prompt 609) — la base del prorrateo es el subtotal BRUTO de la compra, antes de todo
      * descuento, no el neto.
      *
      * Por que el escenario es este y no uno mas simple: un descuento de compra

@@ -24,13 +24,24 @@ use Database\Seeders\testing\TestingFerreteriaSeeder;
  * instalaciones que dependen justamente de eso: llevan el stock por afuera del sistema, y una
  * compra que empezara a moverlo les romperia el inventario.
  *
- * ⚠️ Dato medido el 22/8/2026, contraintuitivo, y la razon por la que este test existe:
- * la migracion `2022_06_02_172623_create_provider_orders_table.php` declara `default(1)` en las
- * tres banderas — pero **ese default no se aplica NUNCA**, porque
- * `ProviderOrderController::store()` (lineas 71-75) siempre escribe el valor que viene del
- * request. El default real lo pone el formulario de la SPA. Si alguna vez alguien "arregla" la
- * contradiccion prendiendo las banderas en el lugar equivocado, este test se pone rojo y eso es
- * exactamente lo que tiene que pasar.
+ * ⚠️ Donde vive el default, medido el 22/8/2026 — es contraintuitivo y conviene tenerlo claro
+ * antes de tocar nada:
+ *   - La migracion `2022_06_02_172623_create_provider_orders_table.php` declara `default(1)` en las
+ *     tres banderas.
+ *   - Pero por el camino del usuario ese default **no se aplica**: `ProviderOrderController::store()`
+ *     (lineas 71, 72 y 75) siempre escribe el valor que viene del request, y quien lo manda es el
+ *     formulario de la SPA, con `value: 0` en `update_stock`/`update_prices`.
+ *   - 🔴 Hay dos caminos que SI toman el `default(1)` porque no mandan las claves:
+ *     `SaleProviderOrderHelper::create()` (la compra que nace automaticamente de una venta B2B) y
+ *     `DatabaseProviderOrderHelper` (la copia de una base a otra). Una orden nacida por ahi arranca
+ *     con las tres banderas en 1 — y como llevan `no_se_puede_desactivar`, queda trabada asi.
+ *     Esta fuera del alcance del prompt 609, quedo anotado en el informe de la mision.
+ *
+ * 🔴 **Que blinda este test y que NO.** Blinda el *gate*: que con las banderas en 0, el helper no
+ * materialice nada en el articulo. Eso es lo que pide el punto 1 del prompt 609.
+ * **No** blinda el default: como el payload manda `0` explicito, prender el `value` del formulario
+ * de la SPA dejaria este test en verde. No hay forma de cubrir eso desde PHPUnit, porque el default
+ * efectivo vive en el otro repo.
  *
  * Decision de producto de Lucas (22/8/2026): las banderas **no se tocan**, se quedan apagadas por
  * default. Lo unico que se hizo del defecto es este test.
@@ -227,6 +238,17 @@ class Banderas_Apagadas_Test extends ComprasTestCase
 
         } finally {
             $this->restaurar_articulo($marco, $snapshot);
+            /*
+             * Limpieza defensiva, mismo criterio que `4_Costos_Extra_Test`. No deberia haber nada
+             * que borrar — si lo hubiera, este test ya estaria rojo. Pero justamente en ese caso el
+             * residuo sobrevive (fixture compartido, sin rollback real) y se lleva puesto a
+             * `4_Costos_Extra_Test::sin_costos_extra_no_se_genera_nada`, que assertea 0 surchages
+             * sobre este mismo articulo: un rojo falso en otro archivo, por un motivo que no se ve.
+             */
+            ArticleSurchage::where('article_id', $marco->id)->delete();
+            ArticleDiscount::where('article_id', $marco->id)
+                            ->where('provider_id', $rosario->id)
+                            ->delete();
         }
     }
 }
