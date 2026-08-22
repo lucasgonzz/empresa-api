@@ -4,7 +4,8 @@ namespace App\Http\Controllers\Helpers\import\provider;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
+use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
 /**
  * Helper que analiza un archivo Excel de importación de proveedores utilizando la API de Claude (Anthropic).
@@ -81,16 +82,32 @@ class AiProviderAnalyzer
      *
      * @param  string $excel_path           Ruta absoluta al archivo Excel ya guardado en storage
      * @param  string $original_filename    Nombre del archivo tal como lo subió el usuario
+     * @param  array  $opciones             ['hoja' => int|null, 'hoja_nombre' => string|null, 'fila_encabezado' => int|null]
      * @return array                        Array con claves: column_mapping, provider_id (null), provider_confidence, row_count
      *
      * @throws \RuntimeException  Si el archivo no puede leerse o Claude no devuelve JSON válido
      */
-    public function analyze(string $excel_path, string $original_filename = ''): array
+    public function analyze(string $excel_path, string $original_filename = '', array $opciones = []): array
     {
+        /*
+         * Paso 0: hoja elegida y fila de encabezado.
+         *
+         * 🔴 $opciones ENTERO ES OPCIONAL: AdminSync\AiExcelImportController llama a los
+         * analyzers con dos argumentos y está fuera del alcance de esta misión. Un parámetro
+         * obligatorio acá es un ArgumentCountError en el endpoint que usa admin-api contra
+         * clientes reales.
+         */
+        $hoja_pedida = isset($opciones['hoja']) ? $opciones['hoja'] : null;
+        $hoja_nombre = isset($opciones['hoja_nombre']) ? $opciones['hoja_nombre'] : null;
+        $fila_pedida = isset($opciones['fila_encabezado']) ? $opciones['fila_encabezado'] : null;
+
+        /* Nombre antes que índice: el índice puede venir de SheetJS y no coincidir (T11 del plan). */
+        $indice_hoja = ExcelWorkbookReader::resolver_indice($excel_path, $hoja_pedida, $hoja_nombre);
+
         /*
          * Paso 1: Leer headers y filas de muestra del Excel.
          */
-        $sample_data = $this->read_sample_rows($excel_path);
+        $sample_data = $this->read_sample_rows($excel_path, $indice_hoja, $fila_pedida);
 
         /*
          * Paso 2: Construir el prompt y llamar a Claude.
@@ -115,7 +132,7 @@ class AiProviderAnalyzer
         /*
          * Paso 5: Contar el total real de filas de datos del Excel (excluye cabecera).
          */
-        $parsed['row_count'] = $this->count_data_rows($excel_path);
+        $parsed['row_count'] = $this->count_data_rows($excel_path, $indice_hoja, $fila_pedida);
 
         return $parsed;
     }
@@ -123,61 +140,67 @@ class AiProviderAnalyzer
     /**
      * Lee las primeras N filas del Excel y retorna un array con headers y muestra.
      *
-     * La primera fila se trata siempre como cabecera.
-     * Las siguientes filas son datos de muestra.
+     * La fila de cabecera ya NO es siempre la 1: la decide ExcelHeaderDetector con la regla
+     * de §1.3 del plan, que en un archivo normal sigue dando 1 y en uno con título y razón
+     * social arriba de la tabla da la fila del encabezado de verdad.
      *
-     * @param  string $excel_path  Ruta al archivo Excel
+     * @param  string   $excel_path       Ruta al archivo Excel
+     * @param  int      $indice_hoja      Hoja 0-based elegida por el usuario
+     * @param  int|null $fila_encabezado  Fila 1-based del encabezado; null = se detecta sola
      * @return array               ['headers' => [...], 'rows' => [[...], ...]]
      *
      * @throws \RuntimeException  Si el archivo no puede abrirse con OpenSpout
      */
-    protected function read_sample_rows(string $excel_path): array
+    protected function read_sample_rows(string $excel_path, $indice_hoja = 0, $fila_encabezado = null): array
     {
         $headers = [];
         $rows    = [];
 
-        /* Lector XLSX de OpenSpout para compatibilidad con los formatos ya aceptados. */
-        $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(true);
-        $reader->open($excel_path);
+        $fila_encabezado = $this->resolver_fila_de_encabezado($excel_path, $indice_hoja, $fila_encabezado);
 
-        /* Contador de fila leída en la hoja; la fila 1 es la cabecera. */
+        /*
+         * Se lee con preservar_filas_vacias = true a propósito: así el contador de filas es
+         * el número FÍSICO del Excel y coincide con el que devolvió el detector de encabezado.
+         */
+        $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, true);
+
+        /* Contador de fila física leída en la hoja. */
         $row_number = 0;
 
-        foreach ($reader->getSheetIterator() as $sheet) {
-            foreach ($sheet->getRowIterator() as $row) {
-                $row_number++;
+        foreach ($lectura->filas() as $row) {
+            $row_number++;
 
-                /* Extraemos los valores de las celdas como strings simples. */
-                $cells = [];
-                foreach ($row->getCells() as $cell) {
-                    $value = $cell->getValue();
-
-                    if ($value instanceof \DateTime) {
-                        $value = $value->format('Y-m-d');
-                    }
-
-                    $cells[] = (string) ($value ?? '');
-                }
-
-                if ($row_number === 1) {
-                    /* La primera fila contiene los encabezados de columna. */
-                    $headers = $cells;
-                } else {
-                    $rows[] = $cells;
-                }
-
-                /* Dejamos de leer una vez que tenemos suficientes filas de muestra. */
-                if ($row_number > self::SAMPLE_ROWS) {
-                    break;
-                }
+            /* Saltear todo lo que esté arriba de la cabecera detectada. */
+            if ($row_number < $fila_encabezado) {
+                continue;
             }
 
-            /* Solo procesamos la primera hoja del libro. */
-            break;
+            /* Extraemos los valores de las celdas como strings simples. */
+            $cells = [];
+            foreach ($row->getCells() as $cell) {
+                $value = $cell->getValue();
+
+                if ($value instanceof \DateTime) {
+                    $value = $value->format('Y-m-d');
+                }
+
+                $cells[] = (string) ($value ?? '');
+            }
+
+            if ($row_number === $fila_encabezado) {
+                /* Fila de encabezado. */
+                $headers = $cells;
+            } else {
+                $rows[] = $cells;
+            }
+
+            /* Dejamos de leer una vez que tenemos suficientes filas de muestra. */
+            if ($row_number >= $fila_encabezado + self::SAMPLE_ROWS) {
+                break;
+            }
         }
 
-        $reader->close();
+        $lectura->cerrar();
 
         if (empty($headers)) {
             throw new \RuntimeException('El archivo Excel está vacío o no tiene cabecera legible.');
@@ -478,40 +501,106 @@ PROMPT;
     }
 
     /**
-     * Cuenta el total de filas de datos del Excel (excluye la primera fila de cabecera).
+     * Cuenta el total de filas de datos del Excel (excluye la fila de cabecera).
      *
-     * @param  string $excel_path  Ruta absoluta al archivo Excel
+     * 🔴 T1 — criterio de preservar_filas_vacias unificado con el del detector de encabezado.
+     * El detector devuelve un número de fila FÍSICO; si acá se leyera con
+     * preservar_filas_vacias = false, ese número se compararía contra un contador de filas NO
+     * VACÍAS y cada fila vacía de arriba del encabezado se comería una fila de datos del total
+     * que se le muestra al usuario. Se lee físico y las vacías se descartan una por una, que
+     * es lo que hacía antes el flag.
+     *
+     * @param  string   $excel_path       Ruta absoluta al archivo Excel
+     * @param  int      $indice_hoja      Hoja 0-based elegida por el usuario
+     * @param  int|null $fila_encabezado  Fila 1-based del encabezado; null = se detecta sola
      * @return int                 Cantidad de filas de datos
      */
-    protected function count_data_rows(string $excel_path): int
+    protected function count_data_rows(string $excel_path, $indice_hoja = 0, $fila_encabezado = null): int
     {
-        /* Contador de filas de datos (sin contar la primera fila de cabecera). */
+        /* Contador de filas de datos (sin contar la fila de cabecera). */
         $data_row_count = 0;
 
-        $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(false);
-        $reader->open($excel_path);
+        $fila_encabezado = $this->resolver_fila_de_encabezado($excel_path, $indice_hoja, $fila_encabezado);
 
-        foreach ($reader->getSheetIterator() as $sheet) {
-            /* Bandera para saltar la primera fila (cabecera). */
-            $first_row_skipped = false;
+        $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, true);
 
-            foreach ($sheet->getRowIterator() as $row) {
-                if (!$first_row_skipped) {
-                    $first_row_skipped = true;
-                    continue;
-                }
+        $row_number = 0;
 
-                $data_row_count++;
+        foreach ($lectura->filas() as $row) {
+            $row_number++;
+
+            /* Saltear todo lo que esté arriba del encabezado, y el encabezado mismo. */
+            if ($row_number <= $fila_encabezado) {
+                continue;
             }
 
-            /* Solo procesamos la primera hoja. */
-            break;
+            $cells = [];
+            foreach ($row->getCells() as $cell) {
+                $value = $cell->getValue();
+
+                if ($value instanceof \DateTime) {
+                    $value = $value->format('Y-m-d');
+                }
+
+                $cells[] = (string) ($value ?? '');
+            }
+
+            /* Las filas completamente vacías que algunos Excel dejan al final no son datos. */
+            if ($this->fila_esta_vacia($cells)) {
+                continue;
+            }
+
+            $data_row_count++;
         }
 
-        $reader->close();
+        $lectura->cerrar();
 
         return $data_row_count;
+    }
+
+    /**
+     * Fila 1-based que se toma como encabezado: la que pidió el usuario, o la que decide
+     * ExcelHeaderDetector.
+     *
+     * 🔴 La regla vive en ExcelHeaderDetector y está espejada en JS en la SPA. Si cambia una,
+     * cambia la otra: el navegador calcula start_row con su copia y el backend arma el mapeo
+     * con ésta.
+     *
+     * @param  string   $excel_path
+     * @param  int      $indice_hoja
+     * @param  int|null $fila_encabezado
+     * @return int
+     */
+    protected function resolver_fila_de_encabezado($excel_path, $indice_hoja, $fila_encabezado)
+    {
+        if (!is_null($fila_encabezado) && is_numeric($fila_encabezado) && (int) $fila_encabezado >= 1) {
+            return (int) $fila_encabezado;
+        }
+
+        $deteccion = ExcelHeaderDetector::detectar_en($excel_path, $indice_hoja);
+
+        return (int) $deteccion['fila'];
+    }
+
+    /**
+     * Una fila es "vacía" cuando ninguna de sus celdas tiene contenido.
+     *
+     * Hace falta porque los lectores leen con preservar_filas_vacias = true (para que el
+     * número de fila sea el físico del Excel): si no se descartan acá, las filas vacías se
+     * cuentan como datos e inflan el total que ve el usuario.
+     *
+     * @param  array $celdas
+     * @return bool
+     */
+    protected function fila_esta_vacia(array $celdas)
+    {
+        foreach ($celdas as $celda) {
+            if (trim((string) $celda) !== '') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

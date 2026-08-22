@@ -9,9 +9,10 @@ use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
+use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
+use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
 /**
  * Helper que analiza un archivo Excel utilizando la API de Claude (Anthropic).
@@ -138,17 +139,52 @@ class AiExcelAnalyzer
      *
      * @param  string $excel_path           Ruta absoluta al archivo Excel ya guardado en storage
      * @param  string $original_filename    Nombre del archivo tal como lo subió el usuario (pista para proveedor)
+     * @param  array  $opciones             ['hoja' => int|null, 'hoja_nombre' => string|null, 'fila_encabezado' => int|null]
      * @return array                        Array con claves: column_mapping, provider_id, provider_confidence
      *
      * @throws \RuntimeException  Si el archivo no puede leerse o Claude no devuelve JSON válido
      */
-    public function analyze(string $excel_path, string $original_filename = ''): array
+    public function analyze(string $excel_path, string $original_filename = '', array $opciones = []): array
     {
+        /*
+         * Paso 0: hoja elegida y fila de encabezado.
+         *
+         * 🔴 $opciones ENTERO ES OPCIONAL, Y NO ES UN GUSTO DE ESTILO.
+         * AdminSync\AiExcelImportController llama analyze($excel_path, $original_filename)
+         * con DOS argumentos y está fuera del alcance de esta misión, así que no se toca.
+         * Un tercer parámetro obligatorio acá es un ArgumentCountError en el endpoint que
+         * usa admin-api contra clientes reales. Lo mismo vale para cada método de más abajo
+         * que suma 'hoja'/'fila_encabezado': todos con default, siempre.
+         */
+        $hoja_pedida     = isset($opciones['hoja']) ? $opciones['hoja'] : null;
+        $hoja_nombre     = isset($opciones['hoja_nombre']) ? $opciones['hoja_nombre'] : null;
+        $fila_pedida     = isset($opciones['fila_encabezado']) ? $opciones['fila_encabezado'] : null;
+
+        /* Nombre antes que índice: el índice puede venir de SheetJS y no coincidir (T11 del plan). */
+        $indice_hoja = ExcelWorkbookReader::resolver_indice($excel_path, $hoja_pedida, $hoja_nombre);
+
+        /* El libro entero se ofrece siempre, aunque tenga una sola hoja: la SPA arma el selector con esto. */
+        $hojas = ExcelWorkbookReader::listar_hojas($excel_path);
+
+        $encabezado = $this->resolver_encabezado($excel_path, $indice_hoja, $fila_pedida);
+
         /*
          * Paso 1: Leer headers y filas de muestra del Excel.
          * Limitamos la lectura para no cargar archivos grandes en memoria.
          */
-        $sample_data = $this->read_sample_rows($excel_path);
+        $sample_data = $this->read_sample_rows($excel_path, $indice_hoja, $encabezado['fila']);
+
+        /*
+         * Los encabezados que alimentan el prompt y el mapeo salen del detector, NO del
+         * read_sample_rows crudo. Son los de la misma fila, pero con las fusiones ya
+         * propagadas: Excel no escribe la celda cubierta por una fusión, así que "PRECIOS"
+         * sobre E1:F1 deja la columna F sin ningún nombre en el XML y el mapeo pierde una
+         * columna entera. read_sample_rows() se deja leyendo crudo a propósito (es lo que
+         * caracterizan los tests de no regresión de la unidad 1).
+         */
+        if (!empty($encabezado['columnas'])) {
+            $sample_data['headers'] = $encabezado['columnas'];
+        }
 
         /*
          * Paso 2: Cargar proveedores disponibles del usuario para que Claude
@@ -198,7 +234,7 @@ class AiExcelAnalyzer
          * Paso 6: Contar el total real de filas de datos del Excel (excluye cabecera)
          * para que el caller pueda informarlo al cliente sin estimaciones heurísticas.
          */
-        $parsed['row_count'] = $this->count_data_rows($excel_path);
+        $parsed['row_count'] = $this->count_data_rows($excel_path, $indice_hoja, $encabezado['fila']);
 
         /*
          * Paso 7: Extraer los índices 0-based de bar_code y provider_code del mapeo enriquecido
@@ -230,7 +266,8 @@ class AiExcelAnalyzer
             $bar_code_idx,
             $provider_code_idx,
             $parsed['provider_id'] ?? null,
-            $this->user_id
+            $this->user_id,
+            ['hoja' => $indice_hoja, 'fila_encabezado' => $encabezado['fila']]
         );
 
         /*
@@ -259,7 +296,9 @@ class AiExcelAnalyzer
          */
         $identification_chain_analysis = $this->analyze_identification_chain(
             $excel_path,
-            $parsed['column_mapping']
+            $parsed['column_mapping'],
+            $indice_hoja,
+            $encabezado['fila']
         );
         $parsed['placeholders']          = $identification_chain_analysis['placeholders'];
         $parsed['cadena_identificacion'] = $identification_chain_analysis['cadena_identificacion'];
@@ -277,7 +316,9 @@ class AiExcelAnalyzer
         $parsed['formatos_numericos'] = ExcelNumericFormatStats::analyze(
             $excel_path,
             $numeric_columns_map['indices'],
-            $numeric_columns_map['nombres']
+            $numeric_columns_map['nombres'],
+            6,
+            ['hoja' => $indice_hoja, 'fila_encabezado' => $encabezado['fila']]
         );
 
         /*
@@ -299,7 +340,165 @@ class AiExcelAnalyzer
          */
         $parsed['assistant_notes'] = $parsed['assistant_notes'] ?? [];
 
+        /*
+         * 🔴 LOS NOMBRES DE ESTAS CINCO CLAVES SON CONTRATO CON LA SPA (§1.4 del plan), que
+         * ya está codeada contra ellos. Si se le cambia el nombre a una, el modal deja de
+         * mostrar el aviso correspondiente y falla EN SILENCIO — no tira ningún error, sólo
+         * no avisa. Se agregan; ninguna clave existente cambia de nombre, tipo ni sentido.
+         */
+        $parsed['hojas'] = $hojas;
+
+        $parsed['hoja_elegida'] = [
+            'indice' => $indice_hoja,
+            'nombre' => $this->nombre_de_la_hoja($hojas, $indice_hoja),
+        ];
+
+        $parsed['encabezado_detectado'] = [
+            'fila'      => $encabezado['fila'],
+            'origen'    => $encabezado['origen'],
+            'motivo'    => $encabezado['motivo'],
+            'confianza' => $encabezado['confianza'],
+            'columnas'  => $encabezado['columnas'],
+        ];
+
+        /* Índices 0-based; [] en el caso normal. */
+        $parsed['columnas_sin_nombre'] = $encabezado['columnas_sin_nombre'];
+
+        /* Entero; 0 en el caso normal. */
+        $parsed['fusiones_aplicadas'] = (int) $encabezado['fusiones_aplicadas'];
+
         return $parsed;
+    }
+
+    /**
+     * Nombre de la hoja $indice dentro del listado que devolvió listar_hojas().
+     *
+     * @param  array $hojas
+     * @param  int   $indice
+     * @return string
+     */
+    protected function nombre_de_la_hoja(array $hojas, $indice)
+    {
+        foreach ($hojas as $hoja) {
+            if ((int) $hoja['indice'] === (int) $indice) {
+                return (string) $hoja['nombre'];
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Decide con qué fila de encabezado se va a trabajar y devuelve todo lo que hace falta
+     * saber sobre ella.
+     *
+     * @param  string   $excel_path
+     * @param  int      $indice_hoja
+     * @param  int|null $fila_pedida  Fila 1-based corregida a mano por el usuario, o null
+     * @return array    ['fila','origen','motivo','confianza','columnas','columnas_sin_nombre','fusiones_aplicadas']
+     */
+    protected function resolver_encabezado($excel_path, $indice_hoja, $fila_pedida)
+    {
+        $deteccion = ExcelHeaderDetector::detectar_en($excel_path, $indice_hoja);
+
+        $deteccion['origen'] = 'automatico';
+
+        $fila_pedida = (is_null($fila_pedida) || !is_numeric($fila_pedida)) ? null : (int) $fila_pedida;
+
+        if (is_null($fila_pedida) || $fila_pedida < 1 || $fila_pedida === $deteccion['fila']) {
+            return $deteccion;
+        }
+
+        /*
+         * El usuario corrigió la fila a mano en el paso 1 del modal: manda él, sin discutir.
+         * La detección automática igual se corrió, porque de ahí sale 'fusiones_aplicadas'
+         * (cuántas celdas del encabezado se llenaron propagando una fusión), que es una
+         * propiedad del archivo y no de la fila elegida.
+         */
+        $ventana = ExcelHeaderDetector::leer_ventana($excel_path, $indice_hoja);
+
+        $columnas = $this->columnas_de_la_fila($ventana, $fila_pedida);
+
+        $columnas_sin_nombre = [];
+
+        foreach ($columnas as $indice_columna => $valor) {
+            if ($valor === '') {
+                $columnas_sin_nombre[] = $indice_columna;
+            }
+        }
+
+        return [
+            'fila'                => $fila_pedida,
+            'origen'              => 'usuario',
+            'motivo'              => 'elegido_por_el_usuario',
+            'confianza'           => 'alta',
+            'columnas'            => $columnas,
+            'columnas_sin_nombre' => $columnas_sin_nombre,
+            'fusiones_aplicadas'  => $deteccion['fusiones_aplicadas'],
+        ];
+    }
+
+    /**
+     * Valores de una fila de la ventana, recortados y estirados al ancho útil de la ventana.
+     *
+     * Mismo criterio de ancho que usa ExcelHeaderDetector para la fila que elige él: la
+     * última columna con contenido en CUALQUIER fila de la ventana. Se mide contra toda la
+     * ventana y no contra la fila del encabezado porque el caso que hay que detectar es el
+     * contrario — el encabezado con MENOS columnas llenas que los datos, que es justo lo que
+     * deja una fusión que no se pudo leer.
+     *
+     * Si la fila pedida cae fuera de la ventana de 20 filas, devuelve [] y analyze() se
+     * queda con los encabezados crudos de read_sample_rows().
+     *
+     * @param  array $ventana  [numero_fila_1based => [valores...]]
+     * @param  int   $fila
+     * @return array
+     */
+    protected function columnas_de_la_fila(array $ventana, $fila)
+    {
+        if (!isset($ventana[$fila])) {
+            return [];
+        }
+
+        $ancho = 0;
+
+        foreach ($ventana as $valores) {
+            foreach ($valores as $indice_columna => $valor) {
+                if (trim((string) $valor) !== '' && ($indice_columna + 1) > $ancho) {
+                    $ancho = $indice_columna + 1;
+                }
+            }
+        }
+
+        $columnas = [];
+
+        for ($i = 0; $i < $ancho; $i++) {
+            $columnas[] = isset($ventana[$fila][$i]) ? trim((string) $ventana[$fila][$i]) : '';
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * Una fila es "vacía" cuando ninguna de sus celdas tiene contenido.
+     *
+     * Hace falta porque los lectores nuevos leen con preservar_filas_vacias = true (para que
+     * el número de fila sea el físico del Excel, el mismo que ve el usuario) y entonces las
+     * filas vacías del medio y del final llegan igual: si no se descartan acá, se cuentan
+     * como filas de datos y el row_count de la pantalla infla.
+     *
+     * @param  array $celdas
+     * @return bool
+     */
+    protected function fila_esta_vacia(array $celdas)
+    {
+        foreach ($celdas as $celda) {
+            if (trim((string) $celda) !== '') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -360,11 +559,13 @@ class AiExcelAnalyzer
      * con lo que va a pasar en la importación real. Si divergieran, la pantalla le
      * mentiría al usuario sobre lo que va a pasar con su archivo.
      *
-     * @param  string $excel_path      Ruta absoluta al Excel ya guardado en storage
-     * @param  array  $column_mapping  Mapeo de columnas enriquecido (con excel_column_index)
+     * @param  string   $excel_path       Ruta absoluta al Excel ya guardado en storage
+     * @param  array    $column_mapping   Mapeo de columnas enriquecido (con excel_column_index)
+     * @param  int      $indice_hoja      Hoja 0-based elegida por el usuario
+     * @param  int|null $fila_encabezado  Fila 1-based del encabezado; null o 1 = rama de siempre
      * @return array  ['placeholders' => [...], 'cadena_identificacion' => [...], 'nombres_duplicados' => [...]]
      */
-    protected function analyze_identification_chain(string $excel_path, array $column_mapping): array
+    protected function analyze_identification_chain(string $excel_path, array $column_mapping, $indice_hoja = 0, $fila_encabezado = null): array
     {
         /* Resultado vacío por defecto: se retorna si no hay ninguna columna identificadora mapeada, o si falla la lectura. */
         $empty_result = [
@@ -460,109 +661,142 @@ class AiExcelAnalyzer
          * porque el try/catch de abajo la necesita en el return final, fuera del scope del foreach. */
         $data_row_index = 0;
 
+        /*
+         * 🔴 INTERRUPTOR DE SEGURIDAD (§1.3 del plan). Con $fila_encabezado en null o en 1
+         * se toma la rama de HOY, byte por byte: preservar_filas_vacias = false, saltear la
+         * primera fila del iterador y numerar $data_row_index + 1. La rama nueva —números de
+         * fila FÍSICOS del Excel— sólo se enciende con $fila_encabezado > 1, o sea sólo en
+         * los archivos que hoy ya se leen mal (título y razón social contados como datos).
+         *
+         * NO "simplifiques" esto dejando una sola rama. La rama vieja no está de adorno: es
+         * lo que acota TODO el riesgo de esta misión a los archivos rotos y lo que hace que
+         * los tests de no regresión pasen por construcción. Los dos criterios de
+         * preservar_filas_vacias dan números distintos en cuanto hay una fila vacía en el
+         * medio, y esos números son los que se le muestran al usuario al lado de cada
+         * duplicado.
+         */
+        $usar_numeracion_fisica = (!is_null($fila_encabezado) && (int) $fila_encabezado > 1);
+        $fila_encabezado        = is_null($fila_encabezado) ? 1 : (int) $fila_encabezado;
+
         try {
             /* Mismo lector XLSX de OpenSpout que el resto del análisis, leyendo el archivo completo. */
-            $reader = ReaderEntityFactory::createXLSXReader();
-            $reader->setShouldPreserveEmptyRows(false);
-            $reader->open($excel_path);
+            $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, $usar_numeracion_fisica);
 
-            foreach ($reader->getSheetIterator() as $sheet) {
-                $header_skipped = false;
-                /* Contador de filas de datos (sin contar la cabecera). */
-                $data_row_index = 0;
+            $header_skipped = false;
+            /* Número de fila física dentro de la hoja (sólo tiene sentido en la rama nueva). */
+            $numero_fila = 0;
 
-                foreach ($sheet->getRowIterator() as $row) {
+            foreach ($lectura->filas() as $row) {
+                $numero_fila++;
+
+                if ($usar_numeracion_fisica) {
+                    /* Todo lo que está arriba del encabezado (título, razón social, vacías) no es dato. */
+                    if ($numero_fila <= $fila_encabezado) {
+                        continue;
+                    }
+                } else {
                     if (!$header_skipped) {
                         $header_skipped = true;
                         continue;
                     }
+                }
 
-                    $data_row_index++;
-                    /* Número de fila real en el Excel (1-based, incluye cabecera): la fila 1 es cabecera. */
-                    $excel_row_number = $data_row_index + 1;
+                /* Extraemos los valores de las celdas como strings simples. */
+                $cells = [];
+                foreach ($row->getCells() as $cell) {
+                    $value = $cell->getValue();
 
-                    /* Extraemos los valores de las celdas como strings simples. */
-                    $cells = [];
-                    foreach ($row->getCells() as $cell) {
-                        $value = $cell->getValue();
-
-                        if ($value instanceof \DateTime) {
-                            $value = $value->format('Y-m-d');
-                        }
-
-                        $cells[] = trim((string) ($value ?? ''));
+                    if ($value instanceof \DateTime) {
+                        $value = $value->format('Y-m-d');
                     }
 
-                    /* Detectar placeholders en cada columna identificadora mapeada. */
-                    foreach ($indices as $campo => $idx) {
-                        if (is_null($idx) || !isset($cells[$idx])) {
-                            continue;
-                        }
+                    $cells[] = trim((string) ($value ?? ''));
+                }
 
-                        $raw_value = $cells[$idx];
-                        if ($raw_value === '') {
-                            continue;
-                        }
+                if ($usar_numeracion_fisica && $this->fila_esta_vacia($cells)) {
+                    continue;
+                }
 
-                        if (IdentifierNormalizer::is_placeholder($raw_value)) {
-                            if (!isset($placeholders_data[$campo][$raw_value])) {
-                                $placeholders_data[$campo][$raw_value] = ['count' => 0, 'filas' => []];
-                            }
-                            $placeholders_data[$campo][$raw_value]['count']++;
-                            /* Limitamos a las primeras 10 filas por valor, igual que ExcelDuplicateStats. */
-                            if (count($placeholders_data[$campo][$raw_value]['filas']) < 10) {
-                                $placeholders_data[$campo][$raw_value]['filas'][] = $excel_row_number;
-                            }
-                        }
+                $data_row_index++;
+                /* Número de fila real en el Excel (1-based, incluye cabecera). */
+                $excel_row_number = $usar_numeracion_fisica ? $numero_fila : ($data_row_index + 1);
+
+                /* Detectar placeholders en cada columna identificadora mapeada. */
+                foreach ($indices as $campo => $idx) {
+                    if (is_null($idx) || !isset($cells[$idx])) {
+                        continue;
                     }
 
-                    /*
-                     * Cadena de identificación efectiva: misma prioridad y mismo normalizador
-                     * que ArticleIndexCache::find_with_index (id -> bar_code -> sku -> provider_code -> name).
-                     */
-                    $id_val            = !is_null($indices['id'])            ? IdentifierNormalizer::normalize($cells[$indices['id']] ?? null)            : null;
-                    $bar_code_val      = !is_null($indices['bar_code'])      ? IdentifierNormalizer::normalize($cells[$indices['bar_code']] ?? null)      : null;
-                    $sku_val           = !is_null($indices['sku'])           ? IdentifierNormalizer::normalize($cells[$indices['sku']] ?? null)           : null;
-                    $provider_code_val = !is_null($indices['provider_code']) ? IdentifierNormalizer::normalize($cells[$indices['provider_code']] ?? null) : null;
-                    $name_val          = !is_null($indices['name'])          ? IdentifierNormalizer::normalize($cells[$indices['name']] ?? null)          : null;
-
-                    if (!is_null($id_val)) {
-                        $escalon_counts['id']++;
-                    } elseif (!is_null($bar_code_val)) {
-                        $escalon_counts['bar_code']++;
-                    } elseif (!is_null($sku_val)) {
-                        $escalon_counts['sku']++;
-                    } elseif (!is_null($provider_code_val)) {
-                        $escalon_counts['provider_code']++;
-                    } elseif (!is_null($name_val)) {
-                        $escalon_counts['name']++;
-                    } else {
-                        $escalon_counts['sin_identificador']++;
+                    $raw_value = $cells[$idx];
+                    if ($raw_value === '') {
+                        continue;
                     }
 
-                    /*
-                     * Nombres repetidos: se cuenta sobre cualquier fila con nombre normalizado
-                     * (no solo las que caen en el escalón "name"), como aviso general del archivo.
-                     */
-                    if (!is_null($name_val)) {
-                        $name_key = mb_strtolower($name_val);
-                        if (!isset($nombres_data[$name_key])) {
-                            $nombres_data[$name_key] = 0;
+                    if (IdentifierNormalizer::is_placeholder($raw_value)) {
+                        if (!isset($placeholders_data[$campo][$raw_value])) {
+                            $placeholders_data[$campo][$raw_value] = ['count' => 0, 'filas' => []];
                         }
-                        $nombres_data[$name_key]++;
+                        $placeholders_data[$campo][$raw_value]['count']++;
+                        /* Limitamos a las primeras 10 filas por valor, igual que ExcelDuplicateStats. */
+                        if (count($placeholders_data[$campo][$raw_value]['filas']) < 10) {
+                            $placeholders_data[$campo][$raw_value]['filas'][] = $excel_row_number;
+                        }
                     }
                 }
 
-                /* Solo procesamos la primera hoja del libro. */
-                break;
+                /*
+                 * Cadena de identificación efectiva: misma prioridad y mismo normalizador
+                 * que ArticleIndexCache::find_with_index (id -> bar_code -> sku -> provider_code -> name).
+                 */
+                $id_val            = !is_null($indices['id'])            ? IdentifierNormalizer::normalize($cells[$indices['id']] ?? null)            : null;
+                $bar_code_val      = !is_null($indices['bar_code'])      ? IdentifierNormalizer::normalize($cells[$indices['bar_code']] ?? null)      : null;
+                $sku_val           = !is_null($indices['sku'])           ? IdentifierNormalizer::normalize($cells[$indices['sku']] ?? null)           : null;
+                $provider_code_val = !is_null($indices['provider_code']) ? IdentifierNormalizer::normalize($cells[$indices['provider_code']] ?? null) : null;
+                $name_val          = !is_null($indices['name'])          ? IdentifierNormalizer::normalize($cells[$indices['name']] ?? null)          : null;
+
+                if (!is_null($id_val)) {
+                    $escalon_counts['id']++;
+                } elseif (!is_null($bar_code_val)) {
+                    $escalon_counts['bar_code']++;
+                } elseif (!is_null($sku_val)) {
+                    $escalon_counts['sku']++;
+                } elseif (!is_null($provider_code_val)) {
+                    $escalon_counts['provider_code']++;
+                } elseif (!is_null($name_val)) {
+                    $escalon_counts['name']++;
+                } else {
+                    $escalon_counts['sin_identificador']++;
+                }
+
+                /*
+                 * Nombres repetidos: se cuenta sobre cualquier fila con nombre normalizado
+                 * (no solo las que caen en el escalón "name"), como aviso general del archivo.
+                 */
+                if (!is_null($name_val)) {
+                    $name_key = mb_strtolower($name_val);
+                    if (!isset($nombres_data[$name_key])) {
+                        $nombres_data[$name_key] = 0;
+                    }
+                    $nombres_data[$name_key]++;
+                }
             }
 
-            $reader->close();
+            $lectura->cerrar();
 
         } catch (\Throwable $e) {
+            /*
+             * T9: este catch devuelve TODO en cero y la pantalla termina diciendo
+             * "0 duplicados" en vez de "no se pudo leer". Ese comportamiento no se cambia
+             * acá (está fuera del alcance), pero la hoja y la fila de encabezado SÍ van al
+             * contexto del log: sin esos dos datos, el próximo que caiga en este error no
+             * tiene con qué reproducirlo — el mismo archivo se lee bien o mal según qué
+             * hoja y qué fila se le hayan pedido.
+             */
             Log::error('AiExcelAnalyzer: error al analizar la cadena de identificación', [
-                'message' => $e->getMessage(),
-                'file'    => $excel_path,
+                'message'         => $e->getMessage(),
+                'file'            => $excel_path,
+                'hoja'            => $indice_hoja,
+                'fila_encabezado' => $fila_encabezado,
             ]);
             $empty_result['cadena_identificacion']['motivo'] = 'error_de_lectura';
             return $empty_result;
@@ -615,53 +849,28 @@ class AiExcelAnalyzer
     }
 
     /**
-     * Recorre la hoja de un reader ya abierto y retorna el número de fila (1-based)
-     * de la primera fila que tenga al menos una celda con contenido no vacío.
+     * Fila 1-based que se toma como encabezado de la hoja.
      *
-     * Retorna 1 si todas las filas están vacías o el archivo no tiene filas.
+     * El nombre quedo historico: hoy NO devuelve "la primera fila no vacia" a secas, sino
+     * lo que decide ExcelHeaderDetector con la regla de §1.3 del plan (la primera fila no
+     * vacia sigue siendo la respuesta en el caso normal, y por eso los once fixtures viejos
+     * siguen dando 1). Se conserva el nombre porque es el punto de entrada que ya usaban
+     * read_sample_rows() y count_data_rows(), y renombrarlo no arregla nada.
      *
-     * @param  string $excel_path  Ruta al archivo Excel
-     * @return int                 Número de fila (1-based) de la primera fila no vacía
+     * 🔴 La regla vive en ExcelHeaderDetector y esta espejada en JS en
+     * `empresa-spa/src/components/listado/modals/ai-excel-import/Index.vue`
+     * (`detect_header_row()`). Si cambia una, cambia la otra: el navegador calcula start_row
+     * con su copia y el backend arma el mapeo con esta.
+     *
+     * @param  string $excel_path   Ruta al archivo Excel
+     * @param  int    $indice_hoja  Hoja 0-based elegida por el usuario
+     * @return int                  Numero de fila (1-based) del encabezado
      */
-    protected function find_first_non_empty_row(string $excel_path): int
+    protected function find_first_non_empty_row(string $excel_path, $indice_hoja = 0): int
     {
-        $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(true);
-        $reader->open($excel_path);
+        $deteccion = ExcelHeaderDetector::detectar_en($excel_path, $indice_hoja);
 
-        /* Número de fila Excel (1-based) donde empieza el contenido real. */
-        $first_non_empty_row = 1;
-        $row_number = 0;
-
-        foreach ($reader->getSheetIterator() as $sheet) {
-            foreach ($sheet->getRowIterator() as $row) {
-                $row_number++;
-
-                foreach ($row->getCells() as $cell) {
-                    $value = $cell->getValue();
-
-                    if ($value instanceof \DateTime) {
-                        $value = $value->format('Y-m-d');
-                    }
-
-                    $str_value = trim((string)($value ?? ''));
-
-                    if ($str_value !== '') {
-                        $first_non_empty_row = $row_number;
-                        $reader->close();
-                        return $first_non_empty_row;
-                    }
-                }
-            }
-
-            /* Solo primera hoja. */
-            break;
-        }
-
-        $reader->close();
-
-        /* Si todo está vacío, retornar 1 como fallback (mismo comportamiento histórico). */
-        return 1;
+        return (int) $deteccion['fila'];
     }
 
     /**
@@ -670,73 +879,72 @@ class AiExcelAnalyzer
      * Detecta la primera fila no vacía del archivo (soporta filas vacías al inicio)
      * y la trata como cabecera; las siguientes filas son datos de muestra.
      *
-     * @param  string $excel_path  Ruta al archivo Excel
+     * @param  string   $excel_path       Ruta al archivo Excel
+     * @param  int      $indice_hoja      Hoja 0-based elegida por el usuario
+     * @param  int|null $fila_encabezado  Fila 1-based del encabezado; null = se detecta sola
      * @return array               ['headers' => [...], 'rows' => [[...], ...]]
      *
      * @throws \RuntimeException  Si el archivo no puede abrirse con OpenSpout
      */
-    protected function read_sample_rows(string $excel_path): array
+    protected function read_sample_rows(string $excel_path, $indice_hoja = 0, $fila_encabezado = null): array
     {
         $headers = [];
         $rows = [];
 
         /*
          * Detectar en qué fila empieza el contenido real del Excel
-         * (puede haber filas vacías al inicio del archivo).
+         * (puede haber filas vacías, un título y una razón social al inicio del archivo).
          */
-        $header_row_number = $this->find_first_non_empty_row($excel_path);
+        $header_row_number = (is_null($fila_encabezado) || (int) $fila_encabezado < 1)
+            ? $this->find_first_non_empty_row($excel_path, $indice_hoja)
+            : (int) $fila_encabezado;
 
         /*
-         * Usamos el lector XLSX de OpenSpout, el mismo que InitExcelImport,
-         * para garantizar compatibilidad con los formatos ya aceptados.
+         * Se lee con preservar_filas_vacias = true a propósito: así el contador de filas es
+         * el número FÍSICO del Excel y coincide con el que devolvió el detector de
+         * encabezado. Si acá se saltearan las vacías, la fila 4 del Excel sería la 3 del
+         * contador y el encabezado se buscaría en la fila equivocada.
          */
-        $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(true);
-        $reader->open($excel_path);
+        $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, true);
 
         $row_number = 0;
         $header_found = false;
 
-        foreach ($reader->getSheetIterator() as $sheet) {
-            foreach ($sheet->getRowIterator() as $row) {
-                $row_number++;
+        foreach ($lectura->filas() as $row) {
+            $row_number++;
 
-                /* Saltear filas vacías anteriores a la cabecera detectada. */
-                if ($row_number < $header_row_number) {
-                    continue;
-                }
-
-                /* Extraemos los valores celdas como strings simples. */
-                $cells = [];
-                foreach ($row->getCells() as $cell) {
-                    $value = $cell->getValue();
-
-                    if ($value instanceof \DateTime) {
-                        $value = $value->format('Y-m-d');
-                    }
-
-                    $cells[] = (string)($value ?? '');
-                }
-
-                if (!$header_found) {
-                    /* Primera fila no vacía: encabezados de columna. */
-                    $headers = $cells;
-                    $header_found = true;
-                } else {
-                    $rows[] = $cells;
-                }
-
-                /* Leer cabecera + SAMPLE_ROWS filas de datos. */
-                if ($row_number >= $header_row_number + self::SAMPLE_ROWS) {
-                    break;
-                }
+            /* Saltear todo lo que esté arriba de la cabecera detectada. */
+            if ($row_number < $header_row_number) {
+                continue;
             }
 
-            /* Solo procesamos la primera hoja del libro. */
-            break;
+            /* Extraemos los valores celdas como strings simples. */
+            $cells = [];
+            foreach ($row->getCells() as $cell) {
+                $value = $cell->getValue();
+
+                if ($value instanceof \DateTime) {
+                    $value = $value->format('Y-m-d');
+                }
+
+                $cells[] = (string)($value ?? '');
+            }
+
+            if (!$header_found) {
+                /* Fila de encabezado. */
+                $headers = $cells;
+                $header_found = true;
+            } else {
+                $rows[] = $cells;
+            }
+
+            /* Leer cabecera + SAMPLE_ROWS filas de datos. */
+            if ($row_number >= $header_row_number + self::SAMPLE_ROWS) {
+                break;
+            }
         }
 
-        $reader->close();
+        $lectura->cerrar();
 
         if (empty($headers)) {
             throw new \RuntimeException('El archivo Excel está vacío o no tiene cabecera legible.');
@@ -1286,14 +1494,40 @@ PROMPT;
      */
     protected function enrich_column_mapping(array $column_mapping, array $headers): array
     {
-        /* Índice por nombre de encabezado normalizado para ubicar la columna en el Excel. */
-        $header_index_by_name = [];
+        /*
+         * 🔴 T3 — LISTA DE ÍNDICES POR NOMBRE, NO EL PRIMERO. ES EL RIESGO MÁS CARO DE ESTA
+         * MISIÓN Y ACÁ ES DONDE SE EVITA.
+         *
+         * Hasta acá esto era `if (!isset($header_index_by_name[$key])) { ...= $header_index; }`:
+         * se quedaba con el PRIMER índice de cada nombre y descartaba los demás. Con una
+         * cabecera "PRECIOS" fusionada sobre E1:F1, la propagación de la fusión deja el mismo
+         * nombre en las columnas 4 y 5; si Claude devuelve dos ítems con
+         * excel_column: "PRECIOS" (uno para costo y otro para precio), los DOS se llevaban el
+         * índice 4. Resultado: costo y precio del catálogo de un cliente importados desde la
+         * MISMA celda del Excel, sin un solo error en pantalla que lo denuncie.
+         *
+         * Por eso el mapa es una lista y se consume en orden: el primer ítem que reclama
+         * "PRECIOS" se lleva el 4, el segundo el 5. De paso arregla un bug latente que ya
+         * existía sin fusiones de por medio, en cualquier planilla que repita un nombre de
+         * columna.
+         *
+         * Si alguna vez te tienta "simplificar" esto de vuelta a un índice por nombre:
+         * el caso que se rompe es costo y precio leyendo la misma columna, y no hace ruido.
+         */
+        $header_indexes_by_name = [];
         foreach ($headers as $header_index => $header_text) {
             $normalized_key = $this->normalize_header_key($header_text);
-            if ($normalized_key !== '' && !isset($header_index_by_name[$normalized_key])) {
-                $header_index_by_name[$normalized_key] = $header_index;
+            if ($normalized_key === '') {
+                continue;
             }
+            if (!isset($header_indexes_by_name[$normalized_key])) {
+                $header_indexes_by_name[$normalized_key] = [];
+            }
+            $header_indexes_by_name[$normalized_key][] = $header_index;
         }
+
+        /* Cuántos índices de cada nombre ya se repartieron: nombre normalizado => cantidad. */
+        $header_indexes_consumed = [];
 
         $enriched_mapping = [];
 
@@ -1315,8 +1549,26 @@ PROMPT;
              * si no hay match, usamos la posición en el array (orden de Claude).
              */
             $excel_column_index = $array_position;
-            if ($normalized_excel_name !== '' && isset($header_index_by_name[$normalized_excel_name])) {
-                $excel_column_index = $header_index_by_name[$normalized_excel_name];
+            if ($normalized_excel_name !== '' && isset($header_indexes_by_name[$normalized_excel_name])) {
+                $indices_del_nombre = $header_indexes_by_name[$normalized_excel_name];
+
+                $ya_repartidos = isset($header_indexes_consumed[$normalized_excel_name])
+                    ? $header_indexes_consumed[$normalized_excel_name]
+                    : 0;
+
+                if ($ya_repartidos < count($indices_del_nombre)) {
+                    $excel_column_index = $indices_del_nombre[$ya_repartidos];
+                    $header_indexes_consumed[$normalized_excel_name] = $ya_repartidos + 1;
+                } else {
+                    /*
+                     * Claude devolvió más ítems con ese nombre que columnas con ese nombre
+                     * hay en el archivo (se lo inventó). No hay índice libre que darle: se
+                     * repite el último, que es el comportamiento de siempre para un ítem de
+                     * más. Los primeros N, que son los que corresponden a columnas reales,
+                     * ya se fueron con índices distintos.
+                     */
+                    $excel_column_index = $indices_del_nombre[count($indices_del_nombre) - 1];
+                }
             }
 
             /* Alineamos system_property al contrato del importador (codigo_de_proveedor, etc.). */
@@ -1517,49 +1769,69 @@ PROMPT;
     /**
      * Cuenta el total de filas de datos del Excel (excluye la fila de cabecera detectada).
      *
-     * Detecta la primera fila no vacía como cabecera y cuenta solo las filas posteriores.
-     * Realiza una pasada completa sobre la primera hoja para obtener el conteo real.
+     * Detecta la fila de cabecera y cuenta solo las filas posteriores que tengan algo.
+     * Realiza una pasada completa sobre la hoja elegida para obtener el conteo real.
      *
-     * @param  string $excel_path  Ruta absoluta al archivo Excel
+     * 🔴 T1 — ACÁ HABÍA UN BUG QUE YA EXISTÍA ANTES DE ESTA MISIÓN, Y ASÍ SE ARREGLÓ.
+     * find_first_non_empty_row() lee con preservar_filas_vacias = TRUE y devuelve un número
+     * de fila FÍSICO; este conteo leía con preservar_filas_vacias = FALSE y comparaba ese
+     * número físico contra un contador de filas NO VACÍAS. Con dos filas vacías arriba del
+     * encabezado ya se perdían dos filas de datos del total que se le muestra al usuario, y
+     * con el encabezado en la fila 4 se perderían tres. Los dos criterios están unificados
+     * en el físico: se lee con preservar_filas_vacias = true (mismo número de fila que el
+     * detector) y las filas vacías se descartan una por una acá adentro, que es lo que hacía
+     * antes el flag. NO vuelvas a poner false: el número vuelve a corresponder a otra cosa.
+     *
+     * @param  string   $excel_path       Ruta absoluta al archivo Excel
+     * @param  int      $indice_hoja      Hoja 0-based elegida por el usuario
+     * @param  int|null $fila_encabezado  Fila 1-based del encabezado; null = se detecta sola
      * @return int                 Cantidad de filas de datos (0 si el archivo está vacío o solo tiene cabecera)
      */
-    protected function count_data_rows(string $excel_path): int
+    protected function count_data_rows(string $excel_path, $indice_hoja = 0, $fila_encabezado = null): int
     {
         /*
-         * Detectar dónde empieza el contenido real (filas vacías al inicio del Excel).
+         * Detectar dónde empieza el contenido real (filas vacías, título y razón social
+         * arriba de la tabla).
          */
-        $header_row_number = $this->find_first_non_empty_row($excel_path);
+        $header_row_number = (is_null($fila_encabezado) || (int) $fila_encabezado < 1)
+            ? $this->find_first_non_empty_row($excel_path, $indice_hoja)
+            : (int) $fila_encabezado;
 
         /* Contador de filas de datos (sin contar la fila de cabecera). */
         $data_row_count = 0;
 
-        /*
-         * Usamos setShouldPreserveEmptyRows(false) para no contar filas completamente vacías
-         * que algunos Excel incluyen al final del rango.
-         */
-        $reader = ReaderEntityFactory::createXLSXReader();
-        $reader->setShouldPreserveEmptyRows(false);
-        $reader->open($excel_path);
+        $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, true);
 
         $row_number = 0;
 
-        foreach ($reader->getSheetIterator() as $sheet) {
-            foreach ($sheet->getRowIterator() as $row) {
-                $row_number++;
+        foreach ($lectura->filas() as $row) {
+            $row_number++;
 
-                /* Saltear filas vacías iniciales y la fila de cabecera. */
-                if ($row_number <= $header_row_number) {
-                    continue;
-                }
-
-                $data_row_count++;
+            /* Saltear todo lo que esté arriba del encabezado, y el encabezado mismo. */
+            if ($row_number <= $header_row_number) {
+                continue;
             }
 
-            /* Solo procesamos la primera hoja. */
-            break;
+            $cells = [];
+            foreach ($row->getCells() as $cell) {
+                $value = $cell->getValue();
+
+                if ($value instanceof \DateTime) {
+                    $value = $value->format('Y-m-d');
+                }
+
+                $cells[] = (string) ($value ?? '');
+            }
+
+            /* Las filas completamente vacías que algunos Excel dejan al final no son datos. */
+            if ($this->fila_esta_vacia($cells)) {
+                continue;
+            }
+
+            $data_row_count++;
         }
 
-        $reader->close();
+        $lectura->cerrar();
 
         return $data_row_count;
     }
@@ -1596,10 +1868,12 @@ PROMPT;
      * @param  string $excel_path                        Ruta absoluta al Excel ya guardado en storage
      * @param  array  $detalle_provider_codes_duplicados  ExcelDuplicateStats::analyze()['detalle_provider_codes_duplicados']
      * @param  array  $column_mapping                     Mapeo enriquecido de columnas (para ubicar la columna nombre)
+     * @param  int    $indice_hoja                        Hoja 0-based elegida por el usuario
+     * @param  int|null $fila_encabezado                  Fila 1-based del encabezado; null o 1 = numeración de siempre
      * @return array  [['codigo' => string, 'nombres' => string[]], ...] — vacío si no hay columna
      *                 nombre mapeada, no hay duplicados, o falla la lectura del archivo
      */
-    public function build_duplicados_con_nombres(string $excel_path, array $detalle_provider_codes_duplicados, array $column_mapping): array
+    public function build_duplicados_con_nombres(string $excel_path, array $detalle_provider_codes_duplicados, array $column_mapping, $indice_hoja = 0, $fila_encabezado = null): array
     {
         if (empty($detalle_provider_codes_duplicados)) {
             return [];
@@ -1636,46 +1910,49 @@ PROMPT;
             return [];
         }
 
+        /*
+         * Mismo interruptor de seguridad que el resto: los números de fila del mapa de arriba
+         * los produjo ExcelDuplicateStats, así que acá hay que contar con EL MISMO criterio o
+         * los nombres salen de las filas equivocadas. Con fila_encabezado en null o 1 se
+         * cuenta como siempre (sin filas vacías); con el encabezado corrido, filas físicas.
+         */
+        $usar_numeracion_fisica = (!is_null($fila_encabezado) && (int) $fila_encabezado > 1);
+
         try {
-            $reader = ReaderEntityFactory::createXLSXReader();
-            $reader->setShouldPreserveEmptyRows(false);
-            $reader->open($excel_path);
+            $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, $usar_numeracion_fisica);
 
-            foreach ($reader->getSheetIterator() as $sheet) {
-                $row_number = 0;
+            $row_number = 0;
 
-                foreach ($sheet->getRowIterator() as $row) {
-                    $row_number++;
+            foreach ($lectura->filas() as $row) {
+                $row_number++;
 
-                    if (!isset($fila_a_codigo[$row_number])) {
-                        continue;
-                    }
-
-                    $cells = [];
-                    foreach ($row->getCells() as $cell) {
-                        $value = $cell->getValue();
-
-                        if ($value instanceof \DateTime) {
-                            $value = $value->format('Y-m-d');
-                        }
-
-                        $cells[] = trim((string) ($value ?? ''));
-                    }
-
-                    $nombre = $cells[$nombre_column_index] ?? '';
-                    if ($nombre !== '') {
-                        $nombres_por_codigo[$fila_a_codigo[$row_number]][] = $nombre;
-                    }
+                if (!isset($fila_a_codigo[$row_number])) {
+                    continue;
                 }
 
-                /* Solo procesamos la primera hoja del libro. */
-                break;
+                $cells = [];
+                foreach ($row->getCells() as $cell) {
+                    $value = $cell->getValue();
+
+                    if ($value instanceof \DateTime) {
+                        $value = $value->format('Y-m-d');
+                    }
+
+                    $cells[] = trim((string) ($value ?? ''));
+                }
+
+                $nombre = $cells[$nombre_column_index] ?? '';
+                if ($nombre !== '') {
+                    $nombres_por_codigo[$fila_a_codigo[$row_number]][] = $nombre;
+                }
             }
 
-            $reader->close();
+            $lectura->cerrar();
         } catch (\Throwable $e) {
             Log::warning('AiExcelAnalyzer: error al armar nombres de duplicados de provider_code', [
-                'message' => $e->getMessage(),
+                'message'         => $e->getMessage(),
+                'hoja'            => $indice_hoja,
+                'fila_encabezado' => $fila_encabezado,
             ]);
             return [];
         }
