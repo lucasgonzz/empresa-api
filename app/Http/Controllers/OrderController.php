@@ -44,21 +44,6 @@ class OrderController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    // function updateStatus(Request $request, $id) {
-    //     $model = Order::find($id);
-
-    //     // OrderHelper::checkPaymentCardInfo($model);
-    //     $model->order_status_id = $request->order_status_id;
-    //     $model->save();
-    //     $model = Order::find($id);
-
-    //     // OrderHelper::sendMail($model);
-    //     CreateSaleOrderHelper::save_sale($model, $this);
-        
-    //     $this->sendAddModelNotification('Order', $model->id);
-    //     return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
-    // }
-
     function cancel(Request $request, $id) {
         $model = Order::find($id);
         $model->order_status_id = $this->getModelBy('order_statuses', 'name', 'Cancelado', false, 'id');
@@ -87,13 +72,39 @@ class OrderController extends Controller
         $prev_status = $model->order_status;
 
         $model->order_status_id = $request->order_status_id;
-        $model->address_id = $request->address_id;
+
+        /**
+         * `address_id` y `articles` se tocan SOLO si la request los trae.
+         *
+         * 🔴 No lo simplifiques a la asignacion directa de antes. Este endpoint tiene dos
+         * consumidores con payloads distintos: el formulario del pedido manda el modelo entero
+         * (incluidos `articles` y `address_id`), y el boton "Confirmar pedido"
+         * (`BtnStatus.vue`) manda unicamente `order_status_id`. Con la asignacion incondicional,
+         * el boton dejaba `address_id` en null y —peor— `GeneralHelper::attachModels()` arranca
+         * con un `detach()` incondicional (GeneralHelper.php:103), asi que el pedido perdia
+         * todos sus renglones y la venta que nace despues salia vacia y sin descontar stock.
+         */
+        if ($request->has('address_id')) {
+            $model->address_id = $request->address_id;
+        }
+
         $model->save();
-        
-        GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
-        
-        $model->total = OrderHelper::get_total($model);
-        $model->save();
+
+        /**
+         * El total se recalcula SOLO cuando se tocaron los renglones.
+         *
+         * 🔴 Tampoco lo saques de adentro del if. `OrderHelper::get_total()` suma los pivotes de
+         * `articles` y `promocion_vinotecas` e ignora cupones y descuentos/recargos de metodo de
+         * pago, que si estan contemplados en el total con el que el pedido nace del lado de la
+         * tienda. Recalcularlo cuando nadie toco los renglones pisaria ese total con otro numero.
+         */
+        if ($request->has('articles')) {
+
+            GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
+
+            $model->total = OrderHelper::get_total($model);
+            $model->save();
+        }
 
         /**
          * Estado nuevo del pedido luego del update.
