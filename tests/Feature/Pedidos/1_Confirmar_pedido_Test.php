@@ -572,29 +572,38 @@ class Confirmar_pedido_Test extends EmpresaTestCase
      * parcial que no lo trajera terminaba en un QueryException 500. El estado tiene que quedar
      * como estaba y no tiene que nacer ninguna venta.
      *
+     * Se prueban los DOS payloads que la columna no acepta: la clave ausente y la clave presente
+     * con valor null. No son el mismo caso — `$request->has()` da true para el segundo, asi que
+     * una guarda escrita con `has()` pasa el primero y rompe con el segundo.
+     *
      * @group pedidos
      * @test
      */
     public function un_payload_sin_estado_no_rompe()
     {
-        $cliente = $this->cliente_cc();
+        foreach ([[], ['order_status_id' => null]] as $extra) {
 
-        $pedido = $this->crear_pedido($cliente->id);
+            $cliente = $this->cliente_cc();
 
-        $estado_previo = $pedido->order_status_id;
+            $pedido = $this->crear_pedido($cliente->id);
 
-        $this->putJson('api/order/'.$pedido->id, ['address_id' => $pedido->address_id])
-             ->assertStatus(200);
+            $estado_previo = $pedido->order_status_id;
 
-        $this->assertEquals(
-            $estado_previo,
-            $pedido->fresh()->order_status_id,
-            'Un payload sin order_status_id cambio el estado del pedido.'
-        );
+            $payload = array_merge(['address_id' => $pedido->address_id], $extra);
 
-        $this->assertNull(
-            Sale::where('order_id', $pedido->id)->first(),
-            'Un payload sin order_status_id llego a crear una venta.'
-        );
+            $this->putJson('api/order/'.$pedido->id, $payload)
+                 ->assertStatus(200);
+
+            $this->assertEquals(
+                $estado_previo,
+                $pedido->fresh()->order_status_id,
+                'Un payload sin order_status_id usable cambio el estado del pedido.'
+            );
+
+            $this->assertNull(
+                Sale::where('order_id', $pedido->id)->first(),
+                'Un payload sin order_status_id usable llego a crear una venta.'
+            );
+        }
     }
 }

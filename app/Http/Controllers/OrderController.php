@@ -83,8 +83,13 @@ class OrderController extends Controller
          *
          * `order_status_id` entra en la misma regla y no por simetria: `orders.order_status_id` es
          * NOT NULL, asi que un payload que no lo traiga rompia con un QueryException 500.
+         *
+         * Se pregunta por `is_null()` y no por `has()` por el mismo motivo que los renglones usan
+         * `is_array()`: `has()` da true tambien cuando la clave viene con valor null, que es
+         * justo el caso que la columna no acepta. Una guarda que deja pasar lo que dice frenar no
+         * es una guarda.
          */
-        if ($request->has('order_status_id')) {
+        if (!is_null($request->order_status_id)) {
             $model->order_status_id = $request->order_status_id;
         }
 
