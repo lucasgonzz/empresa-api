@@ -168,11 +168,20 @@ class OrderController extends Controller
                  * La venta de un pedido la crea `CreateSaleOrderHelper` sin pasar por ahí, así que un
                  * cliente al tope de su límite no podía comprar en el mostrador y sí desde la tienda.
                  *
-                 * 🔴 Va ANTES de `save_sale()` y no adentro. `SaleHelper::attachProperies()` descuenta
-                 * stock (`attachArticles`) antes de llegar a `create_current_acount()`: un chequeo
-                 * más abajo dejaría el stock ido. Y va en el controller y no en el helper porque los
-                 * caminos de Tienda Nube y Mercado Libre también pasan por `save_sale()` y no tienen
-                 * a quién devolverle un 422 (`OrderDownloaderService` corre sin request).
+                 * Lo que garantiza que un rechazo no deje nada escrito es la TRANSACCIÓN de
+                 * arriba, no la posición de estas líneas: el `rollBack()` del 422 revierte por
+                 * igual el estado del pedido, el stock y el movimiento de cuenta corriente. Que el
+                 * chequeo esté antes de `save_sale()` es para no hacer el trabajo al pedo
+                 * —`attachProperies()` descuenta stock, crea comisiones, toca caja y puntos— ni
+                 * tomar los locks de `num('sales')` para después revertirlos.
+                 *
+                 * ⚠️ Y como el que aísla es el rollback, esto depende de InnoDB: con tablas MyISAM
+                 * es un no-op silencioso.
+                 *
+                 * 🔴 Va en el controller y no adentro de `save_sale()` porque los caminos de
+                 * Tienda Nube y Mercado Libre también pasan por ese helper y no tienen a quién
+                 * devolverle un 422 (`OrderDownloaderService` corre sin request). Además esas
+                 * ventas nacen sin `client_id`, o sea sin cuenta corriente que pueda excederse.
                  */
                 $error_limite_credito = $this->chequear_limite_credito_del_pedido($model, $request);
 
@@ -219,7 +228,9 @@ class OrderController extends Controller
      */
     private function chequear_limite_credito_del_pedido($model, $request) {
 
-        if ($request->ignorar_limite_credito) {
+        // `boolean()` y no el truthy pelado: por form-data la bandera puede llegar como el string
+        // "false", que a secas daría true y saltearía el aviso justo cuando nadie lo pidió.
+        if ($request->boolean('ignorar_limite_credito')) {
             return null;
         }
 

@@ -30,12 +30,26 @@ use Tests\EmpresaTestCase;
  * Igual que en las suites 1 y 2 de esta carpeta, los saldos de partida se leen con
  * `CurrentAcountHelper::getSaldo()` y nunca se asumen en 0: la base del slot puede traer
  * movimientos previos de `CLIENTE_CC` de otras suites.
+ *
+ * ⚠️ La no regresión sobre el camino del mostrador (`SaleController::store()`/`update()`, que el
+ * prompt 610 pide como su quinto test) NO está acá: la cubren las suites `1_` y `2_` de esta misma
+ * carpeta, que son las de la misión 160 y siguen verdes. Se corren juntas con
+ * `vendor/bin/phpunit tests/Feature/LimiteCredito`.
+ *
+ * ⚠️ El tercer test del prompt pedía "tope en pesos, venta en dólares". Por este camino es
+ * imposible: `CreateSaleOrderHelper::createSale()` hardcodea `moneda_id => 1`, así que un pedido
+ * es siempre en pesos. El caso se prueba dado vuelta —tope sólo en la otra moneda, pedido en
+ * pesos—, que mide lo mismo: que la cuenta se busca por la moneda de la venta.
  */
 class Limite_de_credito_al_confirmar_pedido_Test extends EmpresaTestCase
 {
     /**
-     * Snapshots de `limite_credito` originales por `credit_account_id`, para restaurarlos en
-     * `tearDown()`. Red de seguridad extra, además de `DatabaseTransactions`.
+     * Snapshots de `limite_credito` originales por `credit_account_id`.
+     *
+     * ⚠️ La restauración de `tearDown()` corre ANTES de `parent::tearDown()`, que es donde
+     * `DatabaseTransactions` hace su rollback, así que esas escrituras se revierten con todo lo
+     * demás: quien aísla de verdad es la transacción. Se deja igual porque documenta qué muta cada
+     * test, pero no es la red de seguridad que parece.
      *
      * @var array<int,array{id:int, limite_credito:float|null}>
      */
@@ -259,6 +273,8 @@ class Limite_de_credito_al_confirmar_pedido_Test extends EmpresaTestCase
     {
         $extencion = Extencion::where('name', 'check_sales')->first();
 
+        // Sin la fila en `extencions` nadie puede tenerla enganchada: el resultado es el mismo que
+        // buscamos, aunque por otro motivo.
         if (is_null($extencion)) {
             return;
         }

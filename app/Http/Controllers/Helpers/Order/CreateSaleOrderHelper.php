@@ -214,12 +214,7 @@ class CreateSaleOrderHelper {
 
     static function saveSaleAfterFinishOrder() {
         $user = UserHelper::getFullModel();
-
-        if (is_null($user) || is_null($user->online_configuration)) {
-            return false;
-        }
-
-        return (bool) $user->online_configuration->save_sale_after_finish_order;
+        return $user->online_configuration->save_sale_after_finish_order;
     }
 
     // static function attach_articles($sale, $articles) {

@@ -23,9 +23,9 @@ use App\Models\Sale;
  *  - `validar_venta_nueva()` — `SaleController::store()`, ANTES de `DB::beginTransaction()`.
  *  - `validar_venta_actualizada()` — `SaleController::update()`, DENTRO de la transacción ya
  *    abierta, justo antes de `SaleHelper::updateCurrentAcountsAndCommissions()`.
- *  - `validar_pedido_confirmado()` — `OrderController::updateStatus()`/`update()` (prompt 610),
- *    para la venta que nace de confirmar un pedido de la tienda propia. 🔴 Esta última es la
- *    única de las tres cuyo 422 es **salteable**: ver su docblock.
+ *  - `validar_pedido_confirmado()` — `OrderController::update()` (prompt 610), para la venta que
+ *    nace de confirmar un pedido de la tienda propia. 🔴 Esta última es la única de las tres cuyo
+ *    422 es **salteable**: ver su docblock.
  */
 class LimiteCreditoHelper {
 
@@ -247,7 +247,23 @@ class LimiteCreditoHelper {
 
         $saldo_actual = (float) CurrentAcountHelper::getSaldo($credit_account->id);
 
-        return Self::comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_actual, (float) $total);
+        /*
+            La frase del final existe por una punta que quedó abierta: el estado del pedido
+            también se puede cambiar desde el SELECT del formulario genérico
+            (`src/models/order.js` lo declara como campo), y ese guardado pasa por
+            `common-vue/components/model/Index.vue`, que no manda `ignorar_limite_credito` y
+            muestra el `message` en un toast. Por ese camino el usuario ve el motivo pero no
+            tiene el botón "Confirmar igual", así que se le dice adónde ir. Enseñarle a saltear
+            al guardado genérico sería tocar el componente que usan todos los modelos de la SPA.
+        */
+        return Self::comparar_contra_limite(
+            $client,
+            $credit_account,
+            $moneda_id,
+            $saldo_actual,
+            (float) $total,
+            'Si aun así querés confirmarlo, usá el botón "Confirmar pedido".'
+        );
     }
 
     /**
@@ -284,9 +300,12 @@ class LimiteCreditoHelper {
      * @param  float  $saldo_base  Saldo contra el que se suma el total (ya neteado de lo que
      *                             corresponda: ver validar_venta_actualizada()).
      * @param  float  $total
+     * @param  string|null  $como_seguir  Frase que se agrega al final del `message` explicando qué
+     *                                    puede hacer el usuario. Sólo la usa el camino del pedido:
+     *                                    ver validar_pedido_confirmado().
      * @return array|null
      */
-    private static function comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_base, $total) {
+    private static function comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_base, $total, $como_seguir = null) {
 
         $saldo_resultante = $saldo_base + $total;
         $limite           = (float) $credit_account->limite_credito;
@@ -298,7 +317,7 @@ class LimiteCreditoHelper {
             return null;
         }
 
-        return Self::armar_respuesta_422(
+        $respuesta = Self::armar_respuesta_422(
             $client->id,
             $client->name,
             $credit_account->id,
@@ -308,6 +327,12 @@ class LimiteCreditoHelper {
             $saldo_resultante,
             $limite
         );
+
+        if (!is_null($como_seguir)) {
+            $respuesta['message'] .= ' '.$como_seguir;
+        }
+
+        return $respuesta;
     }
 
     /**
