@@ -53,6 +53,25 @@ class InitExcelImport
         $this->hoja                     = is_numeric($data['hoja'] ?? null) && (int) $data['hoja'] >= 0
                                             ? (int) $data['hoja']
                                             : 0;
+
+        /*
+         * Nombre de la hoja elegida. Clave OPCIONAL, default null = "usá el índice".
+         *
+         * Es la mitigación que ya estaba construida y no se usaba en este camino:
+         * ExcelWorkbookReader::resolver_indice() existe porque el índice lo calcula
+         * SheetJS en el navegador y quien lee después es OpenSpout, y los dos pueden
+         * discrepar. El camino con IA queda tapado por accidente (la SPA se pisa el índice
+         * con el que le devuelve el backend); acá, en el import clásico, no hay ida y
+         * vuelta: el índice del navegador llega derecho a armar_archivo_csv().
+         *
+         * Si el nombre no viene —que es TODO lo que pasa hoy: ni la SPA ni AdminSync lo
+         * mandan— no se resuelve nada y se usa el índice crudo, exactamente como antes.
+         */
+        $this->hoja_nombre              = (isset($data['hoja_nombre'])
+                                            && is_string($data['hoja_nombre'])
+                                            && trim($data['hoja_nombre']) !== '')
+                                            ? trim($data['hoja_nombre'])
+                                            : null;
         $this->start_row                = $data['start_row'];
         $this->finish_row               = $data['finish_row'];
         $this->provider_id              = $data['provider_id'];
@@ -329,7 +348,26 @@ class InitExcelImport
              * el archivo por número de línea. Si esto dejara de ser 1:1, start_row y finish_row
              * pasarían a apuntar a filas equivocadas.
              */
-            $lectura = ExcelWorkbookReader::abrir($this->archivo_excel, $this->hoja, true);
+            /*
+             * Si vino el nombre de la hoja, manda el nombre.
+             *
+             * resolver_indice() prioriza nombre exacto -> índice en rango -> 0, y nunca
+             * devuelve un índice fuera de rango. Sólo se llama cuando hay nombre: cuesta un
+             * listado completo del libro (un Reader::open() que parsea sharedStrings.xml
+             * entero, ~200ms en un xlsx de 20.000 filas), y no se le paga ese peaje a las
+             * importaciones que hoy andan bien sin él.
+             */
+            $indice_de_hoja = $this->hoja;
+
+            if (!is_null($this->hoja_nombre)) {
+                $indice_de_hoja = ExcelWorkbookReader::resolver_indice(
+                    $this->archivo_excel,
+                    $this->hoja,
+                    $this->hoja_nombre
+                );
+            }
+
+            $lectura = ExcelWorkbookReader::abrir($this->archivo_excel, $indice_de_hoja, true);
 
             $writer = WriterEntityFactory::createCSVWriter();
             $writer->openToFile($this->csv_full_path);
@@ -401,7 +439,9 @@ class InitExcelImport
              * hoja se calculó el rango.
              */
             Log::info('InitExcelImport: hoja volcada al CSV', [
-                'hoja'                      => $this->hoja,
+                'hoja'                      => $indice_de_hoja,
+                'hoja_pedida'               => $this->hoja,
+                'hoja_nombre_pedido'        => $this->hoja_nombre,
                 'hoja_nombre'               => $nombre_de_hoja,
                 'start_row'                 => (int) $this->start_row,
                 'finish_row'                => (int) $this->finish_row,

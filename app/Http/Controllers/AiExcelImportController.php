@@ -540,7 +540,20 @@ class AiExcelImportController extends Controller
              * importa de menos en silencio (ajustar_finish_row_segun_excel_real() recorta por
              * arriba, no completa por abajo).
              */
-            'hoja'                  => $request->input('hoja', 0),
+            'hoja'                  => self::normalizar_hoja($request->input('hoja')),
+
+            /*
+             * Nombre de la hoja elegida, OPCIONAL (default null = "usá el índice").
+             *
+             * Existe por lo mismo que existe ExcelWorkbookReader::resolver_indice(): el
+             * índice lo calcula SheetJS en el navegador y quien lee después es OpenSpout,
+             * y los dos pueden discrepar (chartsheets de por medio). Cuando el nombre
+             * viaja, gana él; cuando no, se usa el índice crudo y todo queda como estaba.
+             *
+             * Hoy la SPA no lo manda por acá, así que este parámetro no cambia nada de lo
+             * que ya anda: es la mitigación disponible para cuando el índice no alcance.
+             */
+            'hoja_nombre'           => self::normalizar_hoja_nombre($request->input('hoja_nombre')),
             'start_row'             => $request->input('start_row', 2),
             'finish_row'            => $request->input('finish_row', 1000),
             'provider_id'           => $request->input('provider_id'),
@@ -601,16 +614,31 @@ class AiExcelImportController extends Controller
             $finish_row = (int) $finish_row;
         }
 
+        /*
+         * Hoja elegida por el usuario en el paso 1 del modal. Opcional con default 0:
+         * un cliente que no la manda importa la primera hoja, como antes de esta mision.
+         *
+         * 🔴 Esto es lo que hacia que el selector MINTIERA para clientes: el modal es
+         * compartido con articulos, le mostraba el selector de hoja al usuario de clientes,
+         * mandaba 'hoja' — y aca no se leia. Peor todavia, sin WithMultipleSheets
+         * Maatwebsite no importaba la primera hoja sino TODAS (ver ClientImport::sheets()),
+         * asi que el usuario terminaba con clientes creados a partir de la hoja de notas.
+         */
+        $hoja        = self::normalizar_hoja($request->input('hoja'));
+        $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
+
         try {
             Excel::import(
-                new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
+                new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre),
                 $excel_full_path
             );
 
             Log::info('AiExcelImportController::import_clients - importación finalizada', [
-                'user_id'    => $this->userId(),
-                'start_row'  => $start_row,
-                'finish_row' => $finish_row,
+                'user_id'     => $this->userId(),
+                'start_row'   => $start_row,
+                'finish_row'  => $finish_row,
+                'hoja'        => $hoja,
+                'hoja_nombre' => $hoja_nombre,
             ]);
 
             return response()->json(['message' => 'Importación de clientes iniciada.'], 200);
@@ -653,20 +681,26 @@ class AiExcelImportController extends Controller
             $finish_row = (int) $finish_row;
         }
 
+        /* Misma hoja elegida que en import_clients, con el mismo default 0. */
+        $hoja        = self::normalizar_hoja($request->input('hoja'));
+        $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
+
         try {
             /*
              * El quinto parámetro ($provider_id) es null; en importación de proveedores
              * no se asigna un proveedor padre al registro importado.
              */
             Excel::import(
-                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
+                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre),
                 $excel_full_path
             );
 
             Log::info('AiExcelImportController::import_providers - importación finalizada', [
-                'user_id'    => $this->userId(),
-                'start_row'  => $start_row,
-                'finish_row' => $finish_row,
+                'user_id'     => $this->userId(),
+                'start_row'   => $start_row,
+                'finish_row'  => $finish_row,
+                'hoja'        => $hoja,
+                'hoja_nombre' => $hoja_nombre,
             ]);
 
             return response()->json(['message' => 'Importación de proveedores iniciada.'], 200);

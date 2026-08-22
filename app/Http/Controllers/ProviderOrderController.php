@@ -199,6 +199,14 @@ class ProviderOrderController extends Controller
         $overwrite_articles = $request->boolean('overwrite_articles', false);
 
         try {
+            /*
+             * Hoja elegida por el usuario, 0-based. Las dos claves son OPCIONALES:
+             * ausentes => hoja 0, que es la primera y lo que veia un cliente viejo.
+             *
+             * ⚠️ Hasta esta mision Maatwebsite recorria TODAS las hojas del libro, y aca
+             * eso significaba procesar la compra una vez por hoja (ver
+             * ProviderOrderArticleImport::sheets()). Ahora se recorre una sola.
+             */
             Excel::import(new ProviderOrderArticleImport(
                 $columns,
                 $request->start_row,
@@ -207,6 +215,8 @@ class ProviderOrderController extends Controller
                 $provider_order,
                 $import_type,
                 $overwrite_articles,
+                $request->input('hoja', 0),
+                $request->input('hoja_nombre'),
             ), $archivo_excel_path);
         } catch (\Throwable $exception) {
             Log::error('Error al importar Excel de compra a proveedor', [

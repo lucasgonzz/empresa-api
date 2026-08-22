@@ -694,6 +694,18 @@ class ArticleController extends Controller
              * 1:1, así que el número de fila cambia de significado al cambiar de hoja.
              */
             'hoja'                  => $request->input('hoja', 0),
+
+            /*
+             * Nombre de la hoja elegida, OPCIONAL (default null = "usá el índice").
+             *
+             * Existe por lo mismo que existe ExcelWorkbookReader::resolver_indice(): el
+             * índice lo calcula SheetJS en el navegador y quien lee después es OpenSpout,
+             * y los dos pueden discrepar. En el camino con IA eso queda tapado porque hay
+             * ida y vuelta con el backend; acá, en el import clásico, el índice del
+             * navegador va derecho a armar_archivo_csv() y nadie lo revisa. Cuando el
+             * nombre viaja, gana él; cuando no, se usa el índice crudo, como hasta hoy.
+             */
+            'hoja_nombre'           => $request->input('hoja_nombre'),
             'start_row'             => $request->start_row,
             'finish_row'            => $request->finish_row,
             'provider_id'           => $request->provider_id, 

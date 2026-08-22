@@ -18,8 +18,23 @@ use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\ToCollection;
 use Maatwebsite\Excel\Concerns\ToModel;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
+use Maatwebsite\Excel\Concerns\WithMultipleSheets;
 
-class ClientImport implements ToCollection {
+class ClientImport implements ToCollection, WithMultipleSheets {
+
+    /**
+     * Indice 0-based de la hoja a importar. Default 0 = primera hoja.
+     *
+     * @var int
+     */
+    private $hoja = 0;
+
+    /**
+     * Nombre de la hoja elegida, cuando el cliente lo manda. Gana sobre el indice.
+     *
+     * @var string|null
+     */
+    private $hoja_nombre = null;
 
     /**
      * Sucursales (addresses) del usuario indexadas por nombre normalizado.
@@ -38,14 +53,66 @@ class ClientImport implements ToCollection {
      */
     private $sucursales_no_encontradas = [];
 
-    function __construct($columns, $create_and_edit, $start_row, $finish_row) {
+    /**
+     * @param array       $columns
+     * @param bool        $create_and_edit
+     * @param int         $start_row
+     * @param int|null    $finish_row
+     * @param int         $hoja         Indice 0-based de hoja. OPCIONAL: default 0.
+     * @param string|null $hoja_nombre  Nombre de la hoja elegida. OPCIONAL: default null.
+     */
+    function __construct($columns, $create_and_edit, $start_row, $finish_row, $hoja = 0, $hoja_nombre = null) {
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         Log::info($this->columns);
         $this->start_row = $start_row;
         $this->finish_row = $finish_row;
         $this->ct = new Controller();
+
+        /*
+         * Los dos ultimos parametros son OPCIONALES y con default a proposito:
+         * AdminSync\AiExcelImportController construye esta clase con cuatro argumentos y
+         * NO se toca en esta mision. Un parametro nuevo sin default seria un
+         * ArgumentCountError en el endpoint que usa admin-api contra clientes reales.
+         */
+        $this->hoja = (is_numeric($hoja) && (int) $hoja >= 0) ? (int) $hoja : 0;
+        $this->hoja_nombre = (is_string($hoja_nombre) && trim($hoja_nombre) !== '')
+                                ? trim($hoja_nombre)
+                                : null;
+
         $this->setProps();
+    }
+
+    /**
+     * Hoja (una sola) que Maatwebsite tiene que recorrer.
+     *
+     * 🔴 SIN este metodo, Maatwebsite NO importa la primera hoja: importa TODAS.
+     * `Reader::loadSpreadsheet()` hace
+     * `if (!$import instanceof WithMultipleSheets) { $this->sheetImports = array_fill(0, $this->spreadsheet->getSheetCount(), $import); }`,
+     * o sea le aplica el MISMO mapeo de columnas a cada hoja del libro y llama
+     * `collection()` una vez por hoja. Medido con un libro de tres hojas: tres llamadas.
+     *
+     * El sintoma era este: el usuario sube un libro con "Clientes" en la hoja 2 y "Notas"
+     * en la 1, elige "Clientes" en el selector del modal, ve el mapeo armado sobre esa
+     * hoja, importa — y le quedaban clientes creados con nombre "Los precios de la lista
+     * no incluyen IVA". El selector le prometia una decision que el backend ignoraba.
+     *
+     * ⚠️ CAMBIO DE COMPORTAMIENTO VISIBLE: antes se importaban todas las hojas del libro,
+     * ahora se importa una sola (la 0 si nadie elige). Es lo que pide la mision: las hojas
+     * no se combinan.
+     *
+     * El NOMBRE le gana al indice cuando viene, porque el indice lo calcula SheetJS en el
+     * navegador y quien lee despues es otra libreria; los dos pueden discrepar. Con clave
+     * string, Maatwebsite resuelve por nombre contra el propio libro (`Sheet::byName()`).
+     *
+     * @return array
+     */
+    public function sheets(): array {
+        if (!is_null($this->hoja_nombre)) {
+            return [$this->hoja_nombre => $this];
+        }
+
+        return [$this->hoja => $this];
     }
 
     function setProps() {
