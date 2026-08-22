@@ -518,4 +518,83 @@ class Confirmar_pedido_Test extends EmpresaTestCase
             'La ruta muerta llego a crear una venta.'
         );
     }
+
+    /**
+     * 7. Confirmar desde el boton NO recalcula el total del pedido.
+     *
+     * Los otros tests son ciegos a esto: siembran `total` = suma exacta de los renglones, que es
+     * justamente el unico caso donde "recalcular" y "no tocar" dan el mismo numero. Aca el pedido
+     * arranca con un total DISTINTO de la suma de sus renglones —que es lo que pasa cuando el
+     * total lo puso otro (el pedido nace del lado de la tienda)— y se verifica que confirmar por
+     * el boton lo deje intacto, y que la venta arrastre ese mismo numero.
+     *
+     * Sin este test, sacar el recalculo de adentro del `if` no rompe ninguna asercion.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function confirmar_desde_el_boton_no_recalcula_el_total()
+    {
+        $cliente = $this->cliente_cc();
+
+        $pedido = $this->crear_pedido($cliente->id);
+
+        /** Total puesto a mano, distinto de la suma de los renglones. */
+        $total_ajeno = $this->total_esperado() - 37.5;
+
+        $pedido->total = $total_ajeno;
+        $pedido->save();
+
+        $this->putJson('api/order/'.$pedido->id, $this->payload_del_boton('Confirmado'))
+             ->assertStatus(200);
+
+        $this->assertEquals(
+            $total_ajeno,
+            (float) $pedido->fresh()->total,
+            'Confirmar desde el boton recalculo el total del pedido y piso el valor que traia.'
+        );
+
+        $venta = Sale::where('order_id', $pedido->id)->first();
+
+        $this->assertNotNull($venta);
+
+        $this->assertEquals(
+            $total_ajeno,
+            (float) $venta->total,
+            'La venta no arrastro el total que traia el pedido.'
+        );
+    }
+
+    /**
+     * 8. Un payload que no manda `order_status_id` no rompe.
+     *
+     * `orders.order_status_id` es NOT NULL: con la asignacion incondicional de antes, un PUT
+     * parcial que no lo trajera terminaba en un QueryException 500. El estado tiene que quedar
+     * como estaba y no tiene que nacer ninguna venta.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function un_payload_sin_estado_no_rompe()
+    {
+        $cliente = $this->cliente_cc();
+
+        $pedido = $this->crear_pedido($cliente->id);
+
+        $estado_previo = $pedido->order_status_id;
+
+        $this->putJson('api/order/'.$pedido->id, ['address_id' => $pedido->address_id])
+             ->assertStatus(200);
+
+        $this->assertEquals(
+            $estado_previo,
+            $pedido->fresh()->order_status_id,
+            'Un payload sin order_status_id cambio el estado del pedido.'
+        );
+
+        $this->assertNull(
+            Sale::where('order_id', $pedido->id)->first(),
+            'Un payload sin order_status_id llego a crear una venta.'
+        );
+    }
 }

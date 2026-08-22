@@ -11,7 +11,6 @@ use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
 use App\Models\Sale;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
@@ -71,19 +70,24 @@ class OrderController extends Controller
          */
         $prev_status = $model->order_status;
 
-        $model->order_status_id = $request->order_status_id;
-
         /**
-         * `address_id` y `articles` se tocan SOLO si la request los trae.
+         * Este endpoint acepta payloads PARCIALES: cada campo se toca solo si la request lo trae.
          *
-         * 🔴 No lo simplifiques a la asignacion directa de antes. Este endpoint tiene dos
-         * consumidores con payloads distintos: el formulario del pedido manda el modelo entero
-         * (incluidos `articles` y `address_id`), y el boton "Confirmar pedido"
-         * (`BtnStatus.vue`) manda unicamente `order_status_id`. Con la asignacion incondicional,
-         * el boton dejaba `address_id` en null y —peor— `GeneralHelper::attachModels()` arranca
-         * con un `detach()` incondicional (GeneralHelper.php:103), asi que el pedido perdia
-         * todos sus renglones y la venta que nace despues salia vacia y sin descontar stock.
+         * 🔴 No lo simplifiques a las asignaciones directas de antes. Tiene dos consumidores con
+         * payloads distintos: el formulario del pedido manda el modelo entero (con `articles` y
+         * `address_id`), y el boton "Confirmar pedido" (`BtnStatus.vue`) manda unicamente
+         * `order_status_id`. Con las asignaciones incondicionales, ese boton dejaba `address_id`
+         * en null y —peor— `GeneralHelper::attachModels()` arranca con un `detach()`
+         * incondicional (GeneralHelper.php:103), asi que el pedido perdia TODOS sus renglones y
+         * la venta que nace mas abajo salia vacia, sin descontar stock.
+         *
+         * `order_status_id` entra en la misma regla y no por simetria: `orders.order_status_id` es
+         * NOT NULL, asi que un payload que no lo traiga rompia con un QueryException 500.
          */
+        if ($request->has('order_status_id')) {
+            $model->order_status_id = $request->order_status_id;
+        }
+
         if ($request->has('address_id')) {
             $model->address_id = $request->address_id;
         }
@@ -91,14 +95,22 @@ class OrderController extends Controller
         $model->save();
 
         /**
-         * El total se recalcula SOLO cuando se tocaron los renglones.
+         * Los renglones se re-adjuntan —y el total se recalcula— SOLO cuando la request los trae.
          *
-         * 🔴 Tampoco lo saques de adentro del if. `OrderHelper::get_total()` suma los pivotes de
-         * `articles` y `promocion_vinotecas` e ignora cupones y descuentos/recargos de metodo de
-         * pago, que si estan contemplados en el total con el que el pedido nace del lado de la
-         * tienda. Recalcularlo cuando nadie toco los renglones pisaria ese total con otro numero.
+         * Se pregunta por `is_array()` y no por `has()`: `has()` da true tambien para
+         * `articles: null`, y ahi el `detach()` de attachModels ya borro todo antes de que el
+         * `foreach(null)` tire el error. La guarda tiene que impedir que se entre, no avisar
+         * despues.
+         *
+         * 🔴 Y el recalculo del total va adentro del if, no afuera. Si nadie toco los renglones no
+         * hay nada que recalcular: escribir `total` igual es pisar un dato que lo puso otro (el
+         * pedido nace del lado de la tienda) con el resultado de una cuenta propia. Para un pedido
+         * de la tienda hoy los dos numeros coinciden —`orders.total` guarda el subtotal de
+         * articulos, misma cuenta que `OrderHelper::get_total()`; ver el docblock de
+         * `OrderTotalsHelper` en tienda-api—, pero eso es una coincidencia de formulas, no un
+         * contrato, y no es motivo para reescribir el campo en cada cambio de estado.
          */
-        if ($request->has('articles')) {
+        if (is_array($request->articles)) {
 
             GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
 
@@ -117,10 +129,6 @@ class OrderController extends Controller
          * Evita duplicados cuando el usuario vuelve a pasar por estados posteriores.
          */
         $has_sale = Sale::where('order_id', $model->id)->exists();
-
-        Log::info('prev_status: '.$prev_status->name);
-        Log::info('order_status: '.$model->order_status->name);
-        Log::info('has_sale: '.$has_sale);
 
         /**
          * Solo crear venta en la primera transición desde "Sin confirmar"
