@@ -479,10 +479,10 @@ class Confirmar_pedido_Test extends EmpresaTestCase
     /**
      * 6. La ruta muerta ya no existe: ni en la tabla de rutas, ni respondiendo 200.
      *
-     * Se chequean las dos cosas porque son distintas. Que el endpoint no devuelva 200 podria ser
-     * casualidad de otro match (`order/from-date/{from_date?}/{until_date?}` llega a matchear esa
-     * URI y devuelve 405 por el metodo); lo que cierra el caso es que NINGUNA ruta declarada tenga
-     * `order/update-status` en su URI.
+     * Se chequean las dos cosas porque son distintas, y el barrido de rutas es el que cierra el
+     * caso. Un `assertNotEquals(200)` solo dice que hoy no anda: pasaria igual con un 500, o con
+     * un 404 que manana otra ruta nueva se coma. Lo que prueba que la ruta se fue es que NINGUNA
+     * ruta declarada tenga `order/update-status` en su URI.
      *
      * @group pedidos
      * @test
