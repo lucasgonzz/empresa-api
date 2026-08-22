@@ -11,7 +11,6 @@ use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
 use App\Models\Sale;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
@@ -44,21 +43,6 @@ class OrderController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    // function updateStatus(Request $request, $id) {
-    //     $model = Order::find($id);
-
-    //     // OrderHelper::checkPaymentCardInfo($model);
-    //     $model->order_status_id = $request->order_status_id;
-    //     $model->save();
-    //     $model = Order::find($id);
-
-    //     // OrderHelper::sendMail($model);
-    //     CreateSaleOrderHelper::save_sale($model, $this);
-        
-    //     $this->sendAddModelNotification('Order', $model->id);
-    //     return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
-    // }
-
     function cancel(Request $request, $id) {
         $model = Order::find($id);
         $model->order_status_id = $this->getModelBy('order_statuses', 'name', 'Cancelado', false, 'id');
@@ -86,14 +70,58 @@ class OrderController extends Controller
          */
         $prev_status = $model->order_status;
 
-        $model->order_status_id = $request->order_status_id;
-        $model->address_id = $request->address_id;
+        /**
+         * Este endpoint acepta payloads PARCIALES: cada campo se toca solo si la request lo trae.
+         *
+         * 🔴 No lo simplifiques a las asignaciones directas de antes. Tiene dos consumidores con
+         * payloads distintos: el formulario del pedido manda el modelo entero (con `articles` y
+         * `address_id`), y el boton "Confirmar pedido" (`BtnStatus.vue`) manda unicamente
+         * `order_status_id`. Con las asignaciones incondicionales, ese boton dejaba `address_id`
+         * en null y —peor— `GeneralHelper::attachModels()` arranca con un `detach()`
+         * incondicional (GeneralHelper.php:103), asi que el pedido perdia TODOS sus renglones y
+         * la venta que nace mas abajo salia vacia, sin descontar stock.
+         *
+         * `order_status_id` entra en la misma regla y no por simetria: `orders.order_status_id` es
+         * NOT NULL, asi que un payload que no lo traiga rompia con un QueryException 500.
+         *
+         * Se pregunta por `is_null()` y no por `has()` por el mismo motivo que los renglones usan
+         * `is_array()`: `has()` da true tambien cuando la clave viene con valor null, que es
+         * justo el caso que la columna no acepta. Una guarda que deja pasar lo que dice frenar no
+         * es una guarda.
+         */
+        if (!is_null($request->order_status_id)) {
+            $model->order_status_id = $request->order_status_id;
+        }
+
+        if ($request->has('address_id')) {
+            $model->address_id = $request->address_id;
+        }
+
         $model->save();
-        
-        GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
-        
-        $model->total = OrderHelper::get_total($model);
-        $model->save();
+
+        /**
+         * Los renglones se re-adjuntan —y el total se recalcula— SOLO cuando la request los trae.
+         *
+         * Se pregunta por `is_array()` y no por `has()`: `has()` da true tambien para
+         * `articles: null`, y ahi el `detach()` de attachModels ya borro todo antes de que el
+         * `foreach(null)` tire el error. La guarda tiene que impedir que se entre, no avisar
+         * despues.
+         *
+         * 🔴 Y el recalculo del total va adentro del if, no afuera. Si nadie toco los renglones no
+         * hay nada que recalcular: escribir `total` igual es pisar un dato que lo puso otro (el
+         * pedido nace del lado de la tienda) con el resultado de una cuenta propia. Para un pedido
+         * de la tienda hoy los dos numeros coinciden —`orders.total` guarda el subtotal de
+         * articulos, misma cuenta que `OrderHelper::get_total()`; ver el docblock de
+         * `OrderTotalsHelper` en tienda-api—, pero eso es una coincidencia de formulas, no un
+         * contrato, y no es motivo para reescribir el campo en cada cambio de estado.
+         */
+        if (is_array($request->articles)) {
+
+            GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
+
+            $model->total = OrderHelper::get_total($model);
+            $model->save();
+        }
 
         /**
          * Estado nuevo del pedido luego del update.
@@ -106,10 +134,6 @@ class OrderController extends Controller
          * Evita duplicados cuando el usuario vuelve a pasar por estados posteriores.
          */
         $has_sale = Sale::where('order_id', $model->id)->exists();
-
-        Log::info('prev_status: '.$prev_status->name);
-        Log::info('order_status: '.$model->order_status->name);
-        Log::info('has_sale: '.$has_sale);
 
         /**
          * Solo crear venta en la primera transición desde "Sin confirmar"

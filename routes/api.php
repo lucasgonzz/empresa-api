@@ -460,7 +460,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('order', 'OrderController');
     Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');
     Route::get('order/from-date/{from_date?}/{until_date?}', 'OrderController@index');
-    Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
     Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
     Route::get('meli-order-status', 'MeliOrderStatusController@index');
