@@ -683,8 +683,19 @@ class ArticleController extends Controller
              */
             'precios_incluyen_iva'  => filter_var($request->precios_incluyen_iva, FILTER_VALIDATE_BOOLEAN),
             'create_and_edit'       => $request->create_and_edit,
-            'start_row'             => $request->start_row, 
-            'finish_row'            => $request->finish_row, 
+
+            /*
+             * Hoja a importar, 0-based. Default 0 = primera hoja: un FormData que no manda
+             * 'hoja' (la SPA sin desplegar) importa exactamente lo que importaba hasta hoy.
+             *
+             * No va acompañado de una fila de encabezado: la importación se rige por start_row,
+             * que ya viaja y que el usuario ve. Y start_row/finish_row tienen que estar
+             * calculados sobre ESTA hoja — el CSV que arma InitExcelImport es la hoja elegida,
+             * 1:1, así que el número de fila cambia de significado al cambiar de hoja.
+             */
+            'hoja'                  => $request->input('hoja', 0),
+            'start_row'             => $request->start_row,
+            'finish_row'            => $request->finish_row,
             'provider_id'           => $request->provider_id, 
             'user'                  => $owner, 
             'auth_user_id'          => Auth()->user()->id, 

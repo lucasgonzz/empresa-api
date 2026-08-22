@@ -114,6 +114,29 @@ class ExcelAnalysisRun extends Model
         $contexto = [
             'model'             => $presentacion['model'],
             'original_filename' => $presentacion['original_filename'],
+            /*
+             * Hoja elegida y fila de encabezado con las que se corrió ESTA corrida.
+             *
+             * Van en el tronco común (no dentro de la rama 'analisis') porque una
+             * recomendación también se calcula sobre una hoja y con una fila de
+             * encabezado: si el modal se rearma en el paso 3 sin estos valores,
+             * vuelve a mostrar la hoja 0 mientras el backend trabajó sobre otra, y
+             * el usuario no tiene forma de darse cuenta.
+             *
+             * Los defaults son los del contrato de §1.4 del plan y son los que
+             * hacen que una corrida vieja —creada antes de que existiera la
+             * elección de hoja— se lea exactamente como se leía: hoja 0 y
+             * detección automática del encabezado.
+             */
+            'hoja'              => isset($payload['hoja']) && is_numeric($payload['hoja'])
+                                    ? (int) $payload['hoja']
+                                    : 0,
+            'hoja_nombre'       => isset($payload['hoja_nombre']) && $payload['hoja_nombre'] !== ''
+                                    ? (string) $payload['hoja_nombre']
+                                    : null,
+            'header_row'        => isset($payload['header_row']) && is_numeric($payload['header_row'])
+                                    ? (int) $payload['header_row']
+                                    : null,
         ];
 
         if ($this->tipo === 'recomendacion') {
