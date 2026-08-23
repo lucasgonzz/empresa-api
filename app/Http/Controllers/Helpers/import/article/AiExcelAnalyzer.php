@@ -160,11 +160,24 @@ class AiExcelAnalyzer
         $hoja_nombre     = isset($opciones['hoja_nombre']) ? $opciones['hoja_nombre'] : null;
         $fila_pedida     = isset($opciones['fila_encabezado']) ? $opciones['fila_encabezado'] : null;
 
-        /* Nombre antes que índice: el índice puede venir de SheetJS y no coincidir (T11 del plan). */
-        $indice_hoja = ExcelWorkbookReader::resolver_indice($excel_path, $hoja_pedida, $hoja_nombre);
-
-        /* El libro entero se ofrece siempre, aunque tenga una sola hoja: la SPA arma el selector con esto. */
+        /*
+         * 🔴 EL LIBRO SE LISTA UNA SOLA VEZ, Y POR ESO EL ÍNDICE SE RESUELVE SOBRE EL ARRAY.
+         *
+         * ExcelWorkbookReader::resolver_indice() lista el libro por adentro. Llamarlo y
+         * después pedir listar_hojas() son DOS Reader::open() completos de OpenSpout, y cada
+         * uno parsea sharedStrings.xml entero: medido sobre un xlsx de 20.000 filas,
+         * resolver_indice 195ms + listar_hojas 220ms, tirados en TODO archivo, incluso en los
+         * de una sola hoja. Es la misma presión de memoria y de parseo que el plan usó para
+         * justificar todo el camino ZIP+XMLReader del inspector; pagarla dos veces acá sería
+         * contradecir el propio argumento.
+         *
+         * El libro entero se ofrece siempre, aunque tenga una sola hoja: la SPA arma el
+         * selector del paso 1 con esto.
+         */
         $hojas = ExcelWorkbookReader::listar_hojas($excel_path);
+
+        /* Nombre antes que índice: el índice puede venir de SheetJS y no coincidir (T11 del plan). */
+        $indice_hoja = $this->resolver_indice_sobre($hojas, $hoja_pedida, $hoja_nombre);
 
         $encabezado = $this->resolver_encabezado($excel_path, $indice_hoja, $fila_pedida);
 
@@ -367,7 +380,248 @@ class AiExcelAnalyzer
         /* Entero; 0 en el caso normal. */
         $parsed['fusiones_aplicadas'] = (int) $encabezado['fusiones_aplicadas'];
 
+        /*
+         * 🔴 CLAVE NUEVA, Y ES LA QUE EVITA EL ERROR MÁS CARO DE TODA LA IMPORTACIÓN.
+         * Un nombre de encabezado que cubre dos o más columnas (lo que deja cualquier
+         * cabecera fusionada) NO se puede desambiguar desde acá: ver el comentario largo de
+         * detectar_columnas_ambiguas(). [] en el caso normal.
+         */
+        $parsed['columnas_ambiguas'] = $this->detectar_columnas_ambiguas(
+            $parsed['column_mapping'],
+            $sample_data['headers']
+        );
+
         return $parsed;
+    }
+
+    /**
+     * Índice 0-based de la hoja a leer, resuelto sobre un listado que YA se leyó.
+     *
+     * 🔴 ES UN ESPEJO DE ExcelWorkbookReader::resolver_indice(), A PROPÓSITO Y CON COSTO.
+     * La regla (nombre exacto -> índice en rango -> 0) vive allá y allá manda; acá se repite
+     * porque la versión de allá vuelve a listar el libro por adentro y este análisis ya lo
+     * listó (B9: 195ms + 220ms de OpenSpout en todo archivo). Mientras las dos existan hay
+     * un invariante decidido en dos lugares, que es la clase de error que ya nos mordió tres
+     * veces en esta misión; por eso AnalyzerHojaYEncabezadoTest compara las dos respuestas
+     * caso por caso y se pone en rojo si se separan. El arreglo de fondo es una sobrecarga
+     * de ExcelWorkbookReader que acepte el listado ya leído, y no entra en esta tanda.
+     *
+     * @param  array       $hojas        Lo que devolvió ExcelWorkbookReader::listar_hojas()
+     * @param  int|null    $hoja         Índice pedido por el usuario (puede venir de SheetJS)
+     * @param  string|null $hoja_nombre  Nombre pedido por el usuario
+     * @return int
+     */
+    protected function resolver_indice_sobre(array $hojas, $hoja, $hoja_nombre)
+    {
+        if (count($hojas) === 0) {
+            return 0;
+        }
+
+        if ($hoja_nombre !== null && trim((string) $hoja_nombre) !== '') {
+            $buscado = trim((string) $hoja_nombre);
+
+            foreach ($hojas as $candidata) {
+                if ($candidata['nombre'] === $buscado) {
+                    return $candidata['indice'];
+                }
+            }
+        }
+
+        if ($hoja !== null && is_numeric($hoja)) {
+            $indice = (int) $hoja;
+
+            foreach ($hojas as $candidata) {
+                if ($candidata['indice'] === $indice) {
+                    return $indice;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * Nombres de encabezado que cubren DOS O MÁS columnas y que el mapeo se repartió a
+     * ciegas. Cada entrada es un aviso listo para el paso 2 del modal.
+     *
+     * 🔴 POR QUÉ ESTO AVISA EN VEZ DE ELEGIR, Y POR QUÉ NO SE "SIMPLIFICA" A ELEGIR MEJOR.
+     *
+     * Con una cabecera "PRECIOS" fusionada sobre E1:F1, la propagación de la fusión deja el
+     * MISMO nombre en las columnas E y F. Claude devuelve dos ítems con
+     * excel_column: "PRECIOS" —uno costo, otro precio— y enrich_column_mapping() les reparte
+     * los índices EN EL ORDEN EN QUE VINIERON: el primero se lleva E, el segundo F. Nada
+     * garantiza ese orden, y no hay dato en el archivo que lo decida:
+     *
+     *     Claude devuelve costo y después precio  ->  costo=E  precio=F   correcto
+     *     Claude devuelve precio y después costo  ->  precio=E costo=F    INVERTIDOS
+     *
+     * El segundo caso importa los costos como precios y los precios como costos en TODO el
+     * catálogo de un cliente, sin un solo error en pantalla. Es peor que el bug que la lista
+     * de índices vino a matar (los dos ítems leyendo E), porque aquel al menos dejaba
+     * precio == costo, que se ve de una. Y con tres ítems para dos columnas, dos propiedades
+     * terminan leyendo la misma celda igual que antes.
+     *
+     * Adivinar mejor no es una opción: la información no está en el archivo. El usuario SÍ la
+     * tiene —abre el Excel y ve cuál columna es cuál—, así que el aviso viaja al paso 2 y él
+     * decide antes de que se toque la base. Es el principio que ordena toda la misión: la
+     * importación no degrada en silencio; si algo no se pudo interpretar, se dice ANTES.
+     *
+     * Sólo se avisa cuando el nombre repetido llegó al mapeo. Un nombre repetido en columnas
+     * que nadie mapeó no le cambia nada al usuario y sería una alerta amarilla más para
+     * ignorar (ver B5: a la tercera alerta sin motivo, dejan de leerse todas).
+     *
+     * @param  array $column_mapping  Mapeo YA enriquecido (con excel_column_index)
+     * @param  array $headers         Encabezados de la fila de encabezado, fusiones propagadas
+     * @return array  [['nombre','columnas','letras','asignaciones','mensaje'], ...]
+     */
+    protected function detectar_columnas_ambiguas(array $column_mapping, array $headers)
+    {
+        $por_nombre = [];
+
+        foreach ($headers as $header_index => $header_text) {
+            $clave = $this->normalize_header_key($header_text);
+
+            if ($clave === '') {
+                continue;
+            }
+
+            if (!isset($por_nombre[$clave])) {
+                $por_nombre[$clave] = ['nombre' => trim((string) $header_text), 'columnas' => []];
+            }
+
+            $por_nombre[$clave]['columnas'][] = (int) $header_index;
+        }
+
+        $avisos = [];
+
+        foreach ($por_nombre as $clave => $datos) {
+            if (count($datos['columnas']) < 2) {
+                continue;
+            }
+
+            $asignaciones = [];
+
+            foreach ($column_mapping as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                if ($this->normalize_header_key(isset($item['excel_column']) ? $item['excel_column'] : '') !== $clave) {
+                    continue;
+                }
+
+                $indice = isset($item['excel_column_index']) ? (int) $item['excel_column_index'] : null;
+
+                $asignaciones[] = [
+                    'system_property'     => isset($item['system_property']) ? $item['system_property'] : null,
+                    'excel_column_index'  => $indice,
+                    'excel_column_letter' => is_null($indice) ? '' : $this->number_to_excel_column($indice + 1),
+                ];
+            }
+
+            if (count($asignaciones) === 0) {
+                continue;
+            }
+
+            $letras = [];
+
+            foreach ($datos['columnas'] as $indice_columna) {
+                $letras[] = $this->number_to_excel_column($indice_columna + 1);
+            }
+
+            $avisos[] = [
+                'nombre'       => $datos['nombre'],
+                'columnas'     => $datos['columnas'],
+                'letras'       => $letras,
+                'asignaciones' => $asignaciones,
+                'mensaje'      => $this->mensaje_de_columna_ambigua($datos['nombre'], $letras, $asignaciones),
+            ];
+        }
+
+        return $avisos;
+    }
+
+    /**
+     * Texto del aviso, armado acá y no en la SPA: el backend es el único que sabe a qué
+     * columna fue a parar cada propiedad, y el modal de importación es compartido por
+     * artículos, clientes y proveedores.
+     *
+     * @param  string $nombre        Nombre del encabezado tal cual está en el Excel
+     * @param  array  $letras        Letras de las columnas que ese nombre cubre
+     * @param  array  $asignaciones  Qué propiedad se llevó cada columna, en el orden repartido
+     * @return string
+     */
+    protected function mensaje_de_columna_ambigua($nombre, array $letras, array $asignaciones)
+    {
+        $repartidas = [];
+        $usadas     = [];
+        $repetidas  = [];
+
+        foreach ($asignaciones as $asignacion) {
+            $propiedad = $asignacion['system_property'];
+
+            if (is_null($propiedad) || trim((string) $propiedad) === '') {
+                $propiedad = 'sin asignar';
+            }
+
+            $repartidas[] = (string) $propiedad . ' → ' . $asignacion['excel_column_letter'];
+
+            $letra = $asignacion['excel_column_letter'];
+
+            if (isset($usadas[$letra])) {
+                $repetidas[$letra] = true;
+            }
+
+            $usadas[$letra] = true;
+        }
+
+        $mensaje = '«' . $nombre . '» cubre las columnas ' . $this->enumerar($letras)
+            . ', y el sistema no tiene forma de saber cuál es cuál.'
+            . ' Quedó ' . $this->enumerar($repartidas) . '.';
+
+        $sin_usar = [];
+
+        foreach ($letras as $letra) {
+            if (!isset($usadas[$letra])) {
+                $sin_usar[] = $letra;
+            }
+        }
+
+        if (count($sin_usar) === 1) {
+            $mensaje .= ' La columna ' . $sin_usar[0] . ' no quedó mapeada a ninguna propiedad.';
+        } elseif (count($sin_usar) > 1) {
+            $mensaje .= ' Las columnas ' . $this->enumerar($sin_usar) . ' no quedaron mapeadas a ninguna propiedad.';
+        }
+
+        if (count($repetidas) > 0) {
+            $mensaje .= ' Y hay más de una propiedad leyendo la columna '
+                . $this->enumerar(array_keys($repetidas)) . '.';
+        }
+
+        return $mensaje . ' Revisalo en el Excel antes de importar.';
+    }
+
+    /**
+     * "E y F", "E, F y G", "E".
+     *
+     * @param  array $partes
+     * @return string
+     */
+    protected function enumerar(array $partes)
+    {
+        $partes = array_values($partes);
+
+        if (count($partes) === 0) {
+            return '';
+        }
+
+        if (count($partes) === 1) {
+            return (string) $partes[0];
+        }
+
+        $ultima = array_pop($partes);
+
+        return implode(', ', $partes) . ' y ' . $ultima;
     }
 
     /**
@@ -415,68 +669,73 @@ class AiExcelAnalyzer
          * (cuántas celdas del encabezado se llenaron propagando una fusión), que es una
          * propiedad del archivo y no de la fila elegida.
          */
-        $ventana = ExcelHeaderDetector::leer_ventana($excel_path, $indice_hoja);
-
-        $columnas = $this->columnas_de_la_fila($ventana, $fila_pedida);
-
-        $columnas_sin_nombre = [];
-
-        foreach ($columnas as $indice_columna => $valor) {
-            if ($valor === '') {
-                $columnas_sin_nombre[] = $indice_columna;
-            }
-        }
+        $elegido = $this->encabezado_en_la_fila($excel_path, $indice_hoja, $fila_pedida);
 
         return [
             'fila'                => $fila_pedida,
             'origen'              => 'usuario',
             'motivo'              => 'elegido_por_el_usuario',
             'confianza'           => 'alta',
-            'columnas'            => $columnas,
-            'columnas_sin_nombre' => $columnas_sin_nombre,
+            'columnas'            => $elegido['columnas'],
+            'columnas_sin_nombre' => $elegido['columnas_sin_nombre'],
             'fusiones_aplicadas'  => $deteccion['fusiones_aplicadas'],
         ];
     }
 
     /**
-     * Valores de una fila de la ventana, recortados y estirados al ancho útil de la ventana.
+     * Columnas de la fila que el usuario eligió a mano en el paso 1, y cuáles quedaron sin
+     * nombre, CON EL MISMO CRITERIO que ExcelHeaderDetector aplica sobre la fila que elige él.
      *
-     * Mismo criterio de ancho que usa ExcelHeaderDetector para la fila que elige él: la
-     * última columna con contenido en CUALQUIER fila de la ventana. Se mide contra toda la
-     * ventana y no contra la fila del encabezado porque el caso que hay que detectar es el
-     * contrario — el encabezado con MENOS columnas llenas que los datos, que es justo lo que
-     * deja una fusión que no se pudo leer.
+     * 🔴 POR QUÉ SE RECORTA LA VENTANA EN VEZ DE CALCULAR EL ANCHO ACÁ.
+     * Este método tenía su propia copia del cálculo —"la última columna con contenido en
+     * cualquier fila de la ventana"— y esa copia se quedó vieja en cuanto el detector
+     * recalibró el suyo: una nota suelta a la derecha ("Promo hasta fin de mes" en J3) volvía
+     * a inflar columnas_sin_nombre y disparaba la alerta amarilla sobre un archivo perfecto,
+     * pero SÓLO por este camino, el de la fila corregida a mano. El mismo invariante decidido
+     * en dos lugares con dos criterios: la clase de error de APRENDER_NO_PARCHEAR.md que ya
+     * mordió tres veces en esta misión.
      *
-     * Si la fila pedida cae fuera de la ventana de 20 filas, devuelve [] y analyze() se
-     * queda con los encabezados crudos de read_sample_rows().
+     * Se le pasa al detector la ventana recortada desde la fila pedida hacia abajo, así la
+     * fila elegida queda arriba de todo y él la toma: si califica como encabezado gana por
+     * ser la única candidata antes del corte, y si no califica cae igual en ella porque es la
+     * primera fila con contenido. Las de abajo quedan como filas de datos, que es lo que
+     * necesita su criterio de "columna que los datos usan de verdad". Si por lo que sea
+     * devolviera otra fila, no se inventa nada: se degrada a la fila cruda.
      *
-     * @param  array $ventana  [numero_fila_1based => [valores...]]
-     * @param  int   $fila
-     * @return array
+     * @param  string $excel_path
+     * @param  int    $indice_hoja
+     * @param  int    $fila         1-based
+     * @return array  ['columnas' => [string...], 'columnas_sin_nombre' => [int...]]
      */
-    protected function columnas_de_la_fila(array $ventana, $fila)
+    protected function encabezado_en_la_fila($excel_path, $indice_hoja, $fila)
     {
+        $ventana = ExcelHeaderDetector::leer_ventana($excel_path, $indice_hoja);
+
+        $fila = (int) $fila;
+
+        /* Fuera de la ventana de 20 filas: analyze() se queda con los headers crudos. */
         if (!isset($ventana[$fila])) {
-            return [];
+            return ['columnas' => [], 'columnas_sin_nombre' => []];
         }
 
-        $ancho = 0;
+        $recortada = [];
 
-        foreach ($ventana as $valores) {
-            foreach ($valores as $indice_columna => $valor) {
-                if (trim((string) $valor) !== '' && ($indice_columna + 1) > $ancho) {
-                    $ancho = $indice_columna + 1;
-                }
+        foreach ($ventana as $numero_fila => $valores) {
+            if ((int) $numero_fila >= $fila) {
+                $recortada[(int) $numero_fila] = $valores;
             }
         }
 
-        $columnas = [];
+        $resultado = ExcelHeaderDetector::detectar($recortada);
 
-        for ($i = 0; $i < $ancho; $i++) {
-            $columnas[] = isset($ventana[$fila][$i]) ? trim((string) $ventana[$fila][$i]) : '';
+        if ((int) $resultado['fila'] !== $fila) {
+            return ['columnas' => [], 'columnas_sin_nombre' => []];
         }
 
-        return $columnas;
+        return [
+            'columnas'            => $resultado['columnas'],
+            'columnas_sin_nombre' => $resultado['columnas_sin_nombre'],
+        ];
     }
 
     /**
@@ -1145,6 +1404,13 @@ PT;
         /*
          * El prompt le explica a Claude exactamente qué debe devolver y en qué formato.
          * Se pide explícitamente JSON puro sin markdown para facilitar el parseo.
+         *
+         * La instrucción 1bis ("una entrada por columna, en orden de columna") existe para
+         * que el reparto de índices de enrich_column_mapping() tenga la mayor chance posible
+         * de acertar cuando dos columnas comparten encabezado. 🔴 NO ES UNA GARANTÍA Y NO SE
+         * DEPENDE DE ELLA: Claude puede no obedecer, y si no obedece el error es costo y
+         * precio invertidos en todo el catálogo, sin ruido. La red que sí atrapa ese caso es
+         * el aviso de detectar_columnas_ambiguas(), que existe aunque esta instrucción esté.
          */
         $prompt = <<<PROMPT
 Analizá el siguiente archivo Excel de importación de artículos y devolvé SOLO un JSON válido (sin markdown, sin explicaciones extra).
@@ -1168,6 +1434,7 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 
 ## Instrucciones generales
 1. Analizá cada columna del Excel y mapeala a la propiedad del sistema más apropiada.
+1bis. Devolvé UNA entrada por columna del Excel, en el MISMO orden en que aparecen las columnas, de izquierda a derecha, incluidas las que no correspondan a ninguna propiedad. Si dos columnas comparten el mismo encabezado (pasa cuando la cabecera está fusionada sobre varias columnas), devolvé una entrada por cada una, igual en orden de izquierda a derecha: la primera entrada con ese nombre se asigna a la columna de más a la izquierda.
 2. Si una columna no corresponde a ninguna propiedad del sistema, usá null en system_property.
 3. Determiná a qué proveedor pertenece este listado: priorizá el nombre del archivo; si no alcanza, usá encabezados y datos de muestra. El provider_id debe ser un ID de la lista de proveedores o null.
 
@@ -1513,6 +1780,15 @@ PROMPT;
          *
          * Si alguna vez te tienta "simplificar" esto de vuelta a un índice por nombre:
          * el caso que se rompe es costo y precio leyendo la misma columna, y no hace ruido.
+         *
+         * 🔴 Y REPARTIR EN ORDEN NO ALCANZA, POR ESO ADEMÁS SE AVISA.
+         * El orden que se reparte acá es el orden en que Claude devolvió los ítems, y nada lo
+         * garantiza: si devuelve precio primero, precio se lleva E y costo F, o sea el
+         * catálogo entero del cliente con costo y precio invertidos y ni un error en
+         * pantalla. La información para desambiguar no está en el archivo. Por eso
+         * detectar_columnas_ambiguas() —abajo, con el detalle completo— manda el caso al paso
+         * 2 como aviso para que lo mire el usuario, que sí puede saberlo. Esta lista de
+         * índices es la mitad mecánica; el aviso es la que hace que no se degrade en silencio.
          */
         $header_indexes_by_name = [];
         foreach ($headers as $header_index => $header_text) {
