@@ -19,11 +19,13 @@ use App\Models\Sale;
  * real (tanto al crear como al actualizar). Si mañana esa regla cambia, este chequeo cambia con
  * ella.
  *
- * Dos entradas, una por cada lugar donde `SaleController` hace que una venta impacte la cuenta
- * corriente:
+ * Tres entradas, una por cada lugar donde una venta empieza a impactar la cuenta corriente:
  *  - `validar_venta_nueva()` — `SaleController::store()`, ANTES de `DB::beginTransaction()`.
  *  - `validar_venta_actualizada()` — `SaleController::update()`, DENTRO de la transacción ya
  *    abierta, justo antes de `SaleHelper::updateCurrentAcountsAndCommissions()`.
+ *  - `validar_pedido_confirmado()` — `OrderController::update()` (prompt 610), para la venta que
+ *    nace de confirmar un pedido de la tienda propia. 🔴 Esta última es la única de las tres cuyo
+ *    422 es **salteable**: ver su docblock.
  */
 class LimiteCreditoHelper {
 
@@ -75,39 +77,17 @@ class LimiteCreditoHelper {
         }
 
         // La credit_account de LA MISMA MONEDA de la venta: no comparar pesos contra dólares.
-        $credit_account = CreditAccount::where('model_name', 'client')
-                                        ->where('model_id', $client->id)
-                                        ->where('moneda_id', $moneda_id)
-                                        ->first();
+        $credit_account = Self::buscar_credit_account_con_limite($client->id, $moneda_id);
 
-        if (is_null($credit_account) || is_null($credit_account->limite_credito)) {
+        if (is_null($credit_account)) {
             return null;
         }
 
         // Saldo recalculado con el mismo helper que usa CurrentAcountFromSaleHelper para el
         // movimiento que va a persistir, no el denormalizado de credit_accounts.saldo.
-        $saldo_actual     = (float) CurrentAcountHelper::getSaldo($credit_account->id);
-        $total            = (float) $request->total;
-        $saldo_resultante = $saldo_actual + $total;
-        $limite           = (float) $credit_account->limite_credito;
+        $saldo_actual = (float) CurrentAcountHelper::getSaldo($credit_account->id);
 
-        // Tolerancia de un centavo: mismo criterio que SaleController::makeAfipTicket() con el
-        // tope del importe personalizado. Sin ella se rechazaría el caso más común, que es vender
-        // exactamente hasta el límite.
-        if ($saldo_resultante <= $limite + 0.01) {
-            return null;
-        }
-
-        return Self::armar_respuesta_422(
-            $client->id,
-            $client->name,
-            $credit_account->id,
-            $moneda_id,
-            $saldo_actual,
-            $total,
-            $saldo_resultante,
-            $limite
-        );
+        return Self::comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_actual, (float) $request->total);
     }
 
     /**
@@ -173,12 +153,9 @@ class LimiteCreditoHelper {
         // ya persistida siempre viene seteado, pero se normaliza igual por las dudas.
         $moneda_id = !is_null($sale->moneda_id) ? (int) $sale->moneda_id : 1;
 
-        $credit_account = CreditAccount::where('model_name', 'client')
-                                        ->where('model_id', $client->id)
-                                        ->where('moneda_id', $moneda_id)
-                                        ->first();
+        $credit_account = Self::buscar_credit_account_con_limite($client->id, $moneda_id);
 
-        if (is_null($credit_account) || is_null($credit_account->limite_credito)) {
+        if (is_null($credit_account)) {
             return null;
         }
 
@@ -195,24 +172,167 @@ class LimiteCreditoHelper {
 
         $saldo_sin_este_movimiento = $saldo_actual - (!is_null($movimiento_actual) ? (float) $movimiento_actual->debe : 0);
 
-        $total            = (float) $sale->total;
-        $saldo_resultante = $saldo_sin_este_movimiento + $total;
+        return Self::comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_sin_este_movimiento, (float) $sale->total);
+    }
+
+    /**
+     * Chequeo del límite de crédito en el camino del PEDIDO CONFIRMADO (prompt 610).
+     *
+     * Hasta este prompt, el límite sólo se miraba en SaleController::store()/update(). Cuando se
+     * confirma un pedido de la tienda propia, la venta la crea CreateSaleOrderHelper sin pasar
+     * por SaleController: un cliente al tope de su límite no podía comprar en el mostrador y sí
+     * desde la tienda.
+     *
+     * 🔴 A diferencia del mostrador, este aviso es SALTEABLE (decisión de Lucas, 22/8/2026): el
+     * que confirma es el dueño mirando una lista de pedidos, no un vendedor con el cliente
+     * adelante, y frenarlo en seco en medio de una tanda es peor que el problema. Quien llama
+     * decide si respeta el 422 o lo saltea con `ignorar_limite_credito` — ver
+     * OrderController::chequear_limite_credito_del_pedido().
+     *
+     * Recibe los valores YA derivados en vez de derivarlos de nuevo: son los mismos que
+     * CreateSaleOrderHelper::get_client_id() / get_to_check() le van a dar a createSale() un
+     * instante después. Si esto los recalculara por su cuenta, podrían desalinearse.
+     *
+     * 🔴 NO se llama a aplicar_bandera_facturar_primero() acá, a diferencia de
+     * validar_venta_nueva(). Esa función replica lo que SaleController::store() hace en la línea
+     * 244 llamando a SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar(). El camino
+     * del pedido NO pasa por ahí: CreateSaleOrderHelper::createSale() hardcodea
+     * save_current_acount => 1 y nadie se lo baja después. Aplicar la bandera acá dejaría pasar
+     * sin chequeo una venta que en los hechos sí entra a la cuenta corriente.
+     *
+     * @param  int|null  $client_id  De CreateSaleOrderHelper::get_client_id().
+     * @param  bool      $to_check   De CreateSaleOrderHelper::get_to_check().
+     * @param  float     $total      Total del pedido, que es el que createSale() va a copiar.
+     * @return array|null  null = el pedido se puede confirmar. Array = cuerpo del 422.
+     */
+    static function validar_pedido_confirmado($client_id, $to_check, $total) {
+
+        // Pedido de invitado, de Tienda Nube o de Mercado Libre: la venta nace sin cliente, así
+        // que no hay cuenta corriente que pueda excederse.
+        if (is_null($client_id) || !$client_id) {
+            return null;
+        }
+
+        // Venta "para chequear" (extensión check_sales): SaleHelper::attachProperies() no llama a
+        // create_current_acount() cuando to_check, así que esta venta no mueve el saldo al
+        // guardarse. Mismo corte que validar_venta_nueva().
+        if ($to_check) {
+            return null;
+        }
+
+        $client = Client::find($client_id);
+
+        if (is_null($client)) {
+            return null;
+        }
+
+        /*
+            No se pregunta por SaleHelper::va_a_volver_a_la_cuenta_corriente() como en las otras
+            dos entradas: en este camino sería una tautología. CreateSaleOrderHelper::createSale()
+            escribe save_current_acount => 1 literal y nunca asigna omitir_en_cuenta_corriente
+            (default 0 en la migración de sales), así que esa función siempre daría true. Los
+            únicos cortes reales son los dos de arriba.
+        */
+
+        // moneda_id fijo en 1 porque createSale() lo hardcodea así. 🔴 Si esa línea alguna vez
+        // deja de ser fija, esta tiene que acompañarla o el límite se mediría contra la cuenta
+        // corriente equivocada.
+        $moneda_id = 1;
+
+        $credit_account = Self::buscar_credit_account_con_limite($client->id, $moneda_id);
+
+        if (is_null($credit_account)) {
+            return null;
+        }
+
+        $saldo_actual = (float) CurrentAcountHelper::getSaldo($credit_account->id);
+
+        /*
+            La frase del final existe por una punta que quedó abierta: el estado del pedido
+            también se puede cambiar desde el SELECT del formulario genérico
+            (`src/models/order.js` lo declara como campo), y ese guardado pasa por
+            `common-vue/components/model/Index.vue`, que no manda `ignorar_limite_credito` y
+            muestra el `message` en un toast. Por ese camino el usuario ve el motivo pero no
+            tiene el botón "Confirmar igual", así que se le dice adónde ir. Enseñarle a saltear
+            al guardado genérico sería tocar el componente que usan todos los modelos de la SPA.
+        */
+        return Self::comparar_contra_limite(
+            $client,
+            $credit_account,
+            $moneda_id,
+            $saldo_actual,
+            (float) $total,
+            'Si aun así querés confirmarlo, usá el botón "Confirmar pedido".'
+        );
+    }
+
+    /**
+     * La credit_account del cliente en ESA moneda, sólo si tiene límite cargado.
+     *
+     * Devolver null cuando `limite_credito` es null no es un atajo: null = sin límite = el
+     * comportamiento de antes de la misión 160, que es el caso de la enorme mayoría de los
+     * clientes.
+     *
+     * @param  int  $client_id
+     * @param  int  $moneda_id
+     * @return \App\Models\CreditAccount|null
+     */
+    private static function buscar_credit_account_con_limite($client_id, $moneda_id) {
+
+        $credit_account = CreditAccount::where('model_name', 'client')
+                                        ->where('model_id', $client_id)
+                                        ->where('moneda_id', $moneda_id)
+                                        ->first();
+
+        if (is_null($credit_account) || is_null($credit_account->limite_credito)) {
+            return null;
+        }
+
+        return $credit_account;
+    }
+
+    /**
+     * La comparación en sí, compartida por las tres entradas.
+     *
+     * @param  \App\Models\Client         $client
+     * @param  \App\Models\CreditAccount  $credit_account
+     * @param  int    $moneda_id
+     * @param  float  $saldo_base  Saldo contra el que se suma el total (ya neteado de lo que
+     *                             corresponda: ver validar_venta_actualizada()).
+     * @param  float  $total
+     * @param  string|null  $como_seguir  Frase que se agrega al final del `message` explicando qué
+     *                                    puede hacer el usuario. Sólo la usa el camino del pedido:
+     *                                    ver validar_pedido_confirmado().
+     * @return array|null
+     */
+    private static function comparar_contra_limite($client, $credit_account, $moneda_id, $saldo_base, $total, $como_seguir = null) {
+
+        $saldo_resultante = $saldo_base + $total;
         $limite           = (float) $credit_account->limite_credito;
 
+        // Tolerancia de un centavo: mismo criterio que SaleController::makeAfipTicket() con el
+        // tope del importe personalizado. Sin ella se rechazaría el caso más común, que es vender
+        // exactamente hasta el límite.
         if ($saldo_resultante <= $limite + 0.01) {
             return null;
         }
 
-        return Self::armar_respuesta_422(
+        $respuesta = Self::armar_respuesta_422(
             $client->id,
             $client->name,
             $credit_account->id,
             $moneda_id,
-            $saldo_sin_este_movimiento,
+            $saldo_base,
             $total,
             $saldo_resultante,
             $limite
         );
+
+        if (!is_null($como_seguir)) {
+            $respuesta['message'] .= ' '.$como_seguir;
+        }
+
+        return $respuesta;
     }
 
     /**
