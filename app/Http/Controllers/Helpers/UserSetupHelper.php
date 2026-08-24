@@ -213,10 +213,11 @@ class UserSetupHelper
                 ? trim((string) $data['google_custom_search_api_key'])
                 : self::GOOGLE_API_KEY_FALLBACK,
             // Cuota de Google del usuario real: la manda admin-api (RunUserSetupService, configurable
-            // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 100.
+            // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 300.
+            // Decisión de Lucas (tanda correctivos 24/8): cliente real 300, demo 100 (DemoSetupHelper).
             'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
                 ? (int) $data['google_cuota']
-                : 100,
+                : 300,
         ]);
     }
 
