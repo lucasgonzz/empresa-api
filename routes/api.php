@@ -467,7 +467,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('meli-order', 'MeLiOrderController')->except(['index', 'create', 'edit']);
 
 
-    Route::resource('order-status', 'OrderStatusController');
+    /*
+        Solo lectura, a proposito (decision de Lucas, 24/8/2026): "no se debe de poder editar".
+
+        OrderStatusHelper depende de los nombres literales de estas filas para decidir si un pedido
+        puede avanzar. Renombrar "Confirmado" deja todos los pedidos de ese comercio solo
+        cancelables, y borrar un estado deja tapiados a los que estaban en el. No habia ninguna
+        pantalla que los editara ni ningun consumidor de store/update/destroy: eran tres endpoints
+        de escritura regalados contra una tabla de la que depende el modulo entero.
+    */
+    Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 
