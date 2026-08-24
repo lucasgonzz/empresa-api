@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Pedidos;
 
+use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Models\OrderStatus;
 use Illuminate\Support\Facades\Route;
 use Tests\Concerns\PedidosDePrueba;
@@ -197,6 +198,69 @@ class Order_status_solo_lectura_Test extends EmpresaTestCase
         $this->assertEmpty(
             $encontradas,
             'Sigue habiendo rutas de escritura sobre order-status: '.implode(', ', $encontradas)
+        );
+    }
+
+    /**
+     * 6. Se listan en el orden de negocio (Sin confirmar, Confirmado, Terminado, Entregado,
+     * Cancelado), no en el orden de `id`/`created_at`.
+     *
+     * 🔴 Regresión concreta: hasta el 24/8/2026 el endpoint ordenaba por `created_at DESC`. Como
+     * los 5 estados se siembran casi en el mismo segundo, eso devolvía los cinco fuera de
+     * secuencia (medido: Terminado, Entregado, Cancelado, Sin confirmar, Confirmado). Este test
+     * sembrando en un orden distinto al de `self::$ESTADOS_PEDIDO` es lo que hace que el caso
+     * pegue: si el endpoint volviera a depender de `id`/`created_at`, este test lo agarra.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function los_estados_se_listan_en_el_orden_de_negocio()
+    {
+        // Se pisa el fixture del setUp con uno sembrado en orden inverso, para que un eventual
+        // regreso a "orderBy id/created_at" quede en evidencia y no pase de casualidad.
+        OrderStatus::query()->delete();
+        foreach (array_reverse(self::$ESTADOS_PEDIDO) as $nombre) {
+            OrderStatus::create(['name' => $nombre]);
+        }
+
+        $response = $this->getJson('api/order-status');
+
+        $response->assertStatus(200);
+
+        $nombres = [];
+        foreach ($response->json('models') as $modelo) {
+            $nombres[] = $modelo['name'];
+        }
+
+        $this->assertEquals(
+            self::$ESTADOS_PEDIDO,
+            $nombres,
+            'El endpoint de lectura no devolvio los estados en el orden de negocio.'
+        );
+    }
+
+    /**
+     * 7. `OrderStatusHelper::ORDEN_VISUAL` (el orden de display) no puede desincronizarse de
+     * `OrderStatusHelper::AVANCE` (la maquina de estados que valida transiciones): los primeros
+     * cuatro tienen que coincidir exactamente, y "Cancelado" tiene que ir al final.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function orden_visual_no_se_desincroniza_de_la_maquina_de_avance()
+    {
+        $this->assertEquals(
+            OrderStatusHelper::AVANCE,
+            array_slice(OrderStatusHelper::ORDEN_VISUAL, 0, 4),
+            'ORDEN_VISUAL dejo de coincidir con AVANCE en sus primeros cuatro estados.'
+        );
+
+        $orden_visual = OrderStatusHelper::ORDEN_VISUAL;
+
+        $this->assertEquals(
+            OrderStatusHelper::CANCELADO,
+            end($orden_visual),
+            'ORDEN_VISUAL tiene que terminar en Cancelado.'
         );
     }
 }
