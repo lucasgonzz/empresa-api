@@ -387,7 +387,33 @@ class ArticleIndexCache
         //     $article_query->where('provider_id', $provider_id);
         // }
 
-        $article_query->chunkById(2000, function ($articles) use (&$index) {
+        /*
+         * Bucket de codigos de proveedor SIN proveedor asignado (decision de Lucas,
+         * 24/8/2026). Hasta hoy un articulo con provider_code pero provider_id NULL
+         * era invisible al escalon provider_code, asi que la fila que tenia que
+         * actualizarlo creaba un duplicado en CADA importacion. Ahora se indexa en un
+         * bucket propio (clave '': PHP convierte la clave null a cadena vacia).
+         *
+         * Va acotado a las importaciones que NO eligieron proveedor, y eso no es un
+         * detalle: con provider_id null find_with_index() ya mete todos los buckets en
+         * la bolsa de "mismo proveedor", asi que el bucket entra solo por ese merge, sin
+         * tocar nada mas. Si se indexara tambien con proveedor elegido caeria en "otros
+         * proveedores" y, con actualizar_articulos_de_otro_proveedor = false y
+         * permitir_provider_code_repetido_en_multi_providers = false, bloquearia filas
+         * que hoy se crean.
+         */
+        $indexar_sin_proveedor = (is_null($provider_id) || (int) $provider_id === 0);
+
+        if ($indexar_sin_proveedor) {
+            /*
+             * Se crea la clave aunque quede vacia: es la marca que update() mira para
+             * saber que ESTA importacion no eligio proveedor (update() no recibe el
+             * provider_id de la importacion, solo el articulo).
+             */
+            $index['provider_codes'][''] = [];
+        }
+
+        $article_query->chunkById(2000, function ($articles) use (&$index, $indexar_sin_proveedor) {
 
             foreach ($articles as $article) {
                 $article_id = (int) $article->id;
@@ -439,6 +465,26 @@ class ArticleIndexCache
                             $index['provider_codes'][$prov_id][$prov_code] = [];
                         }
                         $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
+
+                    } elseif (
+                        $indexar_sin_proveedor
+                        && !is_null($article->provider_code)
+                        && trim((string) $article->provider_code) !== ''
+                        && is_null($article->provider_id)
+                    ) {
+                        /* Codigo de proveedor sin proveedor asignado: bucket propio. */
+                        $prov_code = $article->provider_code;
+
+                        /* '' es la clave del bucket sin proveedor (ver comentario de arriba). */
+                        $sin_prov = '';
+
+                        if (!isset($index['provider_codes'][$sin_prov])) {
+                            $index['provider_codes'][$sin_prov] = [];
+                        }
+                        if (!isset($index['provider_codes'][$sin_prov][$prov_code])) {
+                            $index['provider_codes'][$sin_prov][$prov_code] = [];
+                        }
+                        $index['provider_codes'][$sin_prov][$prov_code][] = $article_id;
                     }
                 // }
 
@@ -1492,6 +1538,34 @@ class ArticleIndexCache
                 // Log::info('Agregando el articulo con provider_code '.$article->provider_code.' al cache:');
                 // Log::info($index['provider_codes'][$article->provider_id][$article->provider_code]);
                 $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
+            }
+
+        } elseif (empty($article->provider_id) && !empty($article->provider_code)) {
+
+            /*
+             * Codigo de proveedor SIN proveedor asignado (decision de Lucas, 24/8/2026):
+             * la contracara en update() del bucket que arma build(). Sin esto, un
+             * articulo creado a mitad de una importacion sin proveedor no queda indexado
+             * por su provider_code y un lote posterior con la misma fila lo duplica --
+             * exactamente el agujero que este cambio viene a cerrar para los articulos
+             * que ya estaban en la base.
+             *
+             * La guarda es la clave '' del indice: build() la crea SOLO cuando la
+             * importacion no eligio proveedor. Si la importacion si eligio uno, este
+             * bucket no existe y no se escribe nada -- porque ahi caeria en "otros
+             * proveedores" de find_with_index() y bloquearia filas que hoy se crean.
+             */
+            $sin_prov = '';
+
+            if (isset($index['provider_codes'][$sin_prov])) {
+
+                $prov_code = $article->provider_code;
+
+                if (!isset($index['provider_codes'][$sin_prov][$prov_code])) {
+                    $index['provider_codes'][$sin_prov][$prov_code] = [];
+                }
+
+                $index['provider_codes'][$sin_prov][$prov_code][] = $article->id;
             }
         }
 
