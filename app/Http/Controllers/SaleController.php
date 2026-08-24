@@ -696,55 +696,43 @@ class SaleController extends Controller
                 }
 
                 /**
-                 * 🔴 El tope NO se valida si la venta tiene `descuento`: el sistema calcula ese
-                 * campo de dos maneras incompatibles y el techo sale mal. `SaleHelper.php:1714`
-                 * lo resta como MONTO ABSOLUTO (`$total_articles -= $sale->descuento`) y
-                 * `AfipItemCalculator.php:241` lo aplica como PORCENTAJE
-                 * (`$price -= $price * $descuento / 100`). Sobre una venta de $375 con
-                 * `descuento = 10`, el usuario ve un total de 365,00 y el tope da 337,50: no se
-                 * podria facturar nada. Con `descuento = 100` el tope da 0,00 y con 375 da
-                 * NEGATIVO. Resolver esa inconsistencia esta fuera del alcance de esta mision;
-                 * hasta entonces, no se bloquea con un numero que no es confiable.
+                 * El tope se valida TAMBIEN cuando la venta tiene `descuento`. Hasta la tanda
+                 * correctivos 24/8 aca habia un salteo: `SaleHelper::getTotalSale()` restaba el
+                 * descuento como MONTO ABSOLUTO mientras `AfipItemCalculator` lo aplicaba como
+                 * PORCENTAJE, asi que el techo no era un numero confiable. Lucas confirmo el
+                 * 24/8/2026 que `sales.descuento` ES porcentaje, `getTotalSale()` ya quedo
+                 * corregido a ese criterio, y el tope —que sale de `AfipHelper::getImportes()`,
+                 * que siempre lo aplico como porcentaje— volvio a ser el total real de la venta.
+                 * El salteo perdio su motivo y se saco.
                  */
-                if (!is_null($sale->descuento) && (float) $sale->descuento != 0) {
 
+                /** @var float|null $tope Total en pesos que se facturaria sin importe personalizado. */
+                $tope = MakeAfipTicket::get_tope_en_pesos(
+                    $sale,
+                    (int) $request->ventas_afip_information_id,
+                    (int) $request->afip_tipo_comprobante_id
+                );
+
+                if (is_null($tope) || $tope <= 0) {
+
+                    // Sin configuracion fiscal valida, o con un tope no positivo, el numero no
+                    // sirve como techo: bloquear con el saldria siempre en 422.
                     Log::warning(
-                        'makeAfipTicket sale id '.$sale->id.': se saltea la validacion del tope del importe '.
-                        'personalizado porque la venta tiene descuento ('.$sale->descuento.') y ese campo se '.
-                        'interpreta como monto absoluto en SaleHelper::getTotal() y como porcentaje en '.
-                        'AfipItemCalculator::get_article_price_with_discounts(). El tope no es determinable.'
+                        'makeAfipTicket sale id '.$sale->id.': tope no determinable ('.
+                        (is_null($tope) ? 'null' : $tope).'). Se saltea la validacion del importe personalizado.'
                     );
 
-                } else {
+                } else if ((float) $monto > $tope + 0.01) {
 
-                    /** @var float|null $tope Total en pesos que se facturaria sin importe personalizado. */
-                    $tope = MakeAfipTicket::get_tope_en_pesos(
-                        $sale,
-                        (int) $request->ventas_afip_information_id,
-                        (int) $request->afip_tipo_comprobante_id
-                    );
-
-                    if (is_null($tope) || $tope <= 0) {
-
-                        // Sin configuracion fiscal valida, o con un tope no positivo, el numero no
-                        // sirve como techo: bloquear con el saldria siempre en 422.
-                        Log::warning(
-                            'makeAfipTicket sale id '.$sale->id.': tope no determinable ('.
-                            (is_null($tope) ? 'null' : $tope).'). Se saltea la validacion del importe personalizado.'
-                        );
-
-                    } else if ((float) $monto > $tope + 0.01) {
-
-                        /**
-                         * El + 0.01 de tolerancia es a proposito: el total que muestra el front
-                         * (sale.total x valor_dolar) y el del AfipHelper (suma de items con
-                         * back-out) pueden diferir en centavos. Sin tolerancia se rechazaria el
-                         * caso mas comun, que es "facturar exactamente el total".
-                         */
-                        return response()->json([
-                            'message' => 'El importe a facturar ($'.number_format((float) $monto, 2, ',', '.').') no puede superar el total de la venta en pesos ($'.number_format($tope, 2, ',', '.').').',
-                        ], 422);
-                    }
+                    /**
+                     * El + 0.01 de tolerancia es a proposito: el total que muestra el front
+                     * (sale.total x valor_dolar) y el del AfipHelper (suma de items con
+                     * back-out) pueden diferir en centavos. Sin tolerancia se rechazaria el
+                     * caso mas comun, que es "facturar exactamente el total".
+                     */
+                    return response()->json([
+                        'message' => 'El importe a facturar ($'.number_format((float) $monto, 2, ',', '.').') no puede superar el total de la venta en pesos ($'.number_format($tope, 2, ',', '.').').',
+                    ], 422);
                 }
             }
 

@@ -1785,8 +1785,21 @@ class SaleHelper extends Controller {
 
         $sub_total = $total_articles + $total_combos + $total_promocion_vinotecas + $total_services;
 
+        /*
+            `sales.descuento` ES PORCENTAJE (confirmado por Lucas, 24/8/2026) y se aplica SOLO
+            al total de los articulos, igual que la SPA (`vender_set_total.js::aplicar_descuento()`:
+            "Aplicando descuento del X% solo al total de los articulos"). Hasta esta tanda aca se
+            restaba como MONTO fijo, y toda venta con descuento que pasara por este metodo (la
+            confirmacion de una venta chequeada, set_total_sales) quedaba con un total distinto
+            del que calculo el front y del que factura AfipItemCalculator (que siempre lo aplico
+            como porcentaje, renglon por renglon).
+
+            La guarda truthy (y no `> 0`) es a proposito: un descuento NEGATIVO es como el
+            sistema representa un recargo global, y la SPA lo aplica igual (`if (this.descuento)`).
+            Mismo criterio que PuntosBaseHelper::factor_descuentos_de_venta().
+        */
         if ($sale->descuento) {
-            $total_articles -= $sale->descuento;
+            $total_articles -= $total_articles * $sale->descuento / 100;
         }
 
         if ($with_discount) {
