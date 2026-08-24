@@ -1230,6 +1230,10 @@ class ActualizarBBDD {
         $rows_create = [];
         $updates = [];
 
+        /* Pares (article_id, price_type_id) ya agregados al INSERT. Ver el comentario del guard
+           mas abajo: la tabla no tiene indice unico y el INSERT IGNORE no deduplica nada. */
+        $pares_ya_agregados = [];
+
         if (app()->environment('local')) { $this->log('asignar_price_types:'); }
 
         // Recorrer todos los artículos
@@ -1265,6 +1269,34 @@ class ActualizarBBDD {
                 $final_price = ($final_price === '' || is_null($final_price)) ? 'NULL' : $final_price;
                 $incluir = $incluir ? 1 : 0;
                 $setear_precio_final = $setear_precio_final ? 1 : 0;
+
+                /*
+                 * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026): guarda contra
+                 * filas DUPLICADAS en article_price_type.
+                 *
+                 * 🔴 El INSERT IGNORE de abajo NO deduplica: la tabla no tiene indice unico sobre
+                 * (article_id, price_type_id) -- la migracion 2024_09_05_101805 no lo crea y
+                 * ninguna posterior lo agrega. El IGNORE solo se traga errores.
+                 *
+                 * Y hay un caso real donde el mismo par llega dos veces: con
+                 * permitir_provider_code_repetido, varias filas del Excel con el MISMO
+                 * provider_code nuevo crean varios articulos, pero get_article_model_from_cache()
+                 * (~:1610) los resuelve todos al mismo modelo con un ->first() por provider_code.
+                 * Medido el 24/8/2026 con 07_repetidos_en_el_archivo.xlsx: el primer articulo
+                 * terminaba con 6 filas de pivot (3 duplicados de cada lista) en vez de 2.
+                 *
+                 * Es un defecto preexistente de get_article_model_from_cache() -- le pasa igual a
+                 * descuentos y recargos --, pero antes solo se disparaba si el Excel mapeaba una
+                 * columna de lista, y ahora se dispararia en toda importacion de una cuenta con
+                 * listas. Se acota aca, que es donde se arma el INSERT.
+                 */
+                $clave_par = $article_id . '-' . $price_type['id'];
+
+                if (isset($pares_ya_agregados[$clave_par])) {
+                    continue;
+                }
+
+                $pares_ya_agregados[$clave_par] = true;
 
                 // Almacenamos los valores para construir el SQL
                 $rows_create[] = "({$article_id}, {$price_type['id']}, {$percentage}, {$final_price}, {$incluir}, {$setear_precio_final})";
@@ -1439,6 +1471,25 @@ class ActualizarBBDD {
 
         // $this->log('get_setear_precio_final:');
         // $this->log($price_type);
+
+        /*
+         * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). La marca la pone
+         * ProcessRow::add_price_type_data() cuando el articulo se esta CREANDO y el Excel no trae
+         * ninguna columna de lista. En ese caso no hay ningun precio fijado a mano que respetar,
+         * asi que no se propaga el `setear_precio_final` de la lista: si se propagara, el precio
+         * calculado por margen se guardaria como si lo hubiera fijado una persona y la lista
+         * quedaria congelada para siempre (medicion completa en el comentario de
+         * ProcessRow::add_price_type_data()).
+         *
+         * Las filas que vienen de un Excel que SI habla de listas no traen esta clave, asi que
+         * para ellas no cambia nada.
+         */
+        if (
+            isset($price_type['pivot']['sin_datos_de_lista_en_el_excel'])
+            && $price_type['pivot']['sin_datos_de_lista_en_el_excel']
+        ) {
+            return 0;
+        }
 
         if ($price_type['pivot']['setear_precio_final']) {
             return $price_type['pivot']['setear_precio_final'];
