@@ -523,6 +523,102 @@ class Estado_del_pedido_Test extends EmpresaTestCase
     }
 
     /**
+     * 13. 🔴 Guardar el formulario NO borra las columnas del pivote que el formulario no edita.
+     *
+     * `article_order` tiene nueve columnas. El formulario solo maneja `price` y `amount`, y el
+     * `attachModels` generico re-adjuntaba escribiendo unicamente esas dos: `cost`, `variant_id`,
+     * `color_id`, `size_id`, `with_dolar`, `address_id` y `notes` quedaban en null.
+     *
+     * Antes eso era alcanzable solo si alguien abria el formulario y guardaba. Desde que se
+     * sacaron los botones del modal es el UNICO camino, asi que cada cambio de estado lo
+     * disparaba.
+     *
+     * Lo mas caro es el `cost` congelado: al perderse,
+     * `CreateSaleOrderHelper::attach_sale_properties()` cae a `$article->pivot->cost ?? $article->cost`,
+     * o sea al costo ACTUAL del articulo, y la venta nace con el margen mal calculado. Por eso el
+     * test verifica tambien que la venta arrastre el costo del pedido y no el del articulo.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function guardar_el_formulario_no_borra_el_pivote_de_los_renglones()
+    {
+        $cliente = $this->cliente_cc();
+
+        $pedido = $this->crear_pedido($cliente->id);
+
+        /** Renglon con todo lo que el formulario NO edita. */
+        $renglon = $this->renglones()[0];
+
+        /** Costo congelado del pedido, distinto del costo actual del articulo a proposito. */
+        $costo_del_pedido = 7.77;
+
+        $this->assertNotEquals(
+            $costo_del_pedido,
+            (float) $renglon['article']->cost,
+            'El costo de prueba tiene que ser distinto del costo actual del articulo, si no el test no mide nada.'
+        );
+
+        $pedido->articles()->updateExistingPivot($renglon['article']->id, [
+            'cost'       => $costo_del_pedido,
+            'variant_id' => 12,
+            'color_id'   => 3,
+            'size_id'    => 4,
+            'notes'      => 'sin cierre',
+        ]);
+
+        $pedido = $pedido->fresh();
+
+        // El payload del formulario: manda los renglones con price y amount, nada mas.
+        $this->putJson('api/order/'.$pedido->id, $this->payload_del_select($pedido, 'Confirmado'))
+             ->assertStatus(200);
+
+        $pedido = $pedido->fresh();
+        $pedido->load('articles');
+
+        /** El renglon que se habia enriquecido, ya despues del guardado. */
+        $renglon_guardado = null;
+
+        foreach ($pedido->articles as $article) {
+            if ($article->id == $renglon['article']->id) {
+                $renglon_guardado = $article;
+            }
+        }
+
+        $this->assertNotNull($renglon_guardado, 'Se perdio el renglon del pedido al guardar.');
+
+        $this->assertEquals($costo_del_pedido, (float) $renglon_guardado->pivot->cost, 'Se perdio el cost del pivote.');
+        $this->assertEquals(12, (int) $renglon_guardado->pivot->variant_id, 'Se perdio el variant_id del pivote.');
+        $this->assertEquals(3, (int) $renglon_guardado->pivot->color_id, 'Se perdio el color_id del pivote.');
+        $this->assertEquals(4, (int) $renglon_guardado->pivot->size_id, 'Se perdio el size_id del pivote.');
+        $this->assertEquals('sin cierre', $renglon_guardado->pivot->notes, 'Se perdio la nota del pivote.');
+
+        // Y lo que el formulario SI edita tiene que seguir viniendo de la request.
+        $this->assertEquals($renglon['price'], (float) $renglon_guardado->pivot->price);
+        $this->assertEquals($renglon['amount'], (int) $renglon_guardado->pivot->amount);
+
+        /**
+         * La consecuencia de plata: la venta tiene que haber arrastrado el costo del PEDIDO.
+         * Si el pivote se hubiera borrado, aca aparece el costo actual del articulo.
+         */
+        $venta = Sale::where('order_id', $pedido->id)->first();
+
+        $this->assertNotNull($venta);
+
+        $venta->load('articles');
+
+        foreach ($venta->articles as $article_de_la_venta) {
+            if ($article_de_la_venta->id == $renglon['article']->id) {
+                $this->assertEquals(
+                    $costo_del_pedido,
+                    (float) $article_de_la_venta->pivot->cost,
+                    'La venta nacio con el costo actual del articulo en vez del costo congelado del pedido.'
+                );
+            }
+        }
+    }
+
+    /**
      * 10. La ruta `order/cancel` ya no existe: cancelar es una transición más del select.
      *
      * Se mira la tabla de rutas y no el código de respuesta, por el mismo motivo que el test de
