@@ -149,25 +149,98 @@ class IncidenteServianTest extends ImportTestCase
      * Las dos filas THOMPSON estan en el lote 1 y en el lote 5 y comparten
      * bar_code. En el incidente esto creo dos articulos con el mismo codigo.
      *
+     * ------------------------------------------------------------------------
+     * POR QUE LA CONSULTA SE ACOTA A LOS ARTICULOS CREADOS (no lo revuelvas)
+     * ------------------------------------------------------------------------
+     * Hasta el 24/8/2026 este test barria TODOS los articulos del tenant. Eso lo
+     * hacia imposible de pasar: el escenario sembrado (ImportTestSeeder, lineas
+     * 51-52) crea A7 y A8 con el MISMO bar_code '7790007' a proposito -- son los
+     * que fijan que el escalon bar_code de ArticleIndexCache de ambiguo -- y el
+     * sembrado corre en cada setUp(), antes de importar. La consulta devolvia
+     * siempre ['7790007'], importara lo que importara el fixture: el test nacio
+     * rojo y nunca pudo medir nada, era un fail() con pasos de mas.
+     *
+     * Acotar a los articulos creados NO es aflojar la asercion: es hacer que mida
+     * lo que su docblock dice, que es que la IMPORTACION no cree dos articulos con
+     * el mismo bar_code. Y el unico caso que el acotamiento dejaria afuera -- que
+     * un articulo creado choque con el bar_code de uno sembrado -- se cubre
+     * explicitamente en la segunda asercion, que antes no existia.
+     *
      * @return void
      */
     public function test_no_se_crean_dos_articulos_con_el_mismo_bar_code()
     {
-        $duplicados = Article::query()
-            ->where('user_id', $this->tenant->id)
-            ->whereNotNull('bar_code')
-            ->where('bar_code', '!=', '')
-            ->selectRaw('bar_code, COUNT(*) as total')
-            ->groupBy('bar_code')
-            ->havingRaw('COUNT(*) > 1')
-            ->pluck('bar_code')
-            ->all();
+        $creados = $this->articulos_creados();
+
+        /* bar_code => cuantos articulos creados lo tienen. */
+        $conteo_por_bar_code = [];
+
+        foreach ($creados as $articulo) {
+
+            $bar_code = (string) $articulo->bar_code;
+
+            if ($bar_code === '') {
+                continue;
+            }
+
+            if (!isset($conteo_por_bar_code[$bar_code])) {
+                $conteo_por_bar_code[$bar_code] = 0;
+            }
+
+            $conteo_por_bar_code[$bar_code]++;
+        }
+
+        $duplicados = [];
+
+        foreach ($conteo_por_bar_code as $bar_code => $total) {
+            if ($total > 1) {
+                $duplicados[] = (string) $bar_code;
+            }
+        }
 
         $this->assertSame(
             [],
             $duplicados,
-            'Se crearon articulos con codigo de barras duplicado: '
+            'La importacion creo dos articulos con el mismo codigo de barras: '
             . implode(', ', $duplicados)
+        );
+
+        /*
+         * Cobertura nueva: un articulo creado tampoco puede quedarse con el
+         * bar_code de un articulo que YA existia. Si pasa, la fila tenia que
+         * haber matcheado (o reportado ambiguedad) contra el sembrado y en vez de
+         * eso creo un duplicado -- que es exactamente el incidente de Servian,
+         * solo que contra el catalogo previo en lugar de contra el mismo archivo.
+         */
+        $bar_codes_sembrados = [];
+
+        foreach ($this->seed as $clave => $sembrado) {
+
+            $bar_code = (string) $sembrado->bar_code;
+
+            if ($bar_code === '') {
+                continue;
+            }
+
+            $bar_codes_sembrados[$bar_code] = $clave;
+        }
+
+        $colisiones = [];
+
+        foreach (array_keys($conteo_por_bar_code) as $bar_code) {
+
+            $bar_code = (string) $bar_code;
+
+            if (isset($bar_codes_sembrados[$bar_code])) {
+                $colisiones[] = $bar_code . ' (ya lo tenia ' . $bar_codes_sembrados[$bar_code] . ')';
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $colisiones,
+            'Un articulo creado por la importacion se quedo con el codigo de barras '
+            . 'de un articulo que ya existia: ' . implode(', ', $colisiones)
         );
     }
 
