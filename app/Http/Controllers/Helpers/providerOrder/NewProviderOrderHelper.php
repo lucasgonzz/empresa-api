@@ -211,6 +211,43 @@ class NewProviderOrderHelper {
      *
      * Mismo gate que aplicar_descuento_compra_a_costo_articulos(): solo corre si la orden está
      * marcada para actualizar costo/precio de catálogo.
+     *
+     * 🔴 Suma DENTRO de la compra vs. pisado ENTRE compras (misión
+     * `costos-extra-mismo-tipo-se-pisan`, 24/8/2026). Son dos comportamientos distintos y sólo uno
+     * era un bug:
+     *
+     *  - ENTRE compras se PISA, y es DELIBERADO: es el criterio "último costo" del párrafo de
+     *    arriba. El recargo de tipo X que dejó una compra anterior lo REEMPLAZA la compra nueva; no
+     *    se acumula compra tras compra. Esto no cambió.
+     *  - DENTRO de una misma compra se SUMA: si la compra trae dos o más costos extra del mismo
+     *    tipo (el caso real y hoy frecuente: "Flete" y "Seguro de carga", los dos con tipo
+     *    `transporte`), los dos son costo real de ESA compra y tienen que llegar juntos al artículo.
+     *
+     * Hasta esta misión, el segundo costo extra del mismo tipo PISABA al primero, porque la
+     * asignación `$surchage->amount = $monto_unitario` corría una vez por CADA costo extra: al costo
+     * del artículo llegaba solamente el último, en silencio y sin ningún aviso. El caso era casi
+     * inalcanzable mientras el default del formulario era `otro` (que no prorratea); dejó de serlo
+     * el 22/8/2026, cuando la misión `compras-banderas-y-prorrateo` cambió ese default a
+     * `transporte` y cargar dos costos extra sin tocar el tipo pasó a ser el camino natural.
+     *
+     * Por eso el método ahora PRE-AGREGA por tipo antes de tocar ningún artículo, y después hace UNA
+     * sola asignación por (artículo, tipo).
+     *
+     * 🔴 Idempotencia, que es la trampa de este arreglo: la compra se reconfirma con cada
+     * `PUT api/provider-order/{id}`. Lo que se guarda sigue siendo una ASIGNACIÓN, nunca un `+=`
+     * sobre el `amount` que ya está en la base. El monto es siempre función de la orden, no del
+     * estado previo del artículo, así que correr el método N veces seguidas da siempre el mismo
+     * número. Si alguna vez alguien lo reescribe acumulando sobre `$surchage->amount`, la segunda
+     * confirmación duplica el recargo.
+     *
+     * ⚠️ El back-out de IVA (bloque "Prompt 516") es POR COSTO EXTRA, no por tipo: dos costos extra
+     * del mismo tipo pueden tener alícuotas distintas, o uno venir facturado y el otro no. Por eso
+     * la agregación suma los valores DESPUÉS del back-out individual de cada uno, nunca antes.
+     *
+     * `ArticleHelper::setFinalPrice()` se llama UNA vez por artículo (antes era una vez por artículo
+     * por costo extra). Da lo mismo y cuesta menos: no acumula, recalcula `costo_real`/`final_price`
+     * desde cero leyendo `articles.cost` + la relación `article_surchages` completa, así que la
+     * última llamada subsume a todas las anteriores.
      */
     function aplicar_costos_extra_a_recargos_articulos() {
 
@@ -234,6 +271,21 @@ class NewProviderOrderHelper {
         if ($total_articulos <= 0) {
             return;
         }
+
+        /*
+         * PASO 1 — agregación por tipo.
+         *
+         * Se recorren los costos extra una sola vez, se netea cada uno con SU propia alícuota (ver
+         * el bloque "Prompt 516" más abajo) y recién ahí se acumula en el mapa
+         * `tipo => monto a prorratear`. Sumar antes del back-out sería un error: dos costos extra
+         * del mismo tipo pueden tener alícuotas distintas, o uno venir facturado y el otro no.
+         *
+         * Este paso NO toca la base: es una función pura de provider_order_extra_costs. Es lo que
+         * permite que el paso 2 siga siendo una asignación única por (artículo, tipo) —y por lo
+         * tanto idempotente— sin perder ningún costo extra por el camino.
+         */
+        $valor_por_tipo   = [];
+        $detalle_por_tipo = [];
 
         foreach ($this->provider_order->provider_order_extra_costs as $extra_cost) {
 
@@ -287,45 +339,86 @@ class NewProviderOrderHelper {
                 }
             }
 
-            foreach ($this->provider_order->articles as $article) {
+            if (!isset($valor_por_tipo[$extra_cost->tipo])) {
+                $valor_por_tipo[$extra_cost->tipo]   = 0;
+                $detalle_por_tipo[$extra_cost->tipo] = [];
+            }
 
-                // Subtotal de este ítem, calculado con la misma lógica que usa set_totales()
-                // para sumar total_articulos (get_total_article), así el prorrateo es
-                // consistente con la base usada.
-                $res            = $this->get_total_article($article);
-                $subtotal_item  = (float)$res['sub_total_article'];
+            $valor_por_tipo[$extra_cost->tipo]     += $valor_costo_extra;
+            $detalle_por_tipo[$extra_cost->tipo][]  = $extra_cost->description.' ('.$valor_costo_extra.')';
+        }
 
-                if ($subtotal_item <= 0) {
+        if (count($valor_por_tipo) == 0) {
+            return;
+        }
+
+        // Una línea por tipo con el total agregado y de qué costos extra salió. Es la traza que
+        // faltaba: hasta esta misión, dos costos extra del mismo tipo se pisaban y el log no lo
+        // dejaba ver.
+        foreach ($valor_por_tipo as $tipo => $valor_total_tipo) {
+
+            Log::info('aplicar_costos_extra_a_recargos_articulos: tipo '.$tipo.' -> '.$valor_total_tipo.' a prorratear, suma de '.count($detalle_por_tipo[$tipo]).' costo(s) extra de esta compra: '.implode(' + ', $detalle_por_tipo[$tipo]));
+        }
+
+        /*
+         * PASO 2 — un solo pase por artículo, y adentro un pase por tipo.
+         *
+         * El subtotal y la cantidad del ítem se calculan UNA vez por artículo (antes se
+         * recalculaban por cada costo extra), y setFinalPrice() se llama UNA vez por artículo,
+         * después de guardar todos sus recargos.
+         */
+        foreach ($this->provider_order->articles as $article) {
+
+            // Subtotal de este ítem, calculado con la misma lógica que usa set_totales()
+            // para sumar total_articulos (get_total_article), así el prorrateo es
+            // consistente con la base usada.
+            $res            = $this->get_total_article($article);
+            $subtotal_item  = (float)$res['sub_total_article'];
+
+            if ($subtotal_item <= 0) {
+                continue;
+            }
+
+            // Cantidad comprada del ítem (Prompt 609: recibida si está completada -incluido
+            // 0-, sino pedida), para llevar el monto prorrateado del ítem a un valor unitario.
+            $cantidad = $this->get_cantidad_efectiva($article);
+
+            if ($cantidad <= 0) {
+                continue;
+            }
+
+            $articulo = Article::find($article->id);
+
+            if (is_null($articulo)) {
+                continue;
+            }
+
+            foreach ($valor_por_tipo as $tipo => $valor_total_tipo) {
+
+                if ($valor_total_tipo <= 0) {
                     continue;
                 }
 
-                // Cantidad comprada del ítem (Prompt 609: recibida si está completada -incluido
-                // 0-, sino pedida), para llevar el monto prorrateado del ítem a un valor unitario.
-                $cantidad = $this->get_cantidad_efectiva($article);
-
-                if ($cantidad <= 0) {
-                    continue;
-                }
-
-                $monto_prorrateado_item = $valor_costo_extra * $subtotal_item / $total_articulos;
+                $monto_prorrateado_item = $valor_total_tipo * $subtotal_item / $total_articulos;
                 $monto_unitario         = $monto_prorrateado_item / $cantidad;
 
-                $articulo = Article::find($article->id);
-
-                if (is_null($articulo)) {
-                    continue;
-                }
-
-                // Criterio último costo: busca un recargo existente del mismo tipo en el
-                // artículo para pisar su amount; si no existe, lo crea.
+                /*
+                 * Criterio último costo (ENTRE compras): busca un recargo existente del mismo tipo
+                 * en el artículo para pisar su amount; si no existe, lo crea.
+                 *
+                 * 🔴 Sigue siendo una ASIGNACIÓN y no un `+=`, y eso NO es un descuido: lo que hay
+                 * que sumar (los costos extra del mismo tipo de ESTA compra) ya se sumó en el paso
+                 * 1. Acumular acá sobre lo que hay en la base rompería las dos cosas a la vez — el
+                 * pisado entre compras y la idempotencia frente a la reconfirmación del PUT.
+                 */
                 $surchage = ArticleSurchage::where('article_id', $articulo->id)
-                                            ->where('tipo', $extra_cost->tipo)
+                                            ->where('tipo', $tipo)
                                             ->first();
 
                 if (is_null($surchage)) {
                     $surchage                          = new ArticleSurchage();
                     $surchage->article_id              = $articulo->id;
-                    $surchage->tipo                     = $extra_cost->tipo;
+                    $surchage->tipo                     = $tipo;
                     $surchage->luego_del_precio_final   = 0;
                 }
 
@@ -334,10 +427,23 @@ class NewProviderOrderHelper {
                 $surchage->percentage  = null;
                 $surchage->save();
 
-                Log::info('aplicar_costos_extra_a_recargos_articulos: recargo '.$extra_cost->tipo.' de '.$articulo->name.' seteado en '.$monto_unitario.' (costo extra: '.$extra_cost->description.', valor total: '.$valor_costo_extra.')');
-
-                ArticleHelper::setFinalPrice($articulo);
+                Log::info('aplicar_costos_extra_a_recargos_articulos: recargo '.$tipo.' de '.$articulo->name.' seteado en '.$monto_unitario.' (total del tipo en esta compra: '.$valor_total_tipo.')');
             }
+
+            /*
+             * Los recargos se acaban de crear/actualizar por query, después de que `Article::find()`
+             * trajera el modelo: se refresca la relación explícitamente para que setFinalPrice() ->
+             * ArticlePricesHelper::aplicar_recargos() calcule con los recargos nuevos y no con una
+             * relación cacheada.
+             *
+             * Una sola llamada por artículo alcanza aunque haya varios tipos: setFinalPrice() no
+             * acumula, recalcula el costo real desde cero iterando TODOS los article_surchages del
+             * artículo, así que la última llamada subsume a las que antes se hacían por cada costo
+             * extra.
+             */
+            $articulo->load('article_surchages');
+
+            ArticleHelper::setFinalPrice($articulo);
         }
     }
 

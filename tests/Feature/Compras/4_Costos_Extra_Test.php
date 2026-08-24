@@ -4,6 +4,7 @@ namespace Tests\Feature\Compras;
 
 use App\Models\ArticleDiscount;
 use App\Models\ArticleSurchage;
+use App\Models\Iva;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderDiscount;
@@ -50,6 +51,28 @@ class Costos_Extra_Test extends ComprasTestCase
     {
         ArticleSurchage::where('article_id', $articulo_id)
                         ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                        ->delete();
+    }
+
+    /**
+     * Igual que `limpiar_surchage_transporte()` pero para los TRES tipos materializables. Lo
+     * necesitan los tests de la mision `costos-extra-mismo-tipo-se-pisan` (24/8/2026), que ademas
+     * del transporte generan recargos de tipo `seguro`: con el helper viejo esos quedaban colgados
+     * en el fixture y contaminaban los demas archivos.
+     *
+     * El helper de arriba se deja intacto porque lo usan seis tests anteriores.
+     *
+     * @param int $articulo_id
+     * @return void
+     */
+    protected function limpiar_surchages_tipados($articulo_id)
+    {
+        ArticleSurchage::where('article_id', $articulo_id)
+                        ->whereIn('tipo', [
+                            ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                            ProviderOrderExtraCost::TIPO_SEGURO,
+                            ProviderOrderExtraCost::TIPO_ARANCEL_IMPORTACION,
+                        ])
                         ->delete();
     }
 
@@ -744,6 +767,668 @@ class Costos_Extra_Test extends ComprasTestCase
             // 3_Descuentos_Test se puede poner rojo por un motivo falso.
             $this->limpiar_descuentos_tagueados($pinza->id);
             $this->limpiar_descuentos_tagueados($alicate->id);
+        }
+    }
+
+    /**
+     * Test 8 (mision `costos-extra-mismo-tipo-se-pisan`) — dos costos extra del MISMO tipo en una
+     * misma compra se SUMAN, no se pisan.
+     *
+     * Es el test del arreglo. Hasta el 24/8/2026 el segundo costo extra del mismo tipo sobreescribia
+     * al primero y al costo del articulo llegaba solo el ultimo, en silencio. El caso era casi
+     * inalcanzable mientras el default del formulario era `otro`; dejo de serlo el 22/8/2026, cuando
+     * ese default paso a `transporte` y cargar "Flete" + "Seguro de carga" sin tocar el tipo se
+     * volvio el camino natural.
+     *
+     * Los numeros distinguen los tres escenarios posibles, no solo dos:
+     *   suma (correcto): 1300 + 2600 = 3900 -> Pinza 300/u, Alicate 90/u
+     *   gana el ultimo:               2600 -> Pinza 200/u, Alicate 60/u
+     *   gana el primero:              1300 -> Pinza 100/u, Alicate 30/u
+     *
+     * @group compras
+     * @test
+     */
+    public function dos_costos_extra_del_mismo_tipo_se_suman()
+    {
+        $this->set_condicion_iva('RRII');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $alicate = $this->articulo('Alicate');
+        $snap_pinza = $this->snapshot_articulo($pinza);
+        $snap_alicate = $this->snapshot_articulo($alicate);
+
+        try {
+            $order_id = $this->crear_compra_base_2_items();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete',
+                'value'             => 1300,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Seguro de carga',
+                'value'             => 2600,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $response = $this->putJson('api/provider-order/'.$order_id, $this->payload_compra([
+                'update_stock'   => 0,
+                'total_with_iva' => 0,
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                    $this->item('Alicate', 300, 10),
+                ],
+            ]));
+
+            $response->assertStatus(200);
+
+            $order = ProviderOrder::find($order_id);
+
+            // Guard anti-verde-falso: los dos costos extra existen y la compra se proceso.
+            $this->assertEqualsWithDelta(
+                16900,
+                (float) $order->total,
+                self::DELTA,
+                'guard: el total suma los dos costos extra (13000 + 1300 + 2600 = 16900)'
+            );
+
+            $surchages_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $surchages_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            // Se suman en UNA fila, no se crean dos filas del mismo tipo en el mismo articulo.
+            $this->assertCount(
+                1,
+                $surchages_pinza,
+                'los dos costos extra de transporte se suman en un solo article_surchage, no crean dos filas'
+            );
+
+            $this->assertCount(1, $surchages_alicate, 'idem para Alicate');
+
+            $this->assertEqualsWithDelta(
+                300,
+                (float) $surchages_pinza->first()->amount,
+                self::DELTA,
+                '1300 + 2600 = 3900 de transporte; 3900 * (10000/13000) / 10 = 300. Si diera 200, el segundo costo extra piso al primero'
+            );
+
+            $this->assertEqualsWithDelta(
+                90,
+                (float) $surchages_alicate->first()->amount,
+                self::DELTA,
+                '3900 * (3000/13000) / 10 = 90. Si diera 60, el segundo costo extra piso al primero'
+            );
+
+            $total_prorrateado = ((float) $surchages_pinza->first()->amount * 10) + ((float) $surchages_alicate->first()->amount * 10);
+
+            $this->assertEqualsWithDelta(
+                3900,
+                $total_prorrateado,
+                0.05,
+                'el prorrateo tiene que sumar el total de los DOS costos extra (3900), sin perder centavos'
+            );
+
+            // Y que llegue al costo real, que es lo que despues arma el margen y el precio final.
+            $pinza->refresh();
+            $alicate->refresh();
+
+            $this->assertEqualsWithDelta(
+                1300,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'costo real de Pinza: 1000 de costo + 300 de recargo sumado = 1300 (con el bug daba 1200)'
+            );
+
+            $this->assertEqualsWithDelta(
+                390,
+                (float) $alicate->costo_real,
+                self::DELTA,
+                'costo real de Alicate: 300 de costo + 90 de recargo sumado = 390 (con el bug daba 360)'
+            );
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap_pinza);
+            $this->restaurar_articulo($alicate, $snap_alicate);
+            $this->limpiar_surchages_tipados($pinza->id);
+            $this->limpiar_surchages_tipados($alicate->id);
+        }
+    }
+
+    /**
+     * Test 9 (mision `costos-extra-mismo-tipo-se-pisan`) — reconfirmar la compra NO duplica el
+     * recargo sumado.
+     *
+     * 🔴 Es la trampa del arreglo y por eso tiene test propio: la compra se reconfirma con cada
+     * `PUT api/provider-order/{id}`, y la forma "obvia" de arreglar el pisado —acumular con `+=`
+     * sobre el `amount` que ya esta en la base— dejaria el recargo en 600 despues del segundo PUT,
+     * en 900 despues del tercero, y asi. El arreglo correcto agrega ANTES de tocar la base y sigue
+     * guardando con una asignacion, asi que el numero es siempre el mismo.
+     *
+     * @group compras
+     * @test
+     */
+    public function reconfirmar_la_compra_no_duplica_el_recargo_sumado()
+    {
+        $this->set_condicion_iva('RRII');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $alicate = $this->articulo('Alicate');
+        $snap_pinza = $this->snapshot_articulo($pinza);
+        $snap_alicate = $this->snapshot_articulo($alicate);
+
+        try {
+            $order_id = $this->crear_compra_base_2_items();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete',
+                'value'             => 1300,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Seguro de carga',
+                'value'             => 2600,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $payload_update = $this->payload_compra([
+                'update_stock'   => 0,
+                'total_with_iva' => 0,
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                    $this->item('Alicate', 300, 10),
+                ],
+            ]);
+
+            // Primera confirmacion.
+            $this->putJson('api/provider-order/'.$order_id, $payload_update)->assertStatus(200);
+
+            $surchage_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->first();
+
+            $this->assertNotNull($surchage_pinza, 'guard: la primera confirmacion tiene que dejar el recargo');
+
+            $this->assertEqualsWithDelta(
+                300,
+                (float) $surchage_pinza->amount,
+                self::DELTA,
+                'guard: despues del primer PUT, el recargo de Pinza vale 300'
+            );
+
+            // Segunda confirmacion, con el MISMO payload. Es lo que hace el usuario cada vez que
+            // vuelve a guardar la compra desde la pantalla.
+            $this->putJson('api/provider-order/'.$order_id, $payload_update)->assertStatus(200);
+
+            $surchages_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $surchages_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $this->assertCount(1, $surchages_pinza, 'la segunda confirmacion no agrega una fila nueva');
+            $this->assertCount(1, $surchages_alicate, 'idem para Alicate');
+
+            $this->assertEqualsWithDelta(
+                300,
+                (float) $surchages_pinza->first()->amount,
+                self::DELTA,
+                'reconfirmar la compra no duplica: sigue en 300. Si acumulara sobre el amount de la base daria 600'
+            );
+
+            $this->assertEqualsWithDelta(
+                90,
+                (float) $surchages_alicate->first()->amount,
+                self::DELTA,
+                'reconfirmar la compra no duplica: sigue en 90. Si acumulara daria 180'
+            );
+
+            $pinza->refresh();
+            $alicate->refresh();
+
+            $this->assertEqualsWithDelta(
+                1300,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'el costo real tampoco se duplica: 1300, no 1600'
+            );
+
+            $this->assertEqualsWithDelta(
+                390,
+                (float) $alicate->costo_real,
+                self::DELTA,
+                'el costo real tampoco se duplica: 390, no 480'
+            );
+
+            $order = ProviderOrder::find($order_id);
+
+            $this->assertEqualsWithDelta(
+                16900,
+                (float) $order->total,
+                self::DELTA,
+                'el total de la compra tampoco se duplica con la reconfirmacion'
+            );
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap_pinza);
+            $this->restaurar_articulo($alicate, $snap_alicate);
+            $this->limpiar_surchages_tipados($pinza->id);
+            $this->limpiar_surchages_tipados($alicate->id);
+        }
+    }
+
+    /**
+     * Test 9 bis (mision `costos-extra-mismo-tipo-se-pisan`) — dos costos extra de tipos DISTINTOS
+     * siguen generando dos recargos separados, cada uno con su monto. No regresion.
+     *
+     * ⚠️ Ojo al leerlo: el `costo_real` y el `total` dan los MISMOS numeros que el test de la suma
+     * (la plata total es la misma: 1300 + 2600). O sea que el costo real NO distingue este caso del
+     * anterior. Lo que distingue es la ESTRUCTURA de filas, por eso la asercion del `count() == 2`
+     * es la importante de este test y no se puede sacar.
+     *
+     * @group compras
+     * @test
+     */
+    public function dos_costos_extra_de_tipos_distintos_generan_dos_recargos_separados()
+    {
+        $this->set_condicion_iva('RRII');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $alicate = $this->articulo('Alicate');
+        $snap_pinza = $this->snapshot_articulo($pinza);
+        $snap_alicate = $this->snapshot_articulo($alicate);
+
+        try {
+            $order_id = $this->crear_compra_base_2_items();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete',
+                'value'             => 1300,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Seguro',
+                'value'             => 2600,
+                'tipo'              => ProviderOrderExtraCost::TIPO_SEGURO,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $response = $this->putJson('api/provider-order/'.$order_id, $this->payload_compra([
+                'update_stock'   => 0,
+                'total_with_iva' => 0,
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                    $this->item('Alicate', 300, 10),
+                ],
+            ]));
+
+            $response->assertStatus(200);
+
+            $order = ProviderOrder::find($order_id);
+
+            $this->assertEqualsWithDelta(
+                16900,
+                (float) $order->total,
+                self::DELTA,
+                'guard: 13000 + 1300 + 2600 = 16900'
+            );
+
+            $tipos = [
+                ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                ProviderOrderExtraCost::TIPO_SEGURO,
+            ];
+
+            // 🔴 La asercion que distingue este test del de la suma: DOS filas, una por tipo.
+            $this->assertCount(
+                2,
+                ArticleSurchage::where('article_id', $pinza->id)->whereIn('tipo', $tipos)->get(),
+                'tipos distintos generan recargos SEPARADOS: dos filas en Pinza, una de transporte y una de seguro'
+            );
+
+            $this->assertCount(
+                2,
+                ArticleSurchage::where('article_id', $alicate->id)->whereIn('tipo', $tipos)->get(),
+                'idem para Alicate'
+            );
+
+            $transporte_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->first();
+
+            $seguro_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                            ->where('tipo', ProviderOrderExtraCost::TIPO_SEGURO)
+                                            ->first();
+
+            $this->assertEqualsWithDelta(
+                100,
+                (float) $transporte_pinza->amount,
+                self::DELTA,
+                'transporte de Pinza: 1300 * (10000/13000) / 10 = 100'
+            );
+
+            $this->assertEqualsWithDelta(
+                200,
+                (float) $seguro_pinza->amount,
+                self::DELTA,
+                'seguro de Pinza: 2600 * (10000/13000) / 10 = 200'
+            );
+
+            $transporte_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                    ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                    ->first();
+
+            $seguro_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_SEGURO)
+                                                ->first();
+
+            $this->assertEqualsWithDelta(30, (float) $transporte_alicate->amount, self::DELTA, 'transporte de Alicate: 1300 * (3000/13000) / 10 = 30');
+            $this->assertEqualsWithDelta(60, (float) $seguro_alicate->amount, self::DELTA, 'seguro de Alicate: 2600 * (3000/13000) / 10 = 60');
+
+            // Los DOS recargos llegan al costo real con una sola llamada a setFinalPrice().
+            $pinza->refresh();
+            $alicate->refresh();
+
+            $this->assertEqualsWithDelta(
+                1300,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'costo real de Pinza: 1000 + 100 de transporte + 200 de seguro = 1300'
+            );
+
+            $this->assertEqualsWithDelta(
+                390,
+                (float) $alicate->costo_real,
+                self::DELTA,
+                'costo real de Alicate: 300 + 30 + 60 = 390'
+            );
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap_pinza);
+            $this->restaurar_articulo($alicate, $snap_alicate);
+            $this->limpiar_surchages_tipados($pinza->id);
+            $this->limpiar_surchages_tipados($alicate->id);
+        }
+    }
+
+    /**
+     * Test 10 (mision `costos-extra-mismo-tipo-se-pisan`) — el criterio "ultimo costo" ENTRE
+     * compras se CONSERVA.
+     *
+     * 🔴 Este es el test que blinda lo que el arreglo NO tenia que romper. Son dos comportamientos
+     * distintos y solo uno era un bug: dentro de una misma compra los costos extra del mismo tipo
+     * se SUMAN (test 8), pero una compra POSTERIOR PISA el recargo que dejo la anterior, no lo
+     * acumula. Eso ultimo esta documentado a proposito en el docblock del metodo y es lo que evita
+     * que el costo del articulo crezca compra tras compra.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_criterio_ultimo_costo_entre_compras_se_conserva()
+    {
+        $this->set_condicion_iva('RRII');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $alicate = $this->articulo('Alicate');
+        $snap_pinza = $this->snapshot_articulo($pinza);
+        $snap_alicate = $this->snapshot_articulo($alicate);
+
+        $payload_items = $this->payload_compra([
+            'update_stock'   => 0,
+            'total_with_iva' => 0,
+            'articles' => [
+                $this->item('Pinza', 1000, 10),
+                $this->item('Alicate', 300, 10),
+            ],
+        ]);
+
+        try {
+            // --- Compra A: flete de 1300 ---
+            $order_a = $this->crear_compra_base_2_items();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_a,
+                'description'       => 'Flete compra A',
+                'value'             => 1300,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $this->putJson('api/provider-order/'.$order_a, $payload_items)->assertStatus(200);
+
+            $surchage_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->first();
+
+            $this->assertNotNull($surchage_pinza, 'guard: la compra A tiene que dejar el recargo');
+
+            $this->assertEqualsWithDelta(
+                100,
+                (float) $surchage_pinza->amount,
+                self::DELTA,
+                'guard: despues de la compra A el recargo de Pinza vale 100. Si esto falla, el resto del test no prueba nada'
+            );
+
+            // --- Compra B, posterior: flete de 2600 ---
+            $order_b = $this->crear_compra_base_2_items();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_b,
+                'description'       => 'Flete compra B',
+                'value'             => 2600,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $this->putJson('api/provider-order/'.$order_b, $payload_items)->assertStatus(200);
+
+            $order = ProviderOrder::find($order_b);
+
+            $this->assertEqualsWithDelta(
+                15600,
+                (float) $order->total,
+                self::DELTA,
+                'guard: total de la compra B = 13000 + 2600 = 15600'
+            );
+
+            $surchages_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $surchages_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $this->assertCount(
+                1,
+                $surchages_pinza,
+                'la compra nueva REEMPLAZA el recargo de la anterior, no agrega una fila'
+            );
+
+            $this->assertCount(1, $surchages_alicate, 'idem para Alicate');
+
+            $this->assertEqualsWithDelta(
+                200,
+                (float) $surchages_pinza->first()->amount,
+                self::DELTA,
+                'criterio ultimo costo: la compra B PISA el recargo de la compra A. 2600 * (10000/13000) / 10 = 200. Si diera 300 (100 + 200) se rompio la semantica documentada entre compras'
+            );
+
+            $this->assertEqualsWithDelta(
+                60,
+                (float) $surchages_alicate->first()->amount,
+                self::DELTA,
+                'criterio ultimo costo: 2600 * (3000/13000) / 10 = 60. Acumular daria 90'
+            );
+
+            $pinza->refresh();
+            $alicate->refresh();
+
+            $this->assertEqualsWithDelta(
+                1200,
+                (float) $pinza->costo_real,
+                self::DELTA,
+                'costo real de Pinza tras la compra B: 1000 + 200 = 1200 (acumulando daria 1300)'
+            );
+
+            $this->assertEqualsWithDelta(
+                360,
+                (float) $alicate->costo_real,
+                self::DELTA,
+                'costo real de Alicate tras la compra B: 300 + 60 = 360 (acumulando daria 390)'
+            );
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap_pinza);
+            $this->restaurar_articulo($alicate, $snap_alicate);
+            $this->limpiar_surchages_tipados($pinza->id);
+            $this->limpiar_surchages_tipados($alicate->id);
+        }
+    }
+
+    /**
+     * Test 11 (mision `costos-extra-mismo-tipo-se-pisan`) — el back-out de IVA se hace POR COSTO
+     * EXTRA, antes de sumar.
+     *
+     * Es el punto fino del arreglo: dos costos extra del mismo tipo pueden tener alicuotas
+     * distintas, o uno venir facturado y el otro no. Si la agregacion sumara los brutos y neteara
+     * el total con una sola alicuota, el numero saldria mal.
+     *
+     * Flete facturado 1210 al 21% -> neto 1000. Seguro de carga sin facturar 1600 -> entero 1600.
+     * Total del tipo = 2600. Pinza = 2600 * (10000/13000) / 10 = 200.
+     *
+     * Los caminos equivocados dan numeros distintos, y por eso el test sirve:
+     *   sumar brutos y netear todo al 21%: 2810 / 1,21 = 2322,31 -> Pinza 178,64
+     *   no netear nada:                    2810                 -> Pinza 216,15
+     *
+     * ⚠️ El `total` de la orden suma el value BRUTO de cada costo extra (13000 + 1210 + 1600 =
+     * 15810): `set_totales()` no netea nada, el back-out vive solo en el prorrateo al costo del
+     * articulo.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_backout_de_iva_se_hace_por_costo_extra_antes_de_sumar()
+    {
+        $this->set_condicion_iva('RRII');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $alicate = $this->articulo('Alicate');
+        $snap_pinza = $this->snapshot_articulo($pinza);
+        $snap_alicate = $this->snapshot_articulo($alicate);
+
+        try {
+            $order_id = $this->crear_compra_base_2_items();
+
+            $iva_21 = Iva::where('percentage', '21')->first();
+
+            $this->assertNotNull($iva_21, 'el fixture tiene que tener el IVA del 21%');
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete facturado',
+                'value'             => 1210,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => true,
+                'iva_id'            => $iva_21->id,
+                'en_factura_compra' => true,
+            ]);
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Seguro de carga',
+                'value'             => 1600,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $response = $this->putJson('api/provider-order/'.$order_id, $this->payload_compra([
+                'update_stock'   => 0,
+                'total_with_iva' => 0,
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                    $this->item('Alicate', 300, 10),
+                ],
+            ]));
+
+            $response->assertStatus(200);
+
+            $order = ProviderOrder::find($order_id);
+
+            $this->assertEqualsWithDelta(
+                15810,
+                (float) $order->total,
+                self::DELTA,
+                'guard: el total de la orden suma el valor BRUTO de cada costo extra (13000 + 1210 + 1600)'
+            );
+
+            $surchages_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $this->assertCount(1, $surchages_pinza, 'los dos costos extra de transporte se suman en una sola fila');
+
+            $this->assertEqualsWithDelta(
+                200,
+                (float) $surchages_pinza->first()->amount,
+                self::DELTA,
+                'back-out individual y despues sumar: (1210/1,21) + 1600 = 2600; 2600 * (10000/13000) / 10 = 200. Sumar brutos y netear al 21% daria 178,64; no netear nada daria 216,15'
+            );
+
+            $surchage_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->first();
+
+            $this->assertEqualsWithDelta(
+                60,
+                (float) $surchage_alicate->amount,
+                self::DELTA,
+                '2600 * (3000/13000) / 10 = 60'
+            );
+
+            $pinza->refresh();
+            $alicate->refresh();
+
+            $this->assertEqualsWithDelta(1200, (float) $pinza->costo_real, self::DELTA, 'costo real de Pinza: 1000 + 200 = 1200');
+            $this->assertEqualsWithDelta(360, (float) $alicate->costo_real, self::DELTA, 'costo real de Alicate: 300 + 60 = 360');
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap_pinza);
+            $this->restaurar_articulo($alicate, $snap_alicate);
+            $this->limpiar_surchages_tipados($pinza->id);
+            $this->limpiar_surchages_tipados($alicate->id);
         }
     }
 }
