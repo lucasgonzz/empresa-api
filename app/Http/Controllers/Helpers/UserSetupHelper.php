@@ -93,6 +93,14 @@ class UserSetupHelper
         */
         Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
 
+        /*
+            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
+            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
+            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
+            la omitiria en silencio.
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
+
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
@@ -267,6 +275,15 @@ class UserSetupHelper
             'sugerencias_compras',
             'motor_de_ofertas',
             'tracking_buyers',
+
+            /*
+                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
+                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
+                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
+                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
+            */
+            'asistente_ia',
+            'escaneo_factura_compra',
 
             /*
                 El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js),
