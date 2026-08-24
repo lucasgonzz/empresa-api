@@ -349,8 +349,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // 
     Route::get('acopio-article-delivery/{sale_id}', 'AcopioArticleDeliveryController@from_sale');
 
-    // Hacer Nota de credito AFIP
-    Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
+    // La ruta de la NC vieja (sale/nota-credito-afip) se eliminó el 24/8/2026 junto con
+    // SaleController@nota_credito_afip y SaleNotaCreditoAfipHelper (tanda 2408, ítem 16).
 
 
 

@@ -28,7 +28,6 @@ use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
-use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
 use App\Services\SaleWhatsappSenderService;
@@ -1034,12 +1033,12 @@ class SaleController extends Controller
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 201);
     }
 
-    function nota_credito_afip($sale_id) {
-        $sale = Sale::find($sale_id);
-
-        SaleNotaCreditoAfipHelper::crear_nota_de_credito_afip($sale);
-        return response(null, 201);
-    }
+    /*
+     * nota_credito_afip() se eliminó el 24/8/2026 (tanda correctivos 2408, ítem 16) junto
+     * con SaleNotaCreditoAfipHelper y su ruta: era la NC vieja, y su único consumidor era
+     * BtnNotaCredito2.vue, que no estaba importado por ningún componente de la SPA. El
+     * camino vigente de la NC facturada es DevolucionesController + AfipNotaCreditoHelper.
+     */
 
     function clear_actualizandose_por($sale_id) {
         $sale = Sale::find($sale_id);
