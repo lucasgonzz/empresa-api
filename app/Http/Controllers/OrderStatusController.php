@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Models\OrderStatus;
 
 /**
@@ -19,9 +20,22 @@ class OrderStatusController extends Controller
 {
 
     public function index() {
-        $models = OrderStatus::orderBy('id', 'ASC')
-                            ->withAll()
-                            ->get();
+        $orden = OrderStatusHelper::ORDEN_VISUAL;
+
+        /**
+         * Se ordena por nombre contra OrderStatusHelper::ORDEN_VISUAL y no por `id`/`created_at`:
+         * esas dos columnas no son estables entre instalaciones (cada base corre
+         * OrderStatusSeeder por su cuenta). Un estado que no esta en la lista (resto de una
+         * instalacion vieja, de cuando se podian crear a mano) se manda al final en vez de romper.
+         */
+        $models = OrderStatus::withAll()
+                            ->get()
+                            ->sortBy(function ($model) use ($orden) {
+                                $pos = array_search($model->name, $orden);
+                                return $pos === false ? count($orden) : $pos;
+                            })
+                            ->values();
+
         return response()->json(['models' => $models], 200);
     }
 

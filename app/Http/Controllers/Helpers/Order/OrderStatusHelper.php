@@ -50,6 +50,17 @@ class OrderStatusHelper {
     const TERMINALES = ['Entregado', 'Cancelado'];
 
     /**
+     * El orden en que los estados tienen que listarse en cualquier pantalla: los cuatro de AVANCE
+     * en su secuencia, y Cancelado al final. Fuente unica para el endpoint de lectura (y para
+     * cualquier otro lugar que necesite mostrar los estados ordenados), en vez de confiar en el
+     * `id` o el `created_at` de la fila: como dice el comentario de arriba, esos dos varian entre
+     * instalaciones.
+     *
+     * @var array<int,string>
+     */
+    const ORDEN_VISUAL = ['Sin confirmar', 'Confirmado', 'Terminado', 'Entregado', 'Cancelado'];
+
+    /**
      * Si el pedido puede pasar de un estado a otro.
      *
      * @param  string|null  $desde  Nombre del estado actual.
