@@ -82,9 +82,24 @@ class OrderController extends Controller
 
             $status_pedido = OrderStatus::find($request->order_status_id);
 
-            if (!is_null($status_pedido)) {
-                $nombre_hacia = $status_pedido->name;
+            /**
+             * 🔴 Un id que no resuelve se RECHAZA, no se ignora.
+             *
+             * Ignorarlo dejaba `$nombre_hacia` igual a `$nombre_desde` —o sea, la guarda de mas
+             * abajo lo daba por bueno— y despues se escribia el id basura igual, porque
+             * `orders.order_status_id` no tiene foreign key. El pedido quedaba en un estado que no
+             * existe, y a partir de ahi `$prev_status` es null y CUALQUIER transicion se permite:
+             * el candado se abria por el mismo agujero que dice cerrar.
+             */
+            if (is_null($status_pedido)) {
+
+                return response()->json([
+                    'message'                    => 'El estado indicado no existe.',
+                    'error_transicion_de_estado' => true,
+                ], 422);
             }
+
+            $nombre_hacia = $status_pedido->name;
         }
 
         /**
@@ -124,8 +139,9 @@ class OrderController extends Controller
              *
              * 🔴 No lo simplifiques a las asignaciones directas de antes. Tiene dos consumidores con
              * payloads distintos: el formulario del pedido manda el modelo entero (con `articles` y
-             * `address_id`), y el boton "Confirmar pedido" (`BtnStatus.vue`) manda unicamente
-             * `order_status_id`. Con las asignaciones incondicionales, ese boton dejaba `address_id`
+             * `address_id`), y hay payloads parciales que mandan unicamente `order_status_id`
+             * (hasta el 22/8/2026 los mandaba el boton "Confirmar pedido" del modal, que se saco;
+             * el endpoint los sigue aceptando y hay tests que los cubren). Con las asignaciones incondicionales, ese boton dejaba `address_id`
              * en null y —peor— `GeneralHelper::attachModels()` arranca con un `detach()`
              * incondicional (GeneralHelper.php:103), asi que el pedido perdia TODOS sus renglones y
              * la venta que nace mas abajo salia vacia, sin descontar stock.
@@ -166,7 +182,7 @@ class OrderController extends Controller
              */
             if (is_array($request->articles)) {
 
-                GeneralHelper::attachModels($model, 'articles', $request->articles, ['price', 'amount']);
+                $this->adjuntar_renglones($model, $request->articles);
 
                 $model->total = OrderHelper::get_total($model);
                 $model->save();
@@ -242,6 +258,7 @@ class OrderController extends Controller
                 OrderStatusHelper::es_la_confirmacion($nombre_desde, $nombre_hacia)
                 && !$has_sale
             ) {
+
                 /**
                  * Límite de crédito del cliente al confirmar el pedido (prompt 610).
                  *
@@ -336,6 +353,82 @@ class OrderController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Order', $model->id);
         return response(null);
+    }
+
+    /**
+     * Re-adjunta los renglones del pedido CONSERVANDO las columnas del pivote que el formulario no
+     * maneja.
+     *
+     * 🔴 Reemplaza a `GeneralHelper::attachModels($model, 'articles', ..., ['price','amount'])`, y
+     * el motivo es que desde el 22/8/2026 este es el UNICO camino que queda.
+     *
+     * `article_order` tiene nueve columnas (`Order::articles()` las declara con `withPivot`):
+     * `cost`, `price`, `amount`, `variant_id`, `color_id`, `size_id`, `with_dolar`, `address_id` y
+     * `notes`. `attachModels` hace `detach()` y re-`attach()` escribiendo SOLO las que se le pasan,
+     * asi que las otras siete quedaban en null.
+     *
+     * Antes eso era alcanzable solo si alguien abria el formulario y guardaba, porque el boton
+     * "Confirmar pedido" mandaba unicamente `order_status_id` y no entraba nunca por aca. Al
+     * sacarse el boton, el formulario manda SIEMPRE el modelo entero: cada cambio de estado pasaba
+     * a borrar la variante, el talle, el color, la nota del comprador y —lo mas caro— el `cost`
+     * congelado del pedido, con lo cual `CreateSaleOrderHelper::attach_sale_properties()` caia al
+     * costo ACTUAL del articulo (`$article->pivot->cost ?? $article->cost`) y la venta nacia con el
+     * margen mal calculado.
+     *
+     * Regla: lo que viene en la request manda; lo que no viene se conserva del pivote que ya
+     * estaba. `price` y `amount` van siempre desde la request, que es lo que el formulario edita.
+     *
+     * ⚠️ Limitacion conocida: la foto de los pivotes previos se indexa por `article_id`. Un pedido
+     * con el MISMO articulo en dos renglones (dos variantes distintas) recibe en los dos el pivote
+     * del ultimo. Sigue siendo estrictamente mejor que dejarlos en null, pero si algun dia hace
+     * falta resolverlo bien, el camino es que el front mande el id del pivote.
+     *
+     * @param  \App\Models\Order  $model
+     * @param  array              $articles  Renglones tal como los manda el formulario.
+     * @return void
+     */
+    private function adjuntar_renglones($model, $articles) {
+
+        /** Columnas del pivote que el formulario NO edita y hay que conservar. */
+        $columnas_a_conservar = ['cost', 'variant_id', 'color_id', 'size_id', 'with_dolar', 'address_id', 'notes'];
+
+        /** Foto de los pivotes actuales, por article_id. Se toma ANTES del detach. */
+        $pivotes_previos = [];
+
+        foreach ($model->articles as $article_previo) {
+            $pivotes_previos[$article_previo->id] = $article_previo->pivot;
+        }
+
+        $model->articles()->detach();
+
+        foreach ($articles as $article) {
+
+            $article_id = isset($article['id']) ? $article['id'] : null;
+
+            if (is_null($article_id)) {
+                continue;
+            }
+
+            $previo = isset($pivotes_previos[$article_id]) ? $pivotes_previos[$article_id] : null;
+
+            $valores = [
+                'price'  => GeneralHelper::getPivotValue($article, 'price'),
+                'amount' => GeneralHelper::getPivotValue($article, 'amount'),
+            ];
+
+            foreach ($columnas_a_conservar as $columna) {
+
+                $de_la_request = GeneralHelper::getPivotValue($article, $columna);
+
+                if (!is_null($de_la_request)) {
+                    $valores[$columna] = $de_la_request;
+                } else if (!is_null($previo)) {
+                    $valores[$columna] = $previo->{$columna};
+                }
+            }
+
+            $model->articles()->attach($article_id, $valores);
+        }
     }
 
     function pdf($id) {

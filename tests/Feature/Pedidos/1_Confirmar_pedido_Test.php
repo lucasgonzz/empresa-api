@@ -19,7 +19,8 @@ use Tests\EmpresaTestCase;
 /**
  * Prompt 608 — confirmar un pedido desde el boton de la fila.
  *
- * `BtnStatus.vue` pegaba contra `PUT order/update-status/{id}`, una ruta que seguia viva pero
+ * El boton "Confirmar pedido" del modal (`BtnStatus.vue`, borrado el 22/8/2026 cuando el estado
+ * paso a manejarse solo desde el select) pegaba contra `PUT order/update-status/{id}`, una ruta que seguia viva pero
  * apuntaba a `OrderController@updateStatus`, comentado entero desde el 14/5/2026. La llamada caia
  * en el `__call` de Laravel y volvia 500: el pedido no se confirmaba, la venta no nacia y el modal
  * quedaba abierto. Estaba asi tambien en `master`, o sea en produccion.

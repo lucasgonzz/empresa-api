@@ -27,6 +27,15 @@ class DeleteSaleHelper {
 	 * lados garantiza que la proxima correccion entre en uno solo y los caminos se desincronicen
 	 * sin que nada lo denuncie.
 	 *
+	 * ⚠️ Lo que este metodo hace es identico para las dos entradas, pero las entradas NO son
+	 * identicas entre si, y conviene saberlo antes de tocar cualquiera:
+	 *
+	 *  - `destroy()` borra una venta facturada igual (solo se saltea la cuenta corriente si hay
+	 *    nota de credito). La cancelacion de un pedido la frena antes con un 422.
+	 *  - La cancelacion siempre pasa `compensar_caja = false`; `destroy()` lo lee del request.
+	 *  - `destroy()` corre fuera de toda transaccion; la cancelacion corre adentro de la de
+	 *    `update()`, asi que la notificacion de borrado sale ANTES del commit.
+	 *
 	 * El orden NO es intercambiable: la cuenta corriente, las comisiones y los puntos se deshacen
 	 * ANTES del `delete()` (necesitan la venta viva para resolver sus relaciones), la compensacion
 	 * de caja va DESPUES (usa la copia en memoria de los metodos de pago, tomada antes del delete)

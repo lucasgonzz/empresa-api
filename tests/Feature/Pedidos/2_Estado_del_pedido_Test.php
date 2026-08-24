@@ -5,6 +5,7 @@ namespace Tests\Feature\Pedidos;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\CurrentAcount;
+use App\Models\OrderStatus;
 use App\Models\Sale;
 use Illuminate\Support\Facades\Route;
 use Tests\Concerns\PedidosDePrueba;
@@ -389,11 +390,17 @@ class Estado_del_pedido_Test extends EmpresaTestCase
     {
         $cliente = $this->cliente_cc();
 
-        foreach (['Sin confirmar', 'Terminado', 'Entregado', 'Cancelado'] as $nombre_estado) {
+        foreach (['Sin confirmar', 'Confirmado', 'Terminado', 'Entregado', 'Cancelado'] as $nombre_estado) {
 
             $pedido = $this->forzar_estado($this->crear_pedido($cliente->id), $nombre_estado);
 
-            $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado($nombre_estado))
+            /**
+             * Se usa el payload del FORMULARIO (modelo entero, con renglones y deposito) y no el
+             * minimo, porque este es justamente el caso que el docblock describe: editar el
+             * deposito o una nota de un pedido ya entregado. El formulario reenvia el estado
+             * aunque el usuario no lo haya tocado.
+             */
+            $this->putJson('api/order/'.$pedido->id, $this->payload_del_select($pedido, $nombre_estado))
                  ->assertStatus(200);
 
             $this->assertEquals(
@@ -402,14 +409,117 @@ class Estado_del_pedido_Test extends EmpresaTestCase
                 'Guardar sin cambiar el estado movio un pedido en "'.$nombre_estado.'".'
             );
 
-            // Y no nace ninguna venta por reenviar el mismo estado.
-            if ($nombre_estado != 'Sin confirmar') {
-                $this->assertNull(
-                    Sale::where('order_id', $pedido->id)->first(),
-                    'Reenviar el estado "'.$nombre_estado.'" creo una venta.'
-                );
-            }
+            /**
+             * 🔴 Reenviar el mismo estado NO crea venta, y "Sin confirmar" entra en la lista.
+             *
+             * Es el unico estado donde `develop` SI creaba la venta al reenviarlo: la condicion
+             * vieja solo miraba que el estado nuevo no fuera "Cancelado", asi que un guardado del
+             * formulario sobre un pedido sin confirmar —cambiarle el deposito, por ejemplo— lo
+             * confirmaba de callado. `es_la_confirmacion()` ahora exige que el estado CAMBIE.
+             */
+            $this->assertNull(
+                Sale::where('order_id', $pedido->id)->first(),
+                'Reenviar el estado "'.$nombre_estado.'" creo una venta.'
+            );
         }
+    }
+
+    /**
+     * 11. La otra mitad de la condicion de AFIP: una venta facturada que YA tiene su nota de
+     *     crédito sí se puede cancelar.
+     *
+     * El bloqueo es "hay comprobante y todavía no se revirtió", no "hubo comprobante alguna vez".
+     * Sin este test, cambiar la condición a un bloqueo absoluto no rompería nada y el pedido
+     * quedaría imposible de cancelar para siempre.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function una_venta_facturada_con_nota_de_credito_si_se_puede_cancelar()
+    {
+        $cliente = $this->cliente_cc();
+
+        $pedido = $this->crear_pedido($cliente->id);
+
+        $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado('Confirmado'))
+             ->assertStatus(200);
+
+        $venta = Sale::where('order_id', $pedido->id)->first();
+
+        $this->assertNotNull($venta, 'No se pudo armar el escenario: el pedido no se confirmó.');
+
+        // La factura...
+        AfipTicket::create([
+            'sale_id'        => $venta->id,
+            'cae'            => '71234567890123',
+            'cbte_letra'     => 'B',
+            'cbte_numero'    => '1',
+            'punto_venta'    => '1',
+            'importe_total'  => $venta->total,
+            'resultado'      => 'A',
+        ]);
+
+        /*
+            ...y su nota de credito. La distincion es la COLUMNA: `nota_credito_afip_tickets()`
+            cuelga de `sale_nota_credito_id`, no de `sale_id`.
+        */
+        AfipTicket::create([
+            'sale_nota_credito_id' => $venta->id,
+            'cae'                  => '71234567890124',
+            'cbte_letra'           => 'B',
+            'cbte_numero'          => '2',
+            'punto_venta'          => '1',
+            'importe_total'        => $venta->total,
+            'resultado'            => 'A',
+        ]);
+
+        $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado('Cancelado'))
+             ->assertStatus(200);
+
+        $this->assertEquals(
+            $this->estado('Cancelado')->id,
+            $pedido->fresh()->order_status_id,
+            'El pedido no quedo cancelado teniendo la nota de credito hecha.'
+        );
+
+        $this->assertNull(
+            Sale::find($venta->id),
+            'Con la nota de credito hecha, cancelar el pedido igual no borro la venta.'
+        );
+    }
+
+    /**
+     * 12. Un `order_status_id` que no existe se rechaza y no se escribe.
+     *
+     * `orders.order_status_id` no tiene foreign key, asi que un id basura se escribia igual y
+     * dejaba el pedido en un estado inexistente — y desde ahi `$prev_status` es null y CUALQUIER
+     * transicion pasa. El candado se abria por el mismo agujero que dice cerrar.
+     *
+     * @group pedidos
+     * @test
+     */
+    public function un_estado_inexistente_se_rechaza()
+    {
+        $cliente = $this->cliente_cc();
+
+        $pedido = $this->crear_pedido($cliente->id);
+
+        $estado_previo = $pedido->order_status_id;
+
+        /** Id que seguro no existe en `order_statuses`. */
+        $id_inexistente = ((int) OrderStatus::max('id')) + 1000;
+
+        $response = $this->putJson('api/order/'.$pedido->id, ['order_status_id' => $id_inexistente]);
+
+        $response->assertStatus(422);
+
+        $response->assertJson(['error_transicion_de_estado' => true]);
+
+        $this->assertEquals(
+            $estado_previo,
+            $pedido->fresh()->order_status_id,
+            'Se escribio un order_status_id que no existe.'
+        );
     }
 
     /**

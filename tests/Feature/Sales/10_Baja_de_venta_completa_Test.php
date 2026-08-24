@@ -25,6 +25,11 @@ use Tests\EmpresaTestCase;
  *
  * La venta se arma por el camino real: se confirma un pedido online, que es el mismo camino que
  * después va a tener que revertirse al cancelarlo.
+ *
+ * ⚠️ Alcance real de lo que mide, para no confiarle mas de lo que da: la venta dada de baja, el
+ * stock y el movimiento de cuenta corriente. NO mira `article_purchase`, las comisiones de
+ * vendedor, los puntos ni la compensacion de caja, que tambien se mudaron. Para esos, la garantia
+ * es que la mudanza fue LITERAL —mismo orden, mismas llamadas— y no una reescritura.
  */
 class Baja_de_venta_completa_Test extends EmpresaTestCase
 {
