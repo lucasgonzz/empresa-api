@@ -33,15 +33,39 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     private $hoja_nombre = null;
 
     /**
+     * Checkbox unico por importacion: que hacer con las celdas VACIAS de las columnas
+     * que el usuario mapeo.
+     *
+     *   false (default): la celda vacia se saltea y el valor que ya tiene el proveedor
+     *                    queda como estaba. Es el comportamiento de siempre.
+     *   true:            la celda vacia ESCRIBE vacio (null) sobre el proveedor existente.
+     *
+     * @var bool
+     */
+    private $vaciar_valores_en_blanco = false;
+
+    /**
+     * Propiedades que esta fila vacia a proposito, como set [prop_key => true].
+     *
+     * Existe SOLO para isDataUpdated(): esa funcion pregunta por isset(), y isset() sobre
+     * un null da false, asi que sin este registro un vaciado nunca dispararia el update()
+     * y el checkbox no haria absolutamente nada. Se resetea en cada saveModel().
+     *
+     * @var array
+     */
+    private $props_vaciadas = [];
+
+    /**
      * @param array       $columns
      * @param bool        $create_and_edit
      * @param int         $start_row
      * @param int|null    $finish_row
      * @param int|null    $provider_id
-     * @param int         $hoja         Indice 0-based de hoja. OPCIONAL: default 0.
-     * @param string|null $hoja_nombre  Nombre de la hoja elegida. OPCIONAL: default null.
+     * @param int         $hoja                     Indice 0-based de hoja. OPCIONAL: default 0.
+     * @param string|null $hoja_nombre              Nombre de la hoja elegida. OPCIONAL: default null.
+     * @param bool        $vaciar_valores_en_blanco Checkbox unico de la importacion. OPCIONAL: default false.
      */
-    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $hoja = 0, $hoja_nombre = null) {
+    public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $hoja = 0, $hoja_nombre = null, $vaciar_valores_en_blanco = false) {
         $this->columns = $columns;
         $this->create_and_edit = $create_and_edit;
         $this->start_row = $start_row;
@@ -53,7 +77,7 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         $this->updated_models = 0;
 
         /*
-         * Los dos ultimos parametros son OPCIONALES y con default a proposito:
+         * Los tres ultimos parametros son OPCIONALES y con default a proposito:
          * AdminSync\AiExcelImportController construye esta clase con cinco argumentos y NO
          * se toca en esta mision. Un parametro nuevo sin default seria un
          * ArgumentCountError en el endpoint que usa admin-api contra clientes reales.
@@ -62,6 +86,7 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         $this->hoja_nombre = (is_string($hoja_nombre) && trim($hoja_nombre) !== '')
                                 ? trim($hoja_nombre)
                                 : null;
+        $this->vaciar_valores_en_blanco = filter_var($vaciar_valores_en_blanco, FILTER_VALIDATE_BOOLEAN);
 
         $this->setProps();
     }
@@ -163,26 +188,44 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     }
 
     function saveModel($row, $provider) {
+        $existing_provider = !is_null($provider);
+        $this->props_vaciadas = [];
         $data = [];
         foreach ($this->props_to_set as $key => $value) {
-            if (!is_null(ImportHelper::getColumnValue($row, $value, $this->columns))) {
-                $data[$key] = ImportHelper::getColumnValue($row, $value, $this->columns);
+            $excel_value = ImportHelper::getColumnValue($row, $value, $this->columns);
+
+            if (!is_null($excel_value)) {
+                $data[$key] = $excel_value;
+            } else if ($this->debeVaciar($value, $key, $existing_provider)) {
+                $this->marcarVaciada($data, $key);
             }
         }
-        if (!is_null(ImportHelper::getColumnValueByAliases($row, [
+        $iva_aliases = [
             'condicion_frente_al_iva',
             'condicion frente al iva',
-        ], $this->columns))) {
-            $iva_condition_excel = ImportHelper::getColumnValueByAliases($row, [
-                'condicion_frente_al_iva',
-                'condicion frente al iva',
-            ], $this->columns);
+        ];
+
+        $iva_condition_excel = ImportHelper::getColumnValueByAliases($row, $iva_aliases, $this->columns);
+
+        if (!is_null($iva_condition_excel)) {
             $iva_condition_id = LocalImportHelper::getIvaConditionId($iva_condition_excel);
 
             if (!is_null($iva_condition_id)) {
                 $data['iva_condition_id'] = $iva_condition_id;
             }
+        } else if ($this->debeVaciarPorAliases($iva_aliases, 'iva_condition_id', $existing_provider)) {
+            /*
+             * providers.iva_condition_id es `int DEFAULT '0'` y acepta null: no hay FK
+             * declarada contra iva_conditions, asi que null es "sin condicion asignada".
+             */
+            $this->marcarVaciada($data, 'iva_condition_id');
         }
+        /*
+         * OJO con la asimetria contra ClientImport: aca 'localidad' YA esta en
+         * props_to_set (mapeada a location_id), asi que el vaciado lo resolvio el foreach
+         * de arriba y este bloque no necesita un else. Si se le agregara uno, se marcaria
+         * dos veces la misma propiedad.
+         */
         if (!is_null(ImportHelper::getColumnValue($row, 'localidad', $this->columns))) {
             LocalImportHelper::saveLocation(ImportHelper::getColumnValue($row, 'localidad', $this->columns), $this->ct);
             $data['location_id'] = $this->ct->getModelBy('locations', 'name', ImportHelper::getColumnValue($row, 'localidad', $this->columns), true, 'id');
@@ -207,7 +250,108 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         LocalImportHelper::setSaldoInicial($row, $this->columns, 'provider', $provider);
     }
 
+    /**
+     * Propiedades que NUNCA se vacian, aunque el checkbox este prendido.
+     *
+     *   name -> `providers.name` es NOT NULL en la base. Un update con name = null es un
+     *           error de SQL. Ademas es inalcanzable: checkRow() saltea la fila cuando
+     *           "nombre" viene vacio.
+     *   num  -> es el IDENTIFICADOR con el que collection() busca el proveedor. Vaciarlo
+     *           le borra el numero al proveedor y lo vuelve imposible de matchear en la
+     *           proxima importacion. Es la diferencia con ClientImport, donde 'numero' se
+     *           usa para matchear pero no esta en props_to_set.
+     *
+     * @return array
+     */
+    private function propsQueNuncaSeVacian() {
+        return ['name', 'num'];
+    }
+
+    /**
+     * Anota en $data que esta propiedad se vacia, y la registra para isDataUpdated().
+     *
+     * @param  array  $data  Se modifica por referencia
+     * @param  string $prop_key
+     * @return void
+     */
+    private function marcarVaciada(&$data, $prop_key) {
+        $data[$prop_key] = null;
+        $this->props_vaciadas[$prop_key] = true;
+    }
+
+    /**
+     * ¿Hay que escribir vacio en $prop_key porque la celda de $column_key vino vacia?
+     *
+     * Las tres condiciones, y las tres importan:
+     *   1. El checkbox de la importacion esta prendido.
+     *   2. El proveedor YA EXISTE. Al crear no hay nada que vaciar.
+     *   3. La columna esta MAPEADA. Este es el punto caro: si el Excel trae 4 columnas y el
+     *      sistema tiene 9 propiedades, prender el checkbox no puede vaciar las otras 5.
+     *      getColumnValue() devuelve null tanto para "columna sin mapear" como para "celda
+     *      vacia", asi que sin isIgnoredColumn() los dos casos serian indistinguibles.
+     *
+     * @param  string $column_key  Clave de la columna en el mapeo (ej: 'telefono')
+     * @param  string $prop_key    Propiedad del sistema (ej: 'phone')
+     * @param  bool   $existing    Si el modelo ya existia
+     * @return bool
+     */
+    private function debeVaciar($column_key, $prop_key, $existing) {
+        return $this->debeVaciarPorAliases([$column_key], $prop_key, $existing);
+    }
+
+    /**
+     * Igual que debeVaciar() pero para las columnas que se mapean con varios alias
+     * (condicion frente al iva). Alcanza con que UNO este mapeado.
+     *
+     * @param  array  $column_keys
+     * @param  string $prop_key
+     * @param  bool   $existing
+     * @return bool
+     */
+    private function debeVaciarPorAliases(array $column_keys, $prop_key, $existing) {
+        if (!$this->vaciar_valores_en_blanco || !$existing) {
+            return false;
+        }
+
+        if (in_array($prop_key, $this->propsQueNuncaSeVacian(), true)) {
+            return false;
+        }
+
+        foreach ($column_keys as $column_key) {
+            if (!ImportHelper::isIgnoredColumn($column_key, $this->columns)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿Alguno de los vaciados de esta fila cambia algo de verdad?
+     *
+     * Va aparte de la lista de isset() de abajo porque isset() sobre null da false: sin
+     * esto, un vaciado nunca dispararia el update() y el checkbox seria decorativo.
+     *
+     * @param  \App\Models\Provider $provider
+     * @return bool
+     */
+    private function hayVaciadoEfectivo($provider) {
+        foreach ($this->props_vaciadas as $prop_key => $marcada) {
+            $valor_actual = $provider->{$prop_key};
+
+            if (!is_null($valor_actual) && $valor_actual !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function isDataUpdated($provider, $data) {
+        if ($this->hayVaciadoEfectivo($provider)) {
+            return true;
+        }
+
         return  (isset($data['name']) && $data['name']                              != $provider->name) ||
                 (isset($data['phone']) && $data['phone']                            != $provider->phone) ||
                 (isset($data['address']) && $data['address']                        != $provider->address) ||
