@@ -185,6 +185,59 @@ class Simular_entrante_Test extends TestCase
     }
 
     /**
+     * 🔴 La respuesta trae el MENSAJE, no solo el chat (misión whatsapp-diseno-conversacion,
+     * 24/8/2026).
+     *
+     * Hasta esa fecha devolvía únicamente `model` (el chat), y el único camino por el que el globo
+     * aparecía en la conversación abierta era el broadcast `WhatsappChatUpdated` — que se emite
+     * dentro de un `try/catch` que se traga cualquier fallo (ver
+     * `WhatsappChatHelper::broadcast_update()`). Con Echo caído o mal configurado, el dueño
+     * simulaba, recibía 201 y un toast de éxito, y en la conversación no aparecía nada hasta
+     * recargar la pantalla.
+     *
+     * Se afirma también que viaja `media_src` (el `$appends` del modelo): la burbuja de la SPA lo
+     * lee siempre, y si el mensaje llegara serializado por otro camino que no lo incluya, el globo
+     * se dibujaría distinto según por dónde entró.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_respuesta_trae_el_mensaje_para_que_la_spa_lo_agregue_sola()
+    {
+        Http::fake(['*' => Http::response([], 200)]);
+        $this->dar_extension();
+        $this->actingAs($this->comercio, 'web');
+
+        $response = $this->postJson(self::RUTA, [
+            'phone' => '3416005566',
+            'body'  => 'hola, ¿tenés tornillos?',
+        ]);
+
+        $response->assertStatus(201);
+
+        $chat = WhatsappChat::where('user_id', $this->comercio->id)->first();
+        $mensaje = WhatsappChatMessage::where('whatsapp_chat_id', $chat->id)->first();
+
+        $this->assertEquals(
+            $mensaje->id,
+            $response->json('message.id'),
+            'La respuesta tiene que traer el mensaje recién creado, no solo el chat.'
+        );
+        $this->assertEquals($chat->id, $response->json('message.whatsapp_chat_id'));
+        $this->assertEquals('in', $response->json('message.direction'));
+        $this->assertEquals('hola, ¿tenés tornillos?', $response->json('message.body'));
+        $this->assertTrue(
+            (bool) $response->json('message.is_simulated'),
+            'El globo tiene que poder dibujar la marca de simulado sin ir a buscarla a otro lado.'
+        );
+        $this->assertArrayHasKey(
+            'media_src',
+            $response->json('message'),
+            'El appends del modelo tiene que viajar: la burbuja de la SPA lee ese campo siempre.'
+        );
+    }
+
+    /**
      * La simulación recorre el MISMO camino que el webhook, debounce incluido.
      *
      * Se configura una demora a propósito: con `ai_reply_delay_seconds = 0` el scheduler

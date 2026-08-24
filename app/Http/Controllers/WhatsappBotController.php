@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
+use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAgentScheduler;
 use App\Services\WhatsappInboundMediaService;
 use Illuminate\Http\JsonResponse;
@@ -431,8 +432,43 @@ class WhatsappBotController extends Controller
             ->first();
 
         return response()->json([
-            'model' => is_null($chat) ? null : $this->fullModel('WhatsappChat', $chat->id),
+            'model'   => is_null($chat) ? null : $this->fullModel('WhatsappChat', $chat->id),
+            'message' => $this->last_inbound_message_of($chat),
         ], 201);
+    }
+
+    /**
+     * Último mensaje ENTRANTE de un chat, o null si no hay ninguno (o si no hay chat).
+     *
+     * 🔴 Existe para que la respuesta de `simulate_inbound()` incluya el mensaje que acaba de
+     * crear, y no solo el chat. Hasta el 24/8/2026 devolvía únicamente `model` (el chat), así que
+     * la SPA no tenía con qué agregar el globo a la conversación abierta: **el ÚNICO camino por el
+     * que ese mensaje aparecía era el broadcast `WhatsappChatUpdated`**. Y ese broadcast se emite
+     * dentro de un `try/catch` que se traga cualquier fallo y solo deja un warning en el log (ver
+     * `WhatsappChatHelper::broadcast_update()`), así que con Echo caído o mal configurado el dueño
+     * simulaba un mensaje, recibía 201, el toast le decía que había salido bien, y en la
+     * conversación no aparecía nada hasta recargar la pantalla.
+     *
+     * Se resuelve en el productor: el endpoint devuelve el mensaje y la SPA lo agrega sola,
+     * deduplicando por id contra lo que ya tenga cargado (la misma dedup que hace el broadcast).
+     * Con Echo andando, el que llegue segundo no duplica nada.
+     *
+     * Se busca por `direction = 'in'` + id más alto y no se devuelve desde `process_inbound()`
+     * para no cambiarle la firma a un método que también usa el webhook real de Kapso.
+     *
+     * @param  WhatsappChat|null  $chat
+     * @return WhatsappChatMessage|null
+     */
+    private function last_inbound_message_of($chat)
+    {
+        if (is_null($chat)) {
+            return null;
+        }
+
+        return WhatsappChatMessage::where('whatsapp_chat_id', $chat->id)
+            ->where('direction', 'in')
+            ->orderBy('id', 'desc')
+            ->first();
     }
 
     /**
