@@ -569,28 +569,40 @@ class SaleHelper extends Controller {
         Recibe el modelo ya cargado para no reconsultar, y usa loadMissing para no depender de
         que quien llama se haya acordado de traer las relaciones.
     */
-    static function motivo_por_el_que_no_se_puede_editar($sale) {
+    static function motivo_por_el_que_no_se_puede_editar($sale, $criterio_conservador_de_tickets = false) {
 
         $sale->loadMissing(['afip_tickets', 'current_acount_payment_methods']);
 
         /*
-            Solo congelan la venta los comprobantes CON CAE (autorizados de verdad por ARCA).
-            Un ticket RECHAZADO queda registrado en afip_tickets pero sin CAE, y hasta el
-            24/8/2026 contaba igual: una factura rechazada dejaba la venta congelada para
-            siempre sin comprobante fiscal real de por medio. El criterio es el mismo que ya
-            usa la SPA para decidir si una venta "tiene factura" (!!afip_ticket.cae en
-            sale-print-buttons).
+            Que congela segun el FLUJO que pregunta (tanda correctivos 2408, items 11 y su
+            acotacion). Los dos criterios conviven a proposito:
+
+            - EDICION de la venta ($criterio_conservador_de_tickets = false, el default:
+              SaleController::update() y updatePrices()): solo congelan los comprobantes CON
+              CAE. Un ticket RECHAZADO no existe ante ARCA y no debe trabar el mostrador
+              (decision de Lucas, 24/8/2026). Es el mismo criterio que ya usa la SPA para
+              decidir si una venta "tiene factura" (!!afip_ticket.cae en sale-print-buttons).
+
+            - ANULACION del presupuesto ($criterio_conservador_de_tickets = true, lo pasa
+              BudgetController::anular()): CUALQUIER AfipTicket congela, tambien uno sin CAE.
+              Anular BORRA la venta, y con un ticket pendiente-sin-respuesta el borrado
+              podria dejar un CAE huerfano si ARCA aprueba despues: primero se resuelve la
+              situacion con ARCA. Es la politica conservadora previa, fijada por
+              tests/Feature/Presupuestos/1 (anular_con_la_venta_facturada_se_rechaza_y_no_toca_nada)
+              y vigente hasta que Lucas diga lo contrario.
         */
-        $tickets_con_cae = 0;
+        $tickets_que_congelan = 0;
 
         foreach ($sale->afip_tickets as $afip_ticket) {
 
-            if (!is_null($afip_ticket->cae) && $afip_ticket->cae !== '') {
-                $tickets_con_cae++;
+            if ($criterio_conservador_de_tickets) {
+                $tickets_que_congelan++;
+            } else if (!is_null($afip_ticket->cae) && $afip_ticket->cae !== '') {
+                $tickets_que_congelan++;
             }
         }
 
-        if ($tickets_con_cae >= 1) {
+        if ($tickets_que_congelan >= 1) {
 
             return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
         }
