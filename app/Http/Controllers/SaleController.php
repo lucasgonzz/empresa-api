@@ -14,7 +14,6 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
-use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -26,7 +25,6 @@ use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
-use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
@@ -45,7 +43,6 @@ use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
 use App\Models\SaleDeliveryInfo;
 use App\Models\SaleSenderInfo;
-use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\SaleModification;
@@ -631,84 +628,21 @@ class SaleController extends Controller
             $payment_methods_para_compensacion = $model->current_acount_payment_methods;
         }
 
-        Log::info('Se quiere eliminar sale N° '.$model->num.'. id: '.$model->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
-        if (!is_null($model->client)) {
-            Log::info('Y pertenece al cliente '.$model->client->name);
-        }
-
-        $h = new ArticlePurchaseHelper();
-        $h->borrar_article_purchase_actuales($model);
-        
-        if ($model->client_id) {
-
-            /* 
-                Si no es NULL, es porque se genero nota de credito de afip.
-                En ese caso, no se elimina la cuenta corriente de la venta
-                Porque ya tiene la nota de credito en la C/C
-            */ 
-            if (count($model->nota_credito_afip_tickets) == 0) {
-
-                SaleHelper::deleteCurrentAcountFromSale($model);
-            }
-
-            SaleHelper::deleteSellerCommissionsFromSale($model);
-
-            if (is_null($model->client->deleted_at)) {
-
-                // Busca la cuenta de crédito del cliente para la moneda de la venta
-                $credit_account = CreditAccount::where('model_name', 'client')
-                                                    ->where('model_id', $model->client_id)
-                                                    ->where('moneda_id', $model->moneda_id)
-                                                    ->first();
-
-                // Verifica que la cuenta de crédito existe antes de validar saldos
-                if (!is_null($credit_account)) {
-                    CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
-                } else {
-                    Log::info('destroy sale '.$model->id.': el cliente '.$model->client_id.' no tiene credit account para la moneda '.$model->moneda_id.'. Se saltea el chequeo de saldos.');
-                }
-                $this->sendAddModelNotification('client', $model->client_id, false);
-            }
-        }
-
         /**
-         * Puntos para clientes. Los dos lados de la venta se deshacen ANTES del delete, por
-         * orden explícito y no dependiendo de que Sale use SoftDeletes: si mañana el borrado
-         * pasara a ser físico, un reconciliador que corriera después no tendría venta que leer.
+         * La baja en si vive en DeleteSaleHelper::eliminar_venta(), no aca.
          *
-         *  - deshacer() devuelve los puntos que el cliente había canjeado en esta venta a los
-         *    lotes exactos de los que salieron (por eso existe movimiento_punto_consumos).
-         *  - revertir_venta() anula los lotes que esta venta otorgó y deja su movimiento
-         *    'revertidos'. No pregunta si corresponde: una venta borrada no otorga nada.
-         *
-         * Los dos salen sin tocar la base si el comercio no tiene la extensión.
-         *
-         * 🔴 `true` = CONSERVAR `sales.puntos_canjeados` y `sales.descuento_puntos`. Esta venta
-         * se va a la papelera con su `total` YA neteado por el canje, y esas dos columnas son
-         * lo único que explica ese número: el movimiento de puntos se borra de verdad, no es un
-         * soft-delete. Limpiarlas acá dejaba una venta restaurable cuyo descuento no se podía
-         * reconstruir, y el cliente terminaba con los puntos Y con el descuento. Ver el
-         * docblock de PuntosCanjeHelper::deshacer() y su contraparte, restaurar().
+         * 🔴 No la vuelvas a inlinear. Tiene dos entradas: este destroy() y la cancelacion de un
+         * pedido online (OrderController@update cuando el estado pasa a "Cancelado"), que tiene que
+         * hacer exactamente lo mismo. Con el cuerpo duplicado, la proxima correccion entra en un
+         * solo lado y los dos caminos empiezan a diferir sin que nada lo denuncie.
          */
-        PuntosCanjeHelper::deshacer($model, true);
-
-        PuntosAcumulacionHelper::revertir_venta($model);
-
-        $model->delete();
-
-        if ($compensar_caja && ! is_null($payment_methods_para_compensacion) && $payment_methods_para_compensacion->count()) {
-            $helper_caja_compensacion->crear_movimientos_compensacion(
-                $payment_methods_para_compensacion,
-                DeleteCajaCompensacionHelper::MODEL_TYPE_SALE,
-                null,
-                'Eliminación de venta N° '.$model->num,
-                $model->id
-            );
-        }
-
-        $this->sendDeleteModelNotification('sale', $model->id);
-
-        DeleteSaleHelper::regresar_stock($model);
+        DeleteSaleHelper::eliminar_venta(
+            $model,
+            $this,
+            $compensar_caja,
+            $payment_methods_para_compensacion,
+            $helper_caja_compensacion
+        );
 
         return response(null);
     }
