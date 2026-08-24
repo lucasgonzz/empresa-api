@@ -30,6 +30,13 @@ use App\Http\Controllers\Helpers\sale\UpdateHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
+/*
+ * Import que faltaba: returnToStock() hace `new StockMovementController()` y sin esta línea
+ * PHP lo resolvía a App\Http\Controllers\Helpers\StockMovementController (inexistente).
+ * Nunca se notó porque el único camino que llega ahí (el panel NC de Vender) reventaba
+ * antes por la firma vieja de notaCredito(), corregida el 24/8/2026.
+ */
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -679,16 +686,50 @@ class SaleHelper extends Controller {
 
             }
 
+            /*
+             * Cuenta corriente del cliente en la moneda de la venta, igual que en
+             * DevolucionesController::store(). Hasta el 24/8/2026 este call site llamaba a
+             * notaCredito() con la firma VIEJA (sin $credit_account_id como primer argumento):
+             * el total entraba donde va el id de cuenta, la descripcion donde va el monto, y
+             * todo lo demas corrido un lugar. El unico camino que quedo desactualizado era
+             * este (el panel "Nota de credito" de Vender); Devoluciones ya usaba la firma nueva.
+             */
+            $credit_account_id = null;
+
+            if (!is_null($request->client_id)) {
+
+                /** Moneda de la venta; sin moneda cargada se asume pesos (id 1), mismo criterio que DevolucionesController::get_moneda_id(). */
+                $moneda_id = !is_null($sale->moneda_id) && $sale->moneda_id != 0 ? $sale->moneda_id : 1;
+
+                $credit_account = CreditAccount::where('model_name', 'client')
+                                                ->where('model_id', $request->client_id)
+                                                ->where('moneda_id', $moneda_id)
+                                                ->first();
+
+                if (!is_null($credit_account)) {
+                    $credit_account_id = $credit_account->id;
+                }
+            }
+
             $nota_credito = CurrentAcountHelper::notaCredito(
-                $haber, 
-                $request->nota_credito_description, 
-                'client', 
-                $request->client_id, 
-                $sale->id, 
+                $credit_account_id,
+                $haber,
+                $request->nota_credito_description,
+                'client',
+                $request->client_id,
+                $sale->id,
                 $request->returned_items
             );
 
-            CurrentAcountHelper::checkSaldos('client', $request->client_id);
+            /*
+             * checkSaldos() tambien cambio de firma con el refactor de credit_account (ahora
+             * recibe el id de la cuenta, no el par model_name/model_id): se recalculan los
+             * saldos de la cuenta de la NC recien creada. Solo si hay cuenta: con null adentro
+             * hace CreditAccount::find(null)->id y revienta.
+             */
+            if (!is_null($credit_account_id)) {
+                CurrentAcountHelper::checkSaldos($credit_account_id);
+            }
 
             $ct = new Controller();
             $ct->sendAddModelNotification('client', $request->client_id, false);
