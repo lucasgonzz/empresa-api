@@ -19,7 +19,7 @@ class OrderStatusController extends Controller
 {
 
     public function index() {
-        $models = OrderStatus::orderBy('created_at', 'DESC')
+        $models = OrderStatus::orderBy('id', 'ASC')
                             ->withAll()
                             ->get();
         return response()->json(['models' => $models], 200);
