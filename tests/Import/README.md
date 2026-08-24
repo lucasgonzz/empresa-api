@@ -148,21 +148,36 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 | **Hoy**, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | **éste es el baseline: el que tiene que dar una corrida limpia hoy** |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
-entres en pánico: **lo que es baseline son los 3 rojos, con estos nombres exactos.** Un cuarto rojo,
+entres en pánico: **lo que es baseline son los 2 rojos, con estos nombres exactos.** Un tercer rojo,
 o un nombre distinto, es una regresión — salvo que se te haya solapado otra corrida, ver el bloque
 de abajo.
 
-Los tres rojos vigentes son los mismos en las dos mediciones, con nombre y todo:
+Los dos rojos vigentes (medición del 24/8/2026 en `s1`, `200 tests, 3 failures` antes del arreglo
+de abajo):
 
 1. `IncidenteServianTest::test_no_se_crean_dos_articulos_con_el_mismo_bar_code`
 2. `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos`
-3. `RollbackTest::test_el_rollback_borra_los_articulos_creados`
+
+🟢 **`RollbackTest::test_el_rollback_borra_los_articulos_creados` salió del baseline el 24/8/2026**
+(tanda-correctivos-2408, ítem 12). No era un bug del rollback: el test fallaba en el conteo PREVIO
+a revertir (esperaba 2 artículos creados y la importación crea 3), así que la aserción del rollback
+nunca se evaluaba — por eso Lucas, probando a mano, veía que el rollback SÍ borra los creados. El
+tercer artículo es el duplicado de `PC-1200`: su artículo en base (A12) tiene `provider_code` pero
+`provider_id` NULL, y el comportamiento fijado del sistema para ese caso es "no matchea → crea
+duplicado" (lo documenta y asierta `StockTest` sobre `04_stock.xlsx`, que trae la misma fila). Se
+corrigió el SETUP del test (espera 3 creados) sin tocar la aserción del rollback, que ahora exige
+además que tras revertir quede vivo solo el A12 original. `RollbackTest` completo en verde.
+
+Los dos rojos de `IncidenteServianTest` **son bugs reales del multi-lote** (la deduplicación
+funciona dentro de un lote pero no entre lotes) y quedaron fuera del alcance de la tanda del 24/8
+porque el fix toca el corazón de `Helpers/import/` (zona en la que trabajan otras misiones en
+paralelo). Los invariantes de esos tests están bien escritos: no ajustarlos.
 
 **Los otros seis rojos que listaba este README se arreglaron en el medio** (los dos restantes de
 `RollbackTest`, los otros dos de `IncidenteServianTest` —incluido el `array_map()` que era el único
 error, no failure— y los dos de `CascadaHerenciaTest`). La suite creció de 90 a 122 tests, y de 122
-a lo que dice la tabla de arriba con la misión de importación de Excel. Un cuarto rojo, o un nombre
-distinto de esos tres, es una regresión nueva.
+a lo que dice la tabla de arriba con la misión de importación de Excel. Un rojo nuevo, o un nombre
+distinto de esos dos, es una regresión nueva.
 
 ## 🔴 Una corrida por vez. La suite NO es segura en paralelo contra la misma base
 

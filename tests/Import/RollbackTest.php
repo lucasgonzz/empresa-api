@@ -56,13 +56,31 @@ class RollbackTest extends ImportTestCase
     /**
      * Los artículos creados por la importación se borran, no quedan huérfanos.
      *
+     * CORRECCIÓN DEL SETUP (tanda correctivos 2408, ítem 12). Este test estaba rojo de
+     * baseline fallando en el conteo PREVIO al rollback (esperaba 2 creados y hay 3), o
+     * sea que la aserción del rollback nunca llegaba a evaluarse — y de ahí la
+     * discrepancia con la prueba manual de Lucas (24/8/2026), que confirmó que el
+     * rollback SÍ borra los artículos creados.
+     *
+     * Los 3 creados son correctos: 05_rollback.xlsx incluye la fila PC-1200, cuyo
+     * artículo en base (A12) tiene provider_code pero provider_id NULL, y el
+     * comportamiento FIJADO del sistema para ese caso es "no matchea -> crea duplicado"
+     * — está documentado y asertado por StockTest de esta misma suite (cabecera:
+     * "F7 PC-1200  A12 no matchea (provider_id null en base) -> crea duplicado", sobre
+     * 04_stock.xlsx, que trae la misma fila). El fixture 05 asumía que PC-1200
+     * actualizaba al existente; en realidad crea el tercer artículo.
+     *
+     * Lo que NO se tocó es la aserción del comportamiento bajo prueba: después de
+     * revertir tiene que quedar CERO creado vivo — y ahora se exige sobre los tres,
+     * incluido el duplicado de PC-1200 (queda vivo únicamente el A12 original).
+     *
      * @return void
      */
     public function test_el_rollback_borra_los_articulos_creados()
     {
         $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
 
-        $this->assertCount(2, $this->articulos_creados(), 'PC-RB-1 y PC-RB-2');
+        $this->assertCount(3, $this->articulos_creados(), 'PC-RB-1, PC-RB-2 y el duplicado de PC-1200');
 
         $this->revertir($import);
 
@@ -75,6 +93,20 @@ class RollbackTest extends ImportTestCase
                     ->withTrashed()
                     ->whereNull('deleted_at')
                     ->count()
+        );
+
+        /*
+         * Del duplicado de PC-1200 borrado tiene que sobrevivir exactamente UNO vivo con
+         * ese provider_code: el A12 original del escenario sembrado.
+         */
+        $this->assertSame(
+            1,
+            Article::where('user_id', $this->tenant->id)
+                    ->where('provider_code', 'PC-1200')
+                    ->withTrashed()
+                    ->whereNull('deleted_at')
+                    ->count(),
+            'Tras el rollback tiene que quedar vivo solo el A12 original con PC-1200.'
         );
     }
 
