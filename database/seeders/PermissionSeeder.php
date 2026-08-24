@@ -505,6 +505,18 @@ class PermissionSeeder extends Seeder
                 'en'            => 'support.see_owner_chats',
             ],
 
+            /*
+                Produccion (tanda correctivos 24/8, item 17): la ruta /produccionV2 de
+                empresa-spa exige can: 'produccion.index' (src/router/routes.js), pero el
+                permiso no se sembraba nunca: ningun empleado podia entrar al modulo. Para
+                bases de produccion existentes esta PermissionProduccionIndexSeeder.
+            */
+            [
+                'singular'      => 'Usar modulo de Produccion',
+                'plural'        => 'Produccion',
+                'en'            => 'produccion.index',
+            ],
+
         ];
         foreach ($permissions as $permission) {
             PermissionEmpresa::create([
