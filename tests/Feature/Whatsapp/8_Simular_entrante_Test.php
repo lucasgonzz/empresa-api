@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Whatsapp;
 
+use App\Events\WhatsappChatUpdated;
 use App\Jobs\GenerateWhatsappAiReplyJob;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
@@ -9,6 +10,7 @@ use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -234,6 +236,75 @@ class Simular_entrante_Test extends TestCase
             'media_src',
             $response->json('message'),
             'El appends del modelo tiene que viajar: la burbuja de la SPA lee ese campo siempre.'
+        );
+    }
+
+    /**
+     * 🔴 La respuesta devuelve EL mensaje que este request creó, no "el último entrante del chat".
+     *
+     * La primera versión de este arreglo buscaba la fila después de `process_inbound()` con un
+     * `where(direction, 'in')->orderBy('id', 'desc')->first()`, y eso tiene una carrera real: el
+     * throttle del endpoint es de 10 por minuto, no de 1, y encima puede entrar un webhook de
+     * Kapso de verdad para el mismo chat en el medio. Ahí la SPA recibía un mensaje que no era el
+     * que se simuló, con 201 y sin ningún error a la vista.
+     *
+     * 🔴 El entrante que compite se inyecta DENTRO del request, no después: si se creara después
+     * del `postJson()` el test pasaría igual con la implementación vieja —la query ya habría
+     * corrido— y no probaría nada. Se engancha un listener del evento `WhatsappChatUpdated`, que
+     * `store_inbound_message()` emite JUSTO DESPUÉS de crear la fila y antes de que el controlador
+     * arme la respuesta: o sea, exactamente la ventana de la carrera. (El evento se despacha a los
+     * listeners aunque el driver de broadcast sea `null`, que es como lo deja el `setUp`.)
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_respuesta_devuelve_el_mensaje_de_este_request_y_no_el_ultimo_del_chat()
+    {
+        Http::fake(['*' => Http::response([], 200)]);
+        $this->dar_extension();
+        $this->actingAs($this->comercio, 'web');
+
+        $intruso_id = null;
+        // Una sola vez: el scheduler y los envíos posteriores emiten más eventos, y no se quiere
+        // llenar el chat de intrusos ni entrar en recursión (crear el intruso no emite el evento,
+        // pero la guarda deja el test a salvo de que eso cambie).
+        Event::listen(WhatsappChatUpdated::class, function ($event) use (&$intruso_id) {
+            if (! is_null($intruso_id) || is_null($event->message)) {
+                return;
+            }
+            $intruso = WhatsappChatMessage::create([
+                'whatsapp_chat_id' => $event->message->whatsapp_chat_id,
+                'direction'        => 'in',
+                'source'           => 'cliente',
+                'body'             => 'entrante real que llegó en el medio',
+            ]);
+            $intruso_id = $intruso->id;
+        });
+
+        $response = $this->postJson(self::RUTA, [
+            'phone' => '3416005566',
+            'body'  => 'el que importa',
+        ]);
+
+        $response->assertStatus(201);
+        $this->assertNotNull($intruso_id, 'El listener tiene que haber corrido: si no, el test no prueba la carrera.');
+
+        // La aserción que importa va primera para que el fallo se lea solo: con la implementación
+        // vieja (`ORDER BY id DESC`) acá se recibe "entrante real que llegó en el medio".
+        $this->assertEquals(
+            'el que importa',
+            $response->json('message.body'),
+            'La respuesta tiene que traer el mensaje que ESTE request creó, no el último del chat.'
+        );
+        $this->assertNotEquals(
+            $intruso_id,
+            $response->json('message.id'),
+            'El entrante que llegó en el medio no puede robarle el lugar al mensaje simulado.'
+        );
+        $this->assertGreaterThan(
+            $response->json('message.id'),
+            $intruso_id,
+            'El intruso tiene que quedar con id MÁS ALTO: es lo que se llevaría un ORDER BY id DESC.'
         );
     }
 
