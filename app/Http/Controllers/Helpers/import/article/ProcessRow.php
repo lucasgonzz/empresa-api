@@ -588,8 +588,14 @@ class ProcessRow {
         return $data;
     }
 
+    /*
+     * Desde la mision `listas-de-precio-por-defecto-al-importar` (24/8/2026) este flag YA NO es
+     * el interruptor global de las listas: gobierna solo el camino de ACTUALIZACION de un
+     * articulo que ya existe. Para los articulos que la importacion crea, el criterio es
+     * "siempre, si la cuenta usa listas" (ver obtener_price_types()).
+     */
     function set_se_importaron_price_types() {
-                
+
         foreach ($this->price_types as $price_type) {
 
             $row_setear_name = $this->get_price_type_row_name('setear_precio_final_', $price_type);
@@ -1323,7 +1329,9 @@ class ProcessRow {
                     el % por defecto del price_type 
             */
             $this->iniciar();
-            $price_types_data = $this->obtener_price_types($row);
+            /* El true final es "esta fila crea un articulo": pide las listas por defecto aunque
+               el Excel no traiga ninguna columna de lista. Ver obtener_price_types(). */
+            $price_types_data = $this->obtener_price_types($row, null, true);
             $data['price_types_data'] = $price_types_data;
             $this->terminar('crear: obtener_price_types');
 
@@ -1544,7 +1552,10 @@ class ProcessRow {
         $baseline_para_diffs = new Article($merged);
 
         $this->iniciar();
-        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs);
+        /* $baseline_para_diffs es un Article NO persistido: esta fila tambien termina creando.
+           Sin el true, obtener_price_types() devolveria [] y ese [] se pisa entero abajo, o sea
+           que esta fila le borraria al articulo las listas que la fila anterior le consiguio. */
+        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs, true);
         $merged['price_types_data'] = $price_types_data;
         $this->terminar('merge pendiente: obtener_price_types');
 
@@ -1836,6 +1847,9 @@ class ProcessRow {
 
 
         $this->iniciar();
+        /* Sin el tercer argumento a proposito: este es el UNICO call site de un articulo
+           persistido de verdad (los fakes de la cola de creacion se desvian antes, al merge), y
+           el alcance que fijo Lucas es solo lo que la importacion crea. */
         $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
         $price_types_data = $this->filter_only_changed_price_types($articulo_ya_creado, $price_types_data);
         if (!empty($price_types_data)) {
@@ -3262,13 +3276,70 @@ class ProcessRow {
     }
 
 
-    private function obtener_price_types($row, $articulo_ya_creado = null) {
+    /**
+     * Arma las filas de `article_price_type` que le corresponden a esta fila del Excel.
+     *
+     * @param  array                    $row                  Fila del Excel.
+     * @param  \App\Models\Article|null $articulo_ya_creado   Base contra la que se diffean los
+     *                                                        valores. OJO: puede ser un modelo
+     *                                                        NO persistido (ver el call site del
+     *                                                        merge, ~1547).
+     * @param  bool                     $es_articulo_a_crear  true si esta fila termina en un
+     *                                                        articulo NUEVO, aunque venga con
+     *                                                        $articulo_ya_creado cargado.
+     * @return array
+     */
+    private function obtener_price_types($row, $articulo_ya_creado = null, $es_articulo_a_crear = false) {
         // $this->log('obtener_price_types: '.UserHelper::uses_listas_de_precio($this->user));
         $price_types_data = [];
 
+        /*
+         * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026), pedido de Lucas: un
+         * articulo que la importacion CREA tiene que quedar relacionado con TODAS las listas de
+         * la cuenta aunque el Excel no traiga ni una sola columna de lista, con el margen por
+         * defecto de cada lista. Los tres valores del pivot viajan en null y los defaults los
+         * resuelve la capa de abajo: ActualizarBBDD::get_price_type_percetange(),
+         * get_setear_precio_final() y get_incluir_en_excel_para_clientes().
+         *
+         * Antes de esto el `&& $this->se_importaron_price_types` mandaba solo, y ese flag se
+         * prende unicamente si el mapeo trae alguna columna %_<lista>, $_final_<lista> o
+         * setear_precio_final_<lista>. O sea: importar sin hablar de listas dejaba al articulo
+         * nuevo sin ninguna fila en article_price_type. Con la extension `ventas_en_dolares`
+         * eso se veia completo -- CERO listas --, porque el otro camino que relaciona
+         * (ArticlePricesHelper::aplicar_precios_segun_listas_de_precios(), via
+         * ActualizarBBDD::set_precios_finales()) no corre para esas cuentas: setFinalPrice
+         * rutea a ArticlePriceTypeMonedaHelper, que no toca article_price_type en ningun lado.
+         *
+         * 🔴 Ojo con "simplificar" esto de las dos maneras obvias, porque las dos estan mal:
+         *
+         * 1) Sacar $this->se_importaron_price_types y dejar solo uses_listas_de_precio(). Eso le
+         *    mete price_types_data tambien a los articulos YA EXISTENTES, que terminan en el
+         *    UPDATE masivo de ActualizarBBDD::asignar_price_types() y en los diffs de
+         *    track_price_type_relation_diff(). Una importacion que no habla de listas pasaria a
+         *    reescribir los pivots de miles de articulos y a llenar el historial de cambios que
+         *    nadie pidio. El alcance que fijo Lucas es SOLO lo que se crea.
+         *    Lo cubre ListasDePrecioPorDefectoTest::test_los_articulos_que_ya_existian_no_cambian_de_listas.
+         *
+         * 2) Deducir el flag de $articulo_ya_creado (un `if (!$articulo_ya_creado)`) en vez de
+         *    recibirlo. El call site del merge (~1547) le pasa un `new Article($merged)` que NO
+         *    esta persistido: es la base para diffear la fila actual contra lo que ya quedo en
+         *    la cola de creacion. Con la deduccion, esa fila se trataria como articulo existente,
+         *    devolveria [] y ese [] se pisa ENTERO sobre $merged['price_types_data'] -- o sea que
+         *    una segunda fila del mismo codigo le BORRARIA las listas que la primera le habia
+         *    conseguido. Por eso el flag es un parametro explicito.
+         *    Lo cubre ListasDePrecioPorDefectoTest::test_dos_filas_que_crean_el_mismo_articulo_no_duplican_las_listas.
+         *
+         * Y esto no inventa un criterio nuevo: si el usuario mapea UNA sola columna de UNA sola
+         * lista, el foreach de abajo ya recorre TODAS las listas y las que no tienen columna
+         * quedan con los tres valores en null, o sea con el default. El cambio es que "cero
+         * columnas" se comporte igual que "una columna".
+         */
         if (
             UserHelper::uses_listas_de_precio($this->user)
-            && $this->se_importaron_price_types
+            && (
+                $this->se_importaron_price_types
+                || $es_articulo_a_crear
+            )
         ) {
 
             foreach ($this->price_types as $price_type) {
@@ -3382,6 +3453,28 @@ class ProcessRow {
                 'setear_precio_final'   => !is_null($setear) ? $setear : null,
                 'percentage'            => !is_null($percentage) ? $percentage : null,
                 'final_price'           => !is_null($final_price) ? $final_price : null,
+
+                /*
+                 * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). Marca las filas
+                 * que salen del camino nuevo: articulo que se crea y Excel que NO trae ninguna
+                 * columna de lista. Con el flag prendido, ActualizarBBDD::get_setear_precio_final()
+                 * NO propaga el `setear_precio_final` de la lista.
+                 *
+                 * 🔴 Por que, medido el 24/8/2026 y no razonado: propagarlo dejaba el precio de
+                 * esa lista CONGELADO. La secuencia es asignar_price_types() inserta el pivot con
+                 * setear=1 y final_price NULL, despues set_precios_finales() calcula el precio por
+                 * margen y lo escribe en final_price, y a partir de ahi
+                 * ArticlePricesHelper::aplicar_precios_segun_listas_de_precios() (linea ~386) lo
+                 * lee como "precio fijado a mano" y deriva el margen al reves. Al duplicar el
+                 * costo de un articulo importado, la lista con setear=1 quedaba clavada en 169.40
+                 * con margen -30%, mientras la lista sin la bandera pasaba de 157.30 a 314.60.
+                 *
+                 * El punto es que ese precio NO lo fijo nadie a mano: lo calculo el sistema con el
+                 * margen por defecto. Un Excel que no habla de listas no puede estar fijando un
+                 * precio final. Cuando el Excel SI trae columnas de lista, el flag queda en false
+                 * y se propaga el default de la lista, exactamente como antes.
+                 */
+                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_price_types,
             ]
         ];
         return $price_types_data;

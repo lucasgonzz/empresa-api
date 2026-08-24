@@ -136,9 +136,17 @@ class WhatsappBotController extends Controller
      *                             propósito: `simulate_inbound()` llama con cinco argumentos
      *                             posicionales y PHP 7.4 no tiene argumentos nombrados, así que
      *                             cualquier otra posición obligaría a tocar ese caller.
+     * @param  WhatsappChatMessage|null  $stored_message  PARÁMETRO DE SALIDA: queda con el mensaje
+     *                             que este llamado acaba de crear. Lo usa `simulate_inbound()`
+     *                             para devolvérselo a la SPA, que lo agrega a la conversación
+     *                             abierta sin depender del broadcast. Se propaga por referencia y
+     *                             no se busca después con un `ORDER BY id DESC` porque eso tiene
+     *                             una carrera real: si entra otro entrante del mismo chat en el
+     *                             medio, se devuelve el equivocado, con 201 y sin ningún error a
+     *                             la vista.
      * @return void
      */
-    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false, $media = null): void
+    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false, $media = null, &$stored_message = null): void
     {
         $user_id = (int) $config->user_id;
 
@@ -152,7 +160,7 @@ class WhatsappBotController extends Controller
         ]);
 
         // Persiste el chat (con auto-vinculación de cliente si corresponde) y el mensaje 'in'.
-        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated, $media);
+        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated, $media, $stored_message);
 
         // El scheduler aplica el debounce configurado: descarta lo que quedó pendiente de
         // confirmación, bumpea el token y encola el job que genera la respuesta.
@@ -424,14 +432,21 @@ class WhatsappBotController extends Controller
         // ventana de 24 h (store_inbound_message setea last_inbound_at = now()) y dispara el
         // agente con su debounce. El `true` final marca el mensaje y el chat como simulados:
         // es lo que hace que esa ventana forzada no se pueda usar para enviar de verdad.
-        $this->process_inbound($config, $phone, $body, $payload, true);
+        // `$mensaje` sale por referencia con la fila que este llamado acaba de crear. Se hace asi
+        // y no buscandola despues con un `ORDER BY id DESC` porque eso tiene una carrera real: el
+        // throttle del endpoint es de 10 por minuto, no de 1, y ademas puede entrar un webhook de
+        // Kapso de verdad para el mismo chat en el medio. Ahi se le devolveria a la SPA un mensaje
+        // que no es el que se simulo, con 201 y sin ningun error a la vista.
+        $mensaje = null;
+        $this->process_inbound($config, $phone, $body, $payload, true, null, $mensaje);
 
         $chat = WhatsappChat::where('user_id', $user_id)
             ->where('phone', WhatsappPhoneHelper::normalize($phone))
             ->first();
 
         return response()->json([
-            'model' => is_null($chat) ? null : $this->fullModel('WhatsappChat', $chat->id),
+            'model'   => is_null($chat) ? null : $this->fullModel('WhatsappChat', $chat->id),
+            'message' => $mensaje,
         ], 201);
     }
 

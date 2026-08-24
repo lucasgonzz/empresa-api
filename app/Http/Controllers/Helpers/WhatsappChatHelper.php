@@ -100,9 +100,17 @@ class WhatsappChatHelper
      *                             si el mensaje es de texto. Va último y con default porque los
      *                             callers existentes pasan seis argumentos posicionales y PHP 7.4
      *                             no tiene argumentos nombrados.
+     * @param  WhatsappChatMessage|null  $stored_message  PARAMETRO DE SALIDA: queda con el mensaje
+     *                             que este llamado acaba de crear. Existe porque el endpoint de
+     *                             simulacion necesita devolverle ese mensaje a la SPA, y buscarlo
+     *                             despues con un `ORDER BY id DESC` tiene una carrera real: si
+     *                             entra un entrante de verdad para el mismo chat en el medio, se
+     *                             devuelve el equivocado, con 201 y sin ningun error a la vista.
+     *                             Va ultimo y con default para no romper a los callers que pasan
+     *                             seis o siete argumentos posicionales.
      * @return WhatsappChat  El chat (nuevo o existente) ya persistido con el mensaje aplicado.
      */
-    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null)
+    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null, &$stored_message = null)
     {
         // Teléfono siempre normalizado (solo dígitos) al persistirlo, así el listado y el
         // matching de auto-vinculación son consistentes.
@@ -190,6 +198,8 @@ class WhatsappChatHelper
         ], $media_columns));
 
         self::broadcast_update($user_id, $chat, $message);
+
+        $stored_message = $message;
 
         return $chat;
     }
