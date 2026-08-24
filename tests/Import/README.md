@@ -193,7 +193,8 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 | Cuándo | Resultado | Para qué sirve |
 |---|---|---|
 | **Antes** de la misión de importación de Excel (hoja elegida, cabecera fusionada, encabezado corrido) | `122 tests, 1457 assertions, 3 failures` | referencia histórica: es contra esto que se midió que la misión no metió regresiones |
-| **Hoy**, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | **éste es el baseline: el que tiene que dar una corrida limpia hoy** |
+| 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
+| **Hoy**, post-merge con develop (24/8/2026, s1, tanda-correctivos-2408) | `209 tests, 2 failures` | **éste es el baseline: los 2 rojos de IncidenteServianTest, con esos nombres exactos** |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
 entres en pánico: **lo que es baseline son los 2 rojos, con estos nombres exactos.** Un tercer rojo,
