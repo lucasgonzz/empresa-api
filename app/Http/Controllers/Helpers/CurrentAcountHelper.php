@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Models\Article;
 use App\Models\Check;
 use App\Models\Client;
@@ -30,33 +31,6 @@ class CurrentAcountHelper {
     // Si este nuevo pago no es provisorio, significa que es el pago que cancela los demas pagos, 
     static function eliminar_pagos_provisorios($credit_account_id, $is_provisorio) {
 
-    }
-
-    static function recalculateCurrentAcountsSalesDebe($client_id) {
-        $clients = Client::where('user_id', 121)
-                            ->get();
-
-        foreach ($clients as $client) {
-            $client_id = $client->id;
-            $current_acounts = CurrentAcount::where('client_id', $client_id)
-                                            ->whereNotNull('sale_id')
-                                            ->orderBy('created_at', 'ASC')
-                                            ->get();
-            foreach ($current_acounts as $current_acount) {
-                if (!is_null($current_acount->sale)) {
-                    if (!is_null($current_acount->haber)) {
-                        $current_acount->debe = null;
-                    } else {
-                        $prev_debe = $current_acount->debe; 
-                        $current_acount->debe = $sale->total;
-                        echo 'Se actualizo el debe de la venta N° '.$current_acount->sale->num.' de '.$prev_debe.' a '.$sale->total.' </br>';
-                        echo '--------------------------  </br>';
-                    }
-                    $current_acount->save();
-                } 
-            }
-            Self::checkSaldos('client', $client_id);
-        }
     }
 
     static function checkCurrentAcountSaldo($credit_account_id) {
@@ -268,6 +242,24 @@ class CurrentAcountHelper {
             $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $model_name, $model_id, $nota_credito);
             $pago_helper->init();
             Self::update_credit_account_saldo($credit_account_id);
+        }
+
+        /*
+         * Puntos para clientes. Este método llama a CurrentAcountPagoHelper DERECHO y nunca
+         * pasa por checkPagos(), así que el enganche de allá no lo ve: sin esto, una nota de
+         * crédito dejaría los puntos de la venta devuelta tal como estaban.
+         *
+         * 🔴 Y una NC es justamente el caso que más duele: se imputa DIRIGIDA al débito de la
+         * venta (el to_pay_id de más arriba), así que una venta devuelta entera llega a
+         * `status = 'pagado'` SIN QUE EL CLIENTE HAYA PAGADO UN PESO. Los dos tapones viven en
+         * PuntosBaseHelper (el returned_amount por renglón y el factor por NC de monto libre),
+         * pero alguien tiene que volver a preguntar, y ese alguien es esta línea.
+         *
+         * `$nota_credito->user_id` ya está resuelto acá arriba: se pasa para que el comercio
+         * sin la extensión salga sin leer ni la venta.
+         */
+        if (!is_null($sale_id)) {
+            PuntosAcumulacionHelper::reconciliar_venta_por_id($sale_id, $nota_credito->user_id);
         }
 
         return $nota_credito;
@@ -637,18 +629,69 @@ class CurrentAcountHelper {
                                     ->where($credit_account->model_name.'_id', $credit_account->model_id)
                                     ->get();
 
-        foreach ($pagos as $pago) {
-            // El detach de pagando_a es un no-op: ya se eliminaron todas las filas
-            // de pagado_por en el batch delete anterior (por debe_id)
-            // Se pasa $credit_account para evitar un CreditAccount::find por cada pago
-            $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago, $credit_account);
-            $pago_helper->init();
+        /*
+         * Puntos para clientes: se SUSPENDE el enganche que cuelga del final de
+         * CurrentAcountPagoHelper::init() mientras dura este loop, y se reconcilia una sola vez
+         * al final de esta función (más abajo).
+         *
+         * El enganche de init() es el que cubre todos los caminos que dejan un débito en
+         * 'pagado' sin pasar por acá —el cobro de todos los días, entre ellos—, pero esta
+         * función llama a init() UNA VEZ POR PAGO de la cuenta: sin suspenderlo, una cuenta con
+         * 30 pagos reconciliaría todas sus ventas 31 veces. No duplicaría un punto (el
+         * reconciliador compara contra lo escrito y no escribe si no cambió nada), pero le
+         * multiplicaría el costo en consultas a los dos jobs de fondo que barren todas las
+         * cuentas de todos los clientes.
+         *
+         * El try/finally no es decorativo: si un pago tira una excepción, el enganche tiene que
+         * volver a prenderse igual, o el módulo queda mudo para el resto del request.
+         */
+        PuntosAcumulacionHelper::suspender();
+
+        try {
+
+            foreach ($pagos as $pago) {
+                // El detach de pagando_a es un no-op: ya se eliminaron todas las filas
+                // de pagado_por en el batch delete anterior (por debe_id)
+                // Se pasa $credit_account para evitar un CreditAccount::find por cada pago
+                $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $credit_account->model_name, $credit_account->model_id, $pago, $credit_account);
+                $pago_helper->init();
+            }
+
+        } finally {
+
+            PuntosAcumulacionHelper::reanudar();
         }
 
         // Grupo 268 · Prompt 02, bug D: los debitos ya quedaron con su estado definitivo (los dos
         // loops de arriba ya corrieron), asi que se revierten las comisiones que se habian dado
         // por liquidadas de una venta que dejo de estar saldada (ej. se borro el pago que la saldaba).
         SellerCommissionHelper::revertirComisionesNoSaldadas($credit_account_id);
+
+        /*
+         * Puntos para clientes (misión del 22/8/2026). Va acá, al final, y UNA SOLA VEZ para
+         * toda la función, porque esta función RE-IMPUTA la cuenta entera: borra las
+         * imputaciones, resetea todos los débitos a 'sin_pagar' y vuelve a correr el pago por
+         * cada pago. O sea que la transición "el débito llegó a pagado" se dispara N veces por
+         * UN solo hecho económico. Por eso el loop de arriba corre con el enganche de
+         * CurrentAcountPagoHelper::init() suspendido y la reconciliación se hace acá, con los
+         * débitos ya en su estado definitivo.
+         *
+         * 🔴 Y esta llamada NO reemplaza a la de init(): checkPagos() es UNO de los caminos por
+         * los que un débito llega a 'pagado', no el único. El cobro de todos los días
+         * (CurrentAcountController@pago con current_date = 1, el default de la SPA) no pasa por
+         * acá — hasta el 22/8/2026 ése era justamente el bug: los puntos aparecían recién de
+         * rebote, cuando alguna otra cosa disparaba checkPagos(). Las dos llamadas son la misma
+         * regla vista desde los dos lados: init() cubre la familia, esta cubre el costo.
+         *
+         * PuntosAcumulacionHelper compara contra lo que ya está escrito y no escribe si no
+         * cambió nada, así que correr esto en cada una de las once llamadas a checkPagos() no
+         * duplica un punto. En un comercio sin la extensión son CERO consultas: el helper corta
+         * con la respuesta memoizada de PuntosConfigHelper antes de mirar una sola fila.
+         *
+         * Se le pasa $credit_account (que ya está en memoria acá arriba) y no su id, para no
+         * pagar un CreditAccount::find de más en los jobs que barren todas las cuentas.
+         */
+        PuntosAcumulacionHelper::reconciliar_cuenta_corriente($credit_account);
 
         // $model->pagos_checkeados = 1;
         // $model->save();

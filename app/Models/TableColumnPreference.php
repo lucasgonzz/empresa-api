@@ -10,6 +10,8 @@ class TableColumnPreference extends Model
 
     protected $casts = [
         'columns' => 'array',
+        // Configuración a nivel de modelo/preference_type (ej: modo de búsqueda del buscador general).
+        'settings' => 'array',
     ];
 }
 

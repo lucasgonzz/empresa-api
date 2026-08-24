@@ -291,6 +291,11 @@ class AuthController extends Controller
             $user = UserHelper::getFullModel(false);
             $user = $this->set_employee_props($user);
             $user->skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
+            /**
+             * Marcador de sesion de demo (mision 52). Va en las DOS ramas de este metodo: esta
+             * es la del bypass de login maestro, que es justo la que menos se prueba.
+             */
+            $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -303,6 +308,16 @@ class AuthController extends Controller
              * Reinyecta el flag de sesión para que el frontend mantenga el comportamiento.
              */
             $user->skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
+            /**
+             * Marcador de sesion de demo (mision 52), con el mismo patron que la linea de arriba.
+             *
+             * Viaja aca y no en una llamada propia porque esta respuesta el arranque YA la paga
+             * para todos los usuarios (App.vue despacha auth/me), asi que el costo es cero: ni un
+             * request ni una query mas --session()->has() lee la sesion que este request ya
+             * cargo--. Y sobrevive al F5 por construccion, porque la fuente es la cookie de
+             * sesion y no una variable de JavaScript.
+             */
+            $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }

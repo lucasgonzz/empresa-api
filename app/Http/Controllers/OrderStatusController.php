@@ -2,47 +2,45 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Models\OrderStatus;
-use Illuminate\Http\Request;
 
+/**
+ * Estados de pedido: SOLO LECTURA.
+ *
+ * 🔴 `store`, `update` y `destroy` se borraron el 24/8/2026 por decision de Lucas. No los vuelvas a
+ * agregar sin hablarlo: `OrderStatusHelper` decide si un pedido puede avanzar comparando los NOMBRES
+ * de estas filas, asi que renombrar "Confirmado" deja todos los pedidos de ese comercio solo
+ * cancelables, y borrar un estado deja tapiados a los que estaban en el.
+ *
+ * Cuando se sacaron no habia ninguna pantalla que los usara ni ningun consumidor en los seis repos.
+ * Y `store` ademas estaba roto: devolvia 500. La ruta quedo acotada con `->only(['index', 'show'])`.
+ */
 class OrderStatusController extends Controller
 {
 
     public function index() {
-        $models = OrderStatus::orderBy('created_at', 'DESC')
-                            ->withAll()
-                            ->get();
+        $orden = OrderStatusHelper::ORDEN_VISUAL;
+
+        /**
+         * Se ordena por nombre contra OrderStatusHelper::ORDEN_VISUAL y no por `id`/`created_at`:
+         * esas dos columnas no son estables entre instalaciones (cada base corre
+         * OrderStatusSeeder por su cuenta). Un estado que no esta en la lista (resto de una
+         * instalacion vieja, de cuando se podian crear a mano) se manda al final en vez de romper.
+         */
+        $models = OrderStatus::withAll()
+                            ->get()
+                            ->sortBy(function ($model) use ($orden) {
+                                $pos = array_search($model->name, $orden);
+                                return $pos === false ? count($orden) : $pos;
+                            })
+                            ->values();
+
         return response()->json(['models' => $models], 200);
     }
-
-    public function store(Request $request) {
-        $model = OrderStatus::create([
-            'num'                   => $this->num('order_statuses'),
-            'name'                  => $request->name,
-            'user_id'               => $this->userId(),
-        ]);
-        $this->sendAddModelNotification('OrderStatus', $model->id);
-        return response()->json(['model' => $this->fullModel('OrderStatus', $model->id)], 201);
-    }  
 
     public function show($id) {
         return response()->json(['model' => $this->fullModel('OrderStatus', $id)], 200);
     }
 
-    public function update(Request $request, $id) {
-        $model = OrderStatus::find($id);
-        $model->name                = $request->name;
-        $model->save();
-        $this->sendAddModelNotification('OrderStatus', $model->id);
-        return response()->json(['model' => $this->fullModel('OrderStatus', $model->id)], 200);
-    }
-
-    public function destroy($id) {
-        $model = OrderStatus::find($id);
-        $model->delete();
-        ImageController::deleteModelImages($model);
-        $this->sendDeleteModelNotification('OrderStatus', $model->id);
-        return response(null);
-    }
 }

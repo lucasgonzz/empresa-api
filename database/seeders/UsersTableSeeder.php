@@ -73,6 +73,13 @@ class UsersTableSeeder extends Seeder
             'user_id'                               => $commerce->id,
         ]);
 
+        // La condicion fiscal ya no vive en user_configurations: vive en users (grupo 231, prompt 01).
+        // Toda cuenta sembrada nace como Responsable Inscripto y con la dinamica contable real activada,
+        // igual que las cuentas que crea HelperController::store_user().
+        $commerce->condicion_iva_precios = User::CONDICION_RRII;
+        $commerce->usar_condicion_fiscal_en_costeo = 1;
+        $commerce->save();
+
         AfipInformation::create([
             'iva_condition_id'      => 1,
             'razon_social'          => 'Colman',
@@ -128,6 +135,13 @@ class UsersTableSeeder extends Seeder
             'can_make_afip_tickets'                 => 1,
             'user_id'                               => $commerce->id,
         ]);
+
+        // La condicion fiscal ya no vive en user_configurations: vive en users (grupo 231, prompt 01).
+        // Toda cuenta sembrada nace como Responsable Inscripto y con la dinamica contable real activada,
+        // igual que las cuentas que crea HelperController::store_user().
+        $commerce->condicion_iva_precios = User::CONDICION_RRII;
+        $commerce->usar_condicion_fiscal_en_costeo = 1;
+        $commerce->save();
 
         AfipInformation::create([
             'iva_condition_id'      => 1,

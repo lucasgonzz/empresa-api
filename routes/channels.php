@@ -25,3 +25,13 @@ Broadcast::channel('App.Models.User.{id}', function ($user, $id) {
 Broadcast::channel('whatsapp.{owner_id}', function ($user, $owner_id) {
     return (int) $user->id === (int) $owner_id || (int) $user->owner_id === (int) $owner_id;
 });
+
+/**
+ * Canal privado del chat con el asistente de IA (misión chat-ia-y-modulo-ia).
+ * Autoriza SOLO por id de PERSONA, a propósito SIN la rama de owner_id del
+ * canal de WhatsApp: las conversaciones son de cada persona (pueden traer
+ * saldos de clientes) y el dueño no escucha las de sus empleados ni al revés.
+ */
+Broadcast::channel('chat.user.{auth_user_id}', function ($user, $auth_user_id) {
+    return (int) $user->id === (int) $auth_user_id;
+});

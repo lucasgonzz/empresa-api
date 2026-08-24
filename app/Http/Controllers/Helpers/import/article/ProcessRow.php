@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
@@ -18,6 +20,7 @@ use App\Models\Category;
 use App\Models\ImportHistory;
 use App\Models\Iva;
 use App\Models\PriceType;
+use App\Models\Provider;
 use App\Models\SubCategory;
 use App\Models\UnidadMedida;
 use Illuminate\Support\Collection;
@@ -25,6 +28,16 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class ProcessRow {
+
+    /**
+     * Alícuota con la que se descompone el costo importado cuando no hay ninguna otra pista: ni la
+     * columna del Excel, ni el `iva_id` del artículo existente.
+     *
+     * Es 21% (`ivas.id = 2`), el mismo default que ya devuelve `get_iva_id()` cuando la celda viene
+     * vacía y el que documenta `LocalImportHelper::getIvaId()`. Decisión de Lucas del 20/8/2026,
+     * que confirma la convención que el sistema ya tenía.
+     */
+    const IVA_ID_POR_DEFECTO = 2;
 
     protected $columns;
     protected $user;
@@ -148,6 +161,37 @@ class ProcessRow {
     protected $se_importaron_price_types = false;
 
     protected $brand_cache = [];
+
+    /**
+     * Proveedores ya resueltos en este chunk, por provider_id (mision 44). Solo se usa
+     * para saber si el proveedor tiene margen de ganancia cargado, que es una de las
+     * tres condiciones del criterio de precio.
+     *
+     * Existe para no hacer una query por fila: find_with_index() trae la relacion
+     * 'providers' (la de muchos a muchos, y solo con el id), no 'provider', asi que
+     * leer $articulo_ya_creado->provider dispararia un SELECT en cada fila del Excel.
+     * El valor null (proveedor inexistente) tambien se cachea, por eso se pregunta con
+     * array_key_exists y no con isset.
+     *
+     * @var array [provider_id => Provider|null]
+     */
+    protected $provider_cache_criterio = [];
+
+    /**
+     * Margen, precio y costo con los que va a quedar cada articulo despues de aplicar las
+     * filas de este chunk que ya se procesaron (mision 44), indexado por article_id.
+     *
+     * Existe porque dos filas del mismo Excel pueden apuntar al mismo articulo y el
+     * criterio de precio tiene que verlas como una sola: la segunda fila relee el articulo
+     * de la BASE (merge_fila_duplicada() hace Article::find()), que a esa altura todavia no
+     * tiene lo que encolo la primera. Sin esto, una fila con margen y otra con precio sobre
+     * el mismo articulo pasaban las dos, el merge por id de ActualizarBBDD fusionaba las
+     * claves y se escribian las dos columnas.
+     *
+     * @var array [article_id => ['percentage_gain' => mixed, 'price' => mixed, 'cost' => mixed]]
+     */
+    protected $criterio_pendiente_por_articulo = [];
+
     protected $category_cache = [];
     protected $sub_category_cache = []; // [category_id][name_key] => id
     protected $iva_cache = [];   
@@ -160,6 +204,48 @@ class ProcessRow {
     protected $slug_next_index = [];
 
     protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
+
+    /**
+     * Buffer paralelo a $provider_relations_buffer (mismo molde): ofertas de OTROS
+     * proveedores que la importación descarta o saltea sin tocar el pivot con ellas.
+     * No decide nada del importador; ArticleImport::guardar_articulos() lo vacía al
+     * histórico de precios ofertados (misión sugerencias de compra).
+     * [article_id][provider_id] => ['provider_code'=>..., 'cost'=>..., 'origen'=>'importacion'] — última fila gana
+     * @var array
+     */
+    protected $ofertas_de_precio_buffer = [];
+
+    /**
+     * Cache en memoria de los descuentos estándar (ProviderDiscount) de cada proveedor,
+     * indexado por provider_id, para no repetir la consulta fila a fila del Excel.
+     * Se llena de forma perezosa en get_provider_standard_discount_percentages().
+     */
+    protected $provider_standard_discounts_cache = [];
+
+    /**
+     * Prompt 310: flag "permitir valores en blanco" configurado por columna mapeada.
+     * Mapa columna_del_import (misma clave que $this->columns, ej. 'costo', 'descuentos')
+     * => bool. Default (columna ausente del mapa) = false: celda vacía NO pisa el valor
+     * actual del artículo. Con el flag en true, celda vacía sobrescribe con blanco/cero.
+     */
+    protected $blank_flags = [];
+
+    /**
+     * Prompt 310: claves de $data (prop_key, ej. 'cost', 'stock_min') detectadas en la fila
+     * actual como "forzar blanco/cero" porque la celda vino vacía y el flag de esa columna
+     * está en true. Se resetea al inicio de cada fila (ver procesar(), justo antes del loop
+     * de props_to_add) y lo consume get_modified_fields() para no omitir el campo pese a
+     * venir null.
+     */
+    protected $forced_blank_props = [];
+
+    /**
+     * Prompt 514: hook preparado (sin fuente en la UI aún, ver comentario en el constructor) para
+     * el mismo criterio "precios incluyen IVA" de la compra manual. Default false = comportamiento
+     * idéntico al de siempre (no se toca ningún costo).
+     */
+    protected $precios_incluyen_iva = false;
+
 
     /**
      * Identificadores unicos (bar_code/sku) asignados por herencia de escalones
@@ -218,6 +304,32 @@ class ProcessRow {
         $this->import_history_id = $data['import_history_id'] ?? null;
         $this->import_uuid = $data['import_uuid'] ?? null;
 
+        // Prompt 310: flags "permitir valores en blanco" por columna mapeada (default vacío = todas en false).
+        $this->blank_flags = isset($data['blank_flags']) && is_array($data['blank_flags']) ? $data['blank_flags'] : [];
+
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla vienen
+         * con el IVA adentro. Lo declara la pantalla de importación, y es la ÚNICA fuente de esa
+         * decisión: no hay fallback por condición fiscal de la cuenta ni por configuración.
+         *
+         * 🔴 Que no haya fallback es deliberado, y una versión anterior de esta misma misión lo tuvo
+         * y salió mal: cuando el criterio se deduce de la cuenta en vez de declararse por carga, el
+         * mismo número termina costeando distinto según por dónde entre —el ABM lo descomponía y el
+         * import no—, y ninguna pantalla lo denuncia. Ahora las tres vías declaran: el ABM con el
+         * input en el que se tipeó, la compra con `provider_orders.precios_incluyen_iva`, y el
+         * import con esta clave.
+         *
+         * Viaja desde ArticleController::import() por el mismo carril que `blank_flags`:
+         * InitExcelImport -> ProcessArticleChunk -> ArticleImport -> acá.
+         *
+         * Default false (= los costos de la planilla son netos), que es el comportamiento histórico
+         * del import: una importación que hoy anda no cambia de resultado.
+         */
+        $this->precios_incluyen_iva = ArticlePricesHelper::el_costo_cargado_es_bruto(
+            $this->user,
+            $data['precios_incluyen_iva'] ?? false
+        );
+
         /*
          * 'fila_inicial' (grupo 294, incidente Servian): numero de fila ABSOLUTO del
          * Excel donde arranca el chunk que va a procesar esta instancia (ver
@@ -250,6 +362,19 @@ class ProcessRow {
         $this->set_category_cache();
         $this->set_sub_category_cache();
         $this->set_iva_cache();
+    }
+
+    /**
+     * Prompt 310: indica si la columna del import (misma clave que $this->columns, ej.
+     * 'costo', 'descuentos') tiene habilitado "permitir valores en blanco".
+     *
+     * @param  string $column_key  Clave de la columna en el mapeo de importación.
+     * @return bool                true si una celda vacía debe sobrescribir (borrar/cero) el
+     *                               valor actual; false (default) si debe omitirse sin tocarlo.
+     */
+    protected function permite_valores_en_blanco(string $column_key): bool
+    {
+        return !empty($this->blank_flags[$column_key]);
     }
 
     public function set_taken_slugs(array $slugs): void
@@ -341,8 +466,136 @@ class ProcessRow {
             ->toArray();
     }
 
+    /**
+     * Prompt 514 — Hook de back-out de IVA para el import (ver comentario detallado en el
+     * constructor y en el punto donde se llama, dentro de procesar()).
+     *
+     * Mismo criterio y misma fórmula que ArticlePricesHelper::back_out_iva() (usado por la compra
+     * manual en NewProviderOrderHelper): neto = bruto / (1 + alicuota/100), usando la alícuota
+     * PROPIA del artículo/fila (por `iva_id`), nunca una alícuota global. No usa
+     * ArticlePricesHelper::back_out_iva() directamente porque ese método espera una instancia de
+     * Article (con su relación `iva`) y acá, en el momento en que se arma $data, todavía no existe
+     * necesariamente un Article persistido — solo tenemos el `iva_id` de la fila del Excel.
+     *
+     * Con $this->precios_incluyen_iva en false es un no-op: la planilla declaró que sus costos ya
+     * vienen netos.
+     *
+     * @param  mixed    $cost    Costo tal cual lo devolvió get_number() (string numérico o null).
+     * @param  int|null $iva_id  Id de la alícuota de IVA de la fila (columna 'iva' del Excel).
+     * @return mixed             Costo neto (string numérico, mismo formato que get_number()) si
+     *                           corresponde hacer el back-out; si no, $cost sin modificar.
+     */
+    private function back_out_iva_import($cost, $iva_id)
+    {
+        if (!$this->precios_incluyen_iva || is_null($cost) || $cost === '') {
+            return $cost;
+        }
+
+        // Sin alícuota conocida para esta fila no se puede hacer el back-out: se deja el costo
+        // tal cual vino (conservador, evita restar IVA "a ciegas"). El llamador
+        // (aplicar_back_out_de_iva) resuelve el id ANTES de llegar acá, así que este guard es una
+        // red y no el camino normal.
+        if (is_null($iva_id)) {
+            return $cost;
+        }
+
+        $iva = Iva::find($iva_id);
+
+        // Mismo criterio que ArticlePricesHelper::hasIva(): sin alícuota real (0/Exento/No
+        // Gravado) no hay IVA que sacar.
+        if (is_null($iva) || in_array((string)$iva->percentage, ['0', 'Exento', 'No Gravado'], true)) {
+            return $cost;
+        }
+
+        $neto = (float)$cost / (1 + ((float)$iva->percentage / 100));
+
+        // Seis decimales, la escala real de `articles.cost` desde la migración del 30/7/2026
+        // (decimal(22,6), declarada en $numeric_precision como 'cost' => [16, 6]). Estuvo en
+        // number_format(..., 2) desde el prompt 514, cuando era código muerto: al activarse el
+        // back-out, truncar acá le comería precisión justo al costo del que salen todos los precios.
+        return number_format($neto, 6, '.', '');
+    }
+
+    /**
+     * Deja `cost` en NETO cuando la planilla declaró que sus costos vienen con IVA.
+     *
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026). `articles.cost` es neto por convención
+     * del sistema; si la importación declara que la columna de costo trae el IVA adentro, hay que
+     * sacárselo ANTES de escribir. Sin esto, un costo bruto entraba tal cual en una columna neta y
+     * el pipeline de precios le volvía a sumar el IVA encima: el costo real quedaba ~21% inflado, y
+     * un proveedor entrado por importación competía más caro que el mismo proveedor entrado por una
+     * compra real (hallazgo 4 de `informes/20260815-motor-de-ofertas-por-cliente.md`).
+     *
+     * 🔴 NO mira `articles.aplicar_iva` ni la condición fiscal de la cuenta, igual que
+     * ArticlePricesHelper::back_out_iva(). `aplicar_iva` es una decisión sobre la VENTA y es
+     * ortogonal a si el número de la planilla trae el IVA adentro. Que las tres vías compartan este
+     * criterio es el punto entero de la misión: si divergen, el mismo importe cuesta distinto según
+     * por dónde entre.
+     *
+     * 🔴 Es IDEMPOTENTE, y tiene que serlo: hay cuatro puntos del flujo que escriben costo y llaman
+     * acá (el alta, la actualización, el merge de filas repetidas y el histórico de ofertas de
+     * proveedor). Cuando el bloque vivía en un solo lugar, dos de esos caminos lo salteaban: el
+     * merge de duplicadas dejaba el bug original vivo sólo para las filas repetidas, y el histórico
+     * de ofertas quedaba mezclando bruto por un call site y neto por los otros dos — y de ahí salen
+     * las sugerencias de compra, donde un 21% decide qué proveedor gana. Lo encontró un checker de
+     * la Fase 5.
+     *
+     * @param  array $data                 Fila ya mapeada.
+     * @param  \App\Models\Article|null $articulo_ya_creado Artículo existente, si lo hay: se usa
+     *                                     sólo para heredar su `iva_id` cuando la planilla no trae
+     *                                     la columna.
+     * @return array                       $data con `cost` en neto.
+     */
+    private function aplicar_back_out_de_iva($data, $articulo_ya_creado)
+    {
+        // Guard de idempotencia: si ya se aplicó sobre esta fila, no se vuelve a aplicar.
+        if (isset($data['__back_out_aplicado'])) {
+            return $data;
+        }
+
+        if (!isset($data['cost']) || !$this->precios_incluyen_iva) {
+            return $data;
+        }
+
+        $data['__back_out_aplicado'] = true;
+
+        /*
+         * Con qué alícuota descomponer, por prioridad. Decisión de Lucas (20/8/2026): *"si no se
+         * indica el IVA de un artículo o directamente no se indica la columna, hay que asignarle el
+         * IVA del veintiún por ciento"*. Implementado por prioridad y no a ciegas, porque asignar
+         * 21% derecho rompía un caso: un Excel sin columna de IVA le hundía el costo a un artículo
+         * Exento.
+         *
+         * 🔴 NO escribe `iva_id` en el artículo: sólo elige con qué descomponer. Pisar el IVA de un
+         * artículo desde un Excel que ni siquiera trae esa columna sería destruir un dato que nadie
+         * pidió tocar.
+         */
+        $iva_id = isset($data['iva_id']) ? $data['iva_id'] : null;
+
+        if (is_null($iva_id)
+            && $articulo_ya_creado instanceof \App\Models\Article
+            && !is_null($articulo_ya_creado->iva_id)
+        ) {
+            $iva_id = $articulo_ya_creado->iva_id;
+        }
+
+        if (is_null($iva_id)) {
+            $iva_id = self::IVA_ID_POR_DEFECTO;
+        }
+
+        $data['cost'] = $this->back_out_iva_import($data['cost'], $iva_id);
+
+        return $data;
+    }
+
+    /*
+     * Desde la mision `listas-de-precio-por-defecto-al-importar` (24/8/2026) este flag YA NO es
+     * el interruptor global de las listas: gobierna solo el camino de ACTUALIZACION de un
+     * articulo que ya existe. Para los articulos que la importacion crea, el criterio es
+     * "siempre, si la cuenta usa listas" (ver obtener_price_types()).
+     */
     function set_se_importaron_price_types() {
-                
+
         foreach ($this->price_types as $price_type) {
 
             $row_setear_name = $this->get_price_type_row_name('setear_precio_final_', $price_type);
@@ -462,6 +715,10 @@ class ProcessRow {
         $this->terminar('get_provider_id');
 
 
+        // Prompt 310: se resetea por fila; get_modified_fields() lo consulta para saber qué
+        // props deben forzarse a blanco/cero pese a que la celda haya venido vacía.
+        $this->forced_blank_props = [];
+
         $this->iniciar();
         foreach ($props_to_add as $prop_to_add) {
 
@@ -495,6 +752,36 @@ class ProcessRow {
                     }
 
                     $excel_value = $resultado_numero['value'];
+
+                    /*
+                     * Mision 44: un precio o un margen en CERO no es un valor, es el estado
+                     * sucio que traba la ficha del articulo (los dos inputs deshabilitados y
+                     * sin salida). parse_number_core() devuelve "0.00" y el UPDATE masivo de
+                     * ActualizarBBDD solo saltea null y cadena vacia, asi que ese cero llegaba
+                     * a la base tanto actualizando como CREANDO articulos.
+                     *
+                     * Se descarta el campo, o sea que la fila no lo toca -- misma semantica
+                     * que una celda vacia. NO se registra conflicto: no es un salteo por
+                     * criterio, es un valor que no significa nada. Los negativos no entran:
+                     * normalizar() solo anula el cero.
+                     */
+                    if (
+                        in_array($prop_to_add['prop_key'], ['price', 'percentage_gain'], true)
+                        && is_null(CriterioDePrecioHelper::normalizar($excel_value))
+                    ) {
+                        continue;
+                    }
+                }
+
+                /*
+                 * Prompt 310: celda vacía (excel_value null) + columna mapeada.
+                 * - Flag OFF (default): se deja $data[prop_key] = null; get_modified_fields()
+                 *   omite los valores null y por lo tanto NO pisa el valor actual del artículo.
+                 * - Flag ON: se marca el prop_key para que get_modified_fields() fuerce la
+                 *   sobreescritura en blanco/cero en vez de omitirlo.
+                 */
+                if (is_null($excel_value) && $this->permite_valores_en_blanco($prop_to_add['excel_column'])) {
+                    $this->forced_blank_props[$prop_to_add['prop_key']] = true;
                 }
 
                 $data[$prop_to_add['prop_key']] = $excel_value;
@@ -556,6 +843,21 @@ class ProcessRow {
             $data['iva_id'] = $iva_id;
             $this->terminar('set iva_id');
         }
+
+        /*
+         * Prompt 514 — El back-out de IVA del costo importado NO va acá.
+         *
+         * 🔴 Estuvo en este punto hasta el 20/8/2026 y era un bug: acá `$data['iva_id']` sólo
+         * existe si el Excel MAPEA una columna de IVA (ver el `if (!ImportHelper::isIgnoredColumn(
+         * 'iva', ...))` de arriba), y la forma más común de lista de proveedor es código + costo,
+         * sin esa columna. Sin `iva_id` el back-out devolvía el costo intacto, así que para un
+         * Monotributista el Excel seguía escribiendo BRUTO en una columna que es NETA por
+         * convención, y `aplicar_iva()` le volvía a sumar el 21%.
+         *
+         * Se movió a `aplicar_back_out_de_iva()`, que corre más abajo, una vez resuelto
+         * `$articulo_ya_creado`: ahí se puede caer al `iva_id` que el artículo YA tiene antes de
+         * usar el default, que es lo que evita descomponerle 21% a un artículo Exento.
+         */
 
 
 
@@ -713,6 +1015,17 @@ class ProcessRow {
             if (in_array($campo, ['bar_code', 'sku', 'provider_code'], true)) {
                 // Fila repetida por bar_code/sku/provider_code: se hace merge sobre la fila anterior en cola.
                 $this->contar_fila('merge_fila_repetida');
+
+                /*
+                 * El merge escribe el costo y sale de procesar() por el return de abajo, sin pasar
+                 * por el back-out del final. Sin esta llamada, una fila repetida guardaba el BRUTO
+                 * en una columna neta mientras la fila normal de al lado guardaba el neto: el bug
+                 * original de la mision, vivo solo para las duplicadas. Todavia no hay articulo
+                 * resuelto en este punto, asi que la alicuota sale de la columna del Excel o del
+                 * default; la llamada es idempotente, no vuelve a descomponer mas adelante.
+                 */
+                $data = $this->aplicar_back_out_de_iva($data, null);
+
                 $this->merge_fila_duplicada($data, $row, $campo);
                 $this->sumar_durations();
                 return $this->observations;
@@ -793,6 +1106,24 @@ class ProcessRow {
             $this->contar_fila('bloqueado_otro_proveedor');
             $this->log('No hubo mach (bloqueado por provider_code existente en otro proveedor)');
             $this->articles_repetidos++;
+
+            // La fila se sigue descartando igual que siempre; lo único nuevo es que antes
+            // de tirarla queda registrado que ESTE proveedor ofrecía ese artículo a ese
+            // precio (misión sugerencias de compra).
+            /*
+             * Este call site corre ANTES del back-out normal, y los otros dos (mas abajo) despues.
+             * Sin esta linea, el historico de ofertas guardaba BRUTO por un camino y NETO por los
+             * otros dos, y de ahi salen las sugerencias de compra: un 21% decide que proveedor
+             * gana. Idempotente, no descompone dos veces.
+             */
+            $data = $this->aplicar_back_out_de_iva($data, null);
+
+            $this->registrar_oferta_de_otro_proveedor(
+                isset($articulo_ya_creado['matched_other_provider_ids']) ? $articulo_ya_creado['matched_other_provider_ids'] : [],
+                $provider_id,
+                $data
+            );
+
             $this->sumar_durations();
             return $this->observations;
         }
@@ -842,6 +1173,15 @@ class ProcessRow {
         // if ($articulo_ya_creado instanceof \App\Models\Article) {
         //     $this->log('Es instancia de Artlce');
         // }
+
+        /*
+         * Back-out de IVA del costo importado (misión `costo-bruto-por-condicion-fiscal`, 20/8/2026).
+         *
+         * Corre EN ESTE PUNTO y no antes: recién acá está resuelto `$articulo_ya_creado`, que es lo
+         * que permite usar la alícuota que el artículo ya tiene en vez del default. Ver la nota
+         * larga donde estaba antes, arriba.
+         */
+        $data = $this->aplicar_back_out_de_iva($data, $articulo_ya_creado);
 
         // Marca si esta fila ya quedo resuelta (match, fake pendiente o creacion encolada);
         // si llega al final sin pasar por ninguna de esas ramas, cuenta 'sin_match_no_creado'.
@@ -943,6 +1283,11 @@ class ProcessRow {
                         $this->procesar_articulo_ya_creado($_articulo_ya_creado, $data, $row);
 
                         $this->terminar('procesar_articulo_ya_creado con provider_code repetido');
+                    } else {
+                        // El artículo pertenece a otro proveedor y se sigue salteando igual que
+                        // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
+                        // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
+                        $this->registrar_oferta_de_otro_proveedor([$_articulo_ya_creado->id], $provider_id, $data);
                     }
 
                 }
@@ -957,6 +1302,11 @@ class ProcessRow {
                     $this->procesar_articulo_ya_creado($articulo_ya_creado, $data, $row, $identificadores_pendientes);
 
                     $this->terminar('procesar_articulo_ya_creado');
+                } else {
+                    // El artículo pertenece a otro proveedor y se sigue salteando igual que
+                    // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
+                    // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
+                    $this->registrar_oferta_de_otro_proveedor([$articulo_ya_creado->id], $provider_id, $data);
                 }
             }
 
@@ -979,16 +1329,29 @@ class ProcessRow {
                     el % por defecto del price_type 
             */
             $this->iniciar();
-            $price_types_data = $this->obtener_price_types($row);
+            /* El true final es "esta fila crea un articulo": pide las listas por defecto aunque
+               el Excel no traiga ninguna columna de lista. Ver obtener_price_types(). */
+            $price_types_data = $this->obtener_price_types($row, null, true);
             $data['price_types_data'] = $price_types_data;
             $this->terminar('crear: obtener_price_types');
 
             
             $this->iniciar();
-            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-            if (!empty($discounts_diff)) {
-                $data['discounts'] = $discounts_diff;
-            } 
+            // Prompt 307: con provider_id conocido, los descuentos se tagean a ese proveedor
+            // (reusa ArticleProviderDiscountHelper::sync_provider_discounts desde ActualizarBBDD).
+            // Sin provider_id, se mantiene el comportamiento legado (descuentos globales, sin tag).
+            if (empty($provider_id)) {
+                $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+                if (!empty($discounts_diff)) {
+                    $data['discounts'] = $discounts_diff;
+                }
+            } else {
+                $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id);
+                if (!is_null($provider_discounts_to_tag)) {
+                    $data['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                    $data['provider_discounts_to_tag_provider_id'] = $provider_id;
+                }
+            }
             $this->terminar('crear: discounts_diff');
 
             $this->iniciar();
@@ -1189,18 +1552,40 @@ class ProcessRow {
         $baseline_para_diffs = new Article($merged);
 
         $this->iniciar();
-        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs);
+        /* $baseline_para_diffs es un Article NO persistido: esta fila tambien termina creando.
+           Sin el true, obtener_price_types() devolveria [] y ese [] se pisa entero abajo, o sea
+           que esta fila le borraria al articulo las listas que la fila anterior le consiguio. */
+        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs, true);
         $merged['price_types_data'] = $price_types_data;
         $this->terminar('merge pendiente: obtener_price_types');
 
 
         $this->iniciar();
-        $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+        // Prompt 307: misma bifurcación que en la creación (ver más arriba en procesar()).
+        $provider_id_para_discounts = isset($merged['provider_id']) ? $merged['provider_id'] : null;
 
-        if (!empty($discounts_diff)) {
-            $merged['discounts'] = $discounts_diff;
+        if (empty($provider_id_para_discounts)) {
+
+            $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
+
+            if (!empty($discounts_diff)) {
+                $merged['discounts'] = $discounts_diff;
+            } else {
+                unset($merged['discounts']);
+            }
+
         } else {
+
             unset($merged['discounts']);
+
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_para_discounts, $baseline_para_diffs);
+
+            if (!is_null($provider_discounts_to_tag)) {
+                $merged['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                $merged['provider_discounts_to_tag_provider_id'] = $provider_id_para_discounts;
+            } else {
+                unset($merged['provider_discounts_to_tag'], $merged['provider_discounts_to_tag_provider_id']);
+            }
         }
 
         $this->terminar('merge pendiente: discounts_diff');
@@ -1387,6 +1772,19 @@ class ProcessRow {
         $this->terminar('get_modified_fields');
 
         /*
+         * Mision 44: en la importacion gana la columna de precio que el articulo YA
+         * tenia en el sistema. Va aca, despues de get_modified_fields() y antes de que
+         * $cambios entre a la cola de actualizacion, porque saltear tiene que ser
+         * saltear de verdad -- si el campo entrara y despues setFinalPrice() lo
+         * revirtiera, el updated_props del historial diria que ese campo cambio cuando
+         * no cambio, y el rollback lo querria restaurar desde un diff que no describe
+         * nada real.
+         */
+        $this->iniciar();
+        $cambios = $this->aplicar_criterio_de_precio($articulo_ya_creado, $data, $cambios);
+        $this->terminar('criterio de precio manual vs margen');
+
+        /*
          * Identificadores (bar_code y/o sku) que la fila traia, no matchearon su propio
          * escalon, y matchearon un UNICO articulo mas abajo en la cascada (regla de
          * Lucas, 30/7/2026, prompt 08 grupo 265): "codigo de barras nuevo + SKU
@@ -1449,6 +1847,9 @@ class ProcessRow {
 
 
         $this->iniciar();
+        /* Sin el tercer argumento a proposito: este es el UNICO call site de un articulo
+           persistido de verdad (los fakes de la cola de creacion se desvian antes, al merge), y
+           el alcance que fijo Lucas es solo lo que la importacion crea. */
         $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
         $price_types_data = $this->filter_only_changed_price_types($articulo_ya_creado, $price_types_data);
         if (!empty($price_types_data)) {
@@ -1458,10 +1859,25 @@ class ProcessRow {
 
         
         $this->iniciar();
-        $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-        if (!empty($discounts_diff)) {
-            $cambios['discounts'] = $discounts_diff;
-        } 
+        // Prompt 307: misma bifurcación que en la creación (ver procesar()).
+        $provider_id_de_la_fila = isset($data['provider_id']) ? $data['provider_id'] : null;
+
+        if (empty($provider_id_de_la_fila)) {
+
+            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
+            if (!empty($discounts_diff)) {
+                $cambios['discounts'] = $discounts_diff;
+            }
+
+        } else {
+
+            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_de_la_fila, $articulo_ya_creado);
+
+            if (!is_null($provider_discounts_to_tag)) {
+                $cambios['provider_discounts_to_tag'] = $provider_discounts_to_tag;
+                $cambios['provider_discounts_to_tag_provider_id'] = $provider_id_de_la_fila;
+            }
+        }
         $this->terminar('discounts_diff');
 
         $this->iniciar();
@@ -1626,6 +2042,229 @@ class ProcessRow {
         }
 
         // return $cambios;
+    }
+
+    /**
+     * Aplica el criterio de precio de la mision 44 sobre los cambios de una fila que
+     * actualiza un articulo YA EXISTENTE: gana la columna que el articulo ya tenia en
+     * el sistema, y la que trae el Excel se saltea.
+     *
+     * Regla de Lucas (12/8/2026): "que en la importacion de Excel gane la columna que
+     * ya estaba antes. Si ya tenia indicado un margen de ganancia el articulo en el
+     * sistema y en el Excel viene seteado el precio manual, se saltea el precio manual.
+     * Y viceversa."
+     *
+     * | El articulo en el sistema           | El Excel trae    | Que pasa                          |
+     * |-------------------------------------|------------------|-----------------------------------|
+     * | Margen propio (> 0)                 | price            | se saltea price, se registra      |
+     * | Precio manual (> 0)                 | percentage_gain  | se saltea el margen, se registra  |
+     * | Margen del proveedor (con costo)    | price            | se saltea price, se registra      |
+     * | Ninguno de los dos                  | los dos a la vez | gana el margen, se saltea price   |
+     *
+     * El COSTO se evalua post-importacion, no pre: si la misma fila trae cost, el
+     * articulo va a tener costo cuando la importacion termine, asi que el margen del
+     * proveedor si va a ser aplicable. Mismo criterio para provider_id y para
+     * apply_provider_percentage_gain, por si la fila los cambia.
+     *
+     * El margen y el precio del ARTICULO, en cambio, se leen de la base tal cual estan:
+     * son justamente "lo que ya estaba", que es lo que la regla protege.
+     *
+     * @param  \App\Models\Article $articulo_ya_creado modelo completo traido por find_with_index()
+     * @param  array               $data               datos crudos de la fila (para el valor a reportar)
+     * @param  array               $cambios            salida de get_modified_fields()
+     * @return array               los mismos cambios, sin las columnas salteadas
+     */
+    protected function aplicar_criterio_de_precio($articulo_ya_creado, array $data, array $cambios)
+    {
+        /*
+         * Red de seguridad del cero. La normalizacion principal esta arriba, en el armado
+         * de $data (ver procesar()), asi que en el camino normal esto no encuentra nada;
+         * queda por si algun llamador arma $data por su cuenta. Un cero del Excel no es
+         * "traer un valor": es el estado sucio que esta mision elimina.
+         */
+        foreach (['price', 'percentage_gain'] as $campo_numerico) {
+
+            if (
+                array_key_exists($campo_numerico, $cambios)
+                && is_null(CriterioDePrecioHelper::normalizar($cambios[$campo_numerico]))
+            ) {
+                $cambios = $this->descartar_campo_de_cambios($cambios, $campo_numerico);
+            }
+        }
+
+        $trae_price           = array_key_exists('price', $cambios);
+        $trae_percentage_gain = array_key_exists('percentage_gain', $cambios);
+
+        if (!$trae_price && !$trae_percentage_gain) {
+            return $cambios;
+        }
+
+        $id_articulo = isset($articulo_ya_creado->id) ? $articulo_ya_creado->id : null;
+
+        /*
+         * Lo que ya dejo encolado OTRA fila de este mismo Excel para este mismo articulo.
+         *
+         * Sin esto, dos filas que apuntan al mismo articulo (mismo bar_code, o el merge de
+         * "ultima fila gana") evaluaban las dos contra la base: la primera encolaba el
+         * margen, la segunda releia el articulo TODAVIA sin margen -- merge_fila_duplicada()
+         * hace Article::find(), que no ve la cola -- y encolaba el precio. El merge por id
+         * de ActualizarBBDD fusiona las claves de las dos entradas, asi que se escribian las
+         * DOS columnas y setFinalPrice() despues borraba el precio: el updated_props del
+         * historial quedaba diciendo que el precio cambio cuando termino en null, que es
+         * justo lo que este bloque existe para impedir.
+         */
+        $pendiente = ($id_articulo && isset($this->criterio_pendiente_por_articulo[$id_articulo]))
+                        ? $this->criterio_pendiente_por_articulo[$id_articulo]
+                        : [];
+
+        $percentage_gain_actual = array_key_exists('percentage_gain', $pendiente)
+                                    ? $pendiente['percentage_gain']
+                                    : $articulo_ya_creado->percentage_gain;
+
+        $price_actual = array_key_exists('price', $pendiente)
+                            ? $pendiente['price']
+                            : $articulo_ya_creado->price;
+
+        /* Valores que van a quedar DESPUES de aplicar esta fila (y las anteriores del chunk). */
+        $cost_resultante = array_key_exists('cost', $cambios)
+                            ? $cambios['cost']
+                            : (array_key_exists('cost', $pendiente) ? $pendiente['cost'] : $articulo_ya_creado->cost);
+
+        $provider_id_resultante = array_key_exists('provider_id', $cambios)
+                                    ? $cambios['provider_id']
+                                    : $articulo_ya_creado->provider_id;
+
+        $apply_provider_resultante = array_key_exists('apply_provider_percentage_gain', $cambios)
+                                        ? $cambios['apply_provider_percentage_gain']
+                                        : $articulo_ya_creado->apply_provider_percentage_gain;
+
+        $provider = $this->provider_para_criterio($provider_id_resultante);
+
+        $modo = CriterioDePrecioHelper::resolver(
+            $percentage_gain_actual,
+            $price_actual,
+            $cost_resultante,
+            $apply_provider_resultante,
+            is_null($provider) ? null : $provider->percentage_gain
+        );
+
+        /* El articulo ya se maneja por margen: el precio del Excel no se aplica. */
+        if (CriterioDePrecioHelper::es_margen($modo) && $trae_price) {
+            $cambios = $this->saltear_columna_de_precio($cambios, $data, 'price');
+            return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+        }
+
+        /* El articulo ya se maneja por precio manual: el margen del Excel no se aplica. */
+        if ($modo === CriterioDePrecioHelper::PRECIO_MANUAL && $trae_percentage_gain) {
+            $cambios = $this->saltear_columna_de_precio($cambios, $data, 'percentage_gain');
+            return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+        }
+
+        /*
+         * El articulo no tenia ninguno de los dos y el Excel trae los dos. No hay "lo
+         * que ya estaba", asi que la desempata una decision: gana el margen, porque es
+         * lo que setFinalPrice() va a hacer igual (pone price en null cuando hay margen
+         * propio). Registrar lo contrario seria avisarle al usuario algo que el sistema
+         * despues no cumple.
+         */
+        if ($modo === CriterioDePrecioHelper::NINGUNO && $trae_price && $trae_percentage_gain) {
+            $cambios = $this->saltear_columna_de_precio($cambios, $data, 'price');
+            return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+        }
+
+        return $this->recordar_criterio_pendiente($id_articulo, $cambios, $percentage_gain_actual, $price_actual, $cost_resultante);
+    }
+
+    /**
+     * Guarda con que margen, precio y costo va a quedar este articulo despues de aplicar
+     * la fila, para que otra fila del mismo chunk que apunte al MISMO articulo decida con
+     * ese estado y no con el de la base, que a esa altura ya quedo viejo.
+     *
+     * @param  mixed $id_articulo
+     * @param  array $cambios
+     * @param  mixed $percentage_gain_actual margen vigente antes de esta fila
+     * @param  mixed $price_actual           precio vigente antes de esta fila
+     * @param  mixed $cost_resultante        costo que va a quedar
+     * @return array los mismos cambios, sin tocar
+     */
+    protected function recordar_criterio_pendiente($id_articulo, array $cambios, $percentage_gain_actual, $price_actual, $cost_resultante)
+    {
+        if (is_null($id_articulo)) {
+            return $cambios;
+        }
+
+        $this->criterio_pendiente_por_articulo[$id_articulo] = [
+            'percentage_gain' => array_key_exists('percentage_gain', $cambios) ? $cambios['percentage_gain'] : $percentage_gain_actual,
+            'price'           => array_key_exists('price', $cambios) ? $cambios['price'] : $price_actual,
+            'cost'            => $cost_resultante,
+        ];
+
+        return $cambios;
+    }
+
+    /**
+     * Saca del cambio la columna de precio salteada y deja constancia de la fila.
+     *
+     * @param  array  $cambios
+     * @param  array  $data   datos crudos de la fila, de donde sale el valor a reportar
+     * @param  string $campo  'price' | 'percentage_gain'
+     * @return array
+     */
+    protected function saltear_columna_de_precio(array $cambios, array $data, $campo)
+    {
+        $valor_del_excel = array_key_exists($campo, $data)
+                            ? $data[$campo]
+                            : (array_key_exists($campo, $cambios) ? $cambios[$campo] : null);
+
+        $this->registrar_columna_de_precio_ignorada(
+            $this->fila_actual,
+            $campo,
+            $valor_del_excel,
+            isset($data['name']) ? $data['name'] : null
+        );
+
+        return $this->descartar_campo_de_cambios($cambios, $campo);
+    }
+
+    /**
+     * Saca un campo de $cambios junto con su __diff__.
+     *
+     * Los dos tienen que irse juntos: la entrada de $cambios se serializa tal cual en el
+     * updated_props del historial (ArticleImportHelper::guardar_articulos_actualizados()) y
+     * de ahi lo lee el rollback (RollbackArticleImportHistory). Sacar uno sin el otro deja
+     * el historial describiendo un cambio que no ocurrio.
+     *
+     * @param  array  $cambios
+     * @param  string $campo
+     * @return array
+     */
+    protected function descartar_campo_de_cambios(array $cambios, $campo)
+    {
+        unset($cambios[$campo]);
+        unset($cambios['__diff__' . $campo]);
+
+        return $cambios;
+    }
+
+    /**
+     * Proveedor de un articulo, cacheado por provider_id dentro del chunk.
+     *
+     * @param  mixed $provider_id
+     * @return \App\Models\Provider|null
+     */
+    protected function provider_para_criterio($provider_id)
+    {
+        if (is_null($provider_id) || $provider_id === '' || (int) $provider_id === 0) {
+            return null;
+        }
+
+        $key = (int) $provider_id;
+
+        if (!array_key_exists($key, $this->provider_cache_criterio)) {
+            $this->provider_cache_criterio[$key] = Provider::select('id', 'percentage_gain')->find($key);
+        }
+
+        return $this->provider_cache_criterio[$key];
     }
 
     /**
@@ -2112,18 +2751,40 @@ class ProcessRow {
             // Valor nuevo normalizado
             $new = $this->normalize_value_for_comparison($value);
 
+            /*
+             * Prompt 310: celda vacía (normalize_value_for_comparison la deja en null) pero la
+             * columna tiene el flag "permitir_valores_en_blanco" activo para este prop_key.
+             * En ese caso NO se omite: se fuerza blanco/cero explícito.
+             */
+            $forzar_blanco = isset($this->forced_blank_props[$key]);
+
             // Si el modelo no tiene esa propiedad, lo tratamos como virtual
 
             if (!array_key_exists($key, $existing->getAttributes())) {
                 if (!is_null($new)) {
                     $modified[$key] = $new;
-                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);  
-                } 
+                    $this->log('Agregando a la fuerza '.$key.' con el valor: '.$new);
+                }
                 continue;
             }
 
             // Valor viejo normalizado
             $old = $this->normalize_value_for_comparison($existing->$key);
+
+            if (is_null($new) && $forzar_blanco) {
+                // Campos numéricos pasan a 0; el resto (texto) queda en blanco (null).
+                $new = is_numeric($old) ? 0 : null;
+
+                if ($old == $new) continue; // ya estaba en blanco/cero, no hay cambio real
+
+                $modified[$key] = $new;
+                $modified["__diff__{$key}"] = [
+                    'old' => $existing->$key,
+                    'new' => $new,
+                ];
+                continue;
+            }
+
 
             // Si son iguales (tras normalizar), no hay cambio
             if ($old == $new || is_null($new)) continue;
@@ -2615,13 +3276,70 @@ class ProcessRow {
     }
 
 
-    private function obtener_price_types($row, $articulo_ya_creado = null) {
+    /**
+     * Arma las filas de `article_price_type` que le corresponden a esta fila del Excel.
+     *
+     * @param  array                    $row                  Fila del Excel.
+     * @param  \App\Models\Article|null $articulo_ya_creado   Base contra la que se diffean los
+     *                                                        valores. OJO: puede ser un modelo
+     *                                                        NO persistido (ver el call site del
+     *                                                        merge, ~1547).
+     * @param  bool                     $es_articulo_a_crear  true si esta fila termina en un
+     *                                                        articulo NUEVO, aunque venga con
+     *                                                        $articulo_ya_creado cargado.
+     * @return array
+     */
+    private function obtener_price_types($row, $articulo_ya_creado = null, $es_articulo_a_crear = false) {
         // $this->log('obtener_price_types: '.UserHelper::uses_listas_de_precio($this->user));
         $price_types_data = [];
 
+        /*
+         * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026), pedido de Lucas: un
+         * articulo que la importacion CREA tiene que quedar relacionado con TODAS las listas de
+         * la cuenta aunque el Excel no traiga ni una sola columna de lista, con el margen por
+         * defecto de cada lista. Los tres valores del pivot viajan en null y los defaults los
+         * resuelve la capa de abajo: ActualizarBBDD::get_price_type_percetange(),
+         * get_setear_precio_final() y get_incluir_en_excel_para_clientes().
+         *
+         * Antes de esto el `&& $this->se_importaron_price_types` mandaba solo, y ese flag se
+         * prende unicamente si el mapeo trae alguna columna %_<lista>, $_final_<lista> o
+         * setear_precio_final_<lista>. O sea: importar sin hablar de listas dejaba al articulo
+         * nuevo sin ninguna fila en article_price_type. Con la extension `ventas_en_dolares`
+         * eso se veia completo -- CERO listas --, porque el otro camino que relaciona
+         * (ArticlePricesHelper::aplicar_precios_segun_listas_de_precios(), via
+         * ActualizarBBDD::set_precios_finales()) no corre para esas cuentas: setFinalPrice
+         * rutea a ArticlePriceTypeMonedaHelper, que no toca article_price_type en ningun lado.
+         *
+         * 🔴 Ojo con "simplificar" esto de las dos maneras obvias, porque las dos estan mal:
+         *
+         * 1) Sacar $this->se_importaron_price_types y dejar solo uses_listas_de_precio(). Eso le
+         *    mete price_types_data tambien a los articulos YA EXISTENTES, que terminan en el
+         *    UPDATE masivo de ActualizarBBDD::asignar_price_types() y en los diffs de
+         *    track_price_type_relation_diff(). Una importacion que no habla de listas pasaria a
+         *    reescribir los pivots de miles de articulos y a llenar el historial de cambios que
+         *    nadie pidio. El alcance que fijo Lucas es SOLO lo que se crea.
+         *    Lo cubre ListasDePrecioPorDefectoTest::test_los_articulos_que_ya_existian_no_cambian_de_listas.
+         *
+         * 2) Deducir el flag de $articulo_ya_creado (un `if (!$articulo_ya_creado)`) en vez de
+         *    recibirlo. El call site del merge (~1547) le pasa un `new Article($merged)` que NO
+         *    esta persistido: es la base para diffear la fila actual contra lo que ya quedo en
+         *    la cola de creacion. Con la deduccion, esa fila se trataria como articulo existente,
+         *    devolveria [] y ese [] se pisa ENTERO sobre $merged['price_types_data'] -- o sea que
+         *    una segunda fila del mismo codigo le BORRARIA las listas que la primera le habia
+         *    conseguido. Por eso el flag es un parametro explicito.
+         *    Lo cubre ListasDePrecioPorDefectoTest::test_dos_filas_que_crean_el_mismo_articulo_no_duplican_las_listas.
+         *
+         * Y esto no inventa un criterio nuevo: si el usuario mapea UNA sola columna de UNA sola
+         * lista, el foreach de abajo ya recorre TODAS las listas y las que no tienen columna
+         * quedan con los tres valores en null, o sea con el default. El cambio es que "cero
+         * columnas" se comporte igual que "una columna".
+         */
         if (
             UserHelper::uses_listas_de_precio($this->user)
-            && $this->se_importaron_price_types
+            && (
+                $this->se_importaron_price_types
+                || $es_articulo_a_crear
+            )
         ) {
 
             foreach ($this->price_types as $price_type) {
@@ -2735,6 +3453,28 @@ class ProcessRow {
                 'setear_precio_final'   => !is_null($setear) ? $setear : null,
                 'percentage'            => !is_null($percentage) ? $percentage : null,
                 'final_price'           => !is_null($final_price) ? $final_price : null,
+
+                /*
+                 * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). Marca las filas
+                 * que salen del camino nuevo: articulo que se crea y Excel que NO trae ninguna
+                 * columna de lista. Con el flag prendido, ActualizarBBDD::get_setear_precio_final()
+                 * NO propaga el `setear_precio_final` de la lista.
+                 *
+                 * 🔴 Por que, medido el 24/8/2026 y no razonado: propagarlo dejaba el precio de
+                 * esa lista CONGELADO. La secuencia es asignar_price_types() inserta el pivot con
+                 * setear=1 y final_price NULL, despues set_precios_finales() calcula el precio por
+                 * margen y lo escribe en final_price, y a partir de ahi
+                 * ArticlePricesHelper::aplicar_precios_segun_listas_de_precios() (linea ~386) lo
+                 * lee como "precio fijado a mano" y deriva el margen al reves. Al duplicar el
+                 * costo de un articulo importado, la lista con setear=1 quedaba clavada en 169.40
+                 * con margen -30%, mientras la lista sin la bandera pasaba de 157.30 a 314.60.
+                 *
+                 * El punto es que ese precio NO lo fijo nadie a mano: lo calculo el sistema con el
+                 * margen por defecto. Un Excel que no habla de listas no puede estar fijando un
+                 * precio final. Cuando el Excel SI trae columnas de lista, el flag queda en false
+                 * y se propaga el default de la lista, exactamente como antes.
+                 */
+                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_price_types,
             ]
         ];
         return $price_types_data;
@@ -3158,6 +3898,55 @@ class ProcessRow {
     }
 
     /**
+     * Registra que una columna de precio del Excel NO se aplico porque el articulo ya se
+     * maneja por la otra (mision 44, regla de Lucas del 12/8/2026: en la importacion gana
+     * la columna que ya estaba).
+     *
+     * Igual que 'fila_sobrescrita', ESTE tipo NO representa una fila que no se pudo
+     * procesar: la fila se proceso bien y se aplico todo menos esa columna. Por eso NO
+     * suma a conflicts_count (ver ActualizarBBDD::persistir_conflictos()); si sumara,
+     * cualquier Excel con una columna de precio de mas mostraria el aviso de "filas que
+     * no se pudieron procesar", que es un error, y esto no lo es.
+     *
+     * @param  int         $fila         numero de fila (absoluto sobre el archivo) donde se salteo.
+     * @param  string      $campo        'price' o 'percentage_gain': la columna que NO se aplico.
+     * @param  mixed       $valor        valor que traia el Excel en esa columna.
+     * @param  string|null $nombre_excel nombre del producto en esa fila, para ubicarla en el Excel.
+     * @return void
+     */
+    function registrar_columna_de_precio_ignorada($fila, $campo, $valor, $nombre_excel = null): void
+    {
+        /*
+         * Una sola fila del Excel puede pasar por procesar_articulo_ya_creado() VARIAS veces
+         * cuando su provider_code matchea a mas de un articulo (ver el camino de match
+         * multiple), y ahi dejaria N conflictos identicos -- misma fila, misma columna, mismo
+         * valor -- que en el modal se leen como N filas salteadas cuando fue una sola.
+         */
+        foreach ($this->conflictos as $ya_registrado) {
+
+            if (
+                $ya_registrado['tipo'] === 'columna_de_precio_ignorada'
+                && $ya_registrado['fila'] === $fila
+                && $ya_registrado['campo'] === $campo
+            ) {
+                return;
+            }
+        }
+
+        $this->conflictos[] = [
+            'fila'          => $fila,
+            'fila_ganadora' => null,
+            'tipo'          => 'columna_de_precio_ignorada',
+            'campo'         => $campo,
+            'valor'         => is_null($valor) ? null : (string) $valor,
+            'article_ids'   => null,
+            'nombre_excel'  => $nombre_excel,
+        ];
+
+        $this->log('Fila ' . $fila . ': se ignoro la columna ' . $campo . ' ("' . $valor . '") porque el articulo se maneja por la otra');
+    }
+
+    /**
      * Cantidad de filas salteadas por match ambiguo en este chunk.
      */
     function get_filas_ambiguas() {
@@ -3277,6 +4066,103 @@ class ProcessRow {
     public function get_provider_relations_buffer(): array
     {
         return $this->provider_relations_buffer;
+    }
+
+    public function buffer_oferta_de_precio(int $article_id, int $provider_id, array $oferta): void
+    {
+        if (!isset($this->ofertas_de_precio_buffer[$article_id])) {
+            $this->ofertas_de_precio_buffer[$article_id] = [];
+        }
+
+        // Última fila gana (mismo criterio que buffer_provider_relation()).
+        $this->ofertas_de_precio_buffer[$article_id][$provider_id] = $oferta;
+    }
+
+    public function get_ofertas_de_precio_buffer(): array
+    {
+        return $this->ofertas_de_precio_buffer;
+    }
+
+    /**
+     * Vacía el buffer de ofertas de precio (arreglo A15 post-chequeo).
+     *
+     * ArticleImport::guardar_articulos() llama a get_ofertas_de_precio_buffer()
+     * UNA vez por chunk para volcarlo a OfertasDeProveedorService::registrar_lote(),
+     * pero antes de este arreglo nada lo vaciaba después: el buffer seguía creciendo
+     * y, si esta misma instancia procesa más de un chunk, el chunk N termina
+     * re-mandando TODO lo acumulado desde el chunk 1. La deduplicación de
+     * registrar_lote() lo vuelve inocuo a nivel de filas escritas, pero cada chunk
+     * paga una lectura whereIn() cada vez más grande — en una importación de
+     * decenas de miles de filas eso degrada de verdad. Mismo patrón preexistente
+     * de $provider_relations_buffer (tampoco se limpia), pero fuera del alcance de
+     * este arreglo: acá solo se resuelve el buffer que esta misión introdujo.
+     *
+     * @return void
+     */
+    public function limpiar_ofertas_de_precio_buffer(): void
+    {
+        $this->ofertas_de_precio_buffer = [];
+    }
+
+    /**
+     * Registra que ESTE proveedor ofrecía el/los artículo(s) a $data['cost'], en los dos
+     * puntos donde el importador descarta o saltea la fila sin tocar el pivot con ella
+     * (sugerencias de compra). Captura de solo lectura: no decide nada del importador.
+     * Guardas duras: sin provider_id sale; sin cost o cost<=0 sale -- a propósito MÁS
+     * estricta que update_provider_relation() (:1582), que solo chequea
+     * isset($data['cost']) y NO descarta un costo <= 0 (arreglo A10 post-chequeo: el
+     * comentario original citaba :1560 y decía "misma condición", y ninguna de las dos
+     * cosas era cierta); cada id tiene que ser entero > 0, nunca un fake_id; y nunca
+     * lanza (try/catch con Log::warning).
+     *
+     * @param array $article_ids ids reales (int) o strings 'fake_...' a descartar
+     * @param int|null $provider_id
+     * @param array $data fila armada por procesar(): se leen 'cost', 'provider_code' y 'cost_in_dollars'
+     */
+    protected function registrar_oferta_de_otro_proveedor($article_ids, $provider_id, array $data): void
+    {
+        try {
+            // Guardas 1 y 2: sin provider_id, o sin cost / cost <= 0, no hay nada que registrar.
+            if (empty($provider_id) || !isset($data['cost']) || (float) $data['cost'] <= 0 || empty($article_ids)) {
+                return;
+            }
+
+            // Arreglo de bloqueante de merge (15/8/2026): moneda REAL de esta fila, para
+            // que el histórico no la asuma "en pesos" por default. $data['cost_in_dollars']
+            // ya está resuelto acá (se arma en procesar(), antes de los tres call sites de este
+            // método) y sale de la columna "moneda" del
+            // Excel (get_cost_in_dollars(): usd/u$s/dolar/dólar/... = 1, cualquier otra cosa
+            // o columna ausente = 0). Sin esta clave, registrar_lote() completaba con
+            // MONEDA_POR_DEFECTO (1 = Peso) -- el mismo bug que A1 ya había arreglado del
+            // lado de la compra (NewProviderOrderHelper::catalogar_costo_proveedor()), pero
+            // acá sin tocar: una oferta en dólares mal etiquetada como pesos compite en
+            // mejores_ofertas_para() (que solo deja competir moneda_id=1) y le gana a todo
+            // el resto por ~1000x, con el ahorro estimado, el total y la orden de compra
+            // generada arrastrando el mismo desvío.
+            $oferta = [
+                'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
+                'cost'          => $data['cost'],
+                'moneda_id'     => !empty($data['cost_in_dollars']) ? 2 : 1,
+                'origen'        => 'importacion',
+            ];
+
+            foreach ($article_ids as $article_id) {
+                // Guarda 3: nunca un fake_id (artículo todavía sin INSERT en este chunk).
+                if (is_string($article_id) && strncmp($article_id, 'fake_', strlen('fake_')) === 0) {
+                    continue;
+                }
+                $article_id_int = (int) $article_id;
+                if ($article_id_int > 0) {
+                    $this->buffer_oferta_de_precio($article_id_int, (int) $provider_id, $oferta);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Guarda 4: nunca lanza. Un histórico de precios que revienta la importación
+            // sería peor que no tener histórico.
+            Log::warning('ProcessRow: no se pudo registrar oferta de otro proveedor', [
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -3671,10 +4557,23 @@ class ProcessRow {
             }
         }
 
-        // Comparar porcentajes: si la columna está mapeada (no ignorada), siempre comparar aunque esté vacía.
-        // Celda vacía + old con valores → diff con new:[] → dispara el borrado del descuento %.
-        // Si la columna está ignorada se omite para no tocar datos existentes.
-        if (!ImportHelper::isIgnoredColumn('descuentos', $this->columns)) {
+        /*
+         * Prompt 310: Comparar porcentajes solo si corresponde.
+         * - Columna mapeada + celda CON valor: siempre se compara (el Excel manda).
+         * - Columna mapeada + celda VACÍA + flag "permitir_valores_en_blanco" OFF (default):
+         *   se omite la comparación para NO pisar/borrar los descuentos existentes (corrige
+         *   el bug donde una celda vacía borraba los descuentos del artículo).
+         * - Columna mapeada + celda VACÍA + flag ON: se mantiene el comportamiento legado
+         *   (diff con new:[] → dispara el borrado del descuento %, ahora explícito y opcional).
+         * - Columna ignorada: se omite para no tocar datos existentes.
+         */
+        if (
+            !ImportHelper::isIgnoredColumn('descuentos', $this->columns)
+            && (
+                !is_null($discounts_percent_str)
+                || $this->permite_valores_en_blanco('descuentos')
+            )
+        ) {
 
             if ($old_percents != $new_percents) {
                 $diffs[] = [
@@ -3687,9 +4586,14 @@ class ProcessRow {
             }
         }
 
-        // Comparar montos: misma lógica que porcentajes.
-        // Celda vacía + old con valores → diff → borra los montos existentes.
-        if (!ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)) {
+        // Comparar montos: misma lógica que porcentajes (ver comentario arriba).
+        if (
+            !ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns)
+            && (
+                !is_null($discounts_amount_str)
+                || $this->permite_valores_en_blanco('descuentos_montos')
+            )
+        ) {
 
             if ($old_amounts != $new_amounts) {
                 $diffs[] = [
@@ -3703,6 +4607,198 @@ class ProcessRow {
         }
 
         return $diffs;
+    }
+
+    /**
+     * Prompt 307: contraparte de ArticleProviderDiscountHelper::sync_provider_discounts()
+     * (prompt 306) para el import de Excel. En lugar de calcular un diff contra TODOS los
+     * article_discounts (que mezclaría descuentos manuales, tagueados de otros proveedores,
+     * etc.), calcula directamente la lista final de descuentos a "tagear" (overwrite total)
+     * con el `provider_id` de esta fila, para pasarla tal cual a `sync_provider_discounts()`.
+     *
+     * Reglas (ver prompt 307):
+     *  - Sin `provider_id` no se puede tagear nada: se devuelve null y el caller conserva el
+     *    comportamiento legado (descuentos globales, sin proveedor) vía get_discounts_diff().
+     *  - Columna "descuentos" (porcentaje) MAPEADA: manda el valor del Excel (aunque venga
+     *    vacío, lo que intencionalmente limpia los descuentos porcentuales tagueados).
+     *  - Columna "descuentos" NO mapeada: si el proveedor tiene descuentos estándar
+     *    (ProviderDiscount.percentage) se materializan esos, tagueados.
+     *  - Columna "descuentos_montos" solo tiene equivalente en el Excel: no existe un monto
+     *    "estándar" de proveedor (ProviderDiscount no tiene columna amount), así que si esa
+     *    columna no está mapeada simplemente no se agregan montos.
+     *  - Si no hay nada que aportar (ninguna columna mapeada y el proveedor no tiene estándar),
+     *    se devuelve null: no se toca lo que ya estuviera tagueado para este artículo.
+     *  - Prompt 310: columna mapeada + celda VACÍA + flag "permitir_valores_en_blanco" OFF
+     *    (default): en lugar de limpiar, se preservan los items ya tagueados (percentage o
+     *    amount, según corresponda) leídos de `$existing_article`. Con el flag ON se mantiene
+     *    el comportamiento legado (celda vacía → sin items → borrado).
+     *
+     * @param  array                     $row              Fila del Excel en proceso.
+     * @param  int|null                  $provider_id      Proveedor de esta fila (columna o el fijo del import).
+     * @param  \App\Models\Article|null  $existing_article Artículo ya persistido (si existe) para
+     *                                                      preservar sus descuentos tagueados cuando
+     *                                                      corresponda. Null si el artículo es nuevo.
+     * @return array|null             Lista de items ['percentage'=>x] / ['amount'=>x] a pasar
+     *                                 a sync_provider_discounts(), o null si no corresponde tocar nada.
+     */
+    private function get_provider_discounts_to_tag($row, $provider_id, $existing_article = null)
+    {
+        // Nunca se tagea un descuento sin proveedor conocido (misma regla que
+        // ArticleProviderDiscountHelper::sync_provider_discounts).
+        if (empty($provider_id)) {
+            return null;
+        }
+
+        $col_percent_ignorada = ImportHelper::isIgnoredColumn('descuentos', $this->columns);
+        $col_amount_ignorada  = ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns);
+
+        // El estándar del proveedor solo aplica cuando la columna de % NO está mapeada:
+        // la columna del Excel siempre manda por sobre el estándar.
+        $estandar_percentages = $col_percent_ignorada
+            ? $this->get_provider_standard_discount_percentages($provider_id)
+            : [];
+
+        // Nada mapeado y sin estándar: no hay nada que tagear, se deja intacto lo existente.
+        if ($col_percent_ignorada && $col_amount_ignorada && empty($estandar_percentages)) {
+            return null;
+        }
+
+        $items = [];
+
+        if (!$col_percent_ignorada) {
+
+            $discounts_percent_str = ImportHelper::getColumnValue($row, 'descuentos', $this->columns);
+
+            if (
+                is_null($discounts_percent_str)
+                && !$this->permite_valores_en_blanco('descuentos')
+            ) {
+                // Prompt 310: celda vacía + flag OFF -> se preserva lo tagueado existente
+                // (sync_provider_discounts sobreescribe TODO, por eso hay que traerlo explícito).
+                foreach ($this->get_tagged_discount_percentages($existing_article) as $percentage) {
+                    $items[] = ['percentage' => $percentage];
+                }
+            } else if ($discounts_percent_str) {
+
+                $new_percents = array_filter(array_map(function ($chunk) {
+                    return self::get_number_forgiving($chunk);
+                }, explode('_', $discounts_percent_str)));
+
+                foreach ($new_percents as $percentage) {
+                    $items[] = ['percentage' => $percentage];
+                }
+            }
+            // discounts_percent_str vacío + flag ON -> no agrega nada -> borra (comportamiento legado).
+
+        } else {
+
+            // Columna no mapeada: se materializa el estándar del proveedor (si tiene).
+            foreach ($estandar_percentages as $percentage) {
+                $items[] = ['percentage' => $percentage];
+            }
+        }
+
+        if (!$col_amount_ignorada) {
+
+            $discounts_amount_str = ImportHelper::getColumnValue($row, 'descuentos_montos', $this->columns);
+
+            if (
+                is_null($discounts_amount_str)
+                && !$this->permite_valores_en_blanco('descuentos_montos')
+            ) {
+                foreach ($this->get_tagged_discount_amounts($existing_article) as $amount) {
+                    $items[] = ['amount' => $amount];
+                }
+            } else if ($discounts_amount_str) {
+
+                $new_amounts = array_filter(array_map(function ($chunk) {
+                    return self::get_number_forgiving($chunk);
+                }, explode('_', $discounts_amount_str)));
+
+                foreach ($new_amounts as $amount) {
+                    $items[] = ['amount' => $amount];
+                }
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * Prompt 310: porcentajes de descuentos ya "tagueados" (con provider_id, de cualquier
+     * proveedor) para un artículo persistido. Se usa para preservarlos cuando la celda de
+     * "descuentos" vino vacía y el flag "permitir_valores_en_blanco" está en false.
+     *
+     * @param  \App\Models\Article|null $article  Artículo a consultar; null o sin id -> sin datos.
+     * @return array<float>
+     */
+    private function get_tagged_discount_percentages($article): array
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return [];
+        }
+
+        return \App\Models\ArticleDiscount::where('article_id', $article->id)
+            ->whereNotNull('provider_id')
+            ->whereNotNull('percentage')
+            ->pluck('percentage')
+            ->map(function ($p) {
+                return (float) $p;
+            })
+            ->all();
+    }
+
+    /**
+     * Prompt 310: montos de descuentos ya "tagueados" para un artículo persistido.
+     * Misma finalidad que get_tagged_discount_percentages() pero para la columna "descuentos_montos".
+     *
+     * @param  \App\Models\Article|null $article  Artículo a consultar; null o sin id -> sin datos.
+     * @return array<float>
+     */
+    private function get_tagged_discount_amounts($article): array
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return [];
+        }
+
+        return \App\Models\ArticleDiscount::where('article_id', $article->id)
+            ->whereNotNull('provider_id')
+            ->whereNotNull('amount')
+            ->pluck('amount')
+            ->map(function ($a) {
+                return (float) $a;
+            })
+            ->all();
+    }
+
+    /**
+     * Devuelve los porcentajes estándar (ProviderDiscount.percentage) de un proveedor,
+     * cacheados en memoria por provider_id para no repetir la consulta en cada fila del Excel.
+     *
+     * @param  int $provider_id
+     * @return array<float>
+     */
+    private function get_provider_standard_discount_percentages($provider_id)
+    {
+        if (isset($this->provider_standard_discounts_cache[$provider_id])) {
+            return $this->provider_standard_discounts_cache[$provider_id];
+        }
+
+        $percentages = \App\Models\ProviderDiscount::where('provider_id', $provider_id)
+            ->whereNotNull('percentage')
+            ->pluck('percentage')
+            ->map(function ($p) {
+                return (float) $p;
+            })
+            ->filter(function ($p) {
+                return $p != 0;
+            })
+            ->values()
+            ->all();
+
+        $this->provider_standard_discounts_cache[$provider_id] = $percentages;
+
+        return $percentages;
     }
 
     private function get_surchages_diff($article, $row)
@@ -3794,8 +4890,16 @@ class ProcessRow {
             }
         }
 
+        /*
+         * Prompt 310: mismo criterio que get_discounts_diff(). Columna mapeada + celda vacía +
+         * flag "permitir_valores_en_blanco" OFF (default) -> se omite la comparación para no
+         * borrar los recargos existentes. Flag ON -> comportamiento legado (borra).
+         */
         // 🔹 3. Comparar porcentajes
-        if (!$this->compare_surchages_arrays($old_percents, $new_percents)) {
+        if (
+            (!is_null($surchages_percent_str) || $this->permite_valores_en_blanco('recargos'))
+            && !$this->compare_surchages_arrays($old_percents, $new_percents)
+        ) {
             $diffs[] = [
                 'type' => '%',
                 '__diff__surchages_percent' => [
@@ -3806,7 +4910,10 @@ class ProcessRow {
         }
 
         // 🔹 4. Comparar montos
-        if (!$this->compare_surchages_arrays($old_amounts, $new_amounts)) {
+        if (
+            (!is_null($surchages_amount_str) || $this->permite_valores_en_blanco('recargos_montos'))
+            && !$this->compare_surchages_arrays($old_amounts, $new_amounts)
+        ) {
             $diffs[] = [
                 'type' => 'amount',
                 '__diff__surchages_amount' => [

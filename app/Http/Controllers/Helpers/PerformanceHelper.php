@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Exports\ArticleSalesExport;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\contabilidad\EstadoResultadosHelper;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\Reportes\ClientesPdf;
@@ -939,6 +940,27 @@ class PerformanceHelper
         $this->company_performance->total_gastos_usd = $this->total_gastos_usd;
 
         $this->company_performance->cantidad_ventas = $this->cantidad_ventas;
+
+        // Snapshot aditivo del Estado de Resultados nuevo (Grupo 225 · Prompt 01). Se guarda ADEMÁS
+        // de todo lo de arriba, nunca en reemplazo: la escritura vieja de este método no se toca.
+        // 'consolidado' es seguro pedirlo siempre: EstadoResultadosHelper cae solo a 'pesos' cuando
+        // el usuario no tiene activa la extensión de ventas en dólares (ver
+        // EstadoResultadosHelper::estado_resultados()).
+        //
+        // Envuelto en try/catch a propósito: si algo falla acá (owner recién creado sin datos,
+        // etc.), el snapshot nuevo queda null pero el resto del reporte viejo (todo lo asignado
+        // arriba en este método) se guarda igual — un fallo en la estructura nueva no puede tumbar
+        // el cron que sostiene la pantalla vieja.
+        try {
+            $this->company_performance->estado_resultados_snapshot = EstadoResultadosHelper::estado_resultados(
+                $this->user_id,
+                $this->mes_inicio->format('Y-m-d'),
+                $this->mes_fin->format('Y-m-d'),
+                'consolidado'
+            );
+        } catch (\Throwable $e) {
+            Log::info('No se pudo calcular estado_resultados_snapshot: '.$e->getMessage());
+        }
 
         $this->company_performance->save();
     }

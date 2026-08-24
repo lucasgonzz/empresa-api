@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PdfColumnProfile;
 use App\Services\PdfColumnService;
 use fpdf;
+use Illuminate\Support\Facades\Log;
 
 require __DIR__.'/../CommonLaravel/fpdf/fpdf.php';
 
@@ -149,8 +150,15 @@ class ArticleTablePdf extends fpdf
         /** Posición Y inferior del contenido de tabla en la página actual. */
         $this->page_table_bottom_y = null;
 
+        /** Cantidad de imágenes que se descartaron en este documento (ver log_discarded_images). */
+        $this->discarded_images_count = 0;
+
+        /** Si ya se logueó la primera ruta descartada: el detalle se escribe una sola vez por documento. */
+        $this->first_discarded_image_logged = false;
+
         $this->AddPage();
         $this->print_items();
+        $this->log_discarded_images();
         $this->Output();
         exit;
     }
@@ -412,7 +420,7 @@ class ArticleTablePdf extends fpdf
         $this->page_table_bottom_y = null;
 
         // Imagen de cabecera configurada en el perfil (opcional)
-        if ($this->header_image_fpdf_path && file_exists($this->header_image_fpdf_path)) {
+        if ($this->header_image_fpdf_path && is_file($this->header_image_fpdf_path)) {
             try {
                 $header_dims = $this->get_header_image_dimensions_mm();
                 if ($header_dims) {
@@ -557,7 +565,7 @@ class ArticleTablePdf extends fpdf
      */
     private function get_header_image_dimensions_mm()
     {
-        if (! $this->header_image_fpdf_path || ! file_exists($this->header_image_fpdf_path)) {
+        if (! $this->header_image_fpdf_path || ! is_file($this->header_image_fpdf_path)) {
             return null;
         }
 
@@ -745,7 +753,7 @@ class ArticleTablePdf extends fpdf
 
             if (PdfColumnService::is_article_image_column($column['value_resolver'])) {
                 // La imagen ocupa ancho × ancho como cuadrado; la fila crece si es mayor
-                if ($article_image_fpdf_path && file_exists($article_image_fpdf_path) && $width > $row_height) {
+                if ($this->tiene_imagen_dibujable($article_image_fpdf_path) && $width > $row_height) {
                     $row_height = $width;
                 }
                 continue;
@@ -787,16 +795,73 @@ class ArticleTablePdf extends fpdf
             return;
         }
 
-        if ($image_path && file_exists($image_path)) {
+        if ($this->tiene_imagen_dibujable($image_path)) {
             /** La imagen se dibuja cuadrada usando el menor valor entre ancho y alto de fila. */
             $image_height = min($width, $row_height);
             try {
                 $this->Image($image_path, $x, $y, $width, $image_height);
             } catch (\Exception $e) {
-                // Si FPDF no puede procesar la imagen, la celda queda en blanco.
+                // La celda queda en blanco, pero ya no en silencio: ese catch mudo es lo que
+                // hizo que el bug de los JPG invisibles viviera meses sin que nadie lo viera.
+                $this->count_discarded_image($image_path, 'FPDF no pudo dibujarla: '.$e->getMessage());
             }
+        } else if (! empty($image_path)) {
+            $this->count_discarded_image($image_path, 'la ruta no es un archivo local');
         }
         // Si no hay imagen: la celda ya tiene fondo pintado por Rect, no hace falta nada más.
+    }
+
+    /**
+     * ¿Esta ruta se puede dibujar? No vacía y archivo local de verdad.
+     *
+     * Existe porque el alto de la fila (calculate_row_height) y el dibujo de la celda
+     * (print_article_first_image_cell) tienen que tomar EXACTAMENTE la misma decisión, y
+     * hasta ahora la condición estaba escrita dos veces por separado: coincidían de
+     * casualidad, y el día que alguien tocara una sola, la fila iba a reservar alto para
+     * una imagen que no se dibuja (o al revés).
+     *
+     * is_file() y no file_exists() porque file_exists() dice true para un directorio, y un
+     * directorio hace reventar a FPDF.
+     *
+     * @param  string|null  $image_path
+     * @return bool
+     */
+    private function tiene_imagen_dibujable($image_path)
+    {
+        return ! empty($image_path) && is_file($image_path);
+    }
+
+    /**
+     * Registra que una imagen se descartó. Loguea el detalle de la PRIMERA nomás:
+     * un catálogo de 800 artículos sin imágenes no puede escribir 800 líneas por PDF.
+     *
+     * @param  string  $image_path
+     * @param  string  $motivo
+     * @return void
+     */
+    private function count_discarded_image($image_path, $motivo)
+    {
+        $this->discarded_images_count++;
+
+        if (! $this->first_discarded_image_logged) {
+            $this->first_discarded_image_logged = true;
+            Log::info('ArticleTablePdf: imagen descartada '.$image_path.' ('.$motivo.')');
+        }
+    }
+
+    /**
+     * Total de imágenes descartadas al cerrar el documento. Si no se descartó ninguna,
+     * no escribe nada: el log solo habla cuando hay algo que mirar.
+     *
+     * @return void
+     */
+    private function log_discarded_images()
+    {
+        if ($this->discarded_images_count === 0) {
+            return;
+        }
+
+        Log::info('ArticleTablePdf: '.$this->discarded_images_count.' imagenes descartadas de '.count($this->articles).' articulos');
     }
 
     // ── Valor de celda ────────────────────────────────────────────────────────

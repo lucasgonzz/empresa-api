@@ -35,6 +35,21 @@ class ArticlesPreImportController extends Controller
 
     function updateArticles(Request $request) {
         $articulos_actualizados = 0;
+
+        /*
+         * 🔴 Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): el pre-import NO descompone, y
+         * es a propósito.
+         *
+         * `costo_nuevo` sale de una fila que ya pasó por ProcessRow, que dejó el costo en NETO si la
+         * planilla declaró que venía con IVA. Sacarle el IVA otra vez acá sería un segundo back-out
+         * sobre el mismo número, y el costo caería un 21% dos veces.
+         *
+         * Una versión anterior de esta misión sí descomponía acá, y quedó declarada en el informe
+         * como "bomba de tiempo": no explotaba sólo porque el único llamador de add_article() es
+         * código muerto. Esta versión la cierra por diseño — el que declara si un número es bruto o
+         * neto es el que lo carga, y el pre-import no carga nada: recibe algo ya resuelto.
+         */
+
         foreach ($request->articles_id as $article_id) {
 
             $article = Article::find($article_id);
@@ -43,6 +58,7 @@ class ArticlesPreImportController extends Controller
                                                 ->first();
 
             $article->cost = $pivot->costo_nuevo;
+
             $article->save();
             ArticleHelper::setFinalPrice($article);
 

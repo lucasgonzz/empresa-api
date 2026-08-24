@@ -8,12 +8,22 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
+use App\Http\Controllers\Pdf\Puntos\PuntosComprobanteHelper;
 use App\Models\AfipInformation;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
+
+	/*
+	 * Cache de los renglones de puntos del ticket. Se declara e inicializa en null ACA, y no
+	 * se lee con isset(), porque leer una propiedad dinamica de $this antes de su primera
+	 * asignacion es la familia de error que rompio produccion el 4/8/2026 con total_bruto en
+	 * NewSalePdf. tests/Unit/Pdf/PropiedadesDePdfInicializadasTest la vigila.
+	 */
+	public $puntos_renglones = null;
 
 	function __construct($sale, $afip_ticket = null) {
 		$this->line_height = 5;
@@ -33,9 +43,6 @@ class SaleTicketPdf extends fpdf {
 		// Clamp geometrico: evita que tamaños extremos rompan el layout del ticket angosto
 		$this->name_font_size = max(8, min(16, $name_size));
 		$this->price_font_size = max(8, min(14, $price_size));
-		// Flag de logo a todo el ancho (default apagado = comportamiento actual sin cambios)
-		$this->logo_full_width = (bool) $this->user->sale_ticket_logo_full_width;
-
 		parent::__construct('P', 'mm', [$this->ancho, $this->getPdfHeight()]);
 		$this->SetAutoPageBreak(false);
 		$this->b = 0;
@@ -99,16 +106,31 @@ class SaleTicketPdf extends fpdf {
 	}
 
 	function clientInfo() {
+
+		// Sin cliente y sin factura no hay nada que mostrar en esta seccion (comportamiento historico).
+		if (!$this->sale->client && !$this->afip_ticket) {
+			return;
+		}
+
 		$this->x = $this->x_incial;
-		$this->SetFont('Arial', '', 10);
+		$this->SetFont('Arial', 'B', 8);
+		$this->Cell($this->cell_ancho, 4, 'CLIENTE', $this->b, 1, 'L');
+
 		if ($this->sale->client) {
-			$this->Cell($this->cell_ancho, 5, 'Cliente: '.$this->sale->client->name, $this->b, 1, 'L');
+			$this->x = $this->x_incial;
+			$this->SetFont('Arial', '', 10);
+			$this->Cell($this->cell_ancho, 5, $this->sale->client->name, $this->b, 1, 'L');
 
 			if (!is_null($this->sale->client->address)) {
 				$this->x = $this->x_incial;
+				$this->SetFont('Arial', '', 9);
+				$this->MultiCell($this->cell_ancho, 5, $this->sale->client->address, $this->b, 'L', 0);
+			}
 
-				// $this->Cell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 1, 'L');
-				$this->MultiCell($this->cell_ancho, 5, 'Direccion: '.$this->sale->client->address, $this->b, 'L', 0);
+			if (!is_null($this->sale->client->phone) && $this->sale->client->phone != '') {
+				$this->x = $this->x_incial;
+				$this->SetFont('Arial', '', 9);
+				$this->Cell($this->cell_ancho, 5, 'Tel: '.$this->sale->client->phone, $this->b, 1, 'L');
 			}
 
 			if (
@@ -116,12 +138,19 @@ class SaleTicketPdf extends fpdf {
 				&& $this->afip_ticket->iva_cliente != ''
 			) {
 				$this->x = $this->x_incial;
+				$this->SetFont('Arial', '', 9);
 				$this->Cell($this->cell_ancho, 5, 'IVA '.$this->afip_ticket->iva_cliente, $this->b, 1, 'L');
-			} 
+			}
 
-		} else if (is_null($this->sale->client) && $this->afip_ticket) {
-			$this->Cell($this->cell_ancho, 5, 'Cliente: Consumidor final', $this->b, 1, 'L');
+		} else {
+			$this->x = $this->x_incial;
+			$this->SetFont('Arial', '', 10);
+			$this->Cell($this->cell_ancho, 5, 'Consumidor final', $this->b, 1, 'L');
 		}
+
+		$this->y += 1;
+		$this->dividerLine();
+		$this->y += 2;
 	}
 
 	function getCaeExpiredAt() {
@@ -142,9 +171,18 @@ class SaleTicketPdf extends fpdf {
 
 		$this->surchages();
 
+		/*
+		 * El canje va DESPUES de los descuentos/recargos porcentuales y ANTES de los descuentos
+		 * por medio de pago, que es el orden con el que el front arma el total
+		 * (vender_set_total.js: total = bruto - descuentos - descuento_puntos - medio de pago).
+		 */
+		$this->canje_de_puntos();
+
 		$this->payment_method_discounts();
 
 		$this->total();
+
+		$this->puntos_del_cliente();
 
 		$this->ticket_description();
 		
@@ -168,103 +206,34 @@ class SaleTicketPdf extends fpdf {
 		}
 	}
 
-	function logo() {
-
-		// Rama nueva: logo a todo el ancho, con la info de la empresa DEBAJO (opcional, segun config del usuario)
-		if ($this->logo_full_width) {
-			$this->logoFullWidth();
-			return;
-		}
-
-        // Logo (comportamiento default, EXACTO al historico: logo a la mitad izquierda, info a la derecha)
-        $image_width = $this->ancho / 2;
-
-        // $image_width -= 4;
-
-        if (!is_null($this->user->image_url)) {
-        	if (config('app.APP_ENV') == 'local') {
-        		$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', 0, 0, $image_width, $image_width);
-        	} else {
-	        	$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $image_width, $image_width);
-        	}
-        }
-
-        // Company name
-		$this->SetFont('Arial', 'B', 12);
-
-		$ancho_cell = $image_width - ($this->x_incial * 2);
-		$x_incial_logo = $image_width + $this->x_incial;
-
-		$this->x = $x_incial_logo;
-		$this->y = 5;
-
-		$this->MultiCell($ancho_cell, 7, $this->user->company_name, $this->b, 'L', 0);
-
-		$domicilio = null;
-		if (
-			$this->afip_ticket
-			&& !is_null($this->afip_ticket->afip_information)
-		) {
-			$domicilio = $this->afip_ticket->afip_information->domicilio_comercial;
-		} else {
-			$punto_venta = AfipInformation::where('user_id', $this->user->id)
-										->first();
-
-			if ($punto_venta) {
-				$domicilio = $punto_venta->domicilio_comercial;
-			}
-		}
-
-		$this->SetFont('Arial', '', 10);
-		if ($domicilio) {
-
-			$this->x = $x_incial_logo;
-			$this->MultiCell($ancho_cell, 7, $domicilio, $this->b, 'L', 0);
-		}
-
-		$phone = $this->user->phone;
-		if (
-			$this->sale->address
-			&& $this->sale->address->phone
-		) {
-			$phone = $this->sale->address->phone;
-		}
-
-		$this->x = $x_incial_logo;
-		$this->Cell($ancho_cell, 7, 'Tel: '.$phone, $this->b, 1, 'L');
-
-
-		$this->y = $ancho_cell;
-		$this->y += 15;
-	}
-
 	/**
-	 * Header alternativo con el logo ocupando todo el ancho del ticket.
-	 * La info de la empresa (nombre, domicilio, telefono) se dibuja DEBAJO del logo,
-	 * en lugar de al costado como en el layout default.
+	 * Header del ticket: el logo ocupa toda la primera fila, al 60% del ancho util y
+	 * centrado horizontalmente. La info del negocio (nombre, domicilio, telefono) va
+	 * debajo, centrada, y una linea fina cierra la seccion antes de los datos AFIP/cliente.
 	 * @return void
 	 */
-	function logoFullWidth() {
-		// Ancho del logo: todo el ancho util del ticket (igual que las celdas de items)
-		$logo_w = $this->cell_ancho;
-		// Alto proporcional del logo, calculado con el mismo helper que usa getPdfHeight()
-		$logo_h = $this->getLogoFullWidthHeight();
+	function logo() {
+		$logo_w = $this->cell_ancho * 0.6;
+		$logo_h = $this->getLogoHeight($logo_w);
+		$logo_x = $this->x_incial + ($this->cell_ancho - $logo_w) / 2;
 
-		if (!is_null($this->user->image_url)) {
+		// Logo de la sucursal de la venta, con caida al del negocio (tarea 17).
+		$logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
+		if (!is_null($logo_url)) {
 			if (config('app.APP_ENV') == 'local') {
-				// En local se mantiene el placeholder de freepik, igual que en el layout default
-				$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', $this->x_incial, $this->x_incial, $logo_w, $logo_h);
+				$this->Image('https://img.freepik.com/vector-gratis/fondo-plantilla-logo_1390-55.jpg', $logo_x, $this->x_incial, $logo_w, $logo_h);
 			} else {
-				$this->Image($this->user->image_url, $this->x_incial, $this->x_incial, $logo_w, $logo_h);
+				$this->Image($logo_url, $logo_x, $this->x_incial, $logo_w, $logo_h);
 			}
+			$this->y = $this->x_incial + $logo_h + 3;
+		} else {
+			$this->y = $this->x_incial;
 		}
 
-		// La info de la empresa arranca debajo del logo (no al costado, como en el layout default)
-		$this->y = $this->x_incial + $logo_h + 3;
-
-		$this->SetFont('Arial', 'B', 12);
+		$this->SetFont('Arial', 'B', 13);
 		$this->x = $this->x_incial;
-		$this->MultiCell($this->cell_ancho, 7, $this->user->company_name, $this->b, 'L', 0);
+		$this->MultiCell($this->cell_ancho, 6, $this->user->company_name, $this->b, 'C', 0);
 
 		$domicilio = null;
 		if (
@@ -281,10 +250,10 @@ class SaleTicketPdf extends fpdf {
 			}
 		}
 
-		$this->SetFont('Arial', '', 10);
+		$this->SetFont('Arial', '', 9);
 		if ($domicilio) {
 			$this->x = $this->x_incial;
-			$this->MultiCell($this->cell_ancho, 7, $domicilio, $this->b, 'L', 0);
+			$this->MultiCell($this->cell_ancho, 5, $domicilio, $this->b, 'C', 0);
 		}
 
 		$phone = $this->user->phone;
@@ -296,30 +265,31 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		$this->x = $this->x_incial;
-		$this->Cell($this->cell_ancho, 7, 'Tel: '.$phone, $this->b, 1, 'L');
+		$this->SetFont('Arial', '', 9);
+		$this->Cell($this->cell_ancho, 5, 'Tel: '.$phone, $this->b, 1, 'C');
 
-		// Nota: a diferencia del layout default, aca NO se pisa $this->y con "$this->y = $ancho_cell;"
-		// porque la info ya quedo posicionada correctamente por los MultiCell/Cell de arriba.
-		$this->y += 5;
+		$this->y += 2;
+		$this->dividerLine();
+		$this->y += 2;
 	}
 
 	/**
-	 * Calcula el alto (en mm) que va a ocupar el logo cuando esta activo el modo "full width".
-	 * Usa getimagesize() sobre la imagen del usuario para mantener la proporcion real;
-	 * si falla (URL no accesible, formato invalido, etc.) cae a un fallback cuadrado
-	 * para no romper ni el render ni el calculo de altura del PDF (getPdfHeight).
-	 * Se reutiliza tanto en logoFullWidth() como en getPdfHeight().
+	 * Calcula el alto (en mm) que va a ocupar el logo, manteniendo su proporcion real.
+	 * Usa getimagesize() sobre la imagen resuelta; si falla (URL no accesible, formato
+	 * invalido, etc.) cae a un fallback cuadrado para no romper ni el render ni el
+	 * calculo de altura del PDF (getPdfHeight).
+	 * @param float $logo_w ancho en mm que va a ocupar el logo
 	 * @return float alto estimado del logo en mm
 	 */
-	function getLogoFullWidthHeight() {
-		$logo_w = $this->cell_ancho;
-
+	function getLogoHeight($logo_w) {
 		// Fallback por default: logo cuadrado, igual que el comportamiento historico
 		$logo_h = $logo_w;
 
-		if (!is_null($this->user->image_url) && config('app.APP_ENV') != 'local') {
+		$logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
+		if (!is_null($logo_url) && config('app.APP_ENV') != 'local') {
 			// @ para no romper el render si la imagen remota no esta disponible
-			$dim = @getimagesize($this->user->image_url);
+			$dim = @getimagesize($logo_url);
 
 			if ($dim && !empty($dim[0]) && !empty($dim[1])) {
 				$logo_h = $logo_w * $dim[1] / $dim[0];
@@ -327,6 +297,18 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		return $logo_h;
+	}
+
+	/**
+	 * Linea fina de separacion entre secciones del ticket (header, cliente, items),
+	 * usando el mismo ancho util que el resto del contenido.
+	 * @return void
+	 */
+	function dividerLine() {
+		$this->SetLineWidth(.2);
+		$this->SetDrawColor(200, 200, 200);
+		$this->Line($this->x_incial, $this->y, $this->x_incial + $this->cell_ancho, $this->y);
+		$this->SetDrawColor(0, 0, 0);
 	}
 
 	function items() {
@@ -447,11 +429,11 @@ class SaleTicketPdf extends fpdf {
 	function itemsHeader($ancho_description, $ancho_price) {
 		// Tamaño de fuente del encabezado: el de precio, pero acotado a 9 para que no compita visualmente con los items
 		$this->SetFont('Arial', 'B', min($this->price_font_size, 9));
-		// Fondo gris claro + borde inferior para dar un divisor sutil entre encabezado e items
-		$this->SetFillColor(240, 240, 240);
+		// Fondo gris claro + borde arriba y abajo, a modo de banda de encabezado
+		$this->SetFillColor(235, 235, 235);
 
 		$this->x = $this->x_incial;
-		$this->Cell($ancho_description, $this->line_height, 'Producto', 'B', 0, 'L', 1);
+		$this->Cell($ancho_description, $this->line_height, 'Producto', 'TB', 0, 'L', 1);
 
 		// Forzar posicionamiento absoluto de x antes de las celdas de precio/total, igual que hacen
 		// los 3 loops de items() (articles, promocion_vinotecas, services), para que el encabezado
@@ -459,10 +441,10 @@ class SaleTicketPdf extends fpdf {
 		$this->x = $ancho_description + 2;
 
 		if ($this->ancho > 60) {
-			$this->Cell($ancho_price, $this->line_height, 'Precio', 'B', 0, 'R', 1);
+			$this->Cell($ancho_price, $this->line_height, 'Precio', 'TB', 0, 'R', 1);
 		}
 
-		$this->Cell($ancho_price, $this->line_height, 'Total', 'B', 1, 'R', 1);
+		$this->Cell($ancho_price, $this->line_height, 'Total', 'TB', 1, 'R', 1);
 
 		// Restaurar color de relleno y texto normal para que no afecte al resto del render
 		$this->SetFillColor(255, 255, 255);
@@ -489,8 +471,17 @@ class SaleTicketPdf extends fpdf {
 		}
 	}
 
+	/*
+	 * El canje de puntos entra en esta condicion junto con los descuentos y los recargos: es
+	 * otra cosa que separa el sub total del total, y sin este renglon el ticket arrancaria
+	 * directo en "Canje 500 pts $116.000" sin decir nunca de cuanto se partia.
+	 */
 	function total_sin_des_rec() {
-		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1) {
+		if (
+			count($this->sale->discounts) >= 1
+			|| count($this->sale->surchages) >= 1
+			|| PuntosComprobanteHelper::tiene_canje($this->sale)
+		) {
 		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', 'B', 10);
 			$this->Cell($this->cell_ancho, 7, 'Total $'.Numbers::price($this->total_sale), 'B', 1, 'R');
@@ -519,6 +510,78 @@ class SaleTicketPdf extends fpdf {
 	    }
 	}
 
+	/**
+	 * El renglon del canje de puntos, con el mismo formato que los descuentos por medio de pago.
+	 *
+	 * 🔴 Resta de $this->total_sale igual que payment_method_discounts(), y eso es lo que hace
+	 * que el ticket CIERRE: total() compara $this->sale->total contra $this->total_sale para
+	 * decidir si imprime "Total sin descuentos". Sin esta resta, una venta con canje imprimia
+	 * un "Total sin descuentos: $121.000" y abajo un "TOTAL: $116.000" con $5.000 de diferencia
+	 * que el papel no explicaba por ningun lado.
+	 *
+	 * @return void
+	 */
+	function canje_de_puntos() {
+
+		$texto = PuntosComprobanteHelper::renglon_descuento_corto($this->sale);
+
+		if (is_null($texto)) {
+			return;
+		}
+
+		$this->total_sale -= PuntosComprobanteHelper::descuento_del_canje($this->sale);
+
+		$this->SetFont('Arial', 'B', 10);
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho / 2, 7, $texto, 'B', 0, 'L');
+		$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
+	}
+
+	/**
+	 * Los puntos que el cliente sumo con esta compra y los que tiene acumulados.
+	 *
+	 * Va DESPUES de la banda del total: es informacion para el cliente, no un renglon de la
+	 * cuenta. El texto lo decide PuntosComprobanteHelper, que es el que sabe que en una venta
+	 * de cuenta corriente todavia impaga los puntos no existen y no se pueden prometer.
+	 *
+	 * @return void
+	 */
+	function puntos_del_cliente() {
+
+		$renglones = $this->get_puntos_renglones();
+
+		if (!count($renglones)) {
+			return;
+		}
+
+		$this->y += 2;
+		$this->SetFont('Arial', '', 9);
+
+		foreach ($renglones as $renglon) {
+			$this->x = $this->x_incial;
+			$this->MultiCell($this->cell_ancho, 4, $renglon, 0, 'C', 0);
+		}
+	}
+
+	/**
+	 * Los renglones de puntos, calculados una sola vez: getPdfHeight() los necesita para
+	 * reservar el alto del ticket ANTES de dibujar, y detras hay dos consultas.
+	 *
+	 * @return array
+	 */
+	function get_puntos_renglones() {
+
+		if (is_null($this->puntos_renglones)) {
+			/*
+			 * $this->user viene de UserHelper::getFullModel() (el comercio de la sesion). El
+			 * helper lo acepta solo si coincide con sales.user_id; si no, resuelve por la venta.
+			 */
+			$this->puntos_renglones = PuntosComprobanteHelper::renglones_puntos($this->sale, $this->user);
+		}
+
+		return $this->puntos_renglones;
+	}
+
 	function surchages() {
 	    $this->SetFont('Arial', 'B', 10);
 	    foreach ($this->sale->surchages as $surchage) {
@@ -537,22 +600,25 @@ class SaleTicketPdf extends fpdf {
 
 			$total_sale = $this->sale->total;
 		}
-		   
+
 		if (!is_null($this->sale->total) && (int)$this->sale->total != (int)$this->total_sale) {
 
-			$this->SetFont('Arial', 'B', 10);
+			$this->SetFont('Arial', '', 9);
 		    $this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 10, 'Total sin descuentos: $'. Numbers::price($this->total_sale), 0, 0, 'L');
-			$this->y += 10;
+			$this->Cell($this->cell_ancho, 6, 'Total sin descuentos: $'. Numbers::price($this->total_sale), 0, 1, 'R');
 		}
 
 		$this->iva_discriminado();
 
+		$this->y += 2;
 
+		// Banda destacada para el total final, en el mismo lenguaje visual que "Tipo comprobante"
+		$this->SetFillColor(0, 0, 0);
+		$this->SetTextColor(255, 255, 255);
 		$this->SetFont('Arial', 'B', 14);
 	    $this->x = $this->x_incial;
-	    $this->y += 2;
-		$this->Cell($this->cell_ancho, 10, 'Total: $'. Numbers::price($total_sale), 0, 0, 'C');
+		$this->Cell($this->cell_ancho, 10, 'TOTAL: $'. Numbers::price($total_sale), $this->b, 0, 'C', 1);
+		$this->SetTextColor(0, 0, 0);
 		$this->y += 10;
 	}
 
@@ -653,11 +719,9 @@ class SaleTicketPdf extends fpdf {
 			$height += 120;
 		}
 
-		// Si el logo full width esta activo, la info de la empresa pasa a ir debajo del logo (no al costado),
-		// por lo que hay que reservar el alto del logo + un margen extra para esa info (~20mm)
-		if (!empty($this->logo_full_width)) {
-			$height += $this->getLogoFullWidthHeight() + 20;
-		}
+		// El logo ocupa toda la primera fila (60% del ancho, centrado) y la info del negocio
+		// va debajo: hay que reservar el alto del logo + un margen extra para esa info (~20mm)
+		$height += $this->getLogoHeight($this->cell_ancho * 0.6) + 20;
 
 		foreach ($this->sale->combos as $combo) {
 			$height += $this->getHeight($combo, 20);
@@ -678,7 +742,22 @@ class SaleTicketPdf extends fpdf {
 			}
 			$height += $renglones * 5;
 		}
-		// $height +=
+
+		/*
+		 * El ticket es un rollo continuo: el alto se calcula ANTES de dibujar y lo que no se
+		 * reserve aca queda cortado. El canje suma dos renglones de 7mm (el "Total" del sub
+		 * total, que sin canje no se imprimia, mas el renglon del canje).
+		 */
+		if (PuntosComprobanteHelper::tiene_canje($this->sale)) {
+			$height += 14;
+		}
+
+		/*
+		 * Los informativos de puntos son MultiCell de 4mm, y en un ticket angosto un renglon
+		 * puede partirse en dos: se reservan 8mm por renglon para no cortar el ultimo.
+		 */
+		$height += count($this->get_puntos_renglones()) * 8;
+
 		return $height;
 	}
 

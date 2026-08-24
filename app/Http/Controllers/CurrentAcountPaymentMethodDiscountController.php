@@ -21,6 +21,8 @@ class CurrentAcountPaymentMethodDiscountController extends Controller
         $model = CurrentAcountPaymentMethodDiscount::create([
             'current_acount_payment_method_id'                  => $request->current_acount_payment_method_id,
             'discount_percentage'                  => $request->discount_percentage,
+            // Cantidad de cuotas a la que aplica esta regla. NULL = aplica sin importar cuotas (Prompt 260).
+            'cuotas'                => $request->cuotas,
             'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('CurrentAcountPaymentMethodDiscount', $model->id);
@@ -35,6 +37,8 @@ class CurrentAcountPaymentMethodDiscountController extends Controller
         $model = CurrentAcountPaymentMethodDiscount::find($id);
         $model->current_acount_payment_method_id                = $request->current_acount_payment_method_id;
         $model->discount_percentage                = $request->discount_percentage;
+        // Cantidad de cuotas a la que aplica esta regla. NULL = aplica sin importar cuotas (Prompt 260).
+        $model->cuotas                = $request->cuotas;
         $model->save();
         $this->sendAddModelNotification('CurrentAcountPaymentMethodDiscount', $model->id);
         return response()->json(['model' => $this->fullModel('CurrentAcountPaymentMethodDiscount', $model->id)], 200);

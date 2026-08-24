@@ -10,6 +10,12 @@ class ProviderOrder extends Model
 
     protected $appends = ['iva_breakdown'];
 
+    // Prompt 513: `precios_incluyen_iva` se guarda como tinyint; se castea a bool para que el
+    // front reciba/consuma siempre true/false y no 0/1.
+    protected $casts = [
+        'precios_incluyen_iva' => 'boolean',
+    ];
+
     function scopeWithAll($query) {
         $query->with('articles.addresses', 'articles.images', 'provider', 'provider_order_afip_tickets.provider_order_afip_ticket_ivas', 'provider_order_status', 'provider_order_extra_costs', 'provider_order_discounts');
     }

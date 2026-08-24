@@ -9,6 +9,13 @@ class StockSuggestionArticleController extends Controller
 {
 
     /**
+     * Piso de seguridad del ->get() histórico: una sugerencia gigante ya no
+     * puede tirar abajo el request. El flujo nuevo (con la extensión) pagina
+     * de verdad; este endpoint queda para el modal viejo.
+     */
+    const LIMITE_FILAS = 2000;
+
+    /**
      * Devuelve las líneas de sugerencia filtradas por depósito según el modo de agrupación.
      *
      * @param Request $request Datos del filtro (stock_suggestion_id, modo_agrupacion y address_id).
@@ -28,8 +35,17 @@ class StockSuggestionArticleController extends Controller
             $query->where('to_address_id', $request->address_id);
         }
 
-        // Colección cruda obtenida desde base.
-        $sugerencias = $query->get();
+        // Colección cruda obtenida desde base. Se lee UNA fila más que el
+        // límite para saber con certeza si el resultado quedó truncado.
+        $sugerencias = $query->limit(self::LIMITE_FILAS + 1)->get();
+
+        // Marca de truncado para que el front avise en vez de mostrar una
+        // tabla incompleta como si fuera todo.
+        $truncado = $sugerencias->count() > self::LIMITE_FILAS;
+
+        if ($truncado) {
+            $sugerencias = $sugerencias->take(self::LIMITE_FILAS);
+        }
 
         // Se eliminan filas inválidas y posibles duplicados para no romper la selección en frontend.
         $sugerencias = $sugerencias
@@ -57,6 +73,9 @@ class StockSuggestionArticleController extends Controller
                 'provider_code' => $article && !empty($article->provider_code) ? $article->provider_code : '',
                 'bar_code' => $article && !empty($article->bar_code) ? $article->bar_code : '',
                 'article' => $article && !empty($article->name) ? $article->name : '',
+                // La tabla del modal siempre esperó 'name'; 'article' se
+                // conserva por si algún consumidor viejo lo lee.
+                'name' => $article && !empty($article->name) ? $article->name : '',
                 'cantidad' => !empty($item->suggested_amount) ? $item->suggested_amount : 0,
                 'from_address_id' => !empty($item->from_address_id) ? $item->from_address_id : 0,
                 'to_address_id' => !empty($item->to_address_id) ? $item->to_address_id : 0,
@@ -65,6 +84,6 @@ class StockSuggestionArticleController extends Controller
             ];
         });
 
-        return response()->json(['models'   => $models], 200);
+        return response()->json(['models' => $models, 'truncado' => $truncado], 200);
     }
 }

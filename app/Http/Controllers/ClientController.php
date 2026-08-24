@@ -164,7 +164,27 @@ class ClientController extends Controller
 
     function import(Request $request) {
         $columns = GeneralHelper::getImportColumns($request);
-        Excel::import(new ClientImport($columns, $request->create_and_edit, $request->start_row, $request->finish_row), $request->file('models'));
+
+        /*
+         * Hoja elegida por el usuario en el selector del modal de importacion, 0-based.
+         * Las dos claves son OPCIONALES: ausentes => hoja 0, que es la primera hoja y lo
+         * que este endpoint hacia con un cliente viejo (la SPA sin desplegar).
+         *
+         * ⚠️ Ojo con lo que cambia de verdad: hasta esta mision, Maatwebsite recorria
+         * TODAS las hojas del libro aplicandoles el mismo mapeo (ver ClientImport::sheets()).
+         * Ahora se importa una sola.
+         */
+        Excel::import(
+            new ClientImport(
+                $columns,
+                $request->create_and_edit,
+                $request->start_row,
+                $request->finish_row,
+                $request->input('hoja', 0),
+                $request->input('hoja_nombre')
+            ),
+            $request->file('models')
+        );
     }
 
     /**

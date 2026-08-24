@@ -139,18 +139,35 @@ class AfipWsfeHelper extends Controller
                         
                         if ($from_sale) {
 
-                            $total_a_facturar = $this->afip_ticket->sale->total;
+                            /**
+                             * Fuente de verdad: el ImpTotal EXACTO que se mando en FECAESolicitar,
+                             * ya persistido por persist_importes_enviados(). Re-derivarlo desde la
+                             * venta era justamente lo que hacia que un comprobante con importe
+                             * personalizado (o con reparto por alicuota) cayera en el
+                             * "NO se actualizo la info del comprobante".
+                             *
+                             * La re-derivacion queda solo para comprobantes viejos, anteriores a
+                             * la persistencia del snapshot de importes.
+                             */
+                            if (!is_null($this->afip_ticket->imp_total_enviado)) {
 
-                            if ($this->afip_ticket->facturar_importe_personalizado) {
-                            
-                                $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
-                            
-                            } else if (
-                                $this->afip_ticket->sale->moneda_id == 2
-                                && !is_null($this->afip_ticket->sale->valor_dolar)
-                                && (float)$this->afip_ticket->sale->valor_dolar > 0
-                            ) {
-                                $total_a_facturar *= (float)$this->afip_ticket->sale->valor_dolar;
+                                $total_a_facturar = (float) $this->afip_ticket->imp_total_enviado;
+
+                            } else {
+
+                                $total_a_facturar = $this->afip_ticket->sale->total;
+
+                                if ($this->afip_ticket->facturar_importe_personalizado) {
+
+                                    $total_a_facturar = $this->afip_ticket->facturar_importe_personalizado;
+
+                                } else if (
+                                    $this->afip_ticket->sale->moneda_id == 2
+                                    && !is_null($this->afip_ticket->sale->valor_dolar)
+                                    && (float)$this->afip_ticket->sale->valor_dolar > 0
+                                ) {
+                                    $total_a_facturar *= (float)$this->afip_ticket->sale->valor_dolar;
+                                }
                             }
 
                             Log::info('total_a_facturar:');
@@ -170,7 +187,9 @@ class AfipWsfeHelper extends Controller
                             && $data->CbteTipo == $this->afip_ticket->cbte_tipo
                             && (
                                 !$from_sale
-                                || $data->ImpTotal == $total_a_facturar
+                                // Comparacion con tolerancia: ImpTotal viene de SOAP como float y
+                                // imp_total_enviado sale de la base como string ("12100.00").
+                                || abs((float) $data->ImpTotal - (float) $total_a_facturar) < 0.01
                             )
                         ) {
 

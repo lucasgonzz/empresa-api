@@ -16,6 +16,9 @@ class BuyerSeeder extends Seeder
     public function run()
     {
         $lucas = Buyer::create([
+            // Los tres num de este bloque estaban repetidos en 1 (bug viejo). Se corrigen de
+            // paso a 1/2/3 porque los 12 perfiles nuevos siguen la numeracion correlativa desde
+            // aca (4 en adelante) y dejarlos en 1 hubiera repetido num tres veces mas.
             'num'                       => 1,
             'name'                      => 'Lucas gonzalez',
             'surname'                   => 'Gonzalez',
@@ -27,7 +30,7 @@ class BuyerSeeder extends Seeder
             'user_id'                   => config('app.USER_ID'),
         ]);
         $marcos = Buyer::create([
-            'num'                       => 1,
+            'num'                       => 2,
             'name'                      => 'Marcos gonzalez',
             'surname'                   => 'Gonzalez',
             'city'                      => 'Gualeguay',
@@ -39,7 +42,7 @@ class BuyerSeeder extends Seeder
         ]);
 
         $marcos = Buyer::create([
-            'num'                       => 1,
+            'num'                       => 3,
             'name'                      => 'Vendedor',
             'surname'                   => 'Gonzalez',
             'city'                      => 'Gualeguay',
@@ -50,6 +53,67 @@ class BuyerSeeder extends Seeder
             'user_id'                   => config('app.USER_ID'),
         ]);
 
+        /*
+            Perfiles de tienda 4 a 18, agregados para la semilla de datos de prueba completa
+            (unidad U2). comercio_city_client_id apunta a los clientes 3 a 17 (ClientSeeder):
+            sin ese vinculo un Buyer no genera ninguna sugerencia del motor de ofertas, porque
+            los criterios carrito_abandonado e interes_ecommerce (CriteriosDeOfertaService)
+            joinean clients con buyers justamente por esa columna.
+
+            🔴 POR QUE 17 CLIENTES CON PERFIL DE TIENDA Y NO LOS 25 QUE SIEMBRA ClientSeeder.
+
+            Dar de alta un Buyer no es gratis del lado del ERP: ActividadTiendaHelper::sembrar()
+            arranca por cancelar_saldos(), que le cobra la cuenta corriente COMPLETA a todo cliente
+            que tenga Buyer con comercio_city_client_id. Tiene que hacerlo -- si no,
+            CriteriosDeOfertaService::excluir_malos_pagadores() los descarta a todos por deuda
+            vencida y ofertas:generar devuelve cero lineas --, pero el efecto de segundo orden es
+            que ese cliente queda con saldo 0 y desaparece de los reportes de cuenta corriente.
+            Con perfil para los 25, la demo no tendria un solo deudor que mostrar.
+
+            Se cubren los primeros 17 y quedan afuera los clientes 18 a 25, que son los que
+            sostienen la cuenta corriente viva. Esos 8 no son un recorte al azar: ClientSeeder
+            rota address_id 1..4, iva_condition_id 1/2 y price_type_id 2/3/null, y 8 es dos vueltas
+            enteras de la rotacion de sucursales, asi que la deuda que sobrevive queda repartida en
+            2 clientes por cada una de las 4 sucursales, mitad y mitad entre las dos condiciones de
+            IVA, y con las tres variantes de lista de precios representadas. O sea que los reportes
+            de deudores y la posicion fiscal tienen con que en CUALQUIER filtro, no solo en el
+            total. El lado de la tienda igual se queda con 17 compradores, mas que suficiente para
+            que los tres perfiles de ActividadTiendaHelper::PERFILES se noten distintos entre si.
+
+            Si algun dia se quieren mas compradores, el numero que hay que mover es este y la
+            cuenta a rehacer es la de arriba: cada cliente que suma perfil es un deudor menos.
+        */
+        $perfiles_tienda = [
+            ['num' => 4,  'name' => 'Sofia',     'surname' => 'Martinez',  'email' => 'sofia.martinez@gmail.com',   'client_id' => 3],
+            ['num' => 5,  'name' => 'Nicolas',    'surname' => 'Fernandez', 'email' => 'nicolas.fernandez@gmail.com', 'client_id' => 4],
+            ['num' => 6,  'name' => 'Valentina',  'surname' => 'Rodriguez', 'email' => 'valentina.rodriguez@gmail.com', 'client_id' => 5],
+            ['num' => 7,  'name' => 'Tomas',      'surname' => 'Diaz',      'email' => 'tomas.diaz@gmail.com',        'client_id' => 6],
+            ['num' => 8,  'name' => 'Camila',     'surname' => 'Gomez',     'email' => 'camila.gomez@gmail.com',      'client_id' => 7],
+            ['num' => 9,  'name' => 'Mateo',      'surname' => 'Alvarez',   'email' => 'mateo.alvarez@gmail.com',     'client_id' => 8],
+            ['num' => 10, 'name' => 'Julieta',    'surname' => 'Romero',    'email' => 'julieta.romero@gmail.com',    'client_id' => 9],
+            ['num' => 11, 'name' => 'Franco',     'surname' => 'Sosa',      'email' => 'franco.sosa@gmail.com',       'client_id' => 10],
+            ['num' => 12, 'name' => 'Agustina',   'surname' => 'Torres',    'email' => 'agustina.torres@gmail.com',   'client_id' => 11],
+            ['num' => 13, 'name' => 'Bruno',      'surname' => 'Ibanez',    'email' => 'bruno.ibanez@gmail.com',      'client_id' => 12],
+            ['num' => 14, 'name' => 'Martina',    'surname' => 'Acosta',    'email' => 'martina.acosta@gmail.com',    'client_id' => 13],
+            ['num' => 15, 'name' => 'Lautaro',    'surname' => 'Molina',    'email' => 'lautaro.molina@gmail.com',    'client_id' => 14],
+            ['num' => 16, 'name' => 'Emilia',     'surname' => 'Benitez',   'email' => 'emilia.benitez@gmail.com',    'client_id' => 15],
+            ['num' => 17, 'name' => 'Thiago',     'surname' => 'Ledesma',   'email' => 'thiago.ledesma@gmail.com',    'client_id' => 16],
+            ['num' => 18, 'name' => 'Renata',     'surname' => 'Cabrera',   'email' => 'renata.cabrera@gmail.com',    'client_id' => 17],
+        ];
+
+        foreach ($perfiles_tienda as $perfil) {
+            Buyer::create([
+                'num'                       => $perfil['num'],
+                'name'                      => $perfil['name'],
+                'surname'                   => $perfil['surname'],
+                'city'                      => 'Gualeguay',
+                'phone'                     => '+5493444622139',
+                'email'                     => $perfil['email'],
+                'password'                  => bcrypt('1234'),
+                'comercio_city_client_id'   => $perfil['client_id'],
+                'user_id'                   => config('app.USER_ID'),
+            ]);
+        }
     }
 
     function matias() {

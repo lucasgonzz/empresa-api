@@ -296,7 +296,10 @@ class ProductInfoLookupService
         $counter->save();
 
         try {
-            $response = $this->google_http()
+            // google_api_http() y no google_http(): la key de Custom Search tiene restriccion por
+            // referrer HTTP y sin el header Google responde "Requests from referer <empty> are
+            // blocked". Ver GoogleSearchHelpers::google_api_http().
+            $response = $this->google_api_http()
                 ->timeout(15)
                 ->withHeaders(['User-Agent' => 'Mozilla/5.0'])
                 ->get('https://www.googleapis.com/customsearch/v1', [

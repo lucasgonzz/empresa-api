@@ -252,6 +252,15 @@ class PermissionSeeder extends Seeder
                 'plural'        => 'Alertas',
                 'en'            => 'alerts.problemas_al_facturar',
             ],
+            // Mision recordatorio-cobro-whatsapp. Ojo que NO es "ver la alerta de cobros": la
+            // solapa Cobros se sigue viendo sin este permiso. Lo que habilita es MANDAR el
+            // recordatorio por WhatsApp -de a un cliente o a todos los deudores del filtro-,
+            // que es una capacidad distinta: le escribe al cliente final en nombre del negocio.
+            [
+                'singular'      => 'Mandar recordatorios de cobro por WhatsApp',
+                'plural'        => 'Alertas',
+                'en'            => 'alerts.recordatorio_cobro',
+            ],
 
 
             // Reportes
@@ -494,6 +503,18 @@ class PermissionSeeder extends Seeder
                 'singular'      => 'Ver chats del dueño',
                 'plural'        => 'Soporte',
                 'en'            => 'support.see_owner_chats',
+            ],
+
+            /*
+                Produccion (tanda correctivos 24/8, item 17): la ruta /produccionV2 de
+                empresa-spa exige can: 'produccion.index' (src/router/routes.js), pero el
+                permiso no se sembraba nunca: ningun empleado podia entrar al modulo. Para
+                bases de produccion existentes esta PermissionProduccionIndexSeeder.
+            */
+            [
+                'singular'      => 'Usar modulo de Produccion',
+                'plural'        => 'Produccion',
+                'en'            => 'produccion.index',
             ],
 
         ];

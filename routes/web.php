@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Helpers\StoragePathHelper;
 use App\Models\Article;
 use App\Services\PlatformConnector\PlatformConnectorOAuthService;
 use App\Services\MercadoLibre\CategoryService;
@@ -196,36 +197,110 @@ Route::post('/password-reset/update-password',
 	'CommonLaravel\PasswordResetController@updatePassword'
 );
 
-Route::get('/storage/{path}', function ($path) {
-    $full_path = storage_path('app/public/' . $path);
+/*
+ * Las tres rutas de abajo son PUBLICAS (routes/web.php se monta con el grupo 'web', que no tiene
+ * ninguna capa de autenticacion) y sirven archivos del disco a partir de un parametro del usuario.
+ * Hasta el 16/8/2026 concatenaban ese parametro directo a storage_path(), asi que un "../" alcanzaba
+ * para leer cualquier archivo del servidor, empezando por el .env.
+ *
+ * El confinamiento vive en StoragePathHelper y se hace sobre realpath(), no sobre el string: un
+ * chequeo textual de ".." no ve los symlinks. Leer el docblock de esa clase antes de tocar esto.
+ *
+ * El {path} sigue aceptando '.*' a proposito: los consumidores legitimos usan subcarpetas anidadas
+ * -- articles_images/zip/<desc>/<desc>.jpg que arma el comando set_article_images, y
+ * support_messages/<ticket_id>/<hash>.ext de los adjuntos del chat de soporte. Achicar el regex
+ * romperia eso y no es donde va la defensa.
+ *
+ * Y responden 404, nunca 403: un 403 le confirma al atacante que el archivo existe.
+ */
+/*
+ * Las tres rutas comparten este closure a proposito, en vez de repetir el cuerpo tres veces.
+ * El motivo es concreto y ya paso: cuando el bug se reporto, se reportaron DOS de las tres rutas.
+ * La tercera (/exported-files/) tenia la misma forma, el mismo defecto y nadie la vio, justamente
+ * porque eran tres copias del mismo cuerpo que hay que acordarse de mantener juntas. Con un solo
+ * cuerpo, la proxima ruta de esta familia no puede quedar atras sin que se note.
+ *
+ * @param  string    $etiqueta   Nombre de la ruta, para el log.
+ * @param  string    $base_dir   Directorio permitido, absoluto.
+ * @param  string    $path       Path pedido por el usuario.
+ * @param  callable  $servir     Recibe el path resuelto y devuelve la respuesta.
+ * @return \Symfony\Component\HttpFoundation\Response
+ */
+$servir_archivo_confinado = function ($etiqueta, $base_dir, $path, $servir) {
+    $resultado = StoragePathHelper::inspeccionar($base_dir, $path);
 
-    if (!file_exists($full_path)) {
+    /*
+     * Solo se loguea el intento de escape, no cada 404. Antes /imported-files/ tenia un
+     * Log::info($full_path) que escribia la ruta absoluta de CADA descarga legitima: ruido en el
+     * log y, de paso, el layout del servidor anotado en un archivo que se comparte para
+     * diagnosticar otras cosas.
+     *
+     * El path se recorta a 255 caracteres porque el ->where('path', '.*') no le pone techo y un
+     * pedido de varios miles de bytes se escribiria entero, tantas veces como el atacante quiera.
+     */
+    if (StoragePathHelper::es_intento_de_escape($resultado['motivo'])) {
+        Log::warning($etiqueta.': intento de salir del directorio permitido', [
+            'path_pedido' => mb_substr((string) $path, 0, 255),
+            'motivo'      => $resultado['motivo'],
+            'ip'          => request()->ip(),
+        ]);
+    }
+
+    if (is_null($resultado['path'])) {
         abort(404);
     }
 
-    return response()->file($full_path);
-})->where('path', '.*');
+    /*
+     * El try/catch no es decorativo: entre el realpath() de la verificacion y este servido hay una
+     * ventana en la que el archivo puede desaparecer, y es un caso real en /exported-files/, donde
+     * los exportados son temporales que una limpieza puede borrar mientras alguien los descarga.
+     * Sin esto, response()->file() tira FileNotFoundException -> HTTP 500, y la diferencia entre
+     * 500 y 404 vuelve a ser el oraculo de existencia que este arreglo viene a sacar. Encima el
+     * mensaje de la excepcion lleva la ruta absoluta al log, que es lo otro que se saco aca.
+     */
+    try {
+        return $servir($resultado['path']);
+    } catch (\Exception $e) {
+        /*
+         * Se loguea porque este catch convierte en 404 cualquier fallo del servido, no solo el
+         * archivo que desaparecio: si alguna vez un cliente reporta "veo 404 en un archivo que
+         * existe", sin esta linea no queda ningun rastro para diagnosticarlo.
+         *
+         * Y se atrapa \Exception y no \Throwable a proposito: un \Error es un bug de programacion y
+         * tiene que seguir saliendo como 500, no enmascararse de 404.
+         */
+        Log::warning($etiqueta.': fallo el servido de un archivo ya verificado', [
+            'archivo' => $resultado['path'],
+            'error'   => $e->getMessage(),
+        ]);
 
-Route::get('/imported-files/{path}', function ($path) {
-    $full_path = storage_path('app/imported_files/' . $path);
-
-    Log::info($full_path);
-    if (!file_exists($full_path)) {
         abort(404);
     }
+};
 
-    return response()->file($full_path);
+Route::get('/storage/{path}', function ($path) use ($servir_archivo_confinado) {
+    /*
+     * Esta ruta es el fallback para las instalaciones SIN el symlink public/storage. Donde el
+     * symlink existe, el servidor web sirve el archivo antes de llegar a index.php y esto no corre
+     * nunca; en hosting compartido, donde no se puede crear el symlink, es lo unico que sirve las
+     * imagenes de articulos. Por eso no se borra.
+     */
+    return $servir_archivo_confinado('storage', storage_path('app/public'), $path, function ($archivo) {
+        return response()->file($archivo);
+    });
 })->where('path', '.*');
 
-Route::get('/exported-files/{path}', function ($path) {
+Route::get('/imported-files/{path}', function ($path) use ($servir_archivo_confinado) {
+    return $servir_archivo_confinado('imported-files', storage_path('app/imported_files'), $path, function ($archivo) {
+        return response()->file($archivo);
+    });
+})->where('path', '.*');
+
+Route::get('/exported-files/{path}', function ($path) use ($servir_archivo_confinado) {
     // Se expone archivo exportado para descarga desde notificación global.
-    $full_path = storage_path('app/exported-files/' . $path);
-
-    if (!file_exists($full_path)) {
-        abort(404);
-    }
-
-    return response()->download($full_path);
+    return $servir_archivo_confinado('exported-files', storage_path('app/exported-files'), $path, function ($archivo) {
+        return response()->download($archivo);
+    });
 })->where('path', '.*');
 
 
@@ -246,6 +321,11 @@ Route::post('/demo-setup', 'DemoSetupController@setup')->name('demo.setup');
 Route::get('/user-setup', 'UserSetupController@form')->name('user.form');
 Route::post('/user-setup', 'UserSetupController@setup')->name('user.setup');
 
+/*
+ * Ruta corta al configurador de extensiones del usuario de config('app.USER_ID') (misión 54).
+ * La de abajo se mantiene porque acepta {user_id} y esa forma se sigue necesitando.
+ */
+Route::get('/extensiones', 'UserExtencionController@edit')->name('extensiones');
 Route::get('/user/extencions/edit/{user_id?}', 'UserExtencionController@edit')->name('users.extencions.edit');
 Route::post('/users/{user_id}/extencions', 'UserExtencionController@update')->name('users.extencions.update');
 
@@ -323,8 +403,6 @@ Route::get('/super-budget', 'SuperBudgetController@pdf');
 
 
 Route::get('helpers/{method}/{param?}/{param_2?}', 'HelperController@callMethod');
-
-Route::get('recaulculate-cc-sales-debe/{client_id}', 'Helpers\CurrentAcountHelper@recalculateCurrentAcountsSalesDebe');
 
 Route::get('articulos-repetidos/{provider_id}', 'HelperController@articulosRepetidos');
 Route::get('check-insuficiente-amount/{company_name}', 'HelperController@checkCartArticlesInsuficienteAmount');

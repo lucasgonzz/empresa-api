@@ -19,6 +19,16 @@ php tests/Import/fixtures/generar.php
 
 El script (`tests/Import/fixtures/generar.php`) es la documentación viva de qué hay en cada celda y, sobre todo, de qué **tipo** es cada celda (string PHP = celda de texto, pasa por el parseo; float/int = celda numérica, lo saltea).
 
+Los fixtures `12_` a `17_` (hojas múltiples, cabecera fusionada, encabezado corrido, `.xls` viejo, lista de proveedor realista) se generan con **otro** script:
+
+```
+php tests/Import/fixtures/generar_hojas_y_fusiones.php
+```
+
+Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout**, que no sabe escribir celdas fusionadas ni el formato `.xls` viejo (BIFF), que es justamente lo que esos cinco fixtures necesitan. `generar_hojas_y_fusiones.php` escribe con **PhpSpreadsheet**. Mezclarlos en un solo archivo obligaría a cambiarle la librería a los once fixtures viejos. Ninguno de los dos toca los archivos del otro.
+
+⚠️ En PhpSpreadsheet hay que ser **explícito con el tipo de celda**: `setCellValueExplicit($ref, '7790101', DataType::TYPE_STRING)` para el texto con contenido numérico, y `setCellValue()` a secas para las numéricas. `setCellValue('7790101')` adivina y lo guarda como número.
+
 | Archivo | Filas | Qué cubre |
 |---|---|---|
 | `01_codigos_de_proveedor.xlsx` | 7 | Matriz de configuraciones de `provider_code` (único, duplicado, cruzado entre proveedores, nuevo, placeholders `S/N` y `-`). F2 y F3 llevan además un sku nuevo (grupo 265, prompt 10): `RepetidosEnElArchivoTest.php` las reusa para probar la herencia de sku de la cascada contra un match único y contra un match múltiple. |
@@ -31,6 +41,12 @@ El script (`tests/Import/fixtures/generar.php`) es la documentación viva de qu�
 | `07_repetidos_en_el_archivo.xlsx` | 9 | Repetidos DENTRO del propio archivo (no en base): jerarquía SKU, generalización de "última fila gana" a sku/provider_code, reporte de sobrescritura y flag `filas_repetidas_del_archivo`. |
 | `09_cascada_herencia.xlsx` | 6 | Cascada con herencia de identificadores (grupo 265, prompt 08 + fix del grupo 285): bar_code nuevo que hereda vía sku, herencia doble (bar_code y sku) vía provider_code único, conflicto `identificador_sin_asignar` sobre provider_code repetido con el campo bar_code, y la guarda `identificadores_asignados_en_chunk` (dos filas del mismo chunk que quieren heredar el mismo bar_code nuevo a dos artículos distintos). |
 | `10_escalon_nombre.xlsx` | 5 | El escalón `name` como punto de llegada de la cascada: match único por nombre, nombre ambiguo, herencia de un bar_code pendiente hasta el escalón 5, el corte de cadena cuando un `provider_code` no matchea (no baja a name), y la normalización de `normalize_name_for_match()` (mayúsculas/espacios). |
+| `12_tres_hojas.xlsx` | 7 (hoja 0) | **Tres hojas**: `"Lista de precios"` (8 filas), `"Notas"` (3 filas de texto libre, sin forma de tabla de artículos a propósito, para que elegir mal se note) y `"Resumen"` (2 filas). Es el fixture que prueba que el `break` de "siempre la primera hoja" murió. |
+| `13_cabecera_fusionada.xlsx` | 4 | Una hoja con `E1:F1` **fusionada** y `"PRECIOS"` en E1 (F1 vacía en el XML). Las 4 filas de datos tienen E (costo) y F (precio) llenas: es el caso caro de T3, dos propiedades del sistema debajo de un mismo nombre de columna. |
+| `14_encabezado_corrido.xlsx` | 5 | Una hoja con título **y fecha de vigencia** en la fila 1, razón social **y CUIT** en la 2, la 3 vacía y el **encabezado real en la fila 4**. El defecto 3. ⚠️ El CUIT y la fecha no son decorado: sin ellos el fixture pasaba el test mientras la regla se caía con cualquier lista de proveedor real (el corte por fila de datos se disparaba con dos celdas si una era numérica). Y van sobre filas que **ya tenían contenido** a propósito: `AnalyzerHojaYEncabezadoTest` asierta números de fila físicos (5 a 9) y el conteo de la rama vieja (7), así que agregar un renglón nuevo los correría. |
+| `17_lista_proveedor_real.xlsx` | 4 | **El caso completo, el que se ve en cámara al filmar la demo**: título **fusionado** sobre A1:F1, razón social con CUIT en la 2, `"Vigencia desde:"` con una celda de **fecha real** en la 3, y el encabezado en la fila 4 **corrido y además fusionado** (`E4:F4` con `"PRECIOS"` en E4). Los tres rasgos rompían la regla por motivos distintos y cada arreglo desactivaba al otro; medido antes de arreglarlo daba `fila=1, sin_candidata_clara`, con lo cual el mapeo se armaba con cinco columnas vacías y se importaban la razón social y el encabezado como si fueran artículos. |
+| `15_una_sola_hoja.xlsx` | 7 | El fixture de **no regresión**: mismo contenido celda por celda que `01_codigos_de_proveedor.xlsx`, pero escrito con PhpSpreadsheet en vez de OpenSpout. Si los dos se leen idéntico, la lectura no depende de quién escribió el archivo. |
+| `16_viejo.xls` | 2 | Un `.xls` **BIFF de verdad** (writer `Xls` de PhpSpreadsheet, no un `.xlsx` renombrado): no es un zip, así que `ZipArchive::open()` falla y se ejercita el mensaje limpio de `ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE`. |
 
 ⚠️ **`06_incidente_servian.xlsx` es el único fixture que se importa con varios lotes.** El `config(['app.ARTICLE_EXCEL_CHUNK_SIZE' => 10])` del `setUp()` de `IncidenteServianTest` es lo que hace que el escenario reproduzca el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes). Si alguien cambia o quita ese `config()`, el test deja de probar lo que dice probar aunque siga pasando en verde.
 
@@ -39,6 +55,117 @@ El script (`tests/Import/fixtures/generar.php`) es la documentación viva de qu�
 `CascadaHerenciaTest.php` (grupo 287, prompt 02) importa `09_cascada_herencia.xlsx` contra el escenario sembrado por `ImportTestSeeder` más un artículo `PC-T-UNICO` que el propio test crea sin sku ni bar_code: cubre el lado de la cascada de `ArticleIndexCache::find_with_index()` que quedó sin test (bar_code nuevo que hereda vía sku, herencia doble vía provider_code único), el conflicto `identificador_sin_asignar` sobre un provider_code repetido con el campo bar_code (complemento del que ya prueba `08_match_unico_provider_code.xlsx` con el campo sku) y la guarda `identificadores_asignados_en_chunk` contra dos filas del mismo chunk que compiten por heredar el mismo bar_code nuevo.
 
 `EscalonNombreTest.php` (grupo 287, prompt 03) importa `10_escalon_nombre.xlsx` contra `A9`/`A10`/`A11` del escenario sembrado más un artículo `T-NORM` que el propio test crea sin códigos: cubre el escalón 5 (`name`) de la cascada como match único y como ambigüedad, la herencia de un identificador pendiente hasta ese escalón, el corte de cadena cuando un `provider_code` no matchea (no baja a `name` aunque el nombre exista en base, comportamiento a fijar) y la normalización de `normalize_name_for_match()`.
+
+`ListasDePrecioPorDefectoTest.php` (misión `listas-de-precio-por-defecto-al-importar`, 24/8/2026)
+**fabrica su propio escenario de listas de precio dentro de la transacción**: el tenant 900 tiene
+`users.listas_de_precio = 0` y cero filas en `price_types`, así que el `setUp()` prende el flag y
+crea dos listas con los defaults **cruzados a propósito** (A: `incluir` 1 / `setear` 0; B: `incluir`
+0 / `setear` 1) — con los dos iguales, un arreglo que escribiera una constante en vez del default de
+la lista pasaría el test igual. Reusa `04_stock.xlsx` y `02_codigos_de_barra_repetidos.xlsx`, sin
+fixture nuevo: el mapeo por defecto de `ImportTestCase::columnas()` no trae ninguna columna de lista,
+que es justo el escenario que estaba roto.
+
+⚠️ **Hay DOS caminos que relacionan un artículo con las listas, y esta clase mide los dos.**
+`ActualizarBBDD::asignar_price_types()` (el que alimenta `ProcessRow::obtener_price_types()`) y
+`ArticlePricesHelper::aplicar_precios_segun_listas_de_precios()` (vía
+`ActualizarBBDD::set_precios_finales()` → `ArticleHelper::setFinalPrice()`). El segundo corre
+siempre y tapaba parte del síntoma, pero **no escribe los defaults de la lista** en
+`incluir_en_excel_para_clientes` ni en `setear_precio_final`, y **no corre para las cuentas con la
+extensión `ventas_en_dolares`** (ahí `setFinalPrice` rutea a `ArticlePriceTypeMonedaHelper`, que no
+toca `article_price_type` en ningún lado). Por eso hay un test con la extensión prendida: es el
+único donde el síntoma se ve completo, con **cero** filas de pivot. Medido el 24/8/2026 contra el
+árbol sin el arreglo: sin la extensión, 2 filas con `percentage` correcto pero las dos banderas en
+0; con la extensión, 0 filas.
+
+🔴 **`setear_precio_final` NO se propaga desde el default de la lista, y eso es deliberado.** Fue
+una regresión real del primer intento del arreglo, medida el 24/8/2026: la fila se insertaba con
+`setear_precio_final = 1`, después `set_precios_finales()` escribía ahí el precio calculado por
+margen, y a partir del **segundo** recálculo `ArticlePricesHelper` lo leía como "precio fijado a
+mano" y derivaba el margen al revés. Al duplicar el costo, la lista quedaba clavada en 169.40 con
+margen **−30%**, mientras la lista sin la bandera pasaba de 157.30 a 314.60. Un Excel que no habla
+de listas no está fijando ningún precio a mano. Lo fija `ProcessRow::add_price_type_data()` con la
+marca `sin_datos_de_lista_en_el_excel`, que lee `ActualizarBBDD::get_setear_precio_final()`, y lo
+cubre `test_el_precio_de_una_lista_que_setea_precio_final_sigue_al_costo`.
+
+🔴 **La otra regresión del primer intento: filas duplicadas con `permitir_provider_code_repetido`.**
+Tres filas con el mismo `provider_code` **nuevo** crean tres artículos, pero
+`ActualizarBBDD::get_article_model_from_cache()` los resuelve a todos al mismo modelo con un
+`->first()` por `provider_code`, así que el primero recibía las tuplas de los tres — medido: **6
+filas** de pivot en vez de 2. Se acota con una deduplicación por `(article_id, price_type_id)` en
+`asignar_price_types()`, y lo cubre `test_provider_code_repetido_no_duplica_filas_de_pivot`.
+⚠️ Lo que **no** se arregló: los artículos 2 y 3 no reciben filas de `asignar_price_types()`. En una
+cuenta normal los rescata `setFinalPrice`; en una con `ventas_en_dolares` quedan sin listas. Es el
+defecto preexistente de `get_article_model_from_cache()`, que también afecta a descuentos y
+recargos.
+
+🔴 **`article_price_type` NO tiene índice único sobre `(article_id, price_type_id)`** — la migración
+`2024_09_05_101805_create_article_price_type_table.php` no lo crea y ninguna posterior lo agrega. O
+sea que el `INSERT IGNORE` de `asignar_price_types()` no deduplica nada: solo ignora errores. Por eso
+las aserciones de esta clase son de **cantidad exacta** de filas, nunca de "al menos una", y el
+helper `pivots()` falla explícitamente si encuentra duplicados.
+
+## Hoja elegida y fila de encabezado (22/8/2026)
+
+`LecturaDeHojasTest.php` y `EncabezadoDetectadoTest.php` cubren los helpers de
+`app/Http/Controllers/Helpers/import/excel/`, que centralizan la lectura del libro para
+artículos, clientes y proveedores. Ninguno de los dos toca la base: extienden `Tests\TestCase`,
+igual que `CadenaIdentificacionTest`.
+
+**Qué hoja se lee.** Antes, los doce lectores del import hacían
+`foreach ($reader->getSheetIterator() as $sheet) { ... break; }`: siempre la primera hoja, sin que
+nadie la eligiera ni la viera. Ahora `ExcelWorkbookReader::listar_hojas()` ofrece todas (índice,
+nombre y cantidad de filas) y `abrir()` devuelve la hoja pedida ya posicionada. Los nombres y los
+índices los da **OpenSpout**, no otra librería: quien después lee las filas es OpenSpout, así que
+el índice tiene que salir de la misma fuente que lo consume. La cantidad de filas la pone
+`ExcelSheetInspector`, que va por el ZIP con `XMLReader` en streaming (no por
+`listWorksheetInfo()` de PhpSpreadsheet, que mete la XML completa de cada hoja en memoria dos
+veces — y esta suite ya necesita `memory_limit=-1` para terminar).
+
+**Qué fila es el encabezado.** `ExcelHeaderDetector` mira las primeras 20 filas físicas con las
+fusiones ya propagadas y elige la fila con más celdas llenas que además cumpla: al menos 2 celdas
+llenas **que vengan del archivo** (las que llenó la propagación de una fusión no cuentan), ninguna
+numérica ni fecha, ninguna de más de 40 caracteres y todas distintas entre sí **evaluando sólo las
+que vienen del archivo**. Frena en la primera fila que ya son datos: al menos una celda numérica o
+fecha y al menos **la mitad de las columnas de la tabla** llenas, con un piso de 3. Si no hay
+candidata, cae a la regla vieja (primera fila con algún contenido) con
+`motivo = 'sin_candidata_clara'` y `confianza = 'baja'`.
+
+⚠️ **Las dos condiciones marcadas arriba se calibraron así después de medir, y las dos parecen de
+más.** El umbral de corte era `>= 2 celdas`, y con eso cortaba ante cualquier renglón de membrete:
+`"Distribuidora Bianchi S.A. | 30712345679"` son dos celdas con un número (el CUIT), igual que
+`"Vigencia desde: | 2026-08-01"`. Las listas de proveedor más comunes que existen daban `fila=1,
+sin_candidata_clara`. Y "todas distintas" contaba las celdas propagadas, así que propagar
+`"PRECIOS"` sobre `E:F` —que es el arreglo de las cabeceras fusionadas— dejaba un duplicado que
+sacaba al encabezado de candidato: **un arreglo desactivaba al otro.** Los fixtures `14_` y `17_`
+son los que fijan las dos cosas.
+
+**Cuándo sale la alerta amarilla de `columnas_sin_nombre`.** Sólo por un agujero adentro del
+encabezado, o por una columna que las **filas de datos** usan de verdad (llena en al menos la mitad
+de las filas debajo del encabezado). Medía contra cualquiera de las 20 filas, y una nota suelta en
+J3 (`"Promo hasta fin de mes"`) alcanzaba para que la alerta saliera sobre una planilla impecable —
+con la nota en AD2, 27 letras de columna. **Una alerta que sale sin motivo es peor que no tener
+alerta:** a la tercera vez el usuario deja de leer las amarillas, incluida la que sí importa.
+
+🔴 **La misma regla está implementada dos veces**, en PHP acá y en JavaScript en
+`empresa-spa/src/components/listado/modals/ai-excel-import/Index.vue`, método
+`detect_header_row()`. Si cambiás una, cambiá la otra: el navegador calcula `start_row` con su
+copia y el backend arma el mapeo con ésta, y si divergen se llega al peor escenario posible —el
+mapeo armado con la fila 4 y la importación arrancando en la fila 2, sin ningún error visible.
+`test_los_once_fixtures_existentes_siguen_teniendo_el_encabezado_en_la_fila_1` es la red que
+detecta cualquier cambio de esa regla sobre el parque de fixtures existente.
+
+**Cuántas filas dice tener cada hoja.** `ExcelSheetInspector` lee `<dimension>`, que es O(1), pero
+**no le cree siempre**: un `ref="A1:A1"` (o `ref="A1"`) decía "1 fila" sobre una hoja de 6, y una
+hoja vacía decía "1 filas" en el selector. Con un `ref` de una sola celda se recorren los `<row>`.
+Y como también hay `<dimension>` que declaran de **menos** (`ref="A1:D2"` con 6 filas reales), en
+las hojas chicas (hasta `BYTES_PARA_VERIFICAR_DIMENSION`, 64 KB de XML sin comprimir) se recorre
+igual y gana el número más grande. En las hojas grandes se le cree al archivo: recorrer una hoja de
+20.000 filas son **~800 ms medidos**, y esa cantidad de filas es sólo un rótulo del selector.
+Se aclara acá porque es una decisión, no un olvido.
+
+ℹ️ `EncabezadoDetectadoTest.php` tiene un `saltear_si_la_unidad_2_no_aterrizo()` que **hoy no
+saltea nada**: la unidad 2 aterrizó y `AiExcelAnalyzer::analyze()` ya tiene su tercer parámetro
+`array $opciones = []`. Queda como guarda por si alguien vuelve a partir el trabajo en unidades.
 
 ## Estabilidad de orden de ejecución (Grupo 289, 31/7/2026)
 
@@ -58,6 +185,65 @@ trait aparte porque hubiera sido el mismo reset duplicado en otro archivo. Tambi
 `config()` (Laravel reconstruye la aplicación completa en cada test — `TestCase::tearDown()` pone
 `$this->app = null` — así que no persiste entre tests) y Mockery (`tearDown()` de Laravel ya llama
 `Mockery::close()` siempre): ninguno de los dos es fuente real de fuga acá.
+
+🔴 **Ese baseline de 90 tests y 9 rojos quedó viejo. No lo uses.** Las dos mediciones vigentes, las
+dos del **22/8/2026** en el slot `s8` y las dos con
+`php -d memory_limit=-1 vendor/bin/phpunit tests/Import`:
+
+| Cuándo | Resultado | Para qué sirve |
+|---|---|---|
+| **Antes** de la misión de importación de Excel (hoja elegida, cabecera fusionada, encabezado corrido) | `122 tests, 1457 assertions, 3 failures` | referencia histórica: es contra esto que se midió que la misión no metió regresiones |
+| 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
+| **Hoy**, post-merge con develop (24/8/2026, s1, tanda-correctivos-2408) | `209 tests, 2 failures` | **éste es el baseline: los 2 rojos de IncidenteServianTest, con esos nombres exactos** |
+
+⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
+entres en pánico: **lo que es baseline son los 2 rojos, con estos nombres exactos.** Un tercer rojo,
+o un nombre distinto, es una regresión — salvo que se te haya solapado otra corrida, ver el bloque
+de abajo.
+
+Los dos rojos vigentes (medición del 24/8/2026 en `s1`, `200 tests, 3 failures` antes del arreglo
+de abajo):
+
+1. `IncidenteServianTest::test_no_se_crean_dos_articulos_con_el_mismo_bar_code`
+2. `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos`
+
+🟢 **`RollbackTest::test_el_rollback_borra_los_articulos_creados` salió del baseline el 24/8/2026**
+(tanda-correctivos-2408, ítem 12). No era un bug del rollback: el test fallaba en el conteo PREVIO
+a revertir (esperaba 2 artículos creados y la importación crea 3), así que la aserción del rollback
+nunca se evaluaba — por eso Lucas, probando a mano, veía que el rollback SÍ borra los creados. El
+tercer artículo es el duplicado de `PC-1200`: su artículo en base (A12) tiene `provider_code` pero
+`provider_id` NULL, y el comportamiento fijado del sistema para ese caso es "no matchea → crea
+duplicado" (lo documenta y asierta `StockTest` sobre `04_stock.xlsx`, que trae la misma fila). Se
+corrigió el SETUP del test (espera 3 creados) sin tocar la aserción del rollback, que ahora exige
+además que tras revertir quede vivo solo el A12 original. `RollbackTest` completo en verde.
+
+Los dos rojos de `IncidenteServianTest` **son bugs reales del multi-lote** (la deduplicación
+funciona dentro de un lote pero no entre lotes) y quedaron fuera del alcance de la tanda del 24/8
+porque el fix toca el corazón de `Helpers/import/` (zona en la que trabajan otras misiones en
+paralelo). Los invariantes de esos tests están bien escritos: no ajustarlos.
+
+**Los otros seis rojos que listaba este README se arreglaron en el medio** (los dos restantes de
+`RollbackTest`, los otros dos de `IncidenteServianTest` —incluido el `array_map()` que era el único
+error, no failure— y los dos de `CascadaHerenciaTest`). La suite creció de 90 a 122 tests, y de 122
+a lo que dice la tabla de arriba con la misión de importación de Excel. Un rojo nuevo, o un nombre
+distinto de esos dos, es una regresión nueva.
+
+## 🔴 Una corrida por vez. La suite NO es segura en paralelo contra la misma base
+
+Dos corridas simultáneas de `tests/Import` contra `empresa_testing_s8` **producen un rojo distinto
+cada vez**. Medido el 22/8/2026: apareció un cuarto rojo en
+`CodigosDeBarraRepetidosTest::test_el_merge_deja_los_valores_de_la_ultima_fila` que **desapareció al
+correr la suite sola** — se le había solapado otra corrida contra la misma base. Los tests usan
+`DatabaseTransactions` sobre un mismo esquema y un mismo tenant sembrado: dos procesos a la vez se
+pisan las filas.
+
+El síntoma es traicionero justamente porque el rojo **cambia de nombre en cada corrida**, así que
+parece un bug de concurrencia del código y no del entorno de test. **Si ves un rojo raro, volvé a
+correr esa clase sola antes de creerle.** Y si hay varias sesiones trabajando sobre el mismo slot,
+una corre la suite y las otras esperan. Costó una corrida entera aprenderlo.
+
+El detalle de abajo es la foto del 31/7/2026 y se deja como historia de la medición de estabilidad,
+no como baseline.
 
 Los 9 rojos estables **no son ruido de orden**: son bugs reproducibles y reales, fuera del alcance
 de este grupo (que es sobre estabilidad, no sobre cero rojos). Quedan documentados para el próximo
@@ -81,7 +267,9 @@ grupo correctivo:
 
 `prompts/suites.json` (repo `claude-comerciocity`) se actualizó con `baseline_rojos: 9` y el
 detalle de esta medición, para que el gate diferencial de merge no confunda estos 9 rojos
-conocidos con una regresión nueva.
+conocidos con una regresión nueva. ⚠️ **Ese `baseline_rojos: 9` también quedó viejo**: hoy son 3
+(ver el bloque de arriba). Si el gate diferencial sigue comparando contra 9, va a dejar pasar seis
+regresiones sin chistar.
 
 **Gotcha de entorno encontrado midiendo esto:** un slot recién provisionado puede no tener
 corridas las migraciones más recientes contra `.env.testing` (acá faltaban

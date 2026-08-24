@@ -101,12 +101,52 @@ class AiExcelImportController extends Controller
             $run = ExcelAnalysisRun::create([
                 'uuid'       => Str::uuid()->toString(),
                 'user_id'    => $this->userId(),
+                /*
+                 * Quién disparó la corrida, para dirigirle el aviso de "terminó"
+                 * cuando el job la complete. El canal de global_notification es
+                 * del owner y lo escuchan todos sus empleados: sin este id, el
+                 * aviso le llegaría también a los que no subieron nada.
+                 */
+                'auth_user_id' => optional(auth()->user())->id,
                 'tipo'       => 'analisis',
                 'estado'     => 'pendiente',
                 'excel_path' => $excel_path,
                 'payload'    => [
                     'model'             => $model,
                     'original_filename' => $original_filename,
+                    /*
+                     * Rango de filas y detección de cabecera. El frontend los calcula
+                     * leyendo el Excel en el navegador (paso 1) y hasta ahora vivían
+                     * solo ahí. Los guardamos porque el modal se puede reabrir en el
+                     * paso 2 desde otra pestaña o después de un F5, y en ese momento
+                     * el archivo local ya no existe: sin estos tres valores el modal
+                     * no puede rearmar el rango a importar.
+                     */
+                    'start_row'         => $request->input('start_row'),
+                    'finish_row'        => $request->input('finish_row'),
+                    'has_header_row'    => $request->input('has_header_row'),
+
+                    /*
+                     * Hoja elegida por el usuario en el paso 1 y fila de encabezado.
+                     *
+                     * 🔴 Los tres son OPCIONALES y tienen default, y eso no es prolijidad:
+                     * es lo que hace que un cliente viejo siga funcionando. La SPA sin
+                     * desplegar no manda ninguno de los tres, y AdminSync\AiExcelImportController
+                     * —el que usa admin-api en producción— tampoco. Con los defaults de acá
+                     * (hoja 0, sin nombre, sin fila de encabezado) esas dos puntas se comportan
+                     * exactamente como antes de esta misión: primera hoja y detección automática.
+                     *
+                     * Viajan hoja Y hoja_nombre a propósito: el índice lo calcula SheetJS en el
+                     * navegador y OpenSpout es quien después lee, y los dos no están garantizados
+                     * a coincidir si el libro tiene chartsheets. ExcelWorkbookReader::resolver_indice()
+                     * resuelve por nombre primero, y para eso el nombre tiene que llegar hasta el job.
+                     *
+                     * NO se guarda en columnas propias: excel_analysis_runs.payload es longText con
+                     * cast 'array' y el modelo tiene $guarded = [], así que esto no lleva migración.
+                     */
+                    'hoja'              => self::normalizar_hoja($request->input('hoja')),
+                    'hoja_nombre'       => self::normalizar_hoja_nombre($request->input('hoja_nombre')),
+                    'header_row'        => self::normalizar_header_row($request->input('header_row')),
                 ],
             ]);
 
@@ -129,8 +169,16 @@ class AiExcelImportController extends Controller
                 'trace'   => $e->getTraceAsString(),
             ]);
 
+            /*
+             * 🔴 El mensaje del usuario NO lleva $e->getMessage(), y no es por prolijidad.
+             * Adentro de esa excepción viaja la ruta absoluta del servidor: la IOException de
+             * OpenSpout dice "Could not open C:\...\storage\app\imported_files\ai_import_1234.xlsx
+             * for reading!", y hasta esta misión eso se concatenaba acá y se le mostraba tal cual
+             * al cliente. El detalle sigue estando —completo, con trace— en el Log::error de arriba,
+             * que es donde sirve para diagnosticar.
+             */
             return response()->json([
-                'message' => 'Ocurrió un error inesperado al iniciar el análisis: ' . $e->getMessage(),
+                'message' => 'Ocurrió un error inesperado al iniciar el análisis. Volvé a intentar en unos minutos; si sigue pasando, avisanos.',
             ], 500);
         }
     }
@@ -158,10 +206,18 @@ class AiExcelImportController extends Controller
         }
 
         return response()->json([
+            'uuid'     => $run->uuid,
+            'tipo'     => $run->tipo,
             'estado'   => $run->estado,
             'progreso' => $run->progreso,
             'paso'     => $run->paso,
             'error'    => $run->error,
+            /*
+             * Estado del modal al momento de encolar la corrida. Va siempre, no
+             * solo cuando terminó: el modal se puede reabrir con el análisis
+             * todavía en curso y necesita saber de qué archivo se trata.
+             */
+            'contexto' => $run->contexto_para_frontend(),
             /*
              * El resultado completo solo se devuelve cuando la corrida terminó
              * ("listo"); mientras está pendiente/procesando/error, va null.
@@ -170,6 +226,85 @@ class AiExcelImportController extends Controller
              */
             'resultado' => $run->estado === 'listo' ? $run->resultado : null,
         ], 200);
+    }
+
+    /**
+     * Devuelve la corrida de análisis que este usuario tiene "abierta": o bien una
+     * que todavía está corriendo, o bien una que ya terminó y que él nunca llegó a
+     * mirar.
+     *
+     * Es lo que permite que el análisis sobreviva a cerrar la pestaña. El aviso de
+     * "terminó" viaja por broadcast, pero un broadcast solo llega a quien está
+     * conectado en ese momento: si el usuario encoló el análisis y se fue, el evento
+     * pasó y no vuelve. La SPA llama a este endpoint al arrancar y recupera lo que
+     * se haya perdido mientras no estaba.
+     *
+     * Se limita a corridas del propio auth_user (no del owner): el Excel lo subió
+     * una persona, y es a esa persona a la que le interesa el resultado.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function analysisEnCurso()
+    {
+        $auth_user_id = optional(auth()->user())->id;
+
+        if (is_null($auth_user_id)) {
+            return response()->json(['run' => null], 200);
+        }
+
+        /*
+         * Solo miramos las últimas 48 horas porque es lo que el job conserva:
+         * RunExcelAnalysisJob borra al arrancar las corridas de más de 2 días.
+         * Ofrecer una corrida más vieja que eso sería ofrecer algo cuyo archivo
+         * y cuyo resultado ya pueden no estar.
+         */
+        $run = ExcelAnalysisRun::where('auth_user_id', $auth_user_id)
+            ->where('created_at', '>=', now()->subDays(2))
+            ->whereNull('visto_at')
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        if (is_null($run)) {
+            return response()->json(['run' => null], 200);
+        }
+
+        return response()->json([
+            'run' => [
+                'uuid'     => $run->uuid,
+                'tipo'     => $run->tipo,
+                'estado'   => $run->estado,
+                'progreso' => $run->progreso,
+                'paso'     => $run->paso,
+                'error'    => $run->error,
+                'contexto' => $run->contexto_para_frontend(),
+            ],
+        ], 200);
+    }
+
+    /**
+     * Marca una corrida como vista, para que no se le vuelva a ofrecer al usuario
+     * en la próxima carga de la SPA.
+     *
+     * Se llama tanto cuando el usuario abre el resultado como cuando descarta el
+     * aviso: en los dos casos ya se enteró, que es de lo único que lleva registro
+     * este campo.
+     *
+     * @param  string  $uuid
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function marcarAnalisisVisto($uuid)
+    {
+        $run = ExcelAnalysisRun::where('uuid', $uuid)
+            ->where('user_id', $this->userId())
+            ->first();
+
+        if (is_null($run)) {
+            return response()->json(['message' => 'No se encontro el analisis'], 404);
+        }
+
+        $run->update(['visto_at' => now()]);
+
+        return response(null, 200);
     }
 
     /**
@@ -215,6 +350,20 @@ class AiExcelImportController extends Controller
         $provider_id = is_numeric($provider_id) && (int) $provider_id > 0
             ? (int) $provider_id
             : null;
+
+        /*
+         * Hoja y fila de encabezado con las que se analizó el archivo. Opcionales con default
+         * (hoja 0, encabezado automático): un cliente viejo que no los manda recalcula sobre la
+         * primera hoja, que es lo que hacía antes de esta misión.
+         *
+         * Acá no se resuelve por nombre: este endpoint recibe el índice ya elegido en el paso 1,
+         * no el nombre. La resolución por nombre vive en el job, que es el único que arranca
+         * desde lo que mandó el navegador.
+         */
+        $opciones_de_hoja = [
+            'hoja'            => self::normalizar_hoja($request->input('hoja')),
+            'fila_encabezado' => self::normalizar_header_row($request->input('header_row')),
+        ];
 
         /*
          * Camino rápido (grupo 291, prompt 03): buscamos el último análisis "listo" de
@@ -263,7 +412,8 @@ class AiExcelImportController extends Controller
             null,
             $provider_code_column_index,
             $provider_id,
-            $this->userId()
+            $this->userId(),
+            $opciones_de_hoja
         );
 
         return response()->json([
@@ -352,7 +502,58 @@ class AiExcelImportController extends Controller
             'import_uuid'           => $import_uuid,
             'archivo_excel'         => $excel_full_path,
             'columns'               => $request->input('columns', []),
+            // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
+            'blank_flags'           => $request->input('blank_flags', []),
+
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus
+             * costos vienen con el IVA adentro.
+             *
+             * 🔴 Este flujo NO pasa por ArticleController::import(): arma su propio array y llama
+             * derecho a InitExcelImport, así que cualquier clave que no se agregue acá llega con el
+             * default del backend. Sin esta línea, una importación por IA de una planilla con
+             * costos brutos los guardaría como netos y el costo quedaría 21% inflado, en silencio,
+             * mientras el import clásico hace lo correcto con la misma planilla.
+             *
+             * `boolean()` y no `(bool)`: el flujo de IA manda JSON con un booleano real, pero
+             * `(bool) 'false'` en PHP da TRUE, así que el cast crudo prendería el desglose justo
+             * cuando el usuario no lo pidió. `boolean()` tolera 1/0, "1"/"0", true/false y
+             * "true"/"false".
+             */
+            'precios_incluyen_iva'  => $request->boolean('precios_incluyen_iva'),
             'create_and_edit'       => $request->input('create_and_edit', false),
+
+            /*
+             * Hoja a importar, 0-based. Default 0 = primera hoja, o sea lo que hacía este
+             * endpoint antes de esta misión.
+             *
+             * 🔴 Acá NO viaja header_row, y es a propósito: la importación real se rige por
+             * start_row, que ya viaja, que el usuario ve en pantalla y que puede corregir a
+             * mano. Mandar además la fila de encabezado sería tener dos fuentes de verdad para
+             * "desde dónde arranco a leer", y la primera vez que difieran se importa de más o
+             * de menos sin que nada avise.
+             *
+             * 🔴 Y OJO con esto (T5 del plan): armar_archivo_csv() vuelca la hoja elegida al CSV
+             * 1:1 con preserveEmptyRows(true), así que línea de CSV = fila del Excel DE ESA HOJA.
+             * start_row/finish_row tienen que venir calculados sobre la MISMA hoja que este
+             * 'hoja'. Si el navegador calculó finish_row mirando la hoja 0 y manda hoja=1, se
+             * importa de menos en silencio (ajustar_finish_row_segun_excel_real() recorta por
+             * arriba, no completa por abajo).
+             */
+            'hoja'                  => self::normalizar_hoja($request->input('hoja')),
+
+            /*
+             * Nombre de la hoja elegida, OPCIONAL (default null = "usá el índice").
+             *
+             * Existe por lo mismo que existe ExcelWorkbookReader::resolver_indice(): el
+             * índice lo calcula SheetJS en el navegador y quien lee después es OpenSpout,
+             * y los dos pueden discrepar (chartsheets de por medio). Cuando el nombre
+             * viaja, gana él; cuando no, se usa el índice crudo y todo queda como estaba.
+             *
+             * Hoy la SPA no lo manda por acá, así que este parámetro no cambia nada de lo
+             * que ya anda: es la mitigación disponible para cuando el índice no alcance.
+             */
+            'hoja_nombre'           => self::normalizar_hoja_nombre($request->input('hoja_nombre')),
             'start_row'             => $request->input('start_row', 2),
             'finish_row'            => $request->input('finish_row', 1000),
             'provider_id'           => $request->input('provider_id'),
@@ -413,16 +614,31 @@ class AiExcelImportController extends Controller
             $finish_row = (int) $finish_row;
         }
 
+        /*
+         * Hoja elegida por el usuario en el paso 1 del modal. Opcional con default 0:
+         * un cliente que no la manda importa la primera hoja, como antes de esta mision.
+         *
+         * 🔴 Esto es lo que hacia que el selector MINTIERA para clientes: el modal es
+         * compartido con articulos, le mostraba el selector de hoja al usuario de clientes,
+         * mandaba 'hoja' — y aca no se leia. Peor todavia, sin WithMultipleSheets
+         * Maatwebsite no importaba la primera hoja sino TODAS (ver ClientImport::sheets()),
+         * asi que el usuario terminaba con clientes creados a partir de la hoja de notas.
+         */
+        $hoja        = self::normalizar_hoja($request->input('hoja'));
+        $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
+
         try {
             Excel::import(
-                new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
+                new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre),
                 $excel_full_path
             );
 
             Log::info('AiExcelImportController::import_clients - importación finalizada', [
-                'user_id'    => $this->userId(),
-                'start_row'  => $start_row,
-                'finish_row' => $finish_row,
+                'user_id'     => $this->userId(),
+                'start_row'   => $start_row,
+                'finish_row'  => $finish_row,
+                'hoja'        => $hoja,
+                'hoja_nombre' => $hoja_nombre,
             ]);
 
             return response()->json(['message' => 'Importación de clientes iniciada.'], 200);
@@ -465,20 +681,26 @@ class AiExcelImportController extends Controller
             $finish_row = (int) $finish_row;
         }
 
+        /* Misma hoja elegida que en import_clients, con el mismo default 0. */
+        $hoja        = self::normalizar_hoja($request->input('hoja'));
+        $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
+
         try {
             /*
              * El quinto parámetro ($provider_id) es null; en importación de proveedores
              * no se asigna un proveedor padre al registro importado.
              */
             Excel::import(
-                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
+                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre),
                 $excel_full_path
             );
 
             Log::info('AiExcelImportController::import_providers - importación finalizada', [
-                'user_id'    => $this->userId(),
-                'start_row'  => $start_row,
-                'finish_row' => $finish_row,
+                'user_id'     => $this->userId(),
+                'start_row'   => $start_row,
+                'finish_row'  => $finish_row,
+                'hoja'        => $hoja,
+                'hoja_nombre' => $hoja_nombre,
             ]);
 
             return response()->json(['message' => 'Importación de proveedores iniciada.'], 200);
@@ -563,6 +785,8 @@ class AiExcelImportController extends Controller
             $run = ExcelAnalysisRun::create([
                 'uuid'       => Str::uuid()->toString(),
                 'user_id'    => $this->userId(),
+                /* Mismo motivo que en analyze(): a quién le corresponde el aviso. */
+                'auth_user_id' => optional(auth()->user())->id,
                 'tipo'       => 'recomendacion',
                 'estado'     => 'pendiente',
                 'excel_path' => $excel_path,
@@ -570,6 +794,29 @@ class AiExcelImportController extends Controller
                     'provider_id'                 => $provider_id,
                     'provider_code_column_index'  => $provider_code_column_index,
                     'column_mapping'              => $column_mapping,
+                    /*
+                     * uuid de la corrida de análisis de la que salió este paso 2.
+                     * La recomendación sola no alcanza para rearmar el paso 3: la
+                     * pantalla también muestra duplicados, placeholders y cadena de
+                     * identificación, que son del análisis. Guardando el uuid padre,
+                     * el modal puede reconstruir los dos pasos pidiendo primero el
+                     * análisis y después esta recomendación.
+                     */
+                    'analysis_uuid'               => $request->input('analysis_uuid'),
+
+                    /*
+                     * Misma hoja y misma fila de encabezado con las que se hizo el análisis del
+                     * que salió este paso 2. Opcionales con default (hoja 0, encabezado
+                     * automático) por la misma razón que en analyze(): la SPA sin desplegar no
+                     * los manda y tiene que seguir andando igual que hoy.
+                     *
+                     * Si no se guardaran, la recomendación se calcularía sobre la hoja 0 mientras
+                     * el usuario eligió otra: los duplicados, los formatos numéricos y la
+                     * política recomendada saldrían de una planilla distinta de la que se va a
+                     * importar, y en pantalla no habría un solo indicio de eso.
+                     */
+                    'hoja'                        => self::normalizar_hoja($request->input('hoja')),
+                    'header_row'                  => self::normalizar_header_row($request->input('header_row')),
                 ],
             ]);
 
@@ -591,9 +838,69 @@ class AiExcelImportController extends Controller
                 'trace'   => $e->getTraceAsString(),
             ]);
 
+            /* Mismo criterio que analyze(): la ruta del servidor va al log, no a la pantalla. */
             return response()->json([
-                'message' => 'Ocurrió un error inesperado al iniciar la recomendación: ' . $e->getMessage(),
+                'message' => 'Ocurrió un error inesperado al iniciar la recomendación. Volvé a intentar en unos minutos; si sigue pasando, avisanos.',
             ], 500);
         }
+    }
+
+    /**
+     * Índice 0-based de hoja recibido del cliente, normalizado.
+     *
+     * Default 0 (primera hoja) para cualquier cosa que no sea un número >= 0: ausente,
+     * vacío, "null", basura. Ese default ES el contrato de compatibilidad hacia atrás
+     * (§1.4 del plan): un cliente que no manda 'hoja' —la SPA sin desplegar, o
+     * AdminSync\AiExcelImportController, que es el que usa admin-api en producción— tiene
+     * que comportarse exactamente como antes de esta misión.
+     *
+     * @param  mixed $valor
+     * @return int
+     */
+    protected static function normalizar_hoja($valor)
+    {
+        if (is_numeric($valor) && (int) $valor >= 0) {
+            return (int) $valor;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Nombre de hoja recibido del cliente, normalizado a string no vacío o null.
+     *
+     * Viaja junto con el índice porque los dos pueden discrepar: el índice lo calcula
+     * SheetJS en el navegador y OpenSpout es quien lee después.
+     * ExcelWorkbookReader::resolver_indice() le da prioridad al nombre.
+     *
+     * @param  mixed $valor
+     * @return string|null
+     */
+    protected static function normalizar_hoja_nombre($valor)
+    {
+        if (is_string($valor) && trim($valor) !== '') {
+            return trim($valor);
+        }
+
+        return null;
+    }
+
+    /**
+     * Fila de encabezado 1-based recibida del cliente, normalizada.
+     *
+     * Default null = "detectala vos". Cualquier valor menor a 1 también cae a null: una
+     * fila 0 no existe en un Excel, y dejarla pasar activaría la rama de encabezado
+     * corrido con un número imposible.
+     *
+     * @param  mixed $valor
+     * @return int|null
+     */
+    protected static function normalizar_header_row($valor)
+    {
+        if (is_numeric($valor) && (int) $valor >= 1) {
+            return (int) $valor;
+        }
+
+        return null;
     }
 }

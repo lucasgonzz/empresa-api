@@ -719,11 +719,17 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      */
     private function fetch_google_image_results(string $query, GeocoderCounter $counter): array
     {
-        $counter->counter += 1;
-        $counter->save();
-
+        // El contador NO se incrementa aca arriba, que es donde estaba y donde parece natural
+        // ponerlo: un error de la API le descontaba busquedas al cliente sin haber consultado nada.
+        // El 4/8/2026, con el bug del referrer (prompt 01), un solo batch le quemo 4 busquedas de 10
+        // sin traer una sola imagen, y cada reintento le comia otras tantas. Google tampoco cobra
+        // una request que rechaza por restriccion de referrer ni una que falla por conexion.
+        // El consumo se registra abajo, en el unico camino que llego a buscar de verdad.
         try {
-            $http_response = $this->google_http()
+            // google_api_http() y no google_http(): la key de Custom Search tiene restriccion por
+            // referrer HTTP y sin el header Google responde "Requests from referer <empty> are
+            // blocked". El User-Agent de aca no lo pisa: son claves distintas del mismo array.
+            $http_response = $this->google_api_http()
                 ->timeout(15)
                 ->withHeaders(['User-Agent' => 'Mozilla/5.0'])
                 ->get('https://www.googleapis.com/customsearch/v1', [
@@ -764,6 +770,8 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             ];
         }
 
+        $this->consumir_cuota($counter);
+
         return [
             'items'         => $body['items'] ?? [],
             'api_error'     => null,
@@ -771,6 +779,23 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                 ? (int) $body['searchInformation']['totalResults']
                 : 0,
         ];
+    }
+
+    /**
+     * Descuenta una busqueda de la cuota diaria del usuario.
+     *
+     * Se llama SOLO desde el camino exitoso de `fetch_google_image_results`, y a proposito tambien
+     * cuando la busqueda no encontro ninguna imagen: Google la cobro igual, porque la query se
+     * ejecuto y devolvio cero resultados. El criterio es "¿llego a haber busqueda?", no "¿sirvio de
+     * algo?" — es la parte contraintuitiva y es justo donde alguien va a querer "corregirlo".
+     *
+     * @param GeocoderCounter $counter Contador de busquedas del dia.
+     * @return void
+     */
+    private function consumir_cuota(GeocoderCounter $counter)
+    {
+        $counter->counter += 1;
+        $counter->save();
     }
 
     /**

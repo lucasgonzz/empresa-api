@@ -64,7 +64,9 @@ class DemoIngresoTokenHelper
      * Resuelve el token de ingreso vigente para el token en claro recibido.
      *
      * Vigente = el hash coincide, `expires_at` es posterior a ahora y
-     * `revoked_at` está vacío.
+     * `revoked_at` está vacío. En local, las dos últimas condiciones se
+     * ignoran (ver `bypass_vigencia_local()`): el hash siempre tiene que
+     * coincidir con un token que de verdad se emitió.
      *
      * @param string $plain_token Token en claro recibido desde el request.
      * @return DemoIngresoToken|null Registro vigente o null si no existe/expiró/fue revocado.
@@ -78,10 +80,35 @@ class DemoIngresoTokenHelper
         /** Hash del token entrante para comparar contra la fila guardada. */
         $token_hash = hash('sha256', trim($plain_token));
 
-        return DemoIngresoToken::where('token_hash', $token_hash)
-            ->where('expires_at', '>', Carbon::now())
-            ->whereNull('revoked_at')
-            ->first();
+        $query = DemoIngresoToken::where('token_hash', $token_hash);
+
+        if (!self::bypass_vigencia_local()) {
+            $query->where('expires_at', '>', Carbon::now())->whereNull('revoked_at');
+        }
+
+        return $query->first();
+    }
+
+    /**
+     * true solo en entorno local: ahí el vencimiento y la revocación del token de ingreso
+     * dejan de bloquear, para poder testear la demo sin pelearse con el horario del turno.
+     *
+     * Mismo criterio que `modo_prueba()` en `admin-api/DemoExperienciaController`: la
+     * variable de entorno, nada más — así no se puede filtrar por accidente a producción,
+     * ni depende de una carpeta o un host particular.
+     *
+     * 🔴 Esto NUNCA salta la EXISTENCIA del registro. Un token que nunca se emitió (o
+     * inventado) sigue sin resolver nada, ni siquiera en local — lo único que se ignora es
+     * CUÁNDO vence y si fue revocado. Lo consultan `resolver()` acá arriba y
+     * `DemoSessionVigente::handle()`: una sola definición de la regla, no dos copias que
+     * puedan divergir (ver el informe `20260817-link-ingreso-demo-sin-esquema.md`: cuando
+     * una regla aparece escrita dos veces, hay que buscar la tercera que no la tiene).
+     *
+     * @return bool
+     */
+    public static function bypass_vigencia_local(): bool
+    {
+        return config('app.env') === 'local';
     }
 
     /**

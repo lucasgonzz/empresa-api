@@ -94,6 +94,216 @@ class AfipImportesCalculator
     }
 
     /**
+     * Porcentaje REAL de cada clave interna de `default_ivas()`.
+     *
+     * 🔴 Las claves NO son el porcentaje: `'10'` es 10,5 % y `'2'` es 2,5 %. Son las claves
+     * internas historicas del arreglo de alicuotas, alineadas con los Id de AFIP (4 y 9).
+     * Cualquier calculo tiene que salir de ACA, nunca de castear la clave a numero.
+     *
+     * @return array Mapa clave interna => porcentaje real.
+     */
+    private function porcentajes_reales()
+    {
+        return [
+            '27' => 27.0,
+            '21' => 21.0,
+            '10' => 10.5,
+            '5'  => 5.0,
+            '2'  => 2.5,
+            '0'  => 0.0,
+        ];
+    }
+
+    /**
+     * Lee el reparto por alicuota que cargo el usuario junto al importe personalizado.
+     *
+     * Se lee con `json_decode()` a mano (y no con un cast del modelo) para no tocar
+     * `App\Models\AfipTicket`. `$guarded = []` hace que el mass-assign del `json_encode()`
+     * que escribe `MakeAfipTicket` funcione igual.
+     *
+     * Las filas se recorren en el orden fijo de `default_ivas()` ('27','21','10','5','2','0')
+     * y no en el orden en que las mando el front: asi el resultado es determinista, y sobre
+     * todo la "ultima fila" que absorbe el descuadre es siempre la de alicuota MENOR.
+     *
+     * @param AfipHelper $afip_helper Contexto principal.
+     * @return array|null Filas normalizadas con `key`, `porcentaje` e `importe`, o null si no hay reparto.
+     */
+    private function get_filas_importe_personalizado(AfipHelper $afip_helper)
+    {
+        /** @var string|null $json Reparto crudo tal como quedo persistido en el ticket. */
+        $json = $afip_helper->afip_ticket->importe_personalizado_ivas_json;
+
+        if (is_null($json) || $json === '') {
+            return null;
+        }
+
+        /** @var mixed $data Reparto decodificado. */
+        $data = json_decode($json, true);
+
+        if (!is_array($data) || count($data) == 0) {
+            return null;
+        }
+
+        /** @var array $porcentajes Porcentajes reales por clave interna. */
+        $porcentajes = $this->porcentajes_reales();
+        /** @var array $filas Filas normalizadas, en el orden fijo de default_ivas(). */
+        $filas = [];
+
+        foreach (array_keys($this->default_ivas()) as $key) {
+
+            foreach ($data as $fila) {
+
+                if (!is_array($fila) || !isset($fila['key']) || (string) $fila['key'] !== (string) $key) {
+                    continue;
+                }
+
+                /**
+                 * @var float $importe Total de esa alicuota CON IVA, cuantizado a 2 decimales.
+                 * El redondeo se re-fuerza aca y no se asume: el reparto viaja en un `longText`,
+                 * asi que una fila con 3 decimales (de un llamador que saltee el controller, o de
+                 * una fila vieja en base) rompe el invariante (a) y puede dejar un BaseImp negativo.
+                 */
+                $importe = isset($fila['importe']) && is_numeric($fila['importe']) ? round((float) $fila['importe'], 2) : 0;
+
+                // Una fila en 0 (o negativa) no genera bucket: ensucia los logs y AfipWsfeHelper
+                // la filtraria igual antes de mandarla.
+                if ($importe <= 0) {
+                    continue;
+                }
+
+                $filas[] = [
+                    'key'        => (string) $key,
+                    'porcentaje' => isset($porcentajes[$key]) ? $porcentajes[$key] : 0.0,
+                    'importe'    => $importe,
+                ];
+            }
+        }
+
+        if (count($filas) == 0) {
+            return null;
+        }
+
+        return $filas;
+    }
+
+    /**
+     * Reparte el importe personalizado entre las alicuotas informadas, haciendo el back-out
+     * del IVA fila por fila.
+     *
+     * Invariantes que este metodo garantiza (y que blindan los tests del grupo `facturacion`):
+     *
+     * (a) POR FILA: el IVA se calcula por RESTA (`importe_fila - base`), jamas como
+     *     `base * pct / 100`. `importe_fila` viene cuantizado a 2 decimales — el redondeo se
+     *     FUERZA en `MakeAfipTicket::validar_filas_importe_personalizado()` al guardar y se
+     *     vuelve a forzar en `get_filas_importe_personalizado()` al leer, no se asume — y `base`
+     *     sale de un `round(..., 2)`, asi que la resta tiene exactamente 2 decimales y
+     *     `base + iva_fila == importe_fila` es EXACTO, sin residuo.
+     *     Sin esa cuantizacion, una fila de 3 decimales dejaba `ImpTotal` distinto del importe
+     *     autorizado y podia generar un `BaseImp` NEGATIVO al absorber el descuadre.
+     *
+     * (b) GLOBAL: el ajuste del descuadre corre ANTES del back-out, asi que
+     *     `suma(importe_fila) == importe_personalizado` exacto. Con (a), eso da
+     *     `suma(BaseImp) + suma(Importe) == importe_personalizado` exacto, y el ImpTotal que
+     *     `calculate()` manda a ARCA es EXACTAMENTE el importe que autorizo el usuario.
+     *
+     * (c) QUIEN ABSORBE: la ULTIMA fila con importe > 0 en el orden fijo '27','21','10','5','2','0'.
+     *     Ultima y no primera para que el centavo caiga en la alicuota MENOR, minimizando el
+     *     impacto fiscal. Se ajusta el importe TOTAL de la fila (antes del back-out), no
+     *     `Importe`/`BaseImp` por separado, para no romper la relacion `Importe ~= BaseImp x alicuota`
+     *     que ARCA valida por fila.
+     *
+     * (d) Este metodo NUNCA lanza excepcion: su contrato es devolver siempre importes coherentes.
+     *     Un descuadre grande (mas de un centavo) se loguea y se reparte igual.
+     *
+     *     🔴 Ojo con el 422 de `SaleController::makeAfipTicket()`: valida la suma del reparto
+     *     contra el importe ANTES de guardar, pero NO puede impedir un descuadre aca. Si un
+     *     descuadre grande llega a este metodo, el 422 ya paso — por un llamador que saltea el
+     *     controller, o por un reparto viejo en base. Por eso el warning es la unica senal, y
+     *     por eso las dos capas comparten el criterio de validacion (ver
+     *     `MakeAfipTicket::validar_filas_importe_personalizado()`).
+     *
+     * @param array $ivas Acumulador de alicuotas (estructura de default_ivas()).
+     * @param float $importe_personalizado Importe total a facturar, en pesos.
+     * @param array $filas Filas normalizadas por get_filas_importe_personalizado(); vacio = todo al 21 %.
+     * @return array Con `ivas`, `gravado` e `iva`.
+     */
+    private function repartir_importe_personalizado($ivas, $importe_personalizado, $filas)
+    {
+        /** @var float $gravado Base imponible total repartida. */
+        $gravado = 0;
+        /** @var float $iva IVA total repartido. */
+        $iva = 0;
+
+        // Sin reparto explicito se conserva el comportamiento historico: todo al 21 %.
+        if (count($filas) == 0) {
+            $filas = [
+                [
+                    'key'        => '21',
+                    'porcentaje' => 21.0,
+                    'importe'    => $importe_personalizado,
+                ],
+            ];
+        }
+
+        // Paso 1 — ajuste del descuadre, ANTES del back-out (invariante (b)).
+        /** @var float $suma Suma de los importes de todas las filas. */
+        $suma = 0;
+        foreach ($filas as $fila) {
+            $suma += (float) $fila['importe'];
+        }
+
+        /** @var float $diferencia Lo que le falta (o le sobra) al reparto para dar el importe. */
+        $diferencia = round($importe_personalizado - $suma, 2);
+
+        if ($diferencia != 0) {
+
+            /** @var int $ultimo Indice de la ultima fila del orden fijo: la de alicuota menor (invariante (c)). */
+            $ultimo = count($filas) - 1;
+            $filas[$ultimo]['importe'] = round((float) $filas[$ultimo]['importe'] + $diferencia, 2);
+
+            if (abs($diferencia) > 0.01) {
+                Log::warning(
+                    'AfipImportesCalculator: el reparto por alicuota del importe personalizado descuadraba en '.
+                    $diferencia.' (importe: '.$importe_personalizado.', suma de filas: '.$suma.'). '.
+                    'Se absorbio en la alicuota '.$filas[$ultimo]['key'].'.'
+                );
+            }
+        }
+
+        // Paso 2 — back-out del IVA fila por fila (invariante (a)).
+        foreach ($filas as $fila) {
+
+            /** @var float $porcentaje Porcentaje REAL de la alicuota (10,5 y 2,5 incluidos). */
+            $porcentaje = (float) $fila['porcentaje'];
+            /** @var float $importe_fila Total de la fila CON IVA. */
+            $importe_fila = (float) $fila['importe'];
+
+            // El divisor sale del porcentaje, igual que AfipItemCalculator::get_price_without_iva().
+            // Nada de hardcodear 1.105.
+            /** @var float $base Base imponible de la fila. */
+            $base = round($importe_fila / (($porcentaje / 100) + 1), 2);
+            /** @var float $iva_fila IVA de la fila, SIEMPRE por resta. */
+            $iva_fila = round($importe_fila - $base, 2);
+
+            if (!isset($ivas[$fila['key']])) {
+                $ivas[$fila['key']] = ['BaseImp' => 0, 'Importe' => 0, 'Id' => 0];
+            }
+
+            $ivas[$fila['key']]['BaseImp'] += $base;
+            $ivas[$fila['key']]['Importe'] += $iva_fila;
+
+            $gravado += $base;
+            $iva += $iva_fila;
+        }
+
+        return [
+            'ivas'    => $ivas,
+            'gravado' => $gravado,
+            'iva'     => $iva,
+        ];
+    }
+
+    /**
      * Calcula importes cuando la condición IVA del emisor es RI.
      *
      * @param AfipHelper $afip_helper Contexto principal.
@@ -106,6 +316,12 @@ class AfipImportesCalculator
      */
     private function calculate_for_responsable_inscripto(AfipHelper $afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva)
     {
+        /**
+         * Ojo con el orden: este bloque va ANTES del importe personalizado y le GANA. Si el
+         * usuario tiene metodos de pago seleccionados para facturar, el importe personalizado
+         * (y su reparto por alicuota) se ignoran por completo. Es comportamiento preexistente
+         * y se preserva tal cual: no se toca.
+         */
         if ($afip_helper->factura_solo_algunos_metodos_de_pago) {
             Log::info('factura_solo_algunos_metodos_de_pago');
 
@@ -127,24 +343,19 @@ class AfipImportesCalculator
         }
 
         if ($afip_helper->afip_ticket->facturar_importe_personalizado) {
-            /** @var float $importe_personalizado Importe final informado manualmente. */
+            /** @var float $importe_personalizado Importe final informado manualmente, SIEMPRE en pesos. */
             $importe_personalizado = (float) $afip_helper->afip_ticket->facturar_importe_personalizado;
-            /** @var float $base_imponible Base imponible para alícuota 21%. */
-            $base_imponible = round($importe_personalizado / 1.21, 2);
-            /** @var float $importe_iva Diferencia correspondiente al IVA 21%. */
-            $importe_iva = round($importe_personalizado - $base_imponible, 2);
-
-            $gravado += $base_imponible;
-            $iva += $importe_iva;
-            $ivas['21']['Importe'] += $importe_iva;
-            $ivas['21']['BaseImp'] += $base_imponible;
+            /** @var array|null $filas Reparto por alicuota que cargo el usuario, o null si no cargo ninguno. */
+            $filas = $this->get_filas_importe_personalizado($afip_helper);
+            /** @var array $resultado Reparto ya resuelto: buckets de IVA, gravado e iva. */
+            $resultado = $this->repartir_importe_personalizado($ivas, $importe_personalizado, is_null($filas) ? [] : $filas);
 
             return [
-                'ivas' => $ivas,
-                'gravado' => $gravado,
+                'ivas' => $resultado['ivas'],
+                'gravado' => $gravado + $resultado['gravado'],
                 'neto_no_gravado' => $neto_no_gravado,
                 'exento' => $exento,
-                'iva' => $iva,
+                'iva' => $iva + $resultado['iva'],
             ];
         }
 
@@ -237,15 +448,27 @@ class AfipImportesCalculator
     {
         /** @var float $total_a_facturar Total bruto sujeto a facturación. */
         $total_a_facturar = $afip_helper->sale->total;
+        /**
+         * @var bool $es_importe_personalizado El importe personalizado ya viene en PESOS: no se cotiza.
+         * Sin esta marca, una venta en dolares con importe personalizado se multiplicaba de nuevo
+         * por `valor_dolar` y salia hacia ARCA con un total inflado por la cotizacion.
+         */
+        $es_importe_personalizado = false;
 
         if (!is_null($afip_helper->afip_ticket->facturar_importe_personalizado)) {
             $total_a_facturar = $afip_helper->afip_ticket->facturar_importe_personalizado;
+            $es_importe_personalizado = true;
         }
 
         /**
          * Si viene desde nota de crédito parcial, se calcula únicamente con artículos recibidos.
+         *
+         * Esta rama PISA el importe personalizado (va despues a proposito, como hoy) y arma el
+         * total desde `pivot->price`, que SI esta en la moneda de la venta: vuelve a necesitar
+         * la cotizacion, asi que se baja la marca.
          */
         if ($afip_helper->nota_credito_model && count($afip_helper->articles) >= 1) {
+            $es_importe_personalizado = false;
             $total_a_facturar = 0;
             foreach ($afip_helper->articles as $article) {
                 $total_article = (float) $article->pivot->price * (float) $article->pivot->amount;
@@ -259,7 +482,11 @@ class AfipImportesCalculator
         /**
          * Si la venta está en USD y tiene cotización, se pasa a moneda local.
          */
-        if ($afip_helper->sale->moneda_id == 2 && !is_null($afip_helper->sale->valor_dolar)) {
+        if (
+            !$es_importe_personalizado
+            && $afip_helper->sale->moneda_id == 2
+            && !is_null($afip_helper->sale->valor_dolar)
+        ) {
             $total_a_facturar *= (float) $afip_helper->sale->valor_dolar;
         }
 

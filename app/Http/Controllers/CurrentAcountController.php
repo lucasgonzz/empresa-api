@@ -6,6 +6,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
@@ -65,6 +66,34 @@ class CurrentAcountController extends Controller
 
         // CurrentAcountHelper::eliminar_pagos_provisorios($request->credit_account_id, $request->is_provisorio);
 
+        /*
+         * 🔴 Las cajas destino se validan ACA, antes de crear absolutamente nada.
+         *
+         * Un pago se puede repartir entre varias cajas (tipico con la extension de ventas en
+         * dolares: efectivo en dolares a la caja en dolares + efectivo en pesos a la caja en
+         * pesos). Los movimientos se crean uno por uno mas abajo, en attachPaymentMethods(), y si
+         * la segunda caja no tenia apertura el flujo se cortaba ahi: el primer movimiento ya
+         * estaba hecho, el pago ya estaba creado, y no llegaban a correr ni el saldo ni la
+         * imputacion. Quedaba un pago huerfano y una caja sin la plata (reportado el 21/8/2026).
+         *
+         * Validar despues no alcanza: para cuando falla, la mitad del trabajo ya esta persistida.
+         * Es la misma convencion que ya usa delete() de este mismo controlador para el borrado.
+         *
+         * 🔴 Lo que se valida es que la caja tenga ALGUNA apertura, no que este abierta ahora. Una
+         * caja cerrada con aperturas previas registra el movimiento sin problema (se cuelga de la
+         * ultima) y asi funciona hoy en todos los flujos: rechazarla seria romperle el cobro a
+         * cualquier comercio que cierra la caja a la noche. Ver el detalle del criterio en
+         * CurrentAcountCajaHelper::cajas_sin_apertura_en_payload().
+         */
+        $cajas_sin_apertura = CurrentAcountCajaHelper::cajas_sin_apertura_en_payload($request->current_acount_payment_methods);
+
+        if (count($cajas_sin_apertura)) {
+
+            return response()->json([
+                'message' => 'Las siguientes cajas nunca se abrieron: '.implode(', ', $cajas_sin_apertura).'. Hay que abrirlas para poder registrar el pago.',
+            ], 422);
+        }
+
         $pago = CurrentAcount::create([
             'haber'                             => $this->get_haber($request),
             'description'                       => $request->description,
@@ -74,7 +103,13 @@ class CurrentAcountController extends Controller
             'status'                            => 'pago_from_client',
             'user_id'                           => $this->userId(),
             'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
-            'to_pay_id'                         => !is_null($request->to_pay) ? $request->to_pay['id'] : null,
+            /*
+             * to_pay explícito del request, o —si el pago viene de una cuota de un plan de
+             * pago— el débito de la venta del plan (tanda correctivos 2408, ítem 13: regla
+             * de Lucas, el pago de una cuota se imputa a la venta del plan y no al
+             * comprobante más viejo). Ver CurrentAcountCuotaHelper::get_to_pay_id().
+             */
+            'to_pay_id'                         => CurrentAcountCuotaHelper::get_to_pay_id($request),
             'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
             'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
@@ -96,6 +131,27 @@ class CurrentAcountController extends Controller
             // Sincroniza saldo de la cuenta corriente y saldo por moneda en el model asociado.
             CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
 
+            /*
+             * 🔴 LAS DOS RAMAS SALDAN EL MISMO DÉBITO, ASÍ QUE LAS DOS TIENEN QUE DEJAR TODO
+             *    LO QUE DEPENDE DE QUE UN DÉBITO QUEDE SALDADO.
+             *
+             * `current_date` NO es una bandera de negocio: es una optimización. Con fecha pasada
+             * hay que recalcular la cuenta entera porque el pago se mete en el medio del orden
+             * cronológico; con la fecha de hoy alcanza con imputar el pago nuevo contra los
+             * débitos pendientes. El hecho económico es el mismo.
+             *
+             * Y el default de la SPA es `current_date = 1`, o sea que la rama de abajo es EL
+             * COBRO DE TODOS LOS DÍAS, no el caso raro. Cualquier efecto que se enganche a "el
+             * débito quedó pagado" y viva solo del lado del recálculo completo va a andar en la
+             * excepción y fallar en la regla — es exactamente lo que pasó con los puntos para
+             * clientes hasta el 22/8/2026.
+             *
+             * Por eso acá NO hay ninguna llamada al módulo de puntos, ni la tiene que haber:
+             * el enganche está al final de `CurrentAcountPagoHelper::init()`, que es el único
+             * método por el que pasan las DOS ramas (check_saldos_y_pagos() también termina
+             * llamándolo, una vez por pago). Si mañana aparece otro efecto de ese tipo, el lugar
+             * es ése y no una copia en cada rama de este if.
+             */
             if (!$request->current_date) {
                 // Pago con fecha pasada: el recálculo completo ya se encarga
                 // de recalcular saldos e imputar todos los pagos (incluyendo este)
@@ -139,6 +195,28 @@ class CurrentAcountController extends Controller
         return $total;
     }
 
+    /**
+     * Nota de crédito de MONTO LIBRE sobre la cuenta corriente del cliente.
+     *
+     * 🔴 ACÁ NO SE PASA `sale_id`, Y NO ES UN OLVIDO. El request de la SPA
+     * (`components/common/current-acounts/NotaCredito.vue`) manda monto, descripción y
+     * modelo, y nada más: esta NC es un ajuste a la CUENTA del cliente y puede no
+     * corresponder a ninguna venta. Inventarle una acá —la más vieja sin saldar, por
+     * ejemplo— sería escribir en `current_acounts.sale_id` un dato que nadie declaró, y ese
+     * campo es el que después usan los comprobantes y el módulo de puntos para decir "esta NC
+     * es de esta venta".
+     *
+     * La consecuencia para los puntos está resuelta del otro lado y hay que dejarla dicha,
+     * porque es la parte que no se ve desde acá: esta NC entra a la cola FIFO y puede saldar
+     * el débito de una venta. Que un débito quede saldado por una NC NO es un cobro, y quien
+     * lo distingue es `PuntosAcumulacionHelper::corresponde_acumular()` mirando `pagado_por`
+     * y el `status` de los haberes; cuánto de la venta anula, lo decide
+     * `PuntosBaseHelper::factor_nota_credito()`. El enganche que vuelve a preguntar cuelga de
+     * `CurrentAcountPagoHelper::init()`, por el que esta NC pasa sí o sí.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function notaCredito(Request $request) {
         $nota_credito = CurrentAcountHelper::notaCredito($request->credit_account_id, $request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
         CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
@@ -260,7 +338,8 @@ class CurrentAcountController extends Controller
                 $metodos_para_compensacion,
                 DeleteCajaCompensacionHelper::MODEL_TYPE_CURRENT_ACOUNT,
                 $model_name,
-                $notas_compensacion
+                $notas_compensacion,
+                $current_acount->id
             );
         }
         

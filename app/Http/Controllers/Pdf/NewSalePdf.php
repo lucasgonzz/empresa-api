@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
+use App\Http\Controllers\Pdf\Puntos\PuntosComprobanteHelper;
 use App\Models\Address;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
@@ -407,6 +408,32 @@ class NewSalePdf extends fpdf
         }
     }
 
+    /**
+     * Cache de los renglones informativos de puntos (sumados + acumulados).
+     *
+     * @var array<int, string>|null
+     */
+    private $puntos_rows = null;
+
+    /**
+     * Los renglones de puntos de esta venta, calculados una sola vez.
+     *
+     * 🔴 La memoización NO es una optimización opcional. Estos renglones se piden desde tres
+     * lugares —estimate_totals_box_height() para medir, print_totals_box() para dibujar, y el
+     * pie de CADA hoja vía render_totals_box_snapshot()— y detrás hay dos consultas (el libro
+     * de movimientos y el saldo). Sin cache, un remito de seis páginas las pagaría trece veces.
+     *
+     * @return array<int, string>
+     */
+    private function get_puntos_rows(): array
+    {
+        if ($this->puntos_rows === null) {
+            $this->puntos_rows = PuntosComprobanteHelper::renglones_puntos($this->sale, $this->user);
+        }
+
+        return $this->puntos_rows;
+    }
+
     function descuentos_y_recargos($total_bruto_override = null) {
 
         /**
@@ -419,7 +446,10 @@ class NewSalePdf extends fpdf
             ? $total_bruto_override
             : $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
 
-        if ($this->total_bruto != $this->sale->total) {
+        if (
+            $this->total_bruto != $this->sale->total
+            || PuntosComprobanteHelper::tiene_canje($this->sale)
+        ) {
 
             /**
              * La línea "Sub Total" solo se imprime si el perfil lo pide (show_subtotal_in_footer).
@@ -444,9 +474,70 @@ class NewSalePdf extends fpdf
 
             $this->discounts();
             $this->surchages();
+            $this->canje_de_puntos();
         }
 
+        $this->renglones_de_puntos();
+    }
 
+    /**
+     * El renglón del canje de puntos del path FISCAL (AFIP/ARCA).
+     *
+     * 🔴 Va acá arriba y NO adentro del cuadro de importes de AFIP. El cuadro fiscal lo arma
+     * AfipPdfHelper::print_footer_importes_block() con los importes que se le declararon a
+     * AFIP, donde gravado + IVA = Importe Total; meterle un renglón de descuento lo dejaría
+     * sin cerrar. El canje ya está prorrateado en el precio de cada artículo
+     * (AfipItemCalculator), así que el Importe Total fiscal ya es el neto: lo que faltaba era
+     * decir POR QUÉ, entre el Sub Total bruto de esta sección y ese importe.
+     *
+     * @return void
+     */
+    function canje_de_puntos() {
+
+        $texto = PuntosComprobanteHelper::renglon_descuento($this->sale);
+
+        if (is_null($texto)) {
+            return;
+        }
+
+        $this->x = $this->start_x;
+        $this->SetFont('Arial', '', 9);
+        $this->Cell(
+            200,
+            7,
+            $texto,
+            $this->b,
+            1,
+            'R'
+        );
+    }
+
+    /**
+     * Los renglones informativos de puntos del path fiscal: cuántos sumó y cuánto acumula.
+     *
+     * @return void
+     */
+    function renglones_de_puntos() {
+
+        $renglones = $this->get_puntos_rows();
+
+        if (!count($renglones)) {
+            return;
+        }
+
+        $this->SetFont('Arial', 'I', 9);
+
+        foreach ($renglones as $renglon) {
+            $this->x = $this->start_x;
+            $this->Cell(
+                200,
+                5,
+                $renglon,
+                $this->b,
+                1,
+                'R'
+            );
+        }
     }
 
 
@@ -783,7 +874,8 @@ class NewSalePdf extends fpdf
          * mutar $this->total_bruto acá (solo se usa para decidir si hay descuentos/recargos).
          */
         $total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
-        $has_discounts_or_surchages = $total_bruto != $this->sale->total;
+        $has_discounts_or_surchages = $total_bruto != $this->sale->total
+            || PuntosComprobanteHelper::tiene_canje($this->sale);
 
         /**
          * El renglón de "Total" siempre está presente.
@@ -796,7 +888,22 @@ class NewSalePdf extends fpdf
             }
             $rows_count += $this->count_discount_rows();
             $rows_count += $this->count_surchage_rows();
+
+            /**
+             * El renglón del canje de puntos, que es el que hace que
+             * Sub Total − descuentos = Total.
+             */
+            if (PuntosComprobanteHelper::tiene_canje($this->sale)) {
+                $rows_count++;
+            }
         }
+
+        /**
+         * Los renglones informativos de puntos (sumados + acumulados) van adentro de la misma
+         * caja, debajo del Total. Se cuentan desde get_puntos_rows(), que memoiza: medir la
+         * altura no puede costar las mismas consultas otra vez.
+         */
+        $rows_count += count($this->get_puntos_rows());
 
         $row_height = 6;
         $padding = 3;
@@ -833,11 +940,18 @@ class NewSalePdf extends fpdf
          */
         $this->total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
 
-        $has_discounts_or_surchages = $this->total_bruto != $this->sale->total;
+        /**
+         * El canje de puntos también abre la diferencia entre el bruto y el total, y por sí
+         * solo (una venta sin descuentos ni recargos, pagada en parte con puntos) tiene que
+         * alcanzar para que se imprima el Sub Total: si no, quedan un Sub Total y un Total
+         * distintos sin nada en el medio que los explique.
+         */
+        $has_discounts_or_surchages = $this->total_bruto != $this->sale->total
+            || PuntosComprobanteHelper::tiene_canje($this->sale);
 
         /**
          * Renglones a imprimir dentro de la caja, en orden: Sub Total (si corresponde),
-         * descuentos, recargos y Total. Cada renglón indica si va en negrita.
+         * descuentos, recargos, canje de puntos y Total. Cada renglón indica si va en negrita.
          */
         $rows = [];
 
@@ -857,6 +971,16 @@ class NewSalePdf extends fpdf
             foreach ($this->build_surchage_rows() as $surchage_row) {
                 $rows[] = ['text' => $surchage_row, 'bold' => false];
             }
+
+            /**
+             * El canje va ÚLTIMO de los descuentos y antes del Total, que es el orden en que se
+             * aplica: `sales.total` viene del front como bruto − descuentos − canje.
+             */
+            $renglon_canje = PuntosComprobanteHelper::renglon_descuento($this->sale);
+
+            if (!is_null($renglon_canje)) {
+                $rows[] = ['text' => $renglon_canje, 'bold' => false];
+            }
         }
 
         /**
@@ -867,6 +991,14 @@ class NewSalePdf extends fpdf
             'text' => 'Total: '.Numbers::price($this->sale->total, true, $this->sale->moneda_id),
             'bold' => true,
         ];
+
+        /**
+         * Los puntos que el cliente sumó y los que tiene acumulados, debajo del Total. Son
+         * informativos: no entran en la cuenta, por eso van DESPUÉS del Total y no antes.
+         */
+        foreach ($this->get_puntos_rows() as $puntos_row) {
+            $rows[] = ['text' => $puntos_row, 'bold' => false];
+        }
 
         /**
          * Medición previa: alto de fila uniforme (6mm) + padding superior/inferior (3mm c/u),
@@ -1341,7 +1473,8 @@ class NewSalePdf extends fpdf
 
             $extra_reserved_height = $this->estimate_optional_footer_extras_height()
                 + $this->estimate_footer_text_height()
-                + $this->estimate_observations_height();
+                + $this->estimate_observations_height()
+                + $this->estimate_puntos_block_height();
 
             return max(120, 285 - $fiscal_footer_height - $extra_reserved_height);
         }
@@ -1366,6 +1499,30 @@ class NewSalePdf extends fpdf
             + $totals_box_extra;
 
         return max(120, $base_limit_y - $extra_reserved_height);
+    }
+
+    /**
+     * Alto que ocupan, en el path FISCAL, el renglón del canje y los renglones informativos de
+     * puntos que imprime descuentos_y_recargos() antes del pie de AFIP.
+     *
+     * Solo se usa para reservar espacio: el path no fiscal ya los cuenta adentro de
+     * estimate_totals_box_height(), porque ahí van adentro de la caja de totales.
+     *
+     * @return float
+     */
+    private function estimate_puntos_block_height(): float
+    {
+        $alto = 0;
+
+        /* El renglón del canje se imprime con Cell de 7mm (ver canje_de_puntos()). */
+        if (PuntosComprobanteHelper::tiene_canje($this->sale)) {
+            $alto += 7;
+        }
+
+        /* Los informativos, con Cell de 5mm (ver renglones_de_puntos()). */
+        $alto += count($this->get_puntos_rows()) * 5;
+
+        return $alto;
     }
 
     /**

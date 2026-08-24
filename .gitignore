@@ -18,6 +18,7 @@ yarn-error.log
 /.idea
 /.vscode
 asd.zip
+/.claude
 .claude/
 
 # Certificados, claves privadas y material de firma de AFIP: NUNCA se commitean.

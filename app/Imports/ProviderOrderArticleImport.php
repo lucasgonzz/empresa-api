@@ -10,9 +10,24 @@ use App\Models\Article;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\ToCollection;
+use Maatwebsite\Excel\Concerns\WithMultipleSheets;
 
-class ProviderOrderArticleImport implements ToCollection
+class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
 {
+
+    /**
+     * Indice 0-based de la hoja a importar. Default 0 = primera hoja.
+     *
+     * @var int
+     */
+    public $hoja = 0;
+
+    /**
+     * Nombre de la hoja elegida, cuando el cliente lo manda. Gana sobre el indice.
+     *
+     * @var string|null
+     */
+    public $hoja_nombre = null;
 
     public $columns;
     public $start_row;
@@ -25,7 +40,28 @@ class ProviderOrderArticleImport implements ToCollection
     public $trabajo_terminado;
     public $current_pivot_by_article_id;
 
-    public function __construct($columns, $start_row, $finish_row, $user, $provider_order, $import_type = 'pedido', $overwrite_articles = false) {
+    /**
+     * @param array       $columns
+     * @param int         $start_row
+     * @param int|null    $finish_row
+     * @param \App\Models\User $user
+     * @param \App\Models\ProviderOrder $provider_order
+     * @param string      $import_type
+     * @param bool        $overwrite_articles
+     * @param int         $hoja         Indice 0-based de hoja. OPCIONAL: default 0.
+     * @param string|null $hoja_nombre  Nombre de la hoja elegida. OPCIONAL: default null.
+     */
+    public function __construct($columns, $start_row, $finish_row, $user, $provider_order, $import_type = 'pedido', $overwrite_articles = false, $hoja = 0, $hoja_nombre = null) {
+
+        /*
+         * Los dos ultimos parametros son OPCIONALES y con default a proposito:
+         * app/Jobs/ProcessProviderOrderArticleImport.php construye esta clase con cinco
+         * argumentos y esta fuera del alcance de esta mision.
+         */
+        $this->hoja = (is_numeric($hoja) && (int) $hoja >= 0) ? (int) $hoja : 0;
+        $this->hoja_nombre = (is_string($hoja_nombre) && trim($hoja_nombre) !== '')
+                                ? trim($hoja_nombre)
+                                : null;
 
         $this->columns            = $columns;
         $this->start_row          = $start_row;
@@ -40,6 +76,37 @@ class ProviderOrderArticleImport implements ToCollection
         $this->current_pivot_by_article_id = [];
 
         $this->load_current_pivots();
+    }
+
+    /**
+     * Hoja (una sola) que Maatwebsite tiene que recorrer.
+     *
+     * 🔴 SIN este metodo, Maatwebsite NO importa la primera hoja: importa TODAS.
+     * `Reader::loadSpreadsheet()` hace
+     * `if (!$import instanceof WithMultipleSheets) { $this->sheetImports = array_fill(0, $this->spreadsheet->getSheetCount(), $import); }`,
+     * o sea llama `collection()` una vez por hoja del libro.
+     *
+     * Y aca eso pegaba MAS FUERTE que en ClientImport y ProviderImport: el final de
+     * `collection()` no solo guarda filas, sino que llama `attach_articles()`,
+     * `check_modo_facturacion()` y `procesar_pedido()`. Con un libro de tres hojas la
+     * compra se procesaba TRES VECES, acumulando en `$this->articles` lo que hubiera
+     * leido de las hojas anteriores.
+     *
+     * ⚠️ CAMBIO DE COMPORTAMIENTO VISIBLE: antes se recorrian todas las hojas del libro,
+     * ahora se recorre una sola (la 0 si nadie elige).
+     *
+     * El NOMBRE le gana al indice cuando viene, por la misma razon que en los otros dos
+     * importadores: el indice lo calcula el navegador y quien lee despues es otra libreria.
+     *
+     * @return array
+     */
+    public function sheets(): array
+    {
+        if (!is_null($this->hoja_nombre)) {
+            return [$this->hoja_nombre => $this];
+        }
+
+        return [$this->hoja => $this];
     }
 
     public function collection(Collection $rows)

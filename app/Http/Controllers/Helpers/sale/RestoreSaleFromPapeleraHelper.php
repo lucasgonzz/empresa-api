@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Helpers\sale;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
@@ -38,6 +40,25 @@ class RestoreSaleFromPapeleraHelper {
             'client',
         ]);
 
+        /*
+         * ─────────────────────────────────────────────────────────────────────────────
+         *  🔴 PUNTOS PARA CLIENTES: EL CANJE VA PRIMERO, ANTES DE TOCAR LA CUENTA CORRIENTE.
+         * ─────────────────────────────────────────────────────────────────────────────
+         *
+         *  `SaleController@destroy` deshace los DOS lados del módulo (el canje y los puntos
+         *  ganados) y hasta el 22/8/2026 este helper no mencionaba ninguno. Una venta de
+         *  cuenta corriente zafaba de rebote —recrear el débito dispara checkPagos y el
+         *  reconciliador cuelga de ahí—, pero una venta de MOSTRADOR no pasa por ninguna
+         *  cuenta corriente: volvía de la papelera con el total descontado por un canje que ya
+         *  no existía y sin ningún lote de puntos. Depender del rebote es depender de un
+         *  camino que la mitad de las ventas no recorre.
+         *
+         *  `restaurar()` va acá arriba, y no al final con el resto del módulo, porque puede
+         *  CORREGIR `sales.total` (cuando el cliente ya no tiene saldo para re-canjear) y el
+         *  débito de cuenta corriente que se crea unas líneas más abajo se arma con ese total.
+         */
+        PuntosCanjeHelper::restaurar($sale);
+
         self::descontar_stock_tras_restaurar($sale);
 
         // Misma condición que al generar compras al confirmar/guardar venta (no depósito).
@@ -56,6 +77,20 @@ class RestoreSaleFromPapeleraHelper {
         self::restaurar_comisiones_si_corresponde($sale);
 
         self::recalcular_saldos_cliente_si_corresponde($sale);
+
+        /*
+         * Y los puntos GANADOS: la venta vuelve a existir, así que vuelve a otorgar lo que le
+         * corresponda. `destroy` había anulado su lote y escrito el 'revertidos'; el
+         * reconciliador revive esa misma fila y borra el reverso (el unique de
+         * `movimiento_puntos` no deja crear una segunda).
+         *
+         * 🔴 VA AL FINAL, después de que la cuenta corriente esté recreada: una venta de
+         * cuenta corriente solo acumula cuando su débito está saldado, y preguntarlo antes de
+         * que el débito exista daría "no corresponde". Es idempotente, así que no molesta que
+         * el rebote de `recalcular_saldos_cliente_si_corresponde()` ya lo haya hecho: lo que
+         * agrega es cubrir la venta de mostrador, que no rebota por ningún lado.
+         */
+        PuntosAcumulacionHelper::reconciliar_venta($sale);
     }
 
     /**

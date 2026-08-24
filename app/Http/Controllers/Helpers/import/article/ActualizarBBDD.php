@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
@@ -180,18 +181,35 @@ class ActualizarBBDD {
                     'fake_id',
                     /* Flag en memoria de ProcessRow; no es columna de articles. */
                     'has_repeated_code_in_db',
+                    /* Prompt 307: descuentos tagueados a un proveedor, se materializan aparte
+                       vía ArticleProviderDiscountHelper::sync_provider_discounts(), no son
+                       columnas de articles. */
+                    'provider_discounts_to_tag',
+                    'provider_discounts_to_tag_provider_id',
+                ])->reject(function ($valor, $columna) {
                     /*
-                     * Marcadores en memoria de ProcessRow (prompt 03, grupo 265), no
-                     * columnas de articles: __match_key identifica por qué campo se
-                     * encoló la entrada (para que una repetición posterior la
-                     * encuentre) y __fila_origen guarda qué fila del Excel la generó
-                     * (para reportar conflictos de sobrescritura encadenados). Si
-                     * cualquiera de las dos llega al INSERT, revienta con
-                     * "Unknown column" en TODAS las importaciones que crean artículos.
+                     * 🔴 Los marcadores en memoria de ProcessRow se descartan por PREFIJO `__`, no
+                     * por lista. Ninguno es columna de `articles`, y si uno llega al INSERT revienta
+                     * con "Unknown column" y se cae **el lote entero** de la importación, no la fila.
+                     *
+                     * Estuvo como lista explícita (`__match_key`, `__fila_origen`) desde el prompt
+                     * 03 del grupo 265, y esa lista es una trampa: el día que alguien agrega un
+                     * marcador nuevo, el import se rompe y ningún test lo ve. Pasó exactamente eso —
+                     * la misión `costo-bruto-por-condicion-fiscal` (20/8/2026) agregó
+                     * `__back_out_aplicado` para hacer idempotente el back-out, y con la lista vieja
+                     * toda importación que CREARA artículos con costo se caía: para cualquier cuenta
+                     * Monotributista sin tocar nada, y para un Responsable Inscripto que tildara "los
+                     * costos de esta planilla son brutos".
+                     *
+                     * Reproducido con un Excel real contra `empresa_testing_s1`:
+                     *   PDOException: SQLSTATE[42S22]: Unknown column '__back_out_aplicado'
+                     *   in 'field list' — ActualizarBBDD.php:264, job ProcessArticleChunk fallido.
+                     *
+                     * El camino de ACTUALIZACIÓN ya filtraba por prefijo (más abajo en este mismo
+                     * archivo). Que los dos usen el mismo criterio es lo que evita que vuelva.
                      */
-                    '__match_key',
-                    '__fila_origen',
-                ])->merge([
+                    return strncmp($columna, '__', 2) === 0;
+                })->merge([
                     'created_at' => $this->now,
                     'updated_at' => $this->now,
                     'chunk_number'  => $this->chunk_number,
@@ -346,14 +364,20 @@ class ActualizarBBDD {
                             || $column === 'stock_global'
                             || $column === 'stock_addresses'
                             || $column === 'variants_data'
+                            /* Prompt 307: idem al bloque de creación, no son columnas de articles. */
+                            || $column === 'provider_discounts_to_tag'
+                            || $column === 'provider_discounts_to_tag_provider_id'
                             /* Excluir campos internos de tracking (prefijo __): __bar_code, __diff__X, etc. */
-                            || strncmp($column, '__', 2) === 0 
+                            || strncmp($column, '__', 2) === 0
 
                             || is_null($value)
                             || $value === ''
                         ) continue;
 
-                            
+                        // El `continue` de arriba ya descartó los nulos, así que acá $value nunca
+                        // lo es. (El ternario que contemplaba NULL era un resto del sentinela con el
+                        // que la misión `costo-bruto-por-condicion-fiscal` intentó, y descartó,
+                        // limpiar una columna desde el import.)
                         $quotedValue = DB::getPdo()->quote($value);
 
                         if (!isset($casesByColumn[$column])) {
@@ -402,8 +426,12 @@ class ActualizarBBDD {
 
  
         // 🔁 Asignar descuentos (a nuevos y actualizados)
+        // Legado: descuentos globales, sin proveedor (filas del import sin provider_id).
         $this->asignar_discounts_percentages();
         $this->asignar_discounts_amounts();
+        // Prompt 307: descuentos tagueados al proveedor de la fila (import con provider_id),
+        // vía el mismo helper que usa la compra (prompt 306).
+        $this->asignar_discounts_tagueados_a_proveedor();
         $this->log('Se asignaron discounts');
 
  
@@ -468,7 +496,15 @@ class ActualizarBBDD {
                 'cost'          => $article->cost,
             ];
 
-            $article->providers()->attach($article->provider_id, $pivot_data);
+            /*
+             * Antes hacía attach() a ciegas: con el índice único uniq_article_provider
+             * (article_id, provider_id) que agrega la migración de dedupe del pivot, un
+             * segundo attach() sobre el mismo par tira "Integrity constraint violation"
+             * en vez de insertar en silencio como hacía hasta ahora. syncWithoutDetaching
+             * es idempotente: inserta si no existe, actualiza el pivot si ya existe, y
+             * nunca toca las demás relaciones del artículo (a diferencia de sync()).
+             */
+            $article->providers()->syncWithoutDetaching([$article->provider_id => $pivot_data]);
         }
 
         $this->terminar('set articles_providers'); 
@@ -671,6 +707,59 @@ class ActualizarBBDD {
             DB::table('article_discounts')->insert($insertData);
         }
         $this->terminar('Descuentos montos articulos para actualizar');
+    }
+
+    /**
+     * Prompt 307: materializa (overwrite) los descuentos "tagueados" a un proveedor que
+     * ProcessRow::get_provider_discounts_to_tag() calculó para las filas del import que sí
+     * tienen `provider_id` (columna 'discounts' legado queda reservada para imports sin
+     * proveedor asociado, ver asignar_discounts_percentages()/asignar_discounts_amounts()).
+     *
+     * Reusa ArticleProviderDiscountHelper::sync_provider_discounts() (mismo helper que usa
+     * NewProviderOrderHelper para las compras, prompt 306): borra los article_discounts
+     * tagueados previos (de cualquier proveedor) y crea los nuevos, dejando intactos los
+     * descuentos manuales (provider_id null).
+     *
+     * Se recorre artículo por artículo (no hay bulk-insert acá) porque sync_provider_discounts
+     * ya resuelve el delete+insert por artículo; el volumen esperado por chunk es acotado.
+     */
+    function asignar_discounts_tagueados_a_proveedor() {
+
+        $this->iniciar();
+
+        // Artículos nuevos de este chunk que traen descuentos tagueados a un proveedor.
+        foreach ($this->articulos_para_crear_CACHE as $article_cache) {
+
+            if (!isset($article_cache['provider_discounts_to_tag'])) continue;
+
+            $article_model = $this->get_article_model_from_cache($article_cache);
+
+            if (!$article_model) continue;
+
+            ArticleProviderDiscountHelper::sync_provider_discounts(
+                $article_model,
+                $article_cache['provider_discounts_to_tag_provider_id'],
+                $article_cache['provider_discounts_to_tag']
+            );
+        }
+
+        // Artículos ya existentes actualizados en este chunk, idem.
+        foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
+
+            if (!isset($article_cache['provider_discounts_to_tag'])) continue;
+
+            $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
+
+            if (!$article_model) continue;
+
+            ArticleProviderDiscountHelper::sync_provider_discounts(
+                $article_model,
+                $article_cache['provider_discounts_to_tag_provider_id'],
+                $article_cache['provider_discounts_to_tag']
+            );
+        }
+
+        $this->terminar('Descuentos tagueados a proveedor (import)');
     }
 
     function asignar_surchages_percentages() {
@@ -1141,6 +1230,10 @@ class ActualizarBBDD {
         $rows_create = [];
         $updates = [];
 
+        /* Pares (article_id, price_type_id) ya agregados al INSERT. Ver el comentario del guard
+           mas abajo: la tabla no tiene indice unico y el INSERT IGNORE no deduplica nada. */
+        $pares_ya_agregados = [];
+
         if (app()->environment('local')) { $this->log('asignar_price_types:'); }
 
         // Recorrer todos los artículos
@@ -1176,6 +1269,34 @@ class ActualizarBBDD {
                 $final_price = ($final_price === '' || is_null($final_price)) ? 'NULL' : $final_price;
                 $incluir = $incluir ? 1 : 0;
                 $setear_precio_final = $setear_precio_final ? 1 : 0;
+
+                /*
+                 * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026): guarda contra
+                 * filas DUPLICADAS en article_price_type.
+                 *
+                 * 🔴 El INSERT IGNORE de abajo NO deduplica: la tabla no tiene indice unico sobre
+                 * (article_id, price_type_id) -- la migracion 2024_09_05_101805 no lo crea y
+                 * ninguna posterior lo agrega. El IGNORE solo se traga errores.
+                 *
+                 * Y hay un caso real donde el mismo par llega dos veces: con
+                 * permitir_provider_code_repetido, varias filas del Excel con el MISMO
+                 * provider_code nuevo crean varios articulos, pero get_article_model_from_cache()
+                 * (~:1610) los resuelve todos al mismo modelo con un ->first() por provider_code.
+                 * Medido el 24/8/2026 con 07_repetidos_en_el_archivo.xlsx: el primer articulo
+                 * terminaba con 6 filas de pivot (3 duplicados de cada lista) en vez de 2.
+                 *
+                 * Es un defecto preexistente de get_article_model_from_cache() -- le pasa igual a
+                 * descuentos y recargos --, pero antes solo se disparaba si el Excel mapeaba una
+                 * columna de lista, y ahora se dispararia en toda importacion de una cuenta con
+                 * listas. Se acota aca, que es donde se arma el INSERT.
+                 */
+                $clave_par = $article_id . '-' . $price_type['id'];
+
+                if (isset($pares_ya_agregados[$clave_par])) {
+                    continue;
+                }
+
+                $pares_ya_agregados[$clave_par] = true;
 
                 // Almacenamos los valores para construir el SQL
                 $rows_create[] = "({$article_id}, {$price_type['id']}, {$percentage}, {$final_price}, {$incluir}, {$setear_precio_final})";
@@ -1350,6 +1471,25 @@ class ActualizarBBDD {
 
         // $this->log('get_setear_precio_final:');
         // $this->log($price_type);
+
+        /*
+         * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). La marca la pone
+         * ProcessRow::add_price_type_data() cuando el articulo se esta CREANDO y el Excel no trae
+         * ninguna columna de lista. En ese caso no hay ningun precio fijado a mano que respetar,
+         * asi que no se propaga el `setear_precio_final` de la lista: si se propagara, el precio
+         * calculado por margen se guardaria como si lo hubiera fijado una persona y la lista
+         * quedaria congelada para siempre (medicion completa en el comentario de
+         * ProcessRow::add_price_type_data()).
+         *
+         * Las filas que vienen de un Excel que SI habla de listas no traen esta clave, asi que
+         * para ellas no cambia nada.
+         */
+        if (
+            isset($price_type['pivot']['sin_datos_de_lista_en_el_excel'])
+            && $price_type['pivot']['sin_datos_de_lista_en_el_excel']
+        ) {
+            return 0;
+        }
 
         if ($price_type['pivot']['setear_precio_final']) {
             return $price_type['pivot']['setear_precio_final'];
@@ -2291,12 +2431,18 @@ class ActualizarBBDD {
          * tipo sumara ahí, cualquier Excel con un código repetido mostraría un aviso
          * de error que no corresponde. Se cuenta aparte y se excluye del incremento.
          * NO "arreglar" esto sumándolo de nuevo: es a propósito.
+         *
+         * 'columna_de_precio_ignorada' (misión 44) está en la misma situación por el
+         * mismo motivo: la fila se procesó bien y se aplicó todo menos una columna de
+         * precio, porque el artículo ya se maneja por la otra.
          */
+        $tipos_que_no_cuentan = ['fila_sobrescrita', 'columna_de_precio_ignorada'];
+
         $conflictos_que_cuentan_para_el_historial = 0;
 
         foreach ($conflictos as $c) {
 
-            if ($c['tipo'] !== 'fila_sobrescrita') {
+            if (!in_array($c['tipo'], $tipos_que_no_cuentan, true)) {
                 $conflictos_que_cuentan_para_el_historial++;
             }
 

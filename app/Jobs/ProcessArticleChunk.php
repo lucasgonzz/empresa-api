@@ -32,7 +32,7 @@ class ProcessArticleChunk implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $csv_path, $columns, $create_and_edit, $start_row, $finish_row,
+    protected $csv_path, $columns, $blank_flags, $create_and_edit, $start_row, $finish_row,
               $provider_id, $user_id, $auth_user_id, $import_status_id, $import_history_id, $chunk_number, $observations, $start_offset, $inicio_chunk, $actualizar_articulos_de_otro_proveedor, $actualizar_proveedor, $permitir_provider_code_repetido, $permitir_provider_code_repetido_en_multi_providers, $actualizar_por_provider_code, $user;
 
     /**
@@ -47,14 +47,21 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $filas_repetidas_del_archivo;
 
+    /**
+     * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla vienen
+     * con IVA adentro. Viaja hasta ProcessRow, que es quien hace el back-out.
+     */
+    protected $precios_incluyen_iva = false;
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
     
 	public function __construct(
-            $csv_path, 
-            $columns, 
-            $create_and_edit, 
+            $csv_path,
+            $columns,
+            $blank_flags,
+            $create_and_edit,
             $start_row, 
             $finish_row, 
             $provider_id, 
@@ -72,11 +79,20 @@ class ProcessArticleChunk implements ShouldQueue
             $actualizar_por_provider_code,
 
             $interpretacion_punto = 'auto',
-            $filas_repetidas_del_archivo = 'ultima_gana'
+            $filas_repetidas_del_archivo = 'ultima_gana',
+
+            /*
+             * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla
+             * vienen con IVA adentro. Va último y con default para no romper los jobs que ya
+             * estuvieran encolados y serializados sin esta clave.
+             */
+            $precios_incluyen_iva = false
     ) {
 
         $this->csv_path                                     = $csv_path;
         $this->columns                                      = $columns;
+        // Prompt 310: flags "permitir_valores_en_blanco" por columna, propagados hasta ProcessRow.
+        $this->blank_flags                                  = $blank_flags;
         $this->create_and_edit                              = $create_and_edit;
         $this->start_row                                    = $start_row;
         $this->finish_row                                   = $finish_row;
@@ -96,6 +112,7 @@ class ProcessArticleChunk implements ShouldQueue
 
         $this->interpretacion_punto                                 = $interpretacion_punto;
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
+        $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
 
         $this->observations = '';
 
@@ -394,6 +411,7 @@ class ProcessArticleChunk implements ShouldQueue
 
             $this->importer = new ArticleImport(
                 $this->columns,
+                $this->blank_flags,
                 $this->create_and_edit,
                 $this->start_row,
                 $this->finish_row,
@@ -415,6 +433,7 @@ class ProcessArticleChunk implements ShouldQueue
 
                 $this->interpretacion_punto,
                 $this->filas_repetidas_del_archivo,
+                $this->precios_incluyen_iva,
             );
 
         } catch (\Throwable $e) {

@@ -34,6 +34,8 @@ class DatabaseSeeder extends Seeder
             $this->call(ExtencionDuplicarPresupuestosSeeder::class);
             $this->call(ExtencionEnviarMailClientesSeeder::class);
             $this->call(ExtencionCrearArticulosDesdeVenderSeeder::class);
+            /* Misión 54: describe las extensiones recién sembradas. Esta rama no pasa por common_seeders(). */
+            $this->call(ExtencionEmpresaDescriptionSeeder::class);
             $this->call(PermissionSeeder::class);
             // $this->call(FeaturesSeeder::class);
             // $this->call(PlansSeeder::class);
@@ -57,6 +59,11 @@ class DatabaseSeeder extends Seeder
 
             $this->call(UserSeeder::class);
 
+            // Engancha al usuario dueño las extensiones de IA que la semilla de datos de
+            // prueba necesita activas (grupo seeders-demo-datos-completos, unidad U2). Va
+            // aca porque necesita al usuario ya creado (UserSeeder, arriba) y las filas de
+            // extencion_empresas ya sembradas (common_seeders(), antes de UserSeeder).
+            $this->call(ExtencionesIaUserSeeder::class);
 
             if ($for_user == 'golo_norte') {
 
@@ -225,6 +232,11 @@ class DatabaseSeeder extends Seeder
 
             $this->call(DeliveryDaySeeder::class);
 
+            // ReportesMesSeeder queda desenganchado (grupo 321, prompt 05): lo reemplaza
+            // `php artisan semilla:datos`. Ver el comentario en la cabecera de ese archivo.
+            // (develop lo habia enganchado aca en el grupo 318; la decision del 321 es
+            // posterior y es la que rige en refractor.)
+
             if ($for_user == 'truvari') {
                 if (env('APP_ENV') == 'local') {
                     $this->call(SaleRoadMapSeeder::class);
@@ -241,6 +253,14 @@ class DatabaseSeeder extends Seeder
             // $this->call(SaleDemoSeeder::class);
 
         }
+
+        /*
+            Defaults del buscador general (preference_type global_search). Va acá, al final del
+            run() y fuera del if/else, y NO adentro de common_seeders(): common_seeders() corre
+            ANTES que UserSeeder, así que ahí no habría todavía ningún usuario y el seeder
+            sembraría cero filas sin fallar. Al final del run() cubre las dos ramas de una vez.
+        */
+        $this->call(GlobalSearchDefaultsSeeder::class);
     }
 
     function local_y_demo() {
@@ -263,6 +283,11 @@ class DatabaseSeeder extends Seeder
             $this->call(ProviderPriceListSeeder::class);
             $this->call(ColorSeeder::class);
             $this->call(DepositSeeder::class);
+
+            // Sucursales antes que los clientes: ClientSeeder reparte address_id entre ellas.
+            // Sin esto no hay cajas por sucursal ni ventas repartidas entre locales, que es
+            // justamente lo que la semilla de datos de reportes necesita poder mostrar.
+            $this->call(AddressSeeder::class);
             $this->call(ClientSeeder::class);
             $this->call(BuyerSeeder::class);
             $this->call(DiscountSeeder::class);
@@ -284,9 +309,10 @@ class DatabaseSeeder extends Seeder
 
             $this->call(MeliPlatformConnectorSeeder::class);
 
-            // Datos historicos por mes para reportes. Va aca y no en el bloque general porque
-            // truncate_data() borra todo el historial operativo del user_id (grupo 318, 3/8/2026).
-            $this->call(ReportesMesSeeder::class);
+            // Sin esto, ContabilidadRepository::iibb_determinado() no encuentra ningún
+            // sale_tax activo y la línea de IIBB del Estado de Resultados y de la Posición
+            // Fiscal da siempre cero.
+            $this->call(SaleTaxSeeder::class);
 
         }
     }
@@ -306,13 +332,45 @@ class DatabaseSeeder extends Seeder
         $this->call(ExtencionDuplicarPresupuestosSeeder::class);
         $this->call(ExtencionEnviarMailClientesSeeder::class);
         $this->call(ExtencionCrearArticulosDesdeVenderSeeder::class);
+        /* Extensión que habilita, por empresa, el input de nombre personalizado en VENDER. */
+        $this->call(ExtencionPersonalizarNombreEnVenderSeeder::class);
         /* Extensión para la importación de artículos asistida por Claude IA. */
         $this->call(ExtencionEmpresaAiExcelImportSeeder::class);
+        /* Extensión de la v2 de sugerencias de traslado de stock entre sucursales. */
+        $this->call(ExtencionSugerenciasInteligentesSeeder::class);
+        /* Extensión del chat con el asistente de IA del negocio (misión chat-ia-y-modulo-ia). */
+        $this->call(ExtencionAsistenteIaSeeder::class);
+        /* Extensión del seguimiento de comportamiento de compradores en la tienda (misión tracking-buyers-tienda). */
+        $this->call(ExtencionTrackingBuyersSeeder::class);
+        /* Extensión del motor de sugerencias de compra a proveedores (misión sugerencias-compra-proveedores). */
+        $this->call(ExtencionSugerenciasComprasSeeder::class);
+        /* Extensión del motor de ofertas personalizadas por cliente (misión motor-de-ofertas-por-cliente). */
+        $this->call(ExtencionMotorDeOfertasSeeder::class);
+        /* Extensión del escaneo de facturas de compra con IA (misión escaneo-factura-compra). */
+        $this->call(ExtencionEscaneoFacturaCompraSeeder::class);
         /* Extensión + permisos del módulo de chats de WhatsApp con clientes (grupo 137). */
         $this->call(ExtencionEmpresaWhatsappSeeder::class);
         $this->call(PermissionEmpresaWhatsappSeeder::class);
         /* Plantillas estándar `cc_cli_*` para las empresas con el bot ya configurado (grupo 137, Prompt 04). */
         $this->call(WhatsappTemplateStandardSeeder::class);
+        /*
+         * 🔴 `PermissionEmpresaRecordatorioCobroSeeder` NO VA ACÁ, Y NO ES UN OLVIDO (misión
+         * recordatorio-cobro-whatsapp). El permiso `alerts.recordatorio_cobro` ya lo siembra
+         * `PermissionSeeder`, que se llama unas líneas más abajo. Llamar también al seeder suelto
+         * dejaba DOS filas con el mismo slug en toda base nueva: `permission_empresas.slug` no
+         * tiene índice único y ningún seeder trunca la tabla, así que el permiso aparecía
+         * duplicado en la pantalla de empleados.
+         *
+         * El seeder suelto SIGUE EXISTIENDO y es el que hay que correr a mano sobre las bases de
+         * producción que ya están creadas (usa `firstOrCreate`, es idempotente):
+         *   php artisan db:seed --class=PermissionEmpresaRecordatorioCobroSeeder
+         *
+         * ⚠️ Y la entrada que se saca es ESTA, no la de `PermissionSeeder`:
+         * `UserSetupHelper::base_seeders()` incluye `'PermissionSeeder'` pero ninguno de los
+         * seeders sueltos, así que un negocio creado desde la app recibe sus permisos SÓLO por
+         * `PermissionSeeder`. Sacándolo de allá, el permiso no le llegaría nunca a un negocio
+         * nuevo.
+         */
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);
@@ -348,6 +406,13 @@ class DatabaseSeeder extends Seeder
         $this->call(PdfColumnProfileSeeder::class);
         $this->call(PdfColumnProfileComisionesSeeder::class);
         $this->call(InputsSizeSeeder::class);
+
+        /*
+         * Va ÚLTIMO a propósito (misión 54): no inserta extensiones, le escribe la descripción,
+         * el módulo y el marcado de desuso a las que ya insertaron los seeders de arriba. Si se
+         * lo llamara antes, las que se siembran después quedarían sin describir.
+         */
+        $this->call(ExtencionEmpresaDescriptionSeeder::class);
     }
 
     function article_variants() {

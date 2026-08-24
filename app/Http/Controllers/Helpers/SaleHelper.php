@@ -27,8 +27,16 @@ use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\SellerCommissionController;
+/*
+ * Import que faltaba: returnToStock() hace `new StockMovementController()` y sin esta línea
+ * PHP lo resolvía a App\Http\Controllers\Helpers\StockMovementController (inexistente).
+ * Nunca se notó porque el único camino que llega ahí (el panel NC de Vender) reventaba
+ * antes por la firma vieja de notaCredito(), corregida el 24/8/2026.
+ */
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -38,6 +46,8 @@ use App\Models\Client;
 use App\Models\Commissioner;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\CurrentAcountPaymentMethodDiscount;
+use App\Models\Cuota;
 use App\Models\Discount;
 use App\Models\Iva;
 use App\Models\Sale;
@@ -273,10 +283,25 @@ class SaleHelper extends Controller {
         if ($from_store && !$model->to_check && !$model->checked) {
             
             Self::create_current_acount($model);
-            
+
             Self::crear_comision($model);
 
             SaleCajaHelper::check_caja($model);
+
+            /*
+             * Puntos para clientes. Lo que se cubre acá es la VENTA DE MOSTRADOR, que nunca
+             * pasa por la cuenta corriente y por lo tanto nunca dispara checkPagos(): sin esta
+             * línea, un comercio que no usa cuenta corriente no acumularía un solo punto.
+             *
+             * Para la venta de cuenta corriente esto es un no-op barato: create_current_acount()
+             * ya llamó a CurrentAcountFromSaleHelper, que llama a checkPagos(), que ya
+             * reconcilió esta misma venta. Correrlo dos veces no duplica nada — el
+             * reconciliador compara contra lo que ya escribió y no toca la base si no cambió.
+             *
+             * Va DESPUÉS de check_caja() y no antes, para que si algo del cobro en el acto
+             * revienta, la venta no quede con puntos otorgados por una venta que no se guardó.
+             */
+            PuntosAcumulacionHelper::reconciliar_venta($model);
 
         } else {
 
@@ -434,9 +459,21 @@ class SaleHelper extends Controller {
                     $total += (float)$request->discount_amount;
                 }
 
+                // Descuento/recargo por metodo de pago: si el frontend ya lo mando calculado (comportamiento
+                // actual, se preserva tal cual), se usa ese valor. Si no vino, se resuelve en base a las
+                // reglas configuradas (metodo + cuotas) segun la precedencia de Capa 3 (Prompt 263).
+                $discount_percentage = $request->discount_percentage;
+                if (is_null($discount_percentage) && !is_null($request->current_acount_payment_method_id)) {
+                    $discount_percentage = Self::resolver_descuento_recargo_metodo_pago(
+                        $sale->user_id,
+                        $request->current_acount_payment_method_id,
+                        $request->cuotas
+                    );
+                }
+
                 $sale->current_acount_payment_methods()->attach($request->current_acount_payment_method_id, [
                     'amount'                => $total,
-                    'discount_percentage'   => $request->discount_percentage,
+                    'discount_percentage'   => $discount_percentage,
                     'discount_amount'       => $request->discount_amount,
                     'caja_id'               => $request->caja_id,
                 ]);
@@ -444,6 +481,73 @@ class SaleHelper extends Controller {
         }
 
     }
+    /**
+     * Resuelve el porcentaje de descuento/recargo aplicable al vender con un metodo de pago y una
+     * cantidad de cuotas determinados (Capa 3 del motor de precios, Prompt 263).
+     *
+     * Precedencia (gana la primera regla que matchee; las reglas NO se acumulan), de mas especifica
+     * a mas generica:
+     *   1. Regla de `cuotas` con `payment_method_id` = metodo elegido Y `cantidad_cuotas` = cuotas elegidas.
+     *   2. Regla de `cuotas` generica (`payment_method_id` NULL) con esa `cantidad_cuotas`.
+     *   3. Regla de `current_acount_payment_method_discounts` del metodo con `cuotas` = cuotas elegidas.
+     *   4. Regla de `current_acount_payment_method_discounts` del metodo con `cuotas` NULL (comportamiento
+     *      actual, previo al Prompt 260/263).
+     * Si ninguna regla matchea, devuelve null (sin descuento/recargo, igual que hoy).
+     *
+     * @param int $user_id Id del owner (dueño de cuenta) al que pertenecen las reglas configuradas.
+     * @param int|null $current_acount_payment_method_id Metodo de pago elegido en la venta.
+     * @param int|null $cuotas Cantidad de cuotas elegida (null si la venta no es en cuotas).
+     * @return float|null Porcentaje a aplicar sobre el monto (positivo = descuento, negativo = recargo).
+     */
+    static function resolver_descuento_recargo_metodo_pago($user_id, $current_acount_payment_method_id, $cuotas = null) {
+
+        if (is_null($current_acount_payment_method_id)) {
+            return null;
+        }
+
+        // Pasos 1 y 2 (reglas de `cuotas`) solo aplican si se eligio una cantidad de cuotas.
+        if (!is_null($cuotas)) {
+
+            // 1. Regla especifica de este metodo de pago para esta cantidad de cuotas.
+            $cuota_especifica = Cuota::where('user_id', $user_id)
+                                ->where('payment_method_id', $current_acount_payment_method_id)
+                                ->where('cantidad_cuotas', $cuotas)
+                                ->first();
+            if ($cuota_especifica) {
+                return (float)$cuota_especifica->descuento - (float)$cuota_especifica->recargo;
+            }
+
+            // 2. Regla generica (sin metodo de pago) para esa cantidad de cuotas.
+            $cuota_generica = Cuota::where('user_id', $user_id)
+                                ->whereNull('payment_method_id')
+                                ->where('cantidad_cuotas', $cuotas)
+                                ->first();
+            if ($cuota_generica) {
+                return (float)$cuota_generica->descuento - (float)$cuota_generica->recargo;
+            }
+
+            // 3. Regla del metodo de pago limitada a esa cantidad de cuotas.
+            $method_discount_con_cuotas = CurrentAcountPaymentMethodDiscount::where('user_id', $user_id)
+                                ->where('current_acount_payment_method_id', $current_acount_payment_method_id)
+                                ->where('cuotas', $cuotas)
+                                ->first();
+            if ($method_discount_con_cuotas) {
+                return (float)$method_discount_con_cuotas->discount_percentage;
+            }
+        }
+
+        // 4. Regla generica del metodo de pago (sin cuotas): comportamiento actual, previo al Prompt 260.
+        $method_discount_generico = CurrentAcountPaymentMethodDiscount::where('user_id', $user_id)
+                            ->where('current_acount_payment_method_id', $current_acount_payment_method_id)
+                            ->whereNull('cuotas')
+                            ->first();
+        if ($method_discount_generico) {
+            return (float)$method_discount_generico->discount_percentage;
+        }
+
+        return null;
+    }
+
     /*
         Devuelve el motivo por el que una venta NO se puede editar, o null si se puede.
 
@@ -465,11 +569,40 @@ class SaleHelper extends Controller {
         Recibe el modelo ya cargado para no reconsultar, y usa loadMissing para no depender de
         que quien llama se haya acordado de traer las relaciones.
     */
-    static function motivo_por_el_que_no_se_puede_editar($sale) {
+    static function motivo_por_el_que_no_se_puede_editar($sale, $criterio_conservador_de_tickets = false) {
 
         $sale->loadMissing(['afip_tickets', 'current_acount_payment_methods']);
 
-        if (count($sale->afip_tickets) >= 1) {
+        /*
+            Que congela segun el FLUJO que pregunta (tanda correctivos 2408, items 11 y su
+            acotacion). Los dos criterios conviven a proposito:
+
+            - EDICION de la venta ($criterio_conservador_de_tickets = false, el default:
+              SaleController::update() y updatePrices()): solo congelan los comprobantes CON
+              CAE. Un ticket RECHAZADO no existe ante ARCA y no debe trabar el mostrador
+              (decision de Lucas, 24/8/2026). Es el mismo criterio que ya usa la SPA para
+              decidir si una venta "tiene factura" (!!afip_ticket.cae en sale-print-buttons).
+
+            - ANULACION del presupuesto ($criterio_conservador_de_tickets = true, lo pasa
+              BudgetController::anular()): CUALQUIER AfipTicket congela, tambien uno sin CAE.
+              Anular BORRA la venta, y con un ticket pendiente-sin-respuesta el borrado
+              podria dejar un CAE huerfano si ARCA aprueba despues: primero se resuelve la
+              situacion con ARCA. Es la politica conservadora previa, fijada por
+              tests/Feature/Presupuestos/1 (anular_con_la_venta_facturada_se_rechaza_y_no_toca_nada)
+              y vigente hasta que Lucas diga lo contrario.
+        */
+        $tickets_que_congelan = 0;
+
+        foreach ($sale->afip_tickets as $afip_ticket) {
+
+            if ($criterio_conservador_de_tickets) {
+                $tickets_que_congelan++;
+            } else if (!is_null($afip_ticket->cae) && $afip_ticket->cae !== '') {
+                $tickets_que_congelan++;
+            }
+        }
+
+        if ($tickets_que_congelan >= 1) {
 
             return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
         }
@@ -582,16 +715,50 @@ class SaleHelper extends Controller {
 
             }
 
+            /*
+             * Cuenta corriente del cliente en la moneda de la venta, igual que en
+             * DevolucionesController::store(). Hasta el 24/8/2026 este call site llamaba a
+             * notaCredito() con la firma VIEJA (sin $credit_account_id como primer argumento):
+             * el total entraba donde va el id de cuenta, la descripcion donde va el monto, y
+             * todo lo demas corrido un lugar. El unico camino que quedo desactualizado era
+             * este (el panel "Nota de credito" de Vender); Devoluciones ya usaba la firma nueva.
+             */
+            $credit_account_id = null;
+
+            if (!is_null($request->client_id)) {
+
+                /** Moneda de la venta; sin moneda cargada se asume pesos (id 1), mismo criterio que DevolucionesController::get_moneda_id(). */
+                $moneda_id = !is_null($sale->moneda_id) && $sale->moneda_id != 0 ? $sale->moneda_id : 1;
+
+                $credit_account = CreditAccount::where('model_name', 'client')
+                                                ->where('model_id', $request->client_id)
+                                                ->where('moneda_id', $moneda_id)
+                                                ->first();
+
+                if (!is_null($credit_account)) {
+                    $credit_account_id = $credit_account->id;
+                }
+            }
+
             $nota_credito = CurrentAcountHelper::notaCredito(
-                $haber, 
-                $request->nota_credito_description, 
-                'client', 
-                $request->client_id, 
-                $sale->id, 
+                $credit_account_id,
+                $haber,
+                $request->nota_credito_description,
+                'client',
+                $request->client_id,
+                $sale->id,
                 $request->returned_items
             );
 
-            CurrentAcountHelper::checkSaldos('client', $request->client_id);
+            /*
+             * checkSaldos() tambien cambio de firma con el refactor de credit_account (ahora
+             * recibe el id de la cuenta, no el par model_name/model_id): se recalculan los
+             * saldos de la cuenta de la NC recien creada. Solo si hay cuenta: con null adentro
+             * hace CreditAccount::find(null)->id y revienta.
+             */
+            if (!is_null($credit_account_id)) {
+                CurrentAcountHelper::checkSaldos($credit_account_id);
+            }
 
             $ct = new Controller();
             $ct->sendAddModelNotification('client', $request->client_id, false);
@@ -715,13 +882,27 @@ class SaleHelper extends Controller {
     }
 
     static function create_current_acount($sale) {
-        if (!is_null($sale->client_id) 
-            && $sale->save_current_acount
-            && !$sale->omitir_en_cuenta_corriente) {
-            
+        if (!is_null($sale->client_id)
+            && Self::va_a_volver_a_la_cuenta_corriente($sale)) {
+
             $helper = new CurrentAcountFromSaleHelper($sale);
             $helper->crear_current_acount();
         }
+    }
+
+    /**
+     * Si la venta corresponde a la cuenta corriente del cliente.
+     *
+     * Son las dos condiciones que create_current_acount() ya usaba, extraidas para que
+     * updateCurrentAcountsAndCommissions() pueda preguntarlo ANTES de borrar el movimiento y
+     * dejar el rastro. Que la decision viva en un solo lugar es justamente lo que evita que el
+     * borrado y la recreacion dejen de estar de acuerdo, que es lo que pasaba en el bug.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return bool
+     */
+    static function va_a_volver_a_la_cuenta_corriente($sale) {
+        return (bool) ($sale->save_current_acount && !$sale->omitir_en_cuenta_corriente);
     }
 
     static function crear_comision($sale) {
@@ -1047,6 +1228,44 @@ class SaleHelper extends Controller {
     }
 
     static function updateCurrentAcountsAndCommissions($sale) {
+
+        /*
+            Se evalua ANTES de borrar si la venta va a volver a la cuenta corriente, con las
+            mismas dos condiciones que decide create_current_acount(). El comportamiento no
+            cambia -una venta que el usuario paso a omitida tiene que salir de la cuenta
+            corriente-, lo que se gana es el rastro: el bug de San Cayetano (mision 56) saco
+            ventas de la cuenta corriente de sus clientes y no dejo una sola linea en ningun lado,
+            porque el borrado y la no-recreacion son dos pasos que por separado parecen correctos.
+        */
+        if (!is_null($sale->client_id) && !Self::va_a_volver_a_la_cuenta_corriente($sale)) {
+
+            $current_acount_previa = CurrentAcount::where('sale_id', $sale->id)
+                                            ->whereNull('haber')
+                                            ->first();
+
+            if (!is_null($current_acount_previa)) {
+
+                /*
+                    Los dos motivos, no uno: pueden darse a la vez, y el log de una venta que se
+                    fue de la cuenta corriente se lee justamente para entender por que.
+                */
+                $motivos = [];
+
+                if ($sale->omitir_en_cuenta_corriente) {
+                    $motivos[] = 'omitir_en_cuenta_corriente vino en '.var_export($sale->omitir_en_cuenta_corriente, true);
+                }
+
+                if (!$sale->save_current_acount) {
+                    $motivos[] = 'save_current_acount vino en '.var_export($sale->save_current_acount, true);
+                }
+
+                Log::info(
+                    'SaleHelper: la venta '.$sale->id.' SALE de la cuenta corriente del cliente '
+                    .$sale->client_id.'. Motivo: '.implode(' y ', $motivos)
+                    .'. Se borra el movimiento '.$current_acount_previa->id.' y no se recrea.'
+                );
+            }
+        }
 
         Self::deleteCurrentAcountFromSale($sale);
         Self::deleteSellerCommissionsFromSale($sale);
@@ -1578,8 +1797,21 @@ class SaleHelper extends Controller {
 
         $sub_total = $total_articles + $total_combos + $total_promocion_vinotecas + $total_services;
 
+        /*
+            `sales.descuento` ES PORCENTAJE (confirmado por Lucas, 24/8/2026) y se aplica SOLO
+            al total de los articulos, igual que la SPA (`vender_set_total.js::aplicar_descuento()`:
+            "Aplicando descuento del X% solo al total de los articulos"). Hasta esta tanda aca se
+            restaba como MONTO fijo, y toda venta con descuento que pasara por este metodo (la
+            confirmacion de una venta chequeada, set_total_sales) quedaba con un total distinto
+            del que calculo el front y del que factura AfipItemCalculator (que siempre lo aplico
+            como porcentaje, renglon por renglon).
+
+            La guarda truthy (y no `> 0`) es a proposito: un descuento NEGATIVO es como el
+            sistema representa un recargo global, y la SPA lo aplica igual (`if (this.descuento)`).
+            Mismo criterio que PuntosBaseHelper::factor_descuentos_de_venta().
+        */
         if ($sale->descuento) {
-            $total_articles -= $sale->descuento;
+            $total_articles -= $total_articles * $sale->descuento / 100;
         }
 
         if ($with_discount) {

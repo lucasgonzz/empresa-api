@@ -105,6 +105,12 @@ class ConceptoStockMovementSeeder extends Seeder
             [
                 'name'  => 'Ajuste Insumo de produccion',
             ],
+            [
+                // Tanda correctivos 2408, ítem 7: rastro del stock que tenía una sucursal
+                // al eliminarla (AddressController::destroy). Para bases de producción
+                // existentes está ConceptoStockMovementEliminacionDeSucursalSeeder.
+                'name'  => 'Eliminacion de sucursal',
+            ],
 
         ];
 

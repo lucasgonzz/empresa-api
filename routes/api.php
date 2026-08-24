@@ -11,15 +11,53 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum'])->group(function() {
 
-    // CommonLaravel 
+    /*
+        Todos los catalogos del arranque en UNA sola respuesta (mision 41, 12/8/2026). Reemplaza a
+        ~70 requests que la SPA dispara una detras de otra al iniciar sesion.
+
+        🔴 ES POST Y NO GET, A PROPOSITO. Son cerca de 70 nombres de modelo: una query string con
+        todos queda cerca del limite de largo de URL de algunos proxies, y el dia que se pase nadie
+        lo va a ver como "URL demasiado larga" sino como catalogos que no cargan en un cliente y si
+        en otro. No lo cambies a GET. Si te molesta que un POST no sea cacheable: este endpoint no
+        se cachea por diseno --se decidio dejar la cache para despues, ver el alcance de la mision--.
+
+        Va adentro de este mismo grupo de middleware que los endpoints individuales, y no en otro:
+        cada modelo se resuelve llamando al index() real de su controller, asi que los filtros por
+        usuario y por permisos tienen que estar puestos igual que para ellos.
+    */
+    Route::post('recursos-iniciales', 'RecursosInicialesController@index');
+
+    /*
+        Eventos de UX de la demo (mision 50). Va adentro de este grupo porque el grupo 'api' ya
+        trae DemoSessionVigente, que es el que corta el acceso cuando el turno del lead termino.
+
+        Responde 204 y no 403 cuando la sesion no es de demo: este mismo empresa-spa se despliega
+        en las instancias de los ~40 clientes reales.
+    */
+    Route::post('demo/evento', 'DemoEventoController@store');
+
+    /*
+        El plan de la demo para el panel lateral del lead (mision 51). Mismo criterio que el
+        endpoint de arriba: 204 mudo fuera de una sesion de demo, sin tocar la base.
+    */
+    Route::get('demo/plan', 'DemoPlanController@index');
+
+    // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
     // Generals
     Route::post('search/{model_name}/{_filters?}/{paginate?}', 'CommonLaravel\SearchController@search');
     Route::post('search-from-modal/{model_name}', 'CommonLaravel\SearchController@searchFromModal');
+    // Buscador general unificado (view-header): OR entre props propias + relaciones + AND de filtros extra.
+    Route::post('global-search/{model_name}', 'CommonLaravel\SearchController@globalSearch');
     Route::post('search/save-if-not-exist/{model_name}/{propertye}/{query}', 'CommonLaravel\SearchController@saveIfNotExist');
+    // Excel de ventas fidedigno a la pantalla: recibe el estado completo del filtro por POST.
+    Route::post('sales/excel/export', 'SaleController@excel_export_view');
+    Route::post('sales/excel/breakdown-export', 'SaleController@excel_breakdown_export_view');
     Route::get('previus-day/{model_name}/{index}/{date_param?}', 'CommonLaravel\PreviusDayController@previusDays');
     Route::get('previus-next/{model_name}/{index}', 'CommonLaravel\PreviusNextController@previusNext');
     Route::get('previus-next-index/{model_name}/{id}', 'CommonLaravel\PreviusNextController@getIndexPreviusNext');
+    /* Abre un modelo por id, en una sola request. Reemplaza al par indice + posicion de arriba. */
+    Route::get('previus-next-by-id/{model_name}/{id}', 'CommonLaravel\PreviusNextController@byId');
     Route::put('update/{model_name}', 'CommonLaravel\UpdateController@update');
     Route::put('delete/{model_name}', 'CommonLaravel\DeleteController@delete');
 
@@ -31,6 +69,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
+    // Preferencias de UI del chat con el asistente de IA (misión chat-ia-y-modulo-ia). Misma
+    // familia que set-dark-mode: es una preferencia POR PERSONA (Auth::user()) y va acá, fuera
+    // del gate de la extensión — el gate protege los DATOS del chat, no una coordenada de pantalla.
+    // 🔴 Tiene que registrarse ANTES de `user/{id}`: las rutas se matchean en orden de registro
+    // y esta tiene dos segmentos, igual que la del comodín — abajo de `user/{id}`, el PUT caería
+    // en UserController@update con id = "set-chat-ia-preferencias" (set-dark-mode zafa solo
+    // porque sus tres segmentos no calzan en el comodín de dos).
+    Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
@@ -181,6 +227,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('abrir-caja/{caja_id}', 'CajaController@abrir_caja');
     Route::put('cerrar-caja/{caja_id}', 'CajaController@cerrar_caja');
 
+    // Línea de tiempo de liquidaciones pendientes de una caja (Grupo 223 · Prompt 02)
+    Route::get('caja/{id}/liquidaciones-pendientes', 'CajaController@liquidaciones_pendientes');
+
     // Apertura de cajas
     Route::get('apertura-caja/{caja_id}', 'AperturaCajaController@index');
     Route::get('apertura-caja/show/{id}', 'AperturaCajaController@show');
@@ -192,6 +241,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Concepto de movimientos de Caja
     Route::resource('concepto-movimiento-caja', 'ConceptoMovimientoCajaController');
+
+    // Override de liquidación/comisión por método de pago dentro de una caja (Grupo 223 · Prompt 01)
+    // 'index' y 'show' se excluyen del resource porque comparten el mismo patrón de URI
+    // (`{param}` único) y colisionarían entre sí; se define el listado filtrado por caja_id
+    // aparte, mismo criterio que 'movimiento-caja' un poco más arriba.
+    Route::get('caja-liquidacion-config/{caja_id}', 'CajaLiquidacionConfigController@index');
+    Route::resource('caja-liquidacion-config', 'CajaLiquidacionConfigController')->except('index', 'show');
 
     // Cajas por defecto
     Route::resource('default-payment-method-caja', 'DefaultPaymentMethodCajaController');
@@ -205,11 +261,20 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Cuotas
     Route::resource('cuota', 'CuotaController');
 
+    // Impuestos sobre ventas (Capa 2 — Prompt 260, ej. IIBB)
+    Route::resource('sale-tax', 'SaleTaxController');
+
 
 
     // Insumos (Producción V2)
     // Importante: esta ruta debe ir ANTES del resource para que no la capture `article/{id}` (show)
     Route::get('article/get-insumos', 'ArticleController@get_insumos');
+
+    // Prompt 308: cambio MANUAL de proveedor de un artículo (dos flags independientes) y su
+    // preview de descuentos para el modal (prompt 309). Igual que get-insumos: deben ir ANTES
+    // del resource para que `article/{article}` (PUT/GET del resource) no las capture.
+    Route::put('article/change-provider', 'ArticleController@change_provider');
+    Route::get('article/change-provider/preview/{id}/{provider_id}', 'ArticleController@change_provider_preview');
 
     Route::resource('article', 'ArticleController')->except(['index']);
     Route::get('article/index/from-status', 'ArticleController@index');
@@ -242,6 +307,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // Descripcion del precio final
     Route::get('/article/final-price-description/{id}', 'ArticleController@get_final_price_description');
+    Route::get('/article/price-type-description/{id}/{price_type_id}', 'ArticleController@get_price_type_description');
     
     // Exportar Excel (procesamiento en cola)
     Route::get('article/excel/export', 'ArticleController@export');
@@ -283,8 +349,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // 
     Route::get('acopio-article-delivery/{sale_id}', 'AcopioArticleDeliveryController@from_sale');
 
-    // Hacer Nota de credito AFIP
-    Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
+    // La ruta de la NC vieja (sale/nota-credito-afip) se eliminó el 24/8/2026 junto con
+    // SaleController@nota_credito_afip y SaleNotaCreditoAfipHelper (tanda 2408, ítem 16).
 
 
 
@@ -394,8 +460,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('order', 'OrderController');
     Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');
     Route::get('order/from-date/{from_date?}/{until_date?}', 'OrderController@index');
-    Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
-    Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
     Route::get('meli-order-status', 'MeliOrderStatusController@index');
     Route::get('meli-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
@@ -403,7 +467,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('meli-order', 'MeLiOrderController')->except(['index', 'create', 'edit']);
 
 
-    Route::resource('order-status', 'OrderStatusController');
+    /*
+        Solo lectura, a proposito (decision de Lucas, 24/8/2026): "no se debe de poder editar".
+
+        OrderStatusHelper depende de los nombres literales de estas filas para decidir si un pedido
+        puede avanzar. Renombrar "Confirmado" deja todos los pedidos de ese comercio solo
+        cancelables, y borrar un estado deja tapiados a los que estaban en el. No habia ninguna
+        pantalla que los editara ni ningun consumidor de store/update/destroy: eran tres endpoints
+        de escritura regalados contra una tabla de la que depende el modulo entero.
+    */
+    Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 
@@ -429,6 +502,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('service', 'ServiceController@store');
     // Route::resource('budget', 'BudgetController')->except(['index']);
     Route::post('budget/{id}/duplicate', 'BudgetController@duplicate');
+    // Van antes del resource, igual que duplicate: acciones explicitas en vez de confirmar/anular
+    // colando el cambio de estado adentro de un update completo.
+    Route::post('budget/{id}/confirmar', 'BudgetController@confirmar');
+    Route::post('budget/{id}/anular', 'BudgetController@anular');
     Route::resource('budget', 'BudgetController');
     Route::get('budget/from-date/{from_date}/{until_date?}', 'BudgetController@index');
     Route::resource('budget-status', 'BudgetStatusController');
@@ -457,6 +534,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Antes usaba esta ruta para obtener los current_acounts, ahora llamo al controlador de CreditAccount
     // Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
     Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CreditAccountController@index');
+    Route::post('/credit-account/limite-credito', 'CreditAccountController@update_limite_credito');
 
     Route::post('/current-acount/pago', 'CurrentAcountController@pago');
     Route::post('/current-acount/nota-credito', 'CurrentAcountController@notaCredito');
@@ -490,6 +568,23 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Reportes
     Route::get('company-performance/{mes_inicio?}/{mes_fin?}', 'CompanyPerformanceController@index');
 
+    // Estado de Resultados devengado (Grupo 225 · Prompt 01): aditivo, no reemplaza el reporte
+    // viejo de arriba (company-performance) hasta que se ejecute el grupo 227.
+    Route::get('reportes/estado-resultados', 'EstadoResultadosController@index');
+
+    // Posición fiscal: IVA, IIBB y pagos a cuenta de Ganancias (Grupo 225 · Prompt 02). Aditivo,
+    // no reemplaza ningún reporte existente.
+    Route::get('reportes/posicion-fiscal', 'PosicionFiscalController@index');
+
+    // Flujo de Caja percibido: ingresos/egresos por caja y método de pago + plata en tránsito
+    // (Grupo 226 · Prompt 01). Aditivo, no reemplaza ningún reporte existente.
+    Route::get('reportes/flujo-caja', 'FlujoCajaController@index');
+
+    // Drill-down genérico de cualquier tarjeta de los reportes de arriba (Estado de Resultados,
+    // Posición Fiscal, Flujo de Caja) — Grupo 226 · Prompt 02. Un solo endpoint parametrizado por
+    // `concepto` en vez de veinte endpoints específicos.
+    Route::get('reportes/detalle', 'ReporteDetalleController@index');
+
     // Article Purchase
     Route::post('article-purchase', 'ArticlePurchaseController@index');
 
@@ -507,6 +602,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('/import-history/rollback/{import_history_id}', 'ImportHistoryController@rollback');
     /* Lista de artículos creados con código repetido para el modal de resultado de importación. */
     Route::get('/import-history/repeated-code-articles/{import_history_id}', 'ImportHistoryController@repeated_code_articles');
+
+    // Desglose completo de una corrida de recalculo de precios (el broadcast solo lleva el top).
+    Route::get('/price-update-run/{id}/desglose', 'PriceUpdateRunController@desglose');
     Route::get('/import-history/{import_history_id}/conflicts', 'ImportHistoryController@conflicts');
 
     /*
@@ -516,9 +614,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
      *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
      *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor (sin releer el Excel si ya hay un análisis previo, grupo 291 prompt 03)
      *  - POST /ai-excel-import/get-recomendacion    : encola la recomendación de configuración con el proveedor real confirmado (grupo 291, prompt 03) y devuelve el uuid de la corrida
+     *  - GET  /ai-excel-import/analysis-en-curso    : corrida abierta del usuario (en curso, o terminada y sin ver) para recuperar el hilo tras cerrar la pestaña
+     *  - POST /ai-excel-import/analysis/{uuid}/visto : marca la corrida como vista, para dejar de ofrecerla
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+    /*
+     * Va ANTES de /analysis/{uuid}: si se declara después, "analysis-en-curso" no
+     * matchea ninguna ruta propia y cae en el patrón de arriba solo si comparten
+     * prefijo — no es el caso acá (son segmentos distintos), pero el orden explícito
+     * evita que un futuro cambio de nombre las haga colisionar en silencio.
+     */
+    Route::get('/ai-excel-import/analysis-en-curso', 'AiExcelImportController@analysisEnCurso');
     Route::get('/ai-excel-import/analysis/{uuid}', 'AiExcelImportController@analysisStatus');
+    Route::post('/ai-excel-import/analysis/{uuid}/visto', 'AiExcelImportController@marcarAnalisisVisto');
     Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
     Route::post('/ai-excel-import/refresh-provider-stats', 'AiExcelImportController@refreshProviderStats');
     Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
@@ -600,10 +708,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     Route::resource('column-position', 'ColumnPositionController');
+    // El where() es solo un guard de forma: valida que el segmento sea un identificador valido.
+    // La lista completa de preference_type validos vive en TableColumnPreferenceController::assert_preference_type()
+    // que aborta 404 para tipos invalidos. Esto evita duplicar la lista de tipos en dos lugares.
     Route::get('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@show')
-        ->where('preference_type', 'table|search|btm_[a-z0-9_]+');
+        ->where('preference_type', '[a-z0-9_]+');
     Route::put('table-column-preference/{model_name}/{preference_type}', 'TableColumnPreferenceController@update')
-        ->where('preference_type', 'table|search|btm_[a-z0-9_]+');
+        ->where('preference_type', '[a-z0-9_]+');
 
     Route::resource('table-column-preferences', 'TableColumnPreferenceCrudController');
     Route::get('pdf-column-options', 'PdfColumnOptionController@index');
@@ -783,11 +894,35 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
 
+    // Descarga del adjunto de un mensaje (misión whatsapp-sidebar-multimedia). Va ADENTRO de
+    // este grupo y no suelta: los audios y las fotos de una conversación viven en el disco
+    // `local`, fuera del docroot, justamente porque `/storage/{path}` de routes/web.php es
+    // público y sin auth. Esta es la única puerta, y suma el chequeo de pertenencia del chat.
+    Route::get('whatsapp-chats/{chat_id}/media/{message_id}', 'WhatsappChatController@media');
+
+    // Envío de una foto o un audio desde el composer (misión whatsapp-sidebar-multimedia).
+    // Multipart: `file` + `caption` opcional. Solo dentro de la ventana de 24 h de Meta; fuera
+    // de ella devuelve 422 `fuera_de_ventana` SIN salir a Kapso, y el front ofrece plantillas.
+    Route::post('whatsapp-chats/{id}/media', 'WhatsappChatController@send_media');
+
     // Envío de plantilla de Meta (grupo 137, Prompt 04): único camino cuando la ventana de 24 h está cerrada.
     Route::post('whatsapp-chats/{id}/send-template', 'WhatsappChatController@send_template');
 
     // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
     Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
+
+    // Recordatorio de cobro por WhatsApp desde el módulo de alertas, solapa Cobros (misión
+    // recordatorio-cobro-whatsapp). Van adentro de ESTE grupo y no sueltas: el recordatorio es
+    // del módulo de WhatsApp, así que si la empresa no tiene la extensión no tiene por dónde
+    // mandarlo. Las cuatro piden además el permiso `alerts.recordatorio_cobro` (403 sin él),
+    // que se chequea adentro del controller.
+    //
+    // 🔴 Ninguna recibe `sale_ids`: reciben `client_id` y `dias`, y el backend recalcula la
+    // query con el recorte del usuario autenticado.
+    Route::get('recordatorio-cobro/preview/{client_id}', 'RecordatorioCobroController@preview');
+    Route::post('recordatorio-cobro/enviar', 'RecordatorioCobroController@enviar');
+    Route::post('recordatorio-cobro/enviar-masivo', 'RecordatorioCobroController@enviar_masivo');
+    Route::get('recordatorio-cobro/lote/{lote_uuid}', 'RecordatorioCobroController@estado_lote');
 
     // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
     Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
@@ -795,6 +930,20 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     Route::put('whatsapp-templates/{id}', 'WhatsappTemplateController@update');
     Route::delete('whatsapp-templates/{id}', 'WhatsappTemplateController@destroy');
     Route::put('whatsapp-templates/{id}/solicitar-alta', 'WhatsappTemplateController@solicitar_alta');
+
+    // Confirmación humana de la respuesta del agente (grupo 137, misión whatsapp-agente).
+    Route::put('whatsapp-chats/messages/{message_id}/confirm', 'WhatsappChatController@confirm_ai_message');
+    Route::delete('whatsapp-chats/messages/{message_id}', 'WhatsappChatController@discard_ai_message');
+
+    // Inyecta un mensaje entrante como si lo hubiera mandado el cliente (solo dueño). Corre
+    // exactamente el mismo camino que el webhook real: ventana de 24 h, debounce y agente.
+    // Throttle propio y bajo, contra los 300/min genéricos: cada llamada gasta un embedding
+    // pago de OpenAI más una respuesta paga de Anthropic. 10 por minuto alcanza de sobra para
+    // probar la agrupación de mensajes seguidos y le pone un techo real al gasto.
+    // La respuesta que genera el agente para un entrante simulado NO sale por Kapso: la frena
+    // WhatsappBotSendService::chat_en_simulacion(), y el porqué está escrito ahí.
+    Route::post('whatsapp-bot/simulate-inbound', 'WhatsappBotController@simulate_inbound')
+        ->middleware('throttle:10,1');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.
@@ -818,6 +967,115 @@ Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 // user_id por parametro. Throttle propio para que una corrida mal configurada no tumbe la base.
 Route::get('integraciones/articulos/{export_key}', 'Integraciones\ArticulosExportController@index')
         ->middleware('throttle:120,1');
+
+// Sugerencias inteligentes de stock (v2): rutas de la vista propia, gateadas por auth Sanctum +
+// la extensión 'sugerencias_inteligentes' (ver ExtencionSugerenciasInteligentesSeeder). Las tres
+// rutas viejas del módulo (resource + create-deposit-movement + stock-suggestion-article) quedan
+// arriba SIN gate a propósito: son el flujo de modales que conservan los clientes sin la
+// extensión, y create-deposit-movement lo comparten los dos flujos.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_inteligentes'])->group(function () {
+    Route::get('stock-suggestion/{id}/articles', 'StockSuggestionController@articles');
+    // Reintento del resumen IA desde la vista: el job no reintenta solo
+    // ($tries = 1, D29), este botón es el camino de vuelta tras un 529.
+    Route::post('stock-suggestion/{id}/resumen', 'StockSuggestionController@regenerar_resumen');
+});
+
+// Chat con el asistente de IA del negocio (misión chat-ia-y-modulo-ia), gateado por auth
+// Sanctum + la extensión 'asistente_ia' (ver ExtencionAsistenteIaSeeder). La tenencia adentro
+// del controller es por PERSONA (auth_user_id + user_id): el gate corta a quien no tiene la
+// extensión, el filtro doble corta al empleado que quiera leer los chats del dueño. El POST
+// del mensaje guarda y despacha el job de respuesta; el evento del canal privado avisa con
+// ids y la SPA busca el texto acá (show_message, también usado por el polling de respaldo).
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->group(function () {
+    Route::get('ai-conversations', 'AiConversationController@index');
+    Route::post('ai-conversations', 'AiConversationController@store');
+    Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+    Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
+    Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
+    Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+});
+
+// Sugerencias de compra a proveedores (misión sugerencias-compra-proveedores), gateado por auth
+// Sanctum + la extensión 'sugerencias_compras' (ver ExtencionSugerenciasComprasSeeder). Sin
+// endpoint update: reprocesar es crear una corrida nueva (D10 del plan), no editar la existente.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_compras'])->group(function () {
+    Route::get('purchase-suggestion', 'PurchaseSuggestionController@index');
+    Route::post('purchase-suggestion', 'PurchaseSuggestionController@store');
+    Route::get('purchase-suggestion/{id}', 'PurchaseSuggestionController@show');
+    Route::delete('purchase-suggestion/{id}', 'PurchaseSuggestionController@destroy');
+    Route::get('purchase-suggestion/{id}/articles', 'PurchaseSuggestionController@articles');
+    Route::post('purchase-suggestion/{id}/resumen', 'PurchaseSuggestionController@resumen');
+    Route::post('purchase-suggestion/{id}/create-provider-order', 'PurchaseSuggestionController@create_provider_order');
+});
+
+// Motor de ofertas por cliente, gateado por Sanctum + 'motor_de_ofertas' (ExtencionMotorDeOfertasSeeder).
+// 🔴 POST client-offer es el ÚNICO escritor de client_offers, la tabla que LEE LA TIENDA por SQL.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:motor_de_ofertas'])->group(function () {
+    Route::get('offer-suggestion', 'OfferSuggestionController@index');
+    Route::post('offer-suggestion', 'OfferSuggestionController@store');
+    Route::get('offer-suggestion/{id}', 'OfferSuggestionController@show');
+    Route::delete('offer-suggestion/{id}', 'OfferSuggestionController@destroy');
+    Route::get('offer-suggestion/{id}/lines', 'OfferSuggestionController@lines');
+    Route::post('offer-suggestion/{id}/resumen', 'OfferSuggestionController@resumen');
+    Route::get('client-offer', 'ClientOfferController@index');
+    Route::post('client-offer', 'ClientOfferController@store');
+    Route::delete('client-offer/{id}', 'ClientOfferController@destroy');
+});
+
+// Actividad de los clientes en el ecommerce (misión actividad-de-clientes-y-oferta-por-whatsapp),
+// gateado por Sanctum + la extensión 'tracking_buyers' (ExtencionTrackingBuyersSeeder).
+// Esa extensión es EL interruptor del tracking de las dos puntas: sin ella la tienda no manda un
+// solo evento y la ingesta no escribe una sola fila, así que la pantalla no tendría nada que
+// mostrar. Las dos rutas son de LECTURA PURA: no escriben en buyer_tracking_events ni en
+// buyer_tracking_daily.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->group(function () {
+    Route::get('actividad-de-clientes', 'ActividadDeClientesController@show');
+    // La lectura en criollo. SINCRÓNICA a propósito, no un job: el modal no puede quedar
+    // esperando a un worker. Molde: WhatsappChatController@summary (llama a Anthropic desde el
+    // request y devuelve el texto sin persistir nada).
+    Route::post('actividad-de-clientes/resumen', 'ActividadDeClientesController@resumen');
+});
+
+// Cotización del dólar al iniciar sesión. Gateado por Sanctum + la extensión
+// 'costo_en_dolares' (ExtencionSeeder, índice 33, tabla extencion_empresas).
+// El gate por rol (is_admin) va adentro del controller: la extensión es de la
+// EMPRESA y el rol es de la PERSONA, y son dos preguntas distintas.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:costo_en_dolares'])->group(function () {
+    Route::get('dolar-cotizacion', 'DolarCotizacionController@show');
+    Route::post('dolar-cotizacion', 'DolarCotizacionController@store');
+    Route::put('dolar-cotizacion/preferencias', 'DolarCotizacionController@preferencias');
+});
+
+// Sistema de puntos para clientes (misión puntos-clientes). Gateado por Sanctum + la extensión
+// 'puntos_clientes' (ExtencionPuntosClientesSeeder), que viene APAGADA por default: sin ella todo
+// este grupo responde 403 y las pantallas de la SPA ni se montan.
+//
+// La extensión es de la EMPRESA; el scope por comercio va adentro de cada controller, que son dos
+// preguntas distintas: el middleware dice "este comercio compró el módulo" y el controller dice
+// "este cliente/este programa es de este comercio". Sin lo segundo, un client_id de otra instancia
+// devolvería el saldo de un desconocido.
+//
+// 🔴 NO hay endpoint de canje, y no es un olvido. El canje viaja adentro del POST/PUT de
+// /api/sale, en `puntos_canjeados` y `descuento_puntos`: un endpoint aparte permitiría canjear sin
+// vender y dejaría el descuento de la venta y el movimiento del libro en dos transacciones
+// distintas, o sea con dos formas de quedar a medio hacer.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:puntos_clientes'])->group(function () {
+    // ABM de la configuración. El nombre en guiones lo espera `routeString('sistema_de_puntos')`
+    // de la SPA (src/common-vue/mixins/generals.js:1521), que reemplaza los guiones bajos.
+    // `except` de create/edit: son las dos rutas de formulario de Blade que Route::resource arma
+    // sola y que este controller no implementa. Sin el except quedan publicadas y contestan un 500
+    // (BadMethodCallException) en vez de un 404, que es lo que corresponde a una ruta que no
+    // existe. Mismo recurso que usa MovimientoCajaController con su `except`.
+    Route::resource('sistema-de-puntos', 'SistemaDePuntosController')->except(['create', 'edit']);
+    Route::get('puntos/cliente/{client_id}',    'PuntoController@cliente');
+    Route::get('puntos/disponible/{client_id}', 'PuntoController@disponible');
+    Route::post('puntos/ajuste',                'PuntoController@ajuste');
+    // El detalle se declara ANTES que el reporte. Hoy son dos rutas literales distintas y el
+    // orden da igual, pero el día que alguien convierta 'puntos/reporte' en 'puntos/reporte/{algo}'
+    // el parámetro se comería el detalle en silencio. Declarado en el orden que sobrevive a eso.
+    Route::get('puntos/reporte/detalle',        'PuntoController@reporte_detalle');
+    Route::get('puntos/reporte',                'PuntoController@reporte');
+});
 
 
 // Plans
@@ -867,3 +1125,20 @@ Route::middleware('admin.api.key')
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
+
+// Escaneo de facturas de compra con IA (misión escaneo-factura-compra), gateado por auth
+// Sanctum + la extensión 'escaneo_factura_compra' (ver ExtencionEscaneoFacturaCompraSeeder).
+// 🔴 'pendientes' y 'en-curso' van ANTES de '{uuid}': son segmentos fijos y si se declaran
+// después, /provider-order-scan/pendientes matchea el patrón {uuid} y devuelve 404 con un
+// mensaje que no dice nada. Mismo motivo por el que 'analysis-en-curso' va antes de
+// 'analysis/{uuid}' en el bloque de ai-excel-import.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_compra'])->group(function () {
+    Route::get('provider-order-scan/pendientes', 'ProviderOrderScanController@pendientes');
+    Route::get('provider-order-scan/en-curso',   'ProviderOrderScanController@en_curso');
+    Route::post('provider-order-scan',           'ProviderOrderScanController@store');
+    Route::get('provider-order-scan/{uuid}',     'ProviderOrderScanController@show');
+    Route::get('provider-order-scan/{uuid}/imagen/{orden}', 'ProviderOrderScanController@imagen');
+    Route::post('provider-order-scan/{uuid}/visto',     'ProviderOrderScanController@marcar_visto');
+    Route::post('provider-order-scan/{uuid}/confirmar', 'ProviderOrderScanController@confirmar');
+    Route::post('provider-order-scan/{uuid}/descartar', 'ProviderOrderScanController@descartar');
+});

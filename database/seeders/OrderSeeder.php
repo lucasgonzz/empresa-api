@@ -18,18 +18,24 @@ class OrderSeeder extends Seeder
      */
     public function run()
     {
-        $buyer = Buyer::where('email', 'lucasgonzalez210200@gmail.com')->first();
+        /*
+            Un buyer distinto por pedido, y los dos con comercio_city_client_id apuntando a un
+            Client real (1 y 2 de ClientSeeder). Ese vinculo es la condicion que chequea
+            CreateSaleOrderHelper::createSale() antes de pasarle client_id a la Sale: sin
+            comercio_city_client la venta nace sin cliente y no impacta la cuenta corriente.
+        */
+        $buyer_lucas = Buyer::where('email', 'lucasgonzalez5500@gmail.com')->first();
+        $buyer_marcos = Buyer::where('email', 'lucasgonzalez210200@gmail.com')->first();
         $models = [
             [
-                'buyer_id'          => $buyer->id,
-                'order_status_id'   => 1,
+                'buyer_id'          => $buyer_lucas->id,
+                'order_status_id'   => 1, // Sin confirmar (OrderStatusSeeder)
                 'deliver'           => 0,
-                // 'created_at'        => Carbon::now(),
-                'created_at'        => Carbon::now()->subDays(2),
+                'created_at'        => Carbon::now(),
             ],
             [
-                'buyer_id'          => $buyer->id,
-                'order_status_id'   => 1,
+                'buyer_id'          => $buyer_marcos->id,
+                'order_status_id'   => 1, // Sin confirmar (OrderStatusSeeder)
                 'deliver'           => 0,
                 'created_at'        => Carbon::now(),
             ],
@@ -45,6 +51,7 @@ class OrderSeeder extends Seeder
             ]);
 
             $articles = Article::where('user_id', config('app.USER_ID'))
+                                ->take(10)
                                 ->get();
 
             foreach ($articles as $article) {

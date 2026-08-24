@@ -12,9 +12,11 @@ use App\Http\Controllers\Helpers\PdfArticleHelper;
 use App\Http\Controllers\Helpers\PdfPrintArticles;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
 use App\Http\Controllers\Pdf\Afip\TicketInfoHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
+use App\Http\Controllers\Pdf\Puntos\PuntosComprobanteHelper;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\Impression;
@@ -222,6 +224,8 @@ class SaleAfipTicketPdf extends fpdf {
 
         $this->printDiscounts();
         $this->printPaymentMethodDiscounts();
+        $this->printCanjeDePuntos();
+        $this->printPuntosDelCliente();
         $this->printImportes();
         // $this->printLine();
         // $this->printPhone();
@@ -271,6 +275,57 @@ class SaleAfipTicketPdf extends fpdf {
 				$this->Cell(100, 5, $text, 0, 1, 'L');
 
 			}
+		}
+	}
+
+	/**
+	 * El renglon que explica el canje de puntos de esta venta.
+	 *
+	 * 🔴 VA ARRIBA DEL CUADRO DE IMPORTES DE AFIP, NO ADENTRO. El cuadro fiscal
+	 * (TicketInfoHelper::print_iva_and_totals) muestra los importes que se le declararon a
+	 * AFIP, donde neto gravado + IVA = Importe Total; agregarle un renglon de descuento lo
+	 * dejaria sin cerrar y el comprobante dejaria de coincidir con lo que la AFIP tiene.
+	 *
+	 * En la factura el canje YA esta prorrateado en el precio de cada articulo
+	 * (AfipItemCalculator::get_porcentaje_descuento_puntos()), asi que la columna Subtotal ya
+	 * suma el neto y las cuentas cierran solas. Lo que faltaba era decir POR QUE los precios
+	 * bajaron: sin este renglon el cliente ve una factura mas barata que la lista y no sabe
+	 * que la diferencia son sus puntos. Por eso el texto aclara donde se aplico.
+	 *
+	 * @return void
+	 */
+	function printCanjeDePuntos() {
+
+		$texto = PuntosComprobanteHelper::renglon_descuento($this->sale);
+
+		if (is_null($texto)) {
+			return;
+		}
+
+		$this->SetFont('Arial', 'I', 9);
+
+		$this->x = 5;
+		$this->Cell(200, 5, $texto.', aplicado en el precio de cada articulo', 0, 1, 'L');
+	}
+
+	/**
+	 * Los puntos que el cliente sumo con esta compra y los que tiene acumulados.
+	 *
+	 * @return void
+	 */
+	function printPuntosDelCliente() {
+
+		$renglones = PuntosComprobanteHelper::renglones_puntos($this->sale, $this->user);
+
+		if (!count($renglones)) {
+			return;
+		}
+
+		$this->SetFont('Arial', 'I', 9);
+
+		foreach ($renglones as $renglon) {
+			$this->x = 5;
+			$this->Cell(200, 5, $renglon, 0, 1, 'L');
 		}
 	}
 
@@ -1103,11 +1158,15 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(25,4,date_format($this->afip_information->inicio_actividades, 'd/m/Y'), 0, 1,'L');
 		}
 
+		// Logo de la sucursal de la venta, con caida al del negocio (tarea 17).
+		// La guarda file_exists_2 queda igual que siempre, aplicada sobre la URL ya resuelta.
+		$logo_url = AfipPdfHelper::resolve_logo_url($this->sale->address, $this->user);
+
 		if (config('app.APP_ENV') == 'local') {
     		$this->Image('https://api.freelogodesign.org/assets/thumb/logo/ad95beb06c4e4958a08bf8ca8a278bad_400.png', 5, 15.2, 35, 35);
     	} else {
-    		if (!is_null($this->user->image_url) && GeneralHelper::file_exists_2($this->user->image_url)) {
-    			$this->Image($this->user->image_url, 5, 15.2, 35, 35);
+    		if (!is_null($logo_url) && GeneralHelper::file_exists_2($logo_url)) {
+    			$this->Image($logo_url, 5, 15.2, 35, 35);
     		}
     	}
 	}

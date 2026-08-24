@@ -22,6 +22,8 @@ class CuotaController extends Controller
             'cantidad_cuotas'       => $request->cantidad_cuotas,
             'descuento'             => $request->descuento,
             'recargo'               => $request->recargo,
+            // Método de pago al que aplica esta regla. NULL = regla genérica (Prompt 260).
+            'payment_method_id'     => $request->payment_method_id,
             'user_id'               => $this->userId(),
         ]);
         $this->sendAddModelNotification('Cuota', $model->id);
@@ -37,6 +39,8 @@ class CuotaController extends Controller
         $model->cantidad_cuotas       = $request->cantidad_cuotas;
         $model->descuento             = $request->descuento;
         $model->recargo               = $request->recargo;
+        // Método de pago al que aplica esta regla. NULL = regla genérica (Prompt 260).
+        $model->payment_method_id     = $request->payment_method_id;
         $model->save();
         
         $this->sendAddModelNotification('Cuota', $model->id);

@@ -280,14 +280,29 @@ class AfipController extends Controller
 
             $provider = $provider_order_afip_ticket->provider_order->provider;
 
+            // Prompt 516: si el comprobante tiene emisor propio cargado (costo extra facturado
+            // aparte, ej. flete tercerizado por otro CUIT), el Libro IVA Compras lo tiene que
+            // atribuir a ESE emisor, no al proveedor de la orden. Si no tiene emisor propio
+            // (comprobante de siempre, o factura principal de la compra), sigue usando el
+            // proveedor de la orden como hasta ahora.
+            $tiene_emisor_propio = !empty($provider_order_afip_ticket->emisor_cuit) || !empty($provider_order_afip_ticket->emisor_razon_social);
+
+            $nombre_emisor = $tiene_emisor_propio
+                ? ($provider_order_afip_ticket->emisor_razon_social ?: $provider_order_afip_ticket->emisor_cuit)
+                : $provider->name;
+
+            $cuit_emisor = $tiene_emisor_propio
+                ? $provider_order_afip_ticket->emisor_cuit
+                : $provider->cuit;
+
             foreach ($provider_order_afip_ticket->provider_order_afip_ticket_ivas as $iva) {
                 $comprobante = [
                     'issued_at'         => $provider_order_afip_ticket->issued_at,
                     'created_at'        => $provider_order_afip_ticket->created_at,
                     'num_comprobante'   => $provider_order_afip_ticket->code,
-                    'proveedor'         => StringHelper::short($provider->name, 22),
-                    'iva'               => $provider->iva_condition ? $provider->iva_condition->slug : '',
-                    'cuit'              => $provider->cuit,
+                    'proveedor'         => StringHelper::short($nombre_emisor, 22),
+                    'iva'               => (!$tiene_emisor_propio && $provider->iva_condition) ? $provider->iva_condition->slug : '',
+                    'cuit'              => $cuit_emisor,
                     'neto'              => $iva->neto,
                     'iva_27'            => $iva->iva_id == 1 ? $iva->iva_importe : '',
                     'iva_21'            => $iva->iva_id == 2 ? $iva->iva_importe : '',

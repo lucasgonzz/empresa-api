@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
@@ -13,6 +14,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\PriceType;
 use App\Models\User;
+use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -55,12 +57,45 @@ class DemoSetupHelper
      *                                   consultora_de_precios, imagenes, produccion,
      *                                   ask_amount_in_vender, redondear_centenas_en_vender,
      *                                   usan_cuentas_corrientes, ventas_con_fecha_de_entrega,
-     *                                   address_1..3, price_type_1..3
+     *                                   address_1..3, price_type_1..3,
+     *                                   demo_eventos_token, demo_eventos_url, demo_plan,
+     *                                   demo_media_urls (mision 50, las cuatro opcionales)
      *
      * @return User Usuario creado
      */
     public static function run(array $data)
     {
+        /**
+         * POR QUE ESTAS DOS LINEAS, ANTES DE QUE ALGUIEN LAS "LIMPIE":
+         *
+         * Este metodo ARRANCA vaciando la base entera con `migrate:fresh` y despues dispara 52
+         * `db:seed` mas `set_company_performances --historico`. Medido el 14/8/2026 contra una
+         * base virgen, por CLI: 109 segundos, de los cuales 66 son el migrate:fresh, 31,5 los
+         * seeders y 4,5 el set_company_performances. O sea que este metodo se pasa del
+         * max_execution_time con el que corre PHP en casi cualquier servidor web -- el default
+         * que trae PHP de fabrica son 30 segundos.
+         *
+         * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
+         *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
+         *   Mismo patron que ya usa este repo en Exports, Imports y PDFs. Va en el helper y no en
+         *   el controller para que cubra los DOS puntos de entrada, el de AdminSync y el legacy
+         *   de /demo/setup. Comprobado el mismo dia con un control A/B contra `php -S` forzando
+         *   max_execution_time=60: sin esta linea el POST muere con "Maximum execution time of 60
+         *   seconds exceeded" a los 61,66 s; con ella devuelve 200 a los 64,23 s. Ese 60 es un
+         *   valor impuesto para que el control sea reproducible -- la maquina donde se midio
+         *   declara 120 en su php.ini --, asi que el numero no es el techo de ningun servidor en
+         *   particular: lo que prueba el control es que sin la linea el techo mata al request y
+         *   con la linea deja de existir.
+         *
+         * - ignore_user_abort(true): si el cliente HTTP corta antes (timeout de admin-api, red),
+         *   el setup tiene que terminar IGUAL. Cortarlo a mitad no deja la instancia "como
+         *   estaba": la deja con la base vaciada o a medio sembrar, porque lo primero que se
+         *   ejecuta es el migrate:fresh. Una instancia armada de la que el admin no se entero se
+         *   arregla re-consultando; una instancia con la base vacia no se arregla sola.
+         */
+        set_time_limit(0);
+        ignore_user_abort(true);
+
         // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
         Artisan::call('migrate:fresh', ['--force' => true]);
 
@@ -71,6 +106,34 @@ class DemoSetupHelper
          * Seeders y modelos auxiliares usan config('app.USER_ID'); debe coincidir con el owner creado.
          */
         config(['app.USER_ID' => $user->id]);
+
+        /**
+         * Y ADEMAS semilla.user_id, que NO es lo mismo aunque lo parezca.
+         *
+         * `config/semilla.php:38` lo resuelve como `env('SEMILLA_USER_ID', env('USER_ID'))`, o sea
+         * que sale del `.env` de la instancia y se congela cuando se carga la configuracion --
+         * mucho antes de que este metodo exista un User. `create_demo_user()` no lo toca.
+         *
+         * El seeder que esta demo usaba antes (ReportesMesSeeder) leia config('app.USER_ID'), asi
+         * que con la linea de arriba alcanzaba. El que lo reemplazo, no: `semilla:datos` hace
+         * `$this->user_id = config('semilla.user_id')` en la PRIMERA parte de su handle()
+         * (SembrarDatosDePrueba.php:235, en runtime y no en el constructor -- por eso pisar la
+         * config aca sirve), y de ahi salen todas sus consultas.
+         *
+         * Sin esta linea, en una instancia cuyo `.env` no tenga `USER_ID`, o lo tenga con un id
+         * distinto al que devolvio `create_demo_user()`, `semilla:datos` busca el catalogo del
+         * usuario equivocado y muere: `cargar_catalogo()` tira "no hay ningun Client para el
+         * usuario X", o `SemillaHelper::asegurar_semilla_user_id_coincide_con_app_user_id()` tira
+         * en la primera venta porque los dos ids no coinciden.
+         *
+         * Y esa excepcion NO se la traga nadie: `Illuminate\Console\Application` corre con
+         * `setCatchExceptions(false)`, asi que `Artisan::call('semilla:datos')` la propaga y
+         * revienta este metodo DESPUES del `migrate:fresh` de arriba y ANTES de
+         * `set_company_performances`, `tienda()` y `DemoIngresoTokenHelper::guardar()`. La
+         * instancia queda con la base vaciada y a medio sembrar, que es el peor final posible
+         * para este helper.
+         */
+        config(['semilla.user_id' => $user->id]);
 
         // Puntos de venta de AFIP (RRII + Monotributo) asociados al user
         self::puntos_de_venta_afip($user);
@@ -84,6 +147,22 @@ class DemoSetupHelper
 
         // El ExtencionSeeder debe correr antes del sync para que existan los registros
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
+
+        /*
+            D2 (18/8/2026): 'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder
+            standalone (pensado justamente para correr aparte en bases existentes). Sin esta
+            linea, el whereIn('slug', $extencions) de mas abajo no encuentra la fila y el
+            sync() la omite en silencio, aunque 'whatsapp' este en base_extencions().
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
+
+        /*
+            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
+            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
+            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
+            la omitiria en silencio.
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
 
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
@@ -108,21 +187,36 @@ class DemoSetupHelper
             $seeders[] = 'RecipeSeeder';
         }
 
-        // Datos de ejemplo de ventas para que la demo tenga movimientos visibles
-        $seeders[] = 'SaleDemoSeeder';
-
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
 
         self::assign_pdf_whatsapp_defaults_for_owner($user->id);
 
+        self::set_default_sale_factura_print_option($user);
+
         self::crear_client_con_mail_del_user_demo($data);
 
         // Reportes pre-calculados que usa el dashboard de ventas
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
-        Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\ReportesMesSeeder', '--force' => true]);
+        /**
+         * D1 (mision seeders-demo-datos-completos, 17/8/2026): la demo deja de sembrar con
+         * ReportesMesSeeder y pasa a llamar al MISMO comando que usa local, semilla:datos.
+         * Antes la demo de producción y una corrida local quedaban con datos distintos; ahora
+         * las dos dejan exactamente la misma aritmética (~523 ventas, la cadencia por mes,
+         * aperturas diarias, planilla de control), y lo que Lucas ve en una demo es lo mismo
+         * que se verifica en local. Sin '--reset': la base recién vino del migrate:fresh de
+         * arriba, así que no hay nada previo que limpiar.
+         *
+         * No se chequea el código de salida ni se envuelve en try/catch, A PROPÓSITO: en una
+         * instancia de CLIENTE REAL -- que corre este mismo helper al instalarse -- ni
+         * config('app.env') es 'local' ni config('app.FOR_USER') es 'demo', así que la guarda
+         * de entorno de semilla:datos sale con código 1 sin sembrar nada. Eso es lo CORRECTO
+         * (el cliente no tiene por qué recibir datos de ejemplo), no una falla que haya que
+         * propagar.
+         */
+        Artisan::call('semilla:datos');
 
         // Performance histórica del usuario (costos, márgenes, etc.)
         Artisan::call('set_company_performances', ['--historico' => true]);
@@ -140,6 +234,100 @@ class DemoSetupHelper
             );
         }
 
+        /**
+         * Canal de eventos de la demo (mision 50). Mismo motivo que el token de ingreso para
+         * guardarlo al final: el migrate:fresh del arranque de este metodo vacia la tabla.
+         *
+         * Las cuatro claves son OPCIONALES. Un payload sin ellas —un lead de la dinamica
+         * anterior, o un admin todavia sin desplegar— deja el setup funcionando exactamente
+         * igual que antes de esta mision: sin fila, no hay canal, y nada de la mision 50 hace
+         * nada en esta instancia.
+         */
+        $canal = null;
+
+        if (!empty($data['demo_eventos_token']) && !empty($data['demo_eventos_url'])) {
+            $canal = DemoTrackingConfigHelper::guardar(
+                $data['demo_eventos_token'],
+                $data['demo_eventos_url'],
+                isset($data['demo_plan']) && is_array($data['demo_plan']) ? $data['demo_plan'] : null,
+                isset($data['demo_media_urls']) && is_array($data['demo_media_urls']) ? $data['demo_media_urls'] : null
+            );
+        }
+
+        /**
+         * Aviso de vuelta al admin: "la instancia quedo armada".
+         *
+         * Mision cruzada `demo-v2-conexion-admin-empresa` (14/8/2026), que corre desde la raiz del
+         * pool y toca los dos proyectos a la vez -- no es una tarea numerada de `tareas/`. El
+         * informe esta en `claude-comerciocity/informes/20260814-demo-v2-conexion-admin-empresa.md`.
+         *
+         * POR QUE ESTO NO SE PUEDE SUBIR DE LUGAR NI SIMPLIFICAR:
+         *
+         * 1. Va AL FINAL, y no arriba junto al resto del setup, por el mismo motivo por el que
+         *    estan al final las dos escrituras de aca arriba: este metodo ARRANCA con
+         *    `migrate:fresh`, que vacia la base entera. Un evento emitido antes queda borrado
+         *    y el admin no se entera de nada.
+         *
+         * 2. Se usa el RESULTADO de guardar() y no `!empty($data['demo_eventos_token'])`.
+         *    Parecen lo mismo y no lo son: guardar() devuelve null cuando el token no entra en
+         *    la columna o cuando el insert falla, y en esos casos el canal no existe. Emitir
+         *    ahi seria escribir una fila en demo_eventos que nadie va a poder empujar nunca,
+         *    porque el push necesita el token y la url que no se guardaron.
+         *
+         * 3. La condicion tambien es la que sostiene el costo cero en las instancias de los
+         *    ~40 clientes REALES. Un cliente real corre este mismo helper al instalarse y su
+         *    payload no trae `demo_eventos_token`: entonces $canal queda null, no se llama al
+         *    emisor, y no se agrega ni una query. La guarda de adentro del emisor existe igual,
+         *    pero no se paga ni siquiera esa.
+         *
+         * 4. La clave de idempotencia sale del token del canal, que es el identificador del lead
+         *    del lado del admin (no viaja lead_id): dos corridas del setup contra el MISMO canal
+         *    dejarian una sola fila, porque el uuid pasa a ser un uuid v5 determinista sobre esa
+         *    clave y choca contra el indice unico.
+         *
+         *    🔴 SINCERIDAD SOBRE ESTA CLAVE, para que nadie la defienda con un motivo falso ni la
+         *    saque por el motivo equivocado: hoy NO tiene ningun escenario activo que la dispare.
+         *    Se necesitan dos corridas del setup compartiendo canal, y eso no puede pasar --
+         *    `RunDemoSetupJob` de admin-api declara `$tries = 1`, la llamada HTTP de la dinamica
+         *    nueva va con `retry(1)`, y sobre todo `emitir_token_de_ingreso()` REGENERA
+         *    `demo_eventos_token` en cada corrida, asi que dos corridas nunca comparten canal.
+         *    Encima el `migrate:fresh` del arranque de este metodo vacia `demo_eventos`.
+         *    Queda igual, y a proposito, porque es defensa en profundidad de costo cero contra un
+         *    cambio futuro del otro lado (que vuelvan los reintentos, o que el token deje de
+         *    rotar), y porque la alternativa -- un uuid aleatorio -- no es mas simple. Lo que NO
+         *    hay que hacer es escribir que "admin-api reintenta y por eso hace falta": es
+         *    mentira, y era lo que decia este comentario hasta que la verificacion cruzada del
+         *    14/8/2026 fue a leer la otra punta.
+         *
+         *    El token no queda expuesto: la clave se digiere en el uuid v5 y no se persiste ni se
+         *    loguea en ningun lado.
+         *
+         * 5. `datos` lleva el user_id del user demo y NADA mas, igual que el resto de los
+         *    eventos de negocio. El admin no necesita el resto y lo que no viaja no se filtra.
+         *
+         * Sobre el tiempo: el emisor agenda el push en app()->terminating(), o sea despues de que
+         * este request ya respondio. Bajo mod_php, `Response::send()` no suelta la conexion antes
+         * de los `terminating` (no existe `fastcgi_finish_request`), asi que en el peor caso esto
+         * le suma el timeout del push -- 5 segundos -- al POST que el admin esta esperando. Contra
+         * el techo de 300 segundos de ese POST es irrelevante, pero no es literalmente cero y
+         * conviene no escribir que lo es.
+         *
+         * Y una limitacion que vale conocer: por el punto de entrada LEGACY (`/demo/setup`, del
+         * grupo `web`) este aviso no sale nunca, porque ahi hay sesion arrancada sin marcador de
+         * demo y la guarda 1 del emisor descarta. No importa en la practica -- ese formulario
+         * manual no manda `demo_eventos_token`, asi que `$canal` queda null y ni se llega al
+         * emisor --, pero no confundirlo con el cherry-pick de mas arriba, que si cubre los dos
+         * puntos de entrada.
+         */
+        if (!is_null($canal)) {
+            DemoEventoEmitter::emitir(
+                'demo.setup.completado',
+                null,
+                ['user_id' => $user->id],
+                (string) $canal->eventos_token
+            );
+        }
+
         return $user;
     }
 
@@ -152,6 +340,26 @@ class DemoSetupHelper
     private static function assign_pdf_whatsapp_defaults_for_owner($owner_id)
     {
         PdfColumnProfileWhatsappDefaultHelper::apply_whatsapp_defaults_for_owner($owner_id, false);
+    }
+
+    /**
+     * Preferencia por defecto del dueño para el botón "Imprimir" de la factura ARCA (tarjetita en
+     * Ventas): PDF A4 fiscal en vez del ticket común. Reutiliza el mismo perfil "Factura comun"
+     * que ya se resuelve para el default de WhatsApp (PdfColumnProfileSeeder lo siembra antes de
+     * llegar acá). Si no se encuentra un perfil válido, no se toca la preferencia (queda en el
+     * default null = ticket común).
+     *
+     * @param User $user
+     * @return void
+     */
+    private static function set_default_sale_factura_print_option($user)
+    {
+        $factura_profile = PdfColumnProfileWhatsappDefaultHelper::resolve_factura_whatsapp_profile($user->id);
+
+        if ($factura_profile) {
+            $user->sale_factura_print_option = 'factura_a4:'.$factura_profile->id;
+            $user->save();
+        }
     }
 
     static function crear_client_con_mail_del_user_demo($data) {
@@ -235,6 +443,37 @@ class DemoSetupHelper
             'acopios',
             'bar_code_scanner',
             'enviar_mail_a_clientes',
+
+            /*
+                D1: la demo ahora siembra con semilla:datos, que deja actividad de tienda,
+                stock por sucursal y ventas facturadas. Sin estas 4 extensiones encendidas,
+                los módulos que muestran esos datos (sugerencias de stock, sugerencias de
+                compra, motor de ofertas, tracking de compradores) quedan con las rutas en
+                403 y esa data sembrada no se puede ni mirar.
+            */
+            'sugerencias_inteligentes',
+            'sugerencias_compras',
+            'motor_de_ofertas',
+            'tracking_buyers',
+
+            /*
+                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
+                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
+                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
+                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
+            */
+            'asistente_ia',
+            'escaneo_factura_compra',
+
+            /*
+                D2 (18/8/2026): el ítem de menú de WhatsApp lo gatea 'whatsapp'
+                (empresa-spa/src/router/routes.js), no 'whatsapp_ia'. Sin 'whatsapp' el
+                módulo no aparece nunca en el menú, aunque se asigne 'whatsapp_ia' a mano
+                desde /user/extencions/edit. Van las dos juntas: 'whatsapp_ia' sola no tiene
+                ningún efecto visible porque el módulo que la usa ni se muestra.
+            */
+            'whatsapp',
+            'whatsapp_ia',
         ];
     }
 
@@ -279,6 +518,12 @@ class DemoSetupHelper
             'ProviderPriceListSeeder',
             'ColorSeeder',
             'DepositSeeder',
+
+            /*
+                D1: tiene que ir ANTES de ClientSeeder -- ClientSeeder escribe address_id 1..4
+                contra sucursales que, hasta ahora, la demo nunca sembraba.
+            */
+            'AddressSeeder',
             'ClientSeeder',
             'BuyerSeeder',
             'DiscountSeeder',
@@ -290,7 +535,16 @@ class DemoSetupHelper
 
             // 'MessageSeeder',
 
+            /*
+                D1: ExpenseCategorySeeder ANTES de ExpenseConceptSeeder -- este último
+                hardcodea expense_category_id 1 y 2 (Impuestos / Gastos bancarios) contra las
+                filas que crea el primero. Y SaleTaxSeeder porque sin un SaleTax activo,
+                ContabilidadRepository::iibb_determinado() da 0 y el renglón de IIBB de la
+                planilla de control no se puede verificar contra el reporte.
+            */
+            'ExpenseCategorySeeder',
             'ExpenseConceptSeeder',
+            'SaleTaxSeeder',
             'PendingSeeder',
 
             'EmployeeSeeder',
@@ -306,6 +560,21 @@ class DemoSetupHelper
             'PdfColumnProfileSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
+
+            /*
+                Defaults del buscador general. Tiene que quedar DESPUÉS de EmployeeSeeder: el
+                seeder borra las filas `global_search` de los empleados para que hereden las del
+                dueño, y si corriera antes no agarraría a los que la demo acaba de crear.
+            */
+            'GlobalSearchDefaultsSeeder',
+
+            /*
+                D1: al final, para que las 4 extensiones de IA (agregadas en base_extencions())
+                ya estén enganchadas al usuario cuando esto corre. Queda idempotente igual --
+                si ya están enganchadas (por el sync de más arriba) las salta, ver su propio
+                PHPDoc -- así que no importa si algún día alguien reordena esta lista.
+            */
+            'ExtencionesIaUserSeeder',
         ];
     }
 

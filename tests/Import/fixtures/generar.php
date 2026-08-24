@@ -441,4 +441,61 @@ escribir('10_escalon_nombre.xlsx', [
     [null,      null, null,        '  ART NORMALIZACION TEST  ',         915.0, 1830.0, 91.5, '21'],
 ], $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 11 - Precio manual vs margen de ganancia en la importacion (mision 44).
+ *
+ * UNICO fixture con cabecera propia: agrega la columna margen_de_ganancia, que
+ * la cabecera comun de los otros diez no tiene. El test pasa su propio mapa de
+ * columnas (prop_margen_de_ganancia), por eso el orden de abajo NO tiene que
+ * coincidir con ImportTestCase::columnas().
+ *
+ * Contra los articulos P1..P6 que crea el propio test (bar_codes 7790101 a
+ * 7790106), cada uno en un estado de precio distinto:
+ *
+ *   F2  7790101 P1 tiene margen propio 25 -> el Excel trae PRECIO. Se saltea
+ *       el precio y queda constancia.
+ *   F3  7790102 P2 tiene precio manual 500 -> el Excel trae MARGEN. Se saltea
+ *       el margen y queda constancia.
+ *   F4  7790103 P3 usa el margen del proveedor Y tiene costo -> el Excel trae
+ *       PRECIO. Se saltea el precio.
+ *   F5  7790104 P4 tiene el mismo proveedor con margen pero SIN costo (y la
+ *       fila tampoco trae costo), asi que no hay margen aplicable -> el precio
+ *       del Excel SI se aplica. Es el caso hermano de F4 y el que fija la
+ *       condicion de costo.
+ *   F6  7790105 P5 no tiene ninguno de los dos -> el Excel trae LOS DOS. Gana
+ *       el margen, se saltea el precio y queda constancia.
+ *   F7  7790106 P6 tiene margen propio 20 -> el Excel trae margen CERO. Un cero
+ *       no es un valor: no se escribe (no vuelve a generar el estado sucio que
+ *       la mision elimina) y NO se registra como columna ignorada.
+ *   F8  7790107 P7 no tiene ninguno de los dos -> el Excel trae MARGEN.
+ *   F9  7790107 OTRA VEZ el mismo articulo, ahora con PRECIO. F8 y F9 juntas son
+ *       el caso de dos filas del mismo Excel apuntando al mismo articulo con las
+ *       columnas repartidas: la segunda relee el articulo de la BASE, donde el
+ *       margen que encolo F8 todavia no esta, asi que sin el estado pendiente
+ *       por articulo las dos pasarian y el merge por id escribiria las DOS
+ *       columnas.
+ * -------------------------------------------------------------------------- */
+$cabecera_con_margen = [
+    'codigo_de_barras',
+    'sku',
+    'codigo_de_proveedor',
+    'nombre',
+    'costo',
+    'precio',
+    'margen_de_ganancia',
+    'stock_actual',
+    'iva',
+];
+
+escribir('11_precio_vs_margen.xlsx', [
+    ['7790101', null, null, 'Art margen propio',        null, 999.0, null, null, '21'],
+    ['7790102', null, null, 'Art precio manual',        null, null,  30.0, null, '21'],
+    ['7790103', null, null, 'Art margen proveedor',     null, 888.0, null, null, '21'],
+    ['7790104', null, null, 'Art proveedor sin costo',  null, 777.0, null, null, '21'],
+    ['7790105', null, null, 'Art sin criterio previo',  null, 666.0, 50.0, null, '21'],
+    ['7790106', null, null, 'Art margen cero del excel',null, null,  0.0,  null, '21'],
+    ['7790107', null, null, 'Art dos filas mismo art',  null, null,  40.0, null, '21'],
+    ['7790107', null, null, 'Art dos filas mismo art',  null, 555.0, null, null, '21'],
+], $cabecera_con_margen);
+
 echo "\nListo.\n";

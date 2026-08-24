@@ -123,7 +123,21 @@ class PdfHelper {
         
         // Logo imagen
         $user = $data['user'];
-        $logo_url = $user->image_url;
+
+        /**
+         * Logo del comprobante: por defecto el del negocio, igual que siempre.
+         *
+         * Un caller puede mandar $data['logo_url'] ya resuelto para imprimir otro. Lo usa
+         * el presupuesto, que imprime el logo de SU sucursal (tarea 17, 11/8/2026): el
+         * valor lo resuelve AfipPdfHelper::resolve_logo_url() en BudgetPdf::Header(), no
+         * se decide nada aca.
+         *
+         * Es opcional a proposito: por PdfHelper::header pasan trece comprobantes
+         * distintos (remitos, notas de credito, pedidos, cuenta corriente, etc.) y los
+         * que no mandan la clave se comportan exactamente como antes de este cambio.
+         */
+        $logo_url = isset($data['logo_url']) ? $data['logo_url'] : $user->image_url;
+
         if (!is_null($logo_url)) {
         	if (config('app.APP_ENV') == 'local') {
         		$instance->Image('https://img.freepik.com/vector-gratis/ilustracion-banner-sello-circulo_53876-28480.jpg', 5, 5, $alto_imagen, $alto_imagen);

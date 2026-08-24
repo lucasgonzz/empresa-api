@@ -264,12 +264,16 @@ class ExtencionSeeder extends Seeder
             ],
             [
                 // 50
-                /* 
-                    Esta extencion se la aplico a truvari, 
-                    para que en el detalle de la hoja de ruta le aparezcan los articulos de todas las ventas, y no cada venta 
-                
+                /*
+                    Esta extencion se la aplico a truvari,
+                    para que en el detalle de la hoja de ruta le aparezcan los articulos de todas las ventas, y no cada venta
+
+                    Tanda correctivos 24/8 (item 18): tenia el name "Ventas con fecha de
+                    entrega", copiado de la extension anterior — dos extensiones distintas
+                    con el mismo nombre visible. Para bases existentes esta
+                    ExtencionRoadMapDetallePorArticulosNameSeeder.
                 */
-                'name' => 'Ventas con fecha de entrega',
+                'name' => 'Hoja de ruta: detalle por articulos',
                 'slug' => 'road_map_detalle_por_articulos_y_no_por_venta',
             ],
             [
@@ -450,6 +454,44 @@ class ExtencionSeeder extends Seeder
             [
                 'name' => 'Crear artículos desde vender',
                 'slug' => 'crear_articulos_desde_vender',
+            ],
+            [
+                /**
+                 * El nombre dice "en VENDER" a propósito: en el admin convive con el permiso
+                 * homónimo "Personalizar nombre del articulo" y sin esa marca son indistinguibles.
+                 */
+                'name' => 'Personalizar nombre del articulo en VENDER',
+                'slug' => 'personalizar_nombre_en_vender',
+            ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Sugerencias inteligentes de stock',
+                'slug' => 'sugerencias_inteligentes',
+            ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Asistente IA',
+                'slug' => 'asistente_ia',
+            ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Sugerencias de compra a proveedores',
+                'slug' => 'sugerencias_compras',
+            ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Seguimiento de compradores en la tienda',
+                'slug' => 'tracking_buyers',
+            ],
+            [
+                // Va acá porque UserSetupHelper/DemoSetupHelper corren SOLO este seeder:
+                // una extensión que no esté en este array no existe para una instancia nueva.
+                'name' => 'Motor de ofertas por cliente',
+                'slug' => 'motor_de_ofertas',
             ],
 
         ];

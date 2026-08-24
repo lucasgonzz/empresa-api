@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\ImportHistory;
@@ -10,7 +11,6 @@ use App\Models\ImportStatus;
 use Illuminate\Bus\Batch;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
 use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Cell;
@@ -33,7 +33,45 @@ class InitExcelImport
         $this->columns                  = ArticleImportColumnsNormalizer::normalize(
             is_array($data['columns'] ?? null) ? $data['columns'] : []
         );
+        /*
+         * Prompt 310: flags "permitir_valores_en_blanco" por columna mapeada, normalizados con
+         * los mismos alias que $this->columns para que ProcessRow los pueda cruzar por clave.
+         */
+        $this->blank_flags              = ArticleImportColumnsNormalizer::normalize_blank_flags(
+            is_array($data['blank_flags'] ?? null) ? $data['blank_flags'] : []
+        );
         $this->create_and_edit          = $data['create_and_edit'];
+
+        /*
+         * Hoja del libro a importar, 0-based. Default 0 = primera hoja, que es lo que este
+         * importador hizo siempre (el `break` del foreach de hojas en armar_archivo_csv()).
+         *
+         * Clave OPCIONAL: AdminSync\AiExcelImportController arma su propio array y no la manda,
+         * y tampoco la manda una SPA sin desplegar. Los dos tienen que seguir importando la
+         * primera hoja, sin un ArgumentCountError ni un índice raro de por medio.
+         */
+        $this->hoja                     = is_numeric($data['hoja'] ?? null) && (int) $data['hoja'] >= 0
+                                            ? (int) $data['hoja']
+                                            : 0;
+
+        /*
+         * Nombre de la hoja elegida. Clave OPCIONAL, default null = "usá el índice".
+         *
+         * Es la mitigación que ya estaba construida y no se usaba en este camino:
+         * ExcelWorkbookReader::resolver_indice() existe porque el índice lo calcula
+         * SheetJS en el navegador y quien lee después es OpenSpout, y los dos pueden
+         * discrepar. El camino con IA queda tapado por accidente (la SPA se pisa el índice
+         * con el que le devuelve el backend); acá, en el import clásico, no hay ida y
+         * vuelta: el índice del navegador llega derecho a armar_archivo_csv().
+         *
+         * Si el nombre no viene —que es TODO lo que pasa hoy: ni la SPA ni AdminSync lo
+         * mandan— no se resuelve nada y se usa el índice crudo, exactamente como antes.
+         */
+        $this->hoja_nombre              = (isset($data['hoja_nombre'])
+                                            && is_string($data['hoja_nombre'])
+                                            && trim($data['hoja_nombre']) !== '')
+                                            ? trim($data['hoja_nombre'])
+                                            : null;
         $this->start_row                = $data['start_row'];
         $this->finish_row               = $data['finish_row'];
         $this->provider_id              = $data['provider_id'];
@@ -66,6 +104,18 @@ class InitExcelImport
          */
         $this->filas_repetidas_del_archivo = $this->normalizar_filas_repetidas_del_archivo(
             $data['filas_repetidas_del_archivo'] ?? null
+        );
+
+        /*
+         * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus costos
+         * vienen con el IVA adentro. Es la ÚNICA fuente de esa decisión para el import — no hay
+         * fallback por condición fiscal ni por configuración de la cuenta —, igual que la compra la
+         * declara con `provider_orders.precios_incluyen_iva` y el ABM con el input en el que se
+         * tipeó. Default false (= netos), que es el comportamiento histórico del import.
+         */
+        $this->precios_incluyen_iva = filter_var(
+            $data['precios_incluyen_iva'] ?? false,
+            FILTER_VALIDATE_BOOLEAN
         );
 
         $this->chunkSize    = config('app.ARTICLE_EXCEL_CHUNK_SIZE');
@@ -284,9 +334,40 @@ class InitExcelImport
 
             Log::info('Iniciando conversión de XLSX a CSV. Origen: ' . $this->archivo_excel);
 
-            $reader = ReaderEntityFactory::createXLSXReader();
-            $reader->setShouldPreserveEmptyRows(true);
-            $reader->open($this->archivo_excel);
+            /*
+             * La hoja elegida, no "la primera y listo".
+             *
+             * Antes acá había un `foreach ($reader->getSheetIterator() as $sheet) { ...; break; }`:
+             * ese break es "siempre la hoja 0", y como nadie lo elegía ni lo veía, un libro con
+             * la lista de precios en la hoja 2 se volcaba a un CSV con la hoja de notas y se
+             * importaba cualquier cosa sin un solo error en pantalla.
+             *
+             * Todo lo demás del volcado queda igual: preservar_filas_vacias en true, una línea de
+             * CSV por cada fila del Excel. Eso es lo que hace que línea de CSV = fila del Excel,
+             * y de eso dependen build_csv_chunk_offsets() y armar_jobs_de_chunks(), que navegan
+             * el archivo por número de línea. Si esto dejara de ser 1:1, start_row y finish_row
+             * pasarían a apuntar a filas equivocadas.
+             */
+            /*
+             * Si vino el nombre de la hoja, manda el nombre.
+             *
+             * resolver_indice() prioriza nombre exacto -> índice en rango -> 0, y nunca
+             * devuelve un índice fuera de rango. Sólo se llama cuando hay nombre: cuesta un
+             * listado completo del libro (un Reader::open() que parsea sharedStrings.xml
+             * entero, ~200ms en un xlsx de 20.000 filas), y no se le paga ese peaje a las
+             * importaciones que hoy andan bien sin él.
+             */
+            $indice_de_hoja = $this->hoja;
+
+            if (!is_null($this->hoja_nombre)) {
+                $indice_de_hoja = ExcelWorkbookReader::resolver_indice(
+                    $this->archivo_excel,
+                    $this->hoja,
+                    $this->hoja_nombre
+                );
+            }
+
+            $lectura = ExcelWorkbookReader::abrir($this->archivo_excel, $indice_de_hoja, true);
 
             $writer = WriterEntityFactory::createCSVWriter();
             $writer->openToFile($this->csv_full_path);
@@ -295,55 +376,77 @@ class InitExcelImport
             $fila = 1;
             $ultima_fila_con_contenido = 1;
 
-            foreach ($reader->getSheetIterator() as $sheet) {
-                foreach ($sheet->getRowIterator() as $row) {
-                    $cells = [];
-                    $fila_tiene_contenido = false;
+            foreach ($lectura->filas() as $row) {
+                $cells = [];
+                $fila_tiene_contenido = false;
 
-                    foreach ($row->getCells() as $cell) {
-                        $value = $cell->getValue();
+                foreach ($row->getCells() as $cell) {
+                    $value = $cell->getValue();
 
-                        if ($value instanceof \DateTime) {
-                            $value = $value->format('Y-m-d H:i:s');
-                        }
-
-                        if ($value === null) {
-                            $value = '';
-                        }
-
-                        $text_value = trim((string) $value);
-                        if ($text_value !== '') {
-                            $fila_tiene_contenido = true;
-                        }
-
-                        $cells[] = new Cell((string) $value);
+                    if ($value instanceof \DateTime) {
+                        $value = $value->format('Y-m-d H:i:s');
                     }
 
-                    if (count($cells) === 0) {
-                        $cells[] = new Cell('');
+                    if ($value === null) {
+                        $value = '';
                     }
 
-                    if ($fila_tiene_contenido) {
-                        $ultima_fila_con_contenido = $fila;
+                    $text_value = trim((string) $value);
+                    if ($text_value !== '') {
+                        $fila_tiene_contenido = true;
                     }
 
-                    $new_row = new Row($cells, null);
-                    $writer->addRow($new_row);
-
-                    $fila++;
+                    $cells[] = new Cell((string) $value);
                 }
 
-                break;
+                if (count($cells) === 0) {
+                    $cells[] = new Cell('');
+                }
+
+                if ($fila_tiene_contenido) {
+                    $ultima_fila_con_contenido = $fila;
+                }
+
+                $new_row = new Row($cells, null);
+                $writer->addRow($new_row);
+
+                $fila++;
             }
 
+            $nombre_de_hoja = $lectura->nombre();
+
             $writer->close();
-            $reader->close();
+            $lectura->cerrar();
 
             /*
              * Si el frontend envió finish_row muy alto (p. ej. 99999 en importación con IA),
              * limitamos al rango real del archivo para no crear miles de chunks vacíos.
              */
             $this->ajustar_finish_row_segun_excel_real($ultima_fila_con_contenido);
+
+            /*
+             * 🔴 Este log existe para diagnosticar "se importó de menos y nadie se dio cuenta".
+             *
+             * ajustar_finish_row_segun_excel_real() protege por ARRIBA (recorta un finish_row
+             * más grande que el archivo) pero NO por abajo: si finish_row quedó demasiado chico
+             * —porque el navegador lo calculó sobre otra hoja y después el usuario cambió de
+             * hoja— se importan menos filas de las que el archivo tiene, sin error, sin
+             * advertencia y sin nada raro en pantalla. Es el mismo síntoma que el histórico del
+             * proyecto conoce como "me faltan artículos y no sé por qué".
+             *
+             * Con estos cuatro números en el log, ese caso se responde en un minuto: si
+             * finish_row < ultima_fila_con_contenido, se importó de menos y ya sabemos sobre qué
+             * hoja se calculó el rango.
+             */
+            Log::info('InitExcelImport: hoja volcada al CSV', [
+                'hoja'                      => $indice_de_hoja,
+                'hoja_pedida'               => $this->hoja,
+                'hoja_nombre_pedido'        => $this->hoja_nombre,
+                'hoja_nombre'               => $nombre_de_hoja,
+                'start_row'                 => (int) $this->start_row,
+                'finish_row'                => (int) $this->finish_row,
+                'ultima_fila_con_contenido' => $ultima_fila_con_contenido,
+            ]);
 
             $conversion_fin = microtime(true);
             $conversion_duracion = $conversion_fin - $conversion_inicio;
@@ -416,6 +519,7 @@ class InitExcelImport
             $this->jobs[] = new ProcessArticleChunk(
                 $this->csv_full_path,
                 $this->columns,
+                $this->blank_flags,
                 $this->create_and_edit,
                 $this->start,
                 $this->end,
@@ -433,7 +537,8 @@ class InitExcelImport
                 $this->permitir_provider_code_repetido_en_multi_providers,
                 $this->actualizar_por_provider_code,
                 $this->interpretacion_punto,
-                $this->filas_repetidas_del_archivo
+                $this->filas_repetidas_del_archivo,
+                $this->precios_incluyen_iva
             );
 
             $this->chunk_number++;

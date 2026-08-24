@@ -200,6 +200,20 @@ class ArticleSeederHelper {
         return $created_article;
     }
 
+    /**
+     * Carga el stock inicial del articulo en cada sucursal y le fija minimos y maximos.
+     *
+     * Acepta un plan por sucursal en $article['stock_por_sucursal'], que es un array de
+     * ['amount', 'stock_min', 'stock_max'] en el mismo orden en que se recorren las
+     * sucursales (posicion 0 = la primera, que en el seeder por defecto es el deposito de
+     * origen). Si la clave NO viene, el comportamiento queda exactamente como estaba
+     * (100 / 50 / 120): este metodo lo llaman varios seeders y solo el de ferreteria
+     * planifica el stock.
+     *
+     * @param \App\Models\Article $created_article
+     * @param array<string,mixed> $article Payload del seeder.
+     * @return void
+     */
     function setStockMovement($created_article, $article) {
 
         if (
@@ -210,30 +224,46 @@ class ArticleSeederHelper {
         }
 
         $ct = new StockMovementController(false);
-        
+
         $data['model_id'] = $created_article->id;
         $data['provider_id'] = $created_article->provider_id;
+
+        // Plan de stock por sucursal si el seeder lo mando; null = numeros historicos.
+        $plan_de_stock = isset($article['stock_por_sucursal']) ? $article['stock_por_sucursal'] : null;
 
         if (count($this->addresses) >= 1) {
 
             $segundos = 0;
 
+            // Posicion de la sucursal dentro del plan; se lleva a mano porque $this->addresses
+            // es una Collection y sus claves no tienen por que ser 0..N correlativas.
+            $posicion = 0;
+
             foreach ($this->addresses as $address) {
-            
+
+                $fila_del_plan = $this->fila_del_plan_de_stock($plan_de_stock, $posicion);
+
                 $data['to_address_id'] = $address->id;
-                $data['amount'] = 100;
+                $data['amount'] = is_null($fila_del_plan) ? 100 : $fila_del_plan['amount'];
                 $data['concepto_stock_movement_name'] = 'Creacion de deposito';
 
                 $ct->crear($data, false, null, null, $segundos);
                 $segundos += 5;
+                $posicion++;
             }
+
+            $posicion = 0;
 
             foreach ($this->addresses as $address) {
 
+                $fila_del_plan = $this->fila_del_plan_de_stock($plan_de_stock, $posicion);
+
                 $created_article->addresses()->updateExistingPivot($address->id, [
-                    'stock_min'   => 50,
-                    'stock_max'   => 120,
+                    'stock_min'   => is_null($fila_del_plan) ? 50 : $fila_del_plan['stock_min'],
+                    'stock_max'   => is_null($fila_del_plan) ? 120 : $fila_del_plan['stock_max'],
                 ]);
+
+                $posicion++;
             }
 
 
@@ -245,6 +275,31 @@ class ArticleSeederHelper {
             $data['amount'] = $article['stock'];
             $ct->crear($data);
         }
+    }
+
+    /**
+     * Fila del plan de stock que le toca a una sucursal segun su posicion.
+     *
+     * Si la posicion se pasa del largo del plan se reusa la ultima fila, en vez de caer a
+     * los numeros historicos: una instalacion con MAS sucursales que el plan tiene que
+     * seguir arrancando con stock coherente en las de mas, no con un 100/50/120 suelto en
+     * el medio de un catalogo planificado.
+     *
+     * @param array<int,array<string,int>>|null $plan_de_stock
+     * @param int $posicion Indice de la sucursal, arrancando en 0.
+     * @return array<string,int>|null Null si no hay plan.
+     */
+    protected function fila_del_plan_de_stock($plan_de_stock, $posicion) {
+
+        if (is_null($plan_de_stock) || count($plan_de_stock) === 0) {
+            return null;
+        }
+
+        // Se acota en vez de indexar directo: un plan mas corto que la cantidad de sucursales
+        // daria un undefined index y voltearia el seeder entero.
+        $indice = $posicion < count($plan_de_stock) ? $posicion : count($plan_de_stock) - 1;
+
+        return $plan_de_stock[$indice];
     }
 
     function getCategoryId($article) {

@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\UserProfileChangeDescriptionHelper;
 use App\Jobs\ProcessSetFinalPrices;
+use App\Models\DolarCotizacionRegistro;
 use App\Models\OnlineConfiguration;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
@@ -80,7 +81,14 @@ class UserController extends Controller
         $current_redondear_precios_en_decenas   = (int) $model->redondear_precios_en_decenas;
         $current_redondear_de_a_50              = (int) $model->redondear_de_a_50;
         $current_redondear_precios_en_centavos  = (int) $model->redondear_precios_en_centavos;
+        // Tarea 4: faltaban en el snapshot, ver el comentario de check_actualizar_articulos().
+        $current_redondear_centenas_en_vender   = (int) $model->redondear_centenas_en_vender;
+        $current_redondear_miles_en_vender      = (int) $model->redondear_miles_en_vender;
         $current_aplicar_iva_al_costo           = (int) $model->aplicar_iva_al_costo;
+        // Condicion de IVA para precios (RRII/MT) previa al guardado, para detectar si cambio y disparar el recalculo masivo.
+        $current_condicion_iva_precios          = $model->condicion_iva_precios;
+        // Flag previo que indica si el costeo depende de la condicion fiscal de la cuenta, para el mismo chequeo de cambios.
+        $current_usar_condicion_fiscal_en_costeo = (int) $model->usar_condicion_fiscal_en_costeo;
 
         $current_default_version                = (int) $model->default_version;
 
@@ -116,13 +124,14 @@ class UserController extends Controller
         $model->sale_ticket_description          = $request->sale_ticket_description;
         $model->sale_ticket_name_font_size       = $request->sale_ticket_name_font_size;
         $model->sale_ticket_price_font_size      = $request->sale_ticket_price_font_size;
-        $model->sale_ticket_logo_full_width      = $request->sale_ticket_logo_full_width;
         $model->siempre_omitir_en_cuenta_corriente          = $request->siempre_omitir_en_cuenta_corriente;
-        $model->redondear_centenas_en_vender          = $request->redondear_centenas_en_vender;
-        $model->redondear_precios_en_decenas          = $request->redondear_precios_en_decenas;
-        $model->redondear_de_a_50                     = $request->redondear_de_a_50;
-        $model->redondear_precios_en_centavos         = $request->redondear_precios_en_centavos;
-        
+
+        // Tarea 4: las cuatro tildes de redondeo se reemplazaron por el select "Opciones de
+        // redondeo" (`modo_redondeo`), que es una fachada sobre las cinco columnas booleanas.
+        // La traduccion vive en un metodo aparte para que la garantia de no-op quede en un solo
+        // lugar y con su explicacion al lado.
+        $this->aplicar_modo_redondeo($model, $request);
+
         $model->header_articulos_pdf            = $request->header_articulos_pdf;
         $model->default_version                 = $request->default_version;
         $model->estable_version                 = $request->estable_version;
@@ -166,8 +175,51 @@ class UserController extends Controller
         $model->mostrar_vendedor_en_venta_pdf   = $request->mostrar_vendedor_en_venta_pdf;
         $model->pdf_image_size                  = $request->pdf_image_size;
         $model->inputs_size_id                  = $request->inputs_size_id;
-        $model->aplicar_iva_al_costo                  = $request->aplicar_iva_al_costo;
+        /**
+         * Tilde historica de costeo. Va con guard, igual que `condicion_iva_precios` mas abajo y
+         * que `usar_condicion_fiscal_en_costeo`: un request que no traiga la clave la dejaba en
+         * null, que en la columna boolean se persiste como 0, o sea que un update cualquiera
+         * apagaba el flag sin que nadie lo pidiera. Y no queda latente: los tres campos entran en
+         * la comparacion de check_actualizar_articulos(), asi que el apagado silencioso dispara el
+         * recalculo de precios de TODOS los articulos de la cuenta en el acto.
+         *
+         * Ademas del `has()` se descarta el null explicito, porque `has()` devuelve true con la
+         * clave presente en null y ese null no puede significar "apagar": apagar se manda como 0.
+         * El campo sigue siendo editable — cuando viene con valor, se guarda.
+         */
+        if ($request->has('aplicar_iva_al_costo') && !is_null($request->aplicar_iva_al_costo)) {
+            $model->aplicar_iva_al_costo = (int) $request->aplicar_iva_al_costo;
+        }
         $model->aplicar_descuentos_de_venta_a_costos = $request->aplicar_descuentos_de_venta_a_costos;
+
+        /**
+         * Condicion de IVA para precios (Grupo 231): define si la cuenta es Monotributista o
+         * Responsable Inscripto y de eso depende el calculo de costeo (via
+         * ArticlePricesHelper::iva_va_al_costo). Se valida acotado porque un valor corrupto en
+         * esta columna descalibra el costeo de toda la cuenta en silencio (misma validacion que
+         * antes vivia en UserConfigurationController, movida aca en el prompt 01). Si llega algo
+         * distinto de RRII/MT no se guarda nada y se corta el request con 422. Se chequea con
+         * `has()` (a diferencia del resto de los campos de este metodo) para no romper el guardado
+         * del formulario de propiedades mientras el prompt 06 (empresa-spa) todavia no manda este
+         * campo nuevo: sin el guard, cualquier request viejo sin `condicion_iva_precios` llegaria
+         * como null y tiraria 422 en TODO guardado de configuracion, no solo en el de esta feature.
+         */
+        if ($request->has('condicion_iva_precios')) {
+            if ($request->condicion_iva_precios !== User::CONDICION_RRII && $request->condicion_iva_precios !== User::CONDICION_MT) {
+                return response()->json(['error' => true, 'message' => 'condicion_iva_precios invalida'], 422);
+            }
+            $model->condicion_iva_precios = $request->condicion_iva_precios;
+        }
+
+        /**
+         * Flag que activa la nueva dinamica de costeo dependiente de la condicion fiscal de la
+         * cuenta. Mismo guard y mismo motivo que `aplicar_iva_al_costo` mas arriba: sin el, un
+         * request que no mande la clave lo apaga en silencio y dispara el recalculo masivo de
+         * precios por check_actualizar_articulos(). No sacar el guard pensando que es redundante.
+         */
+        if ($request->has('usar_condicion_fiscal_en_costeo') && !is_null($request->usar_condicion_fiscal_en_costeo)) {
+            $model->usar_condicion_fiscal_en_costeo = (int) $request->usar_condicion_fiscal_en_costeo;
+        }
 
         /**
          * Permite `provider_code` repetido en artículos.
@@ -177,7 +229,65 @@ class UserController extends Controller
             $model->usa_provider_codes_repetidos = (bool) $request->usa_provider_codes_repetidos;
         }
 
+        /**
+         * Configuración de sugerencias de stock (v2): periodicidad de la
+         * generación automática y valores por defecto de cada sugerencia.
+         * Con guard has() (mismo criterio que usar_condicion_fiscal_en_costeo):
+         * el form sin la extensión sugerencias_inteligentes no manda estas
+         * claves, y un request viejo no puede pisar la configuración con null
+         * (la periodicidad en null apagaría la generación en silencio).
+         *
+         * sugerencias_ultima_generacion_at NO se asigna acá a propósito: esa
+         * marca la escribe únicamente el comando sugerencias:generar. El form
+         * de configuración manda el modelo entero, así que aceptarla por
+         * request hacía que cada guardado retrocediera la marca y adelantara
+         * la próxima generación automática.
+         */
+        if ($request->has('sugerencias_periodicidad') && !is_null($request->sugerencias_periodicidad)) {
+            $model->sugerencias_periodicidad = $request->sugerencias_periodicidad;
+        }
+        if ($request->has('sugerencias_modo') && !is_null($request->sugerencias_modo)) {
+            $model->sugerencias_modo = $request->sugerencias_modo;
+        }
+        if ($request->has('sugerencias_origen') && !is_null($request->sugerencias_origen)) {
+            $model->sugerencias_origen = $request->sugerencias_origen;
+        }
+        if ($request->has('sugerencias_limite_origen') && !is_null($request->sugerencias_limite_origen)) {
+            $model->sugerencias_limite_origen = $request->sugerencias_limite_origen;
+        }
 
+        /**
+         * Configuración de sugerencias de compra a proveedores: periodicidad
+         * de la generación automática (comando compras:generar). Mismo
+         * criterio que el bloque de sugerencias de stock de arriba: guard
+         * has() para que un form sin la extensión sugerencias_compras no
+         * mande esta clave, y descarte explícito del null para que ese "no
+         * mandó nada" nunca apague la generación en silencio (la
+         * periodicidad en null se comporta como 'nunca' en compras:generar).
+         *
+         * sugerencias_compras_ultima_generacion_at NO se asigna acá, mismo
+         * motivo que la marca de stock: la escribe únicamente el comando
+         * compras:generar. Si el PUT la aceptara, cada guardado del form
+         * retrocedería la marca y adelantaría la próxima generación
+         * automática.
+         */
+        if ($request->has('sugerencias_compras_periodicidad') && !is_null($request->sugerencias_compras_periodicidad)) {
+            $model->sugerencias_compras_periodicidad = $request->sugerencias_compras_periodicidad;
+        }
+
+        /**
+         * Motor de ofertas por cliente: periodicidad de la generación automática
+         * (ofertas:generar). Mismo criterio que los dos bloques de arriba: guard
+         * has() para que un form sin la extensión motor_de_ofertas no mande la
+         * clave, y descarte del null para que "no mandó nada" no apague nada.
+         *
+         * ofertas_ultima_generacion_at NO se asigna acá, mismo motivo que sus dos
+         * hermanas: la escribe SOLO el comando. Si el PUT la aceptara, cada guardado
+         * del form retrocedería la marca y adelantaría la próxima corrida.
+         */
+        if ($request->has('ofertas_periodicidad') && !is_null($request->ofertas_periodicidad)) {
+            $model->ofertas_periodicidad = $request->ofertas_periodicidad;
+        }
 
         $model->save();
 
@@ -197,6 +307,28 @@ class UserController extends Controller
         }
 
 
+        /**
+         * Marca de cotización manual cuando el dólar se cambió a mano desde el formulario de
+         * configuración (misión cotizacion-dolar).
+         *
+         * 🔴 Solo cuando el auth_user ES el owner. Este método escribe `dollar` en `Auth()->user()`,
+         * que para un empleado admin es SU PROPIA FILA y no la del dueño (bug preexistente de
+         * develop; esta misión NO lo arregla). Escribir el marcador en la fila del owner mientras
+         * `dollar` se guardó en la del empleado dejaría las dos filas contando historias distintas.
+         *
+         * 🔴 El guard de null es aparte del `!=`: un PUT parcial sin `dollar` deja `$model->dollar`
+         * en null, que es "distinto" del anterior y marcaría una cotización manual sin valor.
+         *
+         * 🔴 PROHIBIDO asignar acá `dolar_avisar_cambios` ni `dolar_variacion_minima` desde el
+         * request: `ModelForm` postea el modelo ENTERO, así que un cliente que entra a cambiarse el
+         * teléfono pisaría sus preferencias de aviso con lo que el front tenga en memoria. Es el
+         * mismo agujero que ya documentan `ofertas_ultima_generacion_at` y sus hermanas.
+         */
+        if ($owner_user && $model->id === $owner_user->id
+            && !is_null($model->dollar) && $model->dollar != $current_dolar) {
+            DolarCotizacionRegistro::marcar_manual_desde_formulario($model, $current_dolar);
+        }
+
         UserHelper::set_sessions($model);
 
         $this->check_update_articles_price_types_relations_on_lists_de_precio($owner_user, $current_lists_de_precio);
@@ -214,7 +346,11 @@ class UserController extends Controller
                 $current_redondear_precios_en_decenas,
                 $current_redondear_de_a_50,
                 $current_redondear_precios_en_centavos,
-                $current_aplicar_iva_al_costo
+                $current_aplicar_iva_al_costo,
+                $current_condicion_iva_precios,
+                $current_usar_condicion_fiscal_en_costeo,
+                $current_redondear_centenas_en_vender,
+                $current_redondear_miles_en_vender
             )
         ) {
             $notifications[] = [
@@ -433,7 +569,7 @@ class UserController extends Controller
                 });
 
             // Recalcula precios para que `final_price` refleje listas activadas.
-            ProcessSetFinalPrices::dispatch($owner_user->id);
+            ProcessSetFinalPrices::dispatch($owner_user->id, null, null, false, 'configuracion_usuario');
             return;
         }
 
@@ -449,7 +585,7 @@ class UserController extends Controller
             }
 
             // Recalcula precios para que `final_price` deje de depender de los price_types.
-            ProcessSetFinalPrices::dispatch($owner_user->id);
+            ProcessSetFinalPrices::dispatch($owner_user->id, null, null, false, 'configuracion_usuario');
         }
     }
 
@@ -472,11 +608,135 @@ class UserController extends Controller
         return response()->json(['dark_mode' => (int) $model->dark_mode], 200);
     }
 
+    /**
+     * Guarda las preferencias de UI del chat con el asistente de IA de la
+     * persona AUTENTICADA (dueño o empleado): la posición del botón flotante
+     * y el ancho de la sidebar del panel.
+     *
+     * Mismo criterio que set_dark_mode, y a diferencia de set_img_auto_timeout:
+     * se resuelve con Auth::user() a propósito porque estas preferencias son
+     * de CADA PERSONA. Con $this->userId(), la posición que arrastra un
+     * empleado quedaría grabada en la fila del dueño y el botón se le movería
+     * de lugar al dueño al recargar.
+     *
+     * `chat_ia_fab_position` viaja como string "left,top" en px (D3 del plan:
+     * string corto en vez de JSON; parse con explode y guard de dos enteros
+     * 0..20000). `chat_ia_sidebar_width` en px, mismo rango 180..420 que la
+     * SPA permite arrastrar. `chat_ia_panel_width` es el ancho del MODAL
+     * ENTERO (19/8/2026), también en px y con el mismo rango 720..1600 que
+     * clampa la SPA. Las tres claves son opcionales: se persiste solo lo que
+     * llega con valor, y un valor inválido corta con 422 SIN guardar nada
+     * (por eso se valida todo antes de escribir).
+     *
+     * 🔴 Los rangos de acá y los de la SPA tienen que decir el MISMO número.
+     * Si divergen, el usuario arrastra hasta un ancho que la SPA acepta y este
+     * endpoint rechaza, y como savePreferences() se traga el 422 en un
+     * console.log, el ancho se pierde en silencio recién al recargar.
+     */
+    function set_chat_ia_preferencias(Request $request) {
+        $model = Auth::user();
+
+        $tiene_posicion     = $request->has('chat_ia_fab_position') && !is_null($request->chat_ia_fab_position);
+        $tiene_ancho        = $request->has('chat_ia_sidebar_width') && !is_null($request->chat_ia_sidebar_width);
+        $tiene_ancho_panel  = $request->has('chat_ia_panel_width') && !is_null($request->chat_ia_panel_width);
+
+        if ($tiene_posicion && !$this->es_posicion_de_fab_valida($request->chat_ia_fab_position)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_fab_position invalida: se espera "left,top" con dos enteros entre 0 y 20000.',
+            ], 422);
+        }
+
+        if ($tiene_ancho && !$this->es_ancho_valido($request->chat_ia_sidebar_width, 180, 420)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_sidebar_width invalido: se espera un entero entre 180 y 420.',
+            ], 422);
+        }
+
+        if ($tiene_ancho_panel && !$this->es_ancho_valido($request->chat_ia_panel_width, 720, 1600)) {
+            return response()->json([
+                'error'   => true,
+                'message' => 'chat_ia_panel_width invalido: se espera un entero entre 720 y 1600.',
+            ], 422);
+        }
+
+        if ($tiene_posicion) {
+            $model->chat_ia_fab_position = (string) $request->chat_ia_fab_position;
+        }
+
+        if ($tiene_ancho) {
+            $model->chat_ia_sidebar_width = (int) $request->chat_ia_sidebar_width;
+        }
+
+        if ($tiene_ancho_panel) {
+            $model->chat_ia_panel_width = (int) $request->chat_ia_panel_width;
+        }
+
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json([
+            'chat_ia_fab_position'  => $model->chat_ia_fab_position,
+            'chat_ia_sidebar_width' => is_null($model->chat_ia_sidebar_width) ? null : (int) $model->chat_ia_sidebar_width,
+            'chat_ia_panel_width'   => is_null($model->chat_ia_panel_width) ? null : (int) $model->chat_ia_panel_width,
+        ], 200);
+    }
+
+    /**
+     * true si el valor es un entero (o su string) adentro del rango cerrado [$min, $max].
+     *
+     * La comparacion `(int) $valor != $valor` es la que voltea los decimales: sin ella,
+     * "300.7" pasaria como 300. Es floja (!=) a proposito, porque el valor llega del
+     * request como string y "300" tiene que valer igual que 300.
+     *
+     * @param mixed $valor Valor recibido desde el request.
+     * @param int $min
+     * @param int $max
+     * @return bool
+     */
+    private function es_ancho_valido($valor, $min, $max) {
+        if (!is_numeric($valor) || (int) $valor != $valor) {
+            return false;
+        }
+
+        return (int) $valor >= $min && (int) $valor <= $max;
+    }
+
+    /**
+     * true si el valor es un "left,top" válido: exactamente dos enteros no
+     * negativos de hasta 20000, separados por una coma. ctype_digit y no
+     * is_numeric: "12.5" o "1e3" no son coordenadas de pantalla.
+     *
+     * @param mixed $valor Valor recibido desde el request.
+     * @return bool
+     */
+    private function es_posicion_de_fab_valida($valor) {
+        if (!is_string($valor)) {
+            return false;
+        }
+
+        $partes = explode(',', $valor);
+
+        if (count($partes) !== 2) {
+            return false;
+        }
+
+        foreach ($partes as $parte) {
+            if (!ctype_digit($parte) || (int) $parte > 20000) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     function set_img_auto_timeout($value) {
         $model = User::find($this->userId());
         $model->img_auto_timeout = $value;
         $model->save();
-        
+
         return response()->json(['model' => $model], 200);
     }
 
@@ -516,7 +776,24 @@ class UserController extends Controller
      * @param int $current_redondear_precios_en_decenas Valor previo del flag redondear_precios_en_decenas.
      * @param int $current_redondear_de_a_50 Valor previo del flag redondear_de_a_50.
      * @param int $current_redondear_precios_en_centavos Valor previo del flag redondear_precios_en_centavos.
+     * @param int $current_aplicar_iva_al_costo Valor previo del flag aplicar_iva_al_costo.
+     * @param mixed $current_condicion_iva_precios Valor previo de condicion_iva_precios (RRII/MT).
+     * @param int $current_usar_condicion_fiscal_en_costeo Valor previo del flag usar_condicion_fiscal_en_costeo.
+     * @param int $current_redondear_centenas_en_vender Valor previo del flag redondear_centenas_en_vender.
+     * @param int $current_redondear_miles_en_vender Valor previo del flag redondear_miles_en_vender.
      * @return bool true si se encoló un recálculo; false si no hubo cambios relevantes.
+     *
+     * 🔴 Tarea 4 — `redondear_centenas_en_vender` y `redondear_miles_en_vender` se agregaron acá el
+     * 10/8/2026. Faltaban, y era un bug real: `ArticleHelper::redondear()` lee las CINCO columnas,
+     * pero esta comparación miraba solo tres, así que prender o apagar "de a centenas" no
+     * despachaba `ProcessSetFinalPrices` y los precios quedaban con el redondeo viejo hasta que
+     * otra cosa los recalculara.
+     *
+     * Con el select "Opciones de redondeo" deja de ser un bug silencioso y pasa a ser una falla
+     * evidente: el cliente elige "de a 100", guarda, y no pasa nada. La regla que ordena esto es
+     * simple y hay que sostenerla si mañana aparece una sexta columna: **cualquier cambio de modo
+     * de redondeo tiene que disparar el recálculo**, así que toda columna que lea
+     * `ArticleHelper::redondear()` va también en esta comparación.
      */
     function check_actualizar_articulos(
         $model,
@@ -527,7 +804,11 @@ class UserController extends Controller
         $current_redondear_precios_en_decenas,
         $current_redondear_de_a_50,
         $current_redondear_precios_en_centavos,
-        $current_aplicar_iva_al_costo
+        $current_aplicar_iva_al_costo,
+        $current_condicion_iva_precios,
+        $current_usar_condicion_fiscal_en_costeo,
+        $current_redondear_centenas_en_vender,
+        $current_redondear_miles_en_vender
     ) {
 
         if (
@@ -539,6 +820,10 @@ class UserController extends Controller
             || (int) $model->redondear_de_a_50 !== (int) $current_redondear_de_a_50
             || (int) $model->redondear_precios_en_centavos !== (int) $current_redondear_precios_en_centavos
             || (int) $model->aplicar_iva_al_costo !== (int) $current_aplicar_iva_al_costo
+            || $model->condicion_iva_precios != $current_condicion_iva_precios
+            || (int) $model->usar_condicion_fiscal_en_costeo !== (int) $current_usar_condicion_fiscal_en_costeo
+            || (int) $model->redondear_centenas_en_vender !== (int) $current_redondear_centenas_en_vender
+            || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender
 
         ) {
             Log::info($model->dollar.' | '.$current_dolar);
@@ -549,6 +834,8 @@ class UserController extends Controller
             Log::info((int) $model->redondear_de_a_50.' | '.(int) $current_redondear_de_a_50);
             Log::info((int) $model->redondear_precios_en_centavos.' | '.(int) $current_redondear_precios_en_centavos);
             Log::info((int) $model->aplicar_iva_al_costo.' | '.(int) $current_aplicar_iva_al_costo);
+            Log::info($model->condicion_iva_precios.' | '.$current_condicion_iva_precios);
+            Log::info((int) $model->usar_condicion_fiscal_en_costeo.' | '.(int) $current_usar_condicion_fiscal_en_costeo);
             Log::info('Hubo cambios en propiedades de user');
 
             /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */
@@ -558,10 +845,87 @@ class UserController extends Controller
                 $from_dolar = true;
             }
 
-            ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar);
+            // from_dolar ya distinguia este caso; ahora ademas lo cuenta el modal.
+            ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar, $from_dolar ? 'dolar' : 'configuracion_usuario');
             return true;
         }
         return false;
+    }
+
+    /**
+     * Tarea 4 — traduce el valor del select "Opciones de redondeo" a las cinco columnas booleanas.
+     *
+     * Hay TRES resultados posibles, y la diferencia entre el segundo y el tercero es la que se paso
+     * por alto la primera vez que se escribio este metodo:
+     *
+     * 1. Un modo de la tabla ('miles', 'centenas', 'decenas', 'cincuenta', 'centavos') deja
+     *    EXACTAMENTE una columna en 1 y las otras cuatro en 0.
+     * 2. 'sin_redondeo' apaga las cinco. Es una eleccion explicita del usuario, no un caso de borde.
+     * 3. 'personalizado', ausente, vacio o desconocido: NO se toca ninguna de las cinco columnas.
+     *
+     * 🔴 El caso 2 faltaba, y era una regresion funcional dura: `sin_redondeo` no esta en
+     * `COLUMNAS_MODO_REDONDEO` —no le corresponde ninguna columna— asi que caia en el early-return
+     * del caso 3 junto con la basura. El select lo ofrece como PRIMERA opcion y habilitada, con lo
+     * cual el cliente elegia "Sin redondeo", recibia 200 OK, la pantalla recargaba `auth/me` y el
+     * select volvia solo a la opcion anterior. Sin ningun mensaje de error: el peor tipo de falla.
+     * Y era regresion, no un limite viejo: antes de la fachada, destildar una tilde la apagaba.
+     *
+     * 🔴 El caso 3 NO es defensa de mas: es la garantia que hace seguro todo el cambio, y este es el
+     * lugar exacto donde alguien lo iria a "simplificar".
+     *
+     * - 'personalizado': el usuario tiene dos o mas columnas prendidas. `ModelForm` postea el
+     *   modelo ENTERO, asi que un cliente que entra a cambiarse el telefono manda
+     *   `modo_redondeo: 'personalizado'` sin haber tocado el select — es el valor que el accessor
+     *   `getModoRedondeoAttribute()` le mando en el GET. Si esta rama colapsara el estado a un
+     *   modo unico, le habriamos cambiado los precios de todo el catalogo por editar un telefono.
+     * - ausente, vacio o desconocido: mismo tratamiento por el mismo motivo. Nunca se adivina un
+     *   modo a partir de un valor que no esta en la tabla.
+     *
+     * La linea que separa el caso 2 del 3 es "apagar es una eleccion, adivinar no": 'sin_redondeo'
+     * es un valor que el propio accessor emite y que el select ofrece, o sea que llega porque
+     * alguien lo eligio. 'personalizado' tambien lo emite el accessor, pero describe un estado que
+     * el select no puede reconstruir — por eso uno se honra y el otro se ignora.
+     *
+     * ⚠️ Limitacion conocida y FUERA DEL ALCANCE de la tarea 4, anotada donde se ve: esto escribe
+     * sobre `$model`, que es la fila del usuario AUTENTICADO, mientras que `ArticleHelper::redondear()`
+     * lee el redondeo del OWNER. Un empleado que elija un modo se lo guarda a si mismo y no cambia
+     * ningun precio, pero `check_actualizar_articulos()` detecta el cambio igual y despacha un
+     * recalculo del catalogo entero del owner que no va a mover un solo precio. `listas_de_precio` y
+     * `sale_factura_print_option` resuelven esto escribiendo en `$owner_user`; el redondeo no. Ver
+     * el hallazgo `20260811-el-select-de-redondeo-le-escribe-al-empleado-y-el-precio-lo-calcula-el-owner`.
+     *
+     * @param User $model Usuario al que se le aplica la configuracion.
+     * @param Request $request Request del PUT, que puede traer o no `modo_redondeo`.
+     * @return void
+     */
+    private function aplicar_modo_redondeo($model, Request $request) {
+
+        $modo = $request->modo_redondeo;
+
+        if (is_null($modo) || $modo === '') {
+            return;
+        }
+
+        // Caso 2. Va ANTES del in_array de abajo porque `sin_redondeo` no es el valor de ninguna
+        // columna: si se dejara caer ahi, seria indistinguible de un valor desconocido — que es
+        // exactamente el bug que este bloque arregla.
+        if ($modo === User::MODO_SIN_REDONDEO) {
+            foreach (array_keys(User::COLUMNAS_MODO_REDONDEO) as $columna) {
+                $model->$columna = 0;
+            }
+            return;
+        }
+
+        // Caso 3. in_array estricto sobre los modos que SI tienen columna: 'personalizado' no esta
+        // en la tabla, asi que cae aca junto con cualquier valor desconocido y sale sin tocar nada.
+        if (!in_array($modo, array_values(User::COLUMNAS_MODO_REDONDEO), true)) {
+            return;
+        }
+
+        // Caso 1.
+        foreach (User::COLUMNAS_MODO_REDONDEO as $columna => $modo_de_esa_columna) {
+            $model->$columna = ($modo_de_esa_columna === $modo) ? 1 : 0;
+        }
     }
 
     function updatePassword(Request $request) {

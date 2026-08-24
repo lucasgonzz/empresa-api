@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Helpers\inventoryPerformance;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
 use App\Models\InventoryPerformance;
 use App\Models\PromocionVinoteca;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -43,6 +45,32 @@ class InventoryPerformanceHelper {
 	public $costo_reposicion_stock_minimo;
 
 	public $inventory_performance;
+
+	/**
+	 * Usuario dueño de la cuenta, resuelto una sola vez. Lo necesita el resolvedor de precios
+	 * para saber si la cuenta usa listas; sin este cache seria una consulta por articulo, y este
+	 * reporte recorre el catalogo entero.
+	 *
+	 * @var \App\Models\User|null|false false = todavia no se busco
+	 */
+	protected $usuario_de_la_cuenta = false;
+
+	/**
+	 * El owner de la cuenta, para pasarselo a ArticlePricesHelper::resolver_precio_de_venta().
+	 *
+	 * No usa UserHelper::user() a proposito: este helper corre tambien dentro de un job, sin
+	 * sesion HTTP, y ahi el unico dato confiable es el user_id que recibio el constructor.
+	 *
+	 * @return \App\Models\User|null
+	 */
+	protected function usuario_para_precios()
+	{
+		if ($this->usuario_de_la_cuenta === false) {
+			$this->usuario_de_la_cuenta = User::find($this->user_id);
+		}
+
+		return $this->usuario_de_la_cuenta;
+	}
 
 	/**
 	 * Inicializa los contadores del reporte.
@@ -178,8 +206,16 @@ class InventoryPerformanceHelper {
 					->values()
 					->all();
 
+		/**
+		 * price_types va en el eager load porque el resolvedor de precios lo lee por cada
+		 * articulo con stock. Sin esto es una consulta por articulo (belongsToMany), y este
+		 * reporte recorre el catalogo entero: ProcessInventoryPerformanceJob deja escrito que
+		 * hay cuentas de 400k articulos. Medido el 11/8/2026: con listas activas y sin este
+		 * with(), 16 consultas al pivote para 16 articulos con stock. No explota, degrada en
+		 * silencio, que es peor.
+		 */
 		Article::select($columns)
-			->with('addresses')
+			->with('addresses', 'price_types')
 			->where('user_id', $this->user_id)
 			->where('status', 'active')
 			->orderBy('created_at', 'ASC')
@@ -222,9 +258,31 @@ class InventoryPerformanceHelper {
 							$this->valor_inventario_en_costos += $total_article_cost;
 
 
-							if (!is_null($article->final_price)) {
+							/**
+							 * Valuacion a precio de HOY: pasa por el resolvedor unico (tarea 7).
+							 *
+							 * En una cuenta con listas de precio, articles.final_price es un
+							 * numero que no se le cobra a nadie, asi que valuar el stock con el
+							 * da un total que no corresponde a lo que ese stock vale en la
+							 * gondola. El resolvedor usa la lista por defecto de la cuenta.
+							 *
+							 * OJO con la distincion que es el corazon de esta tarea: esto es
+							 * valuacion a precio ACTUAL, no es lo vendido. Los reportes de ventas
+							 * salen del precio guardado en cada linea de venta y no se tocan:
+							 * tocarlos reescribiria el historial.
+							 *
+							 * Una cuenta SIN listas cae por la rama 1 del resolvedor y recibe el
+							 * mismo final_price de siempre: ahi el total no se mueve.
+							 */
+							$precio_resuelto = ArticlePricesHelper::resolver_precio_de_venta(
+								$article,
+								$this->usuario_para_precios(),
+								null
+							);
 
-								$total_article_price = $article->final_price * $article->stock;
+							if (!is_null($precio_resuelto['final_price'])) {
+
+								$total_article_price = $precio_resuelto['final_price'] * $article->stock;
 
 								$this->valor_inventario_en_precios += $total_article_price;
 

@@ -65,6 +65,10 @@ class PropiedadesDePdfInicializadasTest extends TestCase
         'OrderProductionPdf.php' => [],
         'PagoPdf.php' => [],
         'ProviderOrderPdf.php' => [],
+        // Alta del 21/8/2026 (sistema de puntos). Entra con [] a proposito: es la entrada mas
+        // estricta posible, o sea que el escaner no encuentra NINGUNA propiedad leida sin
+        // inicializar. Si alguna vez aparece una, este mismo test se pone rojo.
+        'Puntos/PuntosComprobanteHelper.php' => [],
         'ResumenCajaPdf.php' => ['sale'],
         'RoadMapPdf.php' => [],
         'SaleAfipTicketPdf.php' => ['afip_information', 'for_commerce', 'total_pages'],
