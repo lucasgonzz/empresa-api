@@ -9,6 +9,7 @@ use App\Models\IvaCondition;
 use App\Models\Sale;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\Log;
 use Tests\EmpresaTestCase;
 
 /**
@@ -27,11 +28,21 @@ use Tests\EmpresaTestCase;
  *
  *  Lucas confirmó el 24/8/2026 que `sales.descuento` ES porcentaje, `getTotalSale()` quedó
  *  corregido (ver `tests/Feature/Sales/12_Descuento_de_venta_es_porcentaje_Test.php`), el tope
- *  volvió a ser determinable y el salteo se sacó.
+ *  volvió a ser determinable y el salteo se sacó PARA DESCUENTOS >= 0.
+ *
+ *  🔴 LA EXCEPCIÓN QUE QUEDÓ (hallazgo del chequeo independiente): con descuento NEGATIVO
+ *  (recargo global) el salteo sigue vigente, porque `AfipItemCalculator` aplica
+ *  `sales.descuento` solo con la guarda `> 0` — los recargos globales no llegan al comprobante
+ *  de ARCA — y entonces el tope de `getImportes()` queda MENOR al total real que muestra la
+ *  pantalla: validar rechazaría facturar el propio total de la venta. El test 3 blinda ese
+ *  salteo. Si Lucas decide que los negativos deben llegar a ARCA, cae la guarda `> 0` del
+ *  calculador Y este salteo juntos.
  *
  *  Cómo se ejercita SIN red, igual que el archivo 1 de esta carpeta: el 422 se devuelve ANTES
  *  de instanciar `MakeAfipTicket`, y `get_tope_en_pesos()` arma el `AfipTicket` en memoria.
- *  NUNCA se llama `make_afip_ticket()`, que sale a ARCA de verdad.
+ *  NUNCA se llega a `AfipWsController`, que sale a ARCA de verdad (y cuya firma, si falta el
+ *  certificado, termina en un `exit()` que mataría el proceso de PHPUnit: ver el corte
+ *  controlado del test 3).
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -161,6 +172,76 @@ class Tope_del_importe_personalizado_con_descuento_Test extends EmpresaTestCase
                 0,
                 AfipTicket::where('sale_id', $sale->id)->count(),
                 'un importe rechazado no puede haber creado ningun afip_ticket'
+            );
+
+        } finally {
+
+            AfipInformation::where('id', $afip_information->id)->delete();
+        }
+    }
+
+    /**
+     * Test 3 - con descuento NEGATIVO (recargo global) el tope NO se valida: facturar el total
+     * real de la venta no puede rebotar en 422.
+     *
+     * El escenario de la regresión que este test cierra: venta de $1.000 brutos con
+     * `descuento = -10`. La pantalla y `sales.total` dicen $1.100 (la SPA aplica los negativos),
+     * pero `AfipItemCalculator` los ignora (guarda `> 0`), así que el tope RI de
+     * `getImportes()` da $1.000: con la validación activa, facturar los $1.100 que muestra la
+     * propia pantalla devolvía 422. El salteo para negativos evita esa contradicción.
+     *
+     * 🔴 CÓMO SE CORTA EL FLUJO SIN RED: si el salteo aplica, el request sigue hacia
+     * `MakeAfipTicket::make_afip_ticket()`, y de ahí a `AfipWsController` → WSAA, cuya firma
+     * sin certificado termina en un `exit()` que MATA el proceso de PHPUnit. Por eso el POST
+     * lleva un `afip_tipo_comprobante_id` INEXISTENTE: `make_afip_ticket()` hace
+     * `AfipTipoComprobante::find(...)` y accede `->id` sobre el null ANTES de crear nada y de
+     * tocar la red — explota en un 500 determinista. Lo que este test mide NO es ese 500: es
+     * (1) que la respuesta NO sea el 422 del tope y (2) que el `Log::warning` distintivo del
+     * salteo se haya emitido, que es la prueba de que el camino nuevo corrió.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function con_descuento_negativo_el_tope_no_rebota_la_factura()
+    {
+        $sale = $this->con_renglon_de_mil($this->crear_venta([
+            'descuento' => -10,
+            'sub_total' => 1000,
+            'total'     => 1100,
+        ]));
+
+        $afip_information = $this->crear_afip_information('Responsable inscripto');
+
+        Log::spy();
+
+        try {
+
+            $response = $this->postJson('api/afip-ticket', [
+                'sale_id'                    => $sale->id,
+                'ventas_afip_information_id' => $afip_information->id,
+                // Inexistente A PROPÓSITO: corte controlado antes de ARCA (ver docblock).
+                'afip_tipo_comprobante_id'   => 999999,
+                // El total real de la venta con el recargo global es 1100: tiene que poder facturarse.
+                'monto_a_facturar'           => 1100,
+            ]);
+
+            $this->assertNotEquals(
+                422,
+                $response->getStatusCode(),
+                'facturar el total real de una venta con recargo global (descuento negativo) no puede rebotar en el 422 del tope'
+            );
+
+            // La prueba positiva de que corrió el salteo (y no cualquier otra explosión): su warning distintivo.
+            Log::shouldHaveReceived('warning')
+                ->withArgs(function ($mensaje) {
+                    return is_string($mensaje) && strpos($mensaje, 'descuento NEGATIVO') !== false;
+                })
+                ->once();
+
+            $this->assertEquals(
+                0,
+                AfipTicket::where('sale_id', $sale->id)->count(),
+                'el corte controlado explota antes del create: no puede haber quedado ningun afip_ticket'
             );
 
         } finally {

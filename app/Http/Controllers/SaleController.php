@@ -696,43 +696,67 @@ class SaleController extends Controller
                 }
 
                 /**
-                 * El tope se valida TAMBIEN cuando la venta tiene `descuento`. Hasta la tanda
-                 * correctivos 24/8 aca habia un salteo: `SaleHelper::getTotalSale()` restaba el
-                 * descuento como MONTO ABSOLUTO mientras `AfipItemCalculator` lo aplicaba como
-                 * PORCENTAJE, asi que el techo no era un numero confiable. Lucas confirmo el
-                 * 24/8/2026 que `sales.descuento` ES porcentaje, `getTotalSale()` ya quedo
-                 * corregido a ese criterio, y el tope —que sale de `AfipHelper::getImportes()`,
-                 * que siempre lo aplico como porcentaje— volvio a ser el total real de la venta.
-                 * El salteo perdio su motivo y se saco.
+                 * El tope se valida TAMBIEN cuando la venta tiene `descuento` POSITIVO. Hasta la
+                 * tanda correctivos 24/8 aca habia un salteo para CUALQUIER descuento != 0:
+                 * `SaleHelper::getTotalSale()` restaba el descuento como MONTO ABSOLUTO mientras
+                 * `AfipItemCalculator` lo aplicaba como PORCENTAJE, asi que el techo no era un
+                 * numero confiable. Lucas confirmo el 24/8/2026 que `sales.descuento` ES
+                 * porcentaje, `getTotalSale()` quedo corregido a ese criterio, y el tope —que
+                 * sale de `AfipHelper::getImportes()`, que siempre lo aplico como porcentaje—
+                 * volvio a ser el total real de la venta. Ese salteo perdio su motivo.
+                 *
+                 * 🔴 EXCEPCION QUE QUEDA: el descuento NEGATIVO (asi representa el sistema un
+                 * recargo global). `AfipItemCalculator` aplica `sales.descuento` solo con la
+                 * guarda `> 0` (los recargos globales NO llegan al comprobante de ARCA;
+                 * divergencia ya anotada en `PuntosBaseHelper::factor_descuentos_de_venta()`),
+                 * mientras la SPA y `getTotalSale()` los aplican tambien. Sobre una venta de
+                 * $1.000 con `descuento = -10`, la pantalla y `sales.total` dicen $1.100 pero el
+                 * tope de `getImportes()` da $1.000: validar aca rechazaria facturar el total
+                 * que la propia pantalla muestra (`ConfirmAfipTickets.vue::tope_en_pesos()` usa
+                 * `sale.total`). Hasta que Lucas decida si los recargos globales deben llegar a
+                 * ARCA (decision fiscal, fuera de esta tanda), con descuento negativo el tope no
+                 * es un techo confiable y no se bloquea con el.
                  */
+                if (!is_null($sale->descuento) && (float) $sale->descuento < 0) {
 
-                /** @var float|null $tope Total en pesos que se facturaria sin importe personalizado. */
-                $tope = MakeAfipTicket::get_tope_en_pesos(
-                    $sale,
-                    (int) $request->ventas_afip_information_id,
-                    (int) $request->afip_tipo_comprobante_id
-                );
-
-                if (is_null($tope) || $tope <= 0) {
-
-                    // Sin configuracion fiscal valida, o con un tope no positivo, el numero no
-                    // sirve como techo: bloquear con el saldria siempre en 422.
                     Log::warning(
-                        'makeAfipTicket sale id '.$sale->id.': tope no determinable ('.
-                        (is_null($tope) ? 'null' : $tope).'). Se saltea la validacion del importe personalizado.'
+                        'makeAfipTicket sale id '.$sale->id.': se saltea la validacion del tope del importe '.
+                        'personalizado porque la venta tiene descuento NEGATIVO ('.$sale->descuento.'), o sea un '.
+                        'recargo global. AfipItemCalculator lo aplica solo cuando es > 0, asi que el tope de '.
+                        'AfipHelper::getImportes() quedaria menor al total real y rechazaria facturar el total '.
+                        'que muestra la pantalla.'
                     );
 
-                } else if ((float) $monto > $tope + 0.01) {
+                } else {
 
-                    /**
-                     * El + 0.01 de tolerancia es a proposito: el total que muestra el front
-                     * (sale.total x valor_dolar) y el del AfipHelper (suma de items con
-                     * back-out) pueden diferir en centavos. Sin tolerancia se rechazaria el
-                     * caso mas comun, que es "facturar exactamente el total".
-                     */
-                    return response()->json([
-                        'message' => 'El importe a facturar ($'.number_format((float) $monto, 2, ',', '.').') no puede superar el total de la venta en pesos ($'.number_format($tope, 2, ',', '.').').',
-                    ], 422);
+                    /** @var float|null $tope Total en pesos que se facturaria sin importe personalizado. */
+                    $tope = MakeAfipTicket::get_tope_en_pesos(
+                        $sale,
+                        (int) $request->ventas_afip_information_id,
+                        (int) $request->afip_tipo_comprobante_id
+                    );
+
+                    if (is_null($tope) || $tope <= 0) {
+
+                        // Sin configuracion fiscal valida, o con un tope no positivo, el numero no
+                        // sirve como techo: bloquear con el saldria siempre en 422.
+                        Log::warning(
+                            'makeAfipTicket sale id '.$sale->id.': tope no determinable ('.
+                            (is_null($tope) ? 'null' : $tope).'). Se saltea la validacion del importe personalizado.'
+                        );
+
+                    } else if ((float) $monto > $tope + 0.01) {
+
+                        /**
+                         * El + 0.01 de tolerancia es a proposito: el total que muestra el front
+                         * (sale.total x valor_dolar) y el del AfipHelper (suma de items con
+                         * back-out) pueden diferir en centavos. Sin tolerancia se rechazaria el
+                         * caso mas comun, que es "facturar exactamente el total".
+                         */
+                        return response()->json([
+                            'message' => 'El importe a facturar ($'.number_format((float) $monto, 2, ',', '.').') no puede superar el total de la venta en pesos ($'.number_format($tope, 2, ',', '.').').',
+                        ], 422);
+                    }
                 }
             }
 
