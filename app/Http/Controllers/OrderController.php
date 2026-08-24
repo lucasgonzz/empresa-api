@@ -135,6 +135,28 @@ class OrderController extends Controller
         try {
 
             /**
+             * 🔴 Candado contra la DOBLE CONFIRMACIÓN bajo carrera (tanda correctivos 2408,
+             * ítem 10). La transacción ya estaba, pero el candado de idempotencia de más
+             * abajo era un `Sale::where('order_id')->exists()` SIN lock: dos updates
+             * simultáneos del mismo pedido (dos pestañas, un reintento del cliente HTTP)
+             * leían los dos "no hay venta" y creaban DOS ventas del mismo pedido.
+             *
+             * El SELECT ... FOR UPDATE sobre la fila del pedido serializa los dos requests:
+             * el segundo espera acá hasta el commit del primero, y recién entonces evalúa
+             * `$has_sale`, que ya ve la venta creada. Es el mismo patrón con el que los
+             * presupuestos cerraron esta misma carrera (BudgetController::confirmar()).
+             *
+             * NO se agrega unique a `sales.order_id` a propósito: `sales` usa SoftDeletes,
+             * y la venta borrada por una cancelación sigue ocupando el valor — un unique
+             * rompería cualquier flujo legítimo que vuelva a crear la venta del pedido.
+             *
+             * No se reasigna $model: la validación de transición de arriba ya corrió sobre
+             * la foto leída y la máquina de estados no se toca en este ítem. Lo que importa
+             * es el lock de la fila, no releer los atributos.
+             */
+            Order::where('id', $model->id)->lockForUpdate()->first();
+
+            /**
              * Este endpoint acepta payloads PARCIALES: cada campo se toca solo si la request lo trae.
              *
              * 🔴 No lo simplifiques a las asignaciones directas de antes. Tiene dos consumidores con
