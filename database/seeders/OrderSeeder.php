@@ -51,6 +51,7 @@ class OrderSeeder extends Seeder
             ]);
 
             $articles = Article::where('user_id', config('app.USER_ID'))
+                                ->take(10)
                                 ->get();
 
             foreach ($articles as $article) {
