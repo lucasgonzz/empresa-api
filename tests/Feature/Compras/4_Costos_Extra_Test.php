@@ -1431,4 +1431,95 @@ class Costos_Extra_Test extends ComprasTestCase
             $this->limpiar_surchages_tipados($alicate->id);
         }
     }
+
+    /**
+     * Test 12 (mision `costos-extra-mismo-tipo-se-pisan`) — un costo extra en 0 mezclado con uno
+     * valido del mismo tipo no aporta nada, y el valido prorratea solo.
+     *
+     * El codigo descarta el costo extra en 0 ANTES de crear la clave del tipo en el mapa de
+     * agregacion, asi que no aporta ni crea una entrada espuria. Es correcto por lectura, pero sin
+     * este test un reordenamiento futuro del back-out o del filtro podria moverlo de lugar sin que
+     * nada lo denuncie: la suma pasaria a arrastrar un 0 —inofensivo— o, si el filtro quedara
+     * despues del back-out, una division por cero.
+     *
+     * @group compras
+     * @test
+     */
+    public function un_costo_extra_en_cero_no_aporta_al_prorrateo_del_mismo_tipo()
+    {
+        $this->set_condicion_iva('RRII');
+        $this->quitar_bonificaciones_de_buenos_aires();
+
+        $pinza = $this->articulo('Pinza');
+        $alicate = $this->articulo('Alicate');
+        $snap_pinza = $this->snapshot_articulo($pinza);
+        $snap_alicate = $this->snapshot_articulo($alicate);
+
+        try {
+            $order_id = $this->crear_compra_base_2_items();
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Flete',
+                'value'             => 1300,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            ProviderOrderExtraCost::create([
+                'provider_order_id' => $order_id,
+                'description'       => 'Seguro bonificado',
+                'value'             => 0,
+                'tipo'              => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+                'facturado'         => false,
+                'en_factura_compra' => true,
+            ]);
+
+            $response = $this->putJson('api/provider-order/'.$order_id, $this->payload_compra([
+                'update_stock'   => 0,
+                'total_with_iva' => 0,
+                'articles' => [
+                    $this->item('Pinza', 1000, 10),
+                    $this->item('Alicate', 300, 10),
+                ],
+            ]));
+
+            $response->assertStatus(200);
+
+            $order = ProviderOrder::find($order_id);
+
+            $this->assertEqualsWithDelta(
+                14300,
+                (float) $order->total,
+                self::DELTA,
+                'guard: el costo extra en 0 no mueve el total (13000 + 1300 + 0)'
+            );
+
+            $surchages_pinza = ArticleSurchage::where('article_id', $pinza->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->get();
+
+            $this->assertCount(1, $surchages_pinza, 'un solo recargo de transporte');
+
+            $this->assertEqualsWithDelta(
+                100,
+                (float) $surchages_pinza->first()->amount,
+                self::DELTA,
+                'el costo extra en 0 no aporta: prorratea solo el de 1300, o sea 1300 * (10000/13000) / 10 = 100'
+            );
+
+            $surchage_alicate = ArticleSurchage::where('article_id', $alicate->id)
+                                                ->where('tipo', ProviderOrderExtraCost::TIPO_TRANSPORTE)
+                                                ->first();
+
+            $this->assertEqualsWithDelta(30, (float) $surchage_alicate->amount, self::DELTA, '1300 * (3000/13000) / 10 = 30');
+
+        } finally {
+            $this->restaurar_articulo($pinza, $snap_pinza);
+            $this->restaurar_articulo($alicate, $snap_alicate);
+            $this->limpiar_surchages_tipados($pinza->id);
+            $this->limpiar_surchages_tipados($alicate->id);
+        }
+    }
 }

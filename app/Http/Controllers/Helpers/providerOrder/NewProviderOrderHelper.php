@@ -344,8 +344,15 @@ class NewProviderOrderHelper {
                 $detalle_por_tipo[$extra_cost->tipo] = [];
             }
 
-            $valor_por_tipo[$extra_cost->tipo]     += $valor_costo_extra;
-            $detalle_por_tipo[$extra_cost->tipo][]  = $extra_cost->description.' ('.$valor_costo_extra.')';
+            $valor_por_tipo[$extra_cost->tipo] += $valor_costo_extra;
+
+            /*
+             * El detalle lleva el neto Y el bruto a propósito. Esta línea es la traza de
+             * diagnóstico de este método, y el valor que se prorratea es el NETO: quien la lea
+             * mañana va a estar mirando en pantalla el bruto que cargó el usuario ($1.210), y si el
+             * log dijera sólo "Flete (1000)" no le cerraría con nada.
+             */
+            $detalle_por_tipo[$extra_cost->tipo][] = $extra_cost->description.' (neto '.$valor_costo_extra.' de '.$extra_cost->value.')';
         }
 
         if (count($valor_por_tipo) == 0) {
