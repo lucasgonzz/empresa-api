@@ -573,7 +573,24 @@ class SaleHelper extends Controller {
 
         $sale->loadMissing(['afip_tickets', 'current_acount_payment_methods']);
 
-        if (count($sale->afip_tickets) >= 1) {
+        /*
+            Solo congelan la venta los comprobantes CON CAE (autorizados de verdad por ARCA).
+            Un ticket RECHAZADO queda registrado en afip_tickets pero sin CAE, y hasta el
+            24/8/2026 contaba igual: una factura rechazada dejaba la venta congelada para
+            siempre sin comprobante fiscal real de por medio. El criterio es el mismo que ya
+            usa la SPA para decidir si una venta "tiene factura" (!!afip_ticket.cae en
+            sale-print-buttons).
+        */
+        $tickets_con_cae = 0;
+
+        foreach ($sale->afip_tickets as $afip_ticket) {
+
+            if (!is_null($afip_ticket->cae) && $afip_ticket->cae !== '') {
+                $tickets_con_cae++;
+            }
+        }
+
+        if ($tickets_con_cae >= 1) {
 
             return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
         }
