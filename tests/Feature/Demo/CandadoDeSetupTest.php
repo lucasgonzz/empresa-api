@@ -8,28 +8,43 @@ use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
- * POST /api/admin-sync/demo-setup con el candado ya tomado → 409 y la base intacta.
+ * El candado que serializa las tres puertas al `migrate:fresh` de esta instancia:
+ * POST /api/admin-sync/demo-setup, POST /api/admin-sync/user-setup y el form legacy
+ * POST /demo-setup (ver DemoSetupLockHelper, que las lista por nombre).
  *
- * Lo que gobierna acá es la segunda mitad de esa frase. El 409 es la señal para admin-api;
- * lo que arregla el bug es que la corrida rebotada NO llegue al `migrate:fresh` de
- * DemoSetupHelper::run(), que es lo que el 25/8/2026 le vació la base a la corrida que ya
- * estaba sembrando (`SQLSTATE[42S02]` adentro de `semilla:datos`).
+ * Lo que gobierna acá no es el código de respuesta sino la mitad que le sigue: que la
+ * corrida rebotada NO llegue al `migrate:fresh` de los helpers, que es lo que el 25/8/2026
+ * le vació la base a la corrida que ya estaba sembrando (`SQLSTATE[42S02]` adentro de
+ * `semilla:datos`).
  *
- * 🔴 NINGÚN test de esta clase llama a DemoSetupHelper::run(). Arranca con
- * `Artisan::call('migrate:fresh')` y vaciaría empresa_testing_s1 en medio de la suite,
- * dejando en rojo todo lo que corra después. El camino feliz no se cubre acá a propósito:
- * lo único que se puede verificar sin correr el setup es que el candado quede libre, y eso
- * se prueba derecho contra el helper.
+ * CÓMO SE PRUEBA QUE LA BASE NO SE TOCÓ, Y POR QUÉ NO ALCANZA CONTAR TABLAS
+ * ------------------------------------------------------------------------
+ * La primera versión de este test contaba tablas antes y después. No servía para nada:
+ * `migrate:fresh` dropea y vuelve a crear exactamente las mismas 396 tablas, así que la
+ * aserción pasaba igual con la base entera vaciada — el test decía una cosa y verificaba
+ * otra. Lo que un wipe SÍ rompe son las FILAS. Por eso acá se planta un marcador en
+ * `migrations` (la tabla que `migrate:fresh` dropea primero y repuebla desde cero, así que
+ * un renglón inventado por el test no sobrevive de ninguna manera) y además se controla el
+ * conteo de filas de `users`. Si cualquiera de las dos cosas cambia, el request rebotado
+ * llegó al helper.
+ *
+ * 🔴 NINGÚN test de esta clase llama a DemoSetupHelper::run() ni a UserSetupHelper::run().
+ * Arrancan con `Artisan::call('migrate:fresh')` y vaciarían empresa_testing_s1 en medio de
+ * la suite, dejando en rojo todo lo que corra después.
  *
  * DatabaseTransactions (no RefreshDatabase): la base de testing del slot está sembrada de
- * antes y un refresh la vaciaría, que es justo el accidente que este test vigila.
+ * antes y un refresh la vaciaría, que es justo el accidente que este test vigila. El
+ * marcador se va solo con el rollback de cada caso.
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
  */
-class CandadoDeDemoSetupTest extends TestCase
+class CandadoDeSetupTest extends TestCase
 {
     use DatabaseTransactions;
+
+    /** Renglón inventado en `migrations` que un `migrate:fresh` no puede dejar en pie. */
+    const MARCADOR = 'marcador_del_test_del_candado_de_setup';
 
     /**
      * Handle del candado que toma el test para simular "ya hay una corrida". Se suelta en
@@ -38,6 +53,21 @@ class CandadoDeDemoSetupTest extends TestCase
      * @var resource|false
      */
     protected $candado = false;
+
+    /** @var int */
+    protected $filasDeUsuariosAntes = 0;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        DB::table('migrations')->insert([
+            'migration' => self::MARCADOR,
+            'batch' => 9999,
+        ]);
+
+        $this->filasDeUsuariosAntes = (int) DB::table('users')->count();
+    }
 
     protected function tearDown(): void
     {
@@ -48,28 +78,13 @@ class CandadoDeDemoSetupTest extends TestCase
     }
 
     /** @test */
-    public function con_el_candado_tomado_el_endpoint_responde_409_y_no_toca_la_base()
+    public function con_el_candado_tomado_demo_setup_responde_409_y_no_toca_la_base()
     {
-        $this->candado = DemoSetupLockHelper::tomar();
-
-        $this->assertNotFalse(
-            $this->candado,
-            'El candado tenía que estar libre al empezar el test. Si acá da false, quedó tomado por otra corrida.'
-        );
-
-        /**
-         * La prueba de que la base no se tocó: `migrate:fresh` dropea TODAS las tablas, así
-         * que alcanza con contar cuántas hay antes y después. Es más honesto que contar filas
-         * de una tabla puntual —un wipe podría dejarla vacía y recreada— y no depende de que
-         * la base esté sembrada de una forma en particular.
-         */
-        $baseActiva = DB::connection()->getDatabaseName();
-        $tablasAntes = $this->cantidadDeTablas($baseActiva);
-
-        $this->assertGreaterThan(0, $tablasAntes, 'La base de testing tiene que tener tablas antes de empezar.');
+        $this->tomarElCandado();
 
         $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
             'business_type' => 'kiosco',
+            'doc_number' => '30111222',
             'name' => 'Demo del test',
             'company_name' => 'Demo del test',
         ]);
@@ -78,11 +93,94 @@ class CandadoDeDemoSetupTest extends TestCase
         $respuesta->assertJson(['en_curso' => true]);
         $this->assertNotEmpty($respuesta->json('error'), 'El 409 tiene que traer un mensaje para mostrarle a quien disparó el setup.');
 
-        $this->assertSame(
-            $tablasAntes,
-            $this->cantidadDeTablas($baseActiva),
-            'Cambió la cantidad de tablas: el request rebotado llegó igual al migrate:fresh del helper.'
-        );
+        $this->assertBaseIntacta();
+    }
+
+    /** @test */
+    public function con_el_candado_tomado_user_setup_tambien_responde_409_y_no_toca_la_base()
+    {
+        /**
+         * La tercera puerta. UserSetupHelper::run() arranca con el MISMO `migrate:fresh` que
+         * el de demo, y el caso realista es la conversión de Lead a Cliente disparada mientras
+         * la demo de ese lead todavía está sembrando. Un candado que cerrara solo las dos
+         * puertas de demo dejaría la carrera viva por acá.
+         */
+        $this->tomarElCandado();
+
+        $respuesta = $this->postJson('/api/admin-sync/user-setup', [
+            'business_type' => 'kiosco',
+            'user_id' => 987654,
+            'doc_number' => '30111222',
+            'user_name' => 'Cliente del test',
+        ]);
+
+        $respuesta->assertStatus(409);
+        $respuesta->assertJson(['en_curso' => true]);
+        $this->assertNotEmpty($respuesta->json('error'));
+
+        $this->assertBaseIntacta();
+    }
+
+    /** @test */
+    public function demo_setup_sin_doc_number_responde_422_sin_vaciar_la_base()
+    {
+        /**
+         * Este es el otro medio bug: un payload incompleto llegaba al `migrate:fresh` y
+         * recién reventaba con `Undefined index` adentro de create_demo_user(), o sea con la
+         * base ya destruida. El 422 tiene que salir ANTES de tocar nada.
+         */
+        $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
+            'business_type' => 'kiosco',
+            'name' => 'Demo del test',
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertBaseIntacta();
+        $this->assertCandadoLibre('El 422 sale antes de tomar el candado, así que tiene que haber quedado libre.');
+    }
+
+    /** @test */
+    public function demo_setup_con_doc_number_en_null_tambien_responde_422()
+    {
+        /**
+         * Del lado del admin `leads.doc_number` es nullable, así que el caso frecuente no es
+         * la clave ausente sino la clave presente y en null. Un `isset()` o un `array_key_exists()`
+         * dejarían pasar esto; por eso la validación es `trim((string) ...) === ''`.
+         */
+        $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
+            'business_type' => 'kiosco',
+            'doc_number' => null,
+            'name' => 'Demo del test',
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertBaseIntacta();
+    }
+
+    /** @test */
+    public function demo_setup_con_doc_number_en_blanco_tambien_responde_422()
+    {
+        $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
+            'business_type' => 'kiosco',
+            'doc_number' => '   ',
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertBaseIntacta();
+    }
+
+    /** @test */
+    public function user_setup_sin_doc_number_responde_422_sin_vaciar_la_base()
+    {
+        $respuesta = $this->postJson('/api/admin-sync/user-setup', [
+            'business_type' => 'kiosco',
+            'user_id' => 987654,
+            'user_name' => 'Cliente del test',
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertBaseIntacta();
+        $this->assertCandadoLibre('El 422 sale antes de tomar el candado, así que tiene que haber quedado libre.');
     }
 
     /** @test */
@@ -105,7 +203,7 @@ class CandadoDeDemoSetupTest extends TestCase
     }
 
     /** @test */
-    public function sin_candado_tomado_el_archivo_lock_no_bloquea_por_si_solo()
+    public function el_archivo_lock_que_queda_en_disco_no_bloquea_por_si_solo()
     {
         /**
          * El archivo .lock NO se borra al soltar (borrarlo abre una carrera entre el fopen de
@@ -125,17 +223,48 @@ class CandadoDeDemoSetupTest extends TestCase
     }
 
     /**
-     * @param string $baseActiva
-     *
-     * @return int
+     * @return void
      */
-    protected function cantidadDeTablas($baseActiva)
+    protected function tomarElCandado()
     {
-        $fila = DB::selectOne(
-            'SELECT COUNT(*) AS total FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?',
-            [$baseActiva]
+        $this->candado = DemoSetupLockHelper::tomar();
+
+        $this->assertNotFalse(
+            $this->candado,
+            'El candado tenía que estar libre al empezar el test. Si acá da false, quedó tomado por otra corrida.'
+        );
+    }
+
+    /**
+     * Un `migrate:fresh` dropea `migrations` y `users` y las repuebla desde cero: el marcador
+     * inventado por el test no puede sobrevivirlo, y el conteo de usuarios tampoco.
+     *
+     * @return void
+     */
+    protected function assertBaseIntacta()
+    {
+        $this->assertSame(
+            1,
+            (int) DB::table('migrations')->where('migration', self::MARCADOR)->count(),
+            'Desapareció el marcador de migrations: el request llegó igual al migrate:fresh del helper y vació la base.'
         );
 
-        return (int) $fila->total;
+        $this->assertSame(
+            $this->filasDeUsuariosAntes,
+            (int) DB::table('users')->count(),
+            'Cambió la cantidad de usuarios: el request rebotado terminó tocando la base.'
+        );
+    }
+
+    /**
+     * @param string $mensaje
+     *
+     * @return void
+     */
+    protected function assertCandadoLibre($mensaje)
+    {
+        $handle = DemoSetupLockHelper::tomar();
+        $this->assertNotFalse($handle, $mensaje);
+        DemoSetupLockHelper::soltar($handle);
     }
 }
