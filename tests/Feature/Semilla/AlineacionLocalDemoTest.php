@@ -16,7 +16,7 @@ use Tests\EmpresaTestCase;
  * demo es `DemoSetupHelper::run()`, que arranca con un `migrate:fresh` -- o sea que vaciaría la
  * base de testing del slot, se llevaría puesto el fixture de `TestingFerreteriaSeeder` y dejaría
  * al resto de la suite sin nada contra qué correr -- y tarda del orden de media hora (medido:
- * 28 minutos contra `empresa_testing_s2`). Eso no entra en una suite que gobierna merges.
+ * unos 4-5 minutos cada uno contra `empresa_testing_s2`, medido el 25/8/2026). Eso no entra en una suite que gobierna merges.
  *
  * Lo que sí se puede fijar acá, y es donde estuvo el problema real, son las dos cosas que se
  * desalinearon en silencio:

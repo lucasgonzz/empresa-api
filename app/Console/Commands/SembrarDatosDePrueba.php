@@ -498,12 +498,21 @@ class SembrarDatosDePrueba extends Command
              * llena y a él vacía, que es justo lo contrario de lo que su corrida local tiene que
              * garantizar.
              *
-             * Que la demo lo termine corriendo dos veces no rompe nada y no se saca de allá:
-             * `SetCompanyPerformances` borra el mes antes de recrearlo
-             * (`borrar_los_realizados_durante_el_mes()` + `create()`), así que es idempotente, y
-             * la llamada de `DemoSetupHelper` sigue siendo la única que cubre la instalación de
-             * un CLIENTE REAL, donde este comando sale por la guarda de entorno sin llegar hasta
-             * acá.
+             * 🔴 `SetCompanyPerformances` NO es idempotente, y por eso la llamada de
+             * `DemoSetupHelper` está condicionada a que esta siembra no haya corrido. Este
+             * comentario decía lo contrario hasta el 25/8/2026 y era falso:
+             * `borrar_los_realizados_durante_el_mes()`
+             * (`CompanyPerformanceController:126-138`) borra el PADRE por query builder y nada
+             * más — `CompanyPerformance` no tiene hook `deleting` y el repo no usa foreign keys,
+             * así que las ocho tablas hijas quedan huérfanas y la segunda corrida las duplica.
+             * Medido: `company_performance_address_payment_method` 288 → 576,
+             * `company_performance_gasto` 72 → 144, `company_performance_user_payment_method`
+             * 360 → 720.
+             *
+             * 🔴 No borres la guarda `if (!$semilla_sembro)` de `DemoSetupHelper` creyendo que
+             * este comando y aquél se pisan sin consecuencia: es lo único que evita la
+             * duplicación. La llamada de allá sigue siendo la única que cubre la instalación de
+             * un CLIENTE REAL, donde este comando sale por la guarda de entorno sin llegar acá.
              */
             $this->info('Calculando la performance histórica del comercio...');
             $this->call('set_company_performances', [

@@ -75,13 +75,20 @@ class DemoSetupHelper
          * max_execution_time con el que corre PHP en casi cualquier servidor web -- el default
          * que trae PHP de fabrica son 30 segundos.
          *
-         * ⚠️ ESOS 109 SEGUNDOS QUEDARON VIEJOS Y POR MUCHO. Son de ANTES de que la demo pasara a
-         * sembrar con `semilla:datos` (mision del 17/8/2026), que ejecuta un ano entero de
-         * operaciones -- ~523 ventas -- por el camino real del sistema. Vuelto a medir el
-         * 25/8/2026 en `empresa_testing_s2`, mismo metodo de punta a punta: **del orden de 20
-         * minutos**, casi todos adentro de `semilla:datos`. No cambia la conclusion de abajo, la
-         * refuerza: el numero no esta para que alguien lo lea y decida que 109 segundos entran
-         * comodos en algun timeout.
+         * ⚠️ ESOS 109 SEGUNDOS QUEDARON VIEJOS. Son de ANTES de que la demo pasara a sembrar con
+         * `semilla:datos` (mision del 17/8/2026), que ejecuta un ano entero de operaciones
+         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 en
+         * `empresa_testing_s2`, este metodo de punta a punta: **4 minutos 15 segundos**
+         * (~60s el migrate:fresh, el resto casi todo adentro de `semilla:datos`).
+         *
+         * 🔴 Ese numero hay que mirarlo contra el techo del que lo llama: `admin-api` postea acá
+         * con un timeout de `CLIENT_API_TIMEOUT` x 20 = **300 segundos**
+         * (`RunUserSetupService`/`RunDemoSetupService`). O sea que hoy entra, pero por 45
+         * segundos. Cualquier cosa que agregue trabajo a la siembra pasa a ser un problema de
+         * timeout del lado del admin, no una molestia de tiempo local: si esto se pasa de 300s,
+         * el admin marca el lead como `demo_setup_status = fallido` aunque la instancia termine
+         * bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de abajo). Volver
+         * a medir cada vez que se toque `semilla:datos`.
          *
          * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
          *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
