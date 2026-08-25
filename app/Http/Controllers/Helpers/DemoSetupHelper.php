@@ -431,9 +431,17 @@ class DemoSetupHelper
         }
     }
 
+    /**
+     * `name` va con el mismo default que `create_demo_user()` ('Demo') y no sin él.
+     *
+     * Esto se llama en la línea 262, o sea DESPUÉS del `migrate:fresh` y de casi toda la
+     * siembra: un `Undefined index: name` acá tiraba la corrida entera con la base ya
+     * vaciada y media hora de trabajo perdida. Y es un camino real, no teórico: el form web
+     * legacy manda `user_name`, nunca `name`, así que ese lado moría acá siempre.
+     */
     static function crear_client_con_mail_del_user_demo($data) {
         $client = Client::create([
-            'name'      => $data['name'],
+            'name'      => $data['name'] ?? 'Demo',
             'user_id'   => config('app.USER_ID'),
             'email'     => $data['email'] ?? null,
         ]);
@@ -445,13 +453,17 @@ class DemoSetupHelper
      * Crea el registro User principal de la demo con defaults tomados del
      * formulario original. Aísla la carga de campos del setup principal.
      *
-     * `doc_number`, `email` y `online` llevan default como el resto: hasta el 25/8/2026
-     * se leían derecho y un payload sin esas claves tiraba `Undefined index` (500) recién
-     * acá, con el `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario.
-     * El endpoint de admin-sync pasa `$request->all()` tal cual, así que las claves las
-     * decide quien llame; ninguna es obligatoria del lado nuestro. Ojo que `doc_number`
-     * además es la contraseña inicial (`bcrypt`), así que el default tiene que ser un
-     * valor real y no cadena vacía.
+     * `doc_number`, `email` y `online` llevan `?? null`: hasta el 25/8/2026 se leían derecho
+     * y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con el
+     * `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
+     * admin-sync pasa `$request->all()` tal cual, así que las claves las decide quien llame.
+     *
+     * 🔴 `doc_number` NO lleva un valor por default, y es a propósito. Es el nombre de usuario
+     * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y acá abajo
+     * también la contraseña, así que cualquier default fijo dejaría la demo con usuario y
+     * contraseña adivinables en un dominio público. Con `null` la cuenta queda inservible, que
+     * es feo pero no es un agujero. La precondición se exige donde corresponde: los tres
+     * controllers validan `doc_number` y devuelven 422 ANTES del `migrate:fresh`.
      *
      * @param array<string, mixed> $data
      *
@@ -468,14 +480,12 @@ class DemoSetupHelper
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
             'image_url'                     => 'https://comerciocity.com/img/logo.95c86b81.jpg',
-            // '1234' es el mismo doc_number que le pone UserSeeder al usuario de demo, así que
-            // el fallback deja la instancia en el estado conocido en vez de en uno inventado.
-            'doc_number'                    => $data['doc_number'] ?? '1234',
+            'doc_number'                    => $data['doc_number'] ?? null,
             'impresora'                     => 'XP-80',
             'email'                         => $data['email'] ?? null,
             'phone'                         => '3444622139',
             'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
-            'password'                      => bcrypt($data['doc_number'] ?? '1234'),
+            'password'                      => bcrypt($data['doc_number'] ?? null),
             'visible_password'              => null,
             'dollar'                        => 1000,
             'home_position'                 => 1,

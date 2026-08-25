@@ -45,6 +45,28 @@ class DemoSetupController extends Controller
         // }
 
         /**
+         * `doc_number` se valida ACÁ, antes del candado y antes del `migrate:fresh`.
+         *
+         * Es el nombre de usuario del login (`AuthController::login` hace
+         * `Auth::attempt(['doc_number' => ..., 'password' => ...])`) y además la contraseña
+         * inicial de la demo. Sin él, la instancia queda sin nadie que pueda entrar. Hasta el
+         * 25/8/2026 un payload sin la clave reventaba con `Undefined index` RECIÉN adentro de
+         * `create_demo_user()`, o sea con la base ya vaciada por el `migrate:fresh`: el peor
+         * de los dos mundos, base destruida y nada creado. Un 422 acá arriba no toca la base.
+         *
+         * Y no le ponemos default: `doc_number` es la contraseña, así que cualquier valor fijo
+         * deja usuario y contraseña adivinables en un dominio público, sobre un endpoint que no
+         * tiene auth. Se exige o se rechaza.
+         *
+         * El `trim((string) ...)` rechaza null explícitamente (del lado del admin
+         * `leads.doc_number` es nullable, así que la clave puede llegar presente y en null),
+         * la cadena vacía y los espacios.
+         */
+        if (trim((string) $request->input('doc_number')) === '') {
+            return response()->json(['error' => 'doc_number is required'], 422);
+        }
+
+        /**
          * El candado va ANTES de cualquier cosa que toque la base, porque lo primero que
          * hace run() es `migrate:fresh`: si dejamos entrar una segunda corrida, le vacía
          * la base a la primera a mitad de siembra. Ver DemoSetupLockHelper para el porqué

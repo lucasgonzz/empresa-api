@@ -25,15 +25,29 @@ class DemoSetupController extends Controller
      * Recibe el POST del formulario, valida los mínimos indispensables y
      * delega la ejecución al helper.
      *
-     * Toma el mismo candado que el endpoint de admin-sync: esta es la OTRA puerta a la
-     * misma base, y cerrar una sola dejaría la carrera intacta (el técnico manda el form
-     * mientras el admin dispara el setup, y el `migrate:fresh` de uno le vacía la base al
-     * otro). El mensaje sale por session('status'), que es lo único que renderiza la vista.
+     * Toma el mismo candado que los endpoints de admin-sync: esta es la segunda de las tres
+     * puertas al mismo `migrate:fresh` (ver DemoSetupLockHelper), y cerrar una sola dejaría
+     * la carrera intacta — el técnico manda el form mientras el admin dispara el setup, y el
+     * `migrate:fresh` de uno le vacía la base al otro. El mensaje sale por session('status'),
+     * que es lo único que renderiza la vista.
+     *
+     * ⚠️ `doc_number` pasa a ser requerido y la vista `demo.setup` TODAVÍA NO TIENE ESE INPUT,
+     * así que este form no puede completarse hasta que se lo agreguen. No es una regresión:
+     * antes tampoco funcionaba —moría con `Undefined index: doc_number` adentro de
+     * `create_demo_user()`—, solo que lo hacía DESPUÉS del `migrate:fresh`, dejando la base
+     * vaciada. Ahora rebota antes de tocar nada.
      */
     public function setup(Request $request)
     {
+        /**
+         * La validación va antes del candado y antes del `migrate:fresh`: un payload
+         * incompleto no puede vaciar una base. `doc_number` es el usuario del login y la
+         * contraseña inicial de la demo, así que no lleva default (un default lo volvería
+         * adivinable); se exige.
+         */
         $request->validate([
             'business_type' => 'required|string',
+            'doc_number' => 'required|string',
             'use_deposits' => 'nullable|boolean',
             'use_price_lists' => 'nullable|boolean',
         ]);

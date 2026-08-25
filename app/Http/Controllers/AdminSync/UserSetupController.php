@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use App\Http\Controllers\Helpers\UserSetupHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -19,8 +20,12 @@ class UserSetupController extends Controller
     /**
      * Ejecuta UserSetupHelper::run con el payload recibido.
      *
-     * Requiere como mínimo `business_type` y `user_id`. El resto de campos
-     * son opcionales y se interpretan como flags o datos complementarios.
+     * Requiere como mínimo `business_type`, `user_id` y `doc_number`. El resto de
+     * campos son opcionales y se interpretan como flags o datos complementarios.
+     *
+     * El 409 es una respuesta NUEVA de este endpoint (25/8/2026), compatible hacia atrás:
+     * un admin-api viejo la lee como no exitosa y registra el error en el Lead, que es lo
+     * correcto. Lo importante es que en ese caso la base NO se toca.
      *
      * @param Request $request
      */
@@ -34,6 +39,36 @@ class UserSetupController extends Controller
             return response()->json(['error' => 'user_id is required'], 422);
         }
 
+        /**
+         * `doc_number` también es precondición acá, y por la misma razón que en demo-setup:
+         * es el nombre de usuario del login (`AuthController::login` hace
+         * `Auth::attempt(['doc_number' => ...])`). Un user-setup sin doc_number vacía la base
+         * del cliente y le deja un sistema en el que NADIE puede entrar. Se valida antes del
+         * candado y antes del `migrate:fresh` para que un payload incompleto no destruya nada.
+         *
+         * `trim((string) ...)` rechaza null explícitamente: del lado del admin
+         * `leads.doc_number` es nullable, así que la clave puede llegar presente y en null.
+         */
+        if (trim((string) $request->input('doc_number')) === '') {
+            return response()->json(['error' => 'doc_number is required'], 422);
+        }
+
+        /**
+         * Tercera puerta al mismo `migrate:fresh`, mismo candado que las dos de demo (ver
+         * DemoSetupLockHelper, que las lista por nombre). El caso realista no es "dos
+         * user-setup a la vez": es la conversión de Lead a Cliente disparada mientras la demo
+         * de ese mismo lead todavía está sembrando. Ahí el `migrate:fresh` de acá le vacía la
+         * base a la corrida de demo y sale el mismo SQLSTATE[42S02] que motivó todo esto.
+         */
+        $candado = DemoSetupLockHelper::tomar();
+
+        if ($candado === false) {
+            return response()->json([
+                'error' => 'Ya hay un setup corriendo en esta instancia. Esperá a que termine.',
+                'en_curso' => true,
+            ], 409);
+        }
+
         try {
             $user = UserSetupHelper::run($request->all());
         } catch (\Throwable $e) {
@@ -42,6 +77,8 @@ class UserSetupController extends Controller
             ]);
 
             return response()->json(['error' => 'internal error: ' . $e->getMessage()], 500);
+        } finally {
+            DemoSetupLockHelper::soltar($candado);
         }
 
         return response()->json([
