@@ -7,6 +7,7 @@ use Database\Seeders\sales\SaleReporteArticuloSeeder;
 use Database\Seeders\sales\SaleReporteSeeder;
 use Database\Seeders\sales\SaleRoadMapSeeder;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 
 class DatabaseSeeder extends Seeder
@@ -284,6 +285,61 @@ class DatabaseSeeder extends Seeder
             $this->call(CartSeeder::class);
 
             // $this->call(SaleDemoSeeder::class);
+
+            /*
+                Misión semilla-datos-en-local: el historial de compra y la actividad de tienda que
+                necesita el motor de sugerencias de ofertas los siembra `semilla:datos`, y hasta
+                acá ese comando se disparaba SOLO del lado de la demo (`DemoSetupHelper::run()`,
+                donde vive la misma llamada). En local había que acordarse de correrlo a mano
+                después del `migrate:fresh --seed`, así que una base local recién sembrada mostraba
+                el módulo de ofertas vacío -- cero ventas históricas, cero eventos de tracking,
+                cero carritos abandonados -- mientras que a un lead en la demo le aparecía lleno.
+                Que las dos corridas dejen los mismos datos es justamente lo que cuida
+                `tests/Feature/Semilla/AlineacionLocalDemoTest.php`.
+
+                🔴 La condición es LA MISMA, letra por letra, que la de `local_y_demo()`, y eso no
+                es coincidencia de estilo: `cargar_catalogo()` TIRA una excepción si no hay Client,
+                Provider, Address, ExpenseConcept o Article del `config('semilla.user_id')`, y esas
+                cinco cosas se siembran justamente bajo esa condición (las cuatro primeras en
+                `local_y_demo()`, los artículos en `FerreteriaArticlesSeeder`). Si las dos guardas
+                se separan -- por ejemplo poniendo acá `config('app.env')` mientras allá quedó
+                `env('APP_ENV')`, que difieren con `config:cache` activo -- aparece un entorno donde
+                esta llamada corre sin catálogo y revienta el `migrate:fresh --seed` ENTERO, porque
+                la consola de Artisan corre con `setCatchExceptions(false)`. Se tocan las dos
+                juntas o ninguna. Y por lo mismo va DENTRO del `else`: la rama `la_barraca` no pasa
+                por `local_y_demo()`, o sea que ahí no hay ni un cliente que buscar.
+
+                🔴 Y va ÚLTIMA, después de `CartSeeder`, por la misma razón por la que del lado de
+                la demo va después del `foreach` de seeders: `semilla:datos` no siembra catálogo,
+                lo CONSUME (lee artículos, clientes, sucursales y conceptos de gasto ya creados) y
+                su último paso, `ActividadTiendaHelper`, calcula saldos y carritos contra las
+                ventas que el mismo acaba de generar. Un seeder agregado después de esta línea
+                queda fuera de todo lo que la semilla ve.
+
+                Sin `--reset` a propósito, mismo criterio que `DemoSetupHelper`: la base viene de un
+                `migrate:fresh`, no hay corrida anterior que limpiar. Y sin mirar el código de
+                salida, también igual que allá: la guarda de entorno del propio comando devuelve 1
+                sin sembrar nada cuando no corresponde, y eso es lo correcto, no una falla.
+
+                Cuesta minutos. Un dev que necesite un reseed rápido tiene la válvula ya existente:
+                `SEMILLA_MESES_ATRAS=1` en su `.env` (ver `config/semilla.php`).
+            */
+            if (
+                env('APP_ENV') == 'local'
+                || $for_user == 'demo'
+            ) {
+
+                // El tercer argumento reenvía la salida del comando a la consola del `db:seed`:
+                // `semilla:datos` tarda minutos y con un `Artisan::call()` pelado el
+                // `migrate:fresh --seed` se queda mudo todo ese rato y parece colgado.
+                // `isset($this->command)` es el mismo chequeo que hace
+                // `Illuminate\Database\Seeder::call()` para escribir sus "Seeding: ...".
+                Artisan::call(
+                    'semilla:datos',
+                    [],
+                    isset($this->command) ? $this->command->getOutput() : null
+                );
+            }
 
         }
 
