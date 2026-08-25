@@ -131,8 +131,22 @@ class CajaLiquidacionHelper {
             $comision_calculada = Numbers::redondear(((float) $monto) * ((float) $comision_porcentaje) / 100);
         }
 
+        /*
+         * Confirmado por Lucas (25/8/2026): la entidad de cobro retiene comisión + IVA, no solo
+         * la comisión. `crear_gasto_comision()` (MovimientoCajaHelper) ya cobra ese mismo total
+         * cuando `comision_iva_incluido` es false (comisión neta) -- acá se neteaba solo la
+         * comisión, así que el neto estimado quedaba sobrestimado por el IVA (hallazgo del
+         * 10/8/2026, "el neto estimado de liquidacion ignora el IVA de la comision"). Con IVA
+         * incluido no hay nada que sumar: la comisión YA es el total retenido.
+         */
+        $total_retenido = $comision_calculada;
+        if ($comision_calculada > 0 && !$config['comision_iva_incluido']) {
+            $importe_iva = Self::calcular_iva_comision($comision_calculada, $config['comision_iva_alicuota'], $config['comision_iva_incluido']);
+            $total_retenido = Numbers::redondear($comision_calculada + $importe_iva);
+        }
+
         // Redondeo final (no en los pasos intermedios).
-        $monto_neto_estimado = Numbers::redondear(((float) $monto) - $comision_calculada);
+        $monto_neto_estimado = Numbers::redondear(((float) $monto) - $total_retenido);
 
         return [
             'fecha_liquidacion_estimada' => $fecha_liquidacion_estimada,
