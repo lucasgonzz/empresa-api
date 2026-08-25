@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoSetupHelper;
+use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use Illuminate\Http\Request;
 
 /**
@@ -23,6 +24,11 @@ class DemoSetupController extends Controller
     /**
      * Recibe el POST del formulario, valida los mínimos indispensables y
      * delega la ejecución al helper.
+     *
+     * Toma el mismo candado que el endpoint de admin-sync: esta es la OTRA puerta a la
+     * misma base, y cerrar una sola dejaría la carrera intacta (el técnico manda el form
+     * mientras el admin dispara el setup, y el `migrate:fresh` de uno le vacía la base al
+     * otro). El mensaje sale por session('status'), que es lo único que renderiza la vista.
      */
     public function setup(Request $request)
     {
@@ -32,8 +38,19 @@ class DemoSetupController extends Controller
             'use_price_lists' => 'nullable|boolean',
         ]);
 
-        // Pasamos el input crudo al helper; internamente interpreta cada flag
-        DemoSetupHelper::run($request->all());
+        $candado = DemoSetupLockHelper::tomar();
+
+        if ($candado === false) {
+            return redirect()->route('demo.form')
+                ->with('status', 'Ya hay un demo setup corriendo en esta instancia. Esperá a que termine.');
+        }
+
+        try {
+            // Pasamos el input crudo al helper; internamente interpreta cada flag
+            DemoSetupHelper::run($request->all());
+        } finally {
+            DemoSetupLockHelper::soltar($candado);
+        }
 
         return redirect()->route('demo.form')->with('status', 'Demo creada correctamente.');
     }
