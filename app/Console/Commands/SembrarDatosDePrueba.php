@@ -484,6 +484,33 @@ class SembrarDatosDePrueba extends Command
                 $actividad_tienda
             );
 
+            /*
+             * Performance histórica del comercio, DESPUÉS de la planilla (no la afecta: la
+             * planilla se calcula con los números de la propia siembra, nunca consultando la
+             * base) y antes de devolver.
+             *
+             * Está acá desde la misión 63 (siembra-local-igual-a-demo). `DemoSetupHelper::run()`
+             * ya lo corría al terminar, pero una corrida LOCAL -- que es `migrate:fresh --seed`
+             * más este comando -- no lo corría nunca, y `company_performances` es de donde sale
+             * el dashboard de ventas. Medido el 25/8/2026: local terminaba con 0 filas en las
+             * nueve tablas `company_performance*` y una demo con 12, 60, 72, 288 y 360 según la
+             * tabla. O sea que Lucas validaba en local una pantalla que a un lead le aparece
+             * llena y a él vacía, que es justo lo contrario de lo que su corrida local tiene que
+             * garantizar.
+             *
+             * Que la demo lo termine corriendo dos veces no rompe nada y no se saca de allá:
+             * `SetCompanyPerformances` borra el mes antes de recrearlo
+             * (`borrar_los_realizados_durante_el_mes()` + `create()`), así que es idempotente, y
+             * la llamada de `DemoSetupHelper` sigue siendo la única que cubre la instalación de
+             * un CLIENTE REAL, donde este comando sale por la guarda de entorno sin llegar hasta
+             * acá.
+             */
+            $this->info('Calculando la performance histórica del comercio...');
+            $this->call('set_company_performances', [
+                'user_id'     => $this->user_id,
+                '--historico' => true,
+            ]);
+
             $this->info('Listo.');
 
             return 0;
