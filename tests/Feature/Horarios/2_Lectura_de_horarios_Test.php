@@ -188,9 +188,15 @@ class Lectura_de_horarios_Test extends EmpresaTestCase
     /**
      * Test 1 — "¿hasta que hora abren hoy?" con un dia de dos turnos (manana y tarde).
      *
-     * 🔴 El cierre es el MAYOR `hasta` del dia ('21:00'), no el fin del primer rango ('13:00').
-     * Un comercio que corta al mediodia es lo normal en el rubro: contestar "cierran a las 13"
-     * un dia que atienden hasta las 21 le hace perder una venta al negocio.
+     * 🔴 El lector DEVUELVE el `cierre` que llego en el payload; NO lo recalcula a partir de los
+     * rangos. Quien deriva "el cierre del dia es el mayor `hasta`" es el emisor, en admin-api
+     * (ClientScheduleResolver), y esa es justamente la regla que esta punta no reimplementa: si
+     * las dos la resolvieran por su cuenta, el dia que se agregue un caso (medio dia, feriado)
+     * quedarian dos criterios y uno se iba a olvidar.
+     *
+     * Lo que el test fija es el resultado que tiene que llegarle al comprador: con dos turnos,
+     * '21:00' y no '13:00'. Un comercio que corta al mediodia es lo normal en el rubro, y
+     * contestar "cierran a las 13" un dia que atienden hasta las 21 le hace perder una venta.
      *
      * @group horarios
      * @test

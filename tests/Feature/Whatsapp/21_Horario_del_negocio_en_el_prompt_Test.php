@@ -335,17 +335,29 @@ class Horario_del_negocio_en_el_prompt_Test extends TestCase
         $system = $this->generar_y_obtener_system();
 
         $this->assertStringNotContainsString(self::ENCABEZADO, $system, 'Sin dato no hay capa.');
-        $this->assertStringNotContainsString(
-            'cerrado',
+
+        /* 🔴 Sin horario cargado, el modelo no puede tener de donde sacar un "cerrado" — y la
+         * unica forma de estar seguro de que esta capa no se lo dio es comparar contra el prompt
+         * del mismo comercio SIN la fila. Un `assertStringNotContainsString('cerrado', $system)`
+         * a secas diria lo mismo hoy, pero se rompe el dia que alguien meta esa palabra en
+         * FIXED_RULES o en una personalidad, que no es asunto de esta mision. */
+        BusinessHoursConfig::query()->delete();
+
+        $this->assertSame(
+            $this->generar_y_obtener_system(),
             $system,
-            '🔴 Sin horario cargado, el modelo no puede tener de donde sacar un "cerrado".'
+            'Con `configurado: false` el prompt tiene que ser identico al de un comercio sin fila.'
         );
     }
 
     /**
      * Test 3 — la capa contesta "¿hasta que hora abren hoy?": el renglon del dia con los dos
-     * turnos y el renglon de hoy con el cierre real (el mayor `hasta`, no el fin del primer
-     * turno).
+     * turnos y el renglon de hoy con el cierre que llego en el payload ('21:00'), no el fin del
+     * primer turno.
+     *
+     * ⚠️ El cierre NO se calcula aca ni en el lector: lo deriva el emisor en admin-api. Esta
+     * punta solo lo imprime. No "arreglar" el lector para que saque el maximo de los rangos:
+     * seria un segundo criterio sobre el mismo invariante.
      *
      * @group whatsapp
      * @test

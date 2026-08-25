@@ -327,8 +327,11 @@ final class BusinessHoursPromptBuilder
      */
     private function texto_seguro(string $valor, int $largo): string
     {
-        // \x00-\x1F y \x7F son los de control ASCII; \xC2\x80-\x9F, los de control en UTF-8.
-        $limpio = preg_replace('/[\x00-\x1F\x7F]|\xC2[\x80-\x9F]/u', ' ', $valor);
+        /* U+0000-U+001F y U+007F son los de control ASCII; U+0080-U+009F, los C1.
+         * ⚠️ Con el modificador /u hay que escribirlos como code points (\x{0080}), NO como
+         * bytes (\xC2\x80): con /u, "\xC2" es el code point U+00C2, o sea la "Â", y el patrón
+         * termina buscando una "Â" en vez de un carácter de control. */
+        $limpio = preg_replace('/[\x{0000}-\x{001F}\x{007F}-\x{009F}]/u', ' ', $valor);
 
         if ($limpio === null) {
             // preg_replace devuelve null si el texto no es UTF-8 válido: no se arriesga nada.
