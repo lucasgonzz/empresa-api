@@ -445,6 +445,14 @@ class DemoSetupHelper
      * Crea el registro User principal de la demo con defaults tomados del
      * formulario original. Aísla la carga de campos del setup principal.
      *
+     * `doc_number`, `email` y `online` llevan default como el resto: hasta el 25/8/2026
+     * se leían derecho y un payload sin esas claves tiraba `Undefined index` (500) recién
+     * acá, con el `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario.
+     * El endpoint de admin-sync pasa `$request->all()` tal cual, así que las claves las
+     * decide quien llame; ninguna es obligatoria del lado nuestro. Ojo que `doc_number`
+     * además es la contraseña inicial (`bcrypt`), así que el default tiene que ser un
+     * valor real y no cadena vacía.
+     *
      * @param array<string, mixed> $data
      *
      * @return User
@@ -460,17 +468,19 @@ class DemoSetupHelper
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
             'image_url'                     => 'https://comerciocity.com/img/logo.95c86b81.jpg',
-            'doc_number'                    => $data['doc_number'],
+            // '1234' es el mismo doc_number que le pone UserSeeder al usuario de demo, así que
+            // el fallback deja la instancia en el estado conocido en vez de en uno inventado.
+            'doc_number'                    => $data['doc_number'] ?? '1234',
             'impresora'                     => 'XP-80',
-            'email'                         => $data['email'],
+            'email'                         => $data['email'] ?? null,
             'phone'                         => '3444622139',
             'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
-            'password'                      => bcrypt($data['doc_number']),
+            'password'                      => bcrypt($data['doc_number'] ?? '1234'),
             'visible_password'              => null,
             'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
-            'online'                        => $data['online'],
+            'online'                        => $data['online'] ?? null,
             'payment_expired_at'            => Carbon::now()->addMonths(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
