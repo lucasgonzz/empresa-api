@@ -29,6 +29,10 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
      * @var array Un elemento por artículo sin imagen asignada, con
      * `['article_id' => ..., 'name' => ..., 'summary' => ...]`, donde `summary` junta en una
      * frase los `outcome_detail` de los intentos de búsqueda de ese artículo (grupo 201, prompt 03).
+     *
+     * Esta property (y `$skipped_names`, `$needs_review_items`, `$skipped_by_quota_names`)
+     * queda disponible acá a propósito aunque `broadcastWith()` ya no la transmita: es el
+     * contrato en proceso del evento, no solo el de Pusher. No borrarla "porque no se usa".
      */
     public $skipped_items;
 
@@ -92,21 +96,29 @@ class ArticleBatchImagesProcessed implements ShouldBroadcastNow
     }
 
     /**
-     * Payload que recibe el frontend.
+     * Payload que recibe el frontend por Pusher.
+     *
+     * 🔴 Pusher corta cualquier evento en 10240 bytes (confirmado en producción: con un lote de
+     * 40 artículos ya lo supera y el job termina en BroadcastException). Por eso este payload
+     * SOLO lleva contadores y el `batch_uuid`, de tamaño constante sin importar cuántos
+     * artículos tenga el lote. El detalle por artículo (`skipped_items`, `skipped_names`,
+     * `needs_review_items`, `skipped_by_quota_names`) el frontend lo pide aparte a
+     * `GET article-image-search-attempts/summary/{batch_uuid}`
+     * (ArticleImageSearchAttemptController::summary), que lo reconstruye desde la tabla
+     * `article_image_search_attempts` con el mismo shape.
+     *
+     * Prohibido volver a meter acá cualquier campo cuyo tamaño dependa de la cantidad de
+     * artículos del lote: es exactamente el bug que este método arregla.
      */
     public function broadcastWith()
     {
         return [
-            'processed'              => $this->processed,
-            'skipped'                => $this->skipped,
-            'skipped_names'          => $this->skipped_names,
-            'needs_review'           => $this->needs_review,
-            'needs_review_items'     => $this->needs_review_items,
-            'quota_reached'          => $this->quota_reached,
-            'skipped_by_quota'       => $this->skipped_by_quota,
-            'skipped_by_quota_names' => $this->skipped_by_quota_names,
-            'batch_uuid'             => $this->batch_uuid,
-            'skipped_items'          => $this->skipped_items,
+            'processed'        => $this->processed,
+            'skipped'          => $this->skipped,
+            'needs_review'     => $this->needs_review,
+            'quota_reached'    => $this->quota_reached,
+            'skipped_by_quota' => $this->skipped_by_quota,
+            'batch_uuid'       => $this->batch_uuid,
         ];
     }
 }

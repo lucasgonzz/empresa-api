@@ -28,6 +28,7 @@ return [
         'home/clients',
         '/storage/*',
         'storage',
+        'broadcasting/auth',
     ],
     
 

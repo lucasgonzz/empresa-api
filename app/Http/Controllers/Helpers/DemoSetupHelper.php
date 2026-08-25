@@ -493,6 +493,9 @@ class DemoSetupHelper
                 ? (int) $data['google_cuota']
                 : 100,
             'listas_de_precio'              => !empty($data['use_price_lists']) ? 1 : 0,
+            // Pedido de Lucas (25/8/2026): en la demo estos avisos al iniciar sesion quedan apagados por defecto.
+            'show_stock_min_al_iniciar'     => 0,
+            'show_afip_errors_al_iniciar'   => 0,
         ]);
     }
 
