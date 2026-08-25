@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\Demo;
 
+use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 /**
@@ -45,6 +47,9 @@ class CandadoDeSetupTest extends TestCase
 
     /** Renglón inventado en `migrations` que un `migrate:fresh` no puede dejar en pie. */
     const MARCADOR = 'marcador_del_test_del_candado_de_setup';
+
+    /** Id de User que la base de testing no usa, para las creaciones por reflexion. */
+    const ID_DE_USUARIO_LIBRE = 987654;
 
     /**
      * Handle del candado que toma el test para simular "ya hay una corrida". Se suelta en
@@ -122,65 +127,72 @@ class CandadoDeSetupTest extends TestCase
     }
 
     /** @test */
-    public function demo_setup_sin_doc_number_responde_422_sin_vaciar_la_base()
+    public function un_payload_sin_doc_number_no_revienta_y_no_deja_la_cuenta_con_contrasena_vacia()
     {
         /**
-         * Este es el otro medio bug: un payload incompleto llegaba al `migrate:fresh` y
-         * recién reventaba con `Undefined index` adentro de create_demo_user(), o sea con la
-         * base ya destruida. El 422 tiene que salir ANTES de tocar nada.
+         * NO se valida `doc_number` como requerido, y este test fija esa decision: admin-api
+         * manda `doc_number = ''` a proposito cuando el formulario de implementacion no cargo
+         * documento (`ImplementationUserSetupService`), y un lead de demo puede llegar con la
+         * clave en null. Las dos puntas no salen a produccion juntas, asi que rechazar ese
+         * payload dejaria sin armar instancias que hoy se arman.
+         *
+         * Lo que si cambia es la contrasena: antes ese caso quedaba en `bcrypt('')`, o sea una
+         * cuenta que abre con la contrasena VACIA en un dominio publico. Ahora sale de un
+         * Str::random(40): igual de inservible, pero ya no adivinable.
+         *
+         * Se ejercita create_demo_user() por reflexion y NO run(): run() arranca con
+         * `migrate:fresh` y vaciaria empresa_testing_s1. Este metodo es un unico User::create(),
+         * sin otros efectos, y el id se apunta a uno libre para no chocar con el usuario
+         * sembrado. DatabaseTransactions se lleva la fila al terminar el caso.
          */
-        $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
-            'business_type' => 'kiosco',
-            'name' => 'Demo del test',
-        ]);
+        config(['app.USER_ID' => self::ID_DE_USUARIO_LIBRE]);
 
-        $respuesta->assertStatus(422);
-        $this->assertBaseIntacta();
-        $this->assertCandadoLibre('El 422 sale antes de tomar el candado, así que tiene que haber quedado libre.');
+        $create_demo_user = new \ReflectionMethod(DemoSetupHelper::class, 'create_demo_user');
+        $create_demo_user->setAccessible(true);
+
+        $sin_doc = $create_demo_user->invoke(null, array('company_name' => 'Demo del test'));
+
+        $this->assertNotNull($sin_doc->id, 'Un payload sin doc_number tiene que crear el usuario igual, no reventar.');
+        $this->assertNull($sin_doc->doc_number);
+        $this->assertFalse(
+            Hash::check('', $sin_doc->password),
+            'La cuenta abre con la contrasena vacia: volvio el bcrypt del string vacio.'
+        );
     }
 
     /** @test */
-    public function demo_setup_con_doc_number_en_null_tambien_responde_422()
+    public function un_payload_con_doc_number_sigue_teniendo_el_documento_de_contrasena()
     {
         /**
-         * Del lado del admin `leads.doc_number` es nullable, así que el caso frecuente no es
-         * la clave ausente sino la clave presente y en null. Un `isset()` o un `array_key_exists()`
-         * dejarían pasar esto; por eso la validación es `trim((string) ...) === ''`.
+         * La otra mitad del contrato, y la que importa para no romper nada: cuando doc_number
+         * viene con valor, la contrasena es el documento, exactamente como siempre.
          */
-        $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
-            'business_type' => 'kiosco',
-            'doc_number' => null,
-            'name' => 'Demo del test',
-        ]);
+        config(['app.USER_ID' => self::ID_DE_USUARIO_LIBRE]);
 
-        $respuesta->assertStatus(422);
-        $this->assertBaseIntacta();
+        $create_demo_user = new \ReflectionMethod(DemoSetupHelper::class, 'create_demo_user');
+        $create_demo_user->setAccessible(true);
+
+        $con_doc = $create_demo_user->invoke(null, array('doc_number' => '30111222'));
+
+        $this->assertSame('30111222', $con_doc->doc_number);
+        $this->assertTrue(
+            Hash::check('30111222', $con_doc->password),
+            'Con doc_number cargado la contrasena tiene que seguir siendo el documento.'
+        );
     }
 
     /** @test */
-    public function demo_setup_con_doc_number_en_blanco_tambien_responde_422()
+    public function el_string_vacio_que_manda_admin_api_tampoco_deja_la_contrasena_vacia()
     {
-        $respuesta = $this->postJson('/api/admin-sync/demo-setup', [
-            'business_type' => 'kiosco',
-            'doc_number' => '   ',
-        ]);
+        /** El caso exacto de ImplementationUserSetupService: la clave llega, en cadena vacia. */
+        config(['app.USER_ID' => self::ID_DE_USUARIO_LIBRE]);
 
-        $respuesta->assertStatus(422);
-        $this->assertBaseIntacta();
-    }
+        $create_demo_user = new \ReflectionMethod(DemoSetupHelper::class, 'create_demo_user');
+        $create_demo_user->setAccessible(true);
 
-    /** @test */
-    public function user_setup_sin_doc_number_responde_422_sin_vaciar_la_base()
-    {
-        $respuesta = $this->postJson('/api/admin-sync/user-setup', [
-            'business_type' => 'kiosco',
-            'user_id' => 987654,
-            'user_name' => 'Cliente del test',
-        ]);
+        $vacio = $create_demo_user->invoke(null, array('doc_number' => ''));
 
-        $respuesta->assertStatus(422);
-        $this->assertBaseIntacta();
-        $this->assertCandadoLibre('El 422 sale antes de tomar el candado, así que tiene que haber quedado libre.');
+        $this->assertFalse(Hash::check('', $vacio->password));
     }
 
     /** @test */

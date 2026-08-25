@@ -18,6 +18,7 @@ use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Helper que concentra la lógica de "configurar un sistema para una demo":
@@ -77,18 +78,27 @@ class DemoSetupHelper
          *
          * ⚠️ ESOS 109 SEGUNDOS QUEDARON VIEJOS. Son de ANTES de que la demo pasara a sembrar con
          * `semilla:datos` (mision del 17/8/2026), que ejecuta un ano entero de operaciones
-         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 en
-         * `empresa_testing_s2`, este metodo de punta a punta: **4 minutos 15 segundos**
-         * (~60s el migrate:fresh, el resto casi todo adentro de `semilla:datos`).
+         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 contra
+         * `empresa_testing_s1`, este metodo de punta a punta con `use_price_lists = false`:
+         * **565,7 segundos (9 minutos 26 segundos)**. La medicion anterior de este bloque
+         * -- 4 m 15 s en `empresa_testing_s2` -- quedo corta: el numero real es mas del doble.
          *
          * 🔴 Ese numero hay que mirarlo contra el techo del que lo llama: `admin-api` postea acá
-         * con un timeout de `CLIENT_API_TIMEOUT` x 20 = **300 segundos**
-         * (`RunUserSetupService`/`RunDemoSetupService`). O sea que hoy entra, pero por 45
-         * segundos. Cualquier cosa que agregue trabajo a la siembra pasa a ser un problema de
-         * timeout del lado del admin, no una molestia de tiempo local: si esto se pasa de 300s,
-         * el admin marca el lead como `demo_setup_status = fallido` aunque la instancia termine
-         * bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de abajo). Volver
-         * a medir cada vez que se toque `semilla:datos`.
+         * con un timeout propio de **900 segundos** (`services.client_api.demo_setup_timeout`,
+         * que usa `RunDemoSetupService` desde la mision del 25/8/2026).
+         *
+         * Antes ese techo eran los `CLIENT_API_TIMEOUT` x 20 = 300 segundos genericos, y con
+         * 565,7 s de siembra la corrida NO entraba. Lo que pasaba entonces es exactamente la
+         * cadena que motivo el candado de `DemoSetupLockHelper`: el admin daba la corrida por
+         * muerta a los 300 s y marcaba `demo_setup_status = fallido` aunque la instancia
+         * terminara bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de
+         * abajo), la UI volvia a mostrar el boton, y el segundo disparo le vaciaba la base a la
+         * primera corrida, que todavia estaba sembrando.
+         *
+         * Con 900 s de techo y 565,7 s medidos el margen es de ~334 segundos, pero es margen
+         * prestado: cualquier cosa que agregue trabajo a la siembra se lo come, y pasa a ser un
+         * problema de timeout del lado del admin, no una molestia de tiempo local. Volver a
+         * medir cada vez que se toque `semilla:datos`.
          *
          * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
          *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
@@ -459,11 +469,14 @@ class DemoSetupHelper
      * admin-sync pasa `$request->all()` tal cual, así que las claves las decide quien llame.
      *
      * 🔴 `doc_number` NO lleva un valor por default, y es a propósito. Es el nombre de usuario
-     * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y acá abajo
-     * también la contraseña, así que cualquier default fijo dejaría la demo con usuario y
-     * contraseña adivinables en un dominio público. Con `null` la cuenta queda inservible, que
-     * es feo pero no es un agujero. La precondición se exige donde corresponde: los tres
-     * controllers validan `doc_number` y devuelven 422 ANTES del `migrate:fresh`.
+     * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y también la
+     * contraseña, así que cualquier default fijo dejaría la demo con usuario y contraseña
+     * adivinables en un dominio público. Con `null` la cuenta queda inservible, que es feo pero
+     * no es un agujero. Y tampoco se valida como requerido en los controllers: admin-api manda
+     * `doc_number = ''` a propósito cuando el formulario de implementación no cargó documento
+     * (`ImplementationUserSetupService`), y las dos puntas no llegan a producción juntas —
+     * rechazar ese payload dejaría sin armar instancias que hoy se arman. La contraseña de ese
+     * caso la resuelve `password_inicial()`, acá abajo.
      *
      * @param array<string, mixed> $data
      *
@@ -485,7 +498,7 @@ class DemoSetupHelper
             'email'                         => $data['email'] ?? null,
             'phone'                         => '3444622139',
             'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
-            'password'                      => bcrypt($data['doc_number'] ?? null),
+            'password'                      => self::password_inicial($data),
             'visible_password'              => null,
             'dollar'                        => 1000,
             'home_position'                 => 1,
@@ -517,6 +530,46 @@ class DemoSetupHelper
             'show_stock_min_al_iniciar'     => 0,
             'show_afip_errors_al_iniciar'   => 0,
         ]);
+    }
+
+    /**
+     * Contraseña inicial del User de la demo.
+     *
+     * 🔴 POR QUÉ NO ES UN `bcrypt($data['doc_number'])` PELADO, ANTES DE QUE ALGUIEN LO
+     * "SIMPLIFIQUE" DE VUELTA:
+     *
+     * El login es `doc_number` + password (`AuthController::login` →
+     * `Auth::attempt(['doc_number' => ..., 'password' => ...])`) y la contraseña inicial de la
+     * demo es el propio documento. Cuando `doc_number` viene con valor, esto hace exactamente
+     * lo de siempre y no hay nada que discutir.
+     *
+     * El problema es el otro caso. admin-api manda `doc_number = ''` A PROPÓSITO cuando el
+     * formulario de implementación no cargó documento (`ImplementationUserSetupService`: "si no
+     * vino del formulario, dejarlo como string vacío explícito"), y un lead de demo puede
+     * llegar con `doc_number` en null (`leads.doc_number` es nullable). Con el bcrypt pelado
+     * esos casos quedaban con `bcrypt('')`, o sea una cuenta que abre con la CONTRASEÑA VACÍA,
+     * en un dominio público y sobre un endpoint sin auth. Hashear un `Str::random(40)` deja esa
+     * misma cuenta igual de inservible que antes (nadie sabe el documento para el usuario) pero
+     * ya no adivinable.
+     *
+     * No se arregla rechazando el payload con un 422: las dos puntas no llegan a producción
+     * juntas —empresa sale por release a los ~40 clientes y el admin lo sube Lucas a mano—, así
+     * que rechazarlo dejaría sin armar instancias que hoy se arman. Compatibilidad hacia atrás:
+     * ningún payload que hoy funciona cambia de comportamiento.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @return string Hash bcrypt listo para guardar.
+     */
+    private static function password_inicial(array $data)
+    {
+        $doc_number = isset($data['doc_number']) ? trim((string) $data['doc_number']) : '';
+
+        if ($doc_number === '') {
+            return bcrypt(Str::random(40));
+        }
+
+        return bcrypt($data['doc_number']);
     }
 
     /**

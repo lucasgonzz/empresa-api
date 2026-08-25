@@ -31,23 +31,17 @@ class DemoSetupController extends Controller
      * `migrate:fresh` de uno le vacía la base al otro. El mensaje sale por session('status'),
      * que es lo único que renderiza la vista.
      *
-     * ⚠️ `doc_number` pasa a ser requerido y la vista `demo.setup` TODAVÍA NO TIENE ESE INPUT,
-     * así que este form no puede completarse hasta que se lo agreguen. No es una regresión:
-     * antes tampoco funcionaba —moría con `Undefined index: doc_number` adentro de
-     * `create_demo_user()`—, solo que lo hacía DESPUÉS del `migrate:fresh`, dejando la base
-     * vaciada. Ahora rebota antes de tocar nada.
+     * ⚠️ La vista `demo.setup` no tiene input de `doc_number`, así que por este camino la demo
+     * queda siempre con `doc_number` null: una cuenta a la que no se puede entrar. No se valida
+     * como requerido acá —sería romper el contrato con admin-api, que manda `doc_number` vacío
+     * a propósito—; la cuenta inservible se arregla agregando el input a la vista, no rebotando
+     * el request. Lo que sí está cubierto es que esa cuenta no quede ADIVINABLE: ver
+     * `DemoSetupHelper::password_inicial()`.
      */
     public function setup(Request $request)
     {
-        /**
-         * La validación va antes del candado y antes del `migrate:fresh`: un payload
-         * incompleto no puede vaciar una base. `doc_number` es el usuario del login y la
-         * contraseña inicial de la demo, así que no lleva default (un default lo volvería
-         * adivinable); se exige.
-         */
         $request->validate([
             'business_type' => 'required|string',
-            'doc_number' => 'required|string',
             'use_deposits' => 'nullable|boolean',
             'use_price_lists' => 'nullable|boolean',
         ]);

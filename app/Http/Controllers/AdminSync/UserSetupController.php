@@ -20,8 +20,8 @@ class UserSetupController extends Controller
     /**
      * Ejecuta UserSetupHelper::run con el payload recibido.
      *
-     * Requiere como mínimo `business_type`, `user_id` y `doc_number`. El resto de
-     * campos son opcionales y se interpretan como flags o datos complementarios.
+     * Requiere como mínimo `business_type` y `user_id`. El resto de campos
+     * son opcionales y se interpretan como flags o datos complementarios.
      *
      * El 409 es una respuesta NUEVA de este endpoint (25/8/2026), compatible hacia atrás:
      * un admin-api viejo la lee como no exitosa y registra el error en el Lead, que es lo
@@ -37,20 +37,6 @@ class UserSetupController extends Controller
         // }
         if (empty($request->input('user_id'))) {
             return response()->json(['error' => 'user_id is required'], 422);
-        }
-
-        /**
-         * `doc_number` también es precondición acá, y por la misma razón que en demo-setup:
-         * es el nombre de usuario del login (`AuthController::login` hace
-         * `Auth::attempt(['doc_number' => ...])`). Un user-setup sin doc_number vacía la base
-         * del cliente y le deja un sistema en el que NADIE puede entrar. Se valida antes del
-         * candado y antes del `migrate:fresh` para que un payload incompleto no destruya nada.
-         *
-         * `trim((string) ...)` rechaza null explícitamente: del lado del admin
-         * `leads.doc_number` es nullable, así que la clave puede llegar presente y en null.
-         */
-        if (trim((string) $request->input('doc_number')) === '') {
-            return response()->json(['error' => 'doc_number is required'], 422);
         }
 
         /**
