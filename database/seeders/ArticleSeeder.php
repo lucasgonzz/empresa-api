@@ -44,6 +44,26 @@ class ArticleSeeder extends Seeder
     public function run()
     {
 
+        /**
+         * 🔴 ESTE SEEDER ESTÁ MUERTO DESDE EL 14/5/2026 (commit 494fe1d8) Y NO ES UN DESCUIDO.
+         *
+         * El `return` de abajo no tiene condición: `run()` no siembra un solo artículo, ni en
+         * local, ni en la demo, ni para ninguno de los ~19 `FOR_USER` cuyas ramas de
+         * `DatabaseSeeder` todavía lo llaman. Todo lo que hay debajo -- `$images`, `lucas()`, los
+         * `require` de `articles/vinoteca.php` y `articles/supermercado.php` -- es código que no
+         * se ejecuta. Se verificó en la misión 63 (siembra-local-igual-a-demo) con la corrida
+         * real: el seeder aparece en la salida de `db:seed` y tarda 0,04 ms.
+         *
+         * El catálogo de artículos de local y de la demo lo siembra hoy
+         * `FerreteriaArticlesSeeder`, que `DatabaseSeeder::run()` llama sin condición para todos
+         * los `FOR_USER` y que `DemoSetupHelper` engancha desde `apply_business_type_rules()`.
+         *
+         * POR QUÉ NO SE BORRAN EL ARCHIVO NI LAS 19 LLAMADAS: sacarlo obliga a tocar la rama de
+         * cada cliente real dentro de `DatabaseSeeder`, y ese archivo es el que arma la base de
+         * un cliente cuando se lo instala. El beneficio es cero (hoy no siembra nada) y el
+         * riesgo no lo es. Si alguna vez se lo quiere resucitar, el punto de partida es este
+         * `return` y el contenido de `articles/supermercado.php`.
+         */
         return;
 
         if (

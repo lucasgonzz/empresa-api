@@ -1117,6 +1117,10 @@ Route::middleware('admin.api.key')
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
+        // Horarios comerciales empujados por admin-api (ClientScheduleSyncService). El contrato viene
+        // CERRADO del emisor: la semana llega YA RESUELTA y acá solo se guarda y se lee.
+        // Idempotente: el push llega por job encolado y puede repetirse con el mismo contenido.
+        Route::put('business-hours', 'AdminSync\\BusinessHoursController@update');
         // Reemision/revocacion del token de ingreso a la demo (grupo 233, prompt 05). Va dentro
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).

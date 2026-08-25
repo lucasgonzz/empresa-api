@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Log;
 
 class OrderSeeder extends Seeder
 {
@@ -26,6 +27,21 @@ class OrderSeeder extends Seeder
         */
         $buyer_lucas = Buyer::where('email', 'lucasgonzalez5500@gmail.com')->first();
         $buyer_marcos = Buyer::where('email', 'lucasgonzalez210200@gmail.com')->first();
+
+        /*
+            Guarda agregada en la mision 63 (siembra-local-igual-a-demo), cuando este seeder pasó
+            a correr también dentro de `DemoSetupHelper::run()`. Sin ella, un `BuyerSeeder` que
+            algún día cambie esos dos mails deja `$buyer_lucas` en null y el `->id` de más abajo
+            tira un fatal: en local eso es una corrida de seeders que se corta, pero en una demo
+            es el setup de un lead YA AGENDADO que muere después del `migrate:fresh`, o sea una
+            instancia con la base vacía. Se sale sin sembrar y se avisa, que es la diferencia
+            entre "faltan dos pedidos de ejemplo" y "no hay sistema".
+        */
+        if (is_null($buyer_lucas) || is_null($buyer_marcos)) {
+            Log::warning('OrderSeeder: no se encontraron los dos Buyer de BuyerSeeder, no se siembra ningun pedido.');
+            return;
+        }
+
         $models = [
             [
                 'buyer_id'          => $buyer_lucas->id,

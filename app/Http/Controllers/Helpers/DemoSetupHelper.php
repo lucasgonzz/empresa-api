@@ -75,6 +75,21 @@ class DemoSetupHelper
          * max_execution_time con el que corre PHP en casi cualquier servidor web -- el default
          * que trae PHP de fabrica son 30 segundos.
          *
+         * ⚠️ ESOS 109 SEGUNDOS QUEDARON VIEJOS. Son de ANTES de que la demo pasara a sembrar con
+         * `semilla:datos` (mision del 17/8/2026), que ejecuta un ano entero de operaciones
+         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 en
+         * `empresa_testing_s2`, este metodo de punta a punta: **4 minutos 15 segundos**
+         * (~60s el migrate:fresh, el resto casi todo adentro de `semilla:datos`).
+         *
+         * 🔴 Ese numero hay que mirarlo contra el techo del que lo llama: `admin-api` postea acá
+         * con un timeout de `CLIENT_API_TIMEOUT` x 20 = **300 segundos**
+         * (`RunUserSetupService`/`RunDemoSetupService`). O sea que hoy entra, pero por 45
+         * segundos. Cualquier cosa que agregue trabajo a la siembra pasa a ser un problema de
+         * timeout del lado del admin, no una molestia de tiempo local: si esto se pasa de 300s,
+         * el admin marca el lead como `demo_setup_status = fallido` aunque la instancia termine
+         * bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de abajo). Volver
+         * a medir cada vez que se toque `semilla:datos`.
+         *
          * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
          *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
          *   Mismo patron que ya usa este repo en Exports, Imports y PDFs. Va en el helper y no en
@@ -195,8 +210,6 @@ class DemoSetupHelper
 
         self::set_default_sale_factura_print_option($user);
 
-        self::crear_client_con_mail_del_user_demo($data);
-
         // Reportes pre-calculados que usa el dashboard de ventas
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
@@ -209,17 +222,73 @@ class DemoSetupHelper
          * que se verifica en local. Sin '--reset': la base recién vino del migrate:fresh de
          * arriba, así que no hay nada previo que limpiar.
          *
-         * No se chequea el código de salida ni se envuelve en try/catch, A PROPÓSITO: en una
+         * No se envuelve en try/catch ni se propaga ninguna falla, A PROPÓSITO: en una
          * instancia de CLIENTE REAL -- que corre este mismo helper al instalarse -- ni
          * config('app.env') es 'local' ni config('app.FOR_USER') es 'demo', así que la guarda
          * de entorno de semilla:datos sale con código 1 sin sembrar nada. Eso es lo CORRECTO
          * (el cliente no tiene por qué recibir datos de ejemplo), no una falla que haya que
          * propagar.
+         *
+         * El código de salida SÍ se guarda desde la misión 63, y no como manejo de error: es el
+         * único dato que distingue "acá se sembró" (0) de "acá no, porque es un cliente real" (1),
+         * y de eso depende quién calcula la performance histórica más abajo.
          */
-        Artisan::call('semilla:datos');
+        $semilla_sembro = Artisan::call('semilla:datos') === 0;
 
-        // Performance histórica del usuario (costos, márgenes, etc.)
-        Artisan::call('set_company_performances', ['--historico' => true]);
+        /**
+         * 🔴 VA ACÁ, DESPUÉS DE `semilla:datos`, Y NO ANTES (misión 63, siembra-local-igual-a-demo).
+         *
+         * Este Client es el del propio lead (su nombre y su mail salen del formulario), así que es
+         * una diferencia legítima entre una demo y una corrida local: local no tiene formulario y
+         * nunca lo va a tener. Lo que NO era legítimo es que se creara ANTES de la siembra.
+         *
+         * `SembrarDatosDePrueba::cargar_catalogo()` levanta
+         * `Client::where('user_id', ...)->orderBy('num')->get()` y sobre ESA lista rotan
+         * `PERFIL_DE_PAGO` (qué fracción de su deuda paga cada cliente) y `cliente_rotativo()`.
+         * Este Client se crea sin `num`, o sea `num = NULL`, y en MySQL los NULL ordenan PRIMERO
+         * en un ORDER BY ascendente: entraba en la posición 0 y corría un lugar a los 25 clientes
+         * de `ClientSeeder`. Resultado medido el 25/8/2026 sobre `empresa_testing_s2`, comparando
+         * los dos `storage/app/semilla/control.json`: 411 de 773 renglones distintos entre local y
+         * demo -- toda la deuda por cliente, toda la deuda por proveedor, la cobranza de cada mes,
+         * los saldos de las seis cajas y el barrido de efectivo. Los totales del mes (ventas
+         * brutas, costo de mercadería, gastos, IIBB) daban igual, porque salen de la cadencia y no
+         * del catálogo: por eso el desalineo no se veía en el resumen de consola.
+         *
+         * Corriéndolo después, `semilla:datos` ve exactamente los mismos 25 clientes que en local
+         * y el lead sigue encontrando su propio Client en el sistema. Lo único que cambia es que
+         * ese Client queda sin operaciones sembradas, que es lo correcto: es él, no un cliente de
+         * ejemplo.
+         */
+        self::crear_client_con_mail_del_user_demo($data);
+
+        /**
+         * Performance histórica del usuario (costos, márgenes, etc.), SOLO si `semilla:datos` no
+         * la calculó ya.
+         *
+         * 🔴 POR QUÉ LA CONDICIÓN, QUE PARECE DE MÁS Y NO LO ES (misión 63). Desde esta misión el
+         * propio `semilla:datos` termina llamando a `set_company_performances --historico`, para
+         * que una corrida LOCAL -- que es `migrate:fresh --seed` más ese comando y nada más --
+         * llene el dashboard de ventas igual que una demo. Correrlo de nuevo acá NO es inofensivo:
+         * `CompanyPerformanceController::borrar_los_realizados_durante_el_mes()` borra la fila de
+         * `company_performances` del mes pero no todas sus tablas hijas, así que la segunda
+         * corrida DUPLICA las filas de `company_performance_gasto`,
+         * `company_performance_user_payment_method` y compañía. Medido el 25/8/2026 con las dos
+         * llamadas activas: local terminaba con 288 filas en
+         * `company_performance_address_payment_method` y la demo con 576, y las de la demo eran
+         * las mismas doce, dos veces.
+         *
+         * La llamada NO se borra porque sigue siendo la única que cubre la instalación de un
+         * CLIENTE REAL: ahí `semilla:datos` sale por la guarda de entorno sin sembrar ni calcular
+         * nada, y sin esta línea el cliente quedaría sin ninguna performance histórica.
+         *
+         * El `user_id` va explícito desde la misma misión: el comando lo declara como argumento
+         * con default 500 (`SetCompanyPerformances::$signature`), así que sin pasarlo una
+         * instancia cuyo `USER_ID` no sea 500 calculaba la performance de un usuario que no
+         * existe.
+         */
+        if (!$semilla_sembro) {
+            Artisan::call('set_company_performances', ['user_id' => $user->id, '--historico' => true]);
+        }
 
         // Tienda online por defecto para que la demo tenga URL pública
         self::tienda();
@@ -492,11 +561,45 @@ class DemoSetupHelper
             'ConceptoStockMovementSeeder',
             'UnidadMedidaSeeder',
             'PermissionSeeder',
+
+            /*
+                D3 (misión 63): los dos permisos de los chats de WhatsApp no están en
+                `PermissionSeeder` -- viven solo en este seeder suelto. Toda demo recibe de base
+                las extensiones 'whatsapp' y 'whatsapp_ia' (ver base_extencions()), así que sin
+                esta línea el módulo aparece en el menú y la pantalla de empleados no tiene con
+                qué darle permiso a nadie. Es `firstOrCreate`, no duplica.
+            */
+            'PermissionEmpresaWhatsappSeeder',
+
             'OrderStatusSeeder',
+
+            /* D3 (misión 63): estados de los pedidos que llegan desde Tienda Nube. */
+            'TiendaNubeOrderStatusSeeder',
+
             'ProviderOrderStatusSeeder',
             'OnlinePriceTypeSeeder',
             'DepositMovementStatusSeeder',
             'CAPaymentMethodTypeSeeder',
+
+            /*
+                D3 (misión 63): catálogos estructurales que `DatabaseSeeder::common_seeders()`
+                siembra para todos y que la lista de la demo nunca tuvo.
+
+                - `ProvinciaSeeder`: sin provincias, los selects de domicilio de clientes y
+                  sucursales quedan vacíos.
+                - `PaisExportacionSeeder`: los ~309 países con código AFIP que necesita cualquier
+                  comprobante de exportación.
+                - `PlatformSeeder`: las filas de Mercado Libre y Tienda Nube de `platforms`, que
+                  son la clave foránea de `platform_connectors`.
+                - Los tres catálogos de Mercado Libre (tipo de publicación, modo de compra,
+                  condición del ítem).
+            */
+            'ProvinciaSeeder',
+            'PaisExportacionSeeder',
+            'PlatformSeeder',
+            'MeliListingTypeSeeder',
+            'MeliBuyingModeSeeder',
+            'MeliItemConditionSeeder',
 
             'IvaSeeder',
 
@@ -512,9 +615,31 @@ class DemoSetupHelper
 
             'ConceptoMovimientoCajaSeeder',
 
+            /*
+                D3 (misión 63): conceptos 7 a 10 (`Eliminación de Venta`, `de Gasto`, `de Pago de
+                Cliente`, `de Pago a Proveedor`). Tiene que ir DESPUÉS de
+                `ConceptoMovimientoCajaSeeder`, que ocupa los ids 1 a 6. Sin estas cuatro filas,
+                un lead que borra una venta desde la demo deja la caja sin el movimiento de
+                compensación. Es `updateOrInsert` por id, no duplica.
+            */
+            'ConceptoMovimientoCajaCompensacionSeeder',
+
             'AfipTipoComprobanteSeeder',
 
+            /* D3 (misión 63): plantilla de PDF de ofertas de artículos ("Oferta"). */
+            'ArticlePdfSeeder',
+
+            /* D3 (misión 63): las cinco cuotas con recargo que se ofrecen al cobrar una venta. */
+            'CuotaSeeder',
+
             'ProviderSeeder',
+
+            /*
+                D3 (misión 63): DESPUÉS de `ProviderSeeder` -- hardcodea `provider_id => 1`, que
+                es el primer proveedor que crea aquél.
+            */
+            'ProviderDiscountSeeder',
+
             'ProviderPriceListSeeder',
             'ColorSeeder',
             'DepositSeeder',
@@ -551,6 +676,24 @@ class DemoSetupHelper
             'SellerSeeder',
             'ChequeSeeder',
 
+            /*
+                D3 (misión 63): turnos de caja (Mañana / Tarde) y días de entrega, que
+                `DatabaseSeeder` siembra siempre y la demo no tenía. Sin turnos, la pantalla de
+                cierre de caja no ofrece ninguno; sin días de entrega, la tienda no puede
+                proponer fecha.
+            */
+            'TurnoCajaSeeder',
+            'DeliveryDaySeeder',
+
+            /*
+                D3 (misión 63): conector de ejemplo de Mercado Libre. Va DESPUÉS de
+                `PlatformSeeder` (usa `platform_id => 1`). Queda inerte en la demo -- el
+                schedule de sincronización con Meli está gateado por la extensión
+                'usa_mercado_libre', que `base_extencions()` no otorga -- pero es una fila más
+                que local tenía y la demo no.
+            */
+            'MeliPlatformConnectorSeeder',
+
             'ProductionBatchStatusSeeder',
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
@@ -567,6 +710,31 @@ class DemoSetupHelper
                 dueño, y si corriera antes no agarraría a los que la demo acaba de crear.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                D3 (misión 63): las dos únicas extensiones del padrón que `ExtencionSeeder` NO
+                trae y que hasta ahora la demo tampoco sembraba por separado. Medido: local
+                termina con 97 filas en `extencion_empresas` y la demo con 95, y las dos que
+                faltaban eran justamente 'duplicar_presupuestos' y 'ai_excel_import'. Sin la
+                fila, la extensión ni siquiera aparece en /user/extencions/edit para poder
+                otorgarla a mano. Las dos son `firstOrCreate`.
+
+                Los otros seeders sueltos de extensión que corre `common_seeders()`
+                (EnviarMailClientes, CrearArticulosDesdeVender, PersonalizarNombreEnVender,
+                SugerenciasInteligentes, SugerenciasCompras, MotorDeOfertas, TrackingBuyers,
+                AsistenteIa) NO hacen falta acá: sus slugs ya están dentro de `ExtencionSeeder`,
+                que la demo corre antes del sync. Se comprobó slug por slug.
+            */
+            'ExtencionDuplicarPresupuestosSeeder',
+            'ExtencionEmpresaAiExcelImportSeeder',
+
+            /*
+                D3 (misión 63): ÚLTIMO de los seeders de extensión, por el mismo motivo por el
+                que va último en `common_seeders()`: no inserta filas, le escribe la descripción,
+                el módulo y el marcado de desuso a las que ya insertaron los otros. Sin esto, la
+                pantalla de extensiones de una demo muestra slugs pelados.
+            */
+            'ExtencionEmpresaDescriptionSeeder',
 
             /*
                 D1: al final, para que las 4 extensiones de IA (agregadas en base_extencions())
@@ -608,6 +776,21 @@ class DemoSetupHelper
         // Seeder transversal de presupuestos, se encadena al final del bloque de tipo
         $seeders[] = 'FerreteriaArticlesSeeder';
         $seeders[] = 'BudgetSeeder';
+
+        /*
+            D3 (misión 63, siembra-local-igual-a-demo): los pedidos de la tienda y los carritos.
+            Van ACÁ y no en `base_seeders()`, y no es una cuestión de prolijidad: los dos leen el
+            catálogo (`OrderSeeder` hace `Article::take(10)` y `CartSeeder` `Article::take(20)`)
+            y `FerreteriaArticlesSeeder` es la línea de arriba, o sea que desde base_seeders()
+            correrían sin un solo Article en la base y dejarían pedidos y carritos con cero
+            renglones. Es exactamente lo que venía pasando del lado de LOCAL, donde `OrderSeeder`
+            vivía en `DatabaseSeeder::local_y_demo()`, antes del catálogo: medido, 2 filas en
+            `orders` y 0 en `article_order`.
+
+            `BuyerSeeder`, que los dos necesitan, ya está en base_seeders() y corre antes.
+        */
+        $seeders[] = 'OrderSeeder';
+        $seeders[] = 'CartSeeder';
 
         if ($type === 'ferreteria') {
             $extencions[] = 'unidades_individuales_en_articulos';
