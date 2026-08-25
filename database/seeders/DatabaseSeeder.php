@@ -212,14 +212,39 @@ class DatabaseSeeder extends Seeder
                 ) {
 
                     $this->call(ArticleSeeder::class);
+
+                    /*
+                        Misión 63 (siembra-local-igual-a-demo): los cuatro catálogos del módulo
+                        de producción. `DemoSetupHelper::base_seeders()` los siembra en TODA
+                        demo, sin mirar la casilla `produccion` del formulario, así que una
+                        corrida local tiene que tenerlos para quedar igual.
+
+                        Van en ESTA rama y no en `local_y_demo()` a propósito: los cuatro usan
+                        `create()` pelado (no son idempotentes) y la rama `ht5` de más arriba ya
+                        los llama. Puestos en `local_y_demo()` -- que también corre para un ht5
+                        en local -- quedarían duplicados. Esta rama es la del FOR_USER genérico
+                        (o sea `demo`), que es la única que nunca los llamó.
+                    */
+                    $this->call(OrderProductionStatusSeeder::class);
+                    $this->call(ProductionBatchStatusSeeder::class);
+                    $this->call(ProductionBatchMovementTypeSeeder::class);
+                    $this->call(RecipeRouteTypeSeeder::class);
                 }
             }
-            
-            $this->call(BudgetSeeder::class);
+
             $this->call(ChequeSeeder::class);
             $this->call(CajaSeeder::class);
             $this->call(TurnoCajaSeeder::class);
             $this->call(FerreteriaArticlesSeeder::class);
+
+            /*
+                Misión 63: `BudgetSeeder` bajó a DESPUÉS de FerreteriaArticlesSeeder. Arriba
+                corría sin un solo Article en la base, así que sus presupuestos nacían sin
+                renglones: medido, local terminaba con 4 filas en `article_budget` (las cuatro
+                las ponía después `semilla:datos`) contra las 50 de una demo, donde
+                `apply_business_type_rules()` ya lo encadena detrás del catálogo.
+            */
+            $this->call(BudgetSeeder::class);
 
             if ($for_user == 'golo_norte') {
 
@@ -248,6 +273,14 @@ class DatabaseSeeder extends Seeder
                 $this->call(CommissionSeeder::class);
             }
             
+            /*
+                Misión 63: `OrderSeeder` bajó acá desde `local_y_demo()`, al lado de
+                `CartSeeder`, que es el otro seeder que necesita el catálogo ya cargado. Los dos
+                leen `Article::take(N)` y los dos tienen que quedar detrás de
+                `FerreteriaArticlesSeeder`. En la demo corren en este mismo orden relativo, al
+                final de la lista de `DemoSetupHelper::run()`.
+            */
+            $this->call(OrderSeeder::class);
             $this->call(CartSeeder::class);
 
             // $this->call(SaleDemoSeeder::class);
@@ -295,7 +328,12 @@ class DatabaseSeeder extends Seeder
             $this->call(TitleSeeder::class);
             $this->call(DeliveryZoneSeeder::class);
             $this->call(UpdateFeatureSeeder::class);
-            $this->call(OrderSeeder::class);
+            /*
+                `OrderSeeder` se mudó al final del run() (misión 63, siembra-local-igual-a-demo).
+                Acá corría ANTES de FerreteriaArticlesSeeder, así que su `Article::take(10)`
+                devolvía la colección vacía y los dos pedidos de demo quedaban con CERO renglones
+                -- medido: 2 filas en `orders` y 0 en `article_order`. Ver el bloque del final.
+            */
             $this->call(InventoryLinkageScopeSeeder::class);
             
             // $this->call(MessageSeeder::class);
@@ -374,7 +412,26 @@ class DatabaseSeeder extends Seeder
         $this->call(ConceptoStockMovementSeeder::class);
         $this->call(UnidadMedidaSeeder::class);
         $this->call(PermissionSeeder::class);
-        $this->call(NuevosPermisosListadoSeeder::class);
+        /*
+         * 🔴 `NuevosPermisosListadoSeeder` NO VA ACÁ, Y NO ES UN OLVIDO (misión 63,
+         * siembra-local-igual-a-demo). Es el mismo caso que
+         * `PermissionEmpresaRecordatorioCobroSeeder`, unas líneas más abajo: sus cuatro slugs
+         * (`article.percentage_gain`, `article.provider`, `article.stock_only_sucursal`,
+         * `article.stock_min_max`) ya los siembra `PermissionSeeder`, en el segundo array del
+         * archivo, el que crea una fila por entrada con `slug => $permission['en']`.
+         *
+         * Como `permission_empresas.slug` no tiene índice único y ningún seeder trunca la tabla,
+         * llamarlo también acá dejaba los cuatro permisos DUPLICADOS en la pantalla de empleados
+         * de toda base nueva. Medido el 25/8/2026 en `empresa_testing_s2`: una corrida local
+         * terminaba con 139 filas y el mismo sistema armado por `DemoSetupHelper` -- que nunca
+         * llamó a este seeder -- con 133. Las seis de diferencia son estas cuatro duplicadas más
+         * las dos de `PermissionEmpresaWhatsappSeeder`, que sí faltaban del lado de la demo.
+         *
+         * El seeder suelto sigue existiendo para las bases de producción viejas que se crearon
+         * antes de que `PermissionSeeder` incluyera los cuatro, y se lo pasó a `firstOrCreate`
+         * en la misma misión para que correrlo ahí tampoco duplique:
+         *   php artisan db:seed --class=NuevosPermisosListadoSeeder
+         */
         $this->call(OrderStatusSeeder::class);
         $this->call(TiendaNubeOrderStatusSeeder::class);
         $this->call(ProviderOrderStatusSeeder::class);
