@@ -477,7 +477,7 @@ class FerreteriaArticlesSeeder extends Seeder
      * - No por provider_code: hay un 'SIN-COD-PROV' en el catalogo, que es un valor de
      *   relleno y no un identificador.
      *
-     * El acoplamiento por nombre es el mismo que ya denuncia nombre_de_archivo_de_imagen():
+     * El acoplamiento por nombre es el mismo que ya denuncia archivo_de_imagen_de():
      * si alguien retoca un name en get_catalog() y no lo retoca aca, este metodo no
      * encuentra la entrada. Por eso avisa por log y sigue, en vez de reventar.
      *

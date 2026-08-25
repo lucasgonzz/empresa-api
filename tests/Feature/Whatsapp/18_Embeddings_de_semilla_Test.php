@@ -342,7 +342,7 @@ class Embeddings_de_semilla_Test extends TestCase
 
         /*
          * El archivo se indexa por el `name` EXACTO de get_catalog(). Es un acoplamiento por
-         * texto —el mismo que el repo ya denuncia en nombre_de_archivo_de_imagen()— y este test
+         * texto —el mismo que el repo ya denuncia en archivo_de_imagen_de()— y este test
          * es lo que lo hace visible: si alguien retoca un nombre en el catálogo y no allá, el
          * artículo se crearía sin descripciones y sin vector, en silencio.
          */
