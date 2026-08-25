@@ -290,4 +290,138 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
             );
         }
     }
+
+    /**
+     * Test 6 -- `semilla:datos` se dispara en los DOS caminos, y en la corrida local queda
+     * DESPUES del catalogo.
+     *
+     * Por que este test lee codigo fuente en vez de correr algo: `semilla:datos` NO es un seeder
+     * de `db:seed`, es un comando Artisan aparte, asi que no entra en `SEEDERS_COMPARTIDOS` ni en
+     * la comparacion por reflexion de los tests 1 y 2 -- el mecanismo que cuida el resto de este
+     * archivo lo deja afuera por construccion. Y ejecutarlo de verdad no entra en esta suite: la
+     * corrida completa siembra un ano de operaciones (ver el docblock de la clase).
+     *
+     * Lo que si se puede fijar, y es lo que se rompe en silencio, son dos invariantes
+     * estructurales: que la llamada exista en los dos lados, y que del lado local este DESPUES del
+     * catalogo. Si alguien la sube arriba de `FerreteriaArticlesSeeder`, `cargar_catalogo()` no
+     * encuentra articulos y tira una excepcion que se lleva puesto el `migrate:fresh --seed`
+     * entero; si alguien la borra, local vuelve a mostrar el modulo de ofertas vacio y la suite
+     * sigue en verde.
+     *
+     * Lo que este test NO cubre, a proposito: que el gate de entorno sea el correcto en tiempo de
+     * ejecucion. Eso lo sostienen la guarda del propio comando (en el entorno equivocado devuelve
+     * 1 sin sembrar) y el hecho de que el gate sea la MISMA expresion que la de `local_y_demo()`.
+     *
+     * Se escanea con `token_get_all()` y no con `strpos()`: `DatabaseSeeder.php` tiene llamadas
+     * COMENTADAS (`// $this->call(CartSeeder::class);`) y `DemoSetupHelper.php` nombra
+     * `semilla:datos` trece veces en comentarios. Un match de texto no distingue codigo vivo de
+     * codigo muerto, que es justo lo que hay que distinguir. Mismo criterio y mismo precedente que
+     * `tests/Feature/Costeo/GuardiaCaminosDeIvaTest.php`.
+     *
+     * @return void
+     */
+    public function test_semilla_datos_se_dispara_en_la_corrida_local_y_en_la_demo()
+    {
+        $seeder = base_path('database/seeders/DatabaseSeeder.php');
+        $helper = base_path('app/Http/Controllers/Helpers/DemoSetupHelper.php');
+
+        $en_local = $this->apariciones_vivas($seeder, 'semilla:datos');
+        $en_demo  = $this->apariciones_vivas($helper, 'semilla:datos');
+
+        $this->assertCount(
+            1,
+            $en_local,
+            'DatabaseSeeder tiene que llamar a `semilla:datos` exactamente una vez: sin esa llamada '
+                .'un `migrate:fresh --seed` en local deja el modulo de ofertas (y todo el historial '
+                .'de ventas) vacio, y con dos se siembra el ano de operaciones duplicado.'
+        );
+
+        $this->assertCount(
+            1,
+            $en_demo,
+            'DemoSetupHelper::run() tiene que seguir llamando a `semilla:datos`: es lo que hace que '
+                .'lo que ve un lead en la demo sea lo mismo que Lucas verifica en local.'
+        );
+
+        $linea = $en_local[0]['linea'];
+
+        foreach (['FerreteriaArticlesSeeder', 'CartSeeder'] as $anterior) {
+
+            $anclaje = $this->apariciones_vivas($seeder, $anterior);
+
+            $this->assertNotEmpty($anclaje, 'Desaparecio la llamada a '.$anterior.' de DatabaseSeeder.');
+
+            $this->assertGreaterThan(
+                max(array_column($anclaje, 'linea')),
+                $linea,
+                '`semilla:datos` tiene que correr DESPUES de '.$anterior.'. El comando no siembra '
+                    .'catalogo, lo consume: `cargar_catalogo()` tira una excepcion si no encuentra '
+                    .'articulos/clientes del usuario, y esa excepcion se lleva puesto el '
+                    .'`migrate:fresh --seed` completo.'
+            );
+        }
+
+        $cola = $this->apariciones_vivas($seeder, 'GlobalSearchDefaultsSeeder');
+
+        $this->assertCount(1, $cola, 'Cambio la cola compartida de run(); revisar este test.');
+
+        $this->assertLessThan(
+            $cola[0]['linea'],
+            $linea,
+            '`semilla:datos` tiene que quedar antes de la cola comun de run().'
+        );
+
+        $this->assertGreaterThan(
+            $cola[0]['profundidad'],
+            $en_local[0]['profundidad'],
+            '`semilla:datos` quedo en la cola que comparten las DOS ramas de run(). Tiene que estar '
+                .'adentro del `else`: la rama `la_barraca` no pasa por `local_y_demo()`, o sea que '
+                .'ahi no hay ni un Client ni un Article y el comando revienta en `cargar_catalogo()`.'
+        );
+    }
+
+    /**
+     * Ubica un simbolo VIVO (no comentado) en un archivo del repo y devuelve, por cada aparicion,
+     * la linea y la profundidad de llaves en la que esta.
+     *
+     * @param  string $archivo Ruta absoluta.
+     * @param  string $simbolo Nombre de clase o metodo (T_STRING), o contenido de un string literal.
+     * @return array<int,array<string,int>> Cada item: ['linea' => int, 'profundidad' => int].
+     */
+    protected function apariciones_vivas($archivo, $simbolo)
+    {
+        $apariciones = [];
+        $profundidad = 0;
+
+        foreach (token_get_all(file_get_contents($archivo)) as $token) {
+
+            if (!is_array($token)) {
+
+                if ($token === '{') {
+                    $profundidad++;
+                } elseif ($token === '}') {
+                    $profundidad--;
+                }
+
+                continue;
+            }
+
+            /* `{$var}` y `${var}` tambien abren bloque para el tokenizador y cierran con un '}' pelado. */
+            if ($token[0] === T_CURLY_OPEN || $token[0] === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $profundidad++;
+                continue;
+            }
+
+            $es_simbolo = $token[0] === T_STRING && $token[1] === $simbolo;
+
+            $es_literal = $token[0] === T_CONSTANT_ENCAPSED_STRING
+                && trim($token[1], "'\"") === $simbolo;
+
+            if ($es_simbolo || $es_literal) {
+                $apariciones[] = ['linea' => $token[2], 'profundidad' => $profundidad];
+            }
+        }
+
+        return $apariciones;
+    }
 }
