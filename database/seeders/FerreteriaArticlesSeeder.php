@@ -24,11 +24,12 @@ class FerreteriaArticlesSeeder extends Seeder
     /**
      * Carpeta dentro del disco 'public' donde viven las fotos del catalogo.
      * Queda afuera del repo sola, porque storage/app/public/.gitignore ignora todo
-     * salvo a si mismo. Se llena en local con `php artisan semilla:imagenes`.
+     * salvo a si mismo. Se llena copiando a mano los archivos que Lucas elige y sube
+     * contra su base local (ver database/seeders/data/ferreteria_imagenes.php).
      *
      * @var string
      */
-    const CARPETA_IMAGENES = 'articles-seeder';
+    const CARPETA_IMAGENES = 'article-images-2';
 
     /**
      * Stock inicial, minimo y maximo por sucursal, en orden de posicion
@@ -137,7 +138,7 @@ class FerreteriaArticlesSeeder extends Seeder
         /** Indice circular para repartir items entre todos los proveedores existentes. */
         $provider_index = 0;
 
-        foreach ($catalog as $indice => $item) {
+        foreach ($catalog as $item) {
             /** Proveedor asignado en forma rotativa para balancear el catalogo. */
             $provider = $providers[$provider_index % count($providers)];
 
@@ -166,7 +167,7 @@ class FerreteriaArticlesSeeder extends Seeder
             ];
 
             /** Foto local del articulo; null cuando el articulo va sin foto o cuando falta el archivo. */
-            $url_de_imagen = $this->url_de_imagen($indice, $item);
+            $url_de_imagen = $this->url_de_imagen($item);
 
             if (!is_null($url_de_imagen)) {
                 $article_payload['images'] = [['url' => $url_de_imagen]];
@@ -686,48 +687,60 @@ class FerreteriaArticlesSeeder extends Seeder
     }
 
     /**
-     * Nombre del archivo .jpg que le corresponde a un articulo del catalogo.
+     * Ruta del archivo con el mapa nombre de articulo -> archivo de imagen.
      *
-     * Es public static porque el comando `semilla:imagenes` tiene que ESCRIBIR
-     * exactamente el mismo nombre que este seeder despues BUSCA. Con la convencion
-     * duplicada en los dos archivos, un retoque de un lado deja al otro sin encontrar
-     * nada, sin ningun error a la vista: los articulos simplemente quedarian sin foto.
-     *
-     * El prefijo numerico es el indice + 1, y sirve para dos cosas: los archivos se
-     * ordenan en el explorador igual que el catalogo, y los nombres repetidos no se
-     * pisan (hay dos cestos de basura, dos azadas y dos filtros de aire).
-     *
-     * @param int $indice Posicion del articulo en get_catalog().
-     * @param array<string,mixed> $item Fila del catalogo.
-     * @return string|null Null si el articulo va sin foto a proposito.
+     * @var string
      */
-    public static function nombre_de_archivo_de_imagen($indice, $item)
+    const ARCHIVO_IMAGENES = __DIR__ . '/data/ferreteria_imagenes.php';
+
+    /**
+     * Mapa nombre de articulo -> archivo de imagen, leido una sola vez por corrida.
+     *
+     * @var array<string,string>|null
+     */
+    protected $imagenes_del_catalogo = null;
+
+    /**
+     * Nombre del archivo de imagen asignado a mano para este articulo, o null si el
+     * articulo no tiene foto nueva asignada.
+     *
+     * El archivo se lee UNA sola vez por corrida, mismo criterio que descripciones_de()
+     * y embedding_horneado_de(): son 34 entradas y hacer un require por articulo seria
+     * leer el mismo archivo 46 veces.
+     *
+     * @param string $nombre Valor exacto de $item['name'].
+     * @return string|null
+     */
+    protected function archivo_de_imagen_de($nombre)
     {
-        if (!isset($item['imagen_nombre'])) {
+        if (is_null($this->imagenes_del_catalogo)) {
+            $this->imagenes_del_catalogo = require self::ARCHIVO_IMAGENES;
+        }
+
+        if (!isset($this->imagenes_del_catalogo[$nombre])) {
             return null;
         }
 
-        return sprintf('%02d', $indice + 1) . '-' . $item['imagen_nombre'] . '.jpg';
+        return $this->imagenes_del_catalogo[$nombre];
     }
 
     /**
      * URL absoluta de la foto local del articulo, o null si no hay foto que mostrar.
      *
      * 🔴 Este metodo NUNCA puede lanzar una excepcion, y ese es todo su motivo de existir.
-     * La carpeta storage/app/public/articles-seeder no se commitea, asi que en un servidor
+     * La carpeta storage/app/public/article-images-2 no se commitea, asi que en un servidor
      * recien instalado no existe. Este seeder corre adentro de DemoSetupHelper::run(), que
      * arranca con migrate:fresh: una excepcion aca por un archivo faltante voltearia el alta
      * de demos Y la instalacion de un cliente real, dejando la base a medio sembrar. Una foto
      * que falta es un detalle cosmetico; que no se pueda instalar el sistema no lo es.
      *
-     * @param int $indice
      * @param array<string,mixed> $item
      * @return string|null
      */
-    protected function url_de_imagen($indice, $item)
+    protected function url_de_imagen($item)
     {
-        /** Archivo esperado; null en los articulos que van sin foto por decision de catalogo. */
-        $archivo = self::nombre_de_archivo_de_imagen($indice, $item);
+        /** Archivo asignado a mano; null en los articulos que no tienen foto nueva. */
+        $archivo = $this->archivo_de_imagen_de($item['name']);
 
         if (is_null($archivo)) {
             return null;
@@ -779,8 +792,8 @@ class FerreteriaArticlesSeeder extends Seeder
         Log::warning(
             'FerreteriaArticlesSeeder: no se encontraron las fotos en storage/app/public/'
             . self::CARPETA_IMAGENES . ', los articulos se crean SIN imagen. La carpeta no se '
-            . 'commitea: en local se genera con "php artisan semilla:imagenes" y a los servidores '
-            . 'se sube a mano.',
+            . 'commitea: copiala a mano desde donde Lucas subio las fotos elegidas (ver '
+            . 'database/seeders/data/ferreteria_imagenes.php) y a los servidores se sube igual.',
             ['primer_faltante' => $detalle]
         );
     }
@@ -805,28 +818,15 @@ class FerreteriaArticlesSeeder extends Seeder
      * Cada entrada incluye nombre, bar_code valido, codigo proveedor y costo redondeado.
      *
      * Tres claves agregadas para la semilla de demo:
-     *  - imagen_nombre: slug en castellano del sustantivo generico, es el nombre del archivo.
-     *  - imagen_busqueda: el mismo sustantivo en INGLES, que es con lo que semilla:imagenes
-     *    busca en Wikimedia Commons. Va en ingles porque Commons indexa en ingles; buscar
-     *    "azada" no devuelve nada. Los terminos NO son la traduccion literal del SKU sino el
-     *    generico que Commons indexa mejor: "air filter" trae un filtro de gabinete de PC y hay
-     *    que pedir "engine air filter"; "rust" trae una textura oxidada y hay que pedir
-     *    "rust remover bottle" para que aparezca el envase.
-     *    El criterio de Lucas (17/8/2026) es que la foto "coincida un poco" con el articulo y
-     *    que sea de catalogo: fondo blanco y cuadrada. O sea que el termino tiene que acertarle
-     *    al RUBRO, no al SKU exacto, y de elegir la mejor foto entre las que devuelve Commons se
-     *    encarga semilla:imagenes puntuando el fondo. Si agregas un articulo, corré el comando y
-     *    mira el titulo y el puntaje que imprime.
+     *  - imagen_nombre / imagen_busqueda: 🔴 HISTORICAS, YA NO SE USAN (desde el 25/8/2026).
+     *    Eran el slug en castellano y el termino en ingles con los que el comando
+     *    `semilla:imagenes` (borrado) bajaba fotos de Wikimedia Commons a
+     *    storage/app/public/articles-seeder. Ese flujo se reemplazo por fotos elegidas a mano
+     *    por Lucas (ver database/seeders/data/ferreteria_imagenes.php, indexado por `name`).
+     *    Quedan en el catalogo sin limpiar porque sacarlas es un diff de 40+ filas sin ningun
+     *    beneficio: no las lee nada.
      *  - perfil_stock: A / B / C, ver PLANES_DE_STOCK. Vive al lado del articulo en vez de
      *    derivarse del indice en run() porque asi se lee de un vistazo cual es cual.
-     *
-     * Las ultimas 10 filas llevan las dos claves de imagen en null a pedido de Lucas: son los
-     * articulos que quedan sin foto para que la demo muestre tambien como se ve la ficha de un
-     * producto sin imagen cargada, que es el estado real de la mayoria de los catalogos nuevos.
-     *
-     * Es public (y no protected) porque el comando semilla:imagenes lee el catalogo de aca:
-     * si la lista de terminos de busqueda viviera copiada en el comando, agregar un articulo
-     * al catalogo dejaria de bajarle la foto y nadie se enteraria.
      *
      * @return array<int,array<string,mixed>>
      */
