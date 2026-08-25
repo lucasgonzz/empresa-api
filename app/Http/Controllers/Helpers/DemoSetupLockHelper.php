@@ -2,10 +2,33 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use Illuminate\Support\Facades\Log;
+
 /**
- * Candado de exclusión mutua para el setup de demo.
+ * Candado de exclusión mutua para todo lo que corra `migrate:fresh` en esta instancia.
  *
- * Existe porque DemoSetupHelper::run() arranca con `migrate:fresh`: dos corridas
+ * 🔴 LAS TRES PUERTAS AL MISMO `migrate:fresh` — SI AGREGÁS UNA CUARTA, PONELE ESTE CANDADO
+ * ---------------------------------------------------------------------------------------
+ * El candado es UNO SOLO (un único archivo) a propósito: lo que hay que serializar no es
+ * "un demo setup contra otro demo setup", es cualquier cosa que vacíe la base contra
+ * cualquier otra. Hoy las puertas son tres, y las tres toman este mismo candado:
+ *
+ * 1. `App\Http\Controllers\AdminSync\DemoSetupController::store()`
+ *    — POST /api/admin-sync/demo-setup, lo dispara admin-api al dar de alta un Lead.
+ * 2. `App\Http\Controllers\DemoSetupController::setup()`
+ *    — POST /demo-setup, el form web legacy que manda el técnico a mano.
+ * 3. `App\Http\Controllers\AdminSync\UserSetupController::store()`
+ *    — POST /api/admin-sync/user-setup, el setup del sistema real cuando el Lead se
+ *      convierte en Cliente. Corre `UserSetupHelper::run()`, que arranca con el MISMO
+ *      `migrate:fresh` que el de demo. El momento realista en que se pisa con la puerta 1
+ *      es justamente la conversión: la demo todavía está viva y sembrando.
+ *
+ * Un candado que cierra dos de tres puertas no cierra nada. Si mañana aparece una cuarta
+ * (un comando de consola, un job, otro endpoint), va acá también y se anota en esta lista.
+ *
+ * POR QUÉ EXISTE
+ * --------------
+ * `DemoSetupHelper::run()` y `UserSetupHelper::run()` arrancan con `migrate:fresh`: dos corridas
  * solapadas sobre la misma instancia no se molestan un poco, se destruyen. Medido el
  * 25/8/2026 en empresa_testing_s1: la corrida A murió con
  * `SQLSTATE[42S02] Base table or view not found` adentro de `semilla:datos`, justo
@@ -83,6 +106,21 @@ class DemoSetupLockHelper
         $handle = @fopen($ruta, 'c');
 
         if ($handle === false) {
+            /**
+             * Fallar cerrado está bien; fallar ciego no.
+             *
+             * Si el fopen se cae por permisos o disco lleno devolvemos false igual que si el
+             * candado estuviera tomado —no vamos a dejar pasar un `migrate:fresh` sin
+             * proteger—, pero entonces el endpoint contesta "ya hay un setup corriendo" PARA
+             * SIEMPRE, que es mentira. Sin este log, el que investigue ve un 409 eterno sin
+             * ninguna corrida viva y no tiene por dónde agarrarlo.
+             */
+            Log::warning('DemoSetupLockHelper: no se pudo abrir el archivo de candado, se rebota el setup por las dudas.', [
+                'ruta' => $ruta,
+                'directorio_existe' => is_dir($directorio),
+                'directorio_escribible' => is_writable($directorio),
+            ]);
+
             return false;
         }
 
