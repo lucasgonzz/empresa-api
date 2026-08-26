@@ -93,6 +93,9 @@ class PotencialDeArmadoHelper
             'sin_insumos'           => false,
             'renglones_ignorados'   => 0,
             'insumo_limitante'      => null,
+            // TODOS los insumos empatados en el mínimo, no solo el que gana el desempate. Es
+            // aditivo: `insumo_limitante` sigue viajando igual para no romper a nadie.
+            'limitantes'            => [],
             'insumos'               => [],
         ];
 
@@ -194,9 +197,43 @@ class PotencialDeArmadoHelper
 
         $fila['potencial'] = $potencial;
         $fila['insumo_limitante'] = $limitante;
+        $fila['limitantes'] = self::todos_los_limitantes($filas_insumos, $potencial);
         $fila['vendibles'] = $stock_actual + $potencial;
 
         return $fila;
+    }
+
+    /**
+     * Todos los insumos empatados en el mínimo, no solo el que gana el desempate.
+     *
+     * 🔴 CON LOS NÚMEROS REALES DEL CLIENTE EL EMPATE ES LO NORMAL, NO EL BORDE. Estructura da
+     * 10 y regatones da 10 (van 4 por silla y tiene 40): mostrar solo "Estructura silla 1" hace
+     * que el operario fabrique estructuras, el número no se mueva, y no entienda por qué. Los
+     * dos limitan por igual y hay que comprar los dos.
+     *
+     * El orden es alfabético, el mismo criterio de desempate que usa `insumo_limitante`, así que
+     * el primero de esta lista es siempre el que viaja ahí. Dos corridas seguidas sobre los
+     * mismos datos dan la misma lista en el mismo orden.
+     *
+     * @param  array  $filas_insumos
+     * @param  int    $potencial
+     * @return array
+     */
+    private static function todos_los_limitantes($filas_insumos, $potencial)
+    {
+        $limitantes = [];
+
+        foreach ($filas_insumos as $fila_insumo) {
+            if ((int) $fila_insumo['posible'] === (int) $potencial) {
+                $limitantes[] = $fila_insumo;
+            }
+        }
+
+        usort($limitantes, function ($a, $b) {
+            return strcmp($a['article_name'], $b['article_name']);
+        });
+
+        return $limitantes;
     }
 
     /**

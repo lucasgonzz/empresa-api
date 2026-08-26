@@ -323,6 +323,97 @@ class Potencial_de_armado_Test extends ProduccionV2TestCase
     }
 
     /**
+     * 🔴 CUANDO EMPATAN, VIAJAN TODOS. Con los numeros reales del cliente el empate es lo normal.
+     *
+     * Estructura da 10 y regatones da 10 (van 4 por silla y tiene 40). Nombrar uno solo hace que
+     * el operario fabrique estructuras, el numero no se mueva, y no entienda por que.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function cuando_varios_insumos_empatan_en_el_minimo_viajan_todos()
+    {
+        $corte = $this->crear_estado('Corte empate', 1);
+
+        $silla = $this->crear_articulo('Silla empate test', 0);
+
+        /* 10 estructuras -> 10 sillas. 40 regatones a 4 por silla -> 10 sillas tambien. */
+        $estructura = $this->crear_articulo('Estructura empate test', 10);
+        $regaton    = $this->crear_articulo('Regaton empate test', 40);
+        $tornillo   = $this->crear_articulo('Tornillo empate test', 500);
+
+        $receta = $this->crear_receta($silla);
+
+        $this->crear_ruta($receta, [
+            ['article' => $estructura, 'amount' => 1, 'order_production_status_id' => $corte->id],
+            ['article' => $regaton,    'amount' => 4, 'order_production_status_id' => $corte->id],
+            ['article' => $tornillo,   'amount' => 8, 'order_production_status_id' => $corte->id],
+        ]);
+
+        $respuesta = $this->get('api/potencial-de-armado');
+
+        $respuesta->assertStatus(200);
+
+        $fila = $this->fila_de($respuesta->json('models'), 'Silla empate test');
+
+        $this->assertNotNull($fila);
+
+        $this->assertEquals(10, $fila['potencial']);
+
+        /* Los dos que empatan, y NO el tornillo, que da floor(500/8) = 62. */
+        $this->assertCount(2, $fila['limitantes']);
+
+        $nombres = [];
+
+        foreach ($fila['limitantes'] as $limitante) {
+            $nombres[] = $limitante['article_name'];
+        }
+
+        /* Orden alfabetico: el mismo desempate que usa insumo_limitante. */
+        $this->assertEquals(['Estructura empate test', 'Regaton empate test'], $nombres);
+
+        /* Y el primero de la lista es el que sigue viajando en insumo_limitante. */
+        $this->assertEquals('Estructura empate test', $fila['insumo_limitante']['article_name']);
+    }
+
+    /**
+     * Con un solo limitante, `limitantes` trae ese solo: la pantalla tiene que verse igual que
+     * antes de que existiera el array.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function con_un_solo_limitante_el_array_trae_uno_solo()
+    {
+        $corte = $this->crear_estado('Corte sin empate', 1);
+
+        $silla = $this->crear_articulo('Silla sin empate test', 0);
+
+        $estructura = $this->crear_articulo('Estructura sin empate test', 5);
+        $tornillo   = $this->crear_articulo('Tornillo sin empate test', 500);
+
+        $receta = $this->crear_receta($silla);
+
+        $this->crear_ruta($receta, [
+            ['article' => $estructura, 'amount' => 1, 'order_production_status_id' => $corte->id],
+            ['article' => $tornillo,   'amount' => 8, 'order_production_status_id' => $corte->id],
+        ]);
+
+        $respuesta = $this->get('api/potencial-de-armado');
+
+        $respuesta->assertStatus(200);
+
+        $fila = $this->fila_de($respuesta->json('models'), 'Silla sin empate test');
+
+        $this->assertNotNull($fila);
+
+        $this->assertEquals(5, $fila['potencial']);
+        $this->assertCount(1, $fila['limitantes']);
+        $this->assertEquals('Estructura sin empate test', $fila['limitantes'][0]['article_name']);
+        $this->assertEquals('Estructura sin empate test', $fila['insumo_limitante']['article_name']);
+    }
+
+    /**
      * Una receta sin ruta cargada no rompe el listado: viaja con potencial 0 y la marca
      * `sin_ruta`, para que la pantalla pueda decir que falta configurarla.
      *
