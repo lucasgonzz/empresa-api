@@ -57,8 +57,22 @@ class BuyerSeeder extends Seeder
             Perfiles de tienda 4 a 18, agregados para la semilla de datos de prueba completa
             (unidad U2). comercio_city_client_id apunta a los clientes 3 a 17 (ClientSeeder):
             sin ese vinculo un Buyer no genera ninguna sugerencia del motor de ofertas, porque
-            los criterios carrito_abandonado e interes_ecommerce (CriteriosDeOfertaService)
-            joinean clients con buyers justamente por esa columna.
+            LOS CUATRO CRITERIOS (CriteriosDeOfertaService: afinidad, carrito_abandonado,
+            reactivacion e interes_ecommerce) exigen buyer vinculado -- no solo los dos que lo
+            necesitaban para el join con buyer_tracking_events. afinidad() lo agregó por su cuenta
+            (whereIn contra buyers.comercio_city_client_id) y reactivacion() lo hereda de ahí sin
+            duplicarlo, porque arma sus candidatos a partir de lo que devuelve afinidad(). El motivo
+            de fondo es el mismo para los cuatro: la query que corre la tienda (textual en
+            database/migrations/2026_08_17_100200_create_client_offers_table.php:16-26) filtra por
+            `co.client_id = buyers.comercio_city_client_id del buyer logueado`, así que una oferta
+            de un cliente sin buyer no la ve nadie, nunca.
+
+            Medido sobre esta misma semilla (25 clientes, 17 con buyer): con los 25 la corrida local
+            daba 69 líneas activables, pero 18 de esas 69 eran de clientes sin buyer -- invisibles
+            para la tienda. Con los 17 que sí tienen buyer, la corrida da 51 líneas y el 100% son
+            visibles. El número que hay que mover si algún día hacen falta más compradores sigue
+            siendo el de abajo (17); ver CriteriosDeOfertaService::afinidad() para el detalle del
+            filtro.
 
             🔴 POR QUE 17 CLIENTES CON PERFIL DE TIENDA Y NO LOS 25 QUE SIEMBRA ClientSeeder.
 
