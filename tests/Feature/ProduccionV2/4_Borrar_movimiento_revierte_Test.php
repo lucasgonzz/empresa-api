@@ -3,6 +3,7 @@
 namespace Tests\Feature\ProduccionV2;
 
 use App\Models\RecipeRoute;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Borrar un movimiento revierte EXACTAMENTE lo que ese movimiento sumo.
@@ -129,5 +130,120 @@ class Borrar_movimiento_revierte_Test extends ProduccionV2TestCase
         $this->assertEquals(0, $this->stock_de($silla));
 
         $this->assertDatabaseHas('stock_movements', ['article_id' => $silla->id, 'amount' => -10]);
+    }
+
+    /**
+     * 🔴 EL MOVIMIENTO VIEJO (output_stock_applied EN NULL) SE RESUELVE CON EL CRITERIO VIEJO.
+     *
+     * La columna en null significa una cosa sola: ese movimiento se creo ANTES de la migracion,
+     * cuando el estado final era siempre el de mayor position de toda la cuenta y no existian ni
+     * el estado final por ruta ni los grupos. Si el fallback resolviera la cascada ENTERA, un
+     * end_order_production_status_id puesto despues del deploy le cambiaria el criterio a un
+     * hecho que ya paso: el borrado no matchearia y quedaria stock fantasma, sin error y sin log.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function borrar_un_movimiento_viejo_revierte_con_el_criterio_global_y_no_con_la_ruta()
+    {
+        $this->crear_estado('Corte legacy', 1);
+        $armado    = $this->crear_estado('Armado legacy', 2);
+        $terminado = $this->crear_estado('Terminado legacy', 3);
+
+        $silla = $this->crear_articulo('Silla legacy test', 0);
+
+        $receta = $this->crear_receta($silla);
+
+        /* La ruta NO declara estado final: es una ruta como las de antes de la migracion. */
+        $ruta = $this->crear_ruta($receta, []);
+
+        $lote = $this->crear_lote($silla, $receta, $ruta, 10);
+
+        $tipo = $this->crear_tipo_de_movimiento('Avance legacy', 'advance_legacy');
+
+        /* El movimiento llega a Terminado, que es el de mayor position de toda la cuenta. */
+        $respuesta = $this->post('api/production-batch-movement', [
+            'production_batch_id'               => $lote->id,
+            'production_batch_movement_type_id' => $tipo->id,
+            'to_order_production_status_id'     => $terminado->id,
+            'amount'                            => 10,
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $this->assertEquals(10, $this->stock_de($silla));
+
+        $movimiento_id = $respuesta->json('model.id');
+
+        /* Lo envejecemos: asi quedan las filas que ya existian cuando corrio la migracion. */
+        DB::table('production_batch_movements')
+            ->where('id', $movimiento_id)
+            ->update(['output_stock_applied' => null]);
+
+        /* Y recien despues el usuario configura el estado final de la ruta. */
+        $ruta_recargada = RecipeRoute::find($ruta->id);
+        $ruta_recargada->end_order_production_status_id = $armado->id;
+        $ruta_recargada->save();
+
+        $this->delete('api/production-batch-movement/'.$movimiento_id)->assertStatus(204);
+
+        /* Tiene que revertir las 10 que sumo. Con la cascada entera quedarian +10 fantasma. */
+        $this->assertEquals(0, $this->stock_de($silla));
+        $this->assertDatabaseHas('stock_movements', ['article_id' => $silla->id, 'amount' => -10]);
+    }
+
+    /**
+     * El espejo del anterior: un movimiento viejo que NO sumo nada no puede restar al borrarse.
+     *
+     * Llego a Armado cuando el estado final era Terminado, asi que no dio de alta el producto. Si
+     * el fallback resolviera la cascada entera, el end_order_production_status_id = Armado puesto
+     * despues lo haria matchear y el borrado restaria 10 unidades que nunca entraron.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function borrar_un_movimiento_viejo_que_no_sumo_no_resta_nada()
+    {
+        $this->crear_estado('Corte espejo', 1);
+        $armado = $this->crear_estado('Armado espejo', 2);
+        $this->crear_estado('Terminado espejo', 3);
+
+        $silla = $this->crear_articulo('Silla espejo test', 0);
+
+        $receta = $this->crear_receta($silla);
+
+        $ruta = $this->crear_ruta($receta, []);
+
+        $lote = $this->crear_lote($silla, $receta, $ruta, 10);
+
+        $tipo = $this->crear_tipo_de_movimiento('Avance espejo', 'advance_espejo');
+
+        /* Llega a Armado, que NO es el de mayor position: no da de alta el producto. */
+        $respuesta = $this->post('api/production-batch-movement', [
+            'production_batch_id'               => $lote->id,
+            'production_batch_movement_type_id' => $tipo->id,
+            'to_order_production_status_id'     => $armado->id,
+            'amount'                            => 10,
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $this->assertEquals(0, $this->stock_de($silla));
+
+        $movimiento_id = $respuesta->json('model.id');
+
+        DB::table('production_batch_movements')
+            ->where('id', $movimiento_id)
+            ->update(['output_stock_applied' => null]);
+
+        $ruta_recargada = RecipeRoute::find($ruta->id);
+        $ruta_recargada->end_order_production_status_id = $armado->id;
+        $ruta_recargada->save();
+
+        $this->delete('api/production-batch-movement/'.$movimiento_id)->assertStatus(204);
+
+        /* Sigue en 0: no habia nada que revertir. */
+        $this->assertEquals(0, $this->stock_de($silla));
+        $this->assertDatabaseMissing('stock_movements', ['article_id' => $silla->id, 'amount' => -10]);
     }
 }

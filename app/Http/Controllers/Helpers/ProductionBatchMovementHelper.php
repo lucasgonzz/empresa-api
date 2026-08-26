@@ -350,9 +350,26 @@ class ProductionBatchMovementHelper
             }
         }
 
-        // (c) El comportamiento de siempre. El user_id sale del LOTE y no de la sesión: el lote
-        // ya sabe de quién es, y este método corre también desde el borrado, donde el usuario
-        // logueado puede no ser el dueño del lote.
+        // (c) El comportamiento de siempre.
+        return self::end_status_global($batch);
+    }
+
+    /**
+     * La rama (c) sola: el estado de mayor position de toda la cuenta del lote.
+     *
+     * Está separada de resolve_end_status() porque es EL COMPORTAMIENTO VIEJO, y hay un lugar
+     * —el fallback de output_stock_applied null— donde hay que resolver el estado final como se
+     * resolvía ANTES de que existieran el estado final por ruta y los grupos. Ahí llamar a la
+     * cascada entera daría otro estado y revertiría mal (ver apply_output_stock_if_end_status).
+     *
+     * El user_id sale del LOTE y no de la sesión: el lote ya sabe de quién es, y este método
+     * corre también desde el borrado, donde el usuario logueado puede no ser el dueño del lote.
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @return \App\Models\OrderProductionStatus|null
+     */
+    private static function end_status_global(ProductionBatch $batch)
+    {
         $user_id = !is_null($batch->user_id) ? $batch->user_id : UserHelper::userId();
 
         return OrderProductionStatus::where('user_id', $user_id)
@@ -379,9 +396,22 @@ class ProductionBatchMovementHelper
          * que el movimiento se hizo, y esa configuración es mutable. Es la misma razón por la
          * que un stock_movement guarda su stock_resultante.
          *
-         * Si la columna es null (movimiento anterior a la migración), se cae a la resolución por
-         * cascada, que es exactamente el comportamiento de antes. Compatibilidad hacia atrás sin
-         * backfill.
+         * 🔴 SI LA COLUMNA ES NULL, SE RESUELVE POR LA RAMA GLOBAL SOLA, NO POR LA CASCADA.
+         *
+         * La columna en null significa una cosa sola: el movimiento se creó ANTES de esta
+         * migración, o sea cuando el estado final era siempre el de mayor position de toda la
+         * cuenta y no existían ni el estado final por ruta ni los grupos. Entonces lo que hay que
+         * reconstruir al borrarlo es ESE criterio y ninguno otro: end_status_global().
+         *
+         * Pasar por la cascada entera acá sería resolver un movimiento viejo con reglas que no
+         * existían cuando se creó, y rompe en los dos sentidos. Con Corte(1)/Armado(2)/
+         * Terminado(3): un movimiento viejo hacia Terminado sumó 10 y quedó con la columna en
+         * null; después del deploy el usuario le pone end_order_production_status_id = Armado a
+         * la ruta. Al borrarlo, la cascada devolvería Armado ≠ Terminado, no revertiría, y
+         * quedarían +10 fantasma. El espejo también: un movimiento viejo hacia Armado, que no
+         * sumó nada, restaría 10 que nunca entraron.
+         *
+         * Compatibilidad hacia atrás sin backfill.
          */
         if ($direction >= 0) {
 
@@ -401,7 +431,9 @@ class ProductionBatchMovementHelper
 
         } else {
 
-            $end_status = self::resolve_end_status($batch);
+            // Movimiento anterior a la migración: se resuelve con el criterio que estaba vigente
+            // cuando se creó, que es la rama global sola.
+            $end_status = self::end_status_global($batch);
 
             $aplica = (
                 !is_null($end_status)
