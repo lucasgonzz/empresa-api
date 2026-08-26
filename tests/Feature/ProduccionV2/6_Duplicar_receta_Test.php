@@ -5,6 +5,8 @@ namespace Tests\Feature\ProduccionV2;
 use App\Models\Article;
 use App\Models\Recipe;
 use App\Models\RecipeRoute;
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
 
 /**
  * Duplicar un modelo completo: el articulo nuevo mas su receta entera, en un paso.
@@ -143,5 +145,53 @@ class Duplicar_receta_Test extends ProduccionV2TestCase
         $original->refresh();
         $this->assertEquals('7791234567890', $original->bar_code);
         $this->assertEquals(25, (float) $original->stock);
+    }
+
+    /**
+     * 🔴 NO SE PUEDE DUPLICAR LA RECETA DE OTRO COMERCIO.
+     *
+     * El id llega crudo por la URL. Sin el filtro por user_id, cualquier cuenta se copiaba el
+     * articulo entero de otra —con sus costos y sus listas de precio— mas la receta con todas
+     * sus rutas, cantidades e insumos, y quedaba persistido.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function no_se_puede_duplicar_la_receta_de_otro_comercio()
+    {
+        $otro_comercio = User::create([
+            'name'      => 'Otro comercio duplicar',
+            'email'     => 'duplicar-otro-'.uniqid().'@test.local',
+            'password'  => Hash::make('secret'),
+        ]);
+
+        $articulo_ajeno = Article::create([
+            'name'      => 'Silla ajena duplicar test',
+            'stock'     => 5,
+            'cost'      => 999,
+            'status'    => 'active',
+            'user_id'   => $otro_comercio->id,
+        ]);
+
+        $receta_ajena = Recipe::create([
+            'name'          => $articulo_ajeno->name,
+            'article_id'    => $articulo_ajeno->id,
+            'user_id'       => $otro_comercio->id,
+        ]);
+
+        $recetas_antes = Recipe::where('user_id', $this->comercio()->id)->count();
+
+        /* La sesion es la del comercio de prueba, no la del duenio de esa receta. */
+        $this->post('api/recipe/'.$receta_ajena->id.'/duplicar', [
+            'name' => 'Silla robada duplicar test',
+        ])->assertStatus(404);
+
+        /* Y no quedo nada persistido en la cuenta que lo intento. */
+        $this->assertDatabaseMissing('articles', [
+            'name'      => 'Silla robada duplicar test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $this->assertEquals($recetas_antes, Recipe::where('user_id', $this->comercio()->id)->count());
     }
 }

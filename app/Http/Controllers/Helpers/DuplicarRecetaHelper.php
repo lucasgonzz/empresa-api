@@ -77,7 +77,17 @@ class DuplicarRecetaHelper
     {
         return DB::transaction(function () use ($recipe_id, $nombre_nuevo, $controller_instance) {
 
-            $recipe = Recipe::with('article.price_types', 'recipe_routes.articles')->findOrFail($recipe_id);
+            /*
+             * 🔴 EL FILTRO POR user_id NO ES OPCIONAL. El id llega crudo por la URL
+             * (POST /api/recipe/{id}/duplicar) y sin este where cualquier comercio se copiaba
+             * la receta de otro: el articulo entero con sus costos, sus listas de precio y la
+             * receta con todas sus rutas, cantidades e insumos, a su propia cuenta y persistido.
+             * findOrFail() sobre el builder filtrado sigue devolviendo 404, que es lo correcto:
+             * una receta de otra cuenta no existe para esta.
+             */
+            $recipe = Recipe::where('user_id', $controller_instance->userId())
+                            ->with('article.price_types', 'recipe_routes.articles')
+                            ->findOrFail($recipe_id);
 
             if (is_null($recipe->article)) {
                 abort(422, 'La receta no tiene un artículo asociado.');
