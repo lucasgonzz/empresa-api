@@ -4,6 +4,7 @@ namespace Tests\Feature\ProduccionV2;
 
 use App\Models\Article;
 use App\Models\OrderProductionStatus;
+use App\Models\OrderProductionStatusGroup;
 use App\Models\ProductionBatch;
 use App\Models\ProductionBatchMovementType;
 use App\Models\ProductionBatchStatus;
@@ -72,6 +73,22 @@ abstract class ProduccionV2TestCase extends EmpresaTestCase
         }
 
         return $user;
+    }
+
+    /**
+     * Un grupo de estados de produccion.
+     *
+     * @param  string  $nombre
+     * @param  int     $position
+     * @return \App\Models\OrderProductionStatusGroup
+     */
+    protected function crear_grupo($nombre, $position = 1)
+    {
+        return OrderProductionStatusGroup::create([
+            'name'      => $nombre,
+            'position'  => $position,
+            'user_id'   => $this->comercio()->id,
+        ]);
     }
 
     /**
