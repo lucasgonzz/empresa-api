@@ -26,9 +26,18 @@ class Kernel extends ConsoleKernel
         // withoutOverlapping(75) previene que el scheduler arranque un segundo worker en paralelo
         // mientras uno anterior todavía está procesando jobs pesados (timeout = 60 min = 3600 seg).
         // El margen de 75 min asegura que el anterior haya terminado antes de que se permita uno nuevo.
-        $schedule->command('queue:work --stop-when-empty')
-            ->everyMinute()
-            ->withoutOverlapping(75);
+        //
+        // Solo en shared hosting. En el VPS la cola la maneja supervisor, con un queue:work de larga
+        // vida por instancia; si el scheduler ademas programara el suyo, quedarian dos workers
+        // compitiendo por los mismos jobs. La instancia se identifica por VPS=true en su .env, la
+        // misma variable que ya usa config/filesystems.php para decidir el prefijo /public de los
+        // archivos. El default false de env('VPS') deja intacto el comportamiento de toda instancia
+        // que no la declare, que es el caso de todas las del shared.
+        if (! config('app.VPS')) {
+            $schedule->command('queue:work --stop-when-empty')
+                ->everyMinute()
+                ->withoutOverlapping(75);
+        }
 
         // Usuario dueño de la instancia (config app.USER_ID) con extensiones cargadas.
         $company_owner = $this->resolve_company_owner_for_schedule();
