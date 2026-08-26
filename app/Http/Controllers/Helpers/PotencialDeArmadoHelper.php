@@ -111,20 +111,32 @@ class PotencialDeArmadoHelper
         }
 
         /*
-         * El depósito del que salen los insumos, con la MISMA cascada que usa el consumo real
-         * (calculate_planned_inputs): si la ruta declara from_address_id, el stock del insumo es
-         * el de ese depósito; si no, el stock global. Sin esto, el potencial diría que se pueden
-         * armar 50 sillas con remaches que están en otra sucursal.
+         * 🔴 EL DEPÓSITO SE RESUELVE POR INSUMO, NO POR RUTA.
+         *
+         * La cascada que usa el consumo real (calculate_planned_inputs) tiene TRES niveles:
+         * movement.address_id → route.from_address_id → pivot.address_id del renglón (el
+         * "Deposito" que la interfaz expone en cada insumo de la ruta). Acá no hay movimiento,
+         * así que quedan los dos últimos: route.from_address_id → pivot.address_id → global.
+         *
+         * Mirar solo el de la ruta SOBREESTIMA. Ruta sin "Deposito insumos", renglón de Tabla
+         * con Deposito = Central, stock global 500 (494 en Norte y 6 en Central) y 2 por unidad:
+         * el potencial decía 250 y el consumo real solo puede hacer 3. Es un número con el que
+         * se decide una venta.
          */
-        $from_address_id = null;
+        $route_address_id = null;
 
         if (!is_null($route->from_address_id) && $route->from_address_id != 0) {
-            $from_address_id = (int) $route->from_address_id;
+            $route_address_id = (int) $route->from_address_id;
         }
 
-        $fila['address_id'] = $from_address_id;
+        /*
+         * `address_id` de nivel producto = el de la RUTA, y nada más. Puede venir en null aunque
+         * los insumos tengan depósito propio: el de cada insumo viaja en su propio renglón de
+         * `insumos[]` (y en `insumo_limitante`), que es donde hay que leerlo.
+         */
+        $fila['address_id'] = $route_address_id;
 
-        $insumos = self::agrupar_insumos($route);
+        $insumos = self::agrupar_insumos($route, $route_address_id);
 
         $renglones_ignorados = 0;
         $filas_insumos = [];
@@ -144,7 +156,7 @@ class PotencialDeArmadoHelper
 
             $article = $insumo['article'];
 
-            $stock = self::stock_del_insumo($article, $from_address_id);
+            $stock = self::stock_del_insumo($article, $insumo['address_id']);
 
             $posible = $stock <= 0 ? 0 : (int) floor($stock / $cantidad);
 
@@ -152,6 +164,9 @@ class PotencialDeArmadoHelper
                 'article_id'            => (int) $article->id,
                 'article_name'          => $article->name,
                 'cantidad_por_unidad'   => $cantidad,
+                // El depósito con el que se midió ESTE insumo: puede ser el de la ruta, el del
+                // renglón, o null si se midió contra el stock global.
+                'address_id'            => $insumo['address_id'],
                 'stock'                 => $stock,
                 'posible'               => $posible,
             ];
@@ -230,45 +245,84 @@ class PotencialDeArmadoHelper
      * —diría que alcanza para más unidades de las que alcanza— y es un número con el que se
      * decide una venta. Por eso se agrupa antes de dividir.
      *
+     * ⚠️ La clave de agrupamiento es articulo + DEPÓSITO RESUELTO, no el articulo solo. Desde que
+     * el depósito sale del renglón, dos renglones del mismo artículo pueden apuntar a depósitos
+     * distintos, y en ese caso son dos restricciones distintas —el mínimo tiene que salir de las
+     * dos— y no una sola contra un depósito elegido a dedo. Cuando los dos renglones caen en el
+     * mismo depósito (que es el caso normal, y el único que existía antes) se agrupan igual que
+     * siempre y las cantidades se suman.
+     *
      * @param  \App\Models\RecipeRoute  $route
-     * @return array  Cada entrada: ['article' => Article, 'cantidad' => float]
+     * @param  int|null                 $route_address_id  El "Deposito insumos" de la ruta, si lo tiene.
+     * @return array  Cada entrada: ['article' => Article, 'address_id' => int|null, 'cantidad' => float]
      */
-    private static function agrupar_insumos($route)
+    private static function agrupar_insumos($route, $route_address_id)
     {
         $agrupados = [];
 
         foreach ($route->articles as $article) {
 
-            $article_id = (int) $article->id;
+            $address_id = self::address_del_insumo($article, $route_address_id);
 
-            if (!isset($agrupados[$article_id])) {
-                $agrupados[$article_id] = [
-                    'article'   => $article,
-                    'cantidad'  => 0,
+            $clave = (int) $article->id . '-' . (is_null($address_id) ? 'global' : $address_id);
+
+            if (!isset($agrupados[$clave])) {
+                $agrupados[$clave] = [
+                    'article'       => $article,
+                    'address_id'    => $address_id,
+                    'cantidad'      => 0,
                 ];
             }
 
-            $agrupados[$article_id]['cantidad'] += (float) $article->pivot->amount;
+            $agrupados[$clave]['cantidad'] += (float) $article->pivot->amount;
         }
 
         return array_values($agrupados);
     }
 
     /**
-     * El stock disponible de un insumo, según el depósito del que la ruta saca los insumos.
+     * De qué depósito sale ESTE insumo: la cascada del consumo real, sin el nivel del movimiento
+     * (que en esta pantalla no existe).
+     *
+     *   route.from_address_id → pivot.address_id del renglón → null (stock global)
+     *
+     * El 0 se trata como "no seteado" en los dos niveles: es lo que manda el select de la SPA
+     * cuando el usuario deja "Seleccione...".
+     *
+     * @param  \App\Models\Article  $article           El insumo, con su pivot de article_recipe_route.
+     * @param  int|null             $route_address_id  El "Deposito insumos" de la ruta, si lo tiene.
+     * @return int|null
+     */
+    private static function address_del_insumo($article, $route_address_id)
+    {
+        if (!is_null($route_address_id)) {
+            return $route_address_id;
+        }
+
+        $pivot_address_id = $article->pivot->address_id;
+
+        if (!is_null($pivot_address_id) && $pivot_address_id != 0) {
+            return (int) $pivot_address_id;
+        }
+
+        return null;
+    }
+
+    /**
+     * El stock disponible de un insumo, en el depósito que le resolvió address_del_insumo().
      *
      * @param  \App\Models\Article  $article
-     * @param  int|null             $from_address_id  null = stock global.
+     * @param  int|null             $address_id  null = stock global.
      * @return float
      */
-    private static function stock_del_insumo($article, $from_address_id)
+    private static function stock_del_insumo($article, $address_id)
     {
-        if (is_null($from_address_id)) {
+        if (is_null($address_id)) {
             return (float) $article->stock;
         }
 
         foreach ($article->addresses as $address) {
-            if ((int) $address->id === (int) $from_address_id) {
+            if ((int) $address->id === (int) $address_id) {
                 return (float) $address->pivot->amount;
             }
         }

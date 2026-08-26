@@ -197,6 +197,129 @@ class Potencial_de_armado_Test extends ProduccionV2TestCase
         /* floor(6/2) = 3, no floor(500/2) = 250. */
         $this->assertEquals(3, $fila['potencial']);
         $this->assertEquals(6, $fila['insumo_limitante']['stock']);
+
+        /* Y el deposito con el que se midio viaja tambien en el renglon del insumo. */
+        $this->assertEquals($deposito->id, $fila['insumo_limitante']['address_id']);
+        $this->assertEquals($deposito->id, $fila['insumos'][0]['address_id']);
+    }
+
+    /**
+     * 🔴 EL DEPOSITO SALE DEL RENGLON DEL INSUMO CUANDO LA RUTA NO LO DECLARA.
+     *
+     * Es el nivel del medio de la cascada del consumo real, el "Deposito" que la interfaz expone
+     * en cada insumo de la ruta. Si el potencial se saltea ese nivel y cae al stock global,
+     * SOBREESTIMA: la pantalla promete unidades que el consumo real no puede armar porque el
+     * stock esta en otra sucursal.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function el_potencial_usa_el_deposito_del_renglon_del_insumo_si_la_ruta_no_lo_declara()
+    {
+        $corte = $this->crear_estado('Corte deposito renglon', 1);
+
+        $central = Address::create([
+            'street'    => 'Central renglon test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $norte = Address::create([
+            'street'    => 'Norte renglon test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $silla = $this->crear_articulo('Silla deposito renglon test', 0);
+
+        /* 500 en total: 494 en Norte y 6 en Central, que es el deposito del renglon. */
+        $tabla = $this->crear_articulo('Tabla deposito renglon test', 500);
+        $tabla->addresses()->attach($central->id, ['amount' => 6]);
+        $tabla->addresses()->attach($norte->id, ['amount' => 494]);
+
+        $receta = $this->crear_receta($silla);
+
+        /* La ruta NO declara "Deposito insumos": el deposito sale del renglon. */
+        $this->crear_ruta($receta, [
+            [
+                'article'                       => $tabla,
+                'amount'                        => 2,
+                'order_production_status_id'    => $corte->id,
+                'address_id'                    => $central->id,
+            ],
+        ]);
+
+        $respuesta = $this->get('api/potencial-de-armado');
+
+        $respuesta->assertStatus(200);
+
+        $fila = $this->fila_de($respuesta->json('models'), 'Silla deposito renglon test');
+
+        $this->assertNotNull($fila);
+
+        /* El de nivel producto es el de la RUTA, y la ruta no tiene: null. */
+        $this->assertNull($fila['address_id']);
+
+        /* Pero el del insumo es Central, que es donde lo mando el renglon. */
+        $this->assertEquals($central->id, $fila['insumos'][0]['address_id']);
+        $this->assertEquals($central->id, $fila['insumo_limitante']['address_id']);
+
+        /* floor(6/2) = 3, no floor(500/2) = 250. */
+        $this->assertEquals(6, $fila['insumos'][0]['stock']);
+        $this->assertEquals(3, $fila['potencial']);
+    }
+
+    /**
+     * El "Deposito insumos" de la ruta le gana al del renglon: es el orden de la cascada del
+     * consumo real, donde el nivel de la ruta esta arriba del nivel del renglon.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function el_deposito_de_la_ruta_le_gana_al_del_renglon()
+    {
+        $corte = $this->crear_estado('Corte precedencia', 1);
+
+        $de_la_ruta = Address::create([
+            'street'    => 'De la ruta precedencia test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $del_renglon = Address::create([
+            'street'    => 'Del renglon precedencia test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $silla = $this->crear_articulo('Silla precedencia test', 0);
+
+        $tabla = $this->crear_articulo('Tabla precedencia test', 100);
+        $tabla->addresses()->attach($de_la_ruta->id, ['amount' => 20]);
+        $tabla->addresses()->attach($del_renglon->id, ['amount' => 80]);
+
+        $receta = $this->crear_receta($silla);
+
+        $this->crear_ruta($receta, [
+            [
+                'article'                       => $tabla,
+                'amount'                        => 2,
+                'order_production_status_id'    => $corte->id,
+                'address_id'                    => $del_renglon->id,
+            ],
+        ], [
+            'from_address_id' => $de_la_ruta->id,
+        ]);
+
+        $respuesta = $this->get('api/potencial-de-armado');
+
+        $respuesta->assertStatus(200);
+
+        $fila = $this->fila_de($respuesta->json('models'), 'Silla precedencia test');
+
+        $this->assertNotNull($fila);
+
+        $this->assertEquals($de_la_ruta->id, $fila['insumos'][0]['address_id']);
+
+        /* floor(20/2) = 10 (el de la ruta), no floor(80/2) = 40 (el del renglon). */
+        $this->assertEquals(20, $fila['insumos'][0]['stock']);
+        $this->assertEquals(10, $fila['potencial']);
     }
 
     /**
