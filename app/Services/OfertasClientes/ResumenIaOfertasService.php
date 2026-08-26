@@ -3,6 +3,7 @@
 namespace App\Services\OfertasClientes;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\OfertaComunicacionHelper;
 use App\Models\OfferSuggestionLine;
 use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Http;
@@ -233,7 +234,7 @@ class ResumenIaOfertasService
      */
     public function lineas_priorizadas($suggestion)
     {
-        return OfferSuggestionLine::with(['client', 'article'])
+        return OfferSuggestionLine::with(['client.buyer', 'article'])
             ->where('offer_suggestion_id', $suggestion->id)
             ->whereNotNull('prioridad')
             ->orderBy('prioridad', 'ASC')
@@ -290,7 +291,11 @@ class ResumenIaOfertasService
      */
     protected function describir_linea($linea)
     {
-        $cliente  = $linea->client && !empty($linea->client->name) ? $linea->client->name : ('Cliente ' . $linea->client_id);
+        // El nombre a mostrar es el del comprador de la tienda, cayendo al del cliente del
+        // ERP (OfertaComunicacionHelper::nombre_para_mostrar). El fallback propio del método
+        // ('Cliente ' . id) se conserva como último escalón.
+        $nombre_cliente = OfertaComunicacionHelper::nombre_para_mostrar($linea->client);
+        $cliente  = $nombre_cliente !== '' ? $nombre_cliente : ('Cliente ' . $linea->client_id);
         $articulo = $linea->article && !empty($linea->article->name) ? $linea->article->name : ('Articulo ' . $linea->article_id);
 
         $credito = is_null($linea->es_buen_pagador)

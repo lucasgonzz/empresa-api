@@ -122,6 +122,43 @@ class OfertaComunicacionHelper
     }
 
     /**
+     * El nombre a mostrar de un cliente en el módulo de ofertas: el del comprador de la
+     * tienda, cayendo al del cliente del ERP. Regla, en orden:
+     *   1) trim(buyer.name + ' ' + buyer.surname) si el buyer existe y eso no queda vacío.
+     *   2) trim(clients.name) si no.
+     *   3) '' si tampoco hay nada del lado del ERP (o si ni siquiera hay Client).
+     *
+     * 🔴 ASIMETRÍA DELIBERADA CON EL FILTRO DE BUYER DE CriteriosDeOfertaService::afinidad():
+     * acá NO se filtra por buyers.user_id. Allá el user_id decide si la oferta se genera o
+     * no; acá decide qué texto se pinta en una celda. Un nombre de un buyer de otro comercio
+     * es cosmético; una oferta invisible no. Que nadie "unifique" los dos criterios sin
+     * pensarlo.
+     *
+     * @param  mixed $client Client con la relación `buyer` cargable (eager-load con
+     *                       `client.buyer`: sin esto, cada fila de una grilla pega su
+     *                       propia consulta a buyers).
+     * @return string
+     */
+    public static function nombre_para_mostrar($client)
+    {
+        if (is_null($client)) {
+            return '';
+        }
+
+        $buyer = $client->buyer;
+
+        if (!is_null($buyer)) {
+            $nombre_comprador = trim(trim((string) $buyer->name) . ' ' . trim((string) $buyer->surname));
+
+            if ($nombre_comprador !== '') {
+                return $nombre_comprador;
+            }
+        }
+
+        return trim((string) $client->name);
+    }
+
+    /**
      * El texto del mensaje de WhatsApp, en criollo y con el link a la tienda
      * cuando lo hay. Texto PLANO: de encodearlo se ocupa link_de_whatsapp().
      *
@@ -131,9 +168,9 @@ class OfertaComunicacionHelper
      */
     public static function texto_del_mensaje(ClientOffer $offer, $user)
     {
-        $offer->loadMissing('client', 'article');
+        $offer->loadMissing('client.buyer', 'article');
 
-        $nombre_cliente = $offer->client && !empty($offer->client->name) ? $offer->client->name : '';
+        $nombre_cliente = self::nombre_para_mostrar($offer->client);
         $nombre_articulo = $offer->article && !empty($offer->article->name) ? $offer->article->name : 'un artículo';
 
         $texto = ($nombre_cliente !== '' ? 'Hola ' . $nombre_cliente . '! ' : 'Hola! ')

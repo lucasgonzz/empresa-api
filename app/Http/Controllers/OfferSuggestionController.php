@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\OfertaComunicacionHelper;
 use App\Jobs\GenerateOfferSuggestionChunksJob;
 use App\Jobs\GenerarResumenSugerenciaOfertaJob;
 use App\Models\Client;
@@ -282,7 +283,10 @@ class OfferSuggestionController extends Controller
             return [
                 'offer_suggestion_line_id'   => $item->id,
                 'client_id'                  => $item->client_id,
-                'client_nombre'              => $client && !empty($client->name) ? $client->name : '',
+                // El nombre del comprador de la tienda, cayendo al del cliente del ERP
+                // (OfertaComunicacionHelper::nombre_para_mostrar). La CLAVE client_nombre no
+                // cambia: es contrato congelado con la SPA (docblock de la clase, :16-25).
+                'client_nombre'              => OfertaComunicacionHelper::nombre_para_mostrar($client),
                 'article_id'                 => $item->article_id,
                 'name'                       => $article && !empty($article->name) ? $article->name : '',
                 'provider_code'              => $article && !empty($article->provider_code) ? $article->provider_code : '',
