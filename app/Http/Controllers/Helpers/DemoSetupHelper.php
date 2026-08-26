@@ -12,6 +12,7 @@ use App\Models\AfipInformation;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
+use App\Models\OnlinePriceType;
 use App\Models\PriceType;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
@@ -300,8 +301,12 @@ class DemoSetupHelper
             Artisan::call('set_company_performances', ['user_id' => $user->id, '--historico' => true]);
         }
 
-        // Tienda online por defecto para que la demo tenga URL pública
-        self::tienda();
+        // Tienda online por defecto para que la demo tenga URL pública.
+        //
+        // Se le pasa `$semilla_sembro` porque es el MISMO dato que distingue "esta instancia
+        // recibió datos de demostración" (0) de "esta es la instalación de un cliente real" (1),
+        // y de eso depende con qué criterio de precios arranca la tienda. Ver `tienda()`.
+        self::tienda($semilla_sembro);
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
@@ -928,11 +933,16 @@ class DemoSetupHelper
     /**
      * Crea la OnlineConfiguration por defecto para que la tienda online
      * asociada al usuario quede operativa.
+     *
+     * @param bool $es_instancia_de_demostracion `true` cuando `semilla:datos` sembró en esta
+     *                                           instancia, o sea cuando es una demo (o una corrida
+     *                                           local). `false` en la instalación de un cliente
+     *                                           real.
      */
-    private static function tienda()
+    private static function tienda($es_instancia_de_demostracion = false)
     {
         $online_configuration = [
-            'online_price_type_id'      => 3,
+            'online_price_type_id'      => self::online_price_type_id_inicial($es_instancia_de_demostracion),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
             'pausar_tienda_online'      => 0,
@@ -957,6 +967,64 @@ class DemoSetupHelper
         ];
 
         OnlineConfiguration::create($online_configuration);
+    }
+
+    /**
+     * Con qué criterio de visibilidad de precios arranca la tienda online.
+     *
+     * 🔴 UNA DEMO ARRANCA EN `all` (misión demo-lista-para-grabar, 25/8/2026). Hasta acá toda
+     * instancia nacía con el id 3, que en `OnlinePriceTypeSeeder` es
+     * `only_buyers_with_comerciocity_client`: "solo los usuarios registrados que estén vinculados
+     * a un Cliente del sistema". En la tienda de la demo eso se veía como un cartel
+     * "Inicie sesion o Solicite alta de cliente para ver precios" en cada tarjeta de producto
+     * (medido el 25/8/2026 en `https://tienda.comerciocity.store`: 38 productos con imagen y marca
+     * real, y ni un precio). O sea que el clip del ecommerce mostraba un catálogo sin precios.
+     *
+     * `all` es el slug exacto que mira `tienda-spa`, verificado en el código de ese repo y no
+     * asumido: `src/mixins/generals.js::puede_ver_precios()` devuelve `false` solo para
+     * `only_registered` (sin sesión) y para `only_buyers_with_comerciocity_client` (sin sesión o
+     * sin Client vinculado); cualquier otro valor —`all` entre ellos— cae al `return true` final.
+     * Del lado de `tienda-api`, `CommerceController` levanta la relación con
+     * `->with('online_configuration.online_price_type')`, así que lo que viaja al SPA es la fila
+     * entera, slug incluido. `users.listas_de_precio` no participa: la tienda no lo mira.
+     *
+     * 🔴 Y NO SE CAMBIA PARA UN CLIENTE REAL. Este helper corre también en la instalación de un
+     * comercio de verdad, y con qué criterio publica sus precios es una decisión suya, no un
+     * default que podamos mover de costado: para esas instancias sigue valiendo el id 3 de
+     * siempre. Por eso el parámetro, y no un cambio del literal.
+     *
+     * Los DOS ids se resuelven por SLUG y no por número, incluido el del cliente real que antes
+     * era un `3` pelado: `OnlinePriceTypeSeeder` está en `base_seeders()`, así que las filas ya
+     * existen cuando esto corre, y atarse a la posición dentro de esa lista es exactamente el tipo
+     * de acoplamiento que hubo que venir a corregir acá. Los fallbacks numéricos son la posición
+     * que hoy ocupa cada slug en el seeder, y cubren una instancia armada por un camino que no lo
+     * haya corrido.
+     *
+     * @param bool $es_instancia_de_demostracion
+     * @return int
+     */
+    private static function online_price_type_id_inicial($es_instancia_de_demostracion)
+    {
+        if ($es_instancia_de_demostracion) {
+            return self::online_price_type_id_por_slug('all', 1);
+        }
+
+        return self::online_price_type_id_por_slug('only_buyers_with_comerciocity_client', 3);
+    }
+
+    /**
+     * Id de un `OnlinePriceType` buscado por slug, con la posición que ocupa en
+     * `OnlinePriceTypeSeeder` como último recurso.
+     *
+     * @param string $slug
+     * @param int $id_por_defecto
+     * @return int
+     */
+    private static function online_price_type_id_por_slug($slug, $id_por_defecto)
+    {
+        $id = OnlinePriceType::where('slug', $slug)->value('id');
+
+        return is_null($id) ? $id_por_defecto : (int) $id;
     }
 
     /**
