@@ -946,6 +946,8 @@ class DemoSetupHelper
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
             'pausar_tienda_online'      => 0,
+            // Pedido de Lucas (26/8/2026): en la demo este checkbox queda apagado por defecto.
+            'show_articles_without_images' => 0,
             'user_id'                   => config('app.USER_ID'),
             'facebook'                  => 'htts://facebook.com',
             'instagram'                 => 'htts://instagram.com',
