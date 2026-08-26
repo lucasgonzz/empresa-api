@@ -473,4 +473,138 @@ class Criterios_de_seleccion_Test extends TestCase
         $this->assertSame(1, $servicio->clientes_excluidos_por_deuda());
         $this->assertFalse($servicio->evaluacion_crediticia()[$deudor->id]);
     }
+
+    /**
+     * 🔴 A.5.0 — LA ASERCIÓN CENTRAL DEL PEDIDO DE LUCAS: sin buyer vinculado la tienda no le puede
+     * mostrar la oferta a nadie, así que afinidad() no lo tiene que generar como candidato.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function la_afinidad_no_trae_al_cliente_sin_ningun_buyer_vinculado()
+    {
+        $sin_buyer = $this->cliente_sin_buyer('Cliente sin ningun buyer');
+        $con_buyer = $this->cliente('Cliente con buyer');
+        $article   = $this->articulo('Articulo comprado por los dos');
+
+        foreach ([$sin_buyer, $con_buyer] as $c) {
+            foreach ([5, 20, 40] as $dias) {
+                $this->comprar($c, $article, $dias);
+            }
+        }
+
+        $pares = $this->pares($this->servicio()->afinidad());
+        $this->assertNotContains($sin_buyer->id . '-' . $article->id, $pares,
+            'sin buyer la tienda no le puede mostrar la oferta a nadie');
+        $this->assertContains($con_buyer->id . '-' . $article->id, $pares);
+    }
+
+    /**
+     * 🔴 ESTE TEST ES LO QUE SOSTIENE LA DECISIÓN DE NO DUPLICAR EL FILTRO EN reactivacion() (§2.1
+     * del plan): si alguien refactoriza reactivacion() para que deje de apoyarse en afinidad() (por
+     * ejemplo, armando el candidato con datos propios de `dormidos` en vez de leer $mejores), este
+     * test se pone rojo antes que ningún otro.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function la_reactivacion_no_trae_al_dormido_sin_buyer_vinculado()
+    {
+        $sin_buyer = $this->cliente_sin_buyer('Dormido sin buyer');
+        $con_buyer = $this->cliente('Dormido con buyer');
+        $article   = $this->articulo('Articulo de los dos dormidos');
+
+        $this->comprar($sin_buyer, $article, 90);
+        $this->comprar($con_buyer, $article, 90);
+
+        $pares = $this->pares($this->servicio()->reactivacion());
+        $this->assertNotContains($sin_buyer->id . '-' . $article->id, $pares);
+        $this->assertContains($con_buyer->id . '-' . $article->id, $pares);
+    }
+
+    /**
+     * Cierra el OTRO camino de entrada a $mejores: un dormido sin buyer cuya única compra cae FUERA
+     * de la ventana de afinidad (180 días) entra por el segundo pase de reactivacion()
+     * (afinidad($faltantes, $ventana_ampliada), :311 del servicio) — y tampoco ahí lo rescata.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function la_reactivacion_con_la_ventana_ampliada_tampoco_rescata_al_que_no_tiene_buyer()
+    {
+        $sin_buyer = $this->cliente_sin_buyer('Dormido muy viejo sin buyer');
+        $con_buyer = $this->cliente('Dormido muy viejo con buyer');
+        $article   = $this->articulo('Articulo comprado hace mucho');
+
+        // 200 días: fuera de los 180 de dias_historial_afinidad, así que el primer pase de
+        // afinidad() no lo trae y reactivacion() tiene que ir a buscarlo con la ventana ampliada
+        // (180 * 4 = 720 días, adentro de la cual 200 días entra de sobra).
+        $this->comprar($sin_buyer, $article, 200);
+        $this->comprar($con_buyer, $article, 200);
+
+        $pares = $this->pares($this->servicio()->reactivacion());
+        $this->assertNotContains($sin_buyer->id . '-' . $article->id, $pares,
+            'ni con la ventana ampliada el que no tiene buyer puede aparecer');
+        $this->assertContains($con_buyer->id . '-' . $article->id, $pares,
+            'el que sí tiene buyer tiene que rescatarse con la ventana ampliada');
+    }
+
+    /**
+     * 🔴 Fija por escrito la decisión de §2.2 punto 3 del plan: el buyer que habilita la afinidad
+     * tiene que ser DE ESTE COMERCIO. Un buyer con el comercio_city_client_id correcto pero
+     * user_id de otro comercio es el mismo caso que ya declara
+     * ActividadTiendaHelper::cancelar_saldos() (:335-337).
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function un_buyer_de_otro_comercio_no_habilita_la_afinidad()
+    {
+        $cliente = $this->cliente_sin_buyer('Cliente con buyer ajeno');
+        $article = $this->articulo('Articulo del cliente con buyer ajeno');
+
+        $otro_comercio = User::create([
+            'name' => 'Otro comercio P3', 'password' => Hash::make('secret'),
+            'email' => 'otro-comercio-p3-' . uniqid() . '@test.local',
+        ]);
+        Buyer::create([
+            'name' => 'Comprador de otro comercio', 'email' => 'buyer-ajeno-' . uniqid() . '@test.local',
+            'user_id' => $otro_comercio->id, 'comercio_city_client_id' => $cliente->id,
+        ]);
+
+        $this->comprar($cliente, $article, 5);
+
+        $this->assertNotContains(
+            $cliente->id . '-' . $article->id,
+            $this->pares($this->servicio()->afinidad()),
+            'un buyer de otro comercio no puede habilitar una oferta de este comercio'
+        );
+    }
+
+    /**
+     * 🔴 Es el test que impide que alguien "simplifique" el whereIn a un JOIN buyers: un cliente
+     * puede tener más de un Buyer (docblock de vistas_con_tiempo(), :407-411), y con
+     * GROUP BY client_id, article_id + COUNT(*) un JOIN duplicaría la fila y doblaría el score.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function el_cliente_con_dos_buyers_no_duplica_las_compras_de_afinidad()
+    {
+        $cliente = $this->cliente('Cliente con dos buyers'); // ya trae un buyer
+        $this->comprador($cliente); // y este es el segundo
+        $article = $this->articulo('Articulo comprado tres veces');
+
+        foreach ([5, 20, 40] as $dias) {
+            $this->comprar($cliente, $article, $dias);
+        }
+
+        $candidatos = array_values(array_filter($this->servicio()->afinidad(), function ($c) use ($cliente, $article) {
+            return $c['client_id'] === $cliente->id && $c['article_id'] === $article->id;
+        }));
+
+        $this->assertCount(1, $candidatos, 'dos buyers no pueden duplicar la fila del candidato');
+        $this->assertSame(3, $candidatos[0]['compras'], 'las compras son 3, no 6');
+        $this->assertSame(3.0, $candidatos[0]['score'], 'el score es 3.0, no 6.0');
+    }
 }
