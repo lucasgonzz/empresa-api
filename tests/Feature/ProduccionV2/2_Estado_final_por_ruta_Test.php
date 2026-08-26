@@ -60,11 +60,10 @@ class Estado_final_por_ruta_Test extends ProduccionV2TestCase
 
         $this->assertEquals(7, $this->stock_de($silla));
 
-        /* El concepto 17 es `Produccion`. */
         $this->assertDatabaseHas('stock_movements', [
             'article_id'                    => $silla->id,
             'amount'                        => 7,
-            'concepto_stock_movement_id'    => 17,
+            'concepto_stock_movement_id'    => $this->concepto_id('Produccion'),
         ]);
 
         /* Y el hecho quedo registrado en el movimiento, no se recalcula despues. */

@@ -93,11 +93,10 @@ class Estado_final_global_actual_Test extends ProduccionV2TestCase
 
         $this->assertEquals(5, $this->stock_de($silla));
 
-        /* El concepto 17 es `Produccion` (catalogo global, sin user_id). */
         $this->assertDatabaseHas('stock_movements', [
             'article_id'                    => $silla->id,
             'amount'                        => 5,
-            'concepto_stock_movement_id'    => 17,
+            'concepto_stock_movement_id'    => $this->concepto_id('Produccion'),
         ]);
 
         /*

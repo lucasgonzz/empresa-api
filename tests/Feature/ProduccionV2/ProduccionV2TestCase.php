@@ -3,6 +3,7 @@
 namespace Tests\Feature\ProduccionV2;
 
 use App\Models\Article;
+use App\Models\ConceptoStockMovement;
 use App\Models\OrderProductionStatus;
 use App\Models\OrderProductionStatusGroup;
 use App\Models\ProductionBatch;
@@ -273,5 +274,21 @@ abstract class ProduccionV2TestCase extends EmpresaTestCase
     protected function stock_de($article)
     {
         return (float) $article->fresh()->stock;
+    }
+
+    /**
+     * El id de un concepto de stock, resuelto por nombre.
+     *
+     * Se resuelve por nombre y no por id fijo a proposito: el id de cada concepto depende del
+     * ORDEN en que ConceptoStockMovementSeeder los inserta, asi que sembrar uno nuevo mas
+     * arriba le corre el numero a todos los de abajo y rompe estos tests sin que el motor de
+     * produccion haya cambiado en nada.
+     *
+     * @param  string  $nombre
+     * @return int|null
+     */
+    protected function concepto_id($nombre)
+    {
+        return ConceptoStockMovement::where('name', $nombre)->value('id');
     }
 }
