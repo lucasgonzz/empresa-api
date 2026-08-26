@@ -160,7 +160,7 @@ class ComercioCityMailHelper
         // ERP (OfertaComunicacionHelper::nombre_para_mostrar). El mail sale preferentemente
         // al buyers.email, así que llamarlo por la razón social del ERP es justo lo que este
         // cambio viene a arreglar. '—' se conserva como el mismo relleno de siempre.
-        $nombre_cliente_para_mostrar = OfertaComunicacionHelper::nombre_para_mostrar($offer->client);
+        $nombre_cliente_para_mostrar = OfertaComunicacionHelper::nombre_para_mostrar($offer->client, $offer->user_id);
         $nombre_cliente  = $nombre_cliente_para_mostrar !== '' ? $nombre_cliente_para_mostrar : '—';
         $descuento       = OfertaComunicacionHelper::descripcion_del_descuento($offer);
         $vigencia        = self::format_fecha($offer->desde) . ' al ' . self::format_fecha($offer->hasta);

@@ -60,7 +60,7 @@ class ClientOffer extends Model
      */
     public function getClientNombreAttribute()
     {
-        return \App\Http\Controllers\Helpers\OfertaComunicacionHelper::nombre_para_mostrar($this->client);
+        return \App\Http\Controllers\Helpers\OfertaComunicacionHelper::nombre_para_mostrar($this->client, $this->user_id);
     }
 
     /**

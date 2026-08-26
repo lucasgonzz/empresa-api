@@ -287,6 +287,42 @@ class Nombre_del_comprador_en_las_ofertas_Test extends TestCase
     }
 
     /**
+     * 🔴 HALLAZGO DEL CHEQUEO INDEPENDIENTE (26/8/2026): `Client::buyer()` es un `hasOne` SIN
+     * `where('user_id', ...)` — el mismo vínculo manual que ya obliga a CriteriosDeOfertaService::
+     * afinidad() a filtrar por `buyers.user_id` para no habilitar candidatos con un buyer ajeno.
+     * Sin la misma validación del lado de la visualización, la columna "Cliente" de ESTE comercio
+     * podía mostrar el nombre de un comprador real de OTRO comercio con el que ese Client no tiene
+     * ninguna relación de negocio — no una cosmética, un dato ajeno mostrado donde no corresponde.
+     *
+     * @group motor-de-ofertas
+     * @test
+     */
+    public function un_buyer_de_otro_comercio_no_se_muestra_en_la_columna_cliente()
+    {
+        $client = $this->cliente(['name' => 'Cliente con buyer ajeno']);
+        $article = $this->articulo();
+        $corrida = $this->corrida();
+        $this->linea($corrida, $client, $article);
+
+        $otro_comercio = User::create([
+            'name' => 'Otro comercio P12', 'password' => bcrypt('secret'),
+            'email' => 'otro-comercio-p12-' . uniqid() . '@test.local',
+        ]);
+        Buyer::create([
+            'name' => 'Comprador de otro comercio', 'surname' => 'Ajeno',
+            'email' => 'buyer-ajeno-p12-' . uniqid() . '@test.local',
+            'user_id' => $otro_comercio->id, 'comercio_city_client_id' => $client->id,
+        ]);
+
+        $response = $this->getJson('api/offer-suggestion/' . $corrida->id . '/lines')->assertStatus(200);
+        $this->assertSame(
+            'Cliente con buyer ajeno',
+            $response->json('models.data.0.client_nombre'),
+            'un buyer de otro comercio no puede aparecer en la columna Cliente de este comercio; cae al nombre del cliente del ERP'
+        );
+    }
+
+    /**
      * 🔴 GUARD DE N+1: sin el eager-load de client.buyer en scopeWithAll(), cada fila de la grilla
      * pega su propia consulta a buyers. Con ~20 clientes distintos, el conteo de consultas no
      * puede crecer con la cantidad de filas.

@@ -75,7 +75,7 @@ class ResumenIaOfertasService
 
         $lineas = [];
         foreach ($this->lineas_priorizadas($suggestion) as $linea) {
-            $lineas[] = $this->describir_linea($linea);
+            $lineas[] = $this->describir_linea($linea, $suggestion->user_id);
         }
 
         $vigencia = (int) $suggestion->dias_vigencia_sugerida;
@@ -289,12 +289,12 @@ class ResumenIaOfertasService
      * @param  mixed $linea
      * @return string
      */
-    protected function describir_linea($linea)
+    protected function describir_linea($linea, $user_id = null)
     {
         // El nombre a mostrar es el del comprador de la tienda, cayendo al del cliente del
         // ERP (OfertaComunicacionHelper::nombre_para_mostrar). El fallback propio del método
         // ('Cliente ' . id) se conserva como último escalón.
-        $nombre_cliente = OfertaComunicacionHelper::nombre_para_mostrar($linea->client);
+        $nombre_cliente = OfertaComunicacionHelper::nombre_para_mostrar($linea->client, $user_id);
         $cliente  = $nombre_cliente !== '' ? $nombre_cliente : ('Cliente ' . $linea->client_id);
         $articulo = $linea->article && !empty($linea->article->name) ? $linea->article->name : ('Articulo ' . $linea->article_id);
 
