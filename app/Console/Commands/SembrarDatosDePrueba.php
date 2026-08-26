@@ -709,14 +709,42 @@ class SembrarDatosDePrueba extends Command
          * -- y arregla de paso un desorden que ya existía: hasta ahora un pago a proveedor podía
          * quedar fechado ANTES que la compra que estaba pagando.
          *
-         * El mes en curso es la excepción: se usa la hora real, porque fechar a las 20:00 de hoy
-         * cuando son las 10:00 dejaría movimientos en el futuro. Ahí el orden estricto se pierde
-         * solo si la corrida cae un día 1 (único caso en que `fecha_en_rango()` puede devolver el
-         * día de hoy), y para entonces la caja arrastra el saldo de los once meses anteriores.
+         * 🔴 EL MES EN CURSO NO PUEDE PAGAR "HOY" (misión demo-lista-para-grabar, 25/8/2026).
+         *
+         * Hasta esta misión el mes en curso usaba `Carbon::now()`: los egresos del mes entero
+         * quedaban fechados EL DÍA DE LA CORRIDA. Y el día de la corrida es justo el que mira un
+         * lead cuando entra a la demo por el magic link — `/reportes/estado-de-resultados` abre
+         * siempre en la solapa "Hoy" (`empresa-spa/src/store/reportes/index.js`:
+         * `rango_temporal: 'dia-actual'`, que manda `desde == hasta == hoy`). Contra esas ventas
+         * de hoy hay exactamente dos: las 15.000 + 20.000 de `sembrar_hoy()`. Resultado medido el
+         * 25/8/2026 en `https://demo.comerciocity.com`: "El período cerró con una pérdida de
+         * $1.478.582 · Ventas brutas $35.000 · Gastos 4.272,0%". No era un mes en pérdida —el mes
+         * completo cierra con resultado operativo del 30% de las netas— sino medio mes de gastos
+         * amontonado en un solo día.
+         *
+         * La fecha nueva es las 20:00 del ÚLTIMO DÍA en el que `fecha_en_rango()` pudo poner una
+         * operación de este mes (`$inicio_mes + $dias_disponibles - 1`), que en el mes en curso es
+         * AYER: `dias_disponibles` sale de `diffInDays`, que redondea para abajo, así que la
+         * última venta posible del mes en curso cae ayer a las 19:59 como muy tarde. O sea que el
+         * invariante de arriba se mantiene ENTERO —cuando se paga, todo el efectivo del mes ya
+         * entró— y encima queda igual de estricto que en un mes cerrado, en vez de la excepción
+         * que había antes. Lo único que sale del día de hoy son los egresos; ningún total mensual
+         * cambia, así que el resto de los clips del video ve exactamente los mismos números.
+         *
+         * El `greaterThan()` cubre el único caso en que esa cuenta se iría al futuro: una corrida
+         * el día 1 del mes, donde `max(1, ...)` deja `dias_disponibles` en 1 y las 20:00 del día 1
+         * todavía no llegaron. Ahí se vuelve a la hora real, y no hay pérdida que mostrar porque
+         * con un solo día disponible TODAS las ventas del mes caen también hoy.
          */
-        $fecha_egresos_de_caja = $es_mes_actual
-            ? $fin_mes->copy()
-            : $fin_mes->copy()->setTime(20, 0);
+        $fecha_egresos_de_caja = $fin_mes->copy()->setTime(20, 0);
+
+        if ($es_mes_actual) {
+            $ultimo_dia_con_operaciones = $inicio_mes->copy()->addDays($dias_disponibles - 1)->setTime(20, 0);
+
+            $fecha_egresos_de_caja = $ultimo_dia_con_operaciones->greaterThan($fin_mes)
+                ? $fin_mes->copy()
+                : $ultimo_dia_con_operaciones;
+        }
 
         // Desplaza a qué cliente/proveedor le toca cada índice, mes a mes -- sin esto, todos los
         // meses arrancan la rotación en el mismo punto y con CANT_REGISTROS=4 nunca se alcanzan
@@ -2259,9 +2287,13 @@ class SembrarDatosDePrueba extends Command
      * terminar. Es lo que permite probar la vista de caja del día y el dashboard, que con datos
      * solo del pasado se ven vacíos.
      *
+     * Público desde la misión demo-lista-para-grabar (25/8/2026), por el mismo motivo por el que
+     * `sembrar_mes()` lo es: sin este bloque, un test no puede reproducir lo que ve un lead en la
+     * solapa "Hoy" del Estado de Resultados, que son exactamente estas dos ventas de mostrador.
+     *
      * @return array{saldo_por_caja: array<string,float>, delta_deuda_por_cliente: array<int,float>}
      */
-    protected function sembrar_hoy()
+    public function sembrar_hoy()
     {
         $hoy = Carbon::now();
         $primer_address_id = $this->addresses->first()->id;

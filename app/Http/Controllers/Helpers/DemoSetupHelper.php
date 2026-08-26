@@ -12,12 +12,14 @@ use App\Models\AfipInformation;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
+use App\Models\OnlinePriceType;
 use App\Models\PriceType;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Helper que concentra la lógica de "configurar un sistema para una demo":
@@ -77,18 +79,27 @@ class DemoSetupHelper
          *
          * ⚠️ ESOS 109 SEGUNDOS QUEDARON VIEJOS. Son de ANTES de que la demo pasara a sembrar con
          * `semilla:datos` (mision del 17/8/2026), que ejecuta un ano entero de operaciones
-         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 en
-         * `empresa_testing_s2`, este metodo de punta a punta: **4 minutos 15 segundos**
-         * (~60s el migrate:fresh, el resto casi todo adentro de `semilla:datos`).
+         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 contra
+         * `empresa_testing_s1`, este metodo de punta a punta con `use_price_lists = false`:
+         * **565,7 segundos (9 minutos 26 segundos)**. La medicion anterior de este bloque
+         * -- 4 m 15 s en `empresa_testing_s2` -- quedo corta: el numero real es mas del doble.
          *
          * 🔴 Ese numero hay que mirarlo contra el techo del que lo llama: `admin-api` postea acá
-         * con un timeout de `CLIENT_API_TIMEOUT` x 20 = **300 segundos**
-         * (`RunUserSetupService`/`RunDemoSetupService`). O sea que hoy entra, pero por 45
-         * segundos. Cualquier cosa que agregue trabajo a la siembra pasa a ser un problema de
-         * timeout del lado del admin, no una molestia de tiempo local: si esto se pasa de 300s,
-         * el admin marca el lead como `demo_setup_status = fallido` aunque la instancia termine
-         * bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de abajo). Volver
-         * a medir cada vez que se toque `semilla:datos`.
+         * con un timeout propio de **900 segundos** (`services.client_api.demo_setup_timeout`,
+         * que usa `RunDemoSetupService` desde la mision del 25/8/2026).
+         *
+         * Antes ese techo eran los `CLIENT_API_TIMEOUT` x 20 = 300 segundos genericos, y con
+         * 565,7 s de siembra la corrida NO entraba. Lo que pasaba entonces es exactamente la
+         * cadena que motivo el candado de `DemoSetupLockHelper`: el admin daba la corrida por
+         * muerta a los 300 s y marcaba `demo_setup_status = fallido` aunque la instancia
+         * terminara bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de
+         * abajo), la UI volvia a mostrar el boton, y el segundo disparo le vaciaba la base a la
+         * primera corrida, que todavia estaba sembrando.
+         *
+         * Con 900 s de techo y 565,7 s medidos el margen es de ~334 segundos, pero es margen
+         * prestado: cualquier cosa que agregue trabajo a la siembra se lo come, y pasa a ser un
+         * problema de timeout del lado del admin, no una molestia de tiempo local. Volver a
+         * medir cada vez que se toque `semilla:datos`.
          *
          * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
          *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
@@ -290,8 +301,12 @@ class DemoSetupHelper
             Artisan::call('set_company_performances', ['user_id' => $user->id, '--historico' => true]);
         }
 
-        // Tienda online por defecto para que la demo tenga URL pública
-        self::tienda();
+        // Tienda online por defecto para que la demo tenga URL pública.
+        //
+        // Se le pasa `$semilla_sembro` porque es el MISMO dato que distingue "esta instancia
+        // recibió datos de demostración" (0) de "esta es la instalación de un cliente real" (1),
+        // y de eso depende con qué criterio de precios arranca la tienda. Ver `tienda()`.
+        self::tienda($semilla_sembro);
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
@@ -431,9 +446,17 @@ class DemoSetupHelper
         }
     }
 
+    /**
+     * `name` va con el mismo default que `create_demo_user()` ('Demo') y no sin él.
+     *
+     * Esto se llama en la línea 262, o sea DESPUÉS del `migrate:fresh` y de casi toda la
+     * siembra: un `Undefined index: name` acá tiraba la corrida entera con la base ya
+     * vaciada y media hora de trabajo perdida. Y es un camino real, no teórico: el form web
+     * legacy manda `user_name`, nunca `name`, así que ese lado moría acá siempre.
+     */
     static function crear_client_con_mail_del_user_demo($data) {
         $client = Client::create([
-            'name'      => $data['name'],
+            'name'      => $data['name'] ?? 'Demo',
             'user_id'   => config('app.USER_ID'),
             'email'     => $data['email'] ?? null,
         ]);
@@ -444,6 +467,21 @@ class DemoSetupHelper
     /**
      * Crea el registro User principal de la demo con defaults tomados del
      * formulario original. Aísla la carga de campos del setup principal.
+     *
+     * `doc_number`, `email` y `online` llevan `?? null`: hasta el 25/8/2026 se leían derecho
+     * y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con el
+     * `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
+     * admin-sync pasa `$request->all()` tal cual, así que las claves las decide quien llame.
+     *
+     * 🔴 `doc_number` NO lleva un valor por default, y es a propósito. Es el nombre de usuario
+     * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y también la
+     * contraseña, así que cualquier default fijo dejaría la demo con usuario y contraseña
+     * adivinables en un dominio público. Con `null` la cuenta queda inservible, que es feo pero
+     * no es un agujero. Y tampoco se valida como requerido en los controllers: admin-api manda
+     * `doc_number = ''` a propósito cuando el formulario de implementación no cargó documento
+     * (`ImplementationUserSetupService`), y las dos puntas no llegan a producción juntas —
+     * rechazar ese payload dejaría sin armar instancias que hoy se arman. La contraseña de ese
+     * caso la resuelve `password_inicial()`, acá abajo.
      *
      * @param array<string, mixed> $data
      *
@@ -460,17 +498,17 @@ class DemoSetupHelper
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
             'image_url'                     => 'https://comerciocity.com/img/logo.95c86b81.jpg',
-            'doc_number'                    => $data['doc_number'],
+            'doc_number'                    => $data['doc_number'] ?? null,
             'impresora'                     => 'XP-80',
-            'email'                         => $data['email'],
+            'email'                         => $data['email'] ?? null,
             'phone'                         => '3444622139',
             'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
-            'password'                      => bcrypt($data['doc_number']),
+            'password'                      => self::password_inicial($data),
             'visible_password'              => null,
             'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
-            'online'                        => $data['online'],
+            'online'                        => $data['online'] ?? null,
             'payment_expired_at'            => Carbon::now()->addMonths(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
@@ -497,6 +535,46 @@ class DemoSetupHelper
             'show_stock_min_al_iniciar'     => 0,
             'show_afip_errors_al_iniciar'   => 0,
         ]);
+    }
+
+    /**
+     * Contraseña inicial del User de la demo.
+     *
+     * 🔴 POR QUÉ NO ES UN `bcrypt($data['doc_number'])` PELADO, ANTES DE QUE ALGUIEN LO
+     * "SIMPLIFIQUE" DE VUELTA:
+     *
+     * El login es `doc_number` + password (`AuthController::login` →
+     * `Auth::attempt(['doc_number' => ..., 'password' => ...])`) y la contraseña inicial de la
+     * demo es el propio documento. Cuando `doc_number` viene con valor, esto hace exactamente
+     * lo de siempre y no hay nada que discutir.
+     *
+     * El problema es el otro caso. admin-api manda `doc_number = ''` A PROPÓSITO cuando el
+     * formulario de implementación no cargó documento (`ImplementationUserSetupService`: "si no
+     * vino del formulario, dejarlo como string vacío explícito"), y un lead de demo puede
+     * llegar con `doc_number` en null (`leads.doc_number` es nullable). Con el bcrypt pelado
+     * esos casos quedaban con `bcrypt('')`, o sea una cuenta que abre con la CONTRASEÑA VACÍA,
+     * en un dominio público y sobre un endpoint sin auth. Hashear un `Str::random(40)` deja esa
+     * misma cuenta igual de inservible que antes (nadie sabe el documento para el usuario) pero
+     * ya no adivinable.
+     *
+     * No se arregla rechazando el payload con un 422: las dos puntas no llegan a producción
+     * juntas —empresa sale por release a los ~40 clientes y el admin lo sube Lucas a mano—, así
+     * que rechazarlo dejaría sin armar instancias que hoy se arman. Compatibilidad hacia atrás:
+     * ningún payload que hoy funciona cambia de comportamiento.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @return string Hash bcrypt listo para guardar.
+     */
+    private static function password_inicial(array $data)
+    {
+        $doc_number = isset($data['doc_number']) ? trim((string) $data['doc_number']) : '';
+
+        if ($doc_number === '') {
+            return bcrypt(Str::random(40));
+        }
+
+        return bcrypt($data['doc_number']);
     }
 
     /**
@@ -855,11 +933,16 @@ class DemoSetupHelper
     /**
      * Crea la OnlineConfiguration por defecto para que la tienda online
      * asociada al usuario quede operativa.
+     *
+     * @param bool $es_instancia_de_demostracion `true` cuando `semilla:datos` sembró en esta
+     *                                           instancia, o sea cuando es una demo (o una corrida
+     *                                           local). `false` en la instalación de un cliente
+     *                                           real.
      */
-    private static function tienda()
+    private static function tienda($es_instancia_de_demostracion = false)
     {
         $online_configuration = [
-            'online_price_type_id'      => 3,
+            'online_price_type_id'      => self::online_price_type_id_inicial($es_instancia_de_demostracion),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
             'pausar_tienda_online'      => 0,
@@ -884,6 +967,64 @@ class DemoSetupHelper
         ];
 
         OnlineConfiguration::create($online_configuration);
+    }
+
+    /**
+     * Con qué criterio de visibilidad de precios arranca la tienda online.
+     *
+     * 🔴 UNA DEMO ARRANCA EN `all` (misión demo-lista-para-grabar, 25/8/2026). Hasta acá toda
+     * instancia nacía con el id 3, que en `OnlinePriceTypeSeeder` es
+     * `only_buyers_with_comerciocity_client`: "solo los usuarios registrados que estén vinculados
+     * a un Cliente del sistema". En la tienda de la demo eso se veía como un cartel
+     * "Inicie sesion o Solicite alta de cliente para ver precios" en cada tarjeta de producto
+     * (medido el 25/8/2026 en `https://tienda.comerciocity.store`: 38 productos con imagen y marca
+     * real, y ni un precio). O sea que el clip del ecommerce mostraba un catálogo sin precios.
+     *
+     * `all` es el slug exacto que mira `tienda-spa`, verificado en el código de ese repo y no
+     * asumido: `src/mixins/generals.js::puede_ver_precios()` devuelve `false` solo para
+     * `only_registered` (sin sesión) y para `only_buyers_with_comerciocity_client` (sin sesión o
+     * sin Client vinculado); cualquier otro valor —`all` entre ellos— cae al `return true` final.
+     * Del lado de `tienda-api`, `CommerceController` levanta la relación con
+     * `->with('online_configuration.online_price_type')`, así que lo que viaja al SPA es la fila
+     * entera, slug incluido. `users.listas_de_precio` no participa: la tienda no lo mira.
+     *
+     * 🔴 Y NO SE CAMBIA PARA UN CLIENTE REAL. Este helper corre también en la instalación de un
+     * comercio de verdad, y con qué criterio publica sus precios es una decisión suya, no un
+     * default que podamos mover de costado: para esas instancias sigue valiendo el id 3 de
+     * siempre. Por eso el parámetro, y no un cambio del literal.
+     *
+     * Los DOS ids se resuelven por SLUG y no por número, incluido el del cliente real que antes
+     * era un `3` pelado: `OnlinePriceTypeSeeder` está en `base_seeders()`, así que las filas ya
+     * existen cuando esto corre, y atarse a la posición dentro de esa lista es exactamente el tipo
+     * de acoplamiento que hubo que venir a corregir acá. Los fallbacks numéricos son la posición
+     * que hoy ocupa cada slug en el seeder, y cubren una instancia armada por un camino que no lo
+     * haya corrido.
+     *
+     * @param bool $es_instancia_de_demostracion
+     * @return int
+     */
+    private static function online_price_type_id_inicial($es_instancia_de_demostracion)
+    {
+        if ($es_instancia_de_demostracion) {
+            return self::online_price_type_id_por_slug('all', 1);
+        }
+
+        return self::online_price_type_id_por_slug('only_buyers_with_comerciocity_client', 3);
+    }
+
+    /**
+     * Id de un `OnlinePriceType` buscado por slug, con la posición que ocupa en
+     * `OnlinePriceTypeSeeder` como último recurso.
+     *
+     * @param string $slug
+     * @param int $id_por_defecto
+     * @return int
+     */
+    private static function online_price_type_id_por_slug($slug, $id_por_defecto)
+    {
+        $id = OnlinePriceType::where('slug', $slug)->value('id');
+
+        return is_null($id) ? $id_por_defecto : (int) $id;
     }
 
     /**
