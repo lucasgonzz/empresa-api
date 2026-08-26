@@ -340,7 +340,12 @@ class ProductionBatchMovementHelper
             && !is_null($route->order_production_status_group_id)
             && $route->order_production_status_group_id != 0
         ) {
-            $status = OrderProductionStatus::where('order_production_status_group_id', $route->order_production_status_group_id)
+            // El user_id no es redundante con el filtro por grupo: `order_production_statuses`
+            // es de todos los comercios, y un id de grupo que se filtre —o que se repita entre
+            // cuentas si alguna vez se importan datos— haría que este lote resolviera su estado
+            // final contra un estado de OTRO comercio y dejara de dar de alta el producto.
+            $status = OrderProductionStatus::where('user_id', self::user_id_del_lote($batch))
+                                            ->where('order_production_status_group_id', $route->order_production_status_group_id)
                                             ->orderBy('position', 'DESC')
                                             ->orderBy('id', 'DESC')
                                             ->first();
@@ -362,20 +367,29 @@ class ProductionBatchMovementHelper
      * resolvía ANTES de que existieran el estado final por ruta y los grupos. Ahí llamar a la
      * cascada entera daría otro estado y revertiría mal (ver apply_output_stock_if_end_status).
      *
-     * El user_id sale del LOTE y no de la sesión: el lote ya sabe de quién es, y este método
-     * corre también desde el borrado, donde el usuario logueado puede no ser el dueño del lote.
-     *
      * @param  \App\Models\ProductionBatch  $batch
      * @return \App\Models\OrderProductionStatus|null
      */
     private static function end_status_global(ProductionBatch $batch)
     {
-        $user_id = !is_null($batch->user_id) ? $batch->user_id : UserHelper::userId();
-
-        return OrderProductionStatus::where('user_id', $user_id)
+        return OrderProductionStatus::where('user_id', self::user_id_del_lote($batch))
                                     ->orderBy('position', 'DESC')
                                     ->orderBy('id', 'DESC')
                                     ->first();
+    }
+
+    /**
+     * De quién es el lote, para filtrar los estados por dueño.
+     *
+     * Sale del LOTE y no de la sesión: el lote ya sabe de quién es, y la cascada corre también
+     * desde el borrado, donde el usuario logueado puede no ser el dueño del lote.
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @return int|null
+     */
+    private static function user_id_del_lote(ProductionBatch $batch)
+    {
+        return !is_null($batch->user_id) ? $batch->user_id : UserHelper::userId();
     }
 
     private static function apply_output_stock_if_end_status(ProductionBatch $batch, ProductionBatchMovement $movement, $controller_instance, int $direction)
