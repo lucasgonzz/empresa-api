@@ -122,6 +122,68 @@ class OfertaComunicacionHelper
     }
 
     /**
+     * El nombre a mostrar de un cliente en el módulo de ofertas: el del comprador de la
+     * tienda, cayendo al del cliente del ERP. Regla, en orden:
+     *   1) trim(buyer.name + ' ' + buyer.surname) si el buyer existe, es del MISMO comercio
+     *      y eso no queda vacío.
+     *   2) trim(clients.name) si no.
+     *   3) '' si tampoco hay nada del lado del ERP (o si ni siquiera hay Client).
+     *
+     * 🔴 SE VALIDA EL COMERCIO DEL BUYER, Y NO ES COSMÉTICO. `Client::buyer()` es un
+     * `hasOne` SIN `where('user_id', ...)` (el mismo modelo compartido que usa todo el
+     * sistema, no se le agrega un scope acá), y el vínculo `buyers.comercio_city_client_id`
+     * es manual — CriteriosDeOfertaService::afinidad() ya tiene que filtrar por
+     * `buyers.user_id` justamente porque un Client puede tener buyers de MÁS DE UN comercio
+     * apuntándole. Sin esta validación, la columna "Cliente" de este comercio podía mostrar
+     * el nombre de un comprador real de OTRO comercio — no una cosmética, un dato ajeno
+     * mostrado donde no corresponde. Hallazgo del chequeo independiente de la misión
+     * `ofertas-buyer-en-vez-de-cliente-erp` (26/8/2026): el filtro de elegibilidad ya
+     * distinguía este caso; la visualización no.
+     *
+     * El camino rápido (sin consulta extra) es el normal: el buyer que ya viene eager-loaded
+     * en `$client->buyer` casi siempre es del comercio correcto, porque es el mismo vínculo
+     * que hizo elegible a la línea. Solo cuando no lo es —el caso raro— se resuelve con UNA
+     * consulta puntual y determinística (mismo criterio de `buyer_del_cliente()`: el buyer
+     * más reciente del comercio), no con un filtro en PHP sobre datos que no están cargados.
+     *
+     * @param  mixed    $client  Client con la relación `buyer` cargable (eager-load con
+     *                           `client.buyer`: sin esto, cada fila de una grilla pega su
+     *                           propia consulta a buyers).
+     * @param  int|null $user_id Comercio dueño de la oferta/corrida. Si se omite, no se valida
+     *                           el comercio del buyer (no usar así en un contexto nuevo:
+     *                           todos los llamadores actuales lo pasan).
+     * @return string
+     */
+    public static function nombre_para_mostrar($client, $user_id = null)
+    {
+        if (is_null($client)) {
+            return '';
+        }
+
+        $buyer = $client->buyer;
+
+        if (!is_null($buyer) && !is_null($user_id) && (int) $buyer->user_id !== (int) $user_id) {
+            // El buyer eager-loaded es de otro comercio: no sirve para mostrar acá. Se busca
+            // el que sí es de este comercio, con el mismo criterio (más reciente) que ya usa
+            // buyer_del_cliente() más abajo — una sola consulta, solo en este caso raro.
+            $buyer = Buyer::where('comercio_city_client_id', $client->id)
+                ->where('user_id', $user_id)
+                ->orderBy('id', 'DESC')
+                ->first();
+        }
+
+        if (!is_null($buyer)) {
+            $nombre_comprador = trim(trim((string) $buyer->name) . ' ' . trim((string) $buyer->surname));
+
+            if ($nombre_comprador !== '') {
+                return $nombre_comprador;
+            }
+        }
+
+        return trim((string) $client->name);
+    }
+
+    /**
      * El texto del mensaje de WhatsApp, en criollo y con el link a la tienda
      * cuando lo hay. Texto PLANO: de encodearlo se ocupa link_de_whatsapp().
      *
@@ -131,9 +193,9 @@ class OfertaComunicacionHelper
      */
     public static function texto_del_mensaje(ClientOffer $offer, $user)
     {
-        $offer->loadMissing('client', 'article');
+        $offer->loadMissing('client.buyer', 'article');
 
-        $nombre_cliente = $offer->client && !empty($offer->client->name) ? $offer->client->name : '';
+        $nombre_cliente = self::nombre_para_mostrar($offer->client, $offer->user_id);
         $nombre_articulo = $offer->article && !empty($offer->article->name) ? $offer->article->name : 'un artículo';
 
         $texto = ($nombre_cliente !== '' ? 'Hola ' . $nombre_cliente . '! ' : 'Hola! ')

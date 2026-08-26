@@ -24,7 +24,10 @@ class OfferSuggestionLine extends Model
     protected $guarded = [];
 
     function scopeWithAll($q) {
-        $q->with(['client', 'article']);
+        // client.buyer y no client: OfertaComunicacionHelper::nombre_para_mostrar() lee
+        // $client->buyer, y sin el eager-load acá cada fila de la grilla pega su propia
+        // consulta a buyers (N+1 con 500 líneas por página).
+        $q->with(['client.buyer', 'article']);
         return $q;
     }
 

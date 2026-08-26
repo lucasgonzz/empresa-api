@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Jobs\GenerateOfferSuggestionChunksJob;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
+use App\Models\Buyer;
 use App\Models\Client;
 use App\Models\OfferSuggestion;
 use App\Models\Sale;
@@ -89,10 +90,20 @@ class Buen_pagador_y_exclusiones_Test extends TestCase
         return Article::find($article->id);
     }
 
-    /** @return Client */
+    /**
+     * 🔴 Con buyer vinculado: el punto A exige buyer en afinidad(), y las_exclusiones_... /
+     * una_corrida_sin_exclusiones_... corren el job entero (pasan por los criterios). El bonus del
+     * buen pagador arma sus candidatos a mano y no pasa por acá, así que no le afecta.
+     *
+     * @return Client
+     */
     protected function cliente($nombre)
     {
-        return Client::create(['name' => $nombre . '-' . uniqid(), 'user_id' => $this->comercio->id]);
+        $cliente = Client::create(['name' => $nombre . '-' . uniqid(), 'user_id' => $this->comercio->id]);
+        Buyer::create(['name' => 'Comprador ' . uniqid(), 'email' => 'buyer-' . uniqid() . '@test.local',
+            'user_id' => $this->comercio->id, 'comercio_city_client_id' => $cliente->id]);
+
+        return $cliente;
     }
 
     /** Una compra real: la venta y su línea de article_purchases, con la misma fecha. */
