@@ -114,6 +114,68 @@ class DuplicarRecetaHelper
     }
 
     /**
+     * Los insumos de la receta duplicada QUE A SU VEZ TIENEN RECETA PROPIA.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     *  🔴 EL DUPLICAR NO RE-APUNTA LOS INSUMOS, Y NO PUEDE HACERLO.
+     * ─────────────────────────────────────────────────────────────────────────────────────────
+     *
+     * Duplicando "Silla 1" → "Silla 2", la receta nueva sigue consumiendo *Estructura silla 1*,
+     * *Asiento silla 1*, *Respaldo de madera silla 1*. Para una receta hoja (patas → caño) eso
+     * está PERFECTO: el caño es el mismo caño. Para una de ensamble está mal.
+     *
+     * Re-apuntar solo se puede si el sistema sabe cuál es la parte equivalente del otro modelo,
+     * y no lo sabe: no hay ninguna relación entre "Estructura silla 1" y "Estructura silla 2",
+     * ni siquiera existe la segunda hasta que alguien la cargue. Adivinar por nombre —buscar el
+     * artículo que más se parezca— es peor que no hacer nada: engancharía la parte equivocada
+     * en silencio, y el error se descubre cuando el lote descuenta el stock de otro modelo.
+     *
+     * Lo que sí se puede, y es lo que se hace, es MATAR EL SILENCIO: se devuelven nombrados los
+     * insumos que son productos fabricados (los que tienen receta propia), que son exactamente
+     * los que hay que mirar. La materia prima no se lista porque no hay nada que revisar ahí.
+     *
+     * @param  \App\Models\Recipe  $recipe   La receta NUEVA.
+     * @param  int                 $user_id
+     * @return array  Cada entrada: ['article_id' => int, 'article_name' => string]
+     */
+    public static function insumos_a_revisar($recipe, $user_id)
+    {
+        $recipe->load('recipe_routes.articles');
+
+        $vistos = [];
+        $insumos = [];
+
+        foreach ($recipe->recipe_routes as $ruta) {
+
+            foreach ($ruta->articles as $insumo) {
+
+                $article_id = (int) $insumo->id;
+
+                // El mismo artículo puede ser insumo de la misma ruta más de una vez (en estados
+                // distintos) y de más de una ruta: se avisa una sola vez.
+                if (isset($vistos[$article_id])) {
+                    continue;
+                }
+
+                $vistos[$article_id] = true;
+
+                $tiene_receta_propia = Recipe::where('user_id', $user_id)
+                                            ->where('article_id', $article_id)
+                                            ->exists();
+
+                if ($tiene_receta_propia) {
+                    $insumos[] = [
+                        'article_id'    => $article_id,
+                        'article_name'  => $insumo->name,
+                    ];
+                }
+            }
+        }
+
+        return $insumos;
+    }
+
+    /**
      * El artículo nuevo, con sus side-effects de alta.
      *
      * @param  \App\Models\Article  $original

@@ -78,6 +78,12 @@ class RecipeController extends Controller
      * Ver DuplicarRecetaHelper para la lista de que se copia y que no, con el motivo de cada
      * exclusion.
      *
+     * `insumos_a_revisar` son los insumos de la receta nueva que a su vez tienen receta propia:
+     * o sea, partes que se fabrican y que siguen apuntando a las del modelo original. El
+     * duplicar NO las re-apunta (no puede saber cual es la parte equivalente del otro modelo),
+     * asi que las devuelve nombradas para que la pantalla las liste. Ver el docblock de
+     * DuplicarRecetaHelper::insumos_a_revisar().
+     *
      * @param  \Illuminate\Http\Request  $request
      * @param  int  $id
      * @return \Illuminate\Http\JsonResponse
@@ -89,7 +95,10 @@ class RecipeController extends Controller
 
         $nueva = DuplicarRecetaHelper::duplicar($id, $request->name, $this);
 
-        return response()->json(['model' => $this->fullModel('Recipe', $nueva->id)], 201);
+        return response()->json([
+            'model'             => $this->fullModel('Recipe', $nueva->id),
+            'insumos_a_revisar' => DuplicarRecetaHelper::insumos_a_revisar($nueva, $this->userId()),
+        ], 201);
     }
 
     function articleUsedInRecipes($article_id) {

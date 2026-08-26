@@ -148,6 +148,98 @@ class Duplicar_receta_Test extends ProduccionV2TestCase
     }
 
     /**
+     * 🔴 EL DUPLICAR AVISA QUE LOS INSUMOS FABRICADOS SIGUEN APUNTANDO AL MODELO ORIGINAL.
+     *
+     * Duplicando "Silla 1" -> "Silla 2", la receta nueva sigue consumiendo *Estructura silla 1*.
+     * Para una receta hoja (patas -> cano) esta perfecto; para una de ensamble esta mal, y hasta
+     * ahora nada lo avisaba. El sistema no puede re-apuntarlos solo (no sabe cual es la parte
+     * equivalente del otro modelo), pero si puede nombrarlos.
+     *
+     * Solo los que TIENEN RECETA PROPIA: la materia prima no se lista porque ahi no hay nada que
+     * revisar.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function duplicar_devuelve_los_insumos_fabricados_que_hay_que_revisar()
+    {
+        $corte = $this->crear_estado('Corte revisar', 1);
+
+        $silla = $this->crear_articulo('Silla 1 revisar test', 0);
+
+        /* Dos insumos fabricados (tienen receta propia) y uno de materia prima. */
+        $estructura = $this->crear_articulo('Estructura silla 1 revisar test', 3);
+        $asiento    = $this->crear_articulo('Asiento silla 1 revisar test', 3);
+        $tornillo   = $this->crear_articulo('Tornillo revisar test', 900);
+
+        $this->crear_receta($estructura);
+        $this->crear_receta($asiento);
+
+        $receta = $this->crear_receta($silla);
+
+        /* La estructura aparece DOS VECES: se avisa una sola. */
+        $this->crear_ruta($receta, [
+            ['article' => $estructura, 'amount' => 1, 'order_production_status_id' => $corte->id],
+            ['article' => $estructura, 'amount' => 1, 'order_production_status_id' => $corte->id],
+            ['article' => $asiento,    'amount' => 1, 'order_production_status_id' => $corte->id],
+            ['article' => $tornillo,   'amount' => 8, 'order_production_status_id' => $corte->id],
+        ]);
+
+        $respuesta = $this->post('api/recipe/'.$receta->id.'/duplicar', [
+            'name' => 'Silla 2 revisar test',
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $a_revisar = $respuesta->json('insumos_a_revisar');
+
+        $this->assertNotNull($a_revisar);
+
+        /* Los dos fabricados, sin repetir la estructura y sin el tornillo. */
+        $this->assertCount(2, $a_revisar);
+
+        $nombres = [];
+
+        foreach ($a_revisar as $insumo) {
+            $nombres[] = $insumo['article_name'];
+            $this->assertArrayHasKey('article_id', $insumo);
+        }
+
+        $this->assertContains('Estructura silla 1 revisar test', $nombres);
+        $this->assertContains('Asiento silla 1 revisar test', $nombres);
+        $this->assertNotContains('Tornillo revisar test', $nombres);
+    }
+
+    /**
+     * Una receta hoja —insumos que son todos materia prima— no tiene nada que revisar: el array
+     * viaja vacio y la pantalla no muestra ningun aviso.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function duplicar_una_receta_hoja_no_devuelve_nada_para_revisar()
+    {
+        $corte = $this->crear_estado('Corte hoja', 1);
+
+        $pata = $this->crear_articulo('Pata hoja revisar test', 0);
+        $cano = $this->crear_articulo('Cano hoja revisar test', 900);
+
+        $receta = $this->crear_receta($pata);
+
+        $this->crear_ruta($receta, [
+            ['article' => $cano, 'amount' => 1, 'order_production_status_id' => $corte->id],
+        ]);
+
+        $respuesta = $this->post('api/recipe/'.$receta->id.'/duplicar', [
+            'name' => 'Pata reforzada hoja revisar test',
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $this->assertEquals([], $respuesta->json('insumos_a_revisar'));
+    }
+
+    /**
      * 🔴 NO SE PUEDE DUPLICAR LA RECETA DE OTRO COMERCIO.
      *
      * El id llega crudo por la URL. Sin el filtro por user_id, cualquier cuenta se copiaba el
