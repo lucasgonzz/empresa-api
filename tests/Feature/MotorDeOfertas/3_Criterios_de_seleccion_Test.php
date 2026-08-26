@@ -63,8 +63,25 @@ class Criterios_de_seleccion_Test extends TestCase
         return new CriteriosDeOfertaService($this->suggestion, $this->comercio);
     }
 
-    /** @return Client */
+    /**
+     * 🔴 Con buyer vinculado: es el escenario REAL de un cliente que puede recibir una oferta.
+     * Desde el punto A, afinidad() (y por herencia reactivacion()) exige buyer, y la query que
+     * corre la tienda ya lo exigía de antes para poder mostrar la oferta a alguien. Un test que
+     * arma un cliente SIN buyer y espera que el motor le genere algo está probando un escenario
+     * que en producción no puede ver nadie.
+     *
+     * @return Client
+     */
     protected function cliente($nombre)
+    {
+        $cliente = Client::create(['name' => $nombre, 'user_id' => $this->comercio->id]);
+        $this->comprador($cliente);
+
+        return $cliente;
+    }
+
+    /** Un cliente SIN buyer vinculado, para los tests que prueban justamente ese filtro. @return Client */
+    protected function cliente_sin_buyer($nombre)
     {
         return Client::create(['name' => $nombre, 'user_id' => $this->comercio->id]);
     }
@@ -150,6 +167,11 @@ class Criterios_de_seleccion_Test extends TestCase
 
     /**
      * 🔴 A.5.0: una venta borrada NO cuenta, y una consolidación de facturación tampoco.
+     *
+     * 🔴 EL assertSame([], $pares) DE ABAJO PRUEBA UNA SOLA COSA, NO DOS. `cliente()` ahora crea el
+     * Buyer vinculado, así que el [] ya no puede explicarse por "el cliente no tiene buyer": prueba
+     * únicamente que el filtro de A.5.0 (venta borrada / consolidación de facturación) descarta las
+     * dos compras. Es una aserción MÁS estricta que antes, no más floja.
      *
      * @group motor-de-ofertas
      * @test

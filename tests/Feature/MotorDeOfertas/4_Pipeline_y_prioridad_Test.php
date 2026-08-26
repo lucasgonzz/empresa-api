@@ -10,6 +10,7 @@ use App\Jobs\GenerateOfferSuggestionChunksJob;
 use App\Models\AiConversation;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
+use App\Models\Buyer;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OfferSuggestion;
@@ -119,6 +120,12 @@ class Pipeline_y_prioridad_Test extends TestCase
         $articulos = [$this->articulo('zz-pipe-uno'), $this->articulo('zz-pipe-dos')];
 
         foreach ($clientes as $cliente) {
+            // 🔴 El punto A exige buyer vinculado (CriteriosDeOfertaService::afinidad()): sin esto
+            // el pipeline entero no tiene candidatos que procesar y los 5 tests de este archivo
+            // que lo corren se rompen.
+            Buyer::create(['name' => 'Comprador ' . uniqid(), 'email' => 'buyer-' . uniqid() . '@test.local',
+                'user_id' => $this->comercio->id, 'comercio_city_client_id' => $cliente->id]);
+
             foreach ($articulos as $articulo) {
                 $this->comprar($cliente, $articulo, 10);
                 $this->comprar($cliente, $articulo, 30);
