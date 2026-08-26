@@ -245,6 +245,28 @@ abstract class ProduccionV2TestCase extends EmpresaTestCase
     }
 
     /**
+     * 🔴 EL ESTADO "En proceso" SE REUSA, NO SE CREA DE NUEVO.
+     *
+     * `production_batch_statuses.slug` tiene indice UNIQUE global (ver la migracion del
+     * 5/3/2026), asi que crearlo dos veces revienta con un duplicate key. Y crear_lote() lo
+     * pedia siempre: llamarlo dos veces en el mismo test era imposible, y por eso ningun test
+     * podia encadenar dos lotes — que es exactamente el flujo multinivel que esta mision
+     * agrega. La red no faltaba por olvido: faltaba porque este builder no la dejaba escribir.
+     *
+     * @return \App\Models\ProductionBatchStatus
+     */
+    protected function estado_de_lote_en_proceso()
+    {
+        $status = ProductionBatchStatus::where('slug', 'in_progress')->first();
+
+        if (!is_null($status)) {
+            return $status;
+        }
+
+        return $this->crear_estado_de_lote('En proceso', 'in_progress');
+    }
+
+    /**
      * @param  \App\Models\Article      $article  El producto que el lote fabrica.
      * @param  \App\Models\Recipe       $recipe
      * @param  \App\Models\RecipeRoute  $route
@@ -253,7 +275,7 @@ abstract class ProduccionV2TestCase extends EmpresaTestCase
      */
     protected function crear_lote($article, $recipe, $route, $planned)
     {
-        $status = $this->crear_estado_de_lote('En proceso', 'in_progress');
+        $status = $this->estado_de_lote_en_proceso();
 
         return ProductionBatch::create([
             'article_id'                    => $article->id,
