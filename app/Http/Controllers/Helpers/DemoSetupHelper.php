@@ -13,6 +13,7 @@ use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\OnlinePriceType;
+use App\Models\OnlineTemplate;
 use App\Models\PriceType;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
@@ -534,6 +535,28 @@ class DemoSetupHelper
             // Pedido de Lucas (25/8/2026): en la demo estos avisos al iniciar sesion quedan apagados por defecto.
             'show_stock_min_al_iniciar'     => 0,
             'show_afip_errors_al_iniciar'   => 0,
+
+            /*
+                Pedido de Lucas (27/8/2026): la demo nace con la dinamica de costeo por condicion
+                fiscal ENCENDIDA -- la tilde "Calcular costos segun la condicion de IVA" de las
+                propiedades del usuario -- y como Responsable Inscripto.
+
+                Es el mismo criterio que ya aplica `HelperController::store_user()` a toda cuenta
+                nueva: el `0` que trae por default la migracion
+                `2026_07_27_120000_add_costeo_condicion_fiscal_to_users_table` existe para no
+                moverle el costeo a las cuentas viejas, no para las que se crean de aca en adelante.
+
+                VA EN EL `User::create()` Y NO MAS ABAJO EN `run()`, y eso importa: `semilla:datos`
+                siembra el catalogo y calcula los precios de los articulos despues de este punto, y
+                `ArticlePricesHelper::iva_va_al_costo()` lee estas dos columnas del dueño para
+                decidir si el IVA forma parte del costo. Seteadas despues, la demo quedaria con la
+                tilde prendida pero con los precios calculados por el camino historico.
+
+                'RRII' reproduce el comportamiento de costeo actual (costo neto, IVA sumado al
+                vender), asi que la aritmetica de la demo no se mueve al prender la tilde.
+            */
+            'condicion_iva_precios'         => User::CONDICION_RRII,
+            'usar_condicion_fiscal_en_costeo' => 1,
         ]);
     }
 
@@ -943,6 +966,9 @@ class DemoSetupHelper
     {
         $online_configuration = [
             'online_price_type_id'      => self::online_price_type_id_inicial($es_instancia_de_demostracion),
+            // Pedido de Lucas (27/8/2026): la tienda nace con la plantilla ComercioCity, no con
+            // Moderno. Ver `online_template_id_comerciocity()`.
+            'online_template_id'        => self::online_template_id_comerciocity(),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
             'pausar_tienda_online'      => 0,
@@ -1027,6 +1053,32 @@ class DemoSetupHelper
         $id = OnlinePriceType::where('slug', $slug)->value('id');
 
         return is_null($id) ? $id_por_defecto : (int) $id;
+    }
+
+    /**
+     * Id de la plantilla de diseño "ComercioCity" con la que arranca la tienda online.
+     *
+     * 🔴 SE RESUELVE POR SLUG Y NO CON UN NUMERO PELADO, por el mismo motivo que
+     * `online_price_type_id_por_slug()` de aca arriba: `online_templates` se puebla con
+     * `OnlineTemplateSeeder`, que esta en `base_seeders()` y corre ANTES que `tienda()` dentro de
+     * `run()`, asi que la fila ya existe cuando esto se ejecuta; atarse a la posicion que ocupa
+     * dentro de ese seeder es exactamente el acoplamiento que hubo que venir a corregir en el
+     * criterio de precios de la tienda.
+     *
+     * Hasta el 27/8/2026 esta clave no se pasaba y la columna caia en su default de migracion, que
+     * es `1` = "Moderno". El fallback de abajo es `3`, la posicion que hoy ocupa 'comerciocity' en
+     * `OnlineTemplateSeeder`, y cubre una instancia armada por un camino que no lo haya corrido.
+     *
+     * El slug tiene que ser 'comerciocity' tal cual: `tienda-spa` arma la clase CSS concatenando
+     * 'plantilla-' + slug, y contra esa clase estan escritos todos los selectores de la plantilla.
+     *
+     * @return int
+     */
+    private static function online_template_id_comerciocity()
+    {
+        $id = OnlineTemplate::where('slug', 'comerciocity')->value('id');
+
+        return is_null($id) ? 3 : (int) $id;
     }
 
     /**
