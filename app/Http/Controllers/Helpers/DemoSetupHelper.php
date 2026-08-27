@@ -552,8 +552,25 @@ class DemoSetupHelper
                 decidir si el IVA forma parte del costo. Seteadas despues, la demo quedaria con la
                 tilde prendida pero con los precios calculados por el camino historico.
 
-                'RRII' reproduce el comportamiento de costeo actual (costo neto, IVA sumado al
-                vender), asi que la aritmetica de la demo no se mueve al prender la tilde.
+                🔴 ESTO MUEVE LOS PRECIOS DE LA DEMO, Y ES EL PUNTO. Medido el 27/8/2026 con
+                `php artisan costeo:simular` sobre los 10 articulos del fixture: el precio final
+                sube exactamente la alicuota de IVA de cada articulo (21% en ocho de ellos, 10,5%
+                en los de alicuota reducida) y el costo real no se mueve (0,00% en los diez).
+
+                El motivo es que `users.aplicar_iva_al_costo` trae default `1` desde su migracion
+                (`2026_04_29_115713_add_aplicar_iva_al_costo_to_users`), y este helper nunca lo
+                seteaba: la demo nacia en LEGACY con esa tilde prendida, o sea con
+                `iva_va_al_costo()` en true. Y el pipeline hace `if (!iva_va_al_costo()) aplicar_iva()`,
+                asi que el IVA se daba por incluido dentro del costo cargado y no se sumaba en
+                ningun lado. Con la dinamica nueva y RRII el costo se lee como NETO y el IVA se
+                suma al vender, que es lo correcto para un Responsable Inscripto.
+
+                🔴 Y ALINEA LA DEMO CON UNA CORRIDA LOCAL, que es lo que estaba roto. `UserSeeder`
+                y `UsersTableSeeder` ya dejan toda cuenta sembrada con
+                `usar_condicion_fiscal_en_costeo = 1`, asi que local venia calculando por la
+                dinamica nueva mientras la demo seguia en legacy: mismo costo sembrado, 21% de
+                diferencia en el precio final. Es el mismo modo de falla que cerro la mision 63
+                (`siembra-local-igual-a-demo`) y que este camino todavia tenia abierto.
             */
             'condicion_iva_precios'         => User::CONDICION_RRII,
             'usar_condicion_fiscal_en_costeo' => 1,

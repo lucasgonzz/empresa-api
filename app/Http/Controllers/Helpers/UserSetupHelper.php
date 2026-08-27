@@ -238,10 +238,24 @@ class UserSetupHelper
                 `2026_07_27_120000_add_costeo_condicion_fiscal_to_users_table` existe para no
                 moverle el costeo a las cuentas viejas, no para las que se crean de aca en adelante.
 
-                'RRII' reproduce el comportamiento de costeo actual (costo neto, IVA sumado al
-                vender), asi que la cuenta arranca calculando igual que hasta ahora. Si el comercio
-                es Monotributista, lo cambia desde sus propiedades y el sistema recalcula los
-                precios (`UserController`).
+                🔴 CAMBIA COMO SE INTERPRETA EL COSTO QUE CARGA EL COMERCIO, y hay que saberlo.
+                `users.aplicar_iva_al_costo` trae default `1` desde su migracion
+                (`2026_04_29_115713_add_aplicar_iva_al_costo_to_users`) y este helper nunca lo
+                seteaba: una instalacion nueva nacia en LEGACY con esa tilde prendida, o sea con
+                `iva_va_al_costo()` en true, y el pipeline hace
+                `if (!iva_va_al_costo()) aplicar_iva()` -- el IVA se daba por incluido dentro del
+                costo cargado y no se sumaba en ningun lado. Desde ahora el costo se lee como NETO
+                y el IVA se suma al vender, que es lo correcto para un Responsable Inscripto.
+
+                Medido el 27/8/2026 con `php artisan costeo:simular` sobre el fixture de testing:
+                para el mismo costo y el mismo margen, el precio final sube exactamente la alicuota
+                de IVA del articulo (21% / 10,5%) y el costo real no se mueve.
+
+                Es un cambio para las instalaciones NUEVAS solamente: ningun cliente ya instalado
+                se toca, porque el default `0` de
+                `2026_07_27_120000_add_costeo_condicion_fiscal_to_users_table` los deja donde
+                estaban. Si el comercio es Monotributista, lo cambia desde sus propiedades y el
+                sistema recalcula los precios (`UserController`).
             */
             'condicion_iva_precios'         => User::CONDICION_RRII,
             'usar_condicion_fiscal_en_costeo' => 1,
