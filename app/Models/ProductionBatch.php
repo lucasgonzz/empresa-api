@@ -118,7 +118,24 @@ class ProductionBatch extends Model
     public function getAmountsByStatusAttribute()
     {
         // Estados en orden
-        $statuses = OrderProductionStatus::orderBy('position', 'ASC')
+        $query = OrderProductionStatus::where('user_id', $this->user_id);
+
+        // Con grupos, la solapa "Cantidades en cada Estado" muestra SOLO los estados del grupo de
+        // la ruta de este lote. Sin grupo (o sin ruta), se comporta como siempre: todos los estados
+        // de la cuenta. El filtro por user_id es un arreglo aparte: hasta hoy esta query no filtraba
+        // por cuenta y una base multi-comercio mostraba los estados de todos.
+        //
+        // ⚠️ $this->user_id y no UserHelper::userId(): este accessor esta en $appends, o sea que
+        // corre en cada serializacion del lote, tambien desde una cola o un comando donde no hay
+        // sesion. Y $this->recipe_route no agrega una query en el camino normal porque
+        // scopeWithAll() ya la trae con with('recipe_route'). No agregar mas queries que esa.
+        $route = $this->recipe_route;
+
+        if (!is_null($route) && !is_null($route->order_production_status_group_id) && $route->order_production_status_group_id != 0) {
+            $query = $query->where('order_production_status_group_id', $route->order_production_status_group_id);
+        }
+
+        $statuses = $query->orderBy('position', 'ASC')
             ->get(['id', 'name', 'position']);
 
         // Entradas por estado (to)

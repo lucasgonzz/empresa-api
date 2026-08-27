@@ -858,6 +858,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('production-batch-movement-type', 'ProductionBatchMovementTypeController');
 
+    // Multinivel de produccion (misión produccion-v2-multinivel, 26/8/2026)
+    Route::resource('order-production-status-group', 'OrderProductionStatusGroupController');
+    // -- ancla: las rutas de potencial de armado y de duplicar receta van acá abajo --
+    Route::get('potencial-de-armado', 'PotencialDeArmadoController@index');
+    Route::post('recipe/{id}/duplicar', 'RecipeController@duplicar');
+
     Route::resource('c-a-payment-method-type', 'CAPaymentMethodTypeController');
 
 

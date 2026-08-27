@@ -294,14 +294,168 @@ class ProductionBatchMovementHelper
         $stock_movement_ct->crear($data);
     }
 
-    private static function apply_output_stock_if_end_status(ProductionBatch $batch, ProductionBatchMovement $movement, $controller_instance, int $direction)
+    /**
+     * Resuelve cuál es el estado en el que el lote da de alta el producto terminado.
+     *
+     * Cascada, en orden:
+     *   (a) el end_order_production_status_id de la RUTA del lote, si está seteado;
+     *   (b) el estado de mayor position DENTRO del grupo de la ruta;
+     *   (c) el estado de mayor position de toda la cuenta.
+     *
+     * (c) es obligatoria y no se puede sacar: es lo que mantiene andando a los clientes que
+     * ya venían usando el módulo con una sola lista global de estados y ninguna ruta con
+     * estado final propio. Toda ruta existente cae a (c) y no cambia nada para ella.
+     *
+     * El desempate por id DESC no es decorativo: dos estados con la misma position dan un
+     * ganador arbitrario, y este método se llama dos veces sobre el mismo movimiento (al
+     * crearlo y al borrarlo). Sin desempate, borrar podía revertir contra otro estado.
+     *
+     * ⚠️ NO usa get_recipe_route(): ese método hace abort(422) si el lote no tiene ruta, y en
+     * el camino del borrado un 422 dejaría un movimiento imborrable para siempre. Acá se lee
+     * $batch->recipe_route directo y, si viene null, se salta a (c).
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @return \App\Models\OrderProductionStatus|null
+     */
+    private static function resolve_end_status(ProductionBatch $batch)
     {
-        
-        $end_status = OrderProductionStatus::where('user_id', UserHelper::userId())  
+        $route = $batch->recipe_route;
+
+        // (a) La ruta declara explícitamente en qué estado la unidad queda terminada.
+        if (
+            !is_null($route)
+            && !is_null($route->end_order_production_status_id)
+            && $route->end_order_production_status_id != 0
+        ) {
+            $status = OrderProductionStatus::find($route->end_order_production_status_id);
+
+            if (!is_null($status)) {
+                return $status;
+            }
+        }
+
+        // (b) La ruta tiene grupo: el último estado DE ESE GRUPO, no el de toda la cuenta.
+        if (
+            !is_null($route)
+            && !is_null($route->order_production_status_group_id)
+            && $route->order_production_status_group_id != 0
+        ) {
+            // El user_id no es redundante con el filtro por grupo: `order_production_statuses`
+            // es de todos los comercios, y un id de grupo que se filtre —o que se repita entre
+            // cuentas si alguna vez se importan datos— haría que este lote resolviera su estado
+            // final contra un estado de OTRO comercio y dejara de dar de alta el producto.
+            $status = OrderProductionStatus::where('user_id', self::user_id_del_lote($batch))
+                                            ->where('order_production_status_group_id', $route->order_production_status_group_id)
                                             ->orderBy('position', 'DESC')
+                                            ->orderBy('id', 'DESC')
                                             ->first();
 
-        if ((int)$movement->to_order_production_status_id !== (int)$end_status->id) {
+            if (!is_null($status)) {
+                return $status;
+            }
+        }
+
+        // (c) El comportamiento de siempre.
+        return self::end_status_global($batch);
+    }
+
+    /**
+     * La rama (c) sola: el estado de mayor position de toda la cuenta del lote.
+     *
+     * Está separada de resolve_end_status() porque es EL COMPORTAMIENTO VIEJO, y hay un lugar
+     * —el fallback de output_stock_applied null— donde hay que resolver el estado final como se
+     * resolvía ANTES de que existieran el estado final por ruta y los grupos. Ahí llamar a la
+     * cascada entera daría otro estado y revertiría mal (ver apply_output_stock_if_end_status).
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @return \App\Models\OrderProductionStatus|null
+     */
+    private static function end_status_global(ProductionBatch $batch)
+    {
+        return OrderProductionStatus::where('user_id', self::user_id_del_lote($batch))
+                                    ->orderBy('position', 'DESC')
+                                    ->orderBy('id', 'DESC')
+                                    ->first();
+    }
+
+    /**
+     * De quién es el lote, para filtrar los estados por dueño.
+     *
+     * Sale del LOTE y no de la sesión: el lote ya sabe de quién es, y la cascada corre también
+     * desde el borrado, donde el usuario logueado puede no ser el dueño del lote.
+     *
+     * @param  \App\Models\ProductionBatch  $batch
+     * @return int|null
+     */
+    private static function user_id_del_lote(ProductionBatch $batch)
+    {
+        return !is_null($batch->user_id) ? $batch->user_id : UserHelper::userId();
+    }
+
+    private static function apply_output_stock_if_end_status(ProductionBatch $batch, ProductionBatchMovement $movement, $controller_instance, int $direction)
+    {
+        /*
+         * 🔴 AL BORRAR MANDA LO QUE SE REGISTRÓ AL CREAR, NO LO QUE LA CASCADA RESUELVA AHORA.
+         *
+         * Este método se llama dos veces sobre el mismo movimiento: con direction +1 al crearlo
+         * y con -1 al borrarlo, y entre una llamada y la otra pueden pasar semanas. En el medio
+         * el usuario puede cambiar el estado final de la ruta, cambiarle el grupo, agregar un
+         * estado con position más alta o mover una position. En cualquiera de esos casos,
+         * resolver la cascada de nuevo al borrar da OTRO estado, la comparación no matchea y el
+         * borrado no revierte lo que ese movimiento sumó: queda stock fantasma, sin error y sin
+         * log.
+         *
+         * Por eso el resultado se REGISTRA en output_stock_applied cuando el hecho ocurre. No es
+         * cachear estado derivado: la fuente no está vigente, es la configuración del momento en
+         * que el movimiento se hizo, y esa configuración es mutable. Es la misma razón por la
+         * que un stock_movement guarda su stock_resultante.
+         *
+         * 🔴 SI LA COLUMNA ES NULL, SE RESUELVE POR LA RAMA GLOBAL SOLA, NO POR LA CASCADA.
+         *
+         * La columna en null significa una cosa sola: el movimiento se creó ANTES de esta
+         * migración, o sea cuando el estado final era siempre el de mayor position de toda la
+         * cuenta y no existían ni el estado final por ruta ni los grupos. Entonces lo que hay que
+         * reconstruir al borrarlo es ESE criterio y ninguno otro: end_status_global().
+         *
+         * Pasar por la cascada entera acá sería resolver un movimiento viejo con reglas que no
+         * existían cuando se creó, y rompe en los dos sentidos. Con Corte(1)/Armado(2)/
+         * Terminado(3): un movimiento viejo hacia Terminado sumó 10 y quedó con la columna en
+         * null; después del deploy el usuario le pone end_order_production_status_id = Armado a
+         * la ruta. Al borrarlo, la cascada devolvería Armado ≠ Terminado, no revertiría, y
+         * quedarían +10 fantasma. El espejo también: un movimiento viejo hacia Armado, que no
+         * sumó nada, restaría 10 que nunca entraron.
+         *
+         * Compatibilidad hacia atrás sin backfill.
+         */
+        if ($direction >= 0) {
+
+            $end_status = self::resolve_end_status($batch);
+
+            $aplica = (
+                !is_null($end_status)
+                && (int)$movement->to_order_production_status_id === (int)$end_status->id
+            );
+
+            $movement->output_stock_applied = $aplica ? 1 : 0;
+            $movement->save();
+
+        } else if (!is_null($movement->output_stock_applied)) {
+
+            $aplica = ((int)$movement->output_stock_applied === 1);
+
+        } else {
+
+            // Movimiento anterior a la migración: se resuelve con el criterio que estaba vigente
+            // cuando se creó, que es la rama global sola.
+            $end_status = self::end_status_global($batch);
+
+            $aplica = (
+                !is_null($end_status)
+                && (int)$movement->to_order_production_status_id === (int)$end_status->id
+            );
+        }
+
+        if (!$aplica) {
             return;
         }
 
@@ -316,7 +470,10 @@ class ProductionBatchMovementHelper
         $data['model_id'] = $batch->article_id;
         $data['amount'] = $amount;
         $data['concepto_stock_movement_name'] = 'Produccion';
-        $data['observations'] = 'Batch #'.$batch->id;
+
+        // Mismo formato que los movimientos de insumo, para poder rastrear el alta del producto
+        // hasta el movimiento del lote que la produjo y no solo hasta el lote.
+        $data['observations'] = 'Batch #'.$batch->id.' mov #'.$movement->id;
 
         // Si querés, acá se puede usar to_address_id (depósito destino del producto terminado)
         if (!is_null($movement->to_address_id)) {
