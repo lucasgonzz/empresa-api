@@ -32,6 +32,60 @@ class FerreteriaArticlesSeeder extends Seeder
     const CARPETA_IMAGENES = 'article-images-2';
 
     /**
+     * Alicuota de IVA de todo el catalogo de la semilla, en PORCENTAJE (21, no 0,21).
+     *
+     * Es la misma constante que ya replica `SembrarDatosDePrueba::IVA_ALICUOTA`, y por el mismo
+     * motivo: de este numero dependen cuentas que se calculan afuera de la base.
+     *
+     * @var int
+     */
+    const IVA_ALICUOTA_DEL_CATALOGO = 21;
+
+    /**
+     * Id de `ivas` con el que nace todo el catalogo. `IvaSeeder` siembra las alicuotas en orden
+     * ('27', '21', '10.5', ...), asi que el id 2 es el 21% de `IVA_ALICUOTA_DEL_CATALOGO`.
+     *
+     * 🔴 Las dos constantes tienen que moverse juntas: si alguna vez el catalogo pasa a otra
+     * alicuota, cambiar solo una deja los costos descompuestos con un porcentaje y los
+     * comprobantes emitidos con otro, y no lo denuncia nada.
+     *
+     * @var int
+     */
+    const IVA_ID_DEL_CATALOGO = 2;
+
+    /**
+     * Costo NETO a guardar, a partir del costo BRUTO de la lista del proveedor.
+     *
+     * 🔴 LOS COSTOS DE `get_catalog()` VIENEN CON IVA ADENTRO. Son los precios que la ferreteria
+     * fuente tenia en su lista, copiados tal cual, y por eso son numeros de proveedor y no
+     * inventados. Pero `articles.cost` guarda el costo NETO: desde que las cuentas nuevas nacen
+     * con `usar_condicion_fiscal_en_costeo = 1` (27/8/2026), un Responsable Inscripto recupera el
+     * IVA de sus compras como credito fiscal, asi que el IVA no es costo -- se suma recien al
+     * vender. Guardar el bruto ahi dentro hacia que el IVA se cobrara dos veces: una adentro del
+     * costo y otra al facturar, y el precio final de la demo subia 21%.
+     *
+     * 🔴 SE REDONDEA A DOS DECIMALES Y NO A ENTERO, y esto se midio antes de elegirlo. Redondear
+     * a entero parecia mas prolijo -- la lista de arriba son costos redondeados -- pero rompe
+     * justamente lo que este metodo viene a arreglar en la cola barata del catalogo: hay siete
+     * articulos con costo bruto menor a 30 (3, 4, 10, 12, 21, 24 y 27), y ahi un entero es un
+     * escalon gigante. Medido sobre los 49 articulos con margen 50%:
+     *
+     *   - a entero:        el de costo 3 caia de $4,50 a $3,63 -- 19,33% abajo. Desvio maximo
+     *                      del catalogo: 19,33%.
+     *   - a dos decimales: el mismo articulo da $4,50 contra $4,50. Desvio maximo del catalogo:
+     *                      0,1275%, y es un centavo sobre $6 en el articulo de costo bruto 4.
+     *
+     * `articles.cost` es `decimal(22,6)`, asi que los dos decimales entran de sobra.
+     *
+     * @param  int|float $costo_con_iva Costo bruto tal como figura en `get_catalog()`.
+     * @return float Costo neto, redondeado a dos decimales.
+     */
+    private function costo_neto($costo_con_iva)
+    {
+        return round($costo_con_iva / (1 + (self::IVA_ALICUOTA_DEL_CATALOGO / 100)), 2);
+    }
+
+    /**
      * Stock inicial, minimo y maximo por sucursal, en orden de posicion
      * (0 = Tucuman, que es el deposito de origen).
      *
@@ -159,10 +213,10 @@ class FerreteriaArticlesSeeder extends Seeder
                 'provider_id' => $provider->id,
                 'category_name' => $parent_category_name,
                 'sub_category_name' => $item['sub_category_name'],
-                'cost' => $item['cost'],
+                'cost' => $this->costo_neto($item['cost']),
                 'stock' => $item['stock'],
                 'percentage_gain' => 50,
-                'iva_id' => 2,
+                'iva_id' => self::IVA_ID_DEL_CATALOGO,
                 'apply_provider_percentage_gain' => 0,
             ];
 
@@ -816,6 +870,11 @@ class FerreteriaArticlesSeeder extends Seeder
     /**
      * Retorna catalogo de articulos de ferreteria obtenido de excels.
      * Cada entrada incluye nombre, bar_code valido, codigo proveedor y costo redondeado.
+     *
+     * 🔴 EL `cost` DE CADA ENTRADA ES BRUTO: tiene el IVA adentro, porque son los precios de la
+     * lista del proveedor copiados tal cual. Lo que se guarda en `articles.cost` es el NETO, que
+     * lo calcula `costo_neto()` en `run()` -- ver el porque en su docblock. Si agregas un articulo
+     * a esta lista, carga el precio con IVA como los demas; no lo netees vos.
      *
      * Tres claves agregadas para la semilla de demo:
      *  - imagen_nombre / imagen_busqueda: 🔴 HISTORICAS, YA NO SE USAN (desde el 25/8/2026).
