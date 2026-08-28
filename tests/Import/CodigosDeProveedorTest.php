@@ -246,31 +246,105 @@ class CodigosDeProveedorTest extends ImportTestCase
     }
 
     /**
-     * Comportamiento fijado a propósito (NO es lo deseable, es lo que hace hoy):
-     * A12 tiene provider_code 'PC-1200' pero provider_id NULL, y
-     * ArticleIndexCache::build() solo indexa provider_codes cuando el artículo tiene
-     * los DOS campos. Resultado: es invisible al escalón provider_code y, como ese
-     * escalón hace return en vez de caer al escalón name, tampoco se lo encuentra
-     * por nombre: se crea un duplicado en cada importación.
+     * A12 tiene provider_code 'PC-1200' y provider_id NULL.
      *
-     * Si algún día se corrige el build o el fall-through, este test falla y hay que
-     * actualizarlo a conciencia.
+     * ACTUALIZADO EL 24/8/2026 — este test fijaba antes el comportamiento contrario
+     * (`test_articulo_con_provider_code_pero_sin_proveedor_no_matchea`: A12 era
+     * invisible al escalón provider_code y cada importación creaba un duplicado), y su
+     * propio docblock decía que si se corregía el build había que actualizarlo a
+     * conciencia. Es exactamente lo que pasó: por decisión de Lucas, un artículo con
+     * código de proveedor pero sin proveedor asignado SÍ tiene que matchear cuando la
+     * importación no eligió proveedor. `ArticleIndexCache::build()` lo indexa ahora en
+     * un bucket propio, y `find_with_index()` lo absorbe por el merge que ya existía
+     * para provider_id null.
+     *
+     * F7 de 04_stock.xlsx trae PC-1200 con stock 999 y sin costo.
      *
      * @return void
      */
-    public function test_articulo_con_provider_code_pero_sin_proveedor_no_matchea()
+    public function test_articulo_con_provider_code_pero_sin_proveedor_matchea_si_la_importacion_no_eligio_proveedor()
     {
-        $import = $this->importar('04_stock.xlsx', ['provider_id' => null]);
+        $this->importar('04_stock.xlsx', ['provider_id' => null]);
+
+        $creados = $this->articulos_creados()->pluck('provider_code')->toArray();
+
+        $this->assertNotContains(
+            'PC-1200',
+            $creados,
+            'Se creó un duplicado de A12: el escalón provider_code no lo encontró. '
+            . 'Revisá el bucket sin proveedor de ArticleIndexCache::build().'
+        );
+
+        $a12 = $this->recargar('A12');
+
+        $this->assertDecimal(999, $a12->stock, 'A12 tenía que quedar con el stock de su fila del Excel');
+        $this->assertDecimal(1200, $a12->cost, 'La columna costo viene vacía en F7: el costo no se toca');
+    }
+
+    /**
+     * La contracara, y es la que impide que el arreglo de arriba rompa otra cosa:
+     * el bucket sin proveedor entra SOLO cuando la importación no eligió proveedor.
+     *
+     * Si entrara también con proveedor elegido, A12 caería en la bolsa de "otros
+     * proveedores" de find_with_index() y, con actualizar_articulos_de_otro_proveedor
+     * en false y permitir_provider_code_repetido_en_multi_providers en false, la fila
+     * quedaría BLOQUEADA — o sea, dejarían de crearse filas que hoy se crean. Por eso
+     * acá se exige lo de siempre: con proveedor A elegido, A12 no se toca y F7 crea un
+     * artículo nuevo.
+     *
+     * @return void
+     */
+    public function test_articulo_sin_proveedor_no_matchea_si_la_importacion_eligio_proveedor()
+    {
+        $this->importar('04_stock.xlsx', ['provider_id' => $this->providers['A']->id]);
 
         $creados = $this->articulos_creados()->pluck('provider_code')->toArray();
 
         $this->assertContains(
             'PC-1200',
             $creados,
-            'Hoy se crea un duplicado porque A12 no está indexado (provider_id null). '
-            . 'Si esto falla, revisá ArticleIndexCache::build() antes de tocar el test.'
+            'Con proveedor elegido, PC-1200 no existe en ese proveedor: la fila crea un artículo nuevo.'
         );
 
-        $this->assertDecimal(1200, $this->recargar('A12')->cost, 'A12 queda intacto');
+        $a12 = $this->recargar('A12');
+
+        $this->assertDecimal(120,  $a12->stock, 'A12 no es de este proveedor: no se toca');
+        $this->assertDecimal(1200, $a12->cost,  'A12 no es de este proveedor: no se toca');
+    }
+
+    /**
+     * El test que realmente discrimina el acotamiento, y por eso va aparte.
+     *
+     * Con la configuración por defecto (permitir_provider_code_repetido_en_multi_providers
+     * = true) la regla de bloqueo de find_with_index() no se dispara nunca, así que un
+     * bucket sin proveedor mal acotado NO se nota: la fila crea un artículo igual. El
+     * modo de falla aparece con las DOS banderas en false, que es cuando el escalón
+     * provider_code bloquea la fila si el código existe "en otro proveedor".
+     *
+     * Si el bucket sin proveedor entrara también con proveedor elegido, A12 caería en
+     * esa bolsa y F7 quedaría bloqueada: no se crearía nada. Hoy esa fila crea, y tiene
+     * que seguir creando.
+     *
+     * @return void
+     */
+    public function test_el_bucket_sin_proveedor_no_bloquea_filas_cuando_hay_proveedor_elegido()
+    {
+        $this->importar('04_stock.xlsx', [
+            'provider_id'                                        => $this->providers['A']->id,
+            'actualizar_articulos_de_otro_proveedor'             => false,
+            'permitir_provider_code_repetido_en_multi_providers' => false,
+        ]);
+
+        $creados = $this->articulos_creados()->pluck('provider_code')->toArray();
+
+        $this->assertContains(
+            'PC-1200',
+            $creados,
+            'F7 quedó bloqueada: el bucket sin proveedor se está sumando aunque la '
+            . 'importación eligió proveedor, y cae en la bolsa de "otros proveedores". '
+            . 'Revisá el acotamiento de ArticleIndexCache::build().'
+        );
+
+        $this->assertDecimal(120, $this->recargar('A12')->stock, 'A12 no es de este proveedor: no se toca');
     }
 }

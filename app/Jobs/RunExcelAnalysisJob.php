@@ -52,6 +52,27 @@ class RunExcelAnalysisJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
+     * Lo que ve el usuario cuando lo que se rompió fue la BASE DE DATOS.
+     *
+     * 🔴 Existe por el peor de los agujeros de esta misión:
+     * QueryException extends PDOException extends RuntimeException (verificado). Como los
+     * dos handlers de este job atajaban \RuntimeException y le pasaban el getMessage() crudo
+     * al usuario, CUALQUIER error de base durante el análisis le mostraba el SQL completo
+     * con los bindings:
+     *
+     *     SQLSTATE[HY000] [2002] No connection could be made... (SQL: select * from
+     *     `providers` where `user_id` = 5)
+     *
+     * O sea esquema y datos del comercio, no una ruta. Por eso el catch de QueryException va
+     * SIEMPRE ANTES del de \RuntimeException: el orden es todo el arreglo. Si alguien los da
+     * vuelta, vuelve el agujero y no hay nada que avise. tests/Import/MensajesDeErrorTest.php
+     * lo mide.
+     *
+     * @var string
+     */
+    const MENSAJE_ERROR_DE_BASE = 'No pudimos guardar el resultado del análisis. Volvé a intentar en unos minutos; si sigue pasando, avisanos.';
+
+    /**
      * Id de la corrida (excel_analysis_runs.id) a procesar.
      *
      * Se pasa solo el id (no el modelo completo) para que el payload serializado
@@ -267,6 +288,35 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $this->notificar_fin($run);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /*
+             * 🔴 ESTE CATCH VA ANTES DEL DE \RuntimeException Y NO ES CASUALIDAD.
+             * QueryException extiende PDOException, que extiende RuntimeException. Puesto
+             * después, no se ejecuta nunca y el catch de abajo le manda el SQL con los
+             * bindings a la pantalla del comerciante. Ver MENSAJE_ERROR_DE_BASE.
+             */
+            Log::error('RunExcelAnalysisJob: error de base durante el análisis', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+                'trace'                  => $e->getTraceAsString(),
+            ]);
+
+            $this->finalizar_con_error($run, self::MENSAJE_ERROR_DE_BASE);
+
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            /*
+             * Timeout o corte de conexión contra Anthropic. Los analizadores ya lo traducen
+             * adentro de call_claude(); esto es la red de atrás, para cualquier otra llamada
+             * HTTP del pipeline. ConnectionException extiende \Exception y NO
+             * \RuntimeException (verificado), así que sin esto caía en el \Throwable de abajo.
+             */
+            Log::warning('RunExcelAnalysisJob: no hubo respuesta del servicio de IA', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, AiExcelAnalyzer::MENSAJE_IA_SIN_RESPUESTA);
+
         } catch (\RuntimeException $e) {
             /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */
             Log::warning('RunExcelAnalysisJob: error de análisis', [
@@ -453,6 +503,25 @@ class RunExcelAnalysisJob implements ShouldQueue
             ]);
 
             $this->notificar_fin($run);
+
+        } catch (\Illuminate\Database\QueryException $e) {
+            /* Mismo motivo y mismo orden que en handle_analisis(). Ver MENSAJE_ERROR_DE_BASE. */
+            Log::error('RunExcelAnalysisJob: error de base durante la recomendación', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+                'trace'                  => $e->getTraceAsString(),
+            ]);
+
+            $this->finalizar_con_error($run, self::MENSAJE_ERROR_DE_BASE);
+
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            /* Igual que en handle_analisis(): extiende \Exception, no \RuntimeException. */
+            Log::warning('RunExcelAnalysisJob: no hubo respuesta del servicio de IA', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, AiExcelAnalyzer::MENSAJE_IA_SIN_RESPUESTA);
 
         } catch (\RuntimeException $e) {
             /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */

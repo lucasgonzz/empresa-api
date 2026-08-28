@@ -50,6 +50,39 @@ class AiExcelAnalyzer
      */
     protected const MAX_TOKENS = 4000;
 
+    /*
+     * ---------------------------------------------------------------------------------
+     * Mensajes que ve el usuario cuando la IA falla.
+     *
+     * 🔴 Los tres analizadores (AiExcelAnalyzer, AiClientAnalyzer, AiProviderAnalyzer) son
+     * copias casi idénticas. Estos cinco textos están repetidos a propósito en los tres y
+     * TIENEN QUE SER IDÉNTICOS: tests/Import/MensajesDeErrorTest.php lo verifica clase por
+     * clase. Ya pasó en este módulo que un arreglo se hizo en uno solo y se perdió en los
+     * otros dos sin que nadie se enterara. Si tocás uno, tocá los tres.
+     *
+     * Ninguno lleva detalle técnico. El status HTTP y el body de Anthropic siguen yendo
+     * completos al Log::error de call_claude(), que es donde sirven. Hasta esta misión el
+     * body crudo de la API —y hasta el nombre de la variable de entorno que faltaba— se le
+     * mostraban al usuario tal cual: eso le cuenta a un tercero cómo está configurado el
+     * servidor.
+     * ---------------------------------------------------------------------------------
+     */
+
+    /** La API contestó un error que no es transitorio (auth, rate limit, request inválido). */
+    const MENSAJE_IA_RECHAZO = 'El servicio de IA rechazó el pedido. Volvé a intentar en unos minutos; si sigue pasando, avisanos.';
+
+    /** Error transitorio de Anthropic (overloaded_error, api_error, HTTP 529). */
+    const MENSAJE_IA_NO_DISPONIBLE = 'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.';
+
+    /** La conexión con Anthropic se cortó o venció el timeout de 60 segundos. */
+    const MENSAJE_IA_SIN_RESPUESTA = 'El servicio de IA no respondió a tiempo. Probá de nuevo en un minuto: los archivos grandes a veces necesitan un segundo intento.';
+
+    /** Contestó, pero lo que devolvió no se puede usar: sin texto, sin JSON válido o sin column_mapping. */
+    const MENSAJE_IA_RESPUESTA_ILEGIBLE = 'La IA no pudo interpretar esta planilla. Probá de nuevo; si sigue pasando, revisá que el encabezado esté en la fila correcta o avisanos.';
+
+    /** Falta la clave de API en la configuración del servidor. */
+    const MENSAJE_IA_SIN_CONFIGURAR = 'La importación con IA no está configurada en este sistema. Avisanos para que la activemos.';
+
     /**
      * Umbral del fallback heurístico de politica_colision (grupo 284, prompt 02): proporción
      * mínima de provider_codes duplicados dentro del archivo, respecto del total de filas de
@@ -1555,7 +1588,13 @@ PROMPT;
         $api_key = (string) config('services.anthropic.api_key');
 
         if ($api_key === '') {
-            throw new \RuntimeException('La clave ANTHROPIC_API_KEY no está configurada en el entorno.');
+            /*
+             * El nombre de la variable de entorno NO va al mensaje del usuario: contarle a un
+             * tercero cómo está configurado el servidor es información nuestra, no suya. Va al log.
+             */
+            Log::error('AiExcelAnalyzer: falta la clave de API de Anthropic en la configuración del servidor');
+
+            throw new \RuntimeException(self::MENSAJE_IA_SIN_CONFIGURAR);
         }
 
         Log::info('AiExcelAnalyzer: llamando a Claude API', [
@@ -1568,16 +1607,31 @@ PROMPT;
          */
         $http = $this->build_anthropic_http_client($api_key);
 
-        $response = $http->post('https://api.anthropic.com/v1/messages', [
-            'model'      => self::CLAUDE_MODEL,
-            'max_tokens' => self::MAX_TOKENS,
-            'messages'   => [
-                [
-                    'role'    => 'user',
-                    'content' => $prompt,
+        /*
+         * El timeout de 60 segundos y el corte de conexión llegan como ConnectionException, que
+         * extiende \Exception y NO \RuntimeException (verificado). Sin este catch caían en el
+         * \Throwable genérico del job y el usuario leía "ocurrió un error inesperado" para algo
+         * que casi siempre se arregla reintentando: un archivo grande a veces necesita un
+         * segundo intento.
+         */
+        try {
+            $response = $http->post('https://api.anthropic.com/v1/messages', [
+                'model'      => self::CLAUDE_MODEL,
+                'max_tokens' => self::MAX_TOKENS,
+                'messages'   => [
+                    [
+                        'role'    => 'user',
+                        'content' => $prompt,
+                    ],
                 ],
-            ],
-        ]);
+            ]);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            Log::error('AiExcelAnalyzer: no hubo respuesta de Claude API', [
+                'message' => $e->getMessage(),
+            ]);
+
+            throw new \RuntimeException(self::MENSAJE_IA_SIN_RESPUESTA);
+        }
 
         if (!$response->successful()) {
             Log::error('AiExcelAnalyzer: error en respuesta de Claude', [
@@ -1596,15 +1650,16 @@ PROMPT;
             $transient_error_types = ['overloaded_error', 'api_error'];
 
             if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
-                throw new \RuntimeException(
-                    'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
-                );
+                throw new \RuntimeException(self::MENSAJE_IA_NO_DISPONIBLE);
             }
 
-            /* Otros errores (auth, rate limit, etc.): mensaje técnico para debugging. */
-            throw new \RuntimeException(
-                'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
-            );
+            /*
+             * Otros errores (auth, rate limit, request inválido). Hasta esta misión acá se
+             * concatenaba $response->body(): el JSON de error crudo de Anthropic terminaba en
+             * la pantalla del comerciante. El status y el body están completos en el
+             * Log::error de arriba.
+             */
+            throw new \RuntimeException(self::MENSAJE_IA_RECHAZO);
         }
 
         $response_data = $response->json();
@@ -1616,7 +1671,11 @@ PROMPT;
         $text = $response_data['content'][0]['text'] ?? null;
 
         if (is_null($text)) {
-            throw new \RuntimeException('Claude devolvió una respuesta sin contenido de texto.');
+            Log::error('AiExcelAnalyzer: Claude devolvió una respuesta sin contenido de texto', [
+                'body' => $response->body(),
+            ]);
+
+            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
         }
 
         Log::info('AiExcelAnalyzer: respuesta de Claude recibida', [
@@ -1659,16 +1718,17 @@ PROMPT;
                 'json_error'   => json_last_error_msg(),
             ]);
 
-            throw new \RuntimeException(
-                'Claude no devolvió un JSON válido. Error: ' . json_last_error_msg()
-            );
+            /* El JSON crudo y el error de parseo ya quedaron en el Log::error de arriba. */
+            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
         }
 
         /* Validamos que tenga la estructura esperada con column_mapping. */
         if (!isset($parsed['column_mapping']) || !is_array($parsed['column_mapping'])) {
-            throw new \RuntimeException(
-                'La respuesta de Claude no contiene la clave "column_mapping" esperada.'
-            );
+            Log::error('AiExcelAnalyzer: la respuesta de Claude no trae column_mapping', [
+                'raw_response' => $claude_text,
+            ]);
+
+            throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
         }
 
         /*

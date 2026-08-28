@@ -41,8 +41,8 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
         try {
 
             Excel::import(new ProviderOrderArticleImport(
-                $this->columns
-                $this->start_row, 
+                $this->columns,
+                $this->start_row,
                 $this->finish_row,
                 $this->user,
                 $this->provider_order,
@@ -51,7 +51,11 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
         } catch (\Throwable $e) {
 
 
-            Log::error('Error al importar, desde ProcessArticleChunk handle');
+            /*
+             * Decia "desde ProcessArticleChunk handle": copiado de otro job. Mandaba a
+             * cualquiera que leyera el log a buscar el error en el archivo equivocado.
+             */
+            Log::error('Error al importar, desde ProcessProviderOrderArticleImport::handle');
             Log::error('Mensaje: ' . $e->getMessage());
             Log::error('Archivo: ' . $e->getFile());
             Log::error('Línea: ' . $e->getLine());

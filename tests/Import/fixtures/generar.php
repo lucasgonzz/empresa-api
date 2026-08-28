@@ -151,7 +151,9 @@ escribir('03_numeros_y_costos.xlsx', [
  *   PC-700     A7 stock 70 -> 70   (sin cambio, sin movimiento)
  *   PC-STK-NEW nuevo, stock "1.500" como TEXTO -> 1500
  *   PC-800     A8 costo 850, columna stock vacia -> stock intacto (80)
- *   PC-1200    A12 tiene provider_code pero provider_id null en base: NO se indexa
+ *   PC-1200    A12 tiene provider_code pero provider_id null en base: desde el 24/8/2026 SI se
+ *              indexa (bucket propio) cuando la importacion no eligio proveedor, asi que esta fila
+ *              ACTUALIZA a A12 en vez de crear un duplicado
  * -------------------------------------------------------------------------- */
 escribir('04_stock.xlsx', [
     [null, null, 'PC-100',     'Art unico prov A',         null,  null, 25.0,    '21'],
