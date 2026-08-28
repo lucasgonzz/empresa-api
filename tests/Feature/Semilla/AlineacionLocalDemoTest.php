@@ -76,6 +76,17 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
         'OrderSeeder',
         'CartSeeder',
 
+        /*
+         * Faltaba del lado de la demo Y de local: vivía solo en `UserSetupHelper::base_seeders()`.
+         * Es el que crea el perfil "Lista de artículos" (`pdf_column_profiles` con
+         * `model_name = 'article'`), o sea el contenido del ítem "PDF tabla (plantillas)" del
+         * listado. Sin él la pantalla existe pero dice "Sin plantillas", que se lee como que la
+         * función no está hecha. Los otros cinco seeders de su bloque (SheetType, PdfColumnOption,
+         * PdfColumnProfile, PdfColumnProfileComisiones, InputsSize) ya estaban en las dos listas:
+         * el bloque se copió incompleto y se cayó justo el del medio.
+         */
+        'PdfColumnProfileArticleSeeder',
+
         /* Catálogos del módulo de producción, que faltaban del lado de LOCAL. */
         'OrderProductionStatusSeeder',
         'ProductionBatchStatusSeeder',
