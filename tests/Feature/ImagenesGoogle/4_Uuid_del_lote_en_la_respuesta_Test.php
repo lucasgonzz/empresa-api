@@ -195,4 +195,32 @@ class Uuid_del_lote_en_la_respuesta_Test extends TestCase
         $this->assertSame('', $this->uuid_del_job($job),
             'Sin uuid el job tiene que quedar en vacio, que es la senal de "generalo vos".');
     }
+
+    /**
+     * Test 5 -- 🔴 un job ENCOLADO ANTES del deploy no puede quedar con el uuid en null.
+     *
+     * Es la ventana de despliegue, y el fallo es caro: la cola trae jobs serializados con la
+     * clase VIEJA, que no tenia la property `batch_uuid`. Al deserializarlos, PHP deja las
+     * properties ausentes con el DEFAULT DE LA CLASE. Sin default explicito eso es null, y un
+     * null se colaba por el guard de handle() -- que antes preguntaba `!== ''` --, dejaba las
+     * filas de diagnostico sin agrupar y terminaba pasando null a
+     * `new ArticleBatchImagesProcessed(..., string $batch_uuid, ...)`: TypeError en PHP 7.4,
+     * DESPUES de haber quemado la cuota de Google y validado cada imagen con IA.
+     *
+     * `newInstanceWithoutConstructor()` reproduce exactamente esa situacion: crea el objeto sin
+     * pasar por el constructor, igual que unserialize(), asi que lo que queda es el default de
+     * la clase y nada mas.
+     *
+     * @return void
+     */
+    public function test_un_job_viejo_deserializado_no_queda_con_el_uuid_en_null()
+    {
+        $clase = new \ReflectionClass(ProcessArticleBatchImagesJob::class);
+
+        /** @var \App\Jobs\ProcessArticleBatchImagesJob $job */
+        $job = $clase->newInstanceWithoutConstructor();
+
+        $this->assertSame('', $this->uuid_del_job($job),
+            'Un job sin pasar por el constructor tiene que quedar con el uuid en vacio, no en null.');
+    }
 }

@@ -61,8 +61,12 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
     /**
      * @var string UUID de la corrida, cuando lo impone quien despacha el job. Vacío significa
      * "generalo vos", que es como se comportaba antes de que el controlador lo devolviera.
+     *
+     * 🔴 El default `''` no es decorativo: un job que quedó ENCOLADO antes de este deploy se
+     * deserializa sin esta property, y sin default PHP la dejaría en null. Ver el guard de
+     * handle(), que por el mismo motivo pregunta por veracidad y no por `!== ''`.
      */
-    protected $batch_uuid;
+    protected $batch_uuid = '';
 
     /**
      * @param array  $article_ids    IDs de los artículos a procesar.
@@ -112,7 +116,14 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
          * Que el controlador lo genere y lo devuelva en el POST es lo que le permite al frontend
          * filtrar por corrida. Vacío = comportamiento viejo, para cualquier despacho que no lo pase.
          */
-        $batch_uuid = $this->batch_uuid !== '' ? $this->batch_uuid : (string) Str::uuid();
+        /*
+         * 🔴 Se pregunta por VERACIDAD y no por `!== ''`. Un job encolado antes de este deploy se
+         * deserializa sin la property `batch_uuid`: con `!== ''` un null pasaba el guard, las
+         * escrituras de diagnóstico quedaban sin agrupar y al final `new ArticleBatchImagesProcessed(
+         * ..., string $batch_uuid, ...)` reventaba con TypeError en PHP 7.4 — después de haber
+         * quemado la cuota de Google y validado cada imagen con IA, que es lo caro de la corrida.
+         */
+        $batch_uuid = $this->batch_uuid ? (string) $this->batch_uuid : (string) Str::uuid();
 
         // Instancia única del validador por IA: el contador de llamadas (max_calls_batch) tiene
         // que ser por corrida completa, no por artículo.
