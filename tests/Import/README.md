@@ -194,18 +194,33 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 |---|---|---|
 | **Antes** de la misión de importación de Excel (hoja elegida, cabecera fusionada, encabezado corrido) | `122 tests, 1457 assertions, 3 failures` | referencia histórica: es contra esto que se midió que la misión no metió regresiones |
 | 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
-| **Hoy**, post-merge con develop (24/8/2026, s1, tanda-correctivos-2408) | `209 tests, 2 failures` | **éste es el baseline: los 2 rojos de IncidenteServianTest, con esos nombres exactos** |
+| 24/8/2026, s1, tanda-correctivos-2408 | `209 tests, 2 failures` | referencia histórica: quedó atrás con la misión de abajo |
+| **Hoy**, post-merge con develop (24/8/2026, s8, importación sólo con IA) | `247 tests, 2420 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`** |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
-entres en pánico: **lo que es baseline son los 2 rojos, con estos nombres exactos.** Un tercer rojo,
+entres en pánico: **lo que es baseline es ese único rojo, con ese nombre exacto.** Un segundo rojo,
 o un nombre distinto, es una regresión — salvo que se te haya solapado otra corrida, ver el bloque
 de abajo.
 
-Los dos rojos vigentes (medición del 24/8/2026 en `s1`, `200 tests, 3 failures` antes del arreglo
-de abajo):
+El único rojo vigente:
 
-1. `IncidenteServianTest::test_no_se_crean_dos_articulos_con_el_mismo_bar_code`
-2. `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos`
+1. `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos`
+
+🟢 **`IncidenteServianTest::test_no_se_crean_dos_articulos_con_el_mismo_bar_code` salió del baseline
+el 24/8/2026** (s8). No era un bug: **ese test nunca pudo pasar**. Su consulta barría *todos* los
+artículos del tenant, incluidos `A7` y `A8`, que el propio `ImportTestSeeder` siembra con el mismo
+`bar_code = '7790007'` en cada `setUp()`. Devolvía `['7790007']` importara lo que importara — una
+aserción constante, o sea un `fail()` con pasos de más. Se acotó a los artículos que la importación
+creó y se le sumó la aserción que faltaba (que ningún bar_code creado choque con uno sembrado). El
+caso que el test *decía* probar —dos filas que comparten bar_code entre lotes— ya funcionaba.
+
+🔴 **Y el conteo de `RollbackTest` volvió a 2**, revirtiendo el ajuste del ítem 12 de la tanda 2408 —
+pero por una decisión de producto, no por un error de aquella medición. Las dos misiones coincidieron
+en el mecanismo (A12 tiene `provider_code` con `provider_id` NULL y el índice pedía los dos campos);
+la 2408 lo tomó como comportamiento fijado y ajustó el setup a 3, y esta misión arregló la causa
+porque **Lucas decidió el 24/8/2026 que un artículo con código de proveedor y sin proveedor asignado
+SÍ tiene que matchear cuando la importación no eligió proveedor**. El duplicado ya no se crea. El
+detalle está en el docblock de ese test.
 
 🟢 **`RollbackTest::test_el_rollback_borra_los_articulos_creados` salió del baseline el 24/8/2026**
 (tanda-correctivos-2408, ítem 12). No era un bug del rollback: el test fallaba en el conteo PREVIO
