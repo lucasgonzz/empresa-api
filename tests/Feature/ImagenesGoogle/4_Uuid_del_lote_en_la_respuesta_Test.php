@@ -220,7 +220,19 @@ class Uuid_del_lote_en_la_respuesta_Test extends TestCase
         /** @var \App\Jobs\ProcessArticleBatchImagesJob $job */
         $job = $clase->newInstanceWithoutConstructor();
 
-        $this->assertSame('', $this->uuid_del_job($job),
+        /*
+         * 🔴 Se lee el valor CRUDO, sin el cast a string del helper uuid_del_job(): `(string) null`
+         * da '' y haria pasar este test con el defecto puesto. Es exactamente lo que paso al
+         * escribirlo -- el test daba verde con la property sin default -- y por eso la lectura va
+         * a mano aca en vez de reusar el helper.
+         */
+        $property = new ReflectionProperty($job, 'batch_uuid');
+        $property->setAccessible(true);
+
+        $this->assertNotNull($property->getValue($job),
+            'Sin default explicito la property queda en null al deserializar un job viejo, y ese null '
+            .'se cuela por el guard de handle() hasta reventar con TypeError al emitir el evento.');
+        $this->assertSame('', $property->getValue($job),
             'Un job sin pasar por el constructor tiene que quedar con el uuid en vacio, no en null.');
     }
 }

@@ -115,13 +115,12 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
          * con lo que pierde el propio. Medido el 28/8/2026 entre dos instancias de demo.
          * Que el controlador lo genere y lo devuelva en el POST es lo que le permite al frontend
          * filtrar por corrida. Vacío = comportamiento viejo, para cualquier despacho que no lo pase.
-         */
-        /*
-         * 🔴 Se pregunta por VERACIDAD y no por `!== ''`. Un job encolado antes de este deploy se
-         * deserializa sin la property `batch_uuid`: con `!== ''` un null pasaba el guard, las
-         * escrituras de diagnóstico quedaban sin agrupar y al final `new ArticleBatchImagesProcessed(
-         * ..., string $batch_uuid, ...)` reventaba con TypeError en PHP 7.4 — después de haber
-         * quemado la cuota de Google y validado cada imagen con IA, que es lo caro de la corrida.
+         *
+         * 🔴 Y se pregunta por VERACIDAD, no por `!== ''`: un job encolado ANTES de este deploy se
+         * deserializa sin la property, con `!== ''` un null pasaba el guard, las escrituras de
+         * diagnóstico quedaban sin agrupar y al final `new ArticleBatchImagesProcessed(...,
+         * string $batch_uuid, ...)` reventaba con TypeError en PHP 7.4 — después de haber quemado
+         * la cuota de Google y validado cada imagen con IA, que es lo caro de la corrida.
          */
         $batch_uuid = $this->batch_uuid ? (string) $this->batch_uuid : (string) Str::uuid();
 
