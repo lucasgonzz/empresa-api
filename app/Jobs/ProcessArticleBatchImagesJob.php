@@ -59,24 +59,33 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
     protected $google_cuota;
 
     /**
+     * @var string UUID de la corrida, cuando lo impone quien despacha el job. Vacío significa
+     * "generalo vos", que es como se comportaba antes de que el controlador lo devolviera.
+     */
+    protected $batch_uuid;
+
+    /**
      * @param array  $article_ids    IDs de los artículos a procesar.
      * @param int    $user_id        ID del usuario dueño.
      * @param string $google_api_key Clave de Google Custom Search API.
      * @param string $cx             ID del motor de búsqueda personalizado.
      * @param int    $google_cuota   Cuota diaria máxima del owner.
+     * @param string $batch_uuid     UUID de la corrida. Opcional: vacío lo genera handle().
      */
     public function __construct(
         array $article_ids,
         int $user_id,
         string $google_api_key,
         string $cx,
-        int $google_cuota
+        int $google_cuota,
+        $batch_uuid = ''
     ) {
         $this->article_ids   = $article_ids;
         $this->user_id       = $user_id;
         $this->google_api_key = $google_api_key;
         $this->cx            = $cx;
         $this->google_cuota  = $google_cuota;
+        $this->batch_uuid    = (string) $batch_uuid;
     }
 
     /**
@@ -90,8 +99,20 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      */
     public function handle()
     {
-        // UUID que agrupa todas las filas de diagnóstico de esta corrida del job.
-        $batch_uuid = (string) Str::uuid();
+        /*
+         * UUID que agrupa todas las filas de diagnóstico de esta corrida del job, y que además
+         * viaja en el payload del broadcast.
+         *
+         * 🔴 Se respeta el que impone quien despacha, y solo se genera uno si no vino. El motivo
+         * no es de estilo: el canal de Pusher se llama `article_batch_images.{owner_id}` y es
+         * PÚBLICO, así que dos instancias con el mismo id de owner sobre la misma app de Pusher
+         * comparten canal literalmente. Sin un uuid que el frontend conozca de antemano, cada
+         * pestaña acepta el PRIMER evento que llega —sea suyo o no— y se da de baja del canal,
+         * con lo que pierde el propio. Medido el 28/8/2026 entre dos instancias de demo.
+         * Que el controlador lo genere y lo devuelva en el POST es lo que le permite al frontend
+         * filtrar por corrida. Vacío = comportamiento viejo, para cualquier despacho que no lo pase.
+         */
+        $batch_uuid = $this->batch_uuid !== '' ? $this->batch_uuid : (string) Str::uuid();
 
         // Instancia única del validador por IA: el contador de llamadas (max_calls_batch) tiene
         // que ser por corrida completa, no por artículo.
