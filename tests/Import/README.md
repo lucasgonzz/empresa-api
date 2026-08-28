@@ -224,18 +224,23 @@ detalle está en el docblock de ese test.
 
 🟢 **`RollbackTest::test_el_rollback_borra_los_articulos_creados` salió del baseline el 24/8/2026**
 (tanda-correctivos-2408, ítem 12). No era un bug del rollback: el test fallaba en el conteo PREVIO
-a revertir (esperaba 2 artículos creados y la importación crea 3), así que la aserción del rollback
-nunca se evaluaba — por eso Lucas, probando a mano, veía que el rollback SÍ borra los creados. El
-tercer artículo es el duplicado de `PC-1200`: su artículo en base (A12) tiene `provider_code` pero
-`provider_id` NULL, y el comportamiento fijado del sistema para ese caso es "no matchea → crea
-duplicado" (lo documenta y asierta `StockTest` sobre `04_stock.xlsx`, que trae la misma fila). Se
-corrigió el SETUP del test (espera 3 creados) sin tocar la aserción del rollback, que ahora exige
-además que tras revertir quede vivo solo el A12 original. `RollbackTest` completo en verde.
+a revertir, así que la aserción del rollback nunca se evaluaba — por eso Lucas, probando a mano,
+veía que el rollback SÍ borra los creados. Esa tanda dejó además la aserción de que tras revertir
+quede vivo sólo el A12 original, que se conserva.
 
-Los dos rojos de `IncidenteServianTest` **son bugs reales del multi-lote** (la deduplicación
-funciona dentro de un lote pero no entre lotes) y quedaron fuera del alcance de la tanda del 24/8
-porque el fix toca el corazón de `Helpers/import/` (zona en la que trabajan otras misiones en
-paralelo). Los invariantes de esos tests están bien escritos: no ajustarlos.
+⚠️ **Lo que sí quedó vencido de aquel arreglo es el conteo.** La 2408 lo ajustó a 3 creados tomando
+"artículo con `provider_code` pero `provider_id` NULL → no matchea, crea duplicado" como
+comportamiento fijado. Ese comportamiento **cambió el 24/8/2026 por decisión de Lucas** (ver el
+bloque 🔴 de arriba): ahora ese artículo SÍ matchea cuando la importación no eligió proveedor, el
+duplicado no se crea, y el conteo volvió a **2**. `StockTest` y `ImportTestSeeder`, que documentaban
+el comportamiento viejo, están actualizados. **Si algún día ese conteo vuelve a dar 3, no es el
+fixture: es que se revirtió el indexado sin proveedor.**
+
+El rojo de `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos` **es un bug real del
+multi-lote** (la deduplicación funciona dentro de un lote pero no entre lotes) y quedó fuera del
+alcance tanto de la tanda del 24/8 como de la misión de importación sólo con IA, porque el fix toca
+el corazón de `Helpers/import/` y ya se intentó dos veces con reversión. Va en misión propia. El
+invariante de ese test está bien escrito: no ajustarlo.
 
 **Los otros seis rojos que listaba este README se arreglaron en el medio** (los dos restantes de
 `RollbackTest`, los otros dos de `IncidenteServianTest` —incluido el `array_map()` que era el único
