@@ -20,7 +20,11 @@ use App\Models\StockMovement;
  *   F4 PC-700     A7 stock 70 -> 70   (sin cambio, sin movimiento)
  *   F5 PC-STK-NEW nuevo, stock "1.500" como texto -> 1500
  *   F6 PC-800     A8 costo 850, columna stock vacía -> stock intacto (80)
- *   F7 PC-1200    A12 no matchea (provider_id null en base) -> crea duplicado
+ *   F7 PC-1200    A12 stock 120 -> 999 (matchea aunque tenga provider_id null en
+ *                 base: sin proveedor elegido, el bucket sin proveedor del
+ *                 indice entra en la bolsa de "mismo proveedor". Hasta el
+ *                 24/8/2026 esta fila creaba un duplicado). Ninguna asercion de
+ *                 esta clase mira A12: quien lo cubre es CodigosDeProveedorTest.
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe, argumentos
  * nombrados, union types, promoción de constructor, readonly, enum ni #[...].

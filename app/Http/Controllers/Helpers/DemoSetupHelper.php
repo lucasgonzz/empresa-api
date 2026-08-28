@@ -819,9 +819,20 @@ class DemoSetupHelper
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
 
+            /*
+                Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de columnas
+                y los TRES seeders de perfiles que siguen lo necesitan poblado. No reordenar.
+
+                🔴 Son TRES, y el del medio es el que se cae al copiar este bloque. Hasta el
+                28/8/2026 PdfColumnProfileArticleSeeder faltaba aca y en DatabaseSeeder: como la
+                demo se arma por este metodo, nacia sin plantillas de articulo y el item "PDF tabla
+                (plantillas)" del listado mostraba "Sin plantillas". Lo descubrio una sesion que
+                intentaba filmar el clip del catalogo PDF y dio la funcion por inexistente.
+            */
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 

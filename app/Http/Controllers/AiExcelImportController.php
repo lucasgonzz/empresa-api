@@ -163,6 +163,22 @@ class AiExcelImportController extends Controller
                 'estado'        => $run->estado,
             ], 202);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /*
+             * 🔴 VA ANTES DEL \Throwable Y ANTES DE CUALQUIER \RuntimeException.
+             * QueryException extiende PDOException, que extiende RuntimeException: su
+             * getMessage() trae el SQL completo con los bindings. Ver
+             * RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE.
+             */
+            Log::error('AiExcelImportController::analyze - error de base al encolar el análisis', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'message' => RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE,
+            ], 500);
+
         } catch (\Throwable $e) {
             Log::error('AiExcelImportController::analyze - error al encolar el análisis', [
                 'message' => $e->getMessage(),
@@ -492,6 +508,9 @@ class AiExcelImportController extends Controller
         /* model === 'article': flujo original con InitExcelImport. */
         $import_uuid = (string) Str::uuid();
 
+        /* Mapeo de columnas confirmado por el usuario: propiedad => índice de columna. */
+        $columns = $request->input('columns', []);
+
         /*
          * Delegamos en InitExcelImport exactamente con los mismos parámetros que
          * ArticleController, respetando el contrato ya definido.
@@ -501,9 +520,9 @@ class AiExcelImportController extends Controller
         $result = $excel_import->importar([
             'import_uuid'           => $import_uuid,
             'archivo_excel'         => $excel_full_path,
-            'columns'               => $request->input('columns', []),
+            'columns'               => $columns,
             // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
-            'blank_flags'           => $request->input('blank_flags', []),
+            'blank_flags'           => $this->resolver_blank_flags($request, $columns),
 
             /*
              * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus
@@ -590,6 +609,65 @@ class AiExcelImportController extends Controller
     }
 
     /**
+     * Resuelve el mapa `blank_flags` (propiedad => bool) que consume
+     * ProcessRow::permite_valores_en_blanco().
+     *
+     * El modal con IA no tiene un control por columna como el import clásico: tiene UN solo
+     * checkbox por importación, `vaciar_valores_en_blanco`. Esto es el puente entre las dos
+     * cosas — prendido, equivale a marcar la casilla de TODAS las columnas mapeadas.
+     *
+     * 🔴 Se hace así, y no con un flag global nuevo adentro de ProcessRow, a propósito: el
+     * carril de `blank_flags` ya existe, ya está probado y ya lo usa la importación clásica de
+     * artículos. Un segundo mecanismo en paralelo para expresar lo mismo es exactamente cómo se
+     * terminan teniendo dos criterios que divergen, que es la clase de error que este módulo ya
+     * sufrió dos veces.
+     *
+     * 🔴 Un `blank_flags` explícito en el request GANA. Es lo que mantiene andando a
+     * cualquier cliente que ya lo mandaba por columna (la SPA vieja sin desplegar): el
+     * checkbox nuevo es un atajo, no un reemplazo. `vaciar_valores_en_blanco` ausente o false
+     * deja todo exactamente como antes de esta misión.
+     *
+     * `boolean()` y no `(bool)`: `(bool) 'false'` en PHP da TRUE, así que el cast crudo
+     * vaciaría propiedades justo cuando el usuario no lo pidió. Mismo criterio que
+     * `precios_incluyen_iva` en import().
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  mixed                     $columns  Mapa propiedad => índice de columna
+     * @return array                     Mapa propiedad => bool
+     */
+    protected function resolver_blank_flags(Request $request, $columns)
+    {
+        $blank_flags_explicitos = $request->input('blank_flags');
+
+        if (is_array($blank_flags_explicitos) && count($blank_flags_explicitos) > 0) {
+            return $blank_flags_explicitos;
+        }
+
+        if (!$request->boolean('vaciar_valores_en_blanco')) {
+            return [];
+        }
+
+        $flags = [];
+
+        if (is_array($columns)) {
+            foreach ($columns as $property_key => $column_position) {
+                /*
+                 * Sólo las columnas efectivamente mapeadas. Una propiedad sin posición no se
+                 * lee del Excel, así que marcarla no vaciaría nada — pero dejaría un flag
+                 * prendido esperando a que alguien mapee esa columna en otra importación.
+                 */
+                if (is_null($column_position) || $column_position === '') {
+                    continue;
+                }
+
+                $flags[$property_key] = true;
+            }
+        }
+
+        return $flags;
+    }
+
+    /**
      * Ejecuta la importación de clientes usando Maatwebsite Excel y ClientImport.
      *
      * En este controlador el usuario está autenticado vía Bearer token, por lo que
@@ -627,9 +705,20 @@ class AiExcelImportController extends Controller
         $hoja        = self::normalizar_hoja($request->input('hoja'));
         $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
 
+        /*
+         * Checkbox único de la importación: si está prendido, una celda vacía VACÍA la
+         * propiedad en vez de dejar el valor que ya estaba. Opcional con default false, o sea
+         * el comportamiento de siempre: AdminSync no lo manda y no cambia nada.
+         *
+         * Acá sólo se lee del request y se pasa; quien decide qué hacer con él es ClientImport.
+         * Va como último argumento, igual que `hoja`/`hoja_nombre`, para no romper a nadie que
+         * construya la clase con menos argumentos.
+         */
+        $vaciar_valores_en_blanco = $request->boolean('vaciar_valores_en_blanco');
+
         try {
             Excel::import(
-                new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre),
+                new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar_valores_en_blanco),
                 $excel_full_path
             );
 
@@ -650,8 +739,17 @@ class AiExcelImportController extends Controller
                 'user_id' => $this->userId(),
             ]);
 
+            /*
+             * Sin $e->getMessage(): acá adentro viaja la ruta absoluta del servidor (la
+             * IOException de OpenSpout dice "Could not open C:\...\storage\app\...") y, si el
+             * que se rompió fue MySQL, el SQL entero con los bindings. El detalle completo,
+             * con trace, quedó en el Log::error de arriba.
+             *
+             * El "quedó guardado" no es adorno: el excel_path sigue vivo, así que reintentar
+             * no le pide al usuario volver a subir el archivo.
+             */
             return response()->json([
-                'message' => 'Ocurrió un error al importar clientes: ' . $e->getMessage(),
+                'message' => 'No pudimos importar los clientes. El archivo quedó guardado: volvé a intentar en unos minutos. Si sigue pasando, avisanos.',
             ], 500);
         }
     }
@@ -685,13 +783,16 @@ class AiExcelImportController extends Controller
         $hoja        = self::normalizar_hoja($request->input('hoja'));
         $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
 
+        /* Mismo checkbox único que en import_clients, con el mismo default false. */
+        $vaciar_valores_en_blanco = $request->boolean('vaciar_valores_en_blanco');
+
         try {
             /*
              * El quinto parámetro ($provider_id) es null; en importación de proveedores
              * no se asigna un proveedor padre al registro importado.
              */
             Excel::import(
-                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre),
+                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre, $vaciar_valores_en_blanco),
                 $excel_full_path
             );
 
@@ -712,8 +813,9 @@ class AiExcelImportController extends Controller
                 'user_id' => $this->userId(),
             ]);
 
+            /* Mismo criterio que import_clients(): el detalle técnico va al log, no a la pantalla. */
             return response()->json([
-                'message' => 'Ocurrió un error al importar proveedores: ' . $e->getMessage(),
+                'message' => 'No pudimos importar los proveedores. El archivo quedó guardado: volvé a intentar en unos minutos. Si sigue pasando, avisanos.',
             ], 500);
         }
     }
@@ -831,6 +933,17 @@ class AiExcelImportController extends Controller
                 'analysis_uuid' => $run->uuid,
                 'estado'        => $run->estado,
             ], 202);
+
+        } catch (\Illuminate\Database\QueryException $e) {
+            /* Mismo motivo y mismo orden que en analyze(). Ver MENSAJE_ERROR_DE_BASE. */
+            Log::error('AiExcelImportController::getRecomendacion - error de base al encolar la recomendación', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'message' => RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE,
+            ], 500);
 
         } catch (\Throwable $e) {
             Log::error('AiExcelImportController::getRecomendacion - error al encolar la recomendación', [

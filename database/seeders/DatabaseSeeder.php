@@ -350,6 +350,21 @@ class DatabaseSeeder extends Seeder
             sembraría cero filas sin fallar. Al final del run() cubre las dos ramas de una vez.
         */
         $this->call(GlobalSearchDefaultsSeeder::class);
+
+        /*
+            Perfil de PDF del listado de articulos ("Lista de articulos"), o sea el contenido del
+            item "PDF tabla (plantillas)". Sin el, la pantalla existe pero dice "Sin plantillas",
+            que se lee como que la funcion no esta hecha.
+
+            🔴 Va ACA y no adentro de common_seeders() junto al resto de su familia, por el mismo
+            motivo que GlobalSearchDefaultsSeeder de arriba: itera `User::whereNull('owner_id')`
+            (PdfColumnProfileArticleSeeder:21) y common_seeders() corre antes que UserSeeder, asi
+            que ahi sembraria cero filas SIN FALLAR. Al final del run() cubre las dos ramas.
+
+            Se agrego el 28/8/2026: hasta ese dia se llamaba solo desde
+            UserSetupHelper::base_seeders(), y faltaba tanto aca como en DemoSetupHelper.
+        */
+        $this->call(PdfColumnProfileArticleSeeder::class);
     }
 
     function local_y_demo() {
@@ -514,6 +529,18 @@ class DatabaseSeeder extends Seeder
         $this->call(ConceptoMovimientoCajaCompensacionSeeder::class);
 
         $this->call(AfipTipoComprobanteSeeder::class);
+
+        /*
+            Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de columnas
+            (tabla pdf_column_options, sin user_id) y los seeders de perfiles que siguen lo
+            necesitan poblado. No reordenar.
+
+            ⚠️ PdfColumnProfileArticleSeeder NO va aca aunque pertenezca a esta familia: itera
+            `User::whereNull('owner_id')` y common_seeders() corre ANTES que UserSeeder, asi que
+            sembraria cero filas sin fallar. Vive al final del run(), al lado de
+            GlobalSearchDefaultsSeeder, que se cae por lo mismo. Los de esta lista funcionan aca
+            porque escriben con config('app.USER_ID') y no consultan la tabla de usuarios.
+        */
         $this->call(SheetTypeSeeder::class);
         $this->call(PdfColumnOptionSeeder::class);
         $this->call(PdfColumnProfileSeeder::class);

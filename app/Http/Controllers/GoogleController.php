@@ -8,6 +8,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class GoogleController extends Controller
 {
@@ -39,15 +40,36 @@ class GoogleController extends Controller
 
         $google_cuota = ($owner && $owner->google_cuota) ? (int) $owner->google_cuota : 10;
 
+        /*
+         * El UUID de la corrida se genera ACÁ y no adentro del job, para poder devolvérselo a
+         * quien disparó el lote.
+         *
+         * 🔴 Sin esto el frontend no tiene forma de saber cuál de los eventos que llegan por el
+         * canal es el suyo. El canal `article_batch_images.{owner_id}` es PÚBLICO, así que dos
+         * instalaciones que compartan el id del owner y la app de Pusher reciben los eventos de
+         * la otra: la pestaña acepta el primero que llega, se da de baja del canal y se queda sin
+         * el propio. Pasa también con dos lotes seguidos del mismo usuario. Medido el 28/8/2026
+         * entre dos instancias de demo, donde el síntoma era "el modal de resumen no aparece
+         * nunca" aunque las imágenes se asignaban bien.
+         *
+         * El campo se AGREGA a la respuesta y no reemplaza nada: un frontend viejo lo ignora y
+         * sigue funcionando igual que antes.
+         */
+        $batch_uuid = (string) Str::uuid();
+
         ProcessArticleBatchImagesJob::dispatch(
             $request->article_ids,
             (int) $this->userId(),
             $google_api_key,
             'c442e5f346f314951',
-            $google_cuota
+            $google_cuota,
+            $batch_uuid
         );
 
-        return response()->json(['status' => 'processing'], 200);
+        return response()->json([
+            'status'     => 'processing',
+            'batch_uuid' => $batch_uuid,
+        ], 200);
     }
 
     function aumentar_contador_custom_search() {
