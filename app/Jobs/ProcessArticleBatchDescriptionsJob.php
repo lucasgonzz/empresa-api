@@ -15,6 +15,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Job masivo de generacion de descripciones inteligentes. Replica la estructura de
@@ -63,12 +64,23 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
     protected $overwrite;
 
     /**
+     * @var string UUID de la corrida, cuando lo impone quien despacha el job. Vacío significa
+     * "generalo vos", que es como se comportaba antes de que el controlador lo devolviera.
+     *
+     * 🔴 El default `''` no es decorativo: un job que quedó ENCOLADO antes de este deploy se
+     * deserializa sin esta property, y sin default PHP la dejaría en null. Ver el guard de
+     * handle(), que por el mismo motivo pregunta por veracidad y no por `!== ''`.
+     */
+    protected $batch_uuid = '';
+
+    /**
      * @param array  $article_ids    IDs de los artículos a procesar.
      * @param int    $user_id        ID del usuario dueño.
      * @param string $google_api_key Clave de Google Custom Search API.
      * @param string $cx             ID del motor de búsqueda personalizado.
      * @param int    $google_cuota   Cuota diaria máxima del owner.
      * @param bool   $overwrite      Si se debe sobrescribir descripciones ya generadas por IA.
+     * @param string $batch_uuid     UUID de la corrida. Opcional: vacío lo genera handle().
      */
     public function __construct(
         array $article_ids,
@@ -76,7 +88,8 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
         $google_api_key,
         $cx,
         $google_cuota,
-        $overwrite = false
+        $overwrite = false,
+        $batch_uuid = ''
     ) {
         $this->article_ids    = $article_ids;
         $this->user_id        = (int) $user_id;
@@ -84,6 +97,7 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
         $this->cx             = (string) $cx;
         $this->google_cuota   = (int) $google_cuota;
         $this->overwrite      = (bool) $overwrite;
+        $this->batch_uuid     = (string) $batch_uuid;
     }
 
     /**
@@ -95,6 +109,26 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
      */
     public function handle()
     {
+        /*
+         * UUID que identifica esta corrida y que viaja en el payload del broadcast.
+         *
+         * 🔴 Se respeta el que impone quien despacha, y solo se genera uno si no vino. El motivo
+         * no es de estilo: el canal de Pusher se llama `article_batch_descriptions.{owner_id}` y
+         * es PÚBLICO, así que dos instancias con el mismo id de owner sobre la misma app de
+         * Pusher comparten canal literalmente. Sin un uuid que el frontend conozca de antemano,
+         * cada pestaña acepta el PRIMER evento que llega —sea suyo o no— y se da de baja del
+         * canal, con lo que pierde el propio. Que el controlador lo genere y lo devuelva en el
+         * POST es lo que le permite al frontend filtrar por corrida. Vacío = comportamiento
+         * viejo, para cualquier despacho que no lo pase.
+         *
+         * 🔴 Y se pregunta por VERACIDAD, no por `!== ''`: un job encolado ANTES de este deploy
+         * se deserializa sin la property, y con `!== ''` un null pasaba el guard y terminaba
+         * viajando como uuid en el evento, con lo que el frontend nunca lo reconocía como suyo.
+         * Todo eso recién al final de la corrida, con la cuota de Google ya gastada y las
+         * descripciones ya generadas, que es lo caro.
+         */
+        $batch_uuid = $this->batch_uuid ? (string) $this->batch_uuid : (string) Str::uuid();
+
         // Contadores del resumen final (mismo patrón que ProcessArticleBatchImagesJob).
         $processed              = 0;
         $skipped                = 0;
@@ -119,9 +153,10 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
         $ai_service = new ArticleDescriptionAiService();
 
         Log::info(sprintf(
-            '[DescripcionesIA] Inicio batch (%d artículos), overwrite=%s',
+            '[DescripcionesIA] Inicio batch (%d artículos), overwrite=%s, batch_uuid %s',
             count($this->article_ids),
-            $this->overwrite ? 'true' : 'false'
+            $this->overwrite ? 'true' : 'false',
+            $batch_uuid
         ));
 
         foreach ($this->article_ids as $article_id) {
@@ -296,11 +331,13 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             $needs_review_items,
             $quota_reached,
             $skipped_by_quota,
-            $skipped_by_quota_names
+            $skipped_by_quota_names,
+            $batch_uuid
         ));
 
         Log::info('[DescripcionesIA] Batch finalizado.', [
             'user_id'          => $this->user_id,
+            'batch_uuid'       => $batch_uuid,
             'processed'        => $processed,
             'skipped'          => $skipped,
             'skipped_existing' => $skipped_existing,

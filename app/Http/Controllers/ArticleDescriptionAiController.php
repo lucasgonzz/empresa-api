@@ -12,6 +12,7 @@ use App\Services\ProductInfoLookupService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Controlador del flujo de "descripciones inteligentes": preview individual sincrono,
@@ -170,16 +171,36 @@ class ArticleDescriptionAiController extends Controller
 
         $owner = User::find($this->userId());
 
+        /*
+         * El UUID de la corrida se genera ACA y no adentro del job, para poder devolverselo a
+         * quien disparo el lote.
+         *
+         * 🔴 Sin esto el frontend no tiene forma de saber cual de los eventos que llegan por el
+         * canal es el suyo. El canal `article_batch_descriptions.{owner_id}` es PUBLICO, asi que
+         * dos instalaciones que compartan el id del owner y la app de Pusher reciben los eventos
+         * de la otra: la pestaña acepta el primero que llega, se da de baja del canal y se queda
+         * sin el propio. Pasa tambien con dos lotes seguidos del mismo usuario. El sintoma es "el
+         * modal de resumen no aparece nunca" aunque las descripciones se generen bien.
+         *
+         * El campo se AGREGA a la respuesta y no reemplaza nada: un frontend viejo lo ignora y
+         * sigue funcionando igual que antes.
+         */
+        $batch_uuid = (string) Str::uuid();
+
         ProcessArticleBatchDescriptionsJob::dispatch(
             $request->article_ids,
             (int) $this->userId(),
             $this->get_google_api_key($owner),
             self::GOOGLE_CX,
             $this->get_google_cuota($owner),
-            (bool) $request->overwrite
+            (bool) $request->overwrite,
+            $batch_uuid
         );
 
-        return response()->json(['status' => 'processing'], 200);
+        return response()->json([
+            'status'     => 'processing',
+            'batch_uuid' => $batch_uuid,
+        ], 200);
     }
 
     /**
