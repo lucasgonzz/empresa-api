@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\DuplicarRecetaHelper;
 use App\Http\Controllers\Helpers\RecipeHelper;
 use App\Models\Article;
 use App\Models\Recipe;
@@ -68,6 +69,36 @@ class RecipeController extends Controller
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Recipe', $model->id);
         return response(null);
+    }
+
+    /**
+     * Duplica un modelo completo: crea el articulo nuevo Y su receta (rutas, insumos y
+     * cantidades) en un solo paso.
+     *
+     * Ver DuplicarRecetaHelper para la lista de que se copia y que no, con el motivo de cada
+     * exclusion.
+     *
+     * `insumos_a_revisar` son los insumos de la receta nueva que a su vez tienen receta propia:
+     * o sea, partes que se fabrican y que siguen apuntando a las del modelo original. El
+     * duplicar NO las re-apunta (no puede saber cual es la parte equivalente del otro modelo),
+     * asi que las devuelve nombradas para que la pantalla las liste. Ver el docblock de
+     * DuplicarRecetaHelper::insumos_a_revisar().
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function duplicar(Request $request, $id) {
+        $request->validate([
+            'name' => 'required|string|max:191',
+        ]);
+
+        $nueva = DuplicarRecetaHelper::duplicar($id, $request->name, $this);
+
+        return response()->json([
+            'model'             => $this->fullModel('Recipe', $nueva->id),
+            'insumos_a_revisar' => DuplicarRecetaHelper::insumos_a_revisar($nueva, $this->userId()),
+        ], 201);
     }
 
     function articleUsedInRecipes($article_id) {

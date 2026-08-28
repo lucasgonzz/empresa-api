@@ -103,7 +103,13 @@ class CurrentAcountController extends Controller
             'status'                            => 'pago_from_client',
             'user_id'                           => $this->userId(),
             'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
-            'to_pay_id'                         => !is_null($request->to_pay) ? $request->to_pay['id'] : null,
+            /*
+             * to_pay explícito del request, o —si el pago viene de una cuota de un plan de
+             * pago— el débito de la venta del plan (tanda correctivos 2408, ítem 13: regla
+             * de Lucas, el pago de una cuota se imputa a la venta del plan y no al
+             * comprobante más viejo). Ver CurrentAcountCuotaHelper::get_to_pay_id().
+             */
+            'to_pay_id'                         => CurrentAcountCuotaHelper::get_to_pay_id($request),
             'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
             'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
             'created_at'                        => CurrentAcountHelper::getCreatedAt($request),

@@ -415,7 +415,16 @@ class BudgetController extends Controller
             */
             if (!is_null($sale)) {
 
-                $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale);
+                /*
+                    El segundo argumento en true es el criterio CONSERVADOR de tickets:
+                    cualquier AfipTicket congela la anulacion, tambien uno sin CAE. Desde el
+                    24/8/2026 la EDICION de la venta solo se congela con CAE (decision de
+                    Lucas: un rechazado no existe ante ARCA y no debe trabar el mostrador),
+                    pero anular BORRA la venta, y con un ticket pendiente-sin-respuesta el
+                    borrado podria dejar un CAE huerfano si ARCA aprueba despues. La politica
+                    de anulacion queda como estaba hasta que Lucas la revise.
+                */
+                $motivo = SaleHelper::motivo_por_el_que_no_se_puede_editar($sale, true);
 
                 if (!is_null($motivo)) {
                     DB::rollBack();

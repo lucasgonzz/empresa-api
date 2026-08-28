@@ -264,12 +264,16 @@ class ExtencionSeeder extends Seeder
             ],
             [
                 // 50
-                /* 
-                    Esta extencion se la aplico a truvari, 
-                    para que en el detalle de la hoja de ruta le aparezcan los articulos de todas las ventas, y no cada venta 
-                
+                /*
+                    Esta extencion se la aplico a truvari,
+                    para que en el detalle de la hoja de ruta le aparezcan los articulos de todas las ventas, y no cada venta
+
+                    Tanda correctivos 24/8 (item 18): tenia el name "Ventas con fecha de
+                    entrega", copiado de la extension anterior — dos extensiones distintas
+                    con el mismo nombre visible. Para bases existentes esta
+                    ExtencionRoadMapDetallePorArticulosNameSeeder.
                 */
-                'name' => 'Ventas con fecha de entrega',
+                'name' => 'Hoja de ruta: detalle por articulos',
                 'slug' => 'road_map_detalle_por_articulos_y_no_por_venta',
             ],
             [

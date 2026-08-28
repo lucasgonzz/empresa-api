@@ -26,6 +26,11 @@ use Illuminate\Support\Facades\Storage;
  * fijas ganan). A diferencia de la personalidad, las habilidades no tienen un default: si
  * el dueño no cargó ninguna, esa capa directamente no se agrega y el prompt queda igual
  * que en las empresas que no configuraron nada.
+ *
+ * Al final de todo, después del nombre del negocio, va la capa de horario de atención
+ * (`BusinessHoursPromptBuilder`, con el dato que empuja admin-api; misión
+ * horarios-negocio-admin-sync). Sigue la misma regla que las habilidades: sin horario cargado
+ * no se agrega nada y el prompt queda idéntico, byte por byte, al de antes de esa capa.
  */
 class WhatsappBotAiService
 {
@@ -583,6 +588,17 @@ SUMMARY;
         $business_name = $this->business_name($config);
         if ($business_name !== '') {
             $blocks[] = 'Nombre del negocio: '.$business_name.'.';
+        }
+
+        // Capa de contexto: horario del negocio empujado por admin-api (misión horarios-negocio-admin-sync).
+        // Mismo criterio que agent_skills: si no hay dato, la capa NO se agrega y el prompt queda idéntico
+        // al de antes. El horario es de la INSTANCIA (lo escribe solo el admin), por eso si el user del bot
+        // no tiene fila propia se cae a la del owner de la instancia.
+        $horarios = BusinessHoursReader::for_user_o_instancia((int) $config->user_id);
+
+        $capa_horario = (new BusinessHoursPromptBuilder())->capa_de_horario($horarios);
+        if ($capa_horario !== '') {
+            $blocks[] = $capa_horario;
         }
 
         return implode("\n\n", $blocks);

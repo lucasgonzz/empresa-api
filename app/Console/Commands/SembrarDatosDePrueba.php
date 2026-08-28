@@ -484,6 +484,42 @@ class SembrarDatosDePrueba extends Command
                 $actividad_tienda
             );
 
+            /*
+             * Performance histórica del comercio, DESPUÉS de la planilla (no la afecta: la
+             * planilla se calcula con los números de la propia siembra, nunca consultando la
+             * base) y antes de devolver.
+             *
+             * Está acá desde la misión 63 (siembra-local-igual-a-demo). `DemoSetupHelper::run()`
+             * ya lo corría al terminar, pero una corrida LOCAL -- que es `migrate:fresh --seed`
+             * más este comando -- no lo corría nunca, y `company_performances` es de donde sale
+             * el dashboard de ventas. Medido el 25/8/2026: local terminaba con 0 filas en las
+             * nueve tablas `company_performance*` y una demo con 12, 60, 72, 288 y 360 según la
+             * tabla. O sea que Lucas validaba en local una pantalla que a un lead le aparece
+             * llena y a él vacía, que es justo lo contrario de lo que su corrida local tiene que
+             * garantizar.
+             *
+             * 🔴 `SetCompanyPerformances` NO es idempotente, y por eso la llamada de
+             * `DemoSetupHelper` está condicionada a que esta siembra no haya corrido. Este
+             * comentario decía lo contrario hasta el 25/8/2026 y era falso:
+             * `borrar_los_realizados_durante_el_mes()`
+             * (`CompanyPerformanceController:126-138`) borra el PADRE por query builder y nada
+             * más — `CompanyPerformance` no tiene hook `deleting` y el repo no usa foreign keys,
+             * así que las ocho tablas hijas quedan huérfanas y la segunda corrida las duplica.
+             * Medido: `company_performance_address_payment_method` 288 → 576,
+             * `company_performance_gasto` 72 → 144, `company_performance_user_payment_method`
+             * 360 → 720.
+             *
+             * 🔴 No borres la guarda `if (!$semilla_sembro)` de `DemoSetupHelper` creyendo que
+             * este comando y aquél se pisan sin consecuencia: es lo único que evita la
+             * duplicación. La llamada de allá sigue siendo la única que cubre la instalación de
+             * un CLIENTE REAL, donde este comando sale por la guarda de entorno sin llegar acá.
+             */
+            $this->info('Calculando la performance histórica del comercio...');
+            $this->call('set_company_performances', [
+                'user_id'     => $this->user_id,
+                '--historico' => true,
+            ]);
+
             $this->info('Listo.');
 
             return 0;
@@ -673,14 +709,42 @@ class SembrarDatosDePrueba extends Command
          * -- y arregla de paso un desorden que ya existía: hasta ahora un pago a proveedor podía
          * quedar fechado ANTES que la compra que estaba pagando.
          *
-         * El mes en curso es la excepción: se usa la hora real, porque fechar a las 20:00 de hoy
-         * cuando son las 10:00 dejaría movimientos en el futuro. Ahí el orden estricto se pierde
-         * solo si la corrida cae un día 1 (único caso en que `fecha_en_rango()` puede devolver el
-         * día de hoy), y para entonces la caja arrastra el saldo de los once meses anteriores.
+         * 🔴 EL MES EN CURSO NO PUEDE PAGAR "HOY" (misión demo-lista-para-grabar, 25/8/2026).
+         *
+         * Hasta esta misión el mes en curso usaba `Carbon::now()`: los egresos del mes entero
+         * quedaban fechados EL DÍA DE LA CORRIDA. Y el día de la corrida es justo el que mira un
+         * lead cuando entra a la demo por el magic link — `/reportes/estado-de-resultados` abre
+         * siempre en la solapa "Hoy" (`empresa-spa/src/store/reportes/index.js`:
+         * `rango_temporal: 'dia-actual'`, que manda `desde == hasta == hoy`). Contra esas ventas
+         * de hoy hay exactamente dos: las 15.000 + 20.000 de `sembrar_hoy()`. Resultado medido el
+         * 25/8/2026 en `https://demo.comerciocity.com`: "El período cerró con una pérdida de
+         * $1.478.582 · Ventas brutas $35.000 · Gastos 4.272,0%". No era un mes en pérdida —el mes
+         * completo cierra con resultado operativo del 30% de las netas— sino medio mes de gastos
+         * amontonado en un solo día.
+         *
+         * La fecha nueva es las 20:00 del ÚLTIMO DÍA en el que `fecha_en_rango()` pudo poner una
+         * operación de este mes (`$inicio_mes + $dias_disponibles - 1`), que en el mes en curso es
+         * AYER: `dias_disponibles` sale de `diffInDays`, que redondea para abajo, así que la
+         * última venta posible del mes en curso cae ayer a las 19:59 como muy tarde. O sea que el
+         * invariante de arriba se mantiene ENTERO —cuando se paga, todo el efectivo del mes ya
+         * entró— y encima queda igual de estricto que en un mes cerrado, en vez de la excepción
+         * que había antes. Lo único que sale del día de hoy son los egresos; ningún total mensual
+         * cambia, así que el resto de los clips del video ve exactamente los mismos números.
+         *
+         * El `greaterThan()` cubre el único caso en que esa cuenta se iría al futuro: una corrida
+         * el día 1 del mes, donde `max(1, ...)` deja `dias_disponibles` en 1 y las 20:00 del día 1
+         * todavía no llegaron. Ahí se vuelve a la hora real, y no hay pérdida que mostrar porque
+         * con un solo día disponible TODAS las ventas del mes caen también hoy.
          */
-        $fecha_egresos_de_caja = $es_mes_actual
-            ? $fin_mes->copy()
-            : $fin_mes->copy()->setTime(20, 0);
+        $fecha_egresos_de_caja = $fin_mes->copy()->setTime(20, 0);
+
+        if ($es_mes_actual) {
+            $ultimo_dia_con_operaciones = $inicio_mes->copy()->addDays($dias_disponibles - 1)->setTime(20, 0);
+
+            $fecha_egresos_de_caja = $ultimo_dia_con_operaciones->greaterThan($fin_mes)
+                ? $fin_mes->copy()
+                : $ultimo_dia_con_operaciones;
+        }
 
         // Desplaza a qué cliente/proveedor le toca cada índice, mes a mes -- sin esto, todos los
         // meses arrancan la rotación en el mismo punto y con CANT_REGISTROS=4 nunca se alcanzan
@@ -2223,9 +2287,13 @@ class SembrarDatosDePrueba extends Command
      * terminar. Es lo que permite probar la vista de caja del día y el dashboard, que con datos
      * solo del pasado se ven vacíos.
      *
+     * Público desde la misión demo-lista-para-grabar (25/8/2026), por el mismo motivo por el que
+     * `sembrar_mes()` lo es: sin este bloque, un test no puede reproducir lo que ve un lead en la
+     * solapa "Hoy" del Estado de Resultados, que son exactamente estas dos ventas de mostrador.
+     *
      * @return array{saldo_por_caja: array<string,float>, delta_deuda_por_cliente: array<int,float>}
      */
-    protected function sembrar_hoy()
+    public function sembrar_hoy()
     {
         $hoy = Carbon::now();
         $primer_address_id = $this->addresses->first()->id;

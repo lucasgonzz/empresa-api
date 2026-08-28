@@ -248,13 +248,14 @@ class LimiteCreditoHelper {
         $saldo_actual = (float) CurrentAcountHelper::getSaldo($credit_account->id);
 
         /*
-            La frase del final existe por una punta que quedó abierta: el estado del pedido
-            también se puede cambiar desde el SELECT del formulario genérico
-            (`src/models/order.js` lo declara como campo), y ese guardado pasa por
-            `common-vue/components/model/Index.vue`, que no manda `ignorar_limite_credito` y
-            muestra el `message` en un toast. Por ese camino el usuario ve el motivo pero no
-            tiene el botón "Confirmar igual", así que se le dice adónde ir. Enseñarle a saltear
-            al guardado genérico sería tocar el componente que usan todos los modelos de la SPA.
+            La frase del final le dice al usuario cuál es el gesto real para saltear el aviso.
+            Desde el 22/8/2026 el botón "Confirmar pedido" no existe más: el estado se cambia
+            SOLO con el select del formulario, y en el listado de pedidos
+            (`online/components/orders/Index.vue`) ese 422 abre el modal con la opción
+            "Confirmar igual", que reintenta con `ignorar_limite_credito`. Pero el guardado
+            genérico (`common-vue/components/model/Index.vue`) muestra este `message` en un
+            toast en cualquier pantalla que no tenga ese interceptor, así que la frase indica
+            adónde ir. (Tanda correctivos 24/8, item 15: antes nombraba el botón muerto.)
         */
         return Self::comparar_contra_limite(
             $client,
@@ -262,7 +263,7 @@ class LimiteCreditoHelper {
             $moneda_id,
             $saldo_actual,
             (float) $total,
-            'Si aun así querés confirmarlo, usá el botón "Confirmar pedido".'
+            'Si aun así querés confirmarlo, hacelo desde el listado de pedidos: al elegir el estado va a aparecer el aviso con la opción "Confirmar igual".'
         );
     }
 

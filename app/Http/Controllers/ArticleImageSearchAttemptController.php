@@ -120,9 +120,15 @@ class ArticleImageSearchAttemptController extends Controller
 
     /**
      * Reconstruye, a partir de las filas crudas de `article_image_search_attempts`, el mismo
-     * objeto que llegó por Pusher (evento `ArticleBatchImagesProcessed`) al terminar la
-     * corrida `$batch_uuid`. Sirve para que el modal de historial pueda mostrar el detalle de
-     * una corrida vieja sin depender de que el navegador siga conectado al canal de Pusher.
+     * shape que antes viajaba completo por Pusher (evento `ArticleBatchImagesProcessed`) al
+     * terminar la corrida `$batch_uuid`.
+     *
+     * 🔴 Desde el fix del 25/8/2026 (el broadcast de Pusher superaba los 10240 bytes con lotes
+     * grandes), este endpoint dejó de ser solo el camino del historial: es el que usa el modal
+     * EN VIVO al terminar una corrida (`SearchImageAutomatica.vue`, vía
+     * `ArticleBatchImagesProcessed::broadcastWith()`, que ahora solo manda contadores +
+     * `batch_uuid`). El modal de historial (`SmartImagesHistoryModal.vue`) también sigue
+     * usándolo para corridas viejas. No asumir que solo lo llama el historial.
      *
      * Devuelve 404 tanto si el uuid no existe como si pertenece a otro comercio: no hay que
      * distinguir los dos casos en la respuesta para no filtrar la existencia de corridas

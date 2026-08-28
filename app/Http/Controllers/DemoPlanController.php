@@ -188,7 +188,13 @@ class DemoPlanController extends Controller
                     'id' => $clip_id,
                     'titulo' => isset($clip['titulo']) ? $clip['titulo'] : '',
                     'tipo' => isset($clip['tipo']) ? $clip['tipo'] : 'nucleo',
-                    'practica' => isset($clip['practica']) ? (bool) $clip['practica'] : false,
+                    /**
+                     * Default true y no false: desde el 24/8/2026 la SPA oculta el botón
+                     * "Probar" cuando practica es false EXPLÍCITO. Un plan congelado que no
+                     * traiga el campo tiene que comportarse como siempre (botón visible) — con
+                     * default false, todos los clips de ese lead perderían el botón.
+                     */
+                    'practica' => isset($clip['practica']) ? (bool) $clip['practica'] : true,
                     'url' => isset($urls[$clip_id]) && trim((string) $urls[$clip_id]) !== ''
                         ? (string) $urls[$clip_id]
                         : null,

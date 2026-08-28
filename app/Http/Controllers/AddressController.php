@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Address;
 use Illuminate\Http\Request;
 
@@ -69,6 +70,39 @@ class AddressController extends Controller
 
     public function destroy($id) {
         $model = Address::find($id);
+
+        /*
+         * Tanda correctivos 2408, ítem 7: antes del detach se deja un StockMovement por
+         * cada artículo con stock en esta sucursal. Hasta hoy el detach evaporaba ese
+         * stock sin dejar rastro: el pivot desaparecía, el stock global del artículo
+         * quedaba inflado hasta el próximo recálculo, y en el historial de movimientos no
+         * había nada que explicara el salto.
+         *
+         * El movimiento (from_address_id = la sucursal, amount negativo, concepto
+         * "Eliminacion de sucursal") hace las dos cosas por el camino normal de
+         * StockMovementController::crear(): deja el pivot de esta sucursal en 0 y
+         * recalcula el stock global desde los depósitos, así el detach posterior borra
+         * filas que ya están en cero y el número final es consistente.
+         */
+        foreach ($model->articles()->get() as $article) {
+
+            /** Stock del artículo en ESTA sucursal (pivot del belongsToMany). */
+            $stock_en_sucursal = (float) $article->pivot->amount;
+
+            if ($stock_en_sucursal == 0) {
+                continue;
+            }
+
+            $ct_stock_movement = new StockMovementController();
+
+            $ct_stock_movement->crear([
+                'model_id'                     => $article->id,
+                'amount'                       => -$stock_en_sucursal,
+                'from_address_id'              => $model->id,
+                'concepto_stock_movement_name' => 'Eliminacion de sucursal',
+                'observations'                 => 'Eliminacion de sucursal '.$model->street,
+            ]);
+        }
 
         $model->articles()->detach();
 

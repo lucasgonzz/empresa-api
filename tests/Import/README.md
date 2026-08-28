@@ -56,6 +56,54 @@ Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout
 
 `EscalonNombreTest.php` (grupo 287, prompt 03) importa `10_escalon_nombre.xlsx` contra `A9`/`A10`/`A11` del escenario sembrado más un artículo `T-NORM` que el propio test crea sin códigos: cubre el escalón 5 (`name`) de la cascada como match único y como ambigüedad, la herencia de un identificador pendiente hasta ese escalón, el corte de cadena cuando un `provider_code` no matchea (no baja a `name` aunque el nombre exista en base, comportamiento a fijar) y la normalización de `normalize_name_for_match()`.
 
+`ListasDePrecioPorDefectoTest.php` (misión `listas-de-precio-por-defecto-al-importar`, 24/8/2026)
+**fabrica su propio escenario de listas de precio dentro de la transacción**: el tenant 900 tiene
+`users.listas_de_precio = 0` y cero filas en `price_types`, así que el `setUp()` prende el flag y
+crea dos listas con los defaults **cruzados a propósito** (A: `incluir` 1 / `setear` 0; B: `incluir`
+0 / `setear` 1) — con los dos iguales, un arreglo que escribiera una constante en vez del default de
+la lista pasaría el test igual. Reusa `04_stock.xlsx` y `02_codigos_de_barra_repetidos.xlsx`, sin
+fixture nuevo: el mapeo por defecto de `ImportTestCase::columnas()` no trae ninguna columna de lista,
+que es justo el escenario que estaba roto.
+
+⚠️ **Hay DOS caminos que relacionan un artículo con las listas, y esta clase mide los dos.**
+`ActualizarBBDD::asignar_price_types()` (el que alimenta `ProcessRow::obtener_price_types()`) y
+`ArticlePricesHelper::aplicar_precios_segun_listas_de_precios()` (vía
+`ActualizarBBDD::set_precios_finales()` → `ArticleHelper::setFinalPrice()`). El segundo corre
+siempre y tapaba parte del síntoma, pero **no escribe los defaults de la lista** en
+`incluir_en_excel_para_clientes` ni en `setear_precio_final`, y **no corre para las cuentas con la
+extensión `ventas_en_dolares`** (ahí `setFinalPrice` rutea a `ArticlePriceTypeMonedaHelper`, que no
+toca `article_price_type` en ningún lado). Por eso hay un test con la extensión prendida: es el
+único donde el síntoma se ve completo, con **cero** filas de pivot. Medido el 24/8/2026 contra el
+árbol sin el arreglo: sin la extensión, 2 filas con `percentage` correcto pero las dos banderas en
+0; con la extensión, 0 filas.
+
+🔴 **`setear_precio_final` NO se propaga desde el default de la lista, y eso es deliberado.** Fue
+una regresión real del primer intento del arreglo, medida el 24/8/2026: la fila se insertaba con
+`setear_precio_final = 1`, después `set_precios_finales()` escribía ahí el precio calculado por
+margen, y a partir del **segundo** recálculo `ArticlePricesHelper` lo leía como "precio fijado a
+mano" y derivaba el margen al revés. Al duplicar el costo, la lista quedaba clavada en 169.40 con
+margen **−30%**, mientras la lista sin la bandera pasaba de 157.30 a 314.60. Un Excel que no habla
+de listas no está fijando ningún precio a mano. Lo fija `ProcessRow::add_price_type_data()` con la
+marca `sin_datos_de_lista_en_el_excel`, que lee `ActualizarBBDD::get_setear_precio_final()`, y lo
+cubre `test_el_precio_de_una_lista_que_setea_precio_final_sigue_al_costo`.
+
+🔴 **La otra regresión del primer intento: filas duplicadas con `permitir_provider_code_repetido`.**
+Tres filas con el mismo `provider_code` **nuevo** crean tres artículos, pero
+`ActualizarBBDD::get_article_model_from_cache()` los resuelve a todos al mismo modelo con un
+`->first()` por `provider_code`, así que el primero recibía las tuplas de los tres — medido: **6
+filas** de pivot en vez de 2. Se acota con una deduplicación por `(article_id, price_type_id)` en
+`asignar_price_types()`, y lo cubre `test_provider_code_repetido_no_duplica_filas_de_pivot`.
+⚠️ Lo que **no** se arregló: los artículos 2 y 3 no reciben filas de `asignar_price_types()`. En una
+cuenta normal los rescata `setFinalPrice`; en una con `ventas_en_dolares` quedan sin listas. Es el
+defecto preexistente de `get_article_model_from_cache()`, que también afecta a descuentos y
+recargos.
+
+🔴 **`article_price_type` NO tiene índice único sobre `(article_id, price_type_id)`** — la migración
+`2024_09_05_101805_create_article_price_type_table.php` no lo crea y ninguna posterior lo agrega. O
+sea que el `INSERT IGNORE` de `asignar_price_types()` no deduplica nada: solo ignora errores. Por eso
+las aserciones de esta clase son de **cantidad exacta** de filas, nunca de "al menos una", y el
+helper `pivots()` falla explícitamente si encuentra duplicados.
+
 ## Hoja elegida y fila de encabezado (22/8/2026)
 
 `LecturaDeHojasTest.php` y `EncabezadoDetectadoTest.php` cubren los helpers de
@@ -145,24 +193,40 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 | Cuándo | Resultado | Para qué sirve |
 |---|---|---|
 | **Antes** de la misión de importación de Excel (hoja elegida, cabecera fusionada, encabezado corrido) | `122 tests, 1457 assertions, 3 failures` | referencia histórica: es contra esto que se midió que la misión no metió regresiones |
-| **Hoy**, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | **éste es el baseline: el que tiene que dar una corrida limpia hoy** |
+| 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
+| **Hoy**, post-merge con develop (24/8/2026, s1, tanda-correctivos-2408) | `209 tests, 2 failures` | **éste es el baseline: los 2 rojos de IncidenteServianTest, con esos nombres exactos** |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
-entres en pánico: **lo que es baseline son los 3 rojos, con estos nombres exactos.** Un cuarto rojo,
+entres en pánico: **lo que es baseline son los 2 rojos, con estos nombres exactos.** Un tercer rojo,
 o un nombre distinto, es una regresión — salvo que se te haya solapado otra corrida, ver el bloque
 de abajo.
 
-Los tres rojos vigentes son los mismos en las dos mediciones, con nombre y todo:
+Los dos rojos vigentes (medición del 24/8/2026 en `s1`, `200 tests, 3 failures` antes del arreglo
+de abajo):
 
 1. `IncidenteServianTest::test_no_se_crean_dos_articulos_con_el_mismo_bar_code`
 2. `IncidenteServianTest::test_reimportar_no_genera_movimientos_nuevos`
-3. `RollbackTest::test_el_rollback_borra_los_articulos_creados`
+
+🟢 **`RollbackTest::test_el_rollback_borra_los_articulos_creados` salió del baseline el 24/8/2026**
+(tanda-correctivos-2408, ítem 12). No era un bug del rollback: el test fallaba en el conteo PREVIO
+a revertir (esperaba 2 artículos creados y la importación crea 3), así que la aserción del rollback
+nunca se evaluaba — por eso Lucas, probando a mano, veía que el rollback SÍ borra los creados. El
+tercer artículo es el duplicado de `PC-1200`: su artículo en base (A12) tiene `provider_code` pero
+`provider_id` NULL, y el comportamiento fijado del sistema para ese caso es "no matchea → crea
+duplicado" (lo documenta y asierta `StockTest` sobre `04_stock.xlsx`, que trae la misma fila). Se
+corrigió el SETUP del test (espera 3 creados) sin tocar la aserción del rollback, que ahora exige
+además que tras revertir quede vivo solo el A12 original. `RollbackTest` completo en verde.
+
+Los dos rojos de `IncidenteServianTest` **son bugs reales del multi-lote** (la deduplicación
+funciona dentro de un lote pero no entre lotes) y quedaron fuera del alcance de la tanda del 24/8
+porque el fix toca el corazón de `Helpers/import/` (zona en la que trabajan otras misiones en
+paralelo). Los invariantes de esos tests están bien escritos: no ajustarlos.
 
 **Los otros seis rojos que listaba este README se arreglaron en el medio** (los dos restantes de
 `RollbackTest`, los otros dos de `IncidenteServianTest` —incluido el `array_map()` que era el único
 error, no failure— y los dos de `CascadaHerenciaTest`). La suite creció de 90 a 122 tests, y de 122
-a lo que dice la tabla de arriba con la misión de importación de Excel. Un cuarto rojo, o un nombre
-distinto de esos tres, es una regresión nueva.
+a lo que dice la tabla de arriba con la misión de importación de Excel. Un rojo nuevo, o un nombre
+distinto de esos dos, es una regresión nueva.
 
 ## 🔴 Una corrida por vez. La suite NO es segura en paralelo contra la misma base
 

@@ -349,8 +349,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // 
     Route::get('acopio-article-delivery/{sale_id}', 'AcopioArticleDeliveryController@from_sale');
 
-    // Hacer Nota de credito AFIP
-    Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
+    // La ruta de la NC vieja (sale/nota-credito-afip) se eliminó el 24/8/2026 junto con
+    // SaleController@nota_credito_afip y SaleNotaCreditoAfipHelper (tanda 2408, ítem 16).
 
 
 
@@ -460,7 +460,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('order', 'OrderController');
     Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');
     Route::get('order/from-date/{from_date?}/{until_date?}', 'OrderController@index');
-    Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
     Route::get('meli-order-status', 'MeliOrderStatusController@index');
     Route::get('meli-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
@@ -468,7 +467,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('meli-order', 'MeLiOrderController')->except(['index', 'create', 'edit']);
 
 
-    Route::resource('order-status', 'OrderStatusController');
+    /*
+        Solo lectura, a proposito (decision de Lucas, 24/8/2026): "no se debe de poder editar".
+
+        OrderStatusHelper depende de los nombres literales de estas filas para decidir si un pedido
+        puede avanzar. Renombrar "Confirmado" deja todos los pedidos de ese comercio solo
+        cancelables, y borrar un estado deja tapiados a los que estaban en el. No habia ninguna
+        pantalla que los editara ni ningun consumidor de store/update/destroy: eran tres endpoints
+        de escritura regalados contra una tabla de la que depende el modulo entero.
+    */
+    Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 
@@ -850,6 +858,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('production-batch-movement-type', 'ProductionBatchMovementTypeController');
 
+    // Multinivel de produccion (misión produccion-v2-multinivel, 26/8/2026)
+    Route::resource('order-production-status-group', 'OrderProductionStatusGroupController');
+    // -- ancla: las rutas de potencial de armado y de duplicar receta van acá abajo --
+    Route::get('potencial-de-armado', 'PotencialDeArmadoController@index');
+    Route::post('recipe/{id}/duplicar', 'RecipeController@duplicar');
+
     Route::resource('c-a-payment-method-type', 'CAPaymentMethodTypeController');
 
 
@@ -1109,6 +1123,10 @@ Route::middleware('admin.api.key')
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
+        // Horarios comerciales empujados por admin-api (ClientScheduleSyncService). El contrato viene
+        // CERRADO del emisor: la semana llega YA RESUELTA y acá solo se guarda y se lee.
+        // Idempotente: el push llega por job encolado y puede repetirse con el mismo contenido.
+        Route::put('business-hours', 'AdminSync\\BusinessHoursController@update');
         // Reemision/revocacion del token de ingreso a la demo (grupo 233, prompt 05). Va dentro
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).

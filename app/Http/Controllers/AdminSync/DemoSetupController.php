@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupHelper;
+use App\Http\Controllers\Helpers\DemoSetupLockHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -29,6 +30,11 @@ class DemoSetupController extends Controller
      * nombradas igual porque este docblock es lo único que documenta el contrato del
      * endpoint: las cuatro son opcionales y las persiste DemoSetupHelper::run() al final.
      *
+     * El 409 es una respuesta NUEVA de este endpoint (25/8/2026) y es compatible hacia
+     * atrás: un admin-api viejo lo lee como `!successful()` y marca el Lead como fallido
+     * con el mensaje, que es exactamente lo que queremos — lo importante es que la base
+     * NO se toca. 200 y 500 quedan igual que siempre, mismo body.
+     *
      * @param Request $request
      */
     public function store(Request $request)
@@ -38,6 +44,21 @@ class DemoSetupController extends Controller
         //     return response()->json(['error' => 'business_type is required'], 422);
         // }
 
+        /**
+         * El candado va ANTES de cualquier cosa que toque la base, porque lo primero que
+         * hace run() es `migrate:fresh`: si dejamos entrar una segunda corrida, le vacía
+         * la base a la primera a mitad de siembra. Ver DemoSetupLockHelper para el porqué
+         * del archivo (y por qué no Cache::lock).
+         */
+        $candado = DemoSetupLockHelper::tomar();
+
+        if ($candado === false) {
+            return response()->json([
+                'error' => 'Ya hay un demo setup corriendo en esta instancia. Esperá a que termine.',
+                'en_curso' => true,
+            ], 409);
+        }
+
         try {
             $user = DemoSetupHelper::run($request->all());
         } catch (\Throwable $e) {
@@ -46,6 +67,8 @@ class DemoSetupController extends Controller
             ]);
 
             return response()->json(['error' => 'internal error: ' . $e->getMessage()], 500);
+        } finally {
+            DemoSetupLockHelper::soltar($candado);
         }
 
         return response()->json([

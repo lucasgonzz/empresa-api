@@ -257,6 +257,46 @@ class CajaLiquidacionHelperTest extends TestCase
     }
 
     /** @test */
+    public function calcular_neta_iva_de_la_comision_cuando_no_esta_incluido()
+    {
+        // Mismo caso del hallazgo 20260810-el-neto-estimado-de-liquidacion-ignora-el-iva-de-la-comision:
+        // comision 6290 (6.29% de 100000), IVA neto 1320.90 (6290 * 21 / 100), total retenido
+        // 7610.90. Antes del fix el neto daba 93710 (solo restaba la comision); confirmado por
+        // Lucas el 25/8/2026 que la entidad SI retiene comision + IVA, asi que el neto correcto
+        // es 92389.10, el mismo total que crear_gasto_comision() ya le cobraba al Expense.
+        $caja = $this->caja([
+            'comision_porcentaje'   => 6.29,
+            'comision_iva_alicuota' => 21,
+            'comision_iva_incluido' => false,
+        ]);
+        $fecha = Carbon::parse('2026-01-03');
+
+        $resultado = CajaLiquidacionHelper::calcular($caja, 1, 100000, $fecha);
+
+        $this->assertEqualsWithDelta(6290, $resultado['comision_calculada'], self::DELTA);
+        $this->assertEqualsWithDelta(92389.10, $resultado['monto_neto_estimado'], self::DELTA);
+    }
+
+    /** @test */
+    public function calcular_no_neta_iva_de_la_comision_cuando_ya_esta_incluido()
+    {
+        // Con IVA incluido la comision YA es el total: no hay nada mas que descontar del neto.
+        // 6290 * 21 / 121 = 1091.65 de IVA discriminado adentro de esos mismos 6290 (no se resta
+        // de nuevo), asi que el neto es igual al de antes del fix: monto - comision, sin mas.
+        $caja = $this->caja([
+            'comision_porcentaje'   => 6.29,
+            'comision_iva_alicuota' => 21,
+            'comision_iva_incluido' => true,
+        ]);
+        $fecha = Carbon::parse('2026-01-03');
+
+        $resultado = CajaLiquidacionHelper::calcular($caja, 1, 100000, $fecha);
+
+        $this->assertEqualsWithDelta(6290, $resultado['comision_calculada'], self::DELTA);
+        $this->assertEqualsWithDelta(93710, $resultado['monto_neto_estimado'], self::DELTA);
+    }
+
+    /** @test */
     public function calcular_sin_porcentaje_configurado_no_cobra_comision()
     {
         $caja = $this->caja(['comision_porcentaje' => null]);

@@ -36,9 +36,31 @@ class ClientOffer extends Model
 {
     protected $guarded = [];
 
+    /**
+     * client_nombre viaja SIEMPRE junto al modelo (index() y store()/fullModel() lo necesitan
+     * los dos, y las dos rutas pasan por acá): es aditivo, así que no puede romper a nadie que
+     * ya lea `client.name`.
+     */
+    protected $appends = ['client_nombre'];
+
     function scopeWithAll($q) {
-        $q->with(['client', 'article', 'ranges']);
+        // client.buyer y no client: getClientNombreAttribute() lee $client->buyer, y sin el
+        // eager-load acá cada fila de la tabla de Vigentes pega su propia consulta a buyers.
+        $q->with(['client.buyer', 'article', 'ranges']);
         return $q;
+    }
+
+    /**
+     * El nombre a mostrar de esta oferta: el del comprador de la tienda, cayendo al del
+     * cliente del ERP (OfertaComunicacionHelper::nombre_para_mostrar()). Aditivo: `client.name`
+     * sigue viajando intacto en la respuesta, que es lo que usan `display_name` del chat de
+     * WhatsApp (TablaActivas.vue) y los `<select>` de filtro — a propósito NO se tocan.
+     *
+     * @return string
+     */
+    public function getClientNombreAttribute()
+    {
+        return \App\Http\Controllers\Helpers\OfertaComunicacionHelper::nombre_para_mostrar($this->client, $this->user_id);
     }
 
     /**

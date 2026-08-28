@@ -284,10 +284,11 @@ class AuthController extends Controller
 
     public function get_user() {
         /**
-         * En login maestro se evita escribir last_activity/session_id para que
-         * el acceso de soporte no ocupe la sesión única del usuario.
+         * Se evita escribir last_activity/session_id cuando la sesión no tiene que ocupar el
+         * candado de sesión única: el login maestro (acceso de soporte) y el ingreso a la demo
+         * por magic link. Ver `debe_omitir_candado_de_actividad()`.
          */
-        if ($this->is_master_login_activity_bypass_enabled()) {
+        if ($this->debe_omitir_candado_de_actividad()) {
             $user = UserHelper::getFullModel(false);
             $user = $this->set_employee_props($user);
             $user->skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
@@ -331,6 +332,51 @@ class AuthController extends Controller
      */
     function is_master_login_activity_bypass_enabled() {
         return (bool) session($this->master_login_bypass_activity_key, false);
+    }
+
+    /**
+     * Informa si la sesión actual entró a una demo por magic link.
+     *
+     * La fuente es el marcador que deja `DemoIngresoController::store()` después de regenerar la
+     * sesión. Es el mismo que ya se usa para `es_sesion_demo` en `get_user()`: sobrevive al F5
+     * porque vive en la cookie de sesión y no en una variable de JavaScript.
+     *
+     * @return bool
+     */
+    function es_sesion_de_demo() {
+        return session()->has('demo_ingreso_token_id');
+    }
+
+    /**
+     * Informa si esta sesión tiene que OMITIR el candado de sesión única.
+     *
+     * Son dos casos, y por motivos distintos:
+     *
+     * 1. **Login maestro.** El acceso de soporte no puede ocupar la sesión única del cliente:
+     *    si la ocupara, entrar a mirar un problema dejaría al cliente afuera de su propio sistema.
+     *
+     * 2. **Ingreso a la demo por magic link.** 🔴 Sin esto, un lead con su link válido puede
+     *    recibir la pantalla de login sin ninguna explicación y sin forma de destrabarlo.
+     *    Medido el 26/8/2026 contra producción: `POST /api/demo/ingreso` devolvía 200 {"ok":true}
+     *    —el token validaba bien— y el `GET /api/user` siguiente devolvía 403, 6 de 6 veces,
+     *    porque otra sesión tenía el candado tomado. Alcanza con que Lucas tenga la demo abierta.
+     *
+     *    Es seguro eximirla porque la cuenta de demo no es la de un cliente real: cada instancia
+     *    tiene su propia base y su propio usuario, con `migrate:fresh` entre turno y turno, y un
+     *    solo token vigente por usuario. Es una cuenta descartable por turno, pensada para que
+     *    entre quien tenga el token.
+     *
+     *    Decisión de Lucas del 26/8/2026, con la alternativa sobre la mesa: se descartó que el
+     *    magic link se robara el candado ("el último que entra manda") porque expulsaría a Lucas
+     *    de la demo justo mientras acompaña la llamada del lead.
+     *
+     * 🔴 El candado sigue valiendo IGUAL para el login normal, que es donde protege de verdad:
+     * un cliente real con sesiones concurrentes. Esta exención no toca ese camino.
+     *
+     * @return bool
+     */
+    function debe_omitir_candado_de_actividad() {
+        return $this->is_master_login_activity_bypass_enabled() || $this->es_sesion_de_demo();
     }
 
     public function loginLucas($request) {

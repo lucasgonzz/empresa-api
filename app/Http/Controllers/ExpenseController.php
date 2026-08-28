@@ -112,25 +112,22 @@ class ExpenseController extends Controller
         $model->caja_id                               = 0;
         $model->created_at                            = $request->created_at;
         $model->save();
-        
-        // $model->payment_methods()->detach();
-        
-        // foreach ($request->payment_methods as $payment_method) {
-        //     if (!is_null($payment_method['amount'])) {
-        //         $amount = $payment_method['amount'];
-        //         $caja_id = null;
-        //         if (isset($payment_method['caja_id']) && $payment_method['caja_id'] != 0) {
-        //             $caja_id = $payment_method['caja_id'];
-        //         }
-                
-        //         $model->payment_methods()->attach($payment_method['id'],[
-        //             'amount'    => $amount,
-        //             'caja_id'   => $caja_id,
-        //         ]);
-        //     }
-        // }
 
-        // ExpenseCajaHelper::editar_movimiento_caja($model);
+        /*
+         * Tanda correctivos 2408, ítem 5: hasta hoy la edición de un gasto solo tocaba la
+         * fila de expenses. El desglose por método de pago (pivot) y el movimiento de caja
+         * quedaban con el monto viejo: el estado de resultados mostraba el monto nuevo y el
+         * flujo/saldo de caja, el viejo.
+         *
+         * La SPA edita el gasto sin re-mandar el desglose (la tabla de métodos de pago del
+         * form es de solo lectura), así que: (1) se reparte el monto nuevo entre los métodos
+         * ya adjuntos en proporción a lo que cada uno pagaba, y (2) se sincronizan los
+         * movimientos de caja del gasto con ese desglose y se recalculan los saldos. El
+         * detalle de las dos operaciones vive en ExpenseCajaHelper.
+         */
+        ExpenseCajaHelper::escalar_desglose_por_nuevo_monto($model);
+
+        ExpenseCajaHelper::editar_movimiento_caja($model);
 
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 200);
     }
