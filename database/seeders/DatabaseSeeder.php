@@ -514,9 +514,23 @@ class DatabaseSeeder extends Seeder
         $this->call(ConceptoMovimientoCajaCompensacionSeeder::class);
 
         $this->call(AfipTipoComprobanteSeeder::class);
+
+        /*
+            Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de columnas
+            (tabla pdf_column_options, sin user_id) y los TRES seeders de perfiles que siguen lo
+            necesitan poblado. PdfColumnProfileSeeder crea los perfiles de venta (Remito, Factura
+            comun) y PdfColumnProfileArticleSeeder el de listado de articulos. No reordenar.
+
+            🔴 Son TRES, y el del medio es el que se cae al copiar este bloque. Hasta el 28/8/2026
+            PdfColumnProfileArticleSeeder existia SOLO en UserSetupHelper::base_seeders(): faltaba
+            aca y en DemoSetupHelper, asi que toda cuenta nacida por esos dos caminos quedaba sin
+            plantillas de articulo y el item "PDF tabla (plantillas)" del listado mostraba "Sin
+            plantillas". No falla nada ni avisa nadie: la funcion simplemente no tiene contenido.
+        */
         $this->call(SheetTypeSeeder::class);
         $this->call(PdfColumnOptionSeeder::class);
         $this->call(PdfColumnProfileSeeder::class);
+        $this->call(PdfColumnProfileArticleSeeder::class);
         $this->call(PdfColumnProfileComisionesSeeder::class);
         $this->call(InputsSizeSeeder::class);
 
