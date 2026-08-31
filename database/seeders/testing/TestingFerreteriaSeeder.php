@@ -3,6 +3,7 @@
 namespace Database\Seeders\testing;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
@@ -386,6 +387,8 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_cajas_tesoreria($conceptos);
 
+        $this->abrir_caja_efectivo();
+
         $this->seed_impuesto_iibb();
     }
 
@@ -523,6 +526,38 @@ class TestingFerreteriaSeeder extends Seeder
                 'afip_ticket_production'  => 0,
             ]
         );
+    }
+
+    /**
+     * Deja `CAJA_EFECTIVO` ABIERTA.
+     *
+     * 🔴 No es un detalle: el selector de caja de un cobro y el de un pago ofrecen SOLO las cajas
+     * abiertas (`cajas_abiertas` en `src/mixins/vender/cajas.js`). Con las tres cajas cerradas
+     * --como nacian-- el select existe, se dibuja, y esta VACIO: Playwright lo reporta como
+     * "did not find some options", que manda a buscar el problema en el nombre de la caja o en el
+     * vinculo caja-metodo de pago, cuando lo que pasa es que ninguna esta abierta.
+     *
+     * Se abre una sola, y con el helper de produccion (`CajaAperturaHelper`) en vez de tocar las
+     * columnas a mano: abrir una caja es crear su `apertura_caja` Y marcarla, y una caja marcada
+     * abierta sin apertura es un estado que en una cuenta real no existe.
+     *
+     * Las otras dos quedan cerradas a proposito: sirven de contraste, y el circuito de ventas con
+     * multiples metodos de pago va a necesitar abrir alguna mas por su cuenta.
+     *
+     * @return void
+     */
+    protected function abrir_caja_efectivo()
+    {
+        $caja = Caja::where('name', self::CAJA_EFECTIVO)
+                    ->where('user_id', $this->user_id_fixture())
+                    ->first();
+
+        if (is_null($caja) || $caja->abierta) {
+            return;
+        }
+
+        $helper = new CajaAperturaHelper($caja->id);
+        $helper->abrir_caja();
     }
 
     /**
