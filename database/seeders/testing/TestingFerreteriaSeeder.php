@@ -5,11 +5,14 @@ namespace Database\Seeders\testing;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
 use App\Models\Address;
+use App\Models\AfipInformation;
 use App\Models\Article;
 use App\Models\Caja;
 use App\Models\Client;
 use App\Models\CurrentAcountPaymentMethod;
+use App\Models\CurrentAcountPaymentMethodDiscount;
 use App\Models\ExpenseConcept;
+use App\Models\ExtencionEmpresa;
 use App\Models\Iva;
 use App\Models\IvaCondition;
 use App\Models\Moneda;
@@ -22,6 +25,7 @@ use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
 use Database\Seeders\CurrentAcountPaymentMethodSeeder;
 use Database\Seeders\DepositSeeder;
+use Database\Seeders\ExtencionSeeder;
 use Database\Seeders\IvaConditionSeeder;
 use Database\Seeders\IvaSeeder;
 use Database\Seeders\MonedaSeeder;
@@ -146,6 +150,36 @@ class TestingFerreteriaSeeder extends Seeder
      * renglon que mostrar en vez del estado vacio.
      */
     const IMPUESTO_IIBB = 'IIBB';
+
+    /**
+     * Porcentaje de descuento por pagar con el metodo "Efectivo" (circuito e2e de ventas).
+     *
+     * Es un `current_acount_payment_method_discount`, o sea el descuento que el sistema aplica SOLO
+     * sobre el monto cobrado con ese metodo -- no es un descuento de la venta. Es la forma tipica
+     * de premiar el pago en efectivo.
+     */
+    const DESCUENTO_EFECTIVO = 10;
+
+    /**
+     * Numero de punto de venta del `afip_information` del fixture.
+     */
+    const PUNTO_VENTA = 1;
+
+    /**
+     * 🔴 CUIT del punto de venta, y NO es un numero cualquiera: tiene que ser el mismo del
+     * certificado de homologacion que el servidor tiene en `storage/app/afip/testing/`
+     * (`CN=comerciocitytester`, `serialNumber=CUIT 20423548984`).
+     *
+     * Con otro CUIT, WSAA rechaza el pedido de ticket de acceso y el error que vuelve no dice en
+     * ningun lado que el problema sea el CUIT: se ve como una falla generica de conexion con AFIP.
+     */
+    const PUNTO_VENTA_CUIT = '20423548984';
+
+    /**
+     * Slug de la extension de tienda online, tal cual lo siembra `ExtencionSeeder`. Es la que
+     * habilita el campo "Disponible en la tienda" del articulo (ver seed_extencion_online()).
+     */
+    const EXTENCION_ONLINE = 'online';
 
     /**
      * Id del usuario del fixture, resuelto una sola vez por `USER_EMAIL` (ver user_id_fixture()).
@@ -340,6 +374,14 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_metodos_pago_cta_cte();
 
+        // Circuito e2e completo (31/8/2026): el descuento por metodo de pago y el punto de venta de
+        // homologacion. Los dos son `firstOrCreate`, asi que entran en el bloque que corre SIEMPRE.
+        $this->seed_descuento_metodo_pago();
+
+        $this->seed_afip_information();
+
+        $this->seed_extencion_online();
+
         $conceptos = $this->seed_conceptos_gasto();
 
         $this->seed_cajas_tesoreria($conceptos);
@@ -407,6 +449,124 @@ class TestingFerreteriaSeeder extends Seeder
         CurrentAcountPaymentMethod::firstOrCreate([
             'name' => self::PAGO_TARJETA_CREDITO,
         ]);
+    }
+
+    /**
+     * Descuento por metodo de pago para "Efectivo" (circuito e2e de ventas).
+     *
+     * A diferencia de un descuento de venta, este se aplica sobre el MONTO COBRADO con ese metodo,
+     * automaticamente, cada vez que ese metodo se usa en un cobro. Sin el, el circuito de ventas no
+     * tiene forma de verificar por la interfaz que el descuento por metodo de pago se aplique: en
+     * una base recien sembrada la tabla `current_acount_payment_method_discounts` esta vacia.
+     *
+     * @return void
+     */
+    protected function seed_descuento_metodo_pago()
+    {
+        $efectivo = CurrentAcountPaymentMethod::where('name', self::PAGO_EFECTIVO)->first();
+
+        if (is_null($efectivo)) {
+            return;
+        }
+
+        // La clave del firstOrCreate es (metodo, usuario) y no incluye el porcentaje: si el
+        // descuento ya existe con otro valor, este seeder no lo pisa. Es la misma politica que el
+        // resto del fixture -- sembrar lo que falta, nunca corregir lo que ya esta.
+        CurrentAcountPaymentMethodDiscount::firstOrCreate(
+            [
+                'current_acount_payment_method_id' => $efectivo->id,
+                'user_id'                          => $this->user_id_fixture(),
+            ],
+            [
+                'discount_percentage' => self::DESCUENTO_EFECTIVO,
+                'cuotas'              => null,
+            ]
+        );
+    }
+
+    /**
+     * Punto de venta (`afip_information`) del fixture, en modo HOMOLOGACION.
+     *
+     * Sin esto no se puede facturar una venta ni emitir una nota de credito: lo que decide si una
+     * venta se factura es que se elija un punto de venta, y en una base recien sembrada no hay
+     * ninguno.
+     *
+     * 🔴 `afip_ticket_production` va explicitamente en 0 aunque la columna ya tenga ese default.
+     * Es la unica cosa que separa una emision de prueba contra `wsaahomo.afip.gov.ar` de una
+     * emision REAL contra AFIP produccion, y un fixture de testing no puede depender de que nadie
+     * haya cambiado el default de la migracion.
+     *
+     * @return void
+     */
+    protected function seed_afip_information()
+    {
+        $condicion = IvaCondition::where('name', 'Responsable inscripto')->first();
+
+        if (is_null($condicion)) {
+            return;
+        }
+
+        AfipInformation::firstOrCreate(
+            [
+                'user_id'     => $this->user_id_fixture(),
+                'punto_venta' => self::PUNTO_VENTA,
+            ],
+            [
+                'iva_condition_id'        => $condicion->id,
+                'description'             => 'Punto de venta de homologacion',
+                'razon_social'            => 'ComercioCity Tester',
+                'domicilio_comercial'     => 'Av. Siempreviva 742',
+                // Tiene que ser el CUIT del certificado de homologacion. Ver PUNTO_VENTA_CUIT.
+                'cuit'                    => self::PUNTO_VENTA_CUIT,
+                'ingresos_brutos'         => self::PUNTO_VENTA_CUIT,
+                'inicio_actividades'      => '2020-01-01',
+                'afip_ticket_production'  => 0,
+            ]
+        );
+    }
+
+    /**
+     * Habilita la extension "online" (tienda online) para el usuario del fixture.
+     *
+     * 🔴 Sin ella, el campo **"Disponible en la tienda"** (`articles.online`) NO EXISTE EN NINGUNA
+     * PANTALLA: `src/models/article.js` lo declara con `if_has_extencion: 'online'`, y
+     * `common-vue/mixins/generals.js` filtra de plano las props cuya extension el usuario no tiene.
+     * O sea que no aparece ni en el formulario del articulo ni en la actualizacion masiva, y el
+     * dato igual existe en la base con el default 1 de la migracion: el operador no lo puede tocar.
+     *
+     * Es un hueco del fixture, no del producto -- una cuenta real que vende online tiene la
+     * extension --, y sin taparlo no hay forma de verificar por interfaz que la masiva prenda y
+     * apague la disponibilidad en el ecommerce.
+     *
+     * Se habilita SOLO `online` y no el catalogo entero a proposito: cada extension cambia lo que
+     * la SPA dibuja, y prender de mas mueve pantallas que ningun test pidio.
+     *
+     * @return void
+     */
+    protected function seed_extencion_online()
+    {
+        // El catalogo de extensiones lo crea `ExtencionSeeder` con `create()`, que no es
+        // idempotente: va detras de un chequeo de existencia, mismo criterio que
+        // IvaConditionSeeder / CAPaymentMethodTypeSeeder mas arriba.
+        if (!ExtencionEmpresa::exists()) {
+            $this->call(ExtencionSeeder::class);
+        }
+
+        $extencion = ExtencionEmpresa::where('slug', self::EXTENCION_ONLINE)->first();
+
+        if (is_null($extencion)) {
+            return;
+        }
+
+        $user = User::where('email', self::USER_EMAIL)->first();
+
+        if (is_null($user)) {
+            return;
+        }
+
+        // `syncWithoutDetaching` y no `attach`: attach agrega una fila mas cada vez que el seeder
+        // se corre, y este metodo corre SIEMPRE (ver run()).
+        $user->extencions()->syncWithoutDetaching([$extencion->id]);
     }
 
     /**
