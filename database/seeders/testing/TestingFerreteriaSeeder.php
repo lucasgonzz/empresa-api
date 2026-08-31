@@ -12,6 +12,7 @@ use App\Models\Caja;
 use App\Models\Client;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\CurrentAcountPaymentMethodDiscount;
+use App\Models\Discount;
 use App\Models\ExpenseConcept;
 use App\Models\ExtencionEmpresa;
 use App\Models\Iva;
@@ -189,6 +190,18 @@ class TestingFerreteriaSeeder extends Seeder
      * `online`. Y sin ese toggle no hay forma de probar el circuito de presupuestos por interfaz.
      */
     const EXTENCION_PRESUPUESTOS = 'budgets';
+
+    /**
+     * Descuento de VENTA (tabla `discounts`), el que se elige en la etapa 3 de Vender y se resta
+     * del total. Es otra cosa que el descuento por metodo de pago: este se aplica a la venta
+     * entera, aquel solo sobre lo que se cobra con ese metodo.
+     */
+    const DESCUENTO_VENTA = 'Descuento e2e';
+
+    /**
+     * Porcentaje de ese descuento de venta.
+     */
+    const DESCUENTO_VENTA_PORCENTAJE = 15;
 
     /**
      * Id del usuario del fixture, resuelto una sola vez por `USER_EMAIL` (ver user_id_fixture()).
@@ -391,6 +404,8 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_extenciones();
 
+        $this->seed_descuento_de_venta();
+
         $conceptos = $this->seed_conceptos_gasto();
 
         $this->seed_cajas_tesoreria($conceptos);
@@ -532,6 +547,35 @@ class TestingFerreteriaSeeder extends Seeder
                 'ingresos_brutos'         => self::PUNTO_VENTA_CUIT,
                 'inicio_actividades'      => '2020-01-01',
                 'afip_ticket_production'  => 0,
+            ]
+        );
+    }
+
+    /**
+     * Descuento de venta comun (no atado a un cliente), para poder probar por interfaz que un
+     * descuento elegido en la etapa 3 de Vender baja el total.
+     *
+     * La tabla `discounts` nacia vacia, asi que el panel de descuentos de Vender se dibujaba sin
+     * una sola opcion: no habia nada que tildar.
+     *
+     * `client_id` en null a proposito: asi aparece en la seccion "Comunes" y sirve para cualquier
+     * venta, con o sin cliente.
+     *
+     * @return void
+     */
+    protected function seed_descuento_de_venta()
+    {
+        $user_id = $this->user_id_fixture();
+
+        Discount::firstOrCreate(
+            [
+                'name'    => self::DESCUENTO_VENTA,
+                'user_id' => $user_id,
+            ],
+            [
+                'num'        => $this->siguiente_num(Discount::class, $user_id),
+                'percentage' => self::DESCUENTO_VENTA_PORCENTAJE,
+                'client_id'  => null,
             ]
         );
     }
