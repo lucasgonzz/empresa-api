@@ -53,11 +53,25 @@ class MessageSend extends Notification
         }
     }
 
+    /**
+     * El mensaje llega en el momento, sin pasar por la cola.
+     *
+     * 🔴 Es el aviso de un mensaje nuevo en un pedido o en un chat: encolado llegaba tarde o no
+     * llegaba, que para un mensaje es lo mismo que no existir. Medido el 31/8/2026 con
+     * `BROADCAST_DRIVER=log`: cero broadcasts y una fila esperando en `jobs`.
+     *
+     * El porque completo esta en el docblock de
+     * `App\Notifications\Channels\InstantBroadcastChannel`, que ademas es quien ataja una caida de
+     * Pusher para que no vuelva como excepcion al emisor.
+     *
+     * @param mixed $notifiable
+     * @return \Illuminate\Notifications\Messages\BroadcastMessage
+     */
     public function toBroadcast($notifiable)
     {
-        return new BroadcastMessage([
+        return (new BroadcastMessage([
             'message' => $this->message,
-        ]);
+        ]))->onConnection('sync');
     }
 
     public function toMail($notifiable)

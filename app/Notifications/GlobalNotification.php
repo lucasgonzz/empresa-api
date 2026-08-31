@@ -105,8 +105,36 @@ class GlobalNotification extends Notification
     }
 
 
+    /**
+     * El aviso sale en el momento, sin pasar por la cola.
+     *
+     * 🔴 `onConnection('sync')` no es un detalle de performance: sin el, este aviso llega **hasta
+     * 75 minutos tarde** en el shared hosting. `BroadcastChannel` no habla con Pusher, despacha un
+     * `BroadcastNotificationCreated` que es `ShouldBroadcast` (no `Now`), y con
+     * `QUEUE_CONNECTION=database` eso queda en la tabla `jobs` esperando al worker, que el
+     * scheduler agenda cada minuto como `queue:work --stop-when-empty` con
+     * `withoutOverlapping(75)`. El peor caso es sistematico: un emisor que corre dentro de un job
+     * encola su broadcast justo cuando el worker esta por salir por haber vaciado la cola.
+     *
+     * Mismo razonamiento que ya documenta `app/Events/ArticleEmbeddingsBatchGenerated.php:19-25`
+     * para elegir `ShouldBroadcastNow`; una notificacion no puede declararlo por su cuenta, y por
+     * eso se pide por la conexion del mensaje. `BroadcastChannel::send()` lo respeta (vendor,
+     * lineas 46-49).
+     *
+     * ⚠️ **La red de contencion NO vive en este archivo.** Un `sync` pelado dejaria que una caida
+     * de Pusher subiera como excepcion hasta el emisor: 500 al usuario sobre una operacion ya
+     * aplicada, y el job emisor fallado y reintentado. Eso lo ataja
+     * `App\Notifications\Channels\InstantBroadcastChannel`, que es quien resuelve este canal.
+     * Si algun dia se saca ese canal, esta linea pasa a ser peligrosa.
+     *
+     * El payload no cambia ni una clave: es contrato con `empresa-spa`, que lo lee en
+     * `common-vue/mixins/broadcast.js`. Lo unico que cambia es por donde viaja.
+     *
+     * @param mixed $notifiable
+     * @return \Illuminate\Notifications\Messages\BroadcastMessage
+     */
     public function toBroadcast($notifiable) {
-        return new BroadcastMessage([
+        return (new BroadcastMessage([
             'message_text'              => $this->message_text,
             'color_variant'             => $this->color_variant,
             'functions_to_execute'      => $this->functions_to_execute,
@@ -119,6 +147,6 @@ class GlobalNotification extends Notification
             'price_stats'               => $this->price_stats,
             'excel_analysis'            => $this->excel_analysis,
             'provider_order_scan'       => $this->provider_order_scan,
-        ]);
+        ]))->onConnection('sync');
     }
 }
