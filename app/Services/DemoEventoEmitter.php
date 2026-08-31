@@ -37,6 +37,20 @@ class DemoEventoEmitter
         'clip.terminado',
         'nota.escrita',
         'seccion.completada',
+        /**
+         * Los tres del motor de tour guiado (mision del 30/8/2026). El lead los dispara al
+         * apretar "Probar" debajo de un video: `tour.iniciado` al arrancar, `tour.paso_salteado`
+         * si corta a mitad de camino, y `tour.completado` al terminar --con `datos.completo`
+         * diciendo si llego hasta el final o se salio antes--.
+         *
+         * 🔴 Sin estos tres nombres aca, el endpoint los descarta con un 204 mudo y un Log::info.
+         * Del lado del SPA no se ve NADA: la accion `demo/reportar` nunca rechaza, asi que el
+         * tour funciona igual y el unico sintoma es que el panel del admin no muestra un solo
+         * tour. Es el modo de falla callado que este comentario existe para evitar.
+         */
+        'tour.iniciado',
+        'tour.paso_salteado',
+        'tour.completado',
     ];
 
     /**
@@ -94,6 +108,16 @@ class DemoEventoEmitter
          * el envio en app()->terminating(), o sea DESPUES de que este request ya respondio.
          */
         'demo.setup.completado',
+        /**
+         * Mismo criterio que `clip.terminado`, que es su hermano exacto: los dos son el hito de
+         * progreso que Tomas mira en el feed en vivo mientras el lead esta adentro de la demo, y
+         * llegar un minuto tarde le saca justamente el valor de mirarlo en vivo.
+         *
+         * `tour.iniciado` y `tour.paso_salteado` quedan AFUERA a proposito: son ruido para el feed
+         * --un lead puede arrancar y cortar un tour varias veces sobre el mismo clip-- y llegan
+         * igual con el barrido del minuto.
+         */
+        'tour.completado',
     ];
 
     /** Tope de `datos` ya serializado. El campo de notas del panel manda texto libre del lead. */

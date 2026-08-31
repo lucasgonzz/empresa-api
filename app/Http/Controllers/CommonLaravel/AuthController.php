@@ -191,6 +191,23 @@ class AuthController extends Controller
 
         /** Usuario autenticado en la versión origen. */
         $auth_user = Auth::user();
+
+        /**
+         * Libera el candado de sesión única ACÁ, en la misma request que genera el token de
+         * transferencia, y no como efecto colateral del `/logout` que el SPA dispara después
+         * (`check_version()` en empresa-spa). Ese `/logout` es un pedido de red aparte que puede
+         * no llegar a completarse -corte de red, timeout, la pestaña ya navegó- y hasta ahora era
+         * el ÚNICO lugar que soltaba el candado: si fallaba, el usuario quedaba con el
+         * session_id de la versión vieja tomado y sin ningún logout exitoso que lo libere.
+         *
+         * El síntoma reportado por clientes: el login automático en la versión destino fallaba
+         * a veces, y al intentar entrar a mano ahí mismo aparecía "cuenta bloqueada, usada en
+         * otro dispositivo" -aunque no hubiera ningún otro dispositivo, era la propia sesión
+         * vieja que nunca soltó el candado-. Liberándolo acá, el candado queda libre apenas se
+         * decide el cambio de versión, sin depender de que nada más después salga bien.
+         */
+        $this->removeUserLastActivity($auth_user);
+
         $plain_token = VersionSessionTransferHelper::create_for_user($auth_user->id);
 
         return response()->json(['token' => $plain_token], 200);

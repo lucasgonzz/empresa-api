@@ -9,12 +9,14 @@ use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\Article;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\OnlinePriceType;
 use App\Models\OnlineTemplate;
 use App\Models\PriceType;
+use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
@@ -300,6 +302,36 @@ class DemoSetupHelper
          */
         if (!$semilla_sembro) {
             Artisan::call('set_company_performances', ['user_id' => $user->id, '--historico' => true]);
+        }
+
+        /**
+         * Historial de movimientos de stock variado para el clip 4.4 (Trazabilidad de cada
+         * articulo) de la demo comercial.
+         *
+         * 🔴 POR QUE VA EN EL SETUP Y NO SE CORRE A MANO. Medido el 28/8/2026 barriendo los
+         * primeros 120 articulos de `demo`: solo 5 tenian mas de un concepto de movimiento, y
+         * NINGUNO tenia "Compra a proveedor", "Importacion de excel", "Mov entre depositos" ni
+         * "Ingreso manual". El guion del clip promete textualmente *"cada compra, cada venta,
+         * cada correccion a mano, cada movimiento entre depositos, cada importacion de Excel"*, y
+         * su mejor bloque filtra por "Importacion de excel" — que devolvia VACIO en camara
+         * mientras la voz contaba el caso. Ademas el 100% de los movimientos tenian el mismo
+         * empleado, asi que la columna "Empleado" no podia mostrar los nombres distintos que el
+         * guion pide.
+         *
+         * Correrlo a mano sobre cada demo no alcanza: hace falta SSH a la instancia, el pipeline
+         * de actualizacion no ejecuta comandos sueltos, y una demo recien armada volveria a nacer
+         * sin el historial. Acá queda cubierto de una vez.
+         *
+         * ⚠️ SOLO CUANDO SE SEMBRARON DATOS DE DEMOSTRACION. En la instalacion de un cliente REAL
+         * `semilla:datos` sale por la guarda de entorno sin sembrar nada, y meterle movimientos de
+         * stock inventados a un comercio de verdad seria corromperle el historial.
+         *
+         * El comando es idempotente (marca lo suyo en `observations`) y exige `--article_id` a
+         * proposito: no elige el articulo solo. Se le pasa uno del propio owner en vez de
+         * hardcodear un id, porque el numero depende de como haya quedado la siembra.
+         */
+        if ($semilla_sembro) {
+            self::sembrar_trazabilidad_para_el_clip($user);
         }
 
         // Tienda online por defecto para que la demo tenga URL pública.
@@ -979,6 +1011,57 @@ class DemoSetupHelper
         // if (!empty($data['imagenes'])) {
             $extencions[] = 'imagenes';
         // }
+    }
+
+    /**
+     * Le siembra al catálogo el historial de movimientos variado que necesita el clip 4.4.
+     *
+     * Elige el artículo en vez de hardcodear un id: `demo:sembrar-trazabilidad` exige
+     * `--article_id` a propósito (no lo adivina), pero acá el número depende de cómo haya quedado
+     * la siembra, así que se toma uno del propio owner.
+     *
+     * 🔴 NO ROMPE EL SETUP SI FALLA. Es material para un video de demostración: que no se pueda
+     * sembrar es un problema de una filmación, no de la instancia. Un `throw` acá dejaría la demo
+     * del lead a medio armar por algo que no la afecta, así que se registra y se sigue.
+     *
+     * @param User $user Owner de la instancia recién armada.
+     *
+     * @return void
+     */
+    private static function sembrar_trazabilidad_para_el_clip($user)
+    {
+        try {
+            /*
+             * Se prefiere un artículo que YA tenga movimientos: el clip muestra un historial
+             * mezclado, y sembrar sobre uno sin nada previo lo deja pareciendo inventado.
+             * Si ninguno tiene, se cae a cualquiera del owner.
+             */
+            $article_id = StockMovement::query()
+                ->join('articles', 'articles.id', '=', 'stock_movements.article_id')
+                ->where('articles.user_id', $user->id)
+                ->groupBy('stock_movements.article_id')
+                ->orderByRaw('COUNT(*) DESC')
+                ->value('stock_movements.article_id');
+
+            if (!$article_id) {
+                $article_id = Article::where('user_id', $user->id)->value('id');
+            }
+
+            if (!$article_id) {
+                Log::info('DemoSetup: no hay artículos para sembrar la trazabilidad del clip 4.4.');
+
+                return;
+            }
+
+            Artisan::call('demo:sembrar-trazabilidad', [
+                '--article_id' => $article_id,
+                '--user_id'    => $user->id,
+            ]);
+
+            Log::info('DemoSetup: trazabilidad del clip 4.4 sembrada sobre el artículo ' . $article_id . '.');
+        } catch (\Throwable $e) {
+            Log::warning('DemoSetup: no se pudo sembrar la trazabilidad del clip 4.4: ' . $e->getMessage());
+        }
     }
 
     /**
