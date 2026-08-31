@@ -157,8 +157,14 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
     }
 
     /**
-     * No regresión del camino feliz: el token que emite create_version_session_token tiene que
-     * seguir sirviendo para el login automático en la versión destino.
+     * El camino feliz, con el candado tomado de entrada: el token que emite
+     * create_version_session_token tiene que seguir sirviendo para el login automático en la
+     * versión destino.
+     *
+     * 🔴 NO es un control independiente del fix -sin el arreglo también falla, porque
+     * login_from_version_session_token() encuentra el candado tomado por la versión origen y
+     * rechaza-. Es un tercer ángulo del mismo arreglo: confirma que además de liberar el
+     * candado, el token en sí sigue siendo válido y consumible.
      *
      * @return void
      */
@@ -172,7 +178,13 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
         $token_response->assertStatus(200);
         $plain_token = $token_response->json('token');
 
-        /** Nueva request "en la version destino": sin actingAs, sin sesion previa. */
+        /**
+         * Sigue siendo la MISMA sesión de test (actingAs() y el cookie jar persisten entre
+         * llamadas de un mismo método), no una request real desde otro host. Alcanza para
+         * probar el endpoint: login_from_version_session_token() no lee el guard actual, solo
+         * el token, y por eso "quién esté actingAs" en este punto es irrelevante para el
+         * resultado.
+         */
         $login_por_transferencia = $this->postJson('/login-from-version-session-token', [
             'token' => $plain_token,
         ]);
