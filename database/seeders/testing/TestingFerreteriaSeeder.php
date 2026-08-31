@@ -178,9 +178,17 @@ class TestingFerreteriaSeeder extends Seeder
 
     /**
      * Slug de la extension de tienda online, tal cual lo siembra `ExtencionSeeder`. Es la que
-     * habilita el campo "Disponible en la tienda" del articulo (ver seed_extencion_online()).
+     * habilita el campo "Disponible en la tienda" del articulo (ver seed_extenciones()).
      */
     const EXTENCION_ONLINE = 'online';
+
+    /**
+     * Slug de la extension de presupuestos. Sin ella, el toggle "Guardar como presupuesto" de
+     * VENDER **no se dibuja** (`v-if="hasExtencion('budgets') && client"` en
+     * stage-1/GuardarComoPresupuesto.vue), igual que pasaba con "Disponible en la tienda" y
+     * `online`. Y sin ese toggle no hay forma de probar el circuito de presupuestos por interfaz.
+     */
+    const EXTENCION_PRESUPUESTOS = 'budgets';
 
     /**
      * Id del usuario del fixture, resuelto una sola vez por `USER_EMAIL` (ver user_id_fixture()).
@@ -381,7 +389,7 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_afip_information();
 
-        $this->seed_extencion_online();
+        $this->seed_extenciones();
 
         $conceptos = $this->seed_conceptos_gasto();
 
@@ -561,7 +569,7 @@ class TestingFerreteriaSeeder extends Seeder
     }
 
     /**
-     * Habilita la extension "online" (tienda online) para el usuario del fixture.
+     * Habilita las extensiones que el fixture necesita para que ciertas pantallas EXISTAN.
      *
      * 🔴 Sin ella, el campo **"Disponible en la tienda"** (`articles.online`) NO EXISTE EN NINGUNA
      * PANTALLA: `src/models/article.js` lo declara con `if_has_extencion: 'online'`, y
@@ -573,12 +581,15 @@ class TestingFerreteriaSeeder extends Seeder
      * extension --, y sin taparlo no hay forma de verificar por interfaz que la masiva prenda y
      * apague la disponibilidad en el ecommerce.
      *
-     * Se habilita SOLO `online` y no el catalogo entero a proposito: cada extension cambia lo que
+     * Lo mismo vale para `budgets`: sin ella el toggle "Guardar como presupuesto" de VENDER no se
+     * dibuja, y el circuito de presupuestos no tiene por donde entrar.
+     *
+     * Se habilitan SOLO esas dos y no el catalogo entero a proposito: cada extension cambia lo que
      * la SPA dibuja, y prender de mas mueve pantallas que ningun test pidio.
      *
      * @return void
      */
-    protected function seed_extencion_online()
+    protected function seed_extenciones()
     {
         // El catalogo de extensiones lo crea `ExtencionSeeder` con `create()`, que no es
         // idempotente: va detras de un chequeo de existencia, mismo criterio que
@@ -587,21 +598,24 @@ class TestingFerreteriaSeeder extends Seeder
             $this->call(ExtencionSeeder::class);
         }
 
-        $extencion = ExtencionEmpresa::where('slug', self::EXTENCION_ONLINE)->first();
-
-        if (is_null($extencion)) {
-            return;
-        }
-
         $user = User::where('email', self::USER_EMAIL)->first();
 
         if (is_null($user)) {
             return;
         }
 
+        $slugs = [self::EXTENCION_ONLINE, self::EXTENCION_PRESUPUESTOS];
+
+        $ids = ExtencionEmpresa::whereIn('slug', $slugs)->pluck('id')->all();
+
+        if (count($ids) === 0) {
+            return;
+        }
+
         // `syncWithoutDetaching` y no `attach`: attach agrega una fila mas cada vez que el seeder
-        // se corre, y este metodo corre SIEMPRE (ver run()).
-        $user->extencions()->syncWithoutDetaching([$extencion->id]);
+        // se corre, y este metodo corre SIEMPRE (ver run()). Y tampoco `sync()`, que le sacaria al
+        // usuario cualquier otra extension que alguien le haya prendido a mano.
+        $user->extencions()->syncWithoutDetaching($ids);
     }
 
     /**
