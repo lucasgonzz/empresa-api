@@ -989,6 +989,36 @@ class ContabilidadRepository
     }
 
     /**
+     * Cuántas notas de crédito autorizadas por ARCA todavía NO tienen su IVA medido.
+     *
+     * 🔴 Existe para que un cero del renglón "IVA de notas de crédito emitidas" no pueda
+     * confundirse con un cero medido. Hasta el 1/9/2026 el IVA de las notas de crédito no se
+     * persistía (ver `AfipNotaCreditoHelper::update_afip_ticket()`), así que TODA nota de crédito
+     * anterior a ese cambio tiene `importe_iva` en null hasta que se corra
+     * `php artisan set_iva_notas_credito`. Sin este contador, un comercio que en agosto emitió
+     * $40.000 de IVA en notas de crédito abre el reporte y ve un $0 con la misma cara que un mes
+     * sin ninguna devolución — y paga $40.000 de más creyendo que el sistema se lo midió.
+     *
+     * 🔴 A propósito NO filtra por fecha. Una nota de crédito sin `importe_iva` tampoco tiene
+     * `afip_fecha_emision` (las dos columnas se escriben juntas, ver el comando de backfill), así
+     * que filtrar por período la dejaría afuera y el contador siempre daría 0: justo el silencio
+     * que este método existe para romper.
+     *
+     * @param  int $user_id
+     * @return int
+     */
+    public static function notas_credito_sin_medir($user_id)
+    {
+        return (int) AfipTicket::query()
+            ->join('current_acounts', 'current_acounts.id', '=', 'afip_tickets.nota_credito_id')
+            ->whereNotNull('afip_tickets.nota_credito_id')
+            ->where('current_acounts.user_id', $user_id)
+            ->where('afip_tickets.resultado', 'A')
+            ->whereNull('afip_tickets.importe_iva')
+            ->count();
+    }
+
+    /**
      * Detalle paginado de los comprobantes que componen `iva_notas_credito()`.
      *
      * `link_tipo` es `current_acount` y `link_id` es el `nota_credito_id`: el comprobante real que
