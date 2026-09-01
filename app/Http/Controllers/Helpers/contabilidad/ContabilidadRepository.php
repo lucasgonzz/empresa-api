@@ -927,6 +927,127 @@ class ContabilidadRepository
     }
 
     // =========================================================================================
+    // IVA DE NOTAS DE CREDITO EMITIDAS (debito fiscal cancelado)
+    // =========================================================================================
+
+    /**
+     * Query base de las notas de crédito emitidas y autorizadas por ARCA en el período.
+     *
+     * FUENTE ACTUAL: tabla `afip_tickets` (`resultado = 'A'`, campo `importe_iva`), unida a
+     * `current_acounts` por `nota_credito_id` para filtrar por usuario.
+     *
+     * 🔴 Por qué el join va contra `current_acounts` y no contra `sales`: `nota_credito_id` es el
+     * campo que DEFINE que un `afip_ticket` es una nota de crédito (`AfipNotaCreditoHelper::
+     * create_afip_ticket()` lo escribe y ninguna factura de venta lo tiene), así que el inner join
+     * hace estructuralmente imposible que este renglón cuente una factura de venta. Además es el
+     * mismo scope de tenant que ya usa `query_devoluciones()` sobre esas mismas notas de crédito:
+     * si acá se usara otra fuente, los dos renglones podrían divergir de dueño en silencio.
+     *
+     * 🔴 No puede duplicar filas: `afip_tickets.nota_credito_id` apunta a la PK de
+     * `current_acounts`, así que cada ticket matchea como máximo una fila (no hay fan-out).
+     *
+     * 🔴 No filtra por `cbte_tipo` a propósito. Una lista blanca de tipos (3, 8, 13, 21, 203, 208,
+     * 213) sería un segundo criterio que puede divergir del primero: el día que ARCA habilite otro
+     * tipo de nota de crédito, la lista vieja haría DESAPARECER notas de crédito reales del
+     * renglón — o sea, subdeclarar el IVA cancelado y pagar de más. Y `cbte_tipo` es `string` en
+     * base, así que un `whereIn` con enteros dependería de la coerción de MySQL. Un filtro que
+     * puede fallar en silencio hacia el lado de "más impuesto" no va en un reporte fiscal.
+     *
+     * 🔴 Regla 02: fechado por `afip_fecha_emision`, igual que `query_iva_debito()`. Las dos
+     * puntas del mismo saldo tienen que fechar igual o el neteo no cierra.
+     *
+     * @param  int $user_id
+     * @param  \Carbon\Carbon $desde
+     * @param  \Carbon\Carbon $hasta
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private static function query_iva_notas_credito($user_id, $desde, $hasta)
+    {
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
+        return AfipTicket::query()
+            ->join('current_acounts', 'current_acounts.id', '=', 'afip_tickets.nota_credito_id')
+            ->whereNotNull('afip_tickets.nota_credito_id')
+            ->where('current_acounts.user_id', $user_id)
+            ->where('afip_tickets.resultado', 'A')
+            ->whereDate('afip_tickets.afip_fecha_emision', '>=', $desde)
+            ->whereDate('afip_tickets.afip_fecha_emision', '<=', $hasta);
+    }
+
+    /**
+     * IVA de las notas de crédito emitidas en el período: el débito fiscal que se cancela con las
+     * notas de crédito ya facturadas ante ARCA.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @return float
+     */
+    public static function iva_notas_credito($user_id, $desde, $hasta)
+    {
+        return (float) self::query_iva_notas_credito($user_id, $desde, $hasta)->sum('afip_tickets.importe_iva');
+    }
+
+    /**
+     * Detalle paginado de los comprobantes que componen `iva_notas_credito()`.
+     *
+     * `link_tipo` es `current_acount` y `link_id` es el `nota_credito_id`: el comprobante real que
+     * el usuario quiere abrir es el movimiento de la nota de crédito, no el `afip_ticket` (mismo
+     * criterio que `devoluciones_detalle()`, y `current_acount` ya está mapeado en el modal de
+     * detalle de la SPA).
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @param  int $page
+     * @param  int $per_page
+     * @return array{registros: array, total: int, page: int, per_page: int}
+     */
+    public static function iva_notas_credito_detalle($user_id, $desde, $hasta, $page = 1, $per_page = 50)
+    {
+        $base = function () use ($user_id, $desde, $hasta) {
+            return self::query_iva_notas_credito($user_id, $desde, $hasta);
+        };
+
+        $total = $base()->count();
+
+        // Las columnas van calificadas con `afip_tickets.`: con el join a `current_acounts` en el
+        // medio, un `id` pelado traería la PK del movimiento de cuenta corriente y `link_id`
+        // apuntaría al comprobante equivocado.
+        $rows = $base()
+            ->orderBy('afip_tickets.afip_fecha_emision', 'ASC')
+            ->skip(($page - 1) * $per_page)
+            ->take($per_page)
+            ->get([
+                'afip_tickets.id',
+                'afip_tickets.afip_fecha_emision as fecha',
+                'afip_tickets.cbte_numero',
+                'afip_tickets.importe_iva',
+                'afip_tickets.nota_credito_id',
+            ]);
+
+        $registros = [];
+
+        foreach ($rows as $row) {
+            $registros[] = [
+                'id'          => $row->id,
+                'fecha'       => $row->fecha,
+                'descripcion' => 'Nota de crédito N° '.$row->cbte_numero,
+                'monto'       => (float) $row->importe_iva,
+                'link_tipo'   => 'current_acount',
+                'link_id'     => $row->nota_credito_id,
+            ];
+        }
+
+        return [
+            'registros' => $registros,
+            'total'     => $total,
+            'page'      => (int) $page,
+            'per_page'  => (int) $per_page,
+        ];
+    }
+
+    // =========================================================================================
     // IVA CREDITO (facturas de compra + IVA de gastos)
     // =========================================================================================
 
