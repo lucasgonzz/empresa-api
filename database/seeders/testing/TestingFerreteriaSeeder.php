@@ -4,9 +4,13 @@ namespace Database\Seeders\testing;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\AfipTicket;
+use App\Models\AfipTipoComprobante;
+use App\Models\BudgetStatus;
 use App\Models\Article;
 use App\Models\Caja;
 use App\Models\Client;
@@ -23,6 +27,8 @@ use App\Models\ProviderDiscount;
 use App\Models\SaleChannel;
 use App\Models\SaleTax;
 use App\Models\User;
+use Database\Seeders\AfipTipoComprobanteSeeder;
+use Database\Seeders\BudgetStatusSeeder;
 use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
 use Database\Seeders\CurrentAcountPaymentMethodSeeder;
@@ -403,6 +409,9 @@ class TestingFerreteriaSeeder extends Seeder
         $this->seed_afip_information();
 
         $this->seed_extenciones();
+        $this->seed_estados_de_presupuesto();
+        $this->seed_tipos_de_comprobante();
+        $this->limpiar_comprobantes_sin_cae();
 
         $this->seed_descuento_de_venta();
 
@@ -410,7 +419,7 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_cajas_tesoreria($conceptos);
 
-        $this->abrir_caja_efectivo();
+        $this->abrir_cajas();
 
         $this->seed_impuesto_iibb();
     }
@@ -442,17 +451,49 @@ class TestingFerreteriaSeeder extends Seeder
             'Corre `IvaConditionSeeder` antes de este seeder.'
         );
 
+        /*
+         * 🔴 El CUIT no es decoracion: ARCA lo exige para facturar clase "A", que es la que
+         * corresponde entre dos Responsables Inscriptos. Sin el, la emision vuelve rechazada con
+         * "El campo DocNro es invalido" --y el comprobante queda creado SIN CAE, que ademas hace
+         * aparecer el modal de "Facturas no autorizadas" en todas las pantallas--. Medido el
+         * 31/8/2026 armando el circuito de facturacion.
+         *
+         * 20111111112 es el CUIT de prueba de homologacion de ARCA, y tiene digito verificador
+         * valido: la validacion del front lo chequea antes de mandar nada.
+         */
         $clientes = [
-            self::CLIENTE_CC       => $iva_responsable_inscripto,
-            self::CLIENTE_CONTADO  => $iva_responsable_inscripto,
-            self::CLIENTE_EXENTO   => $iva_exento,
+            self::CLIENTE_CC       => ['iva' => $iva_responsable_inscripto, 'cuit' => '20111111112'],
+            self::CLIENTE_CONTADO  => ['iva' => $iva_responsable_inscripto, 'cuit' => '20111111112'],
+            self::CLIENTE_EXENTO   => ['iva' => $iva_exento,                'cuit' => null],
         ];
 
-        foreach ($clientes as $nombre => $iva_condition) {
-            Client::firstOrCreate(
+        foreach ($clientes as $nombre => $datos) {
+            $cliente = Client::firstOrCreate(
                 ['name' => $nombre, 'user_id' => $user_id],
-                ['iva_condition_id' => $iva_condition->id]
+                ['iva_condition_id' => $datos['iva']->id]
             );
+
+            // `firstOrCreate` no toca al que ya existe: el CUIT se asegura aparte para que un
+            // fixture ya sembrado tambien lo reciba.
+            if ($cliente->cuit !== $datos['cuit']) {
+                $cliente->cuit = $datos['cuit'];
+                $cliente->save();
+            }
+
+            /*
+             * 🔴 La cuenta corriente del cliente no nace con el cliente: la crea
+             * `CreditAccountHelper::crear_credit_accounts()`, que en produccion corre desde
+             * `ClientController`. Un `firstOrCreate` directo como el de arriba se la saltea.
+             *
+             * Sin ella, confirmar un presupuesto revienta con un 500 --"Trying to get property 'id'
+             * of non-object" en `CurrentAcountFromSaleHelper` linea 54-- DESPUES de haber creado la
+             * venta y descontado el stock. Es la falla que el propio `BudgetController::confirmar()`
+             * describe en el comentario de su catch, y la que se comio una corrida del circuito e2e
+             * de presupuestos el 31/8/2026.
+             *
+             * El helper es idempotente (chequea antes de crear) y arma las dos monedas.
+             */
+            CreditAccountHelper::crear_credit_accounts('client', $cliente->id, $user_id);
         }
     }
 
@@ -581,7 +622,7 @@ class TestingFerreteriaSeeder extends Seeder
     }
 
     /**
-     * Deja `CAJA_EFECTIVO` ABIERTA.
+     * Deja ABIERTAS las cajas que los circuitos necesitan: `CAJA_EFECTIVO` y `CAJA_MP`.
      *
      * 🔴 No es un detalle: el selector de caja de un cobro y el de un pago ofrecen SOLO las cajas
      * abiertas (`cajas_abiertas` en `src/mixins/vender/cajas.js`). Con las tres cajas cerradas
@@ -589,27 +630,107 @@ class TestingFerreteriaSeeder extends Seeder
      * "did not find some options", que manda a buscar el problema en el nombre de la caja o en el
      * vinculo caja-metodo de pago, cuando lo que pasa es que ninguna esta abierta.
      *
-     * Se abre una sola, y con el helper de produccion (`CajaAperturaHelper`) en vez de tocar las
-     * columnas a mano: abrir una caja es crear su `apertura_caja` Y marcarla, y una caja marcada
-     * abierta sin apertura es un estado que en una cuenta real no existe.
+     * Se abren con el helper de produccion (`CajaAperturaHelper`) en vez de tocar las columnas a
+     * mano: abrir una caja es crear su `apertura_caja` Y marcarla, y una caja marcada abierta sin
+     * apertura es un estado que en una cuenta real no existe.
      *
-     * Las otras dos quedan cerradas a proposito: sirven de contraste, y el circuito de ventas con
-     * multiples metodos de pago va a necesitar abrir alguna mas por su cuenta.
+     * Son DOS y no una: el circuito de venta con multiples metodos de pago
+     * (`circuito-multipago-devolucion.spec.js`) reparte el cobro entre dos metodos y le pone a cada
+     * uno SU caja, que es justamente lo que hay que verificar --que cada movimiento cae donde
+     * corresponde y no todo junto en la primera--. Con una sola caja abierta ese circuito no tiene
+     * como existir.
+     *
+     * "Caja Sin Concepto" queda cerrada a proposito: sirve de contraste para el caso de un select
+     * que no la ofrece.
      *
      * @return void
      */
-    protected function abrir_caja_efectivo()
+    protected function abrir_cajas()
     {
-        $caja = Caja::where('name', self::CAJA_EFECTIVO)
-                    ->where('user_id', $this->user_id_fixture())
-                    ->first();
+        $nombres = [self::CAJA_EFECTIVO, self::CAJA_MP];
 
-        if (is_null($caja) || $caja->abierta) {
-            return;
+        foreach ($nombres as $nombre) {
+
+            $caja = Caja::where('name', $nombre)
+                        ->where('user_id', $this->user_id_fixture())
+                        ->first();
+
+            if (is_null($caja) || $caja->abierta) {
+                continue;
+            }
+
+            $helper = new CajaAperturaHelper($caja->id);
+            $helper->abrir_caja();
         }
+    }
 
-        $helper = new CajaAperturaHelper($caja->id);
-        $helper->abrir_caja();
+    /**
+     * Siembra los dos estados de presupuesto, que son una tabla GLOBAL de solo lectura.
+     *
+     * 🔴 Sin esto, crear un presupuesto revienta con un 500 y un mensaje que no nombra la tabla:
+     * "Trying to get property 'name' of non-object" en `BudgetHelper::checkStatus()`, que hace
+     * `$budget->budget_status->name` sobre una relacion vacia. Medido el 31/8/2026 armando el
+     * circuito e2e de presupuestos: la extension `budgets` ya estaba prendida --o sea que el
+     * toggle de VENDER se dibujaba y todo el flujo parecia disponible-- y el POST igual moria.
+     *
+     * `BudgetStatusSeeder` usa `create()`, asi que no es idempotente: va detras de un chequeo de
+     * existencia, mismo criterio que IvaConditionSeeder / ExtencionSeeder.
+     *
+     * Los ids importan: `BtnConfirmarAnular.vue` y `BudgetController` tratan al 1 como "Sin
+     * confirmar" y al 2 como "Confirmado". Por eso se siembra con el seeder de produccion y no a
+     * mano en otro orden.
+     *
+     * @return void
+     */
+    protected function seed_estados_de_presupuesto()
+    {
+        if (!BudgetStatus::exists()) {
+            $this->call(BudgetStatusSeeder::class);
+        }
+    }
+
+    /**
+     * Siembra el catalogo de tipos de comprobante de AFIP, que es otra tabla GLOBAL de solo lectura.
+     *
+     * 🔴 Sin esto no se puede facturar: el select "Tipo de comprobante" del modal de facturacion se
+     * dibuja habilitado y **con una sola opcion, la de placeholder**. El boton de emitir queda
+     * deshabilitado y no hay ningun mensaje que diga que falta un catalogo. Medido el 31/8/2026
+     * armando el circuito de facturacion y devolucion.
+     *
+     * Es el mismo genero que `budget_statuses`: una tabla que en produccion viene sembrada desde
+     * siempre y que un `migrate:fresh` de testing deja vacia.
+     *
+     * @return void
+     */
+    protected function seed_tipos_de_comprobante()
+    {
+        if (!AfipTipoComprobante::exists()) {
+            $this->call(AfipTipoComprobanteSeeder::class);
+        }
+    }
+
+    /**
+     * Borra los comprobantes de AFIP que quedaron SIN CAE.
+     *
+     * 🔴 Un comprobante sin CAE es una emision que fallo, y en esta base aparecen solos: alcanza con
+     * que una corrida de los tests intente facturar y ARCA no conteste. El problema es lo que pasa
+     * despues: el modal "Facturas no autorizadas" (`afip-reenviar-facturas`, montado en App.vue) se
+     * abre SOLO en cualquier pantalla mientras exista alguno, y **tapa toda la interfaz** --el
+     * header queda debajo de su overlay, el buscador general no se puede clickear y el foco del
+     * teclado se lo lleva el modal--.
+     *
+     * O sea que un intento fallido de facturar deja la base en un estado en el que los tests que no
+     * tienen nada que ver empiezan a fallar, con timeouts sobre elementos perfectamente visibles.
+     * Costo cuatro corridas el 31/8/2026.
+     *
+     * En una cuenta real ese modal es correcto --hay que reintentar esas facturas--. En una base de
+     * testing es basura de una corrida anterior.
+     *
+     * @return void
+     */
+    protected function limpiar_comprobantes_sin_cae()
+    {
+        AfipTicket::whereNull('cae')->delete();
     }
 
     /**
