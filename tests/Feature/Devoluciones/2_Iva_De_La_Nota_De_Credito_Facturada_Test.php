@@ -91,9 +91,14 @@ class Iva_De_La_Nota_De_Credito_Facturada_Test extends EmpresaTestCase
 
     /**
      * Arma el mínimo indispensable para que `AfipNotaCreditoHelper` se pueda construir y crear su
-     * comprobante: la configuración fiscal del comercio (el `TestingFerreteriaSeeder` NO siembra
-     * `AfipInformation`), una venta y su factura autorizada, y el movimiento de cuenta corriente de
-     * la nota de crédito.
+     * comprobante: la configuración fiscal del comercio, una venta y su factura autorizada, y el
+     * movimiento de cuenta corriente de la nota de crédito.
+     *
+     * Crea su propia `AfipInformation` en vez de usar la del fixture a propósito. Cuando se escribió
+     * este archivo el `TestingFerreteriaSeeder` no sembraba ninguna; el 1/9/2026 empezó a sembrarla
+     * (`seed_afip_information()`), pero seguir creando la propia mantiene el escenario explícito y
+     * bajo control de este test: si mañana el seeder le cambia el punto de venta o la condición de
+     * IVA al fixture, este test no se entera. El `tearDown` borra por id, así que las dos conviven.
      *
      * @return array{afip_ticket_venta: \App\Models\AfipTicket, nota_credito: \App\Models\CurrentAcount}
      */
