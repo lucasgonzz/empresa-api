@@ -451,6 +451,35 @@ class OrderController extends Controller
 
             $model->articles()->attach($article_id, $valores);
         }
+
+        /**
+         * 🔴 Se DESCARGA la relacion, porque el `foreach ($model->articles ...)` de arriba la dejo
+         * cargada en memoria con los pivotes VIEJOS y el `detach()`/`attach()` escribe la base sin
+         * enterarla. No lo borres por parecer al pedo: sin esta linea, todo lo que lea
+         * `$order->articles` despues de llamar acá recibe las cantidades y los precios que el
+         * formulario acaba de reemplazar.
+         *
+         * Lo que costaba, medido sobre `demo` el 31/8/2026 con un renglon de 7 unidades bajado a 3:
+         *
+         *   - `OrderHelper::get_total()` devolvia el total de 7 y `orders.total` quedaba viejo;
+         *   - `chequear_limite_credito_del_pedido()`, que compara contra ese `total`, avisaba con el
+         *     numero equivocado;
+         *   - `CreateSaleOrderHelper::save_sale()` creaba la venta con `pivot->amount` de 7 y con
+         *     `'total' => $order->total`, o sea descontaba 7 de stock y le cargaba 7 a la cuenta
+         *     corriente del cliente.
+         *
+         * Se confirmaba un pedido por 3 y se facturaban 7, y el error no se descubria solo: el
+         * pedido queda diciendo 3 y la venta diciendo 7, y no hay ninguna pantalla donde esos dos
+         * numeros se vean juntos.
+         *
+         * Va acá adentro y no en `update()` a proposito: el metodo que desincroniza el modelo es el
+         * que tiene que dejarlo coherente. Ponerlo en el llamador arregla este llamador; ponerlo acá
+         * arregla tambien al que se agregue mañana.
+         *
+         * `unsetRelation()` y no `load()`: descarga y deja que el proximo acceso la recargue solo,
+         * asi el camino que no crea venta —que no vuelve a mirar los renglones— no paga la consulta.
+         */
+        $model->unsetRelation('articles');
     }
 
     function pdf($id) {
