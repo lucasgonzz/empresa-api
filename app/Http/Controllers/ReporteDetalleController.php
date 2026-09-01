@@ -145,6 +145,13 @@ class ReporteDetalleController extends Controller
                 $detalle = ContabilidadRepository::iva_debito_detalle($user_id, $desde, $hasta, $page, $per_page);
                 break;
 
+            case 'iva_notas_credito':
+                // Sin dimensión de moneda, igual que iva_debito: los impuestos se liquidan en
+                // pesos sobre toda la operación (ver PHPDoc de clase de PosicionFiscalHelper).
+                $total = ContabilidadRepository::iva_notas_credito($user_id, $desde, $hasta);
+                $detalle = ContabilidadRepository::iva_notas_credito_detalle($user_id, $desde, $hasta, $page, $per_page);
+                break;
+
             case 'iva_credito':
                 $total = ContabilidadRepository::iva_credito($user_id, $desde, $hasta);
                 $detalle = ContabilidadRepository::iva_credito_detalle($user_id, $desde, $hasta, $page, $per_page);

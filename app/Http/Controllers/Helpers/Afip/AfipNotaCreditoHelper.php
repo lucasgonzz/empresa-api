@@ -112,9 +112,12 @@ class AfipNotaCreditoHelper
 
 
 
+        // Mismo criterio que interno(): un solo reloj para lo que se declara y lo que se guarda.
+        $fecha_emision = Carbon::today();
+
         $data = [
             'Id'                    => $this->sale->id.rand(0,99999),
-            'Fecha_cbte'            => date('Ymd'),
+            'Fecha_cbte'            => $fecha_emision->format('Ymd'),
             'Cbte_Tipo'             => 21, // Nota de credito de Exportacion
             'Punto_vta'             => $this->afip_ticket->afip_information->punto_venta,
             'Cbte_nro'              => $cbte_nro,
@@ -253,6 +256,14 @@ class AfipNotaCreditoHelper
                     'cuit_cliente'      => $this->sale->client->cuit,
                     'cae'               => $result->FEXAuthorizeResult->FEXResultAuth->Cae,
                     'cae_expired_at'    => $result->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
+                    /*
+                     * Una NC de exportacion (cbte_tipo 21) no lleva IVA: FEXAuthorize no tiene ImpIVA y el
+                     * comprobante sale sin discriminar. Se guarda 0 EXPLICITO y no null a proposito: null seria
+                     * "no lo medimos" y quedaria indistinguible de una NC vieja sin backfill, mientras que 0 es
+                     * el numero real que le corresponde al renglon.
+                     */
+                    'importe_iva'        => 0,
+                    'afip_fecha_emision' => $fecha_emision->format('Y-m-d'),
                 ];
 
                 $this->update_afip_ticket($data);
@@ -294,7 +305,18 @@ class AfipNotaCreditoHelper
         $afip_helper = new AfipHelper($this->afip_ticket, $this->nota_credito->articles, $this->nota_credito->services, null, null, $this->nota_credito->nota_credito_descriptions, $this->nota_credito);
         $importes = $afip_helper->getImportes();
 
-        $today = date('Ymd');
+        /*
+         * Un solo reloj para las dos puntas. Lo que se le declara a ARCA en CbteFch y lo que queda
+         * guardado en afip_fecha_emision tienen que ser el MISMO dia, porque el renglon "IVA de notas
+         * de credito emitidas" de la Posicion Fiscal fechea por afip_fecha_emision. Si se leyera
+         * date() dos veces, una NC emitida a las 23:59:59 podria quedar declarada un dia y guardada
+         * al siguiente, y el renglon no cerraria contra el Libro IVA por un comprobante.
+         *
+         * A diferencia de la factura de venta (MakeAfipTicket linea 21), la NC no tiene fecha de
+         * emision elegible por el usuario: se emite siempre en el dia.
+         */
+        $fecha_emision = Carbon::today();
+        $today = $fecha_emision->format('Ymd');
         $moneda_id = 'PES';
         $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
         $invoice = array(
@@ -389,6 +411,8 @@ class AfipNotaCreditoHelper
                     'cuit_cliente'      => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->DocNro,
                     'cae'               => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAE,
                     'cae_expired_at'    => $result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->CAEFchVto,
+                    'importe_iva'       => $importes['iva'],
+                    'afip_fecha_emision'=> $fecha_emision->format('Y-m-d'),
                 ];
 
                 $this->update_afip_ticket($data);
@@ -522,6 +546,16 @@ class AfipNotaCreditoHelper
             'cuit_cliente'      => $data['cuit_cliente'],
             'cae'               => $data['cae'],
             'cae_expired_at'    => $data['cae_expired_at'],
+            /*
+             * Estas dos son las que hacen existir el renglon "IVA de notas de credito emitidas".
+             * Hasta la mision de 1/9/2026 la NC se emitia ante ARCA con su ImpIVA (interno(), linea
+             * 319) y ese numero se perdia: no quedaba en ninguna columna. Sin importe_iva no hay
+             * monto que sumar; sin afip_fecha_emision no hay periodo al que imputarlo, porque toda
+             * la Posicion Fiscal fechea por fecha de EMISION y no por created_at (ver
+             * ContabilidadRepository::query_iva_debito(), regla 02).
+             */
+            'importe_iva'        => $data['importe_iva'],
+            'afip_fecha_emision' => $data['afip_fecha_emision'],
         ]);
     }
 

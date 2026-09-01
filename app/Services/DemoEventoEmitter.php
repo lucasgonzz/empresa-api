@@ -51,6 +51,24 @@ class DemoEventoEmitter
         'tour.iniciado',
         'tour.paso_salteado',
         'tour.completado',
+        /**
+         * Cuanto del video vio el lead, en porcentaje (mision del 1/9/2026). Lo emite
+         * `TarjetaClip.vue` cada vez que el video cruza un decimo nuevo y al pausar, con
+         * `datos.porcentaje` entero de 1 a 99.
+         *
+         * 🔴 A proposito NO esta en NOMBRES_CON_PUSH_INMEDIATO, y el motivo es de volumen, no
+         * de importancia: son ~10 eventos por video mirado, contra 1 de `clip.terminado`. Con
+         * push inmediato, un lead que mira seis videos seguidos dispara ~60 envios al canal del
+         * admin en pocos minutos, y ninguno de ellos le cambia nada a Tomas mirando el feed en
+         * vivo: el porcentaje solo importa para el lead que NO llego al final, y eso se lee
+         * despues, no en el segundo. Viaja con el barrido del minuto, que es exactamente para lo
+         * que existe.
+         *
+         * ⚠️ Sin este nombre aca el endpoint lo descarta con un 204 mudo y del lado del SPA no se
+         * ve NADA --`demo/reportar` nunca rechaza--: es el mismo modo de falla callado que
+         * documenta el bloque de los tres del tour, arriba.
+         */
+        'clip.progreso',
     ];
 
     /**
