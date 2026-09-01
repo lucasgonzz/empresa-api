@@ -999,22 +999,36 @@ class ContabilidadRepository
      * $40.000 de IVA en notas de crédito abre el reporte y ve un $0 con la misma cara que un mes
      * sin ninguna devolución — y paga $40.000 de más creyendo que el sistema se lo midió.
      *
-     * 🔴 A propósito NO filtra por fecha. Una nota de crédito sin `importe_iva` tampoco tiene
+     * 🔴 Fechea por `created_at` y NO por `afip_fecha_emision`, que es justo lo contrario de lo que
+     * hace el resto de este bloque. El motivo: una nota de crédito sin `importe_iva` tampoco tiene
      * `afip_fecha_emision` (las dos columnas se escriben juntas, ver el comando de backfill), así
-     * que filtrar por período la dejaría afuera y el contador siempre daría 0: justo el silencio
-     * que este método existe para romper.
+     * que filtrar por emisión las dejaría afuera a todas y el contador daría 0 siempre — justo el
+     * silencio que este método existe para romper. `created_at` es el mismo proxy que usa el
+     * backfill para reconstruir la fecha de emisión, y por el mismo motivo: la fila la crea
+     * `AfipNotaCreditoHelper::create_afip_ticket()` en la misma request en la que se le declara el
+     * `CbteFch` a ARCA.
+     *
+     * Acotarlo al período pedido importa: sin eso, el aviso aparecería incluso en un período
+     * enteramente posterior al cambio, donde todo está medido. Un aviso que sale siempre se
+     * convierte en ruido y deja de leerse, que es la forma más silenciosa de perder una advertencia.
      *
      * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
      * @return int
      */
-    public static function notas_credito_sin_medir($user_id)
+    public static function notas_credito_sin_medir($user_id, $desde, $hasta)
     {
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
         return (int) AfipTicket::query()
             ->join('current_acounts', 'current_acounts.id', '=', 'afip_tickets.nota_credito_id')
             ->whereNotNull('afip_tickets.nota_credito_id')
             ->where('current_acounts.user_id', $user_id)
             ->where('afip_tickets.resultado', 'A')
             ->whereNull('afip_tickets.importe_iva')
+            ->whereDate('afip_tickets.created_at', '>=', $desde)
+            ->whereDate('afip_tickets.created_at', '<=', $hasta)
             ->count();
     }
 

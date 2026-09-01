@@ -83,7 +83,7 @@ class PosicionFiscalHelper
          * que el comercio paga de mas, asi que no puede quedar librada a que alguien se acuerde de
          * correr el backfill.
          */
-        $notas_credito_sin_medir = ContabilidadRepository::notas_credito_sin_medir($user_id);
+        $notas_credito_sin_medir = ContabilidadRepository::notas_credito_sin_medir($user_id, $desde, $hasta);
 
         $iva_credito = ContabilidadRepository::iva_credito($user_id, $desde, $hasta);
 

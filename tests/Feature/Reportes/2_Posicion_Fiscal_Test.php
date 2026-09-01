@@ -24,8 +24,9 @@ use Tests\EmpresaTestCase;
  * por test, todos entre julio de 2019 y julio de 2020, para no solaparse ni con los otros tests de
  * este archivo ni con los rangos que ya usa `1_Estado_Resultados_Test.php` (enero a junio de 2019
  * y todo 2016). Los meses de julio de 2019 a febrero de 2020 son de los tests 1 a 8; marzo a julio
- * de 2020 son de los tests 9 a 13 (renglón "IVA de notas de crédito emitidas") y agosto de 2020 es
- * del test 14 (`notas_credito_sin_medir`). Un test nuevo en este archivo tiene que elegir un mes que
+ * de 2020 son de los tests 9 a 13 (renglón "IVA de notas de crédito emitidas") y agosto Y SEPTIEMBRE
+ * de 2020 son del test 14 (`notas_credito_sin_medir`, que necesita dos meses para verificar que el
+ * aviso queda acotado al período). Un test nuevo en este archivo tiene que elegir un mes que
  * no esté en esa lista: dos tests compartiendo mes se contaminan entre sí y el rojo aparece recién
  * cuando cambia el orden de la corrida.
  *
@@ -817,12 +818,16 @@ class Posicion_Fiscal_Test extends EmpresaTestCase
      * que subir cuando falta medir y volver a cero cuando se midió. Un test que solo verificara el
      * "1" pasaría igual con un contador que nunca baja.
      *
-     * 🔴 El contador NO filtra por fecha a propósito (`ContabilidadRepository::notas_credito_sin_medir()`):
-     * una nota de crédito sin `importe_iva` tampoco tiene `afip_fecha_emision` —las dos columnas se
-     * escriben juntas, ver `SetIvaNotasCredito::persistir()`—, así que filtrar por período la dejaría
-     * afuera y el contador siempre daría 0, que es justo el silencio que existe para romper. Por eso
-     * el baseline de arranque se assertea explícitamente: sin él, un "1" podría venir de cualquier
-     * otro test del archivo y no de lo que este siembra.
+     * 🔴 El contador fechea por `created_at` y no por `afip_fecha_emision`, al revés que todos los
+     * demás renglones (`ContabilidadRepository::notas_credito_sin_medir()`). Una nota de crédito sin
+     * `importe_iva` tampoco tiene `afip_fecha_emision` —las dos columnas se escriben juntas, ver
+     * `SetIvaNotasCredito::persistir()`—, así que fechear por emisión las dejaría afuera a todas y el
+     * contador daría 0 siempre, que es justo el silencio que existe para romper. Igual va acotado al
+     * período: un aviso que sale en cualquier rango, incluso en uno enteramente posterior al cambio y
+     * ya medido, se convierte en ruido y deja de leerse.
+     *
+     * Por eso el baseline de arranque se assertea explícitamente: sin él, un "1" podría venir de
+     * cualquier otro test del archivo y no de lo que este siembra.
      *
      * Agosto de 2020, rango exclusivo de este test.
      *
@@ -902,6 +907,37 @@ class Posicion_Fiscal_Test extends EmpresaTestCase
             (float) $iva['iva_notas_credito'],
             self::DELTA,
             'Una vez medida, la nota de crédito tiene que sumar al renglón: es lo que el backfill viene a recuperar.'
+        );
+
+        /*
+         * Y el aviso está acotado al período: una nota de crédito sin medir creada en OTRO mes no
+         * tiene que encender la advertencia acá. Sin esto, el aviso saldría en todos los rangos que
+         * el usuario mire —incluido uno enteramente posterior al cambio, donde está todo medido— y
+         * un aviso que sale siempre deja de leerse, que es la forma más silenciosa de perderlo.
+         */
+        $this->fijar_reloj_en('2020-09-15 10:00:00');
+
+        $this->crear_nota_credito_facturada(null, null, 800, [
+            'afip_ticket' => [
+                'importe_iva'        => null,
+                'afip_fecha_emision' => null,
+            ],
+        ]);
+
+        $iva = $this->pedir_posicion_fiscal('2020-08-01', '2020-08-31')['posicion_iva'];
+
+        $this->assertSame(
+            0,
+            (int) $iva['notas_credito_sin_medir'],
+            'Una nota de crédito sin medir de septiembre no tiene que encender el aviso en el reporte de agosto.'
+        );
+
+        $iva_septiembre = $this->pedir_posicion_fiscal('2020-09-01', '2020-09-30')['posicion_iva'];
+
+        $this->assertSame(
+            1,
+            (int) $iva_septiembre['notas_credito_sin_medir'],
+            'Pero sí tiene que encenderlo en el reporte de septiembre, que es el período al que pertenece.'
         );
     }
 }
