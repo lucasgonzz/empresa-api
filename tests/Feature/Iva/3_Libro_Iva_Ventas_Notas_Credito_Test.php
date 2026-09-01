@@ -153,11 +153,43 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
      */
     protected function configuracion_fiscal_responsable_inscripto()
     {
-        $iva_condition = IvaCondition::where('name', 'Responsable inscripto')->first();
+        return $this->configuracion_fiscal('Responsable inscripto');
+    }
+
+    /**
+     * Configuracion fiscal propia del test, MONOTRIBUTISTA.
+     *
+     * Es la otra rama de `AfipImportesCalculator::calculate()`: cualquier emisor que no sea
+     * "Responsable inscripto" cae en `calculate_for_no_responsable_inscripto()`, que no desglosa
+     * por alicuota y arma el total de otra forma. El catalogo `iva_conditions` de la base de
+     * testing tiene cuatro: Responsable inscripto, Monotributista, Consumidor final y Exento.
+     * Se elige Monotributista y no Exento a proposito, porque `calculate()` le da a "Exento" un
+     * tratamiento extra propio y eso mezclaria dos cosas en el mismo test.
+     *
+     * @return \App\Models\AfipInformation
+     */
+    protected function configuracion_fiscal_monotributista()
+    {
+        return $this->configuracion_fiscal('Monotributista');
+    }
+
+    /**
+     * Crea la `AfipInformation` del test con la condicion de IVA pedida, resuelta POR NOMBRE.
+     *
+     * Por nombre y no por id porque es exactamente asi como la lee
+     * `AfipImportesCalculator::calculate()` (`afip_information->iva_condition->name`): si el nombre
+     * del catalogo cambiara, el test tiene que caerse con un mensaje claro y no medir otra rama.
+     *
+     * @param  string $nombre_condicion Nombre exacto en la tabla `iva_conditions`.
+     * @return \App\Models\AfipInformation
+     */
+    protected function configuracion_fiscal($nombre_condicion)
+    {
+        $iva_condition = IvaCondition::where('name', $nombre_condicion)->first();
 
         if (is_null($iva_condition)) {
             $this->fail(
-                'No existe la condicion de IVA "Responsable inscripto" en la base de testing. '.
+                'No existe la condicion de IVA "'.$nombre_condicion.'" en la base de testing. '.
                 'AfipImportesCalculator::calculate() lee `afip_information->iva_condition->name` para '.
                 'decidir si desglosa por alicuota, asi que sin ella estos tests no miden nada. Es un '.
                 'problema del fixture para reportar, no algo para saltear.'
@@ -807,7 +839,132 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 6 — el comando de auditoria encuentra la nota de credito que se exporto subdeclarada y
+     * Test 6 — LA RAMA NO RESPONSABLE INSCRIPTO, que es la que mas cambio con el arreglo.
+     *
+     * Por que este test existe: `AfipImportesCalculator::calculate_for_no_responsable_inscripto()`
+     * tiene una rama que solo corre `if ($afip_helper->nota_credito_model && count($afip_helper->
+     * articles) >= 1)`. Hasta el 1/9/2026 `get_importes()` pasaba SIEMPRE `nota_credito_model` en
+     * null, asi que para una nota de credito esa rama no corria NUNCA. Ahora corre, y cambia el
+     * numero de punta a punta — pero los otros seis tests de esta clase arman todos un emisor
+     * Responsable inscripto y ninguno la toca.
+     *
+     * Escenario: comercio MONOTRIBUTISTA, venta facturada por 5000,00 entera, y una nota de credito
+     * que devuelve un solo articulo de 1210,00.
+     *
+     *   - construccion VIEJA (sin `nota_credito_model`): la rama no corre, el total sale de
+     *     `$afip_helper->sale->total` → 5000,00. O sea que el Libro IVA Ventas declaraba la VENTA
+     *     ENTERA como si toda ella se hubiera anulado.
+     *   - construccion NUEVA (con `nota_credito_model`): la rama corre y arma el total desde el
+     *     pivot de los articulos devueltos → 1210,00 * 1 = 1210,00.
+     *
+     * 🔴 LIMITACION CONOCIDA QUE ESTE TEST FIJA A PROPOSITO: esa rama suma SOLO LOS ARTICULOS.
+     * Ignora los servicios y las lineas de descripcion libre, que es exactamente lo que esta mision
+     * arreglo para Responsable inscripto. Por eso el escenario cuelga tambien una descripcion de
+     * 605,00 y un servicio de 1210,00 y el total sigue dando 1210,00 y no 3025,00. NO se arregla
+     * acá: se deja medido para que se vea, y para que el dia que alguien la complete este test se
+     * ponga en rojo y lo obligue a actualizar el numero a conciencia.
+     *
+     * Un emisor no RI tampoco discrimina IVA: `iva` y el desglose por alicuota quedan en cero, y el
+     * gravado es el total bruto. Eso ya era asi antes del arreglo.
+     *
+     * @group iva-notas-credito
+     * @test
+     */
+    public function una_nota_de_credito_de_un_comercio_no_responsable_inscripto_declara_solo_los_articulos_devueltos()
+    {
+        $afip_information = $this->configuracion_fiscal_monotributista();
+        $venta = $this->venta_facturada($afip_information, 5000);
+        $nc = $this->nota_credito_facturada($afip_information, $venta['sale'], $venta['afip_ticket'], 1210);
+
+        $this->agregar_articulo($nc['nota_credito'], 'Pinza', 1210, 1);
+
+        // Los dos que la rama no-RI ignora. Estan para que la limitacion quede medida, no de adorno.
+        $this->agregar_descripcion($nc['nota_credito'], 'Reintegro por flete', 605);
+
+        $servicio = Service::create([
+            'user_id' => $this->usuario_de_testing()->id,
+            'name'    => 'Mano de obra devuelta (test libro iva monotributo)',
+            'price'   => 1210,
+        ]);
+        $this->sembrado['services'][] = $servicio->id;
+
+        $nc['nota_credito']->services()->attach($servicio->id, [
+            'amount' => 1,
+            'price'  => 1210,
+        ]);
+
+        $importes = $this->importes_del_libro_iva($nc['afip_ticket']);
+
+        $this->assertEqualsWithDelta(
+            1210.00,
+            (float) $importes['total'],
+            self::DELTA,
+            'total de la NC de un monotributista: sale del pivot de los articulos devueltos (1210,00 x 1), no del total de la venta'
+        );
+
+        $this->assertEqualsWithDelta(
+            1210.00,
+            (float) $importes['gravado'],
+            self::DELTA,
+            'un emisor no RI no separa neto de IVA: el gravado es el total bruto'
+        );
+
+        $this->assertEqualsWithDelta(
+            0.00,
+            (float) $importes['iva'],
+            self::DELTA,
+            'un emisor no RI no discrimina IVA: `calculate_for_no_responsable_inscripto()` nunca acumula la columna iva'
+        );
+
+        $this->assertEqualsWithDelta(
+            0.00,
+            (float) $importes['ivas']['21']['BaseImp'],
+            self::DELTA,
+            'un emisor no RI no lleva desglose por alicuota: los buckets quedan como los dejo default_ivas()'
+        );
+
+        /*
+         * La limitacion, dicha con un numero. 3025,00 seria el total si la rama sumara tambien la
+         * descripcion libre (605,00) y el servicio (1210,00). Hoy NO lo hace.
+         */
+        $this->assertNotEqualsWithDelta(
+            3025.00,
+            (float) $importes['total'],
+            self::DELTA,
+            'LIMITACION CONOCIDA: si esto falla, la rama no-RI empezo a sumar servicios y descripciones libres. No es un bug nuevo: es que alguien completo la rama y hay que actualizar este test a conciencia'
+        );
+
+        /*
+         * La otra mitad, igual que en los demas tests de la clase: la construccion vieja tiene que
+         * dar DISTINTO, o el escenario no esta midiendo la rama.
+         */
+        $viejos = $this->importes_de_la_construccion_vieja($nc['afip_ticket']);
+
+        $this->assertEqualsWithDelta(
+            5000.00,
+            (float) $viejos['total'],
+            self::DELTA,
+            'sin el modelo de la NC la rama no corria y el total salia de sale->total: la VENTA ENTERA (5000,00) declarada como anulada'
+        );
+
+        $this->assertEqualsWithDelta(
+            3790.00,
+            (float) $viejos['total'] - (float) $importes['total'],
+            self::DELTA,
+            'la diferencia es exactamente lo que la venta tiene de mas que la devolucion (5000,00 - 1210,00)'
+        );
+
+        $this->assertLessThan(
+            (float) $viejos['total'],
+            (float) $importes['total'],
+            'ESCENARIO MAL ARMADO si esto falla: en la rama no-RI la forma vieja declaraba de MAS, no de menos, o el test no esta midiendo nada'
+        );
+
+        $nc['nota_credito']->services()->detach();
+    }
+
+    /**
+     * Test 7 — el comando de auditoria encuentra la nota de credito que se exporto subdeclarada y
      * dice de cuanto fue.
      *
      * Es la parte de la mision que contesta la pregunta que el arreglo NO contesta: el codigo
@@ -815,6 +972,10 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
      * numero viejo. Un comando que devolviera 0 en un escenario donde SI hay diferencia seria peor
      * que no tenerlo, asi que se prueba con el mismo escenario del test 1, cuyo delta esta
      * calculado a mano: 500,00 de base imponible y 105,00 de IVA.
+     *
+     * Con una vuelta de tuerca: el movimiento de cuenta corriente va con `user_id` en NULL, que es
+     * el caso que el scope viejo del comando no veia y el exportador si exporta. Ver el comentario
+     * de adentro.
      *
      * @group iva-notas-credito
      * @test
@@ -828,6 +989,16 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
         $this->agregar_articulo($nc['nota_credito'], 'Pinza', 1210, 1);
         $this->agregar_descripcion($nc['nota_credito'], 'Reintegro por flete', 605);
 
+        /*
+         * 🔴 EL MOVIMIENTO DE CUENTA CORRIENTE VA CON `user_id` EN NULL, A PROPOSITO. La columna es
+         * nullable (verificado en la base de testing) y el PDF del Libro IVA Ventas exporta igual
+         * esta nota de credito, porque el se scopea por `sale_nota_credito.user_id`, que si esta.
+         * Hasta el 1/9/2026 el comando se scopeaba por `current_acounts.user_id` —el criterio de
+         * `ContabilidadRepository`— y una fila asi se exportaba pero NO se auditaba: un agujero
+         * silencioso. Si alguien vuelve a poner aquel scope, este test encuentra 0 y se pone rojo.
+         */
+        $nc['nota_credito']->update(['user_id' => null]);
+
         // El rango acota la corrida a las filas de este test (julio de 2015), asi que el resumen no
         // puede contaminarse con nada mas que haya en la base.
         Artisan::call('auditar_libro_iva_notas_credito', [
@@ -836,12 +1007,23 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
             '--hasta'      => '2015-07-31',
         ]);
 
-        $salida = Artisan::output();
+        /*
+         * Se normalizan los fines de linea antes de mirar la salida: `Artisan::output()` corta con
+         * PHP_EOL, que en Windows es \r\n y en el server de Lucas \n. Sin esto, una asercion que
+         * mira el final de un renglon pasaria en una maquina y no en la otra.
+         */
+        $salida = str_replace("\r\n", "\n", Artisan::output());
 
-        $this->assertStringContainsString(
-            'Notas de credito autorizadas en el periodo: 1',
+        /*
+         * 🔴 EXACTA, no substring. `assertStringContainsString('periodo: 1')` tambien pasa con
+         * "periodo: 12", "periodo: 100" o "periodo: 1734": el test decia "encontro una" y en
+         * realidad estaba tapando que el scope se habia llevado media base. El \n ancla el final
+         * del renglon.
+         */
+        $this->assertMatchesRegularExpression(
+            '/Notas de credito autorizadas en el periodo: 1\n/',
             $salida,
-            'el comando tiene que encontrar la nota de credito del periodo (si encuentra 0, el scope por usuario o el filtro de fecha estan mal)'
+            'el comando tiene que encontrar EXACTAMENTE la nota de credito del periodo y ninguna otra (si encuentra 0, el scope por comercio o el filtro de fecha estan mal; si encuentra mas, se esta llevando filas de otro comercio)'
         );
 
         $this->assertStringContainsString(
@@ -851,21 +1033,102 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
         );
 
         $this->assertStringContainsString(
-            'base imponible: 500,00',
+            'SUBDECLARADO (la exportacion informo de MENOS que el comprobante autorizado):'."\n".
+            '      base imponible: 500,00'."\n".
+            '      IVA:            105,00',
             $salida,
-            'el delta de base imponible tiene que ser exactamente la descripcion libre neta (605,00 / 1,21 = 500,00)'
+            'el delta subdeclarado tiene que ir en su propio bloque y ser exactamente la descripcion libre neta (605,00 / 1,21 = 500,00) con su IVA (105,00)'
         );
 
+        /*
+         * La otra punta informada por separado. Es lo que impide que una NC declarada de mas
+         * cancele a una subdeclarada y el titular quede por debajo de la exposicion real.
+         */
         $this->assertStringContainsString(
-            'IVA:            105,00',
+            'SOBREDECLARADO (la exportacion informo de MAS):'."\n".
+            '      base imponible: 0,00'."\n".
+            '      IVA:            0,00',
             $salida,
-            'el delta de IVA tiene que ser exactamente el IVA de la descripcion libre (500,00 * 0,21)'
+            'en este escenario no hay ninguna NC declarada de mas, y el comando lo tiene que decir con su propio numero en vez de netearlo contra el subdeclarado'
         );
 
         $this->assertStringNotContainsString(
             'No hay ninguna nota de credito con diferencia',
             $salida,
             'un cero tranquilizador en un escenario que SI tiene diferencia seria peor que no tener el comando'
+        );
+    }
+
+    /**
+     * Test 8 — el comando NO puede decir "nada que rectificar" cuando no pudo medir nada.
+     *
+     * El agujero que fija este test: hasta el 1/9/2026 el cierre del comando miraba solo los
+     * contadores `subdeclaradas` y `sobredeclaradas`. Una corrida donde TODOS los comprobantes
+     * fallaron al calcularse imprimia el warning de "no medibles" y en el renglon siguiente
+     * afirmaba "No hay ninguna nota de credito con diferencia en el periodo. Nada que rectificar."
+     * —y devolvia 0—. Es el mismo cero tranquilizador que el comando existe para evitar, esta vez
+     * escrito en el comando.
+     *
+     * Como se fuerza el fallo, sin tocar el codigo de produccion: la `AfipInformation` del
+     * comprobante se crea con un `iva_condition_id` que no existe en el catalogo (la columna no
+     * tiene foreign key, verificado en la base de testing). `AfipImportesCalculator::calculate()`
+     * arranca leyendo `afip_information->iva_condition->name`, se encuentra con null y tira. El
+     * comando lo atrapa con su `catch (Throwable)`, lo cuenta como no medible y sigue — que es
+     * exactamente lo que tiene que pasar con una fila rota en una base de produccion.
+     *
+     * @group iva-notas-credito
+     * @test
+     */
+    public function el_comando_de_auditoria_no_dice_nada_que_rectificar_cuando_no_pudo_medir()
+    {
+        $afip_information = AfipInformation::create([
+            'user_id'                => $this->usuario_de_testing()->id,
+            // Id inexistente a proposito: es lo que hace que el calculo tire y el comprobante
+            // quede sin medir. No hay FK sobre esta columna, asi que la fila entra igual.
+            'iva_condition_id'       => 999999,
+            'razon_social'           => 'Comercio de test libro iva sin condicion de iva',
+            'cuit'                   => '20000000000',
+            'punto_venta'            => 99,
+            'afip_ticket_production' => 0,
+        ]);
+
+        $this->sembrado['afip_information'][] = $afip_information->id;
+
+        $venta = $this->venta_facturada($afip_information, 5000);
+        $nc = $this->nota_credito_facturada($afip_information, $venta['sale'], $venta['afip_ticket'], 1210);
+
+        $this->agregar_articulo($nc['nota_credito'], 'Pinza', 1210, 1);
+
+        $exit_code = Artisan::call('auditar_libro_iva_notas_credito', [
+            'company_name' => $this->usuario_de_testing()->company_name,
+            '--desde'      => '2015-07-01',
+            '--hasta'      => '2015-07-31',
+        ]);
+
+        $salida = str_replace("\r\n", "\n", Artisan::output());
+
+        $this->assertMatchesRegularExpression(
+            '/No medibles \(ver el detalle de arriba\): +1\n/',
+            $salida,
+            'el comprobante roto tiene que contarse como no medible, no desaparecer del resumen'
+        );
+
+        $this->assertStringNotContainsString(
+            'Nada que rectificar',
+            $salida,
+            '🔴 EL AGUJERO: con comprobantes sin medir, el comando NO puede afirmar que no hay nada que rectificar. No midio nada, no sabe.'
+        );
+
+        $this->assertStringContainsString(
+            'CONCLUSION PARCIAL',
+            $salida,
+            'el cierre tiene que decir con todas las letras que la conclusion es parcial y cuantos comprobantes quedaron sin medir'
+        );
+
+        $this->assertSame(
+            2,
+            $exit_code,
+            'el exit code tiene que ser distinto de 0 para que un cron o un pipeline no lea como verde una corrida que no midio todo'
         );
     }
 }
