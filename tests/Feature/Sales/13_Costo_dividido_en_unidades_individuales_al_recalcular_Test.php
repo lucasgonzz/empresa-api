@@ -8,18 +8,15 @@ use App\Models\User;
 use Tests\TestCase;
 
 /**
- * Protege el calculo de costo de SaleHelper::getCost() cuando el item que llega en el
- * POST /api/sale NO trae un pivot con costo ya guardado (rama "fresca": el item se
- * repite desde un documento anterior cuyo pivot de origen no tenia costo, o se agrega
- * por primera vez con costo_real crudo). Si el articulo tiene unidades_individuales,
- * el costo tiene que quedar dividido por esa cantidad, no el costo del bulto entero.
+ * Protege el contrato general de SaleHelper::getCost(): cuando el item que llega en el
+ * POST /api/sale NO trae un pivot con costo ya guardado (rama "fresca", cost se recalcula
+ * desde costo_real), si el articulo tiene unidades_individuales el costo tiene que quedar
+ * dividido por esa cantidad, no el costo del bulto entero.
  *
- * Caso real que origino el test: venta 50662 de ferretotal, articulo 12753 (unidades
- * individuales = 100) quedo con cost = costo_real sin dividir, dando ganancia muy
- * negativa en la linea. La causa raiz estaba en el front (getItemsPreviusSale nunca
- * copiaba unidades_individuales al repetir una venta anterior), pero este test protege
- * el contrato del back del que ese fix depende: si el item trae unidades_individuales,
- * el costo se tiene que dividir.
+ * No es el camino que produjo el bug real (ver 14_Costo_..._Presupuesto_Test.php para
+ * ese) — este test protege el contrato compartido del que dependen TODOS los que arman
+ * un item "fresco" sin pivot (incluida BudgetHelper::attachArticles, que llama a esta
+ * misma funcion).
  */
 class Costo_dividido_en_unidades_individuales_al_recalcular_Test extends TestCase
 {
