@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Notifications\GlobalNotification;
 use App\Services\Filter\FilterHistoryService;
 use Exception;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -115,6 +116,18 @@ class DeleteModelsHelper
                      */
                     $send_notification = !$suppress_per_model_notifications && $total_count <= 300;
                     $controller->destroy($model->id, $send_notification);
+                } elseif ($model_name == 'sale') {
+                    /**
+                     * 🔴 SaleController::destroy() recibe (Request, $id), no ($id). Sin este caso
+                     * aparte el borrado masivo de ventas moria con un TypeError y devolvia 500 sin
+                     * borrar nada --medido el 31/8/2026 con el circuito e2e de ventas--.
+                     *
+                     * El Request va VACIO a proposito: `compensar_caja` queda en false, que es lo
+                     * unico que promete el texto del confirm del listado ("Se repondran los
+                     * articulos"). El borrado de UNA venta entra por otro lado --el modal de la
+                     * venta, con el checkbox de compensar caja-- y ahi por defecto SI la compensa.
+                     */
+                    $controller->destroy(new Request(), $model->id);
                 } else {
                     $controller->destroy($model->id);
                 }
