@@ -3,7 +3,6 @@
 namespace Tests\Feature\Iva;
 
 use App\Http\Controllers\AfipController;
-use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;

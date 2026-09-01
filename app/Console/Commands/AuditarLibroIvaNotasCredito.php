@@ -111,8 +111,20 @@ class AuditarLibroIvaNotasCredito extends Command
             /*
              * Una NC con snapshot fiscal persistido NO se exporto mal: `AfipImportesResolver::
              * resolve()` prioriza el snapshot y el recalculo incompleto nunca llego al TXT ni al
-             * PDF. Historicamente esto va a dar 0 —`AfipNotaCreditoHelper` no persistia el
-             * snapshot hasta el 1/9/2026— y de ahi en mas tiene que ser el bucket que crece.
+             * PDF.
+             *
+             * 🔴 Hoy este contador da 0 SIEMPRE, y va a seguir dando 0: NINGUNA nota de credito
+             * tiene snapshot, porque `AfipNotaCreditoHelper` no persiste las columnas
+             * `imp_*_enviado`. La mision del 1/9/2026 lo construyo y lo REVIRTIO: el snapshot
+             * emite la clave de alicuota '10.5' mientras que el recalculo emite '10', y
+             * `iva_ventas_pdf()` lee ['10'], asi que darle snapshot a las notas de credito les
+             * hacia desaparecer el renglon de 10,5 % del Libro IVA Ventas — justo el reporte que
+             * esa mision venia a arreglar.
+             *
+             * Un 0 aca NO es un sintoma, es lo esperado. El chequeo se deja como guarda para el
+             * dia que se unifiquen las claves y las notas de credito pasen a tener snapshot: si
+             * ese dia este contador empieza a crecer, el comando ya lo contempla y no hay que
+             * tocarlo. Detalle en `informes/20260901-libro-iva-ventas-notas-credito.md`.
              */
             if (!is_null($ticket->imp_total_enviado)) {
                 $contadores['con_snapshot']++;
