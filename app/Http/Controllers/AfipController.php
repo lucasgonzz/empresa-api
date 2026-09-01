@@ -234,6 +234,8 @@ class AfipController extends Controller
         $sale = null;
         $articles = null;
         $services = [];
+        $descriptions = [];
+        $nota_credito_model = null;
 
         if ($afip_ticket->sale) {
             // Factura de una venta
@@ -242,13 +244,38 @@ class AfipController extends Controller
             Log::info('Factura');
 
         } else if ($afip_ticket->nota_credito) {
-            // Factura de una nota de credito
+            /*
+             * Factura de una nota de credito.
+             *
+             * 🔴 Van las CINCO partes, no solo los articulos. Hasta el 1/9/2026 este bloque pasaba
+             * unicamente `articles` y dejaba `services` en [], sin descripciones y sin el modelo de
+             * la nota de credito — mientras que el camino que la emite ante ARCA
+             * (`AfipNotaCreditoHelper::interno()`) le pasa las cinco. O sea que lo que se le
+             * declaraba a ARCA y lo que despues salia en el Libro IVA Ventas se calculaban con
+             * insumos distintos.
+             *
+             * Lo que se perdia: las lineas de descripcion libre (plata que no viene de ningun
+             * articulo devuelto), los servicios, y los descuentos y recargos de la propia nota de
+             * credito. El efecto es SUBDECLARAR: el archivo de alicuotas informaba menos base
+             * imponible que el comprobante autorizado, y no cerraba contra el total del archivo de
+             * comprobantes, que sale del `imp_total_enviado` persistido.
+             *
+             * Si alguien viene a "simplificar" esto de vuelta a una sola linea: la referencia es
+             * `AfipNotaCreditoHelper::interno()`, y las dos construcciones tienen que ser iguales.
+             */
+            $nota_credito = $afip_ticket->nota_credito;
+            $nota_credito->load(['discounts', 'surchages']);
+
             $sale = $afip_ticket->sale_nota_credito;
-            $articles = $afip_ticket->nota_credito->articles;
+            $articles = $nota_credito->articles;
+            $services = $nota_credito->services;
+            $descriptions = $nota_credito->nota_credito_descriptions;
+            $nota_credito_model = $nota_credito;
+
             Log::info('Nota de credito');
         }
 
-        $afip_helper = new AfipHelper($afip_ticket, $articles, $services, null, $sale);
+        $afip_helper = new AfipHelper($afip_ticket, $articles, $services, null, $sale, $descriptions, $nota_credito_model);
 
         /**
          * Usa snapshot fiscal persistido (si existe) para alinear TXT/PDF con AFIP.
