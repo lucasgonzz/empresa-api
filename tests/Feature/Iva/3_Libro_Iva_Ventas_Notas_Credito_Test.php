@@ -16,6 +16,7 @@ use App\Models\Sale;
 use App\Models\Service;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\Artisan;
 use Tests\EmpresaTestCase;
 
 /**
@@ -875,6 +876,69 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
         $this->assertNull(
             $comprobante_venta->imp_total_enviado,
             'EL COMPROBANTE DE LA FACTURA DE VENTA NO SE TOCA: si el snapshot de la nota de credito le cae encima, la factura queda declarando el importe de la devolucion'
+        );
+    }
+
+    /**
+     * Test 7 — el comando de auditoria encuentra la nota de credito que se exporto subdeclarada y
+     * dice de cuanto fue.
+     *
+     * Es la parte de la mision que contesta la pregunta que el arreglo NO contesta: el codigo
+     * corrige lo que se exporte de ahora en mas, pero las DDJJ ya presentadas siguen teniendo el
+     * numero viejo. Un comando que devolviera 0 en un escenario donde SI hay diferencia seria peor
+     * que no tenerlo, asi que se prueba con el mismo escenario del test 1, cuyo delta esta
+     * calculado a mano: 500,00 de base imponible y 105,00 de IVA.
+     *
+     * @group iva-notas-credito
+     * @test
+     */
+    public function el_comando_de_auditoria_encuentra_la_nota_de_credito_subdeclarada_y_reporta_el_delta()
+    {
+        $afip_information = $this->configuracion_fiscal_responsable_inscripto();
+        $venta = $this->venta_facturada($afip_information, 5000);
+        $nc = $this->nota_credito_facturada($afip_information, $venta['sale'], $venta['afip_ticket'], 1815);
+
+        $this->agregar_articulo($nc['nota_credito'], 'Pinza', 1210, 1);
+        $this->agregar_descripcion($nc['nota_credito'], 'Reintegro por flete', 605);
+
+        // El rango acota la corrida a las filas de este test (julio de 2015), asi que el resumen no
+        // puede contaminarse con nada mas que haya en la base.
+        Artisan::call('auditar_libro_iva_notas_credito', [
+            'company_name' => $this->usuario_de_testing()->company_name,
+            '--desde'      => '2015-07-01',
+            '--hasta'      => '2015-07-31',
+        ]);
+
+        $salida = Artisan::output();
+
+        $this->assertStringContainsString(
+            'Notas de credito autorizadas en el periodo: 1',
+            $salida,
+            'el comando tiene que encontrar la nota de credito del periodo (si encuentra 0, el scope por usuario o el filtro de fecha estan mal)'
+        );
+
+        $this->assertStringContainsString(
+            'SUBDECLARADAS:',
+            $salida,
+            'el comando tiene que marcar la nota de credito como subdeclarada'
+        );
+
+        $this->assertStringContainsString(
+            'base imponible: 500,00',
+            $salida,
+            'el delta de base imponible tiene que ser exactamente la descripcion libre neta (605,00 / 1,21 = 500,00)'
+        );
+
+        $this->assertStringContainsString(
+            'IVA:            105,00',
+            $salida,
+            'el delta de IVA tiene que ser exactamente el IVA de la descripcion libre (500,00 * 0,21)'
+        );
+
+        $this->assertStringNotContainsString(
+            'No hay ninguna nota de credito con diferencia',
+            $salida,
+            'un cero tranquilizador en un escenario que SI tiene diferencia seria peor que no tener el comando'
         );
     }
 }
