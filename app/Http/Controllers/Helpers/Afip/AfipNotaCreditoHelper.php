@@ -417,21 +417,6 @@ class AfipNotaCreditoHelper
 
                 $this->update_afip_ticket($data);
 
-                /*
-                 * Snapshot fiscal de lo que se le mando a ARCA. Con esto, el Libro IVA Ventas y los
-                 * TXT dejan de recalcular la nota de credito y usan lo que efectivamente se
-                 * autorizo (AfipImportesResolver::resolve() prioriza el snapshot).
-                 *
-                 * Importa mas de lo que parece: un recalculo posterior lee el estado de HOY de los
-                 * articulos y de la venta, y ya se midio que la alicuota historica puede no estar
-                 * (article_current_acount.iva_percentage nacio el 11/6/2026). El snapshot es el
-                 * unico registro de lo que se declaro.
-                 *
-                 * Va DESPUES de la autorizacion y no antes, para que nunca quede un snapshot de un
-                 * comprobante que ARCA rechazo.
-                 */
-                $this->persist_importes_enviados($invoice);
-
                 $this->update_sale_total_facturado($data);
             }
 
@@ -538,33 +523,6 @@ class AfipNotaCreditoHelper
             'iva_cliente'                       => !is_null($this->sale->client) && !is_null($this->sale->client->iva_condition) ? $this->sale->client->iva_condition->name : '',
             'sale_nota_credito_id'              => $this->sale->id,
             'sale_afip_ticket_id'               => $this->afip_ticket->id,
-        ]);
-    }
-
-    /**
-     * Guarda en el comprobante de la nota de crédito los importes exactos que se le mandaron a ARCA.
-     *
-     * Es el gemelo de `AfipWsfeHelper::persist_importes_enviados()`, con una diferencia que no es
-     * cosmética: escribe sobre `$this->created_afip_ticket` (el comprobante de la NOTA DE CREDITO) y
-     * no sobre `$this->afip_ticket`, que en esta clase es el de la FACTURA de venta. Escribirlo en
-     * el que no es le pisaría el snapshot a la factura.
-     *
-     * @param  array $invoice Payload final que se le mandó a ARCA.
-     * @return void
-     */
-    function persist_importes_enviados($invoice)
-    {
-        $request_data = $invoice['FeCAEReq']['FeDetReq']['FECAEDetRequest'];
-
-        $iva_detalle_enviado = isset($request_data['Iva']) ? $request_data['Iva'] : [];
-
-        $this->created_afip_ticket->update([
-            'imp_total_enviado'        => $request_data['ImpTotal'],
-            'imp_tot_conc_enviado'     => $request_data['ImpTotConc'],
-            'imp_neto_enviado'         => $request_data['ImpNeto'],
-            'imp_op_ex_enviado'        => $request_data['ImpOpEx'],
-            'imp_iva_enviado'          => $request_data['ImpIVA'],
-            'iva_detalle_enviado_json' => $iva_detalle_enviado,
         ]);
     }
 
