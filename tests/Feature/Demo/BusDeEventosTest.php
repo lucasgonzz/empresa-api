@@ -546,6 +546,53 @@ class BusDeEventosTest extends TestCase
     }
 
     /**
+     * `clip.progreso` entra por la lista blanca y persiste su porcentaje.
+     *
+     * 🔴 Mismo modo de falla callado que los tres del tour, y por eso este test existe aparte de
+     * mirar el array a ojo: sin `clip.progreso` en DemoEventoEmitter::NOMBRES_UX el endpoint
+     * responde 204 mudo, `demo/reportar` no rechaza nunca, y el video se sigue mirando igual. El
+     * unico sintoma seria que en el admin todos los leads que no terminaron un video figuran en
+     * 0%, indistinguibles del que ni lo abrio.
+     *
+     * Se verifica tambien `datos.porcentaje`, no solo el 200: el nombre en la lista blanca sin el
+     * porcentaje adentro deja el evento sin la unica informacion por la que se emite.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_el_endpoint_de_ux_registra_el_progreso_de_un_clip()
+    {
+        $this->sin_red();
+        $this->configurar_canal();
+
+        $respuesta = $this->como_sesion_de_demo()->postJson('/api/demo/evento', [
+            'nombre'  => 'clip.progreso',
+            'clip_id' => '1.4',
+            'datos'   => ['porcentaje' => 40],
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $evento = DemoEvento::where('nombre', 'clip.progreso')->orderBy('id', 'DESC')->first();
+
+        $this->assertNotNull(
+            $evento,
+            'clip.progreso tiene que quedar persistido. Si esto falla, revisa que el nombre este en DemoEventoEmitter::NOMBRES_UX.'
+        );
+
+        $this->assertSame(
+            '1.4',
+            $evento->clip_id,
+            'clip.progreso tiene que viajar con el clip que lo disparo: sin eso el admin no sabe de que video es el porcentaje.'
+        );
+
+        $this->assertTrue(
+            is_array($evento->datos) && isset($evento->datos['porcentaje']) && (int) $evento->datos['porcentaje'] === 40,
+            'clip.progreso tiene que traer `porcentaje` en datos.'
+        );
+    }
+
+    /**
      * Sin el marcador de sesion demo, el endpoint responde 204 mudo y no escribe nada.
      *
      * 204 y no 403 a proposito: el mismo empresa-spa se despliega en las instancias de los
