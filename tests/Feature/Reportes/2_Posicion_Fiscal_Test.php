@@ -24,9 +24,10 @@ use Tests\EmpresaTestCase;
  * por test, todos entre julio de 2019 y julio de 2020, para no solaparse ni con los otros tests de
  * este archivo ni con los rangos que ya usa `1_Estado_Resultados_Test.php` (enero a junio de 2019
  * y todo 2016). Los meses de julio de 2019 a febrero de 2020 son de los tests 1 a 8; marzo a julio
- * de 2020 son de los tests 9 a 13 (renglón "IVA de notas de crédito emitidas"). Un test nuevo en
- * este archivo tiene que elegir un mes que no esté en esa lista: dos tests compartiendo mes se
- * contaminan entre sí y el rojo aparece recién cuando cambia el orden de la corrida.
+ * de 2020 son de los tests 9 a 13 (renglón "IVA de notas de crédito emitidas") y agosto de 2020 es
+ * del test 14 (`notas_credito_sin_medir`). Un test nuevo en este archivo tiene que elegir un mes que
+ * no esté en esa lista: dos tests compartiendo mes se contaminan entre sí y el rojo aparece recién
+ * cuando cambia el orden de la corrida.
  *
  * El IVA débito (`ContabilidadRepository::iva_debito()`) sale de `afip_tickets` con
  * `resultado = 'A'`, unido a `sales`. `EscenariosDePlata` no tiene un método para facturar una
@@ -798,5 +799,109 @@ class Posicion_Fiscal_Test extends EmpresaTestCase
         $iva = $this->pedir_posicion_fiscal('2020-07-01', '2020-07-31')['posicion_iva'];
 
         $this->assertEqualsWithDelta(50 + 70, (float) $iva['iva_notas_credito'], self::DELTA, 'Entran las dos notas de crédito emitidas en julio (extremos del rango incluidos) y NO la emitida en agosto: el renglón fechea por afip_fecha_emision, no por created_at.');
+    }
+
+    /**
+     * Test 14 — 🔴 `notas_credito_sin_medir`: el payload distingue "no hubo devoluciones" de "todavía
+     * no lo sé".
+     *
+     * Un $0 en el renglón "IVA de notas de crédito emitidas" es visualmente idéntico en los dos
+     * casos, y la diferencia entre ellos es el impuesto que el comercio paga de más. Hasta el
+     * 1/9/2026 ese IVA no se persistía, así que el día del despliegue TODO el histórico tiene
+     * `importe_iva` en null hasta que se corra `php artisan set_iva_notas_credito`: si el reporte
+     * mostrara el cero pelado, un comercio que en agosto emitió $40.000 de IVA en notas de crédito
+     * lo vería igual que un mes sin ninguna devolución. Por eso el payload trae el contador, para
+     * que la UI pueda decir "no lo sé todavía" en vez de un número que parece un dato.
+     *
+     * Se recorre el ciclo completo en un solo test porque es una sola pregunta: el contador tiene
+     * que subir cuando falta medir y volver a cero cuando se midió. Un test que solo verificara el
+     * "1" pasaría igual con un contador que nunca baja.
+     *
+     * 🔴 El contador NO filtra por fecha a propósito (`ContabilidadRepository::notas_credito_sin_medir()`):
+     * una nota de crédito sin `importe_iva` tampoco tiene `afip_fecha_emision` —las dos columnas se
+     * escriben juntas, ver `SetIvaNotasCredito::persistir()`—, así que filtrar por período la dejaría
+     * afuera y el contador siempre daría 0, que es justo el silencio que existe para romper. Por eso
+     * el baseline de arranque se assertea explícitamente: sin él, un "1" podría venir de cualquier
+     * otro test del archivo y no de lo que este siembra.
+     *
+     * Agosto de 2020, rango exclusivo de este test.
+     *
+     * @group reportes
+     * @test
+     */
+    public function el_payload_informa_cuantas_notas_de_credito_todavia_no_tienen_el_iva_medido()
+    {
+        $this->fijar_reloj_en('2020-08-12 10:00:00');
+
+        // Baseline: como el contador no filtra por fecha, arranca contando TODAS las notas de
+        // crédito sin medir del usuario. Se ancla en 0 antes de sembrar nada.
+        $iva = $this->pedir_posicion_fiscal('2020-08-01', '2020-08-31')['posicion_iva'];
+
+        $this->assertArrayHasKey(
+            'notas_credito_sin_medir',
+            $iva,
+            'La posición de IVA tiene que traer el contador explícito: sin él, la UI no puede distinguir un cero medido de un cero por falta de dato.'
+        );
+
+        $this->assertSame(
+            0,
+            (int) $iva['notas_credito_sin_medir'],
+            'El contador tiene que arrancar en 0 en este escenario. Si no, hay notas de crédito sin medir '.
+            'sembradas por otro lado y este test no estaría midiendo lo que siembra — es algo para reportar, '.
+            'no para ajustar en las aserciones de abajo.'
+        );
+
+        /*
+         * Nota de crédito autorizada por ARCA pero sin el IVA persistido: exactamente el estado en
+         * el que quedaron todas las emitidas antes del 1/9/2026. Las dos columnas van en null
+         * juntas, tal como las deja (y las escribe) el backfill.
+         */
+        $sin_medir = $this->crear_nota_credito_facturada(null, null, 600, [
+            'afip_ticket' => [
+                'importe_iva'        => null,
+                'afip_fecha_emision' => null,
+            ],
+        ]);
+
+        $iva = $this->pedir_posicion_fiscal('2020-08-01', '2020-08-31')['posicion_iva'];
+
+        $this->assertSame(
+            1,
+            (int) $iva['notas_credito_sin_medir'],
+            'Con una nota de crédito autorizada sin importe_iva, el payload tiene que informarla.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $iva['iva_notas_credito'],
+            self::DELTA,
+            'El renglón sigue en $0 —no hay IVA que sumar— y por eso hace falta el contador: es el único '.
+            'que explica que ese cero no está medido.'
+        );
+
+        /*
+         * Y ahora se mide, escribiendo las dos columnas juntas (es lo único que hace el backfill
+         * sobre un comprobante recuperable). El contador tiene que volver a 0 y el renglón tiene
+         * que pasar a valer.
+         */
+        AfipTicket::where('id', $sin_medir['afip_ticket']->id)->update([
+            'importe_iva'        => 210,
+            'afip_fecha_emision' => '2020-08-12',
+        ]);
+
+        $iva = $this->pedir_posicion_fiscal('2020-08-01', '2020-08-31')['posicion_iva'];
+
+        $this->assertSame(
+            0,
+            (int) $iva['notas_credito_sin_medir'],
+            'Con todo medido, el contador tiene que volver a 0: si no bajara, la UI mostraría la advertencia para siempre y dejaría de significar algo.'
+        );
+
+        $this->assertEqualsWithDelta(
+            210,
+            (float) $iva['iva_notas_credito'],
+            self::DELTA,
+            'Una vez medida, la nota de crédito tiene que sumar al renglón: es lo que el backfill viene a recuperar.'
+        );
     }
 }
