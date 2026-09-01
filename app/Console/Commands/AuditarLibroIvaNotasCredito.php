@@ -30,7 +30,11 @@ use Throwable;
  *
  * Cómo lo mide: por cada nota de crédito autorizada calcula los importes DE LAS DOS FORMAS —la
  * incompleta (solo `articles`, exactamente como lo hacía `get_importes()`) y la completa— y lista
- * las que difieren, con el delta.
+ * las que difieren, con el delta, separando lo subdeclarado de lo sobredeclarado (netearlos
+ * escondería exposición: para rectificar, cada punta se mira por su lado).
+ *
+ * 🔴 Qué conjunto audita: EL QUE SE EXPORTÓ, con el mismo filtro que usa `iva_ventas_pdf()` —no el
+ * de `ContabilidadRepository`—. El detalle y el porqué están en `notas_de_credito_del_comercio()`.
  *
  * 🔴 La forma incompleta se arma A MANO acá adentro y NO llamando a `AfipController::get_importes()`.
  * Después de la misión del 1/9/2026 ese método ya ES la forma completa: si el comando lo llamara,
@@ -38,6 +42,11 @@ use Throwable;
  *
  * 🔴 Es de SOLO LECTURA. No escribe nada, nunca, y por eso no lleva `--aplicar`: no hay nada que
  * aplicar. El arreglo es el código; esto es el diagnóstico de lo ya exportado.
+ *
+ * Códigos de salida — el 2 existe para que un cron no pueda leer como verde una corrida ciega:
+ *   0 = se midieron todos los comprobantes del período. La conclusión es completa.
+ *   1 = no existe el comercio. No se midió nada.
+ *   2 = CONCLUSIÓN PARCIAL: quedaron comprobantes sin medir (haya habido diferencias o no).
  *
  *     php artisan auditar_libro_iva_notas_credito "Nombre del comercio"
  *     php artisan auditar_libro_iva_notas_credito "Nombre del comercio" --desde=2026-01-01 --hasta=2026-08-31
@@ -83,9 +92,19 @@ class AuditarLibroIvaNotasCredito extends Command
             'no_medibles'    => 0,
         ];
 
-        /** Acumuladores del delta, en pesos: lo que la exportacion se comio (o inflo). */
-        $delta_gravado_total = 0;
-        $delta_iva_total = 0;
+        /*
+         * Acumuladores del delta, en pesos, SEPARADOS por direccion.
+         *
+         * 🔴 No se acumula un solo total con signo. Si se hiciera, una nota de credito declarada de
+         * mas cancelaria a una subdeclarada y el titular quedaria por debajo de la exposicion real:
+         * dos comprobantes de 500,00 para cada lado darian 0,00, como si no hubiera pasado nada.
+         * Para una DDJJ los dos numeros importan por separado — se rectifica cada punta, no el
+         * neteo. El neto se informa igual, pero al final y dicho como lo que es: un saldo.
+         */
+        $delta_gravado_subdeclarado = 0;
+        $delta_iva_subdeclarado = 0;
+        $delta_gravado_sobredeclarado = 0;
+        $delta_iva_sobredeclarado = 0;
 
         foreach ($tickets as $ticket) {
 
@@ -100,16 +119,21 @@ class AuditarLibroIvaNotasCredito extends Command
                 continue;
             }
 
+            /*
+             * No lleva chequeo de null: el INNER JOIN contra `current_acounts` del scope ya
+             * garantiza que la fila existe, y `CurrentAcount` no usa SoftDeletes (o sea que la
+             * relacion no puede volver null por un borrado logico que el join no vea).
+             */
             $nota_credito = $ticket->nota_credito;
-
-            if (is_null($nota_credito)) {
-                $contadores['no_medibles']++;
-                $this->error('  Ticket '.$ticket->id.': su movimiento de nota de credito (nota_credito_id='.$ticket->nota_credito_id.') no existe. No se puede medir.');
-                continue;
-            }
 
             $venta = $ticket->sale_nota_credito;
 
+            /*
+             * Este SI queda. El scope pide `whereHas('sale_nota_credito')`, pero esa condicion se
+             * evalua una sola vez al armar la query y la venta se resuelve recien aca, comprobante
+             * por comprobante: sobre la base de un comercio de produccion, un borrado logico en el
+             * medio de la corrida la volveria null. Se reporta como no medible y se sigue.
+             */
             if (is_null($venta)) {
                 $contadores['no_medibles']++;
                 $this->error('  Ticket '.$ticket->id.': no tiene la venta asociada (sale_nota_credito_id='.$ticket->sale_nota_credito_id.'). El calculador la necesita para los combos y las promociones. No se puede medir.');
@@ -142,14 +166,20 @@ class AuditarLibroIvaNotasCredito extends Command
                 continue;
             }
 
+            /*
+             * El comprobante entero cae en un bucket o en el otro segun su direccion, y su delta se
+             * suma SOLO ahi. Asi el total de cada bucket es la exposicion de esa punta, sin que la
+             * otra se la coma.
+             */
             if ($delta_gravado > 0 || $delta_iva > 0) {
                 $contadores['subdeclaradas']++;
+                $delta_gravado_subdeclarado += $delta_gravado;
+                $delta_iva_subdeclarado += $delta_iva;
             } else {
                 $contadores['sobredeclaradas']++;
+                $delta_gravado_sobredeclarado += $delta_gravado;
+                $delta_iva_sobredeclarado += $delta_iva;
             }
-
-            $delta_gravado_total += $delta_gravado;
-            $delta_iva_total += $delta_iva;
 
             $this->error(
                 '  Ticket '.$ticket->id.
@@ -190,35 +220,98 @@ class AuditarLibroIvaNotasCredito extends Command
 
         $this->line('');
 
-        if ($contadores['subdeclaradas'] == 0 && $contadores['sobredeclaradas'] == 0) {
+        $hay_diferencias = $contadores['subdeclaradas'] > 0 || $contadores['sobredeclaradas'] > 0;
+
+        /*
+         * 🔴 "Nada que rectificar" SOLO si ademas se pudo medir todo. Hasta el 1/9/2026 este cierre
+         * miraba unicamente los dos contadores de diferencia: una corrida donde fallaron los 400
+         * comprobantes imprimia el warning de "no medibles" y a renglon seguido afirmaba que no
+         * habia nada que rectificar. Ese es exactamente el cero tranquilizador que este comando
+         * existe para evitar, escrito en el propio comando.
+         */
+        if (!$hay_diferencias && $contadores['no_medibles'] == 0) {
             $this->info('  No hay ninguna nota de credito con diferencia en el periodo. Nada que rectificar.');
             return 0;
         }
 
+        if ($hay_diferencias) {
+
+            /*
+             * El numero que Lucas necesita para contestar "¿alguna DDJJ ya presentada salio mal?".
+             * Va SEPARADO por direccion y recien despues el neto: para rectificar, lo que importa es
+             * cuanto se informo de menos y cuanto de mas, cada uno por su lado. El neto no es la
+             * exposicion — es solo el saldo entre las dos puntas.
+             */
+            $this->error('  Delta del periodo, separado por direccion:');
+            $this->error('    SUBDECLARADO (la exportacion informo de MENOS que el comprobante autorizado):');
+            $this->error('      base imponible: '.number_format($delta_gravado_subdeclarado, 2, ',', '.'));
+            $this->error('      IVA:            '.number_format($delta_iva_subdeclarado, 2, ',', '.'));
+            $this->error('    SOBREDECLARADO (la exportacion informo de MAS):');
+            $this->error('      base imponible: '.number_format(abs($delta_gravado_sobredeclarado), 2, ',', '.'));
+            $this->error('      IVA:            '.number_format(abs($delta_iva_sobredeclarado), 2, ',', '.'));
+            $this->line('');
+            $this->line('    NETO (las dos puntas compensadas; NO es la exposicion, es solo el saldo):');
+            $this->line('      base imponible: '.number_format($delta_gravado_subdeclarado + $delta_gravado_sobredeclarado, 2, ',', '.'));
+            $this->line('      IVA:            '.number_format($delta_iva_subdeclarado + $delta_iva_sobredeclarado, 2, ',', '.'));
+            $this->line('');
+            $this->warn(
+                '  Si alguna DDJJ del periodo ya se presento con estos archivos, el numero informado era '.
+                'el de la columna "exportado". Hay que decidir con el contador si corresponde rectificar.'
+            );
+        }
+
         /*
-         * El numero que Lucas necesita para contestar "¿alguna DDJJ ya presentada salio mal?": el
-         * total del delta del periodo. En IVA, el signo importa — un delta positivo significa que
-         * el archivo de alicuotas informo MENOS credito del que correspondia.
+         * Exit code 2 = CONCLUSION PARCIAL. Se separa del 0 y del 1 (que es "no existe el comercio")
+         * para que un cron o un pipeline no pueda leer como verde una corrida que no midio todo.
          */
-        $this->error('  Delta total del periodo (lo que la exportacion NO declaro):');
-        $this->error('    base imponible: '.number_format($delta_gravado_total, 2, ',', '.'));
-        $this->error('    IVA:            '.number_format($delta_iva_total, 2, ',', '.'));
-        $this->line('');
-        $this->warn(
-            '  Si alguna DDJJ del periodo ya se presento con estos archivos, el numero informado era '.
-            'el de la columna "exportado". Hay que decidir con el contador si corresponde rectificar.'
-        );
+        if ($contadores['no_medibles'] > 0) {
+            $this->line('');
+            $this->error(
+                '  🔴 CONCLUSION PARCIAL: quedaron '.$contadores['no_medibles'].' de '.$contadores['total'].
+                ' comprobantes SIN MEDIR (el detalle esta arriba, comprobante por comprobante).'
+            );
+            $this->error(
+                '     Lo de arriba vale solo para los que si se pudieron medir. NO alcanza para decir '.
+                'que no hay nada que rectificar: hay que resolver esos '.$contadores['no_medibles'].
+                ' y volver a correr.'
+            );
+
+            return 2;
+        }
 
         return 0;
     }
 
     /**
-     * Notas de crédito autorizadas del comercio, opcionalmente acotadas a un período.
+     * Notas de crédito que el Libro IVA Ventas EXPORTÓ para este comercio, opcionalmente acotadas
+     * a un período.
      *
-     * Scope por usuario: el mismo criterio que `ContabilidadRepository::query_iva_notas_credito()`
-     * — join contra `current_acounts` por `nota_credito_id` y filtro por `current_acounts.user_id`.
-     * El `afip_ticket` de una nota de crédito nace con `sale_id` en NULL, así que no hay otra forma
-     * de scopearlo por comercio.
+     * 🔴 EL CRITERIO ES EL DEL EXPORTADOR, NO EL DE `ContabilidadRepository`. El trabajo de este
+     * comando es auditar lo que efectivamente salió en los archivos que el contador sube a ARCA,
+     * así que el conjunto auditado tiene que ser el MISMO que el conjunto exportado. Una nota de
+     * crédito que se exporta pero no se audita es un agujero silencioso: el comando diría "sin
+     * diferencia" sobre un comprobante que nunca miró.
+     *
+     * El exportador es `AfipController::iva_ventas_pdf()`, y filtra así:
+     *
+     *   - `whereNotNull('cae')`      → un comprobante sin CAE ni siquiera entra al PDF.
+     *   - `orWhereHas('sale_nota_credito', fn($q) => $q->where('user_id', ...))` → el scope por
+     *     comercio sale de la VENTA de la nota de crédito, no del movimiento de cuenta corriente.
+     *
+     * Por qué NO se copia el criterio de `ContabilidadRepository::query_iva_notas_credito()`, que
+     * scopea por `current_acounts.user_id`: esa columna es NULLABLE. Una nota de crédito con
+     * `current_acounts.user_id` en NULL igual se exporta (porque su `Sale` sí tiene `user_id`) y
+     * con aquel criterio quedaba afuera de la auditoría. Los dos criterios son legítimos para lo
+     * suyo — `ContabilidadRepository` arma un saldo contable, esto audita una exportación — pero
+     * acá manda el del exportador.
+     *
+     * El `resultado = 'A'` tampoco se copia, por lo mismo: el exportador no lo mira. Filtrar por
+     * ahí achicaría el conjunto auditado por debajo del exportado, que es justo la dirección
+     * peligrosa. `whereNotNull('cae')` ya deja afuera lo que ARCA no autorizó.
+     *
+     * El join contra `current_acounts` se queda, pero YA NO ES EL SCOPE POR COMERCIO: es lo que
+     * garantiza que el movimiento de la nota de crédito existe (es INNER y `CurrentAcount` no usa
+     * SoftDeletes), y por eso el bucle no necesita chequear `is_null($ticket->nota_credito)`.
      *
      * 🔴 `select('afip_tickets.*')` no es opcional: sin eso el join pisa la columna `id` con la de
      * `current_acounts` y todo lo que se imprima apunta a la fila equivocada.
@@ -245,8 +338,10 @@ class AuditarLibroIvaNotasCredito extends Command
         $query = AfipTicket::query()
             ->join('current_acounts', 'current_acounts.id', '=', 'afip_tickets.nota_credito_id')
             ->whereNotNull('afip_tickets.nota_credito_id')
-            ->where('current_acounts.user_id', $user->id)
-            ->where('afip_tickets.resultado', 'A')
+            ->whereNotNull('afip_tickets.cae')
+            ->whereHas('sale_nota_credito', function ($q) use ($user) {
+                $q->where('user_id', $user->id);
+            })
             ->orderBy('afip_tickets.id', 'ASC')
             ->select('afip_tickets.*');
 
