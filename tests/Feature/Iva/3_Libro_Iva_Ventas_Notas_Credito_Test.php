@@ -632,7 +632,18 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 4 — EL SNAPSHOT GANA. Es lo que hace que el arreglo B sirva.
+     * Test 4 — EL SNAPSHOT GANA sobre el recalculo.
+     *
+     * ⚠️ Hoy NINGUNA nota de credito tiene snapshot: `AfipNotaCreditoHelper` no lo persiste. Esta
+     * mision estuvo a punto de agregarlo y se dio marcha atras, porque el snapshot emite la clave
+     * de alicuota `'10.5'` mientras que el recalculo emite `'10'`, y el PDF del Libro IVA Ventas
+     * lee `['10']`: darle snapshot a las notas de credito les haria DESAPARECER el renglon de
+     * 10,5 % del mismo reporte que esta mision viene a arreglar. Ver el informe.
+     *
+     * El test se queda igual porque la precedencia del snapshot ya existe y ya corre para las
+     * facturas de venta: es el contrato de `AfipImportesResolver::resolve()`, y el dia que se
+     * unifiquen las claves y las notas de credito pasen a tener snapshot, este test es el que
+     * tiene que seguir en verde.
      *
      * Con `imp_total_enviado` e `iva_detalle_enviado_json` cargados, `get_importes()` tiene que
      * devolver lo que se le declaro a ARCA y NO el recalculo, aunque los dos difieran. Los numeros
@@ -796,91 +807,7 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
     }
 
     /**
-     * Test 6 — el snapshot de la nota de credito se escribe en SU comprobante, no en el de la
-     * factura de venta.
-     *
-     * Es el modo de fallo que el arreglo B tiene mas cerca: `AfipNotaCreditoHelper` guarda en
-     * `$this->afip_ticket` el comprobante de la FACTURA y en `$this->created_afip_ticket` el de la
-     * NOTA DE CREDITO. Copiar el gemelo de `AfipWsfeHelper::persist_importes_enviados()` tal cual
-     * —que escribe sobre `$this->afip_ticket`— le pisaria el snapshot a la factura de venta con los
-     * importes de la nota de credito, y nada avisaria: los dos comprobantes existen, los dos tienen
-     * CAE, y el numero equivocado recien aparece en la DDJJ del mes.
-     *
-     * 🔴 No toca la red: se llama al metodo plano que solo escribe en base, no a `interno()`.
-     *
-     * @group iva-notas-credito
-     * @test
-     */
-    public function el_snapshot_de_la_nota_de_credito_se_escribe_en_su_comprobante_y_no_en_el_de_la_factura()
-    {
-        $afip_information = $this->configuracion_fiscal_responsable_inscripto();
-        $venta = $this->venta_facturada($afip_information, 5000);
-        $nc = $this->nota_credito_facturada($afip_information, $venta['sale'], $venta['afip_ticket'], 1210);
-
-        $helper = new AfipNotaCreditoHelper($venta['afip_ticket'], $nc['nota_credito']);
-
-        // El comprobante de la NC ya existe (lo armo el escenario). Se lo enchufa a mano en vez de
-        // llamar a create_afip_ticket() para no sembrar una fila de mas y para dejar explicito cual
-        // es el comprobante sobre el que TIENE que escribir el metodo.
-        $helper->created_afip_ticket = AfipTicket::find($nc['afip_ticket']->id);
-
-        $helper->persist_importes_enviados([
-            'FeCAEReq' => [
-                'FeDetReq' => [
-                    'FECAEDetRequest' => [
-                        'ImpTotal'   => 1210.00,
-                        'ImpTotConc' => 0,
-                        'ImpNeto'    => 1000.00,
-                        'ImpOpEx'    => 0,
-                        'ImpIVA'     => 210.00,
-                        'Iva'        => [
-                            ['Id' => 5, 'BaseImp' => 1000.00, 'Importe' => 210.00],
-                        ],
-                    ],
-                ],
-            ],
-        ]);
-
-        // Se relee de la base (y no del modelo en memoria): un campo que no esta en la lista del
-        // update() se ve igual de bien en el objeto que quedo en RAM.
-        $comprobante_nc = AfipTicket::find($nc['afip_ticket']->id);
-        $comprobante_venta = AfipTicket::find($venta['afip_ticket']->id);
-
-        $this->assertEqualsWithDelta(
-            1210.00,
-            (float) $comprobante_nc->imp_total_enviado,
-            self::DELTA,
-            'el ImpTotal que se le mando a ARCA tiene que quedar en el comprobante de la NOTA DE CREDITO'
-        );
-
-        $this->assertEqualsWithDelta(
-            1000.00,
-            (float) $comprobante_nc->imp_neto_enviado,
-            self::DELTA,
-            'el ImpNeto que se le mando a ARCA tiene que quedar en el comprobante de la nota de credito'
-        );
-
-        $this->assertEqualsWithDelta(
-            210.00,
-            (float) $comprobante_nc->imp_iva_enviado,
-            self::DELTA,
-            'el ImpIVA que se le mando a ARCA tiene que quedar en el comprobante de la nota de credito'
-        );
-
-        $this->assertEquals(
-            [['Id' => 5, 'BaseImp' => 1000.00, 'Importe' => 210.00]],
-            $comprobante_nc->iva_detalle_enviado_json,
-            'el desglose por alicuota tiene que quedar persistido tal cual se mando (el cast del modelo lo devuelve como array)'
-        );
-
-        $this->assertNull(
-            $comprobante_venta->imp_total_enviado,
-            'EL COMPROBANTE DE LA FACTURA DE VENTA NO SE TOCA: si el snapshot de la nota de credito le cae encima, la factura queda declarando el importe de la devolucion'
-        );
-    }
-
-    /**
-     * Test 7 — el comando de auditoria encuentra la nota de credito que se exporto subdeclarada y
+     * Test 6 — el comando de auditoria encuentra la nota de credito que se exporto subdeclarada y
      * dice de cuanto fue.
      *
      * Es la parte de la mision que contesta la pregunta que el arreglo NO contesta: el codigo
