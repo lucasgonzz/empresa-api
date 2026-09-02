@@ -187,6 +187,19 @@ class AddIndexesVentasVenderPerformance extends Migration
      * Dropea UNICAMENTE los indices que up() puede haber creado, y solo si existen con ese nombre
      * exacto. Nunca toca los indices de nombre default de las migraciones 050 / 375 / 07-30.
      *
+     * Cada drop va en su propio try/catch: en `sales`, `user_id` tiene FK hacia `users`
+     * (`sales_user_id_foreign`). Medido el 1/9/2026 contra empresa_testing_s10: al crear
+     * `sales_user_id_num_idx` (arranca igual por `user_id`), InnoDB deja de necesitar el indice de
+     * soporte auto-generado de la FK y lo remueve -- confirmado con SHOW INDEX (desaparece) e
+     * information_schema.KEY_COLUMN_USAGE (la constraint sigue viva). Con las dos columnas nuevas
+     * puestas, cualquiera de las dos sostiene la FK sola, pero NINGUNA de las dos se puede dropear si
+     * es la ULTIMA que le queda a la columna: MySQL corta con "1553 Cannot drop index ... needed in a
+     * foreign key constraint". Sin este catch, el down() de sales aborta ahi mismo y nunca llega a
+     * article_sale / article_purchases / articles / current_acount_payment_method_sale -- que no
+     * tienen este problema porque ninguna de sus columnas indexadas por esta migracion sostiene una FK
+     * en soledad. Se loguea y se sigue: down() no es un camino que este release use (no hay rollback en
+     * produccion), y dejar un indice de mas puesto es un resultado aceptable frente a abortar a mitad.
+     *
      * @return void
      */
     public function down()
@@ -203,7 +216,15 @@ class AddIndexesVentasVenderPerformance extends Migration
                     continue;
                 }
 
-                $this->dropear_indice($tabla, $nombre);
+                try {
+                    $this->dropear_indice($tabla, $nombre);
+                } catch (\Throwable $e) {
+                    Log::warning('AddIndexesVentasVenderPerformance: no se pudo dropear el indice (probablemente sostiene una FK en soledad), se lo deja puesto', [
+                        'tabla'  => $tabla,
+                        'indice' => $nombre,
+                        'error'  => $e->getMessage(),
+                    ]);
+                }
             }
         }
     }
