@@ -18,14 +18,30 @@ use Tests\TestCase;
  * ArticlePricesHelper::aplicar_iva() exige la relación `iva` cargada (hasIva), así que en
  * esa primera pasada el IVA NO se aplica.
  *
- * CÓMO SE LLEGA CON PRECIO (aclarado el 2/9/2026): en develop, el modal "Nuevo artículo"
- * de Vender (vender/modals/NewArticle.vue, abierto por checkRegister() cuando el artículo
- * buscado/escaneado no existe y el usuario tiene `vender.create_article`) pide nombre y
- * PRECIO y postea este endpoint con `price`. En la demo Lucas ve una versión sin campo de
- * precio (el artículo queda sin precio y sin final — la guardia inicial de setFinalPrice
- * corta con cost y price nulos, consistente con lo que él describe); el escenario de este
- * test es el de develop, y el mecanismo de fondo (memoria vs defaults de la base) es el
- * mismo para cualquier caller que mande precio o costo.
+ * 🔴 ES UN DEFECTO LATENTE: HOY NO SE ALCANZA POR LA INTERFAZ (medido el 2/9/2026, a
+ * raíz de que Lucas no encontrara el modal en Vender — y tiene razón, no se puede).
+ *
+ * El único caller de `article/new-article` en empresa-spa es el modal
+ * `vender/modals/NewArticle.vue`, y ese modal está en un CICLO CERRADO sin entrada:
+ *
+ *   setNewArticle() (abre el modal)  ← sólo lo llama checkRegister() (mixins/vender.js:724,727)
+ *   checkRegister()                  ← sólo lo llama setVenderArticle() (vender.js:569)
+ *   setVenderArticle()               ← sólo lo llama NewArticle.vue:58, o sea el propio modal
+ *
+ * Nadie más en `src/` llama a ninguno de los tres (verificado con grep sobre todo src/),
+ * así que el modal no se abre nunca y el endpoint no lo ejercita ninguna pantalla.
+ *
+ * El camino VIVO de alta rápida en Vender es otro: el doble Enter del buscador por nombre,
+ * que va a `POST search/save-if-not-exist/article/name/{query}`
+ * (common-vue/components/search/Modal.vue:1334) y crea el artículo **sin precio y sin
+ * costo** — por eso queda con el precio vacío en el listado, y por eso hay que ponerle
+ * precio personalizado en cada venta. Ese camino NO dispara este defecto: sin cost ni
+ * price, setFinalPrice corta en su guardia inicial y no calcula nada.
+ *
+ * Este test se conserva porque el endpoint sigue vivo del lado del servidor (una app
+ * móvil, una integración o un caller futuro lo pueden usar) y porque el mecanismo de fondo
+ * —calcular sobre el modelo en memoria, sin los defaults que la base acaba de escribir—
+ * es una clase de error que puede reaparecer en cualquier alta programática.
  *
  * Consecuencia: el artículo nace con un precio final SIN IVA, y el primer recálculo
  * posterior — cualquier guardado del formulario, una masiva, un recálculo por dólar —

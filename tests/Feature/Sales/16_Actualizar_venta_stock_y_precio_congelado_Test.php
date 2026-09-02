@@ -364,15 +364,21 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
      * decisión de Lucas — toca stock en producción y no se arregla solo.
      *
      * Para un artículo con STOCK GLOBAL (sin filas en address_article), vender y BORRAR la
-     * venta le PIERDE stock. El estado es alcanzable por interfaz y el propio formulario lo
-     * reconoce (verificado el 2/9/2026, a raíz de la pregunta de Lucas de cómo se llega):
-     * el modal "Movimiento de Stock" del listado (listado/modals/stock-movement/Form.vue)
-     * manda el ingreso SIN depósito cuando el selector queda en "Seleccione deposito", y
-     * para un artículo que ya tiene stock global sin depósitos directamente lo oculta y
-     * muestra "primero divida el stock global hacia los depósitos". Ese ingreso entra por
-     * CheckGlobalStock (POST api/stock-movement sin to_address_id, igual que
-     * Stock/1_Set_global_stock_Test). Camino completo: alta rápida desde Vender (nace sin
-     * stock) + ingreso manual sin depósito = stock global puro.
+     * venta le PIERDE stock.
+     *
+     * CÓMO SE LLEGA A ESE ESTADO POR LA INTERFAZ — medido el 2/9/2026 contra el endpoint
+     * real, después de que Lucas señalara (con razón) que el modal de movimiento de stock
+     * NO sirve para esto: ese modal EXIGE depósito cuando la cuenta tiene alguno
+     * (listado/modals/stock-movement/Form.vue:223, `check()` → "Indique el deposito").
+     *
+     * El camino que SÍ lo produce es la **actualización masiva del listado sobre el campo
+     * Stock**: `MasiveUpdateHelper::apply_form_change()` escribe `$model->stock` y hace
+     * save() sin tocar `address_article` en ningún momento. Medido con
+     * `PUT api/update/article` + `set_stock`: el artículo queda con 20 en la columna y CERO
+     * filas de depósito. `stock` es una prop numérica común del modelo
+     * (empresa-spa/src/models/article.js:510), así que está en el modal de la masiva.
+     *
+     * También llegan a este estado los datos anteriores a que la cuenta usara depósitos.
      *
      *  - La venta descuenta del stock global (CheckGlobalStock, camino correcto).
      *  - El borrado repone con to_address_id = la sucursal de la venta
