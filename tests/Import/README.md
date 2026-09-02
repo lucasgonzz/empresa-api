@@ -46,6 +46,9 @@ Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout
 | `14_encabezado_corrido.xlsx` | 5 | Una hoja con título **y fecha de vigencia** en la fila 1, razón social **y CUIT** en la 2, la 3 vacía y el **encabezado real en la fila 4**. El defecto 3. ⚠️ El CUIT y la fecha no son decorado: sin ellos el fixture pasaba el test mientras la regla se caía con cualquier lista de proveedor real (el corte por fila de datos se disparaba con dos celdas si una era numérica). Y van sobre filas que **ya tenían contenido** a propósito: `AnalyzerHojaYEncabezadoTest` asierta números de fila físicos (5 a 9) y el conteo de la rama vieja (7), así que agregar un renglón nuevo los correría. |
 | `17_lista_proveedor_real.xlsx` | 4 | **El caso completo, el que se ve en cámara al filmar la demo**: título **fusionado** sobre A1:F1, razón social con CUIT en la 2, `"Vigencia desde:"` con una celda de **fecha real** en la 3, y el encabezado en la fila 4 **corrido y además fusionado** (`E4:F4` con `"PRECIOS"` en E4). Los tres rasgos rompían la regla por motivos distintos y cada arreglo desactivaba al otro; medido antes de arreglarlo daba `fila=1, sin_candidata_clara`, con lo cual el mapeo se armaba con cinco columnas vacías y se importaban la razón social y el encabezado como si fueran artículos. |
 | `15_una_sola_hoja.xlsx` | 7 | El fixture de **no regresión**: mismo contenido celda por celda que `01_codigos_de_proveedor.xlsx`, pero escrito con PhpSpreadsheet en vez de OpenSpout. Si los dos se leen idéntico, la lectura no depende de quién escribió el archivo. |
+| `18_pc_repetido_mismo_nombre.xlsx` | 3 | Tres filas con el mismo `provider_code` **y el mismo nombre** (costos 100/200/300). Existe porque `07_repetidos_en_el_archivo.xlsx` **no alcanza**: sus filas repetidas tienen nombres distintos, y con nombres distintos la corrección tentadora del defecto del 2/9/2026 queda verde por suerte del fixture. Ver `RepetidosConPermitirRepetidoTest`. |
+| `19_pc_repetido_en_archivo_y_base.xlsx` | 2 | Dos filas con `PC-DUP`, que en el escenario sembrado pertenece a **dos** artículos (A3 y A4). Es la celda "repetido en el archivo Y repetido en la base" — la razón de ser de la opción *"Actualizar todos los artículos que tengan ese código"*—, y no tenía ningún test: la encontró el chequeo independiente del 2/9/2026 cuando el fix de ese día introdujo una regresión ahí (el merge le aplicaba la fila nueva a **uno solo** de los dos). |
+| `20_mismo_nombre_solo_una_con_codigo.xlsx` | 2 | Dos filas con el **mismo nombre**, pero sólo la segunda trae `provider_code`. Es la otra celda que el fix del 2/9/2026 cambió (de 1 artículo a 2, alineando `permitir = 1` con lo que `permitir = 0` ya hacía): sin este fixture el cambio quedaba sólo declarado en un informe. |
 | `16_viejo.xls` | 2 | Un `.xls` **BIFF de verdad** (writer `Xls` de PhpSpreadsheet, no un `.xlsx` renombrado): no es un zip, así que `ZipArchive::open()` falla y se ejercita el mensaje limpio de `ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE`. |
 
 ⚠️ **`06_incidente_servian.xlsx` es el único fixture que se importa con varios lotes.** El `config(['app.ARTICLE_EXCEL_CHUNK_SIZE' => 10])` del `setUp()` de `IncidenteServianTest` es lo que hace que el escenario reproduzca el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes). Si alguien cambia o quita ese `config()`, el test deja de probar lo que dice probar aunque siga pasando en verde.
@@ -103,6 +106,46 @@ recargos.
 sea que el `INSERT IGNORE` de `asignar_price_types()` no deduplica nada: solo ignora errores. Por eso
 las aserciones de esta clase son de **cantidad exacta** de filas, nunca de "al menos una", y el
 helper `pivots()` falla explícitamente si encuentra duplicados.
+
+## Repetidos del archivo vs. repetidos contra la base (2/9/2026)
+
+`RepetidosConPermitirRepetidoTest.php` cubre la celda de la matriz que nunca había tenido test y
+donde vivía un defecto real: **`filas_repetidas_del_archivo` (el archivo) y
+`permitir_provider_code_repetido` (la base) son dos preguntas distintas**, y hasta el 2/9/2026 la
+segunda apagaba la detección de la primera.
+
+En el modal de importación con IA eso se veía así: elegir *"Es el mismo producto, cargado más de una
+vez"* junto con *"Actualizar todos los artículos que tengan ese código"* **no fusionaba** las filas
+repetidas — creaba una por fila, al revés de lo que la pantalla promete. `ProcessRow::esta_repetido()`
+condicionaba su escalón `provider_code` con el flag de la base (`matching_counts_json` medido:
+`creado_nuevo=2, merge_fila_repetida=0`, o sea que la detección nunca corría). El arreglo le saca la
+condición: ese método sólo DETECTA, y qué hacer con la detección lo decide `procesar()`.
+
+🔴 **La corrección tentadora —condicionar el escalón por `filas_repetidas_del_archivo === 'ultima_gana'`—
+mete una regresión y la suite vieja NO la detecta.** Con `productos_distintos` apaga el escalón, la
+fila cae al escalón `name` y `procesar()` la **descarta** (gana la primera) en vez de crear un
+producto aparte. Queda verde con `07_repetidos_en_el_archivo.xlsx` porque sus filas repetidas tienen
+nombres distintos; por eso existe `18_pc_repetido_mismo_nombre.xlsx` y por eso hay dos tests
+(`test_productos_distintos_con_nombres_iguales_no_fusiona` y su gemelo con `permitir = 0`) que son
+específicamente la red contra esa variante.
+
+🔴 **Y el arreglo trajo una regresión propia, que el chequeo independiente encontró y que se
+corrigió en el mismo cambio.** Con la detección intra-archivo siempre prendida, una segunda fila
+repetida entra por `merge_fila_duplicada()` — y esa función se quedaba con **una sola** entrada de
+la cola. Cuando el código pertenece a VARIOS artículos existentes (el caso de `permitir = 1`, que
+es justamente para eso), la primera fila encola una entrada por artículo y la segunda le aplicaba
+sus datos a uno solo: la mitad quedaba con la fila vieja mientras el reporte decía que la última
+había ganado. Ahora reprocesa **todos** los ids que comparten esa clave, deduplicados. Lo cubre
+`test_repetido_en_archivo_y_en_base_actualiza_los_dos_con_la_ultima_fila` con
+`19_pc_repetido_en_archivo_y_base.xlsx`.
+
+⚠️ **Defecto abierto que quedó fijado, no arreglado:** importar **sin proveedor elegido** fusiona
+bien, pero el artículo queda con los datos de la **primera** fila, no de la última.
+`ArticleIndexCache::add()` sólo indexa el `provider_code` cuando hay `provider_id`, así que
+`merge_fila_duplicada()` no encuentra destino y retorna sin escribir. Es anterior a esta misión
+(pasa igual con `permitir = 0`) y arreglarlo toca el índice que gobierna todo el matching contra la
+base. Lo fija `test_sin_proveedor_fusiona_pero_gana_la_primera_fila` con el valor real (700): el día
+que se corrija, ese test se pone rojo y hay que pasarlo a 900.
 
 ## Hoja elegida y fila de encabezado (22/8/2026)
 
@@ -195,7 +238,8 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 | **Antes** de la misión de importación de Excel (hoja elegida, cabecera fusionada, encabezado corrido) | `122 tests, 1457 assertions, 3 failures` | referencia histórica: es contra esto que se midió que la misión no metió regresiones |
 | 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
 | 24/8/2026, s1, tanda-correctivos-2408 | `209 tests, 2 failures` | referencia histórica: quedó atrás con la misión de abajo |
-| **Hoy**, post-merge con develop (24/8/2026, s8, importación sólo con IA) | `247 tests, 2420 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`** |
+| 24/8/2026, s8, importación sólo con IA | `247 tests, 2420 assertions, 1 failure` | referencia histórica |
+| **Hoy** (2/9/2026, s8, misión `fix-ultima-gana-con-actualizar-todos`) | `257 tests, 2510 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`.** Los 10 tests nuevos son `RepetidosConPermitirRepetidoTest` |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
 entres en pánico: **lo que es baseline es ese único rojo, con ese nombre exacto.** Un segundo rojo,
