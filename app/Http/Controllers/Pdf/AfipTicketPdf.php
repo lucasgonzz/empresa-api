@@ -156,7 +156,10 @@ class AfipTicketPdf extends fpdf {
 	}
 
 	function printImportes() {
-		$importes = $this->afip_helper->getImportes();
+		// El `true` es el modo tolerante: esto es una REIMPRESION de un comprobante ya autorizado.
+		// Una alicuota vieja que ARCA no reconoce se loguea y no genera renglon, pero el PDF sale.
+		// La emision llama sin parametro y sigue cortando (ver AfipHelper::getImportes()).
+		$importes = $this->afip_helper->getImportes(true);
 		
 		$this->y += 5;
 

@@ -13,10 +13,15 @@ class AfipImportesCalculator
     /**
      * Calcula los importes AFIP de una venta.
      *
+     * 🔴 `$tolerar_alicuota_desconocida` en `false` por DEFAULT: ver el docblock de
+     * `AfipHelper::getImportes()`. En corto: la EMISION corta, la LECTURA loguea y sigue.
+     *
      * @param AfipHelper $afip_helper Instancia principal con contexto de venta y ticket.
+     * @param bool $tolerar_alicuota_desconocida Modo lectura: no tira ante una alicuota que no
+     *                                           esta en la tabla, la loguea y no le crea bucket.
      * @return array Resumen de importes con detalle de IVA por alicuota.
      */
-    public function calculate(AfipHelper $afip_helper)
+    public function calculate(AfipHelper $afip_helper, $tolerar_alicuota_desconocida = false)
     {
         /** @var array $ivas Estructura base de alicuotas para AFIP. */
         $ivas = $this->default_ivas();
@@ -35,7 +40,7 @@ class AfipImportesCalculator
         $is_responsable_inscripto = $afip_helper->afip_ticket->afip_information->iva_condition->name == 'Responsable inscripto';
 
         if ($is_responsable_inscripto) {
-            $result = $this->calculate_for_responsable_inscripto($afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva);
+            $result = $this->calculate_for_responsable_inscripto($afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva, $tolerar_alicuota_desconocida);
             $ivas = $result['ivas'];
             $gravado = $result['gravado'];
             $neto_no_gravado = $result['neto_no_gravado'];
@@ -307,9 +312,10 @@ class AfipImportesCalculator
      * @param float $neto_no_gravado Acumulador neto no gravado.
      * @param float $exento Acumulador exento.
      * @param float $iva Acumulador iva.
+     * @param bool $tolerar_alicuota_desconocida Modo lectura, ver `calculate()`.
      * @return array
      */
-    private function calculate_for_responsable_inscripto(AfipHelper $afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva)
+    private function calculate_for_responsable_inscripto(AfipHelper $afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva, $tolerar_alicuota_desconocida = false)
     {
         /**
          * Ojo con el orden: este bloque va ANTES del importe personalizado y le GANA. Si el
@@ -354,7 +360,7 @@ class AfipImportesCalculator
             ];
         }
 
-        return $this->calculate_from_sale_items($afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva);
+        return $this->calculate_from_sale_items($afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva, $tolerar_alicuota_desconocida);
     }
 
     /**
@@ -366,9 +372,10 @@ class AfipImportesCalculator
      * @param float $neto_no_gravado Acumulador neto no gravado.
      * @param float $exento Acumulador exento.
      * @param float $iva Acumulador iva.
+     * @param bool $tolerar_alicuota_desconocida Modo lectura, ver `calculate()`.
      * @return array
      */
-    private function calculate_from_sale_items(AfipHelper $afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva)
+    private function calculate_from_sale_items(AfipHelper $afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva, $tolerar_alicuota_desconocida = false)
     {
         foreach ($afip_helper->articles as $article) {
             $afip_helper->article = $article;
@@ -421,8 +428,45 @@ class AfipImportesCalculator
              * en base y puede traer 'Exento' o 'No Gravado'. Si la linea no tiene IVA se asume 21.
              */
             $percentage_crudo = $description->iva ? (string) $description->iva->percentage : '21';
-            /** @var string $bucket_key Clave INTERNA del bucket que le corresponde a esa alicuota. */
-            $bucket_key = $this->clave_de_bucket_de_descripcion($percentage_crudo, $description->notes);
+            /**
+             * @var string|null $bucket_key Clave INTERNA del bucket que le corresponde a esa
+             * alicuota. `null` SOLO en modo tolerante y SOLO con una alicuota desconocida.
+             */
+            $bucket_key = $this->clave_de_bucket_de_descripcion(
+                $percentage_crudo,
+                $description->notes,
+                $tolerar_alicuota_desconocida
+            );
+
+            if (is_null($bucket_key)) {
+                /**
+                 * 🔴 MODO TOLERANTE, alicuota desconocida: la plata suma a `gravado` y a `iva`,
+                 * pero NO se le crea bucket. El resultado queda, a proposito, con
+                 * `suma(BaseImp de los buckets) != gravado`.
+                 *
+                 * Por que esta bien que quede asi, y por que no es un comportamiento nuevo: es
+                 * EXACTAMENTE lo que ya hace el camino de los ARTICULOS unas lineas mas arriba.
+                 * Ese bloque pide `getImporteIva()` solo para las SEIS alicuotas conocidas, asi
+                 * que un articulo al 50 % ya suma a `gravado` y a `iva` sin generar ningun
+                 * renglon de IVA. El descuadre es PREEXISTENTE del camino de articulos; lo unico
+                 * que hace esta rama es alinear la descripcion libre con el articulo en vez de
+                 * estrenar una tercera conducta.
+                 *
+                 * Y por que no tirar aca: este camino es de LECTURA (Libro IVA Ventas, TXT, PDF)
+                 * sobre comprobantes YA AUTORIZADOS. Romper el reporte del mes entero por una
+                 * linea vieja no le devuelve el renglon a nadie. La EMISION sigue cortando: entra
+                 * con `$tolerar_alicuota_desconocida` en false y nunca llega a este `if`.
+                 *
+                 * @var float $iva_percentage Porcentaje crudo ya normalizado, que es el que se
+                 * uso siempre para esta linea. No sale de la tabla porque no esta en la tabla.
+                 */
+                $iva_percentage = (float) AfipImportesResolver::normalizar_porcentaje($percentage_crudo);
+                $description_iva = $afip_helper->get_description_iva($description, $iva_percentage);
+                $gravado += $description_iva['BaseImp'];
+                $iva += $description_iva['Importe'];
+                continue;
+            }
+
             /**
              * @var float $iva_percentage Porcentaje REAL, sacado de la tabla y no del texto crudo.
              * Da el mismo numero que antes (10,5 sigue siendo 10,5): la traduccion mueve la linea
@@ -505,8 +549,19 @@ class AfipImportesCalculator
     /**
      * Traduce el `percentage` de una descripcion libre a la CLAVE INTERNA de su bucket de IVA.
      *
-     * `ivas.percentage` es un STRING en base (migracion 2022_03_17_173214) y el seeder carga
-     * nueve valores, dos de los cuales no son numeros: 'Exento' y 'No Gravado'.
+     * 🔴 `ivas.percentage` es un STRING en base (migracion 2022_03_17_173214) y la tabla `ivas`
+     * NO es un conjunto cerrado. El seeder carga nueve valores y tres de ellos no resuelven a
+     * ninguna alicuota de ARCA ('Exento', 'No Gravado' y '50'), pero eso es lo de menos: la
+     * importacion de articulos por Excel crea filas nuevas con el texto CRUDO de una columna de
+     * la planilla, sin validar nada. Son dos lugares:
+     *
+     *   - `app/Http/Controllers/Helpers/import/article/ProcessRow.php` (`Iva::create(['percentage' => $iva])`)
+     *   - `app/Http/Controllers/Helpers/LocalImportHelper.php` (idem)
+     *
+     * O sea que en produccion hay `percentage` con espacios al final ('21 ') y con coma decimal
+     * ('10,5'), y puede aparecer cualquier cosa que alguien haya escrito en una planilla. Por eso
+     * la comparacion pasa por `AfipImportesResolver::normalizar_porcentaje()` y por eso este
+     * metodo tiene un modo tolerante: no se puede asumir que la lista sea la del seeder.
      *
      * 🔴 Por que 'Exento' y 'No Gravado' caen en el bucket '0' A PROPOSITO:
      * hoy caen ahi por accidente del cast (`(float) 'Exento'` da 0.0) y se suman al gravado, o
@@ -519,12 +574,20 @@ class AfipImportesCalculator
      *
      * @param string $percentage Valor crudo de `ivas.percentage`.
      * @param string $notas Texto de la linea, solo para que el error diga cual es.
-     * @return string Clave interna de alicuota.
-     * @throws \InvalidArgumentException Si el porcentaje no corresponde a ninguna alicuota conocida.
+     * @param bool $tolerar_alicuota_desconocida Modo lectura: devuelve null en vez de tirar.
+     * @return string|null Clave interna de alicuota, o null en modo tolerante con una desconocida.
+     * @throws \InvalidArgumentException Si el porcentaje no corresponde a ninguna alicuota conocida
+     *                                   y NO se pidio el modo tolerante (o sea, en la emision).
      */
-    private function clave_de_bucket_de_descripcion($percentage, $notas = '')
+    private function clave_de_bucket_de_descripcion($percentage, $notas = '', $tolerar_alicuota_desconocida = false)
     {
-        $percentage = (string) $percentage;
+        /**
+         * @var string $percentage Ya normalizado: `trim()` y coma decimal a punto. Va ANTES de
+         * comparar con nada, incluido el 'Exento' de abajo: la comparacion era `===` estricta y
+         * un 'Exento ' con un espacio al final —que la importacion por Excel puede dejar en base—
+         * se escapaba sin que nadie lo viera.
+         */
+        $percentage = AfipImportesResolver::normalizar_porcentaje($percentage);
 
         // Comparacion estricta de string: no se cae al cast, que es lo que ocultaba el ruteo.
         if ($percentage === 'Exento' || $percentage === 'No Gravado') {
@@ -533,6 +596,28 @@ class AfipImportesCalculator
 
         /** @var string|null $key Clave interna de la alicuota, o null si no existe. */
         $key = AfipImportesResolver::clave_de_porcentaje($percentage);
+
+        if (is_null($key) && $tolerar_alicuota_desconocida) {
+            /**
+             * 🔴 MODO LECTURA. Se loguea y se devuelve null; quien llama no le crea bucket a la
+             * linea (ver `calculate_from_sale_items()`, que explica por que el descuadre que eso
+             * deja es preexistente y esta bien).
+             *
+             * No es "tragarse el error": el `Log::error` nombra la linea y la alicuota, que es lo
+             * que hace falta para arreglar el dato. Lo que no se hace es reventar con 500 el Libro
+             * IVA Ventas del mes ENTERO por un comprobante ya autorizado.
+             */
+            Log::error(
+                'AfipImportesCalculator: la linea "'.$notas.'" tiene una alicuota de IVA que ARCA no '.
+                'reconoce ('.$percentage.'). Se esta LEYENDO un comprobante ya emitido, asi que no se '.
+                'corta: su importe suma al gravado y al IVA pero NO genera renglon de alicuota, igual '.
+                'que ya pasa con un articulo a una alicuota desconocida. Para que vuelva a aparecer en '.
+                'el desglose hay que corregir la fila de la tabla ivas, o agregar la alicuota en '.
+                'AfipImportesResolver::$alicuotas si ARCA la reconoce.'
+            );
+
+            return null;
+        }
 
         if (is_null($key)) {
             throw new \InvalidArgumentException(

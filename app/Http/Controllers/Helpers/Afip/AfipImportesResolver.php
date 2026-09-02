@@ -132,23 +132,54 @@ class AfipImportesResolver
     }
 
     /**
+     * Normaliza un porcentaje que viene de la base antes de compararlo con nada.
+     *
+     * 🔴 Existe porque `ivas.percentage` es un STRING cargado por gente, y la tabla `ivas` es un
+     * conjunto ABIERTO: la importacion de articulos por Excel hace `Iva::create(['percentage' =>
+     * $iva])` con el texto CRUDO de una columna de la planilla, sin validar nada (ver
+     * `Helpers/import/article/ProcessRow.php` y `Helpers/LocalImportHelper.php`). O sea que en
+     * produccion hay `percentage` con espacios al final y con coma decimal.
+     *
+     * Medido con el PHP 7.4.33 de wamp, que es lo que hace esto necesario:
+     *  - `is_numeric('21 ')` da **false**, pero `(float) '21 '` da **21.0**. Sin normalizar, un
+     *    `'21 '` que hoy bucketea bien al 21 % dejaria de resolver.
+     *  - `is_numeric('10,5')` da **false**: la coma decimal no es un numero para PHP.
+     *
+     * Dos operaciones y nada mas: `trim()` y coma decimal a punto. No intenta interpretar nada
+     * (no saca separadores de miles, no acepta '%'): lo que no es un porcentaje escrito de una de
+     * estas dos formas sigue sin resolver, que es lo correcto.
+     *
+     * @param mixed $valor Valor crudo, tal como salio de la base.
+     * @return string Valor listo para `is_numeric()` y para comparar contra un literal.
+     */
+    public static function normalizar_porcentaje($valor): string
+    {
+        return str_replace(',', '.', trim((string) $valor));
+    }
+
+    /**
      * Clave interna a partir del porcentaje real. Es la traduccion que necesitan las
      * descripciones libres, donde el porcentaje viene de `ivas.percentage` (un STRING).
      *
-     * 🔴 Dos cosas que NO se pueden "simplificar":
-     *  1. El `is_numeric()` va primero. Sin el, `'Exento'` y `'No Gravado'` se castean a `0.0`
-     *     y se cuelan como clave `'0'` sin que nadie lo note. Que caigan en `'0'` es una
+     * 🔴 Tres cosas que NO se pueden "simplificar":
+     *  1. La normalizacion va primero, y va ACA para que nadie tenga que acordarse de hacerla
+     *     antes de llamar. Ver `normalizar_porcentaje()`: `'21 '` y `'10,5'` son valores que la
+     *     importacion de articulos por Excel mete en `ivas.percentage` sin validar.
+     *  2. El `is_numeric()` va antes de castear. Sin el, `'Exento'` y `'No Gravado'` se castean
+     *     a `0.0` y se cuelan como clave `'0'` sin que nadie lo note. Que caigan en `'0'` es una
      *     decision explicita de quien llama (ver `AfipImportesCalculator`), no un accidente
      *     de esta funcion.
-     *  2. La comparacion es por tolerancia, no `==` ni `(string) (float) $x`. Castear un float
+     *  3. La comparacion es por tolerancia, no `==` ni `(string) (float) $x`. Castear un float
      *     a texto depende del ini `precision`, y esa fragilidad es exactamente la que esta
      *     funcion viene a sacar del sistema.
      *
-     * @param mixed $porcentaje Porcentaje real (10.5, '10.5', 21, 'Exento', ...).
+     * @param mixed $porcentaje Porcentaje real (10.5, '10.5', '10,5', '21 ', 'Exento', ...).
      * @return string|null Null si no es numerico o no corresponde a ninguna alicuota.
      */
     public static function clave_de_porcentaje($porcentaje): ?string
     {
+        $porcentaje = self::normalizar_porcentaje($porcentaje);
+
         if (!is_numeric($porcentaje)) {
             return null;
         }
@@ -256,9 +287,19 @@ class AfipImportesResolver
 
         /**
          * Fallback histórico: recalcular desde ítems de venta cuando el ticket no tiene snapshot.
+         *
+         * 🔴 El `true` es el MODO TOLERANTE, y no es decorativo: este metodo es el funnel de TODOS
+         * los caminos de LECTURA (Libro IVA Ventas, los dos TXT, los PDF). Ninguno de ellos tiene
+         * `try/catch`, asi que una alicuota desconocida en una sola linea de un solo comprobante
+         * reventaria con 500 el reporte del mes ENTERO.
+         *
+         * Es el mismo criterio que ya aplica `resolve_from_snapshot()` un par de lineas mas arriba:
+         * un comprobante YA AUTORIZADO tiene que poder imprimirse igual, porque romper la impresion
+         * no le devuelve el renglon a nadie. La emision —`AfipWsfeHelper` y `AfipNotaCreditoHelper`,
+         * que llaman a `getImportes()` SIN parametro— sigue cortando, que es donde importa.
          */
         if (!is_null($afip_helper)) {
-            return $afip_helper->getImportes();
+            return $afip_helper->getImportes(true);
         }
 
         return [
@@ -342,23 +383,5 @@ class AfipImportesResolver
             'ivas' => $ivas,
             'total' => (float) $afip_ticket->imp_total_enviado,
         ];
-    }
-
-    /**
-     * Convierte Id de alicuota de ARCA a la CLAVE INTERNA del bucket de IVA.
-     *
-     * 🔴 Devuelve `'10'` (no `'10.5'`) y `'2'` (no `'2.5'`): es la misma clave que produce el
-     * recalculo en `AfipImportesCalculator::default_ivas()`. Que las dos fuentes —snapshot y
-     * recalculo— emitan la MISMA clave es justamente la unificacion: antes, el mismo comprobante
-     * se imprimia y se exportaba distinto segun por donde entraba.
-     *
-     * Se conserva el nombre viejo porque es la firma publica que ya usaban los llamadores.
-     *
-     * @param int $iva_id Identificador de alicuota de ARCA.
-     * @return string|null Clave interna, o null si el Id no esta en la tabla.
-     */
-    public static function iva_id_to_label(int $iva_id): ?string
-    {
-        return self::clave_de_id($iva_id);
     }
 }

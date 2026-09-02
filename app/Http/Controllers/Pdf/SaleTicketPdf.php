@@ -633,7 +633,10 @@ class SaleTicketPdf extends fpdf {
         	
         	$afip_helper = new AfipHelper($this->afip_ticket);
 
-			$importes = $afip_helper->getImportes();
+			// El `true` es el modo tolerante: esto es una REIMPRESION de un comprobante ya
+			// autorizado. Una alicuota vieja que ARCA no reconoce se loguea y no genera renglon,
+			// pero el ticket sale. La emision llama sin parametro y sigue cortando.
+			$importes = $afip_helper->getImportes(true);
 
 		    $this->x = $this->x_incial;
 			$this->Cell(60, 5, 'Imp Neto Gravado: $'.Numbers::price($importes['gravado']), 0, 1, 'L');
