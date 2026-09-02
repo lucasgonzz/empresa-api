@@ -2381,9 +2381,34 @@ class ProcessRow {
 
         // --- 2. Es un artículo real de BD, ya encolado en articulosParaActualizar ---
         $match_key_buscado = $campo . '|' . $valor;
-        $idx_encontrado = null;
 
-        foreach ($this->articulosParaActualizar as $idx => $art) {
+        /*
+         * TODOS los articulos que esa clave dejo encolados, no uno solo.
+         *
+         * 🔴 Hasta el 2/9/2026 esto se quedaba con la ULTIMA entrada que matcheaba y
+         * reprocesaba UN articulo. Con un provider_code que en la base pertenece a VARIOS
+         * articulos y la opcion "Actualizar todos los articulos que tengan ese codigo"
+         * (permitir_provider_code_repetido = 1), la primera fila del Excel encola una
+         * entrada por cada articulo matcheado -- y la segunda fila repetida le aplicaba sus
+         * datos a uno solo. Resultado: la mitad de los articulos quedaba con la fila vieja,
+         * mientras el reporte de sobrescritura le decia al usuario que la ultima habia
+         * ganado. Las dos opciones prometen lo contrario: "actualiza TODOS los que tengan
+         * ese codigo" + "queda la informacion de la ULTIMA aparicion".
+         *
+         * Se deduplica por article_id porque procesar_articulo_ya_creado() APPENDEA una
+         * entrada nueva por fila en vez de pisar la anterior (ver el comentario de abajo):
+         * el mismo articulo aparece varias veces en la cola y no hay que reprocesarlo dos
+         * veces por eso.
+         *
+         * Lo encontro el chequeo independiente de la mision fix-ultima-gana-con-actualizar-todos,
+         * y era una regresion introducida por esa misma mision: antes del arreglo del escalon 4,
+         * la segunda fila ni siquiera se detectaba como repetida y volvia a pasar por
+         * find_with_index(), que si actualizaba a los dos. Lo cubre
+         * RepetidosConPermitirRepetidoTest::test_repetido_en_archivo_y_en_base_actualiza_los_dos_con_la_ultima_fila.
+         */
+        $ids_encontrados = [];
+
+        foreach ($this->articulosParaActualizar as $art) {
 
             $coincide = false;
 
@@ -2393,63 +2418,62 @@ class ProcessRow {
                 $coincide = true;
             }
 
-            if ($coincide) {
-                // Sin break: se queda con la ÚLTIMA entrada que matchea, no la primera
-                // (mismo motivo que buscar_fila_origen_repetida()).
-                $idx_encontrado = $idx;
+            if ($coincide && !empty($art['id'])) {
+                $ids_encontrados[(int) $art['id']] = true;
             }
         }
 
-        if (is_null($idx_encontrado)) {
+        if (empty($ids_encontrados)) {
             $this->log('merge_fila_duplicada: WARNING — ' . $campo . '=' . $valor . ' no encontrado en ninguna cola');
             return;
         }
 
-        $article_id = $this->articulosParaActualizar[$idx_encontrado]['id'];
+        foreach (array_keys($ids_encontrados) as $article_id) {
 
-        /*
-         * Recargar el Article REAL desde BD (no un array_merge superficial) para no
-         * perder el calculo de diffs de stock/price_types de procesar_articulo_ya_creado().
-         * Ese método hace un push() de una entrada NUEVA a articulosParaActualizar (no
-         * pisa la entrada anterior in-place): es intencional, ActualizarBBDD::
-         * merge_articulos_para_actualizar_ultima_fila_gana() ya fusiona por id con
-         * "última fila gana" antes de armar el UPDATE. Lo que hay que garantizar acá
-         * es que la entrada vigente para este id quede marcada con __match_key y
-         * __fila_origen correctos, para que buscar_fila_origen_repetida() encadene
-         * bien la PRÓXIMA repetición (ver bloque de abajo).
-         */
-        $articulo_real = \App\Models\Article::find($article_id);
+            /*
+             * Recargar el Article REAL desde BD (no un array_merge superficial) para no
+             * perder el calculo de diffs de stock/price_types de procesar_articulo_ya_creado().
+             * Ese método hace un push() de una entrada NUEVA a articulosParaActualizar (no
+             * pisa la entrada anterior in-place): es intencional, ActualizarBBDD::
+             * merge_articulos_para_actualizar_ultima_fila_gana() ya fusiona por id con
+             * "última fila gana" antes de armar el UPDATE. Lo que hay que garantizar acá
+             * es que la entrada vigente para este id quede marcada con __match_key y
+             * __fila_origen correctos, para que buscar_fila_origen_repetida() encadene
+             * bien la PRÓXIMA repetición (ver bloque de abajo).
+             */
+            $articulo_real = \App\Models\Article::find($article_id);
 
-        if (is_null($articulo_real)) {
-            $this->log('merge_fila_duplicada: WARNING — articulo id=' . $article_id . ' no encontrado en BD para ' . $campo . '=' . $valor);
-            return;
-        }
-
-        $this->procesar_articulo_ya_creado($articulo_real, $data, $row);
-
-        /*
-         * FIX (prompt 03, grupo 265, corrección de checker): procesar_articulo_ya_creado()
-         * ya deja __match_key/__fila_origen en la entrada que appendea SI hubo cambios
-         * (get_modified_fields no vacío). Si no hubo cambios, no se appendeó nada nuevo
-         * y la entrada vigente sigue siendo la anterior con su __fila_origen viejo: se
-         * re-marca acá explícitamente para que la fila actual quede como origen vigente
-         * de todas formas (esta fila "ganó" la repetición aunque no haya cambiado ningún
-         * valor concreto).
-         */
-        $idx_final = null;
-        foreach ($this->articulosParaActualizar as $idx => $art) {
-            if ((int) ($art['id'] ?? 0) === (int) $article_id) {
-                // Última entrada con este id: la recién appendeada, o la única si no hubo cambios.
-                $idx_final = $idx;
+            if (is_null($articulo_real)) {
+                $this->log('merge_fila_duplicada: WARNING — articulo id=' . $article_id . ' no encontrado en BD para ' . $campo . '=' . $valor);
+                continue;
             }
-        }
 
-        if (!is_null($idx_final)) {
-            $this->articulosParaActualizar[$idx_final]['__match_key'] = $match_key_buscado;
-            $this->articulosParaActualizar[$idx_final]['__fila_origen'] = $this->fila_actual;
-        }
+            $this->procesar_articulo_ya_creado($articulo_real, $data, $row);
 
-        $this->log('merge_fila_duplicada: ' . $campo . '=' . $valor . ' reprocesado via procesar_articulo_ya_creado (id=' . $article_id . ')');
+            /*
+             * FIX (prompt 03, grupo 265, corrección de checker): procesar_articulo_ya_creado()
+             * ya deja __match_key/__fila_origen en la entrada que appendea SI hubo cambios
+             * (get_modified_fields no vacío). Si no hubo cambios, no se appendeó nada nuevo
+             * y la entrada vigente sigue siendo la anterior con su __fila_origen viejo: se
+             * re-marca acá explícitamente para que la fila actual quede como origen vigente
+             * de todas formas (esta fila "ganó" la repetición aunque no haya cambiado ningún
+             * valor concreto).
+             */
+            $idx_final = null;
+            foreach ($this->articulosParaActualizar as $idx => $art) {
+                if ((int) ($art['id'] ?? 0) === (int) $article_id) {
+                    // Última entrada con este id: la recién appendeada, o la única si no hubo cambios.
+                    $idx_final = $idx;
+                }
+            }
+
+            if (!is_null($idx_final)) {
+                $this->articulosParaActualizar[$idx_final]['__match_key'] = $match_key_buscado;
+                $this->articulosParaActualizar[$idx_final]['__fila_origen'] = $this->fila_actual;
+            }
+
+            $this->log('merge_fila_duplicada: ' . $campo . '=' . $valor . ' reprocesado via procesar_articulo_ya_creado (id=' . $article_id . ')');
+        }
     }
 
     /**
@@ -2566,19 +2590,16 @@ class ProcessRow {
      *   1) id            -> compara. return.
      *   2) bar_code      -> compara. return.
      *   3) sku           -> compara. return.
-     *   4) provider_code -> compara, solo si !permitir_provider_code_repetido. return.
-     *   5) name          -> logica propia (contraste con provider_code cuando los
-     *                        repetidos estan habilitados).
+     *   4) provider_code -> compara. return.
+     *   5) name          -> solo se alcanza si la fila NO trae provider_code.
      *
-     * El codigo de proveedor es el UNICO escalon con bandera de configuracion
-     * (permitir_provider_code_repetido) porque es la unica de estas columnas que
-     * puede repetirse legitimamente entre productos distintos (ej. varios articulos
-     * de un mismo proveedor bajo el mismo codigo de catalogo). id, bar_code y sku
-     * identifican al producto por si solos: si la fila ya trae valor en alguno de
-     * esos tres, ese valor la identifica y un provider_code repetido es irrelevante
-     * (no llega a evaluarse el escalon 4). La pregunta "¿permito repetidos de
-     * provider_code?" solo tiene sentido cuando el provider_code es lo unico que
-     * identifica a la fila.
+     * 🔴 NINGUN escalon mira aca la configuracion. Este metodo DETECTA que dos filas
+     * son el mismo producto; QUE HACER con esa deteccion se decide una capa mas
+     * arriba, en procesar() (ver $tratar_repeticion_como_producto_distinto, que lee
+     * filas_repetidas_del_archivo). Hasta el 2/9/2026 el escalon 4 estaba condicionado
+     * por permitir_provider_code_repetido y ese era un defecto: ese flag responde otra
+     * pregunta -- "el codigo puede estar repetido entre articulos que YA EXISTEN en la
+     * base" -- y apagaba la deteccion DENTRO del archivo. Detalle abajo, en el escalon 4.
      *
      * Comparacion con === (no ==): los codigos vienen como string desde el Excel y
      * un == haria que '0012' y '12' matcheen.
@@ -2659,8 +2680,33 @@ class ProcessRow {
             return false;
         }
 
-        // 4) Coincidencia por provider_code (solo si NO se permiten repetidos)
-        if (!empty($data['provider_code']) && !$codigos_repetidos) {
+        /*
+         * 4) Coincidencia por provider_code dentro del MISMO archivo.
+         *
+         * 🔴 NO volver a colgar este escalon de permitir_provider_code_repetido. Lo estuvo hasta
+         * el 2/9/2026 y ese era el defecto: elegir "Es el mismo producto, cargado mas de una vez"
+         * (filas_repetidas_del_archivo = ultima_gana) junto con "Actualizar todos los articulos
+         * que tengan ese codigo" (que viaja como permitir_provider_code_repetido = 1) NO fusionaba
+         * las filas repetidas -- creaba una por fila, al reves de lo que la pantalla promete.
+         * Son dos preguntas distintas: ese flag habla de la BASE (¿el codigo puede estar repetido
+         * entre articulos que ya existen?) y este metodo decide sobre el ARCHIVO (¿estas dos filas
+         * son el mismo producto?). La pregunta del archivo la contesta filas_repetidas_del_archivo
+         * y se aplica en procesar(), no aca.
+         *
+         * 🔴 Y tampoco condicionarlo por filas_repetidas_del_archivo === 'ultima_gana', que es la
+         * simplificacion tentadora y parece la correccion natural: apagar el escalon con
+         * 'productos_distintos' NO devuelve la fila al camino "no repetida", la hace caer al
+         * escalon 5 (name), donde dos filas con el mismo nombre se marcan repetidas y procesar()
+         * las DESCARTA (bucket fila_repetida_en_excel, gana la primera) -- exactamente lo contrario
+         * de lo que el usuario pidio. Con la deteccion siempre prendida, las cuatro combinaciones
+         * de (permitir_provider_code_repetido x filas_repetidas_del_archivo) dan bien.
+         *
+         * Medido el 2/9/2026: 07_repetidos_en_el_archivo.xlsx NO alcanza para cubrir esto (sus
+         * filas repetidas tienen nombres DISTINTOS, asi que la variante equivocada quedaria verde
+         * por suerte del fixture). Lo cubre 18_pc_repetido_mismo_nombre.xlsx, en
+         * RepetidosConPermitirRepetidoTest.
+         */
+        if (!empty($data['provider_code'])) {
 
             // Ver comentario del escalón bar_code: mismo motivo y misma prioridad de __match_key.
             if (isset($art['__match_key'])) {
@@ -2679,17 +2725,29 @@ class ProcessRow {
             return false;
         }
 
-        // 5) Coincidencia por name
+        /*
+         * 5) Coincidencia por name.
+         *
+         * Desde el fix del 2/9/2026 este escalon solo se alcanza cuando la fila NO trae
+         * provider_code: si lo trae, el escalon 4 decide y retorna siempre. O sea que el
+         * if de $codigos_repetidos de aca abajo quedo sin efecto observable -- sus dos
+         * ramas terminan marcando 'name' igual, porque la rama que las diferenciaba
+         * (comparar los dos provider_code) es inalcanzable con $data['provider_code'] vacio.
+         *
+         * Se deja en pie a proposito y no se borra en el mismo commit que el arreglo de
+         * comportamiento: un diff que mezcla las dos cosas es mucho mas caro de revisar.
+         * Limpiarlo es una tarea aparte, y cuando se haga hay que mirar tambien que este
+         * escalon NUNCA mergea (procesar() lo manda al descarte, gana la PRIMERA fila), que
+         * es una asimetria propia y anterior a este fix.
+         */
         if (!empty($data['name'])) {
 
             if (!empty($art['name']) && $art['name'] === $data['name']) {
 
-                // --- REGLA NUEVA ---
-                // Si se permiten codigos de proveedor repetidos, SOLO marcamos repetido
-                // cuando el provider_code también coincide (si ambos existen).
                 if ($codigos_repetidos) {
 
-                    // Si ambos tienen provider_code y SON IGUALES => repetido = true
+                    // Rama inalcanzable desde el fix del 2/9/2026 (ver el comentario de arriba):
+                    // si la fila trajera provider_code, el escalon 4 ya habria retornado.
                     if (!empty($data['provider_code']) && !empty($art['provider_code'])) {
                         if ($art['provider_code'] === $data['provider_code']) {
                             $this->escalon_repeticion = 'name';
