@@ -12,11 +12,20 @@ use Tests\TestCase;
  * 🔴 DEFECTO CONOCIDO, fijado a propósito (exploración 1/9/2026). Reportado, espera
  * decisión de Lucas — toca precios en producción y no se arregla solo.
  *
- * El alta rápida (POST api/article/new-article — el camino del buscador de Vender) calcula
- * el precio final sobre el modelo EN MEMORIA recién guardado, que no tiene los DEFAULTS
- * que la base le acaba de poner a la fila: `articles.iva_id` (default 2 → IVA 21%) y
- * `articles.aplicar_iva` (default 1). ArticlePricesHelper::aplicar_iva() exige la relación
- * `iva` cargada (hasIva), así que en esa primera pasada el IVA NO se aplica.
+ * El alta rápida (POST api/article/new-article) calcula el precio final sobre el modelo EN
+ * MEMORIA recién guardado, que no tiene los DEFAULTS que la base le acaba de poner a la
+ * fila: `articles.iva_id` (default 2 → IVA 21%) y `articles.aplicar_iva` (default 1).
+ * ArticlePricesHelper::aplicar_iva() exige la relación `iva` cargada (hasIva), así que en
+ * esa primera pasada el IVA NO se aplica.
+ *
+ * CÓMO SE LLEGA CON PRECIO (aclarado el 2/9/2026): en develop, el modal "Nuevo artículo"
+ * de Vender (vender/modals/NewArticle.vue, abierto por checkRegister() cuando el artículo
+ * buscado/escaneado no existe y el usuario tiene `vender.create_article`) pide nombre y
+ * PRECIO y postea este endpoint con `price`. En la demo Lucas ve una versión sin campo de
+ * precio (el artículo queda sin precio y sin final — la guardia inicial de setFinalPrice
+ * corta con cost y price nulos, consistente con lo que él describe); el escenario de este
+ * test es el de develop, y el mecanismo de fondo (memoria vs defaults de la base) es el
+ * mismo para cualquier caller que mande precio o costo.
  *
  * Consecuencia: el artículo nace con un precio final SIN IVA, y el primer recálculo
  * posterior — cualquier guardado del formulario, una masiva, un recálculo por dólar —

@@ -255,25 +255,27 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
     }
 
     /**
-     * 🔴 DEFECTO CONOCIDO, fijado a propósito (exploración 1/9/2026). Reportado, espera
-     * decisión de Lucas — toca el total de la venta y la cuenta corriente en producción y
-     * no se arregla solo.
+     * El endpoint del modal "Actualizar precios" (PUT sale/update-prices/{id}) es el PASO 1
+     * de un flujo de DOS pasos — aclarado por Lucas el 2/9/2026, después de que la
+     * exploración del 1/9 lo reportara como defecto:
      *
-     * El modal "Actualizar precios" de una venta (PUT sale/update-prices/{id}) actualiza
-     * el precio de los renglones... y NADA MÁS: `SaleHelper::updateItemsPrices()` pisa los
-     * pivotes pero nadie recalcula `sales.total`, y `updateCurrentAcountsAndCommissions()`
-     * recrea el movimiento de deuda leyendo ese total viejo. Con 3 renglones que pasan de
-     * 500 a 600, la venta queda mostrando renglones por 1800 con un total de 1500, y la
-     * deuda del cliente se recrea por 1500.
+     *   1. El modal confirma → este endpoint pisa el `price` de los pivotes → la SPA carga
+     *      la venta en Vender (`setPreviusSale`, update-prices/Index.vue).
+     *   2. El operador guarda en Vender → PUT api/sale/{id} → recién ahí se recalculan el
+     *      total y la cuenta corriente (ese paso lo custodia el test de precio congelado de
+     *      esta misma clase, que verifica total y pivotes tras el PUT de venta).
      *
-     * El invariante que DEBERÍA cumplirse (y hoy no): total = suma de renglones = 1800, y
-     * la cuenta corriente lo sigue. Cuando se corrija, las dos aserciones marcadas se van
-     * a poner rojas: cambiarlas a 1800 y cerrar el hallazgo en la bitácora.
+     * Lo que este test fija es el estado INTERMEDIO, y por qué importa: el paso 1 PERSISTE.
+     * Si el operador no completa el paso 2 (cierra Vender, se corta la sesión), la venta
+     * queda con renglones nuevos (suman 1800) y total y deuda viejos (1500) — ese estado a
+     * mitad de camino es alcanzable y queda guardado. Reportado como ventana de abandono;
+     * si algún día el paso 1 deja de persistir (o pasa a recalcular), estas aserciones se
+     * ponen rojas y hay que releer el flujo completo.
      *
      * @group exploracion-vender
      * @test
      */
-    public function actualizar_precios_de_la_venta_hoy_no_recalcula_el_total_ni_la_deuda()
+    public function actualizar_precios_de_la_venta_persiste_renglones_sin_recalcular_total_ni_deuda()
     {
         $user = $this->autenticar();
 
@@ -317,16 +319,16 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
         );
 
         /*
-         * 🔴 Comportamiento REAL (defecto): el total queda en el valor previo (1500) con los
-         * renglones sumando 1800. Cuando update-prices recalcule el total, cambiar a 1800.
+         * Estado intermedio del paso 1: el total queda en el valor previo (1500) con los
+         * renglones ya persistidos sumando 1800. El recálculo llega recién con el guardado
+         * en Vender (paso 2). Si esta aserción se pone roja, el paso 1 cambió de contrato.
          */
         $this->assertEqualsWithDelta(
             1500.0,
             (float) $venta->total,
             0.01,
-            'El comportamiento conocido (defectuoso) cambió: si el total ya es 1800, '
-                . 'update-prices empezó a recalcular el total — actualizar este test a 1800 '
-                . 'y cerrar el hallazgo en la bitácora.'
+            'El paso 1 de update-prices cambió de contrato: ahora recalcula el total. '
+                . 'Releer el flujo de dos pasos y actualizar este test y la bitácora.'
         );
 
         $movimiento = \App\Models\CurrentAcount::where('sale_id', $venta->id)
@@ -337,16 +339,15 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
         $this->assertNotNull($movimiento, 'La venta con cliente CC tenía que tener su movimiento de deuda.');
 
         /*
-         * 🔴 Comportamiento REAL (defecto): la deuda recreada lee sales.total viejo (1500).
-         * Lo correcto sería 1800 — la deuda del cliente quedó 300 abajo de lo vendido.
+         * Ídem: la deuda recreada por el paso 1 lee sales.total viejo (1500). En el flujo
+         * completo la corrige el paso 2; en un flujo abandonado queda 300 abajo de lo vendido.
          */
         $this->assertEqualsWithDelta(
             1500.0,
             (float) $movimiento->debe,
             0.01,
-            'El comportamiento conocido (defectuoso) cambió: si la deuda ya es 1800, '
-                . 'update-prices empezó a recrear la cuenta corriente con el total nuevo — '
-                . 'actualizar este test a 1800 y cerrar el hallazgo en la bitácora.'
+            'El paso 1 de update-prices cambió de contrato: ahora recrea la deuda con el '
+                . 'total nuevo. Releer el flujo de dos pasos y actualizar este test y la bitácora.'
         );
 
         $this->assertEquals(
@@ -362,9 +363,16 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
      * 🔴 DEFECTO CONOCIDO, fijado a propósito (exploración 1/9/2026). Reportado, espera
      * decisión de Lucas — toca stock en producción y no se arregla solo.
      *
-     * Para un artículo con STOCK GLOBAL (sin filas en address_article — el estado en que
-     * nace un artículo del alta rápida de Vender, y el que CheckGlobalStock existe para
-     * soportar), vender y BORRAR la venta le PIERDE stock:
+     * Para un artículo con STOCK GLOBAL (sin filas en address_article), vender y BORRAR la
+     * venta le PIERDE stock. El estado es alcanzable por interfaz y el propio formulario lo
+     * reconoce (verificado el 2/9/2026, a raíz de la pregunta de Lucas de cómo se llega):
+     * el modal "Movimiento de Stock" del listado (listado/modals/stock-movement/Form.vue)
+     * manda el ingreso SIN depósito cuando el selector queda en "Seleccione deposito", y
+     * para un artículo que ya tiene stock global sin depósitos directamente lo oculta y
+     * muestra "primero divida el stock global hacia los depósitos". Ese ingreso entra por
+     * CheckGlobalStock (POST api/stock-movement sin to_address_id, igual que
+     * Stock/1_Set_global_stock_Test). Camino completo: alta rápida desde Vender (nace sin
+     * stock) + ingreso manual sin depósito = stock global puro.
      *
      *  - La venta descuenta del stock global (CheckGlobalStock, camino correcto).
      *  - El borrado repone con to_address_id = la sucursal de la venta
