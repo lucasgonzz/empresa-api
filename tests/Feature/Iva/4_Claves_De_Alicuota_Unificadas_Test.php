@@ -75,7 +75,8 @@ class EspiaDePdf
  *
  * Por que existe este archivo: hasta esta mision el sistema convivia con dos convenciones de clave
  * para el mismo arreglo de alicuotas. El recalculo (`AfipImportesCalculator::default_ivas()`) emitia
- * `'10'` para 10,5 %; el snapshot (`AfipImportesResolver::iva_id_to_label()`) emitia `'10.5'`; y las
+ * `'10'` para 10,5 %; el snapshot (la traduccion de Id de ARCA a clave, hoy
+ * `AfipImportesResolver::clave_de_id()`) emitia `'10.5'`; y las
  * lineas de descripcion libre armaban la clave con `(string) (float) $percentage`, o sea `'10.5'`,
  * cayendo en un bucket paralelo con `Id => 0`. Cada consumidor andaba bien con UN productor y mal
  * con el otro, y desde ningun archivo se veia el problema completo:
@@ -550,6 +551,9 @@ class Claves_De_Alicuota_Unificadas_Test extends EmpresaTestCase
     /**
      * Corre `exportVentas()` de marzo de 2014 y devuelve sus lineas.
      *
+     * Sin `Storage::fake()`, por lo mismo que `lineas_del_txt_de_alicuotas()`: el metodo termina
+     * en `response()->download(storage_path(...))` y necesita el archivo real en disco.
+     *
      * @return array<int, string>
      */
     protected function lineas_del_txt_de_comprobantes()
@@ -561,6 +565,85 @@ class Claves_De_Alicuota_Unificadas_Test extends EmpresaTestCase
         $this->archivos_generados[] = $archivo;
 
         return $this->lineas_de($archivo);
+    }
+
+    /**
+     * Offset donde arranca el campo "cantidad de alicuotas" dentro de una linea de `exportVentas()`.
+     *
+     * Sale de sumar los campos fijos que van antes, todos con `str_pad()` de ancho conocido:
+     *   fecha 8 | tipo cbte 3 | punto vta 5 | nro cbte 20 | nro cbte hasta 20 | cod doc 2 |
+     *   nro doc 20 | comprador 30 | imp total 15 | no gravados 15 | perc no categ 15 |
+     *   exento 15 | perc nacional 15 | perc iibb 15 | perc municipal 15 | imp internos 15 |
+     *   moneda 3 | tipo cambio 10   =   241
+     */
+    const OFFSET_CANTIDAD_IVA = 241;
+
+    /**
+     * Ancho de la cola que va DESPUES de la cantidad de alicuotas: codigo de operacion (1) +
+     * otros tributos (15) + fecha de vencimiento (8).
+     */
+    const ANCHO_COLA_COMPROBANTE = 24;
+
+    /**
+     * Busca en el TXT de comprobantes la linea de un comprobante puntual.
+     *
+     * Hace falta porque `exportVentas()` no scopea por usuario y en marzo de 2014 este fixture deja
+     * DOS comprobantes con CAE: la factura de la venta y la nota de credito. Se matchea por el
+     * bloque tipo+punto de venta+numero, que arranca en el offset 8 y ocupa 28 caracteres.
+     *
+     * @param  array<int, string> $lineas
+     * @param  \App\Models\AfipTicket $afip_ticket
+     * @return string
+     */
+    protected function linea_del_txt_de_comprobantes($lineas, $afip_ticket)
+    {
+        /** @var string $clave Tipo (3) + punto de venta (5) + numero (20), como los arma exportVentas(). */
+        $clave = str_pad($afip_ticket->cbte_tipo, 3, '0', STR_PAD_LEFT)
+            .str_pad($afip_ticket->punto_venta, 5, '0', STR_PAD_LEFT)
+            .str_pad($afip_ticket->cbte_numero, 20, '0', STR_PAD_LEFT);
+
+        foreach ($lineas as $linea) {
+            if (substr($linea, 8, 28) === $clave) {
+                return $linea;
+            }
+        }
+
+        $this->fail(
+            'El comprobante "'.$clave.'" no aparece en el TXT de comprobantes de '.self::PERIODO.'. '.
+            'Sin la linea no hay nada que medir: revisar el fixture (cae, fecha, cbte_numero). '.
+            'Lineas encontradas: '.count($lineas).'.'
+        );
+    }
+
+    /**
+     * Lee el campo "cantidad de alicuotas" TAL COMO QUEDO ESCRITO en la linea del TXT.
+     *
+     * 🔴 Esto es lo que hace que el test valga, y no se puede reemplazar por `get_cantidad_iva()`:
+     * ese campo se concatena CRUDO, sin `str_pad()`, asi que su ancho depende del valor. Un
+     * contador que devuelve 2 no solo declara mal la cantidad: corre un caracter TODA la cola de
+     * la linea (codigo de operacion, otros tributos y fecha de vencimiento). Medir el contador
+     * aislado no diria nada sobre el archivo que el contador le sube a ARCA.
+     *
+     * Por eso el campo se recorta contra el final de la linea y no con un ancho fijo: es
+     * exactamente la fragilidad que se esta midiendo.
+     *
+     * @param  string $linea
+     * @return string Contenido crudo del campo, sin castear.
+     */
+    protected function cantidad_de_alicuotas_declarada($linea)
+    {
+        /** @var int $largo Lo que ocupa el campo: lo que sobra entre el offset fijo y la cola fija. */
+        $largo = strlen($linea) - self::OFFSET_CANTIDAD_IVA - self::ANCHO_COLA_COMPROBANTE;
+
+        if ($largo < 1) {
+            $this->fail(
+                'La linea del TXT de comprobantes es mas corta de lo que permite su propio layout '.
+                '('.strlen($linea).' caracteres). Si cambio algun campo de exportVentas(), hay que '.
+                'actualizar OFFSET_CANTIDAD_IVA y ANCHO_COLA_COMPROBANTE. Linea: "'.$linea.'"'
+            );
+        }
+
+        return substr($linea, self::OFFSET_CANTIDAD_IVA, $largo);
     }
 
     /**
@@ -1005,6 +1088,11 @@ class Claves_De_Alicuota_Unificadas_Test extends EmpresaTestCase
      * Pre-arreglo daba 2 —los dos buckets con plata—, contra un archivo de alicuotas que declaraba
      * un renglon `0000` que ARCA no reconoce.
      *
+     * 🔴 Se corre `exportVentas()` DE VERDAD y se mide el contenido del archivo, no
+     * `get_cantidad_iva()` a solas. El campo se concatena crudo, sin `str_pad()`: un 2 en vez de un
+     * 1 no solo declara mal, corre un caracter toda la cola de la linea. Ver
+     * `cantidad_de_alicuotas_declarada()`.
+     *
      * @group iva-claves-alicuota
      * @test
      */
@@ -1012,31 +1100,51 @@ class Claves_De_Alicuota_Unificadas_Test extends EmpresaTestCase
     {
         $e2 = $this->escenario_e2();
 
-        $afip_controller = new AfipController();
-        $cantidad_iva = $afip_controller->get_cantidad_iva(AfipTicket::find($e2['afip_ticket']->id));
+        $linea = $this->linea_del_txt_de_comprobantes(
+            $this->lineas_del_txt_de_comprobantes(),
+            $e2['afip_ticket']
+        );
 
         $this->assertSame(
-            1,
-            $cantidad_iva,
-            'E2 tiene toda su plata al 10,5 %: una sola alicuota. Un 2 significa que la descripcion '.
-            'libre armo un bucket propio, y entonces el archivo de comprobantes declara mas '.
-            'renglones de los que ARCA puede reconocer en el de alicuotas'
+            '1',
+            $this->cantidad_de_alicuotas_declarada($linea),
+            'E2 tiene toda su plata al 10,5 %: el archivo que el contador le sube a ARCA tiene que '.
+            'declarar UNA sola alicuota. Un 2 significa que la descripcion libre armo un bucket '.
+            'propio, y entonces el comprobante declara mas renglones de los que ARCA puede '.
+            'reconocer en el archivo de alicuotas. Linea: "'.$linea.'"'
         );
 
         /*
-         * La otra mitad: el numero que se declara tiene que coincidir con lo que realmente sale en
-         * el archivo de alicuotas. Sin esta comparacion, el test mediria un contador aislado.
+         * La otra mitad: lo que se declara tiene que coincidir con lo que realmente sale en el
+         * archivo de alicuotas. Los dos archivos se importan juntos y ARCA los cruza.
          */
         $this->assertCount(
-            $cantidad_iva,
+            (int) $this->cantidad_de_alicuotas_declarada($linea),
             $this->lineas_del_txt_de_alicuotas(),
             'la cantidad de alicuotas declarada en el archivo de comprobantes tiene que ser EXACTAMENTE '.
             'la cantidad de renglones del archivo de alicuotas para ese comprobante'
         );
+
+        /*
+         * Y el contador aislado, que es lo que arma el campo. Se mantiene la asercion porque deja
+         * el diagnostico mas cerca cuando esto se rompe, pero la celda de la matriz la cubre el
+         * archivo real de arriba.
+         */
+        $afip_controller = new AfipController();
+
+        $this->assertSame(
+            1,
+            $afip_controller->get_cantidad_iva(AfipTicket::find($e2['afip_ticket']->id)),
+            'get_cantidad_iva() es el que arma el campo: si el archivo esta mal, empezar por aca'
+        );
     }
 
     /**
-     * A8 — TXT de comprobantes por SNAPSHOT: la cantidad de alicuotas es la misma que por recalculo.
+     * A8 — TXT de comprobantes por SNAPSHOT: la linea del archivo es la misma que por recalculo.
+     *
+     * 🔴 La asercion fuerte es la ultima: la linea ENTERA tiene que salir identica venga el
+     * desglose del recalculo o del snapshot de autorizacion. Pre-arreglo eso era falso, y el
+     * contador aislado no alcanzaba para verlo porque el campo se concatena sin padding.
      *
      * @group iva-claves-alicuota
      * @test
@@ -1045,26 +1153,118 @@ class Claves_De_Alicuota_Unificadas_Test extends EmpresaTestCase
     {
         $e2 = $this->escenario_e2();
 
-        $afip_controller = new AfipController();
-        $cantidad_por_recalculo = $afip_controller->get_cantidad_iva(AfipTicket::find($e2['afip_ticket']->id));
+        $linea_por_recalculo = $this->linea_del_txt_de_comprobantes(
+            $this->lineas_del_txt_de_comprobantes(),
+            $e2['afip_ticket']
+        );
 
         $this->poner_snapshot($e2['afip_ticket'], 1657.50, 1500.00, 157.50, [
             ['Id' => 4, 'BaseImp' => 1500.00, 'Importe' => 157.50],
         ]);
 
-        $cantidad_por_snapshot = $afip_controller->get_cantidad_iva(AfipTicket::find($e2['afip_ticket']->id));
-
-        $this->assertSame(
-            1,
-            $cantidad_por_snapshot,
-            'con snapshot tambien tiene que declarar una sola alicuota'
+        $linea_por_snapshot = $this->linea_del_txt_de_comprobantes(
+            $this->lineas_del_txt_de_comprobantes(),
+            AfipTicket::find($e2['afip_ticket']->id)
         );
 
         $this->assertSame(
-            $cantidad_por_recalculo,
-            $cantidad_por_snapshot,
-            'LA UNIFICACION: la cantidad de alicuotas de un comprobante no puede depender de si el '.
-            'ticket tiene snapshot o no'
+            '1',
+            $this->cantidad_de_alicuotas_declarada($linea_por_snapshot),
+            'con snapshot el archivo tambien tiene que declarar una sola alicuota. Linea: '.
+            '"'.$linea_por_snapshot.'"'
+        );
+
+        $this->assertSame(
+            $linea_por_recalculo,
+            $linea_por_snapshot,
+            'LA UNIFICACION: la linea del archivo de comprobantes no puede depender de si el ticket '.
+            'tiene snapshot o no. Es el mismo comprobante y es el mismo archivo para el contador'
+        );
+
+        /*
+         * El contador aislado, por lo mismo que en A7: acorta el diagnostico, no reemplaza al
+         * archivo.
+         */
+        $afip_controller = new AfipController();
+
+        $this->assertSame(
+            1,
+            $afip_controller->get_cantidad_iva(AfipTicket::find($e2['afip_ticket']->id)),
+            'get_cantidad_iva() es el que arma el campo: si el archivo esta mal, empezar por aca'
+        );
+    }
+
+    /**
+     * A11 — una alicuota que ARCA no reconoce NO revienta el Libro IVA Ventas del mes entero.
+     *
+     * 🔴 Este test cubre el CABLEADO, que es lo que ningun test del calculador puede ver:
+     * `AfipImportesResolver::resolve()` —el funnel de TODOS los caminos de lectura— tiene que
+     * llamar a `getImportes(true)`. Si lo llamara sin el parametro, UNA linea vieja de UN
+     * comprobante ya autorizado tiraria `InvalidArgumentException`, y como ni
+     * `comprobantes_del_libro_iva_ventas()` ni `exportVentas()` ni `exportAlicuotasTxt()` tienen
+     * `try/catch` en ninguna parte, el reporte del MES COMPLETO se cae con 500.
+     *
+     * Que ese caso exista no es hipotetico: la tabla `ivas` trae `'50'` desde el seeder, y la
+     * importacion de articulos por Excel (`ProcessRow.php:3530`, `LocalImportHelper.php:459`) le
+     * mete texto crudo sin validar.
+     *
+     * Lo que se acepta a proposito: la linea al 50 % suma a `neto` pero no genera renglon de
+     * alicuota. Es lo mismo que ya pasa con un ARTICULO a una alicuota desconocida.
+     *
+     * @group iva-claves-alicuota
+     * @test
+     */
+    public function una_alicuota_desconocida_no_revienta_el_libro_iva_ventas_del_mes()
+    {
+        $e2 = $this->escenario_e2();
+
+        // La linea envenenada: 1500,00 al 50 %, una alicuota que existe en la tabla `ivas` del
+        // sistema pero que ARCA no reconoce.
+        $this->agregar_descripcion($e2['nota_credito'], 'Servicio raro al 50', 1500, '50');
+
+        /** @var array $filas El libro completo del periodo. Llegar hasta aca ya es la mitad del test. */
+        $filas = $this->filas_del_libro();
+
+        $this->assertGreaterThanOrEqual(
+            2,
+            count($filas),
+            'EL DEFECTO EN UNA LINEA: si esto tira o devuelve menos filas, `resolve()` dejo de pedir '.
+            'el modo tolerante y una sola linea vieja se lleva puesto el Libro IVA Ventas ENTERO'
+        );
+
+        $fila = $this->fila_del_comprobante($filas, $e2['afip_ticket']);
+
+        $this->assertEqualsWithDelta(
+            -157.50,
+            (float) $fila['iva_10'],
+            self::DELTA,
+            'el renglon de 10,5 % del resto del comprobante tiene que salir igual: la linea que no '.
+            'se pudo clasificar no puede arrastrar a las que si'
+        );
+
+        /*
+         * Y los dos TXT, que son los otros dos consumidores sin try/catch. Se los corre enteros:
+         * lo que se esta midiendo es que no exploten.
+         */
+        $lineas_de_alicuotas = $this->lineas_del_txt_de_alicuotas();
+
+        $this->assertCount(
+            1,
+            $lineas_de_alicuotas,
+            'la linea al 50 % no genera renglon de alicuota (no se le puede inventar un Id), asi que '.
+            'el archivo sigue trayendo el unico renglon de 10,5 %: '.implode(' | ', $lineas_de_alicuotas)
+        );
+
+        $this->assertSame(
+            '1',
+            $this->cantidad_de_alicuotas_declarada(
+                $this->linea_del_txt_de_comprobantes(
+                    $this->lineas_del_txt_de_comprobantes(),
+                    $e2['afip_ticket']
+                )
+            ),
+            'y el archivo de comprobantes tiene que declarar esa misma cantidad: los dos se importan '.
+            'juntos y ARCA los cruza'
         );
     }
 

@@ -197,8 +197,10 @@ class Bucket_De_Alicuota_Y_Id_De_Arca_Test extends EmpresaTestCase
 
         if (is_null($iva)) {
             $this->fail(
-                'No existe la alicuota "'.$iva_percentage.'" en la tabla ivas del fixture. Las nueve '.
-                'del seeder son: 27, 21, 10.5, 5, 2.5, 0, Exento, No Gravado y 50.'
+                'No existe la alicuota "'.$iva_percentage.'" en la tabla ivas del fixture. El seeder '.
+                'carga 27, 21, 10.5, 5, 2.5, 0, Exento, No Gravado y 50 — pero la tabla es ABIERTA '.
+                '(la importacion de articulos por Excel crea filas nuevas), asi que si esta buscando '.
+                'un valor que el seeder no trae, use descripcion_con_percentage_crudo().'
             );
         }
 
@@ -212,14 +214,48 @@ class Bucket_De_Alicuota_Y_Id_De_Arca_Test extends EmpresaTestCase
     }
 
     /**
+     * Igual que `descripcion_en_memoria()`, pero con un `ivas.percentage` ARBITRARIO, sin exigir
+     * que la fila exista en la base.
+     *
+     * 🔴 Existe porque la tabla `ivas` es un conjunto ABIERTO: `ProcessRow.php:3530` y
+     * `LocalImportHelper.php:459` hacen `Iva::create(['percentage' => $iva])` con el texto CRUDO de
+     * una columna de una planilla de importacion de articulos, sin validar nada. O sea que en
+     * produccion hay `percentage` con espacios al final y con coma decimal, que el seeder de
+     * testing no tiene y por lo tanto ningun test podria ejercitar de otra forma.
+     *
+     * El `Iva` va en memoria (sin `save()`) a proposito: no se esta midiendo la persistencia, y
+     * ensuciar la tabla `ivas` del fixture afectaria a otros tests. El calculador solo lee
+     * `iva->percentage`, y `get_description_iva()` solo lee `price`.
+     *
+     * @param  string $notes
+     * @param  float $price Precio CON IVA incluido.
+     * @param  string $percentage Texto crudo, tal como podria haber quedado en la base.
+     * @return \App\Models\NotaCreditoDescription
+     */
+    protected function descripcion_con_percentage_crudo($notes, $price, $percentage)
+    {
+        $iva = new Iva();
+        $iva->percentage = $percentage;
+
+        $description = new NotaCreditoDescription();
+        $description->notes = $notes;
+        $description->price = $price;
+        $description->setRelation('iva', $iva);
+
+        return $description;
+    }
+
+    /**
      * Corre el calculo real de importes sobre una venta, con articulos y descripciones libres.
      *
      * @param  \App\Models\Sale $venta
      * @param  mixed $articles Coleccion de articulos, o null para tomarlos de la venta.
      * @param  array $descriptions Lineas de descripcion libre.
+     * @param  bool $tolerar_alicuota_desconocida `true` = camino de LECTURA (Libro IVA Ventas,
+     *                                            TXT, PDF); `false` = camino de EMISION.
      * @return array Resultado de `AfipHelper::getImportes()`.
      */
-    protected function importes_de($venta, $articles, $descriptions = [])
+    protected function importes_de($venta, $articles, $descriptions = [], $tolerar_alicuota_desconocida = false)
     {
         $afip_ticket = new AfipTicket();
         $afip_ticket->cbte_letra = 'A';
@@ -229,7 +265,17 @@ class Bucket_De_Alicuota_Y_Id_De_Arca_Test extends EmpresaTestCase
 
         $afip_helper = new AfipHelper($afip_ticket, $articles, [], $this->usuario_de_testing(), $venta, $descriptions, null);
 
-        return $afip_helper->getImportes();
+        /*
+         * 🔴 En el camino de emision se llama SIN argumento, a proposito, y no con un `false`
+         * explicito: lo que hay que fijar es el DEFAULT de `getImportes()`, que es lo que usan
+         * `AfipWsfeHelper` y `AfipNotaCreditoHelper`. Medido: pasando `false` a mano, invertir el
+         * default en produccion dejaba este archivo entero en VERDE.
+         */
+        if (!$tolerar_alicuota_desconocida) {
+            return $afip_helper->getImportes();
+        }
+
+        return $afip_helper->getImportes(true);
     }
 
     /**
@@ -340,12 +386,20 @@ class Bucket_De_Alicuota_Y_Id_De_Arca_Test extends EmpresaTestCase
     }
 
     /**
-     * B2 — recorre LAS NUEVE alicuotas del seeder como descripcion libre: ninguna produce un bucket
-     * con `Id => 0`, y ninguna produce una clave fuera de la tabla.
+     * B2 — recorre las nueve alicuotas QUE CARGA EL SEEDER como descripcion libre: ninguna produce
+     * un bucket con `Id => 0`, y ninguna produce una clave fuera de la tabla.
      *
      * Las ocho primeras tienen que rutear a un bucket conocido. La novena (`'50'`, que existe en la
      * tabla `ivas` pero ARCA no reconoce) tiene que CORTAR con excepcion en vez de inventar un Id,
      * y eso lo mide B3 en detalle; aca se comprueba que no devuelve un bucket a escondidas.
+     *
+     * 🔴 Nueve NO es "todas": la tabla `ivas` es un conjunto ABIERTO. `ProcessRow.php:3530` y
+     * `LocalImportHelper.php:459` hacen `Iva::create(['percentage' => $iva])` con el texto crudo de
+     * una columna de una planilla de importacion de articulos, sin validar nada, asi que en
+     * produccion hay valores que el seeder no tiene: con espacios al final, con coma decimal, o
+     * directamente cualquier cosa. Este test cubre lo que el seeder trae; el texto sucio y la
+     * alicuota genuinamente desconocida los cubren los tests de abajo, que arman el `percentage`
+     * a mano con `descripcion_con_percentage_crudo()`.
      *
      * 🔴 El mapa clave-esperada esta escrito A MANO. Si lo leyera de `AfipImportesResolver`, el test
      * no mediria nada: pasaria tambien con la tabla cambiada.
@@ -757,6 +811,284 @@ class Bucket_De_Alicuota_Y_Id_De_Arca_Test extends EmpresaTestCase
         $this->assertNull(
             AfipImportesResolver::clave_de_porcentaje('50'),
             '50 % no es una alicuota de ARCA, aunque este en la tabla ivas del sistema'
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // B7-B11 — la tabla `ivas` es un conjunto ABIERTO: texto sucio y alicuotas desconocidas
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * B7 — un `percentage` con un espacio al final ('21 ') sigue cayendo en su bucket.
+     *
+     * 🔴 Este test es el que fija una REGRESION, no una mejora. Medido con el PHP 7.4.33 de wamp:
+     *
+     *     is_numeric('21 ')  ->  false          (string) (float) '21 '  ->  '21'
+     *
+     * O sea que el codigo VIEJO —que armaba la clave con `(string) (float) $percentage`— bucketeaba
+     * bien un `'21 '`, y una traduccion que arranque con `is_numeric()` sin normalizar lo dejaria
+     * afuera. Y afuera, en la emision, significa cortar la facturacion de un comercio que hoy
+     * factura bien.
+     *
+     * Que un `'21 '` exista no es hipotetico: `ProcessRow.php:3530` y `LocalImportHelper.php:459`
+     * crean filas de `ivas` con el texto crudo de una columna de Excel.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function un_percentage_con_espacio_al_final_cae_igual_en_su_bucket()
+    {
+        $venta = $this->crear_venta(1210);
+
+        $importes = $this->importes_de(
+            $venta,
+            [],
+            [$this->descripcion_con_percentage_crudo('Linea con percentage sucio', 1210, '21 ')]
+        );
+
+        $this->assertSame(
+            '21',
+            $this->bucket_con_plata($importes['ivas']),
+            'un percentage "21 " (con espacio al final, como lo deja la importacion por Excel) tiene '.
+            'que caer en el bucket "21". Es la alicuota del 90 % de los comprobantes del sistema'
+        );
+
+        $this->assertSame(
+            5,
+            $importes['ivas']['21']['Id'],
+            'Id de alicuota de ARCA para 21 %'
+        );
+
+        $this->assertEqualsWithDelta(
+            1000.00,
+            (float) $importes['ivas']['21']['BaseImp'],
+            self::DELTA,
+            'base imponible (literal: 1210 / 1,21)'
+        );
+
+        $this->assertEqualsWithDelta(
+            210.00,
+            (float) $importes['ivas']['21']['Importe'],
+            self::DELTA,
+            'IVA de la linea (literal: 1210 - 1000)'
+        );
+    }
+
+    /**
+     * B8 — un `percentage` con COMA decimal ('10,5') cae en el bucket de 10,5 %.
+     *
+     * `is_numeric('10,5')` da false en PHP: la coma no es un separador decimal para el lenguaje.
+     * Y una planilla de importacion escrita en Argentina la trae con coma la mitad de las veces.
+     * Sin normalizar, esa linea no resuelve a ninguna alicuota.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function un_percentage_con_coma_decimal_cae_en_el_bucket_de_10_5()
+    {
+        $venta = $this->crear_venta(1105);
+
+        $importes = $this->importes_de(
+            $venta,
+            [],
+            [$this->descripcion_con_percentage_crudo('Linea con coma decimal', 1105, '10,5')]
+        );
+
+        $this->assertSame(
+            '10',
+            $this->bucket_con_plata($importes['ivas']),
+            'un percentage "10,5" tiene que caer en el bucket "10", que es la clave interna de '.
+            '10,5 % (no es el porcentaje: "10" vale 10,5)'
+        );
+
+        $this->assertSame(
+            4,
+            $importes['ivas']['10']['Id'],
+            'Id de alicuota de ARCA para 10,5 %'
+        );
+
+        $this->assertEqualsWithDelta(
+            105.00,
+            (float) $importes['ivas']['10']['Importe'],
+            self::DELTA,
+            'IVA de la linea, calculado con el porcentaje REAL 10,5 (literal: 1105 - 1105/1,105)'
+        );
+    }
+
+    /**
+     * B9 — 'Exento ' con un espacio al final sigue cayendo en el bucket '0'.
+     *
+     * La comparacion con 'Exento' es `===` estricta a proposito (no se cae al cast, que es lo que
+     * ocultaba el ruteo), y por eso mismo un espacio al final la esquivaba en silencio: la linea se
+     * iba a buscar una alicuota numerica, no la encontraba, y cortaba la emision.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function exento_con_espacio_al_final_cae_igual_en_el_bucket_cero()
+    {
+        $venta = $this->crear_venta(1000);
+
+        $importes = $this->importes_de(
+            $venta,
+            [],
+            [$this->descripcion_con_percentage_crudo('Linea exenta con espacio', 1000, 'Exento ')]
+        );
+
+        $this->assertSame(
+            '0',
+            $this->bucket_con_plata($importes['ivas']),
+            '"Exento " con espacio al final tiene que rutear igual que "Exento": al bucket "0". Que '.
+            'caiga ahi (y no en ImpOpEx) es la decision de caracterizacion que fija B4'
+        );
+
+        $this->assertSame(
+            3,
+            $importes['ivas']['0']['Id'],
+            'Id de alicuota de ARCA para 0 %'
+        );
+
+        $this->assertEqualsWithDelta(
+            0.00,
+            (float) $importes['ivas']['0']['Importe'],
+            self::DELTA,
+            'una linea exenta no genera IVA'
+        );
+    }
+
+    /**
+     * B10 — MODO LECTURA: una alicuota que ARCA no reconoce NO rompe el reporte.
+     *
+     * 🔴 Es el otro lado del guardia de B3, y los dos son necesarios. `getImportes(true)` lo llaman
+     * SOLO los caminos de lectura: `AfipImportesResolver::resolve()` —que es el funnel del Libro
+     * IVA Ventas, del TXT de comprobantes y del TXT de alicuotas— y los dos PDF de ticket. Ninguno
+     * de ellos tiene `try/catch` en ninguna parte, asi que si el calculo tirara, UNA linea vieja de
+     * UN comprobante ya autorizado reventaria con 500 el Libro IVA Ventas del MES ENTERO. Romper la
+     * impresion no le devuelve el renglon a nadie: es el mismo criterio que ya aplica
+     * `resolve_from_snapshot()` ante un Id de ARCA que no conoce.
+     *
+     * Lo que SI se acepta a proposito: la plata suma a `gravado` y a `iva` pero no genera renglon
+     * de alicuota, asi que `suma(BaseImp)` no cierra contra `gravado`. Ese descuadre es
+     * PREEXISTENTE del camino de los ARTICULOS —`calculate_from_sale_items()` pide `getImporteIva()`
+     * solo para las seis alicuotas conocidas, asi que un articulo al 50 % ya se comporta asi—; esta
+     * mision alinea la descripcion libre con el articulo en vez de estrenar una tercera conducta.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function en_modo_lectura_una_alicuota_desconocida_no_rompe_el_reporte()
+    {
+        $venta = $this->crear_venta(1500);
+
+        $importes = $this->importes_de(
+            $venta,
+            [],
+            [$this->descripcion_con_percentage_crudo('Servicio raro al 50', 1500, '50')],
+            true
+        );
+
+        $this->assertIsArray(
+            $importes,
+            'en modo lectura el calculo tiene que TERMINAR: el Libro IVA Ventas del mes entero no '.
+            'puede reventar por una linea vieja de un comprobante ya autorizado'
+        );
+
+        $this->assertNull(
+            $this->bucket_con_plata($importes['ivas']),
+            'la alicuota desconocida NO genera renglon de IVA: no se le puede inventar un Id'
+        );
+
+        foreach ($importes['ivas'] as $key => $bucket) {
+            $this->assertNotSame(
+                0,
+                $bucket['Id'],
+                'EL DEFECTO EN UNA LINEA: tolerar la alicuota desconocida NO puede volver por la '.
+                'ventana como un bucket "'.$key.'" con Id 0. Ese cero viaja tal cual al payload de '.
+                'ARCA y sale como codigo de alicuota 0000 en el TXT del contador'
+            );
+        }
+
+        /*
+         * Y la plata no desaparece: sigue en gravado y en iva, exactamente como ya pasa hoy con un
+         * ARTICULO a una alicuota desconocida. Si esto fallara, el reporte estaria subdeclarando.
+         */
+        $this->assertEqualsWithDelta(
+            1000.00,
+            (float) $importes['gravado'],
+            self::DELTA,
+            'la base imponible de la linea sigue sumando al gravado (literal: 1500 / 1,5)'
+        );
+
+        $this->assertEqualsWithDelta(
+            500.00,
+            (float) $importes['iva'],
+            self::DELTA,
+            'el IVA de la linea sigue sumando al total de IVA (literal: 1500 - 1000)'
+        );
+
+        $this->assertEqualsWithDelta(
+            1500.00,
+            (float) $importes['total'],
+            self::DELTA,
+            'el total del comprobante no cambia: tolerar la alicuota mueve el DESGLOSE, nunca la plata'
+        );
+    }
+
+    /**
+     * B11 — MODO EMISION (el default): la MISMA linea sigue cortando.
+     *
+     * 🔴 Es el test que garantiza que la tolerancia de B10 no se filtro a la emision. Es la misma
+     * descripcion, el mismo importe y la misma alicuota que B10; lo unico que cambia es que
+     * `getImportes()` se llama SIN parametro, que es como lo llaman `AfipWsfeHelper` y
+     * `AfipNotaCreditoHelper`, los dos unicos que le hablan al webservice de ARCA.
+     *
+     * Facturar con una alicuota inventada deja el desglose fiscal del comercio mal para siempre y
+     * nadie se entera. Leer un comprobante ya autorizado con una alicuota rara, no.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function en_modo_emision_la_misma_alicuota_desconocida_sigue_cortando()
+    {
+        $venta = $this->crear_venta(1500);
+
+        /** @var \InvalidArgumentException|null $excepcion La que tiene que tirar la emision. */
+        $excepcion = null;
+        /** @var array|null $importes Lo que devolvio, si es que devolvio algo. */
+        $importes = null;
+
+        try {
+            $importes = $this->importes_de(
+                $venta,
+                [],
+                [$this->descripcion_con_percentage_crudo('Servicio raro al 50', 1500, '50')]
+            );
+        } catch (InvalidArgumentException $e) {
+            $excepcion = $e;
+        }
+
+        $this->assertNull(
+            $importes,
+            'EL DEFECTO EN UNA LINEA: si la emision devuelve importes con una alicuota desconocida, '.
+            'el modo tolerante se filtro al camino que le habla a ARCA. El default de '.
+            'AfipHelper::getImportes() tiene que seguir siendo false'
+        );
+
+        $this->assertNotNull(
+            $excepcion,
+            'la emision tiene que CORTAR ante una alicuota que ARCA no reconoce'
+        );
+
+        $this->assertStringContainsString(
+            '50',
+            $excepcion->getMessage(),
+            'el mensaje tiene que nombrar la alicuota que no se pudo resolver'
+        );
+
+        $this->assertStringContainsString(
+            'Servicio raro al 50',
+            $excepcion->getMessage(),
+            'y tiene que nombrar la linea, que es lo unico que le sirve a quien tiene que arreglarla'
         );
     }
 }
