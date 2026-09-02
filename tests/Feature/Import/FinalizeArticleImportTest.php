@@ -206,16 +206,20 @@ class FinalizeArticleImportTest extends TestCase
     }
 
     /**
-     * Caso 4. 🔴 EL CANDADO CONTRA EL FALSO ARREGLO.
+     * Caso 4. El camino feliz sigue cerrando: 'terminado' y `terminado_at` sellado.
      *
-     * Una importación completa se cierra igual que siempre: pasa a 'terminado' y sella
-     * `terminado_at`. El `ImportStatus` llega acá en 'completado' porque se lo dejó el último
-     * chunk, ANTES de que este job existiera.
+     * El `ImportStatus` llega acá en 'completado' porque se lo dejó el último chunk, ANTES de que
+     * este job existiera.
      *
-     * Se pone rojo si alguien mete 'completado' o 'terminado' en la guarda, o si sube la guarda
-     * por encima del chequeo de chunks. Los dos errores son plausibles —el enum de
-     * `import_statuses` invita al primero— y los dos rompen el cierre de todas las importaciones
-     * exitosas sin tirar un solo error.
+     * ⚠️ OJO CON LO QUE ESTE CASO **NO** PROTEGE. Con `processed == total` el flujo ni siquiera
+     * entra al brazo del re-dispatch, así que la guarda no se ejecuta y este test queda verde
+     * aunque alguien le meta 'completado' adentro. El candado de eso es el caso 6, que sí la
+     * ejecuta. Este caso sólo se cae si se rompen las DOS cosas a la vez (subir la guarda por
+     * encima del chequeo de chunks Y hacerle mirar un estado de éxito).
+     *
+     * Que la guarda no se pueda subir no lo garantiza ningún test: lo garantiza la estructura
+     * —los dos `return` viven en el mismo brazo, del que el cierre ya era inalcanzable— y está
+     * explicado en el comentario de `handle()`.
      *
      * @group import
      * @test
@@ -260,5 +264,35 @@ class FinalizeArticleImportTest extends TestCase
 
         $this->assertEquals('terminado', $import_history->fresh()->status);
         $this->assertNotNull($import_history->fresh()->terminado_at);
+    }
+
+    /**
+     * Caso 6. 🔴 EL CANDADO CONTRA EL FALSO ARREGLO — el que el caso 4 no da.
+     *
+     * `ImportStatus` en 'completado' pero con chunks faltantes: es el único escenario que entra al
+     * brazo del re-dispatch Y ejecuta la guarda con un estado de éxito en la mano. Hoy tiene que
+     * re-despachar, porque 'completado' no significa que la importación esté cerrada — se lo puede
+     * haber dejado un chunk mientras otros siguen.
+     *
+     * Se pone rojo apenas alguien agregue 'completado' (o 'terminado') a `import_esta_cerrado()`,
+     * que es la "corrección" más plausible que le pueden hacer a este arreglo: el enum de
+     * `import_statuses` es ['pendiente','en_proceso','completado','fallo'] y no tiene 'terminado',
+     * así que el primero que lo lea va a querer emparejarlos. Esa guarda cortaría el cierre de
+     * todas las importaciones exitosas, en silencio.
+     *
+     * @group import
+     * @test
+     */
+    public function un_import_completado_pero_con_chunks_faltantes_se_sigue_redespachando()
+    {
+        $import_status  = $this->import_status('completado', 3, 1);
+        $import_history = $this->import_history('en_proceso');
+
+        Queue::fake();
+
+        $this->correr_el_job($import_status, $import_history);
+
+        // Si esto se cae, alguien le agregó un estado de éxito a la guarda.
+        Queue::assertPushed(FinalizeArticleImport::class, 1);
     }
 }
