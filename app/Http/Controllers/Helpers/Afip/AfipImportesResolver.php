@@ -166,6 +166,78 @@ class AfipImportesResolver
     }
 
     /**
+     * Etiqueta VISIBLE de una clave interna: lo que se imprime en un PDF o en un ticket.
+     *
+     * 🔴 Es la contracara del error que esta mision cierra: la clave `'10'` se imprimia tal cual
+     * y en el papel salia "IVA 10%" donde iba 10,5 %. Ningun renderer arma la etiqueta con la
+     * clave: la pide aca.
+     *
+     * Se deriva con `(string) $porcentaje`, que da exactamente '27','21','10.5','5','2.5','0'.
+     * No se pasa a '10,5' con coma: eso cambiaria una salida que hoy ya es correcta.
+     *
+     * Con una clave desconocida LOGUEA y devuelve la clave tal cual, sin tirar. Una etiqueta rara
+     * en un papel es feo; lo que no puede fallar en silencio es el `Id` que va a ARCA, y de eso
+     * se ocupa `AfipImportesCalculator::add_iva_bucket()`, que ahi si tira.
+     *
+     * @param string $key Clave interna.
+     * @return string Etiqueta a imprimir (sin el signo %).
+     */
+    public static function etiqueta_de_clave($key): string
+    {
+        $key = (string) $key;
+
+        /** @var float|null $porcentaje Porcentaje real de la clave. */
+        $porcentaje = self::porcentaje_de_clave($key);
+
+        if (is_null($porcentaje)) {
+            Log::warning(
+                'AfipImportesResolver: no hay etiqueta para la clave de alicuota "'.$key.'". '.
+                'Se imprime la clave tal cual. Si es una alicuota nueva, se agrega en '.
+                'AfipImportesResolver::$alicuotas.'
+            );
+
+            return $key;
+        }
+
+        return (string) $porcentaje;
+    }
+
+    /**
+     * Renglones de IVA a imprimir: los buckets con importe > 0, ya con su etiqueta visible.
+     *
+     * Unifica el filtro `Importe > 0` que estaba repetido (y con tres redacciones distintas) en
+     * `TicketInfoHelper`, `AfipTicketPdf` y `SaleTicketPdf`.
+     *
+     * @param array $importes Estructura de `resolve()` / `AfipHelper::getImportes()`.
+     * @return array<int, array> Lista de ['etiqueta' => string, 'importe' => float].
+     */
+    public static function renglones_de_iva($importes): array
+    {
+        /** @var array $renglones Renglones listos para imprimir. */
+        $renglones = [];
+
+        if (!isset($importes['ivas']) || !is_array($importes['ivas'])) {
+            return $renglones;
+        }
+
+        foreach ($importes['ivas'] as $key => $bucket) {
+            /** @var float $importe Importe de IVA de ese bucket. */
+            $importe = isset($bucket['Importe']) ? (float) $bucket['Importe'] : 0;
+
+            if ($importe <= 0) {
+                continue;
+            }
+
+            $renglones[] = [
+                'etiqueta' => self::etiqueta_de_clave($key),
+                'importe'  => $importe,
+            ];
+        }
+
+        return $renglones;
+    }
+
+    /**
      * Obtiene importes del ticket priorizando snapshot fiscal persistido.
      *
      * @param AfipTicket $afip_ticket Comprobante AFIP con posibles importes enviados.

@@ -16,13 +16,6 @@ use Carbon\Carbon;
 class AfipPdfHelper
 {
     /**
-     * Alícuotas IVA a mostrar siempre en el resumen fiscal (letras A y B).
-     *
-     * @var array<int, string>
-     */
-    protected static $iva_rate_labels = ['27', '21', '10.5', '5', '2.5', '0'];
-
-    /**
      * Filas fijas de la tabla "Otros Tributos" (sin datos reales en el sistema).
      *
      * @var array<int, string>
@@ -1550,7 +1543,9 @@ class AfipPdfHelper
              */
             $right_height = $row_h;
             if ($cbte_letra === 'A' || $cbte_letra === 'B') {
-                $right_height += $row_h + (count(self::$iva_rate_labels) * $row_h);
+                // Siguen siendo las seis alicuotas de la tabla, asi que la altura no cambia:
+                // el bloque imprime UNA fila por alicuota aunque de cero (ver print_footer_importes_block).
+                $right_height += $row_h + (count(AfipImportesResolver::keys()) * $row_h);
             }
             if (!$es_exportacion) {
                 $right_height += $row_h;
@@ -1681,14 +1676,23 @@ class AfipPdfHelper
                 false, $row_h
             );
 
-            foreach (self::$iva_rate_labels as $iva_rate) {
+            /**
+             * 🔴 Se recorre por CLAVE INTERNA (la del bucket) y se imprime la ETIQUETA.
+             * Antes se recorria una lista de etiquetas ('10.5', '2.5') y se la usaba tambien como
+             * clave de lectura: el bucket '10' nunca se encontraba y el papel decia "IVA 10.5%: $0"
+             * con 105 pesos de IVA adentro.
+             *
+             * Se imprimen LAS SEIS filas aunque den cero: el alto del bloque es fijo y
+             * `estimate_footer_height()` lo cuenta.
+             */
+            foreach (AfipImportesResolver::keys() as $iva_key) {
                 $importe_iva = 0;
-                if (isset($importes['ivas'][$iva_rate]['Importe'])) {
-                    $importe_iva = (float) $importes['ivas'][$iva_rate]['Importe'];
+                if (isset($importes['ivas'][$iva_key]['Importe'])) {
+                    $importe_iva = (float) $importes['ivas'][$iva_key]['Importe'];
                 }
                 self::print_footer_right_row(
                     $pdf, $right_x, $right_w,
-                    'IVA '.$iva_rate.'%:',
+                    'IVA '.AfipImportesResolver::etiqueta_de_clave($iva_key).'%:',
                     Numbers::price($importe_iva, true, $moneda_id),
                     false, $row_h
                 );

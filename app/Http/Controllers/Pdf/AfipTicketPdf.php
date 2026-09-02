@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
+use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -167,12 +168,11 @@ class AfipTicketPdf extends fpdf {
 			$this->Cell(40, 5, 'Importe Neto Gravado: ', 1, 0, 'L');
 			$this->Cell(40, 5, '$'.Numbers::price($importes['gravado']), 1, 1, 'L');
 
-			foreach ($importes['ivas'] as $iva => $importe) {
-				if ($importe['Importe'] > 0) {
-					$this->x = 125;
-					$this->Cell(40, 5, 'IVA '.$iva.'%: ', 1, 0, 'L');
-					$this->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
-				}
+			// 🔴 Se imprime la ETIQUETA, no la clave del bucket: la clave '10' vale 10,5 %.
+			foreach (AfipImportesResolver::renglones_de_iva($importes) as $renglon) {
+				$this->x = 125;
+				$this->Cell(40, 5, 'IVA '.$renglon['etiqueta'].'%: ', 1, 0, 'L');
+				$this->Cell(40, 5, '$'.Numbers::price($renglon['importe']), 1, 1, 'L');
 			}
 		}
 		
