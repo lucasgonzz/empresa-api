@@ -258,7 +258,7 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 | 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
 | 24/8/2026, s1, tanda-correctivos-2408 | `209 tests, 2 failures` | referencia histórica: quedó atrás con la misión de abajo |
 | 24/8/2026, s8, importación sólo con IA | `247 tests, 2420 assertions, 1 failure` | referencia histórica |
-| **Hoy** (2/9/2026, s8, misión `fix-ultima-gana-con-actualizar-todos`) | `257 tests, 2510 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`.** Los 10 tests nuevos son `RepetidosConPermitirRepetidoTest` |
+| **Hoy** (2/9/2026, s8, misión `fix-ultima-gana-con-actualizar-todos`) | `260 tests, 2535 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`.** Los 13 tests nuevos son `RepetidosConPermitirRepetidoTest` |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
 entres en pánico: **lo que es baseline es ese único rojo, con ese nombre exacto.** Un segundo rojo,
