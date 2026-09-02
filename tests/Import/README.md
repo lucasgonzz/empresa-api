@@ -139,6 +139,25 @@ había ganado. Ahora reprocesa **todos** los ids que comparten esa clave, dedupl
 `test_repetido_en_archivo_y_en_base_actualiza_los_dos_con_la_ultima_fila` con
 `19_pc_repetido_en_archivo_y_base.xlsx`.
 
+⚠️ **El camino de VARIANTES, medido por primera vez.** Si el mapeo incluye una columna cuyo nombre
+coincide con un `ArticlePropertyType` (color, talle…), una fila repetida no se mergea: se convierte
+en **variante** del artículo de la primera fila (`procesar()` la desvía ahí *antes* del merge). Con
+`permitir = 0` eso pasaba desde siempre; el fix del 2/9/2026 lo volvió alcanzable también con
+`permitir = 1`. Nadie lo había ejercitado — `article_property_types` es una tabla **global** que
+viene vacía en testing, y la persistencia está detrás de la extensión `article_variants`. Ahora hay
+dos tests con `21_pc_repetido_con_variantes.xlsx`, y dejan medido esto:
+
+- **Con la extensión**: queda 1 artículo y **1** variante (la fila repetida). La primera fila es el
+  artículo base, así que su propio color no queda como una variante más. Es discutible como diseño,
+  pero es lo que el sistema hace y cambiarlo es decisión de producto.
+- **Sin la extensión**: 🔴 **la fila repetida se pierde**. Se desvía al camino de variantes, se le
+  cuelga el payload a la cola, y `guardar_variantes_desde_cache_simple()` nunca lo persiste porque
+  está entera detrás de la extensión. No se mergea (el desvío retorna antes) y no se guarda: queda
+  contada en el bucket `variante_de_fila_previa`, que ni siquiera tiene tarjeta en el modal de
+  resultado. **Hoy es inalcanzable desde la interfaz** (el select de mapeo del modal con IA no
+  ofrece propiedades de variante, y el import clásico de artículos ya no se monta en ninguna
+  pantalla), así que queda fijado con test y reportado, no arreglado.
+
 ⚠️ **Defecto abierto que quedó fijado, no arreglado:** importar **sin proveedor elegido** fusiona
 bien, pero el artículo queda con los datos de la **primera** fila, no de la última.
 `ArticleIndexCache::add()` sólo indexa el `provider_code` cuando hay `provider_id`, así que

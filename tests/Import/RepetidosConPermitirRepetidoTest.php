@@ -309,6 +309,187 @@ class RepetidosConPermitirRepetidoTest extends ImportTestCase
     }
 
     /* ------------------------------------------------------------------
+     * Filas repetidas que traen propiedades de variante
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Prende la extension de variantes para el tenant del fixture (mismo patron que
+     * ListasDePrecioPorDefectoTest::prender_ventas_en_dolares()).
+     *
+     * @return void
+     */
+    protected function prender_article_variants()
+    {
+        $extencion = \App\Models\ExtencionEmpresa::where('slug', 'article_variants')->first();
+
+        if (is_null($extencion)) {
+            $extencion = new \App\Models\ExtencionEmpresa();
+            $extencion->name = 'Variantes de articulo';
+            $extencion->slug = 'article_variants';
+            $extencion->save();
+        }
+
+        $this->tenant->extencions()->syncWithoutDetaching($extencion->id);
+        $this->tenant->load('extencions');
+    }
+
+    /**
+     * Con una columna de propiedad mapeada (el caso de una lista de indumentaria: un codigo
+     * de catalogo, una fila por color) y la extension `article_variants` prendida, las filas
+     * repetidas se absorben como VARIANTES del articulo de la primera. Un articulo, dos
+     * variantes.
+     *
+     * Ese camino esta ANTES del merge en procesar() (~:983) y es el diseno original del
+     * sistema: si dos filas son el mismo producto y traen propiedades distintas, la
+     * representacion correcta es un articulo con variantes, no dos articulos ni un merge que
+     * pise el color de la primera con el de la segunda.
+     *
+     * Lo que cambio el 2/9/2026 es que ese camino ahora se ALCANZA tambien con
+     * permitir_provider_code_repetido = 1: antes el escalon 4 apagado hacia que las filas ni
+     * siquiera se detectaran como repetidas y cada una creaba su articulo. Con permitir = 0 ya
+     * pasaba desde siempre. Lo encontro el revisor de merge de la mision.
+     *
+     * ⚠️ Dos cosas que hay que sembrar a mano y que explican por que ningun otro test de esta
+     * suite ejercita variantes: `article_property_types` es una tabla GLOBAL que viene vacia en
+     * la base de testing, y la persistencia esta detras de la extension `article_variants`
+     * (ActualizarBBDD::guardar_variantes_desde_cache_simple(), ~:1865).
+     *
+     * @return void
+     */
+    public function test_filas_repetidas_con_propiedades_quedan_como_variantes()
+    {
+        $this->prender_article_variants();
+
+        $tipo = \App\Models\ArticlePropertyType::firstOrCreate(['name' => 'Color']);
+
+        $this->importar('21_pc_repetido_con_variantes.xlsx', [
+            'provider_id'                     => $this->providers['A']->id,
+            'permitir_provider_code_repetido' => true,
+            'filas_repetidas_del_archivo'     => 'ultima_gana',
+            /* La columna 9 del fixture. La clave del mapeo es el nombre del tipo en minusculas. */
+            'prop_color'                      => 9,
+        ]);
+
+        $articulos = $this->articulos_con_provider_code('PC-VAR');
+
+        $this->assertCount(
+            1,
+            $articulos,
+            'Las dos filas son el mismo producto: tiene que quedar UN articulo.'
+        );
+
+        $variantes = \App\Models\ArticleVariant::where('article_id', $articulos->first()->id)->get();
+
+        /*
+         * UNA variante, no dos, y esto es el comportamiento real medido -- no una expectativa
+         * rebajada para que el test pase. La fila 1 no pasa por el camino de variantes (todavia
+         * no hay ninguna repeticion que detectar): crea el articulo base con SUS datos, color
+         * incluido como valor de la fila. Solo las filas repetidas 2..N se convierten en
+         * variantes. O sea que el color de la primera fila no queda como una variante mas.
+         *
+         * Es discutible como diseno -lo natural seria que las N filas fueran N variantes de un
+         * articulo padre- pero es lo que el sistema hace desde que existe el camino, y cambiarlo
+         * es una decision de producto, no parte de este fix. Se fija acá para que quede medido:
+         * hasta hoy nadie lo habia ejercitado (`grep variante_de_fila_previa tests/Import/` no
+         * devolvia nada).
+         */
+        $this->assertCount(
+            1,
+            $variantes,
+            'La fila repetida queda como variante del articulo de la primera; la primera es el articulo base.'
+        );
+
+        $tipo->delete();
+    }
+
+    /**
+     * 🔴 DEFECTO ABIERTO, fijado a proposito: la MISMA planilla, en una cuenta SIN la extension
+     * `article_variants`, pierde la segunda fila.
+     *
+     * Medido el 2/9/2026: queda UN articulo y CERO variantes. La fila 2 se detecta como
+     * repetida, procesar() la manda al camino de variantes (build_variant_payload() devuelve
+     * payload porque la columna esta mapeada), attach_variant_to_existing_article() le cuelga
+     * el payload a la entrada en cola... y ActualizarBBDD nunca lo persiste, porque
+     * guardar_variantes_desde_cache_simple() esta entera detras de la extension. La fila no se
+     * mergea (el camino de variantes retorna antes) y no se guarda: desaparece, contada en el
+     * bucket `variante_de_fila_previa`, que ni siquiera tiene tarjeta en el modal de resultado.
+     *
+     * Por que NO se arregla en esta mision, y por que no bloquea:
+     *   - Es PREEXISTENTE: con permitir_provider_code_repetido = 0 pasa exactamente igual
+     *     desde siempre. El fix del 2/9 solo lo hace alcanzable tambien con permitir = 1.
+     *   - Hoy es INALCANZABLE desde la interfaz: el select de mapeo del modal de importacion
+     *     con IA no ofrece propiedades de variante (`system_property_options` no las incluye),
+     *     y el import clasico de articulos ya no se monta en ninguna pantalla. Queda expuesto
+     *     solo para un cliente de API directo.
+     *   - Arreglarlo bien es decidir que hace el import con una propiedad de variante cuando la
+     *     cuenta no tiene variantes: ignorarla y mergear normal, o avisar. Es una decision de
+     *     producto, no un ajuste.
+     *
+     * El dia que se arregle, este test se pone rojo y hay que actualizarlo.
+     *
+     * @return void
+     */
+    public function test_sin_la_extension_de_variantes_la_fila_repetida_se_pierde()
+    {
+        $tipo = \App\Models\ArticlePropertyType::firstOrCreate(['name' => 'Color']);
+
+        $this->importar('21_pc_repetido_con_variantes.xlsx', [
+            'provider_id'                     => $this->providers['A']->id,
+            'permitir_provider_code_repetido' => true,
+            'filas_repetidas_del_archivo'     => 'ultima_gana',
+            'prop_color'                      => 9,
+        ]);
+
+        $articulos = $this->articulos_con_provider_code('PC-VAR');
+
+        $this->assertCount(1, $articulos, 'Queda un solo articulo, el de la primera fila.');
+
+        $this->assertCount(
+            0,
+            \App\Models\ArticleVariant::where('article_id', $articulos->first()->id)->get(),
+            'DEFECTO ABIERTO fijado: sin la extension, la segunda fila no se guarda ni como '
+            . 'variante ni como merge. Cuando se corrija, este numero cambia.'
+        );
+
+        $this->assertDecimal(
+            100,
+            $articulos->first()->cost,
+            'Y el articulo se queda con el costo de la PRIMERA fila: la segunda se perdio.'
+        );
+
+        $tipo->delete();
+    }
+
+    /**
+     * La contrapartida: con 'productos_distintos' el camino de variantes NO se toma (procesar()
+     * lo saltea junto con todo el bloque de repeticion) y cada fila crea su articulo.
+     *
+     * Es lo que le da sentido a la eleccion del usuario: la misma planilla da un articulo con
+     * variantes o dos articulos segun lo que haya respondido.
+     *
+     * @return void
+     */
+    public function test_productos_distintos_no_convierte_las_filas_en_variantes()
+    {
+        $tipo = \App\Models\ArticlePropertyType::firstOrCreate(['name' => 'Color']);
+
+        $this->importar('21_pc_repetido_con_variantes.xlsx', [
+            'provider_id'                     => $this->providers['A']->id,
+            'permitir_provider_code_repetido' => true,
+            'filas_repetidas_del_archivo'     => 'productos_distintos',
+            'prop_color'                      => 9,
+        ]);
+
+        $this->assertCount(
+            2,
+            $this->articulos_con_provider_code('PC-VAR'),
+            "Con 'productos_distintos' cada fila es su propio articulo, no una variante."
+        );
+
+        $tipo->delete();
+    }
+
+    /* ------------------------------------------------------------------
      * Sin proveedor elegido (riesgo R1 del plan)
      * ------------------------------------------------------------------ */
 

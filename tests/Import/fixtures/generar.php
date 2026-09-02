@@ -574,4 +574,42 @@ escribir('20_mismo_nombre_solo_una_con_codigo.xlsx', [
     [null, null, 'PC-SOLO-UNA',   'Mismo nombre sin codigo', 200.0, 250.0, 20.0, '21'],
 ], $cabecera);
 
+/* --------------------------------------------------------------------------
+ * 21 - Mismo provider_code repetido, con una columna de PROPIEDAD de variante
+ * (mision fix-ultima-gana-con-actualizar-todos, 2/9/2026, hallazgo del revisor
+ * de merge).
+ *
+ * Es la forma tipica de una lista de indumentaria: un codigo de catalogo, una
+ * fila por color. Cuando la cuenta tiene cargado el ArticlePropertyType 'Color'
+ * y el mapeo incluye esa columna, ProcessRow::build_variant_payload() devuelve
+ * payload y las filas repetidas se absorben como VARIANTES del articulo de la
+ * primera fila, en vez de mergearse campo a campo.
+ *
+ * Ese camino esta ANTES del merge en procesar() y es el diseno original del
+ * sistema, pero hasta el 2/9/2026 no se alcanzaba con permitir=1: el escalon 4
+ * apagado hacia que las filas ni siquiera se detectaran como repetidas. O sea
+ * que el fix no lo invento -- lo volvio alcanzable, igual que ya lo era con
+ * permitir=0.
+ *
+ * Lleva cabecera propia: la comun tiene 8 columnas y esta agrega 'color' al final.
+ *
+ *   F2, F3  mismo provider_code PC-VAR, nombres distintos, colores distintos.
+ * -------------------------------------------------------------------------- */
+$cabecera_con_color = [
+    'codigo_de_barras',
+    'sku',
+    'codigo_de_proveedor',
+    'nombre',
+    'costo',
+    'precio',
+    'stock_actual',
+    'iva',
+    'color',
+];
+
+escribir('21_pc_repetido_con_variantes.xlsx', [
+    [null, null, 'PC-VAR', 'Remera rep rojo', 100.0, 150.0, 10.0, '21', 'Rojo'],
+    [null, null, 'PC-VAR', 'Remera rep azul', 200.0, 250.0, 20.0, '21', 'Azul'],
+], $cabecera_con_color);
+
 echo "\nListo.\n";
