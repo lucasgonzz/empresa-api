@@ -36,6 +36,32 @@ class Article extends Model
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category', 'article_ubications', 'article_price_ranges', 'providers', 'sales_with_deliveries_in_acopio', 'provider');
     }
 
+    /**
+     * Las mismas relaciones de withAll() MENOS `sales_with_deliveries_in_acopio` (27 en vez de 28).
+     *
+     * Esa relacion (linea ~306) es un belongsToMany a Sale que joinea article_sale y sales filtrando
+     * por en_acopio y por delivered_amount NOT NULL. Es la mas cara del paquete y en el flujo de
+     * VENDER no la usa nadie: medido el 1/9/2026, el UNICO consumidor en todo empresa-spa es
+     * src/components/listado/components/Buttons.vue (pantalla Listado de articulos), que se alimenta
+     * de ArticleController::index() -- y ese sigue usando withAll(), sin cambios.
+     *
+     * Las DOS pantallas que consumen el endpoint que usa este scope
+     * (GET vender/buscar-articulo-por-codido/{code}, routes/api.php:321) no la leen:
+     *   - vender/components/remito/header-form/ArticleBarCode.vue (arma el item de venta con
+     *     set_item_vender: usa precios, descuentos, imagenes, direcciones/deposito, no acopio).
+     *   - consultora-de-precios/components/buscador/BuscadorInput.vue (InfoArticle.vue solo lee
+     *     article.name, el accessor de precio y variant.variant_description).
+     *
+     * NO CONVERTIR ESTO EN "withAll() menos una relacion" tocando withAll(): withAll() lo usan ~12
+     * controllers mas (ArticleController::index(), etc.) y sacarle acopio le rompe el badge de
+     * Buttons.vue, que hace .length sobre la propiedad sin guarda. La lista va duplicada a proposito,
+     * y el test 15_Indices_De_Venta_Y_Vender_Test::las_dos_listas_difieren_en_una_sola_relacion falla
+     * si las dos listas se separan en algo mas que sales_with_deliveries_in_acopio.
+     */
+    function scopeWithAllSinAcopio($query) {
+        $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category', 'article_ubications', 'article_price_ranges', 'providers', 'provider');
+    }
+
     public function article_price_ranges()
     {
         return $this->hasMany(ArticlePriceRange::class);

@@ -4,26 +4,269 @@ namespace App\Http\Controllers\Helpers\Afip;
 
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Models\AfipTicket;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Resuelve importes fiscales de un comprobante AFIP.
  * Prioriza el snapshot persistido al autorizar (FECAESolicitar) y recalcula solo como fallback.
+ *
+ * Ademas es la FUENTE UNICA de la tabla de alicuotas de IVA (ver `alicuotas()`).
  */
 class AfipImportesResolver
 {
     /**
-     * Mapa AFIP Id de alícuota -> etiqueta interna usada por calculadores legacy.
+     * FUENTE UNICA de la tabla de alicuotas de IVA. Clave interna => Id de ARCA + porcentaje real.
      *
-     * @var array<int, string>
+     * 🔴 Las claves NO son el porcentaje: `'10'` significa 10,5 % y `'2'` significa 2,5 %.
+     * Son claves internas historicas, alineadas con los Id de ARCA (4 y 9), y estan congeladas
+     * porque son un CONTRATO con `empresa-spa` (el front manda `'10'`/`'2'` en el reparto del
+     * importe personalizado, y `MakeAfipTicket::validar_filas_importe_personalizado()` rechaza
+     * con 422 cualquier otra) y porque hay datos ya persistidos en produccion con esas claves
+     * en `afip_tickets.importe_personalizado_ivas_json`.
+     *
+     * Quien la consume:
+     *  - `AfipImportesCalculator::default_ivas()` arma el acumulador de buckets desde aca.
+     *  - `MakeAfipTicket::keys_de_alicuota_validas()` publica estas claves como contrato de API.
+     *  - `resolve_from_snapshot()` traduce el Id de ARCA que volvio autorizado a la clave interna.
+     *  - Los cuatro renderers de PDF/ticket imprimen `etiqueta_de_clave()`, NUNCA la clave cruda.
+     *
+     * 🔴 Nadie deriva el porcentaje casteando la clave a numero, y nadie arma una clave con
+     * `(string) $porcentaje`. Para eso estan `porcentaje_de_clave()` y `clave_de_porcentaje()`.
+     *
+     * 🔴 Agregar o cambiar una alicuota se hace ACA y en ningun otro lado. El orden importa:
+     * `AfipImportesCalculator::repartir_importe_personalizado()` le encaja el descuadre de
+     * centavos a la ULTIMA fila viva, que tiene que ser la de alicuota MENOR.
+     *
+     * @var array<string, array>
      */
-    protected static $iva_id_to_label_map = [
-        6 => '27',
-        5 => '21',
-        4 => '10.5',
-        8 => '5',
-        9 => '2.5',
-        3 => '0',
+    protected static $alicuotas = [
+        '27' => ['id' => 6, 'porcentaje' => 27.0],
+        '21' => ['id' => 5, 'porcentaje' => 21.0],
+        '10' => ['id' => 4, 'porcentaje' => 10.5],
+        '5'  => ['id' => 8, 'porcentaje' => 5.0],
+        '2'  => ['id' => 9, 'porcentaje' => 2.5],
+        '0'  => ['id' => 3, 'porcentaje' => 0.0],
     ];
+
+    /**
+     * Tabla completa de alicuotas. Ver el docblock de `$alicuotas`: es LA fuente unica.
+     *
+     * @return array Mapa clave interna => ['id' => int, 'porcentaje' => float].
+     */
+    public static function alicuotas(): array
+    {
+        return self::$alicuotas;
+    }
+
+    /**
+     * Claves internas de alicuota, en el orden fijo '27','21','10','5','2','0'.
+     *
+     * 🔴 El `(string)` no es decorativo: PHP convierte a ENTERO toda clave de array que sea un
+     * string numerico, asi que `array_keys()` devuelve `[27, 21, 10, 5, 2, 0]`. El contrato con
+     * `empresa-spa` que publica `MakeAfipTicket::keys_de_alicuota_validas()` es de STRINGS, y el
+     * test lo compara con `assertSame`. Sacar el cast rompe el contrato sin cambiar el 422.
+     *
+     * @return array<int, string>
+     */
+    public static function keys(): array
+    {
+        /** @var array<int, string> $keys Claves ya normalizadas a string. */
+        $keys = [];
+
+        foreach (self::$alicuotas as $key => $alicuota) {
+            $keys[] = (string) $key;
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Id de ARCA de una clave interna.
+     *
+     * @param string $key Clave interna ('27','21','10','5','2','0').
+     * @return int|null Null si la clave no esta en la tabla.
+     */
+    public static function id_de_clave($key): ?int
+    {
+        $key = (string) $key;
+
+        if (!isset(self::$alicuotas[$key])) {
+            return null;
+        }
+
+        return (int) self::$alicuotas[$key]['id'];
+    }
+
+    /**
+     * Porcentaje REAL de una clave interna ('10' => 10.5).
+     *
+     * @param string $key Clave interna.
+     * @return float|null Null si la clave no esta en la tabla.
+     */
+    public static function porcentaje_de_clave($key): ?float
+    {
+        $key = (string) $key;
+
+        if (!isset(self::$alicuotas[$key])) {
+            return null;
+        }
+
+        return (float) self::$alicuotas[$key]['porcentaje'];
+    }
+
+    /**
+     * Clave interna a partir del Id de ARCA.
+     *
+     * @param int $iva_id Id de alicuota de ARCA.
+     * @return string|null Null si el Id no esta en la tabla.
+     */
+    public static function clave_de_id($iva_id): ?string
+    {
+        foreach (self::$alicuotas as $key => $alicuota) {
+            if ((int) $alicuota['id'] === (int) $iva_id) {
+                return (string) $key;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normaliza un porcentaje que viene de la base antes de compararlo con nada.
+     *
+     * 🔴 Existe porque `ivas.percentage` es un STRING cargado por gente, y la tabla `ivas` es un
+     * conjunto ABIERTO: la importacion de articulos por Excel hace `Iva::create(['percentage' =>
+     * $iva])` con el texto CRUDO de una columna de la planilla, sin validar nada (ver
+     * `Helpers/import/article/ProcessRow.php` y `Helpers/LocalImportHelper.php`). O sea que en
+     * produccion hay `percentage` con espacios al final y con coma decimal.
+     *
+     * Medido con el PHP 7.4.33 de wamp, que es lo que hace esto necesario:
+     *  - `is_numeric('21 ')` da **false**, pero `(float) '21 '` da **21.0**. Sin normalizar, un
+     *    `'21 '` que hoy bucketea bien al 21 % dejaria de resolver.
+     *  - `is_numeric('10,5')` da **false**: la coma decimal no es un numero para PHP.
+     *
+     * Dos operaciones y nada mas: `trim()` y coma decimal a punto. No intenta interpretar nada
+     * (no saca separadores de miles, no acepta '%'): lo que no es un porcentaje escrito de una de
+     * estas dos formas sigue sin resolver, que es lo correcto.
+     *
+     * @param mixed $valor Valor crudo, tal como salio de la base.
+     * @return string Valor listo para `is_numeric()` y para comparar contra un literal.
+     */
+    public static function normalizar_porcentaje($valor): string
+    {
+        return str_replace(',', '.', trim((string) $valor));
+    }
+
+    /**
+     * Clave interna a partir del porcentaje real. Es la traduccion que necesitan las
+     * descripciones libres, donde el porcentaje viene de `ivas.percentage` (un STRING).
+     *
+     * 🔴 Tres cosas que NO se pueden "simplificar":
+     *  1. La normalizacion va primero, y va ACA para que nadie tenga que acordarse de hacerla
+     *     antes de llamar. Ver `normalizar_porcentaje()`: `'21 '` y `'10,5'` son valores que la
+     *     importacion de articulos por Excel mete en `ivas.percentage` sin validar.
+     *  2. El `is_numeric()` va antes de castear. Sin el, `'Exento'` y `'No Gravado'` se castean
+     *     a `0.0` y se cuelan como clave `'0'` sin que nadie lo note. Que caigan en `'0'` es una
+     *     decision explicita de quien llama (ver `AfipImportesCalculator`), no un accidente
+     *     de esta funcion.
+     *  3. La comparacion es por tolerancia, no `==` ni `(string) (float) $x`. Castear un float
+     *     a texto depende del ini `precision`, y esa fragilidad es exactamente la que esta
+     *     funcion viene a sacar del sistema.
+     *
+     * @param mixed $porcentaje Porcentaje real (10.5, '10.5', '10,5', '21 ', 'Exento', ...).
+     * @return string|null Null si no es numerico o no corresponde a ninguna alicuota.
+     */
+    public static function clave_de_porcentaje($porcentaje): ?string
+    {
+        $porcentaje = self::normalizar_porcentaje($porcentaje);
+
+        if (!is_numeric($porcentaje)) {
+            return null;
+        }
+
+        /** @var float $valor Porcentaje ya normalizado a numero. */
+        $valor = (float) $porcentaje;
+
+        foreach (self::$alicuotas as $key => $alicuota) {
+            if (abs(((float) $alicuota['porcentaje']) - $valor) < 0.0001) {
+                return (string) $key;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Etiqueta VISIBLE de una clave interna: lo que se imprime en un PDF o en un ticket.
+     *
+     * 🔴 Es la contracara del error que esta mision cierra: la clave `'10'` se imprimia tal cual
+     * y en el papel salia "IVA 10%" donde iba 10,5 %. Ningun renderer arma la etiqueta con la
+     * clave: la pide aca.
+     *
+     * Se deriva con `(string) $porcentaje`, que da exactamente '27','21','10.5','5','2.5','0'.
+     * No se pasa a '10,5' con coma: eso cambiaria una salida que hoy ya es correcta.
+     *
+     * Con una clave desconocida LOGUEA y devuelve la clave tal cual, sin tirar. Una etiqueta rara
+     * en un papel es feo; lo que no puede fallar en silencio es el `Id` que va a ARCA, y de eso
+     * se ocupa `AfipImportesCalculator::add_iva_bucket()`, que ahi si tira.
+     *
+     * @param string $key Clave interna.
+     * @return string Etiqueta a imprimir (sin el signo %).
+     */
+    public static function etiqueta_de_clave($key): string
+    {
+        $key = (string) $key;
+
+        /** @var float|null $porcentaje Porcentaje real de la clave. */
+        $porcentaje = self::porcentaje_de_clave($key);
+
+        if (is_null($porcentaje)) {
+            Log::warning(
+                'AfipImportesResolver: no hay etiqueta para la clave de alicuota "'.$key.'". '.
+                'Se imprime la clave tal cual. Si es una alicuota nueva, se agrega en '.
+                'AfipImportesResolver::$alicuotas.'
+            );
+
+            return $key;
+        }
+
+        return (string) $porcentaje;
+    }
+
+    /**
+     * Renglones de IVA a imprimir: los buckets con importe > 0, ya con su etiqueta visible.
+     *
+     * Unifica el filtro `Importe > 0` que estaba repetido (y con tres redacciones distintas) en
+     * `TicketInfoHelper`, `AfipTicketPdf` y `SaleTicketPdf`.
+     *
+     * @param array $importes Estructura de `resolve()` / `AfipHelper::getImportes()`.
+     * @return array<int, array> Lista de ['etiqueta' => string, 'importe' => float].
+     */
+    public static function renglones_de_iva($importes): array
+    {
+        /** @var array $renglones Renglones listos para imprimir. */
+        $renglones = [];
+
+        if (!isset($importes['ivas']) || !is_array($importes['ivas'])) {
+            return $renglones;
+        }
+
+        foreach ($importes['ivas'] as $key => $bucket) {
+            /** @var float $importe Importe de IVA de ese bucket. */
+            $importe = isset($bucket['Importe']) ? (float) $bucket['Importe'] : 0;
+
+            if ($importe <= 0) {
+                continue;
+            }
+
+            $renglones[] = [
+                'etiqueta' => self::etiqueta_de_clave($key),
+                'importe'  => $importe,
+            ];
+        }
+
+        return $renglones;
+    }
 
     /**
      * Obtiene importes del ticket priorizando snapshot fiscal persistido.
@@ -44,9 +287,19 @@ class AfipImportesResolver
 
         /**
          * Fallback histórico: recalcular desde ítems de venta cuando el ticket no tiene snapshot.
+         *
+         * 🔴 El `true` es el MODO TOLERANTE, y no es decorativo: este metodo es el funnel de TODOS
+         * los caminos de LECTURA (Libro IVA Ventas, los dos TXT, los PDF). Ninguno de ellos tiene
+         * `try/catch`, asi que una alicuota desconocida en una sola linea de un solo comprobante
+         * reventaria con 500 el reporte del mes ENTERO.
+         *
+         * Es el mismo criterio que ya aplica `resolve_from_snapshot()` un par de lineas mas arriba:
+         * un comprobante YA AUTORIZADO tiene que poder imprimirse igual, porque romper la impresion
+         * no le devuelve el renglon a nadie. La emision —`AfipWsfeHelper` y `AfipNotaCreditoHelper`,
+         * que llaman a `getImportes()` SIN parametro— sigue cortando, que es donde importa.
          */
         if (!is_null($afip_helper)) {
-            return $afip_helper->getImportes();
+            return $afip_helper->getImportes(true);
         }
 
         return [
@@ -92,11 +345,27 @@ class AfipImportesResolver
         }
 
         foreach ($detalle as $iva_row) {
+            /**
+             * 🔴 Un renglon sin `Id`, o con un `Id` que no esta en la tabla, se LOGUEA y se saltea.
+             * Se loguea porque significa que ARCA autorizo una alicuota que este sistema no conoce
+             * y su plata desaparece del desglose sin que nadie se entere (el error viejo era el
+             * `continue` mudo). Y se saltea en vez de tirar porque un comprobante YA AUTORIZADO
+             * tiene que poder imprimirse igual: romper la impresion no le devuelve el renglon a nadie.
+             */
             if (!isset($iva_row['Id'])) {
+                Log::error(
+                    'AfipImportesResolver: renglon de iva_detalle_enviado_json sin Id en el afip_ticket '.
+                    $afip_ticket->id.'. El renglon se ignora en el desglose.'
+                );
                 continue;
             }
-            $iva_label = self::iva_id_to_label((int) $iva_row['Id']);
+            $iva_label = self::clave_de_id((int) $iva_row['Id']);
             if ($iva_label === null) {
+                Log::error(
+                    'AfipImportesResolver: Id de alicuota desconocido ('.$iva_row['Id'].') en el afip_ticket '.
+                    $afip_ticket->id.'. El renglon se ignora en el desglose. Si es una alicuota nueva de ARCA, '.
+                    'se agrega en AfipImportesResolver::$alicuotas.'
+                );
                 continue;
             }
             $ivas[$iva_label] = [
@@ -114,20 +383,5 @@ class AfipImportesResolver
             'ivas' => $ivas,
             'total' => (float) $afip_ticket->imp_total_enviado,
         ];
-    }
-
-    /**
-     * Convierte Id de alícuota AFIP al texto de porcentaje usado en renderer/calculadores.
-     *
-     * @param int $iva_id Identificador AFIP de alícuota.
-     * @return string|null
-     */
-    public static function iva_id_to_label(int $iva_id): ?string
-    {
-        if (!isset(self::$iva_id_to_label_map[$iva_id])) {
-            return null;
-        }
-
-        return self::$iva_id_to_label_map[$iva_id];
     }
 }

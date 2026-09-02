@@ -59,11 +59,15 @@ class MakeAfipTicket {
      * Un cliente de la API que mande '10.5' o '2.5' esta mandando una clave INVALIDA y tiene
      * que recibir un 422, nunca un descarte silencioso (ver validar_filas_importe_personalizado).
      *
+     * 🔴 La lista NO se escribe aca: sale de `AfipImportesResolver::alicuotas()`, que es la fuente
+     * unica de la tabla de alicuotas. Este metodo sigue existiendo porque es el CONTRATO de API
+     * con `empresa-spa` y el 422 cuelga de el: `['27','21','10','5','2','0']`, en ese orden.
+     *
      * @return array
      */
     public static function keys_de_alicuota_validas()
     {
-        return ['27', '21', '10', '5', '2', '0'];
+        return AfipImportesResolver::keys();
     }
 
     /**

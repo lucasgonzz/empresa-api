@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -632,16 +633,18 @@ class SaleTicketPdf extends fpdf {
         	
         	$afip_helper = new AfipHelper($this->afip_ticket);
 
-			$importes = $afip_helper->getImportes();
+			// El `true` es el modo tolerante: esto es una REIMPRESION de un comprobante ya
+			// autorizado. Una alicuota vieja que ARCA no reconoce se loguea y no genera renglon,
+			// pero el ticket sale. La emision llama sin parametro y sigue cortando.
+			$importes = $afip_helper->getImportes(true);
 
 		    $this->x = $this->x_incial;
 			$this->Cell(60, 5, 'Imp Neto Gravado: $'.Numbers::price($importes['gravado']), 0, 1, 'L');
 
-			foreach ($importes['ivas'] as $iva => $importe) {
-				if ($importe['Importe'] > 0) {
-		    		$this->x = $this->x_incial;
-					$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 0, 1, 'L');
-				}
+			// 🔴 Se imprime la ETIQUETA, no la clave del bucket: la clave '10' vale 10,5 %.
+			foreach (AfipImportesResolver::renglones_de_iva($importes) as $renglon) {
+	    		$this->x = $this->x_incial;
+				$this->Cell(40, 5, 'IVA '.$renglon['etiqueta'].'%: $'.Numbers::price($renglon['importe']), 0, 1, 'L');
 			}
 			$this->y += 5;
 		}

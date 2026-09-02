@@ -113,18 +113,26 @@ class AuditarLibroIvaNotasCredito extends Command
              * resolve()` prioriza el snapshot y el recalculo incompleto nunca llego al TXT ni al
              * PDF.
              *
-             * 🔴 Hoy este contador da 0 SIEMPRE, y va a seguir dando 0: NINGUNA nota de credito
-             * tiene snapshot, porque `AfipNotaCreditoHelper` no persiste las columnas
-             * `imp_*_enviado`. La mision del 1/9/2026 lo construyo y lo REVIRTIO: el snapshot
-             * emite la clave de alicuota '10.5' mientras que el recalculo emite '10', y
-             * `iva_ventas_pdf()` lee ['10'], asi que darle snapshot a las notas de credito les
-             * hacia desaparecer el renglon de 10,5 % del Libro IVA Ventas — justo el reporte que
-             * esa mision venia a arreglar.
+             * 🔴 Hoy este contador da 0: NINGUNA nota de credito tiene snapshot, porque
+             * `AfipNotaCreditoHelper` no persiste las columnas `imp_*_enviado`. La mision del
+             * 1/9/2026 lo construyo (`17725cac`) y lo REVIRTIO (`53795146`).
              *
-             * Un 0 aca NO es un sintoma, es lo esperado. El chequeo se deja como guarda para el
-             * dia que se unifiquen las claves y las notas de credito pasen a tener snapshot: si
-             * ese dia este contador empieza a crecer, el comando ya lo contempla y no hay que
-             * tocarlo. Detalle en `informes/20260901-libro-iva-ventas-notas-credito.md`.
+             * ⚠️ El motivo de esa marcha atras YA NO EXISTE. Era el desalineo de claves —el
+             * snapshot emitia '10.5' y el recalculo '10', y el Libro IVA Ventas lee ['10']—, y
+             * la rama `mision/unificar-claves-alicuota-iva` lo unifico: las dos fuentes emiten
+             * la misma clave interna. El bloqueante esta LEVANTADO.
+             *
+             * Que el snapshot de las notas de credito siga pendiente es una decision de alcance,
+             * no un impedimento tecnico: `AfipNotaCreditoHelper::interno()` es el UNICO metodo
+             * que habla con el webservice de ARCA y NINGUN test lo cubre, asi que su unica
+             * verificacion posible es emitir en homologacion. Mezclar eso con un cambio que la
+             * suite si verifica impide atribuir un problema en produccion. Queda para una mision
+             * propia, que puede arrancar de `git cherry-pick 17725cac`.
+             *
+             * Mientras tanto un 0 aca NO es un sintoma, es lo esperado. El chequeo se deja como
+             * guarda: el dia que las notas de credito pasen a tener snapshot este contador empieza
+             * a crecer y el comando ya lo contempla, no hay que tocarlo. Detalle en
+             * `informes/20260901-libro-iva-ventas-notas-credito.md`.
              */
             if (!is_null($ticket->imp_total_enviado)) {
                 $contadores['con_snapshot']++;
