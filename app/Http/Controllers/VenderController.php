@@ -61,7 +61,10 @@ class VenderController extends Controller
             }
         }
 
-        $article = $article->withAll()
+        // withAllSinAcopio: las mismas 26 relaciones menos sales_with_deliveries_in_acopio, que es la
+        // cara del paquete (join article_sale/sales por en_acopio) y que ninguna de las dos pantallas
+        // que consumen este endpoint lee. Ver el docblock del scope en App\Models\Article.
+        $article = $article->withAllSinAcopio()
                         ->first();
 
 
@@ -181,7 +184,7 @@ class VenderController extends Controller
             $price_vender = intval($amount_str);
 
             $article = Article::where('id', $default_article_id)
-                                ->withAll()
+                                ->withAllSinAcopio()
                                 ->first();
         }
 
@@ -218,7 +221,7 @@ class VenderController extends Controller
 
         $article = Article::where('user_id', $this->userId())
                             ->where('plu', $plu)
-                            ->withAll()
+                            ->withAllSinAcopio()
                             ->first();
 
         if ($article && $article->unidad_medida_id != 2) {
