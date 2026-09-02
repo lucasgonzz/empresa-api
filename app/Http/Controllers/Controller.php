@@ -241,7 +241,12 @@ class Controller extends BaseController
                 DB::table('users')->where('id', $prop_value)->lockForUpdate()->first();
             }
 
+            // Solo se lee $last->num (dos lineas mas abajo). Traer la fila entera obliga a MySQL a ir
+            // a la tabla por cada candidata; con el indice (user_id, num) de la migracion
+            // 2026_09_01_180000 esta consulta se resuelve dentro del indice. Es generica (la usan ~35
+            // tablas) y ninguna llamada necesita otra columna: num() devuelve un int, no la fila.
             $last = DB::table($table)
+                ->select('num')
                 ->where($prop_to_check, $prop_value)
                 ->orderBy('num', 'DESC')
                 ->lockForUpdate()

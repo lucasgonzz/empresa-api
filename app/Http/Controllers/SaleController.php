@@ -135,8 +135,22 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
+    /**
+     * Guarda anti-duplicados: aborta la venta si hace 5 segundos o menos entro una identica.
+     *
+     * El select() explicito es parte del arreglo de performance del 1/9/2026, no cosmetico: de la
+     * fila solo se leen num, total y created_at (las tres, para el Log de abajo). created_at se sigue
+     * casteando a Carbon -- Eloquent castea CREATED_AT/UPDATED_AT via getDates() sobre el atributo
+     * presente en el modelo, no sobre la lista del SELECT.
+     *
+     * El indice sales_user_id_created_at_idx (migracion 2026_09_01_180000) es lo que hace que esta
+     * guarda FUNCIONE, no solo que sea rapida: medida en lamartina2 el 1/9/2026 tardaba 13 segundos
+     * con una ventana de 5, o sea que terminaba de mirar cuando la venta anterior ya habia quedado
+     * fuera de su propia ventana. Ese era el motivo de las ventas duplicadas.
+     */
     function venta_ya_cread($request) {
-        $sale_ya_creada = Sale::where('user_id', $this->userId())
+        $sale_ya_creada = Sale::select('num', 'total', 'created_at')
+                                ->where('user_id', $this->userId())
                                 ->where('client_id', $request->client_id)
                                 ->where('employee_id', SaleHelper::getEmployeeId($request))
                                 ->where('total', $request->total)
