@@ -640,6 +640,43 @@ class ArticleHelper {
         $des = $res['des'];
 
         /**
+         * El precio final se cuantiza a 2 decimales ACA, una sola vez, y no en cada comparacion.
+         *
+         * `articles.final_price` es DECIMAL(22,2): la base guarda 2 decimales y se acabo. Si en
+         * memoria se deja la cola larga que sale de la cadena -- con IIBB, que se aplica por
+         * DIVISION (ArticlePricesHelper::aplicar_sale_taxes), 150 / 0,965 = 155,44041450777202 --
+         * entonces memoria y base valen cosas distintas, y la comparacion de mas abajo da "cambio"
+         * en CADA recalculo aunque nadie haya tocado nada: $current_final_price se leyo de la base
+         * (2 decimales) y $article->final_price tiene la cola. Un price_change espurio por articulo
+         * por corrida, previus_final_price y final_price_updated_at pisados siempre, y el modal
+         * "Precios actualizados: N" contando el catalogo entero.
+         *
+         * Va DESPUES de redondear() -- que es la ultima transformacion de VALOR: sus modos son de
+         * magnitud (miles, centenas, decenas, de a 50, centavos) y cualquiera de ellos pisaria una
+         * cuantizacion anterior -- y ANTES de que el valor se use para algo: el renglon TOTAL del
+         * desglose, la asignacion a $article, el array del modo simulacion y la comparacion.
+         *
+         * 🔴 NO mover esto a los puntos de comparacion (aca, ProcessChunkSetFinalPrices::handle(),
+         * InventoryLinkageHelper). Parece mas prolijo y es peor por dos motivos: el que agregue la
+         * proxima comparacion vuelve a tener el bug y nada se lo avisa, y ademas no arregla lo que
+         * se GUARDA -- price_changes.final_price, el literal SQL que arma
+         * ActualizarBBDD::updateMasivo() y el renglon del desglose seguirian mostrando un numero
+         * que la base no tiene. Se redondea en el origen, una vez, y todo lo de abajo queda bien
+         * de arrastre.
+         *
+         * 🔴 El is_null no es defensivo de mas. round(null, 2) devuelve 0.0 en PHP 7.4, y un
+         * articulo sin costo y sin precio en una cuenta con listas de precio llega hasta aca
+         * valiendo null (el early-return del principio de esta funcion no aplica para esas
+         * cuentas). Sin la guarda, ese articulo pasaria de NULL -- "no tiene precio" -- a 0.00 --
+         * "es gratis" -- en la base, y NADIE se enteraria: la comparacion de mas abajo no lo
+         * denuncia porque en PHP null == 0 es verdadero. Ver el test
+         * el_articulo_sin_costo_ni_precio_conserva_el_final_price_en_null().
+         */
+        if (!is_null($final_price)) {
+            $final_price = round((float) $final_price, 2);
+        }
+
+        /**
          * Renglon de cierre de la seccion del precio final unico.
          *
          * Es el unico renglon NUEVO que esta mision agrega al desglose; todos los demas son la misma
