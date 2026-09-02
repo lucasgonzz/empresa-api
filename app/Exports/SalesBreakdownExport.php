@@ -11,11 +11,17 @@ class SalesBreakdownExport implements FromCollection, WithHeadings, ShouldAutoSi
     /** Ventas del rango (una fila por artículo en el detalle). */
     protected $sales;
 
+    /** Índice columna Cantidad. */
+    protected $cantidad_column_index = 5;
+
+    /** Índice columna Unidad de medida. */
+    protected $unidad_medida_column_index = 6;
+
     /** Índice columna Total ($) al final del desglose. */
-    protected $total_peso_column_index = 8;
+    protected $total_peso_column_index = 9;
 
     /** Índice columna Total USD al final del desglose. */
-    protected $total_usd_column_index = 9;
+    protected $total_usd_column_index = 10;
 
     /**
      * @param \Illuminate\Support\Collection $sales Ventas con artículos cargados.
@@ -26,15 +32,26 @@ class SalesBreakdownExport implements FromCollection, WithHeadings, ShouldAutoSi
     }
 
     /**
-     * Filas por artículo (total línea = precio × cantidad) y fila final con suma de ventas en $ y USD.
+     * Filas por artículo (total línea = precio × cantidad), fila final con suma de ventas en $,
+     * USD y cantidad, y debajo un resumen de cantidad total vendida por cada unidad de medida.
      *
      * @return \Illuminate\Support\Collection
      */
     public function collection()
     {
-        $rows = $this->sales->flatMap(function ($sale) {
-            return $sale->articles->map(function ($article) use ($sale) {
+        $this->sales->loadMissing('articles.unidad_medida');
+
+        $cantidad_total = 0;
+        $cantidad_por_unidad = [];
+
+        $rows = $this->sales->flatMap(function ($sale) use (&$cantidad_total, &$cantidad_por_unidad) {
+            return $sale->articles->map(function ($article) use ($sale, &$cantidad_total, &$cantidad_por_unidad) {
                 $line_totals = $this->article_line_totals_for_columns($sale, $article);
+                $cantidad = (float) ($article->pivot->amount ?? 0);
+                $unidad_medida = optional($article->unidad_medida)->name ?? 'N/A';
+
+                $cantidad_total += $cantidad;
+                $cantidad_por_unidad[$unidad_medida] = ($cantidad_por_unidad[$unidad_medida] ?? 0) + $cantidad;
 
                 return [
                     'numero_venta'    => $sale->id,
@@ -43,6 +60,7 @@ class SalesBreakdownExport implements FromCollection, WithHeadings, ShouldAutoSi
                     'precio'          => $article->pivot->price ?? '',
                     'costo'           => $article->pivot->cost ?? '',
                     'cantidad'        => $article->pivot->amount ?? '',
+                    'unidad_medida'   => $unidad_medida,
                     'cliente'         => optional($sale->client)->name ?? 'N/A',
                     'empleado'        => optional($sale->employee)->name ?? 'N/A',
                     'total'           => $line_totals['total'],
@@ -54,10 +72,20 @@ class SalesBreakdownExport implements FromCollection, WithHeadings, ShouldAutoSi
         $totals = $this->sum_totals_by_moneda();
         $total_row = array_fill(0, count($this->headings()), '');
         $total_row[0] = 'Total';
+        $total_row[$this->cantidad_column_index] = $cantidad_total;
         $total_row[$this->total_peso_column_index] = $totals['pesos'];
         $total_row[$this->total_usd_column_index] = $totals['usd'];
 
         $rows->push($total_row);
+
+        foreach ($cantidad_por_unidad as $unidad_medida => $cantidad) {
+            $resumen_row = array_fill(0, count($this->headings()), '');
+            $resumen_row[0] = 'Total '.$unidad_medida;
+            $resumen_row[$this->cantidad_column_index] = $cantidad;
+            $resumen_row[$this->unidad_medida_column_index] = $unidad_medida;
+
+            $rows->push($resumen_row);
+        }
 
         return $rows;
     }
@@ -139,6 +167,7 @@ class SalesBreakdownExport implements FromCollection, WithHeadings, ShouldAutoSi
             'Precio',
             'Costo',
             'Cantidad',
+            'Unidad de medida',
             'Cliente',
             'Empleado',
             'Total',
