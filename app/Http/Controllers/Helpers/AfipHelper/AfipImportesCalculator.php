@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\AfipHelper;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\AfipSelectedPaymentMethodsHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use Illuminate\Support\Facades\Log;
@@ -77,41 +78,28 @@ class AfipImportesCalculator
     }
 
     /**
-     * Retorna estructura base de alícuotas utilizada por AFIP.
+     * Estructura base de alicuotas (acumulador de buckets), armada desde la FUENTE UNICA.
+     *
+     * 🔴 Las claves NO son el porcentaje: `'10'` es 10,5 % y `'2'` es 2,5 %. La tabla —claves,
+     * Id de ARCA y porcentajes reales— vive en `AfipImportesResolver::alicuotas()` y en ningun
+     * otro lado. Volver a escribir el literal aca es lo que tenia al sistema con dos convenciones
+     * de clave a la vez.
+     *
+     * El ORDEN sale de `alicuotas()` y tiene que seguir siendo '27','21','10','5','2','0': el
+     * reparto del importe personalizado le encaja el descuadre de centavos a la ULTIMA fila viva.
      *
      * @return array
      */
     private function default_ivas()
     {
-        return [
-            '27' => ['BaseImp' => 0, 'Importe' => 0, 'Id' => 6],
-            '21' => ['BaseImp' => 0, 'Importe' => 0, 'Id' => 5],
-            '10' => ['BaseImp' => 0, 'Importe' => 0, 'Id' => 4],
-            '5' => ['BaseImp' => 0, 'Importe' => 0, 'Id' => 8],
-            '2' => ['BaseImp' => 0, 'Importe' => 0, 'Id' => 9],
-            '0' => ['BaseImp' => 0, 'Importe' => 0, 'Id' => 3],
-        ];
-    }
+        /** @var array $ivas Acumulador vacio, una entrada por alicuota. */
+        $ivas = [];
 
-    /**
-     * Porcentaje REAL de cada clave interna de `default_ivas()`.
-     *
-     * 🔴 Las claves NO son el porcentaje: `'10'` es 10,5 % y `'2'` es 2,5 %. Son las claves
-     * internas historicas del arreglo de alicuotas, alineadas con los Id de AFIP (4 y 9).
-     * Cualquier calculo tiene que salir de ACA, nunca de castear la clave a numero.
-     *
-     * @return array Mapa clave interna => porcentaje real.
-     */
-    private function porcentajes_reales()
-    {
-        return [
-            '27' => 27.0,
-            '21' => 21.0,
-            '10' => 10.5,
-            '5'  => 5.0,
-            '2'  => 2.5,
-            '0'  => 0.0,
-        ];
+        foreach (AfipImportesResolver::alicuotas() as $key => $alicuota) {
+            $ivas[$key] = ['BaseImp' => 0, 'Importe' => 0, 'Id' => (int) $alicuota['id']];
+        }
+
+        return $ivas;
     }
 
     /**
@@ -144,8 +132,6 @@ class AfipImportesCalculator
             return null;
         }
 
-        /** @var array $porcentajes Porcentajes reales por clave interna. */
-        $porcentajes = $this->porcentajes_reales();
         /** @var array $filas Filas normalizadas, en el orden fijo de default_ivas(). */
         $filas = [];
 
@@ -171,9 +157,14 @@ class AfipImportesCalculator
                     continue;
                 }
 
+                // 🔴 El porcentaje real sale de la fuente unica, NUNCA de castear la clave:
+                // la clave '10' vale 10,5 % y la '2' vale 2,5 %.
+                /** @var float|null $porcentaje Porcentaje real de la clave interna. */
+                $porcentaje = AfipImportesResolver::porcentaje_de_clave($key);
+
                 $filas[] = [
                     'key'        => (string) $key,
-                    'porcentaje' => isset($porcentajes[$key]) ? $porcentajes[$key] : 0.0,
+                    'porcentaje' => is_null($porcentaje) ? 0.0 : $porcentaje,
                     'importe'    => $importe,
                 ];
             }
