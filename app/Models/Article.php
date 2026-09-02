@@ -37,7 +37,7 @@ class Article extends Model
     }
 
     /**
-     * Las mismas relaciones de withAll() MENOS `sales_with_deliveries_in_acopio` (26 en vez de 27).
+     * Las mismas relaciones de withAll() MENOS `sales_with_deliveries_in_acopio` (27 en vez de 28).
      *
      * Esa relacion (linea ~306) es un belongsToMany a Sale que joinea article_sale y sales filtrando
      * por en_acopio y por delivered_amount NOT NULL. Es la mas cara del paquete y en el flujo de

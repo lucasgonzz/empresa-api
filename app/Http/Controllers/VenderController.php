@@ -61,7 +61,7 @@ class VenderController extends Controller
             }
         }
 
-        // withAllSinAcopio: las mismas 26 relaciones menos sales_with_deliveries_in_acopio, que es la
+        // withAllSinAcopio: las mismas 27 relaciones menos sales_with_deliveries_in_acopio, que es la
         // cara del paquete (join article_sale/sales por en_acopio) y que ninguna de las dos pantallas
         // que consumen este endpoint lee. Ver el docblock del scope en App\Models\Article.
         $article = $article->withAllSinAcopio()

@@ -85,9 +85,11 @@ use Illuminate\Support\Facades\Schema;
  * SUB_PART IS NULL en la guarda (b): un indice de prefijo sobre varchar (INDEX bar_code(20))
  * arranca por la columna pero no cubre lo mismo, y no puede contar como cubierto.
  *
- * down() usa SOLO la guarda (a): dropea unicamente lo que up() pudo haber creado, por nombre exacto.
- * Nunca toca `article_sale_sale_id_index` ni ningun indice ajeno; ese es el modo de falla (c) de
- * 2026_08_19_120000 ("un down() que destruye en vez de revertir").
+ * down() es un NO-OP a proposito (ver su propio docblock): no hay forma barata de distinguir, por
+ * nombre exacto, "este indice lo creo up()" de "este indice ya estaba con ese nombre" -- que es
+ * justo el caso de lamartina2. Un down() que dropea por nombre borraria ahi los indices que Lucas
+ * puso a mano, reabriendo el bug de ventas duplicadas. Es el modo de falla (c) de 2026_08_19_120000
+ * ("un down() que destruye en vez de revertir"), evitado quedandose quieto en vez de adivinar.
  *
  * ---
  *
@@ -184,49 +186,35 @@ class AddIndexesVentasVenderPerformance extends Migration
     }
 
     /**
-     * Dropea UNICAMENTE los indices que up() puede haber creado, y solo si existen con ese nombre
-     * exacto. Nunca toca los indices de nombre default de las migraciones 050 / 375 / 07-30.
+     * NO DROPEA NADA. Es un no-op documentado, a proposito.
      *
-     * Cada drop va en su propio try/catch: en `sales`, `user_id` tiene FK hacia `users`
-     * (`sales_user_id_foreign`). Medido el 1/9/2026 contra empresa_testing_s10: al crear
-     * `sales_user_id_num_idx` (arranca igual por `user_id`), InnoDB deja de necesitar el indice de
-     * soporte auto-generado de la FK y lo remueve -- confirmado con SHOW INDEX (desaparece) e
-     * information_schema.KEY_COLUMN_USAGE (la constraint sigue viva). Con las dos columnas nuevas
-     * puestas, cualquiera de las dos sostiene la FK sola, pero NINGUNA de las dos se puede dropear si
-     * es la ULTIMA que le queda a la columna: MySQL corta con "1553 Cannot drop index ... needed in a
-     * foreign key constraint". Sin este catch, el down() de sales aborta ahi mismo y nunca llega a
-     * article_sale / article_purchases / articles / current_acount_payment_method_sale -- que no
-     * tienen este problema porque ninguna de sus columnas indexadas por esta migracion sostiene una FK
-     * en soledad. Se loguea y se sigue: down() no es un camino que este release use (no hay rollback en
-     * produccion), y dejar un indice de mas puesto es un resultado aceptable frente a abortar a mitad.
+     * up() no puede distinguir "este indice lo cree yo" de "este indice ya estaba, con este mismo
+     * nombre, antes de correr la migracion" -- que es exactamente el caso de lamartina2: los 8 indices
+     * ya existen ahi creados a mano, la guarda (a) los reconoce por nombre y up() no toca nada. Un
+     * down() que dropea por nombre exacto, sin esa distincion, borraria en lamartina2 los indices que
+     * Lucas puso a mano para arreglar el problema de fondo -- reabriendo el bug de ventas duplicadas
+     * que esta misma migracion existe para cerrar en el resto de los clientes. Una version anterior de
+     * este down() intentaba dropear por nombre exacto con ALGORITHM=INPLACE, LOCK=NONE explicito, y
+     * ademas encontro un segundo problema real: en `sales`, `user_id` tiene FK hacia `users`
+     * (`sales_user_id_foreign`), y al crear `sales_user_id_num_idx` (arranca igual por `user_id`)
+     * InnoDB deja de necesitar el indice de soporte auto-generado de la FK y lo remueve (confirmado
+     * contra empresa_testing_s10 con SHOW INDEX). Con las dos columnas nuevas puestas, cualquiera
+     * sostiene la FK sola, pero ninguna se puede dropear si es la ULTIMA que le queda a la columna:
+     * MySQL corta con "1553 Cannot drop index ... needed in a foreign key constraint", y ese error
+     * abortaba el down() de sales antes de llegar a las otras cuatro tablas.
+     *
+     * down() no es un camino que este release use (no hay rollback de esta migracion en produccion),
+     * asi que el costo de dejarlo como no-op es bajo, y evita los dos problemas de arriba de una vez.
+     * Si alguna vez hace falta revertir esto en un cliente puntual, se hace a mano, mirando primero
+     * si ese indice ya estaba ANTES de esta migracion (lamartina2) o lo creo ella.
      *
      * @return void
      */
     public function down()
     {
-        foreach (self::INDICES as $tabla => $indices) {
-
-            if (!Schema::hasTable($tabla)) {
-                continue;
-            }
-
-            foreach ($indices as $nombre => $columnas) {
-
-                if (!$this->ya_existe_el_indice($tabla, $nombre)) {
-                    continue;
-                }
-
-                try {
-                    $this->dropear_indice($tabla, $nombre);
-                } catch (\Throwable $e) {
-                    Log::warning('AddIndexesVentasVenderPerformance: no se pudo dropear el indice (probablemente sostiene una FK en soledad), se lo deja puesto', [
-                        'tabla'  => $tabla,
-                        'indice' => $nombre,
-                        'error'  => $e->getMessage(),
-                    ]);
-                }
-            }
-        }
+        Log::warning('AddIndexesVentasVenderPerformance::down() es un no-op a proposito: no se puede '
+            . 'distinguir un indice creado por up() de uno que ya existia con ese nombre (caso '
+            . 'lamartina2). Revertir esta migracion, si hace falta, se hace a mano por cliente.');
     }
 
     /**
@@ -258,33 +246,6 @@ class AddIndexesVentasVenderPerformance extends Migration
 
         Schema::table($tabla, function (Blueprint $table) use ($nombre, $columnas) {
             $table->index($columnas, $nombre);
-        });
-    }
-
-    /**
-     * Contraparte de crear_indice(): DROP con el mismo ALGORITHM/LOCK explicito y la misma caida.
-     *
-     * @param  string $tabla
-     * @param  string $nombre
-     * @return void
-     */
-    private function dropear_indice($tabla, $nombre)
-    {
-        $sql = 'ALTER TABLE `' . $tabla . '` DROP INDEX `' . $nombre . '`, ALGORITHM=INPLACE, LOCK=NONE';
-
-        try {
-            DB::statement($sql);
-            return;
-        } catch (\Throwable $e) {
-            Log::warning('AddIndexesVentasVenderPerformance: el DROP con ALGORITHM=INPLACE, LOCK=NONE fallo, se cae a Schema::table()', [
-                'tabla'  => $tabla,
-                'indice' => $nombre,
-                'error'  => $e->getMessage(),
-            ]);
-        }
-
-        Schema::table($tabla, function (Blueprint $table) use ($nombre) {
-            $table->dropIndex($nombre);
         });
     }
 
