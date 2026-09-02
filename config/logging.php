@@ -48,22 +48,38 @@ return [
     */
 
     'channels' => [
+        /*
+         * Rota por día y escribe desde 'warning' para arriba (1/9/2026).
+         *
+         * Antes el stack apilaba 'single', que escribe todo a un único laravel.log que no rota
+         * nunca: en un cliente con mucho movimiento ese archivo crece sin freno hasta llenar el
+         * disco del hosting. Con 'daily' y 'days' => 14 se poda solo.
+         *
+         * ⚠️ El laravel.log viejo NO lo borra la rotación: 'days' sólo poda los laravel-*.log
+         * nuevos. El archivo historico hay que borrarlo a mano una vez por instalación.
+         *
+         * ⚠️ El piso en 'warning' apaga los Log::info/debug de toda la aplicación en las
+         * instalaciones cuyo .env no defina LOG_LEVEL, que al 1/9/2026 son 96 de 99. Eso
+         * incluye el rastro de envíos de WhatsApp (WhatsappBotSendService y compañía escriben
+         * con Log::channel('daily')->info) y varios diagnósticos. Si algún rastro tiene que
+         * sobrevivir, hay que subirlo a warning explícitamente en su llamador.
+         */
         'stack' => [
             'driver' => 'stack',
-            'channels' => ['single'], // Cambie "single" por "daily"
+            'channels' => ['daily'],
             'ignore_exceptions' => false,
         ],
 
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env('LOG_LEVEL', 'warning'),
         ],
 
         'daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
-            'level' => env('LOG_LEVEL', 'debug'),
+            'level' => env('LOG_LEVEL', 'warning'),
             'days' => 14,
         ],
 
