@@ -286,6 +286,14 @@ class RecalculoNoInflaPreciosCambiadosTest extends TestCase
      * El montaje es lo que hace que el null LLEGUE hasta el redondeo; cada paso va comentado con
      * la rama del pipeline que habilita.
      *
+     * 🔴 Y ese montaje es estrecho a proposito, no por comodidad: medido, en la configuracion
+     * NORMAL de una cuenta -- con IIBB, o con el IVA del articulo, o con cualquier modo de
+     * redondeo prendido -- el null muere aguas arriba y el articulo termina en 0.00 igual, con
+     * guarda y todo. Eso es un defecto propio, PREEXISTENTE y distinto del que arregla el
+     * redondeo: un articulo sin costo ni precio queda en 0.00 y nada lo registra como cambio,
+     * porque null != 0.0 da false. Esta declarado en
+     * informes/20260902-recalculo-no-infla-precios-cambiados.md y NO lo cubre este test.
+     *
      * @group precios
      * @test
      */
@@ -300,6 +308,24 @@ class RecalculoNoInflaPreciosCambiadosTest extends TestCase
          *    leyendo la columna users.listas_de_precio del dueño (no una extension).
          */
         $user->listas_de_precio = 1;
+
+        /*
+         * 1-bis) Y sin ningun modo de redondeo prendido. 4 de los 5 aplastan el null antes de que
+         *    llegue al redondeo a 2 decimales -- round(null, -1), ceil(null / 50) * 50,
+         *    round(null / 1000) * 1000, round(null) dan todos 0.0; el unico que lo deja pasar es
+         *    el de centenas, por su `if ($price > 100)`.
+         *
+         *    🔴 Se apagan EXPLICITAMENTE aunque el usuario 500 ya los tenga en 0. Si el test se
+         *    apoyara en la configuracion de la semilla, el dia que alguien prenda uno de estos
+         *    flags este test se pondria rojo y pareceria una regresion del redondeo, cuando en
+         *    realidad seria el montaje que dejo de armar el escenario que dice armar.
+         */
+        $user->redondear_miles_en_vender     = 0;
+        $user->redondear_centenas_en_vender  = 0;
+        $user->redondear_precios_en_decenas  = 0;
+        $user->redondear_de_a_50             = 0;
+        $user->redondear_precios_en_centavos = 0;
+
         $user->save();
 
         /*

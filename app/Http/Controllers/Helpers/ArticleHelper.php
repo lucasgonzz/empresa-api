@@ -664,13 +664,27 @@ class ArticleHelper {
          * que la base no tiene. Se redondea en el origen, una vez, y todo lo de abajo queda bien
          * de arrastre.
          *
-         * 🔴 El is_null no es defensivo de mas. round(null, 2) devuelve 0.0 en PHP 7.4, y un
-         * articulo sin costo y sin precio en una cuenta con listas de precio llega hasta aca
-         * valiendo null (el early-return del principio de esta funcion no aplica para esas
-         * cuentas). Sin la guarda, ese articulo pasaria de NULL -- "no tiene precio" -- a 0.00 --
-         * "es gratis" -- en la base, y NADIE se enteraria: la comparacion de mas abajo no lo
-         * denuncia porque en PHP null == 0 es verdadero. Ver el test
-         * el_articulo_sin_costo_ni_precio_conserva_el_final_price_en_null().
+         * 🔴 La guarda is_null es para que round() no invente un precio. round(null, 2) devuelve
+         * 0.0 en PHP 7.4, o sea que sin el if un articulo sin precio pasaria de NULL -- "no tiene
+         * precio" -- a 0.00 -- "es gratis" --, y nadie se enteraria: la comparacion de mas abajo
+         * no lo denuncia porque en PHP null == 0 es verdadero.
+         *
+         * Pero OJO con cuanto protege, que se midio y es menos de lo que parece: para que el null
+         * llegue hasta aca hace falta una cuenta que saltee el early-return del principio (listas
+         * de precio o ventas_en_dolares) Y que no tenga sale_taxes activos Y que el articulo no
+         * aplique IVA Y que la cuenta no tenga ningun modo de redondeo prendido. Si alguna de
+         * esas TRES ULTIMAS no se da, el null muere antes, aguas arriba: aplicar_sale_taxes() lo divide
+         * (null / 0,965 = 0.0), aplicar_iva() lo suma, y 4 de los 5 modos de redondear() lo
+         * aplastan (round(null, -1), ceil(null / 50) * 50, etc.).
+         *
+         * O sea que en la configuracion normal el articulo sin costo ni precio termina en 0.00
+         * IGUAL, con guarda y todo, y la comparacion tampoco lo registra como cambio. Eso es un
+         * defecto propio, PREEXISTENTE y distinto del que arregla este bloque; esta declarado en
+         * informes/20260902-recalculo-no-infla-precios-cambiados.md. No borres la guarda por eso:
+         * en la configuracion estrecha donde el null si llega, es lo unico que lo preserva.
+         *
+         * Ver el test el_articulo_sin_costo_ni_precio_conserva_el_final_price_en_null(), que arma
+         * esa configuracion estrecha a mano justamente porque no es la de una cuenta cualquiera.
          */
         if (!is_null($final_price)) {
             $final_price = round((float) $final_price, 2);
