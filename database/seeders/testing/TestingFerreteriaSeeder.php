@@ -14,6 +14,7 @@ use App\Models\BudgetStatus;
 use App\Models\Article;
 use App\Models\Caja;
 use App\Models\Client;
+use App\Models\DepositMovementStatus;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\CurrentAcountPaymentMethodDiscount;
 use App\Models\Discount;
@@ -33,6 +34,7 @@ use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
 use Database\Seeders\CurrentAcountPaymentMethodSeeder;
 use Database\Seeders\DepositSeeder;
+use Database\Seeders\DepositMovementStatusSeeder;
 use Database\Seeders\ExtencionSeeder;
 use Database\Seeders\IvaConditionSeeder;
 use Database\Seeders\IvaSeeder;
@@ -339,6 +341,21 @@ class TestingFerreteriaSeeder extends Seeder
         // create(), no firstOrCreate, y correrlo dos veces duplica Peso y Dolar.
         if (!Moneda::exists()) {
             $this->call(MonedaSeeder::class);
+        }
+
+        // Sin los estados de movimiento de deposito ("En proceso" / "Recibido"), el modulo de
+        // movimientos entre depositos queda ENTERO inoperante sobre el fixture, y de la forma mas
+        // silenciosa posible: el modal del listado agrupa las filas por estado (order_list_by),
+        // asi que con el catalogo vacio no dibuja NI UNA fila ni el cartel de vacio aunque los
+        // movimientos existan en la base; el select de Estado del form queda sin opciones; y
+        // DepositMovementHelper::check_status() compara contra el NOMBRE del estado, con lo cual
+        // ningun movimiento puede recibirse ni trasladar stock. Medido el 3/9/2026 en s9 durante
+        // la exploracion de depositos: 3 movimientos en el store del SPA y cero filas en pantalla.
+        //
+        // En una cuenta real DatabaseSeeder lo siembra en la instalacion: hueco del fixture, no
+        // del producto. Detras del chequeo de existencia porque el seeder usa create().
+        if (!DepositMovementStatus::exists()) {
+            $this->call(DepositMovementStatusSeeder::class);
         }
 
         // Guardado por el mismo motivo: `seed_ventas_y_tesoreria()` corre antes que este
