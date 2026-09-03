@@ -24,9 +24,19 @@ use Tests\EmpresaTestCase;
  *
  * Lo que se fija:
  *
- * 1. La copia de credenciales COPIA y no mueve. Si vaciara el origen, todos los comercios
- *    dejarían de cobrar en la ventana entre el deploy de `empresa` y el de `tienda`, que lee
- *    `payment_methods.access_token`.
+ * 1. 🔴 LA MIGRACIÓN DE CREDENCIALES NO MIGRA A NADIE. Es el guardián de la decisión de Lucas
+ *    del 3/9/2026 ("que no migre a nadie"): un comercio con credenciales cargadas —en
+ *    `online_configurations.mp_*`, en `payment_methods`, o en las dos— tiene que quedar SIN
+ *    conector después de correrla, y con las dos fuentes intactas.
+ *
+ *    El motivo, que es lo que estos tests protegen: el OAuth del 21/7/2026 nunca cobró nada, así
+ *    que un comercio pudo apretar "Conectar" y olvidarse. Tomar ese click como declaración de
+ *    "esta es mi cuenta de cobro", retroactivamente y en silencio, es cambiarle a alguien la
+ *    cuenta donde le entra la plata. Cada comercio sigue cobrando por donde cobraba hasta que
+ *    conecte a mano.
+ *
+ *    Estos tests están escritos para fallar si alguien "completa" la migración vacía.
+ *
  * 2. La migración de cifrado es idempotente. Correrla dos veces sobre el mismo valor lo dejaría
  *    doblemente cifrado y el token, irrecuperable.
  *
@@ -35,7 +45,8 @@ use Tests\EmpresaTestCase;
 class MigracionCredencialesMercadoPagoTest extends EmpresaTestCase
 {
     /**
-     * Instancia la migración que copia las credenciales a los conectores.
+     * Instancia la migración que NO copia las credenciales a los conectores (ver el docblock de
+     * la clase: es un no-op deliberado, no un olvido).
      *
      * @return \Illuminate\Database\Migrations\Migration
      */
@@ -117,11 +128,15 @@ class MigracionCredencialesMercadoPagoTest extends EmpresaTestCase
     }
 
     /**
-     * La copia desde `online_configuration` deja el conector cargado y el ORIGEN INTACTO.
+     * 🔴 Un comercio con credenciales en `online_configuration` NO recibe conector.
+     *
+     * Es el caso del que apretó "Conectar" en algún momento desde el 21/7/2026. Ese OAuth nunca
+     * cobró nada, así que el click no significó nada: no se puede tomar retroactivamente como su
+     * declaración de cuenta de cobro.
      *
      * @return void
      */
-    public function test_copia_desde_online_configuration_sin_vaciar_el_origen()
+    public function test_no_crea_conector_para_un_comercio_con_credenciales_en_online_configuration()
     {
         $this->sin_conector_mp();
 
@@ -138,33 +153,29 @@ class MigracionCredencialesMercadoPagoTest extends EmpresaTestCase
 
         $this->migracion_de_copia()->up();
 
-        $conector = $this->conector_mp();
-
-        $this->assertNotNull($conector, 'La migración no creó el conector de Mercado Pago del comercio.');
-        $this->assertSame('TOKEN-VIEJO-DE-ONLINE-CONFIG', $conector->access_token);
-        $this->assertSame('REFRESH-VIEJO-DE-ONLINE-CONFIG', $conector->refresh_token);
-        $this->assertSame('PUBLIC-KEY-VIEJA', $conector->public_key);
-        $this->assertSame('55554444', $conector->platform_user_id);
-        $this->assertSame(PlatformConnector::STATUS_CONECTADO, $conector->status);
-        $this->assertTrue($conector->is_connected());
+        $this->assertNull(
+            $this->conector_mp(),
+            'La migración creó un conector de Mercado Pago. La decisión del 3/9/2026 es que NO MIGRE '.
+            'A NADIE: el OAuth del 21/7 nunca cobró, así que ese click no puede decidir '.
+            'retroactivamente en qué cuenta le entra la plata al comercio.'
+        );
 
         $configuracion->refresh();
 
         $this->assertSame(
             'TOKEN-VIEJO-DE-ONLINE-CONFIG',
             $configuracion->mp_access_token,
-            'La migración VACIÓ el origen. Tiene que copiar: mientras tienda-api no se despliegue, '.
-            'borrar el origen deja comercios sin poder cobrar.'
+            'La migración tocó online_configuration. No tiene que leer ni escribir nada.'
         );
     }
 
     /**
-     * Sin `online_configuration` cargado, la copia cae a `payment_methods` — que es lo único con
-     * lo que `tienda-api` cobra hoy — y tampoco lo vacía.
+     * 🔴 Un comercio con la credencial cargada A MANO en `payment_methods` tampoco recibe
+     * conector, y su credencial queda intacta: sigue cobrando exactamente por donde cobraba.
      *
      * @return void
      */
-    public function test_copia_desde_payment_methods_sin_vaciar_el_origen()
+    public function test_no_crea_conector_para_un_comercio_con_credenciales_en_payment_methods()
     {
         $this->sin_conector_mp();
 
@@ -188,15 +199,9 @@ class MigracionCredencialesMercadoPagoTest extends EmpresaTestCase
 
         $this->migracion_de_copia()->up();
 
-        $conector = $this->conector_mp();
-
-        $this->assertNotNull($conector, 'La migración no cayó a payment_methods para el comercio sin OAuth.');
-        $this->assertSame('TOKEN-CARGADO-A-MANO', $conector->access_token);
-        $this->assertSame('PUBLIC-KEY-A-MANO', $conector->public_key);
         $this->assertNull(
-            $conector->expires_at,
-            'Una credencial cargada a mano no vence: si la migración le inventa un vencimiento, el '.
-            'command de refresh la va a intentar renovar y la va a dejar desconectada.'
+            $this->conector_mp(),
+            'La migración creó un conector desde payment_methods. No migra a nadie.'
         );
 
         $payment_method->refresh();
@@ -204,39 +209,78 @@ class MigracionCredencialesMercadoPagoTest extends EmpresaTestCase
         $this->assertSame(
             'TOKEN-CARGADO-A-MANO',
             $payment_method->access_token,
-            'La migración VACIÓ payment_methods, que es con lo que la tienda cobra hoy.'
+            'La migración tocó payment_methods, que es con lo que la tienda cobra hoy.'
         );
+        $this->assertSame('PUBLIC-KEY-A-MANO', $payment_method->public_key);
     }
 
     /**
-     * Correr la copia dos veces no pisa lo que el comercio ya tiene conectado.
+     * 🔴 Con las DOS fuentes cargadas tampoco pasa nada: ninguna precedencia, ningún conector.
+     *
+     * Este es el test que fallaría primero si alguien "completa" la migración vacía eligiendo un
+     * orden entre las dos fuentes, que es exactamente la decisión que Lucas descartó.
      *
      * @return void
      */
-    public function test_la_copia_es_idempotente_y_no_pisa_un_conector_ya_conectado()
+    public function test_con_las_dos_fuentes_cargadas_sigue_sin_crear_nada()
     {
         $this->sin_conector_mp();
 
         $configuracion = OnlineConfiguration::where('user_id', $this->user_id())->firstOrFail();
-        $configuracion->mp_access_token = 'TOKEN-VIEJO';
+        $configuracion->mp_access_token = 'TOKEN-DE-ONLINE-CONFIG';
         $configuracion->save();
+
+        $type = PaymentMethodType::where('name', 'MercadoPago')->first();
+        if (!$type) {
+            $type = PaymentMethodType::create(['name' => 'MercadoPago']);
+        }
+
+        $payment_method = PaymentMethod::create([
+            'name'                   => 'MercadoPago',
+            'payment_method_type_id' => $type->id,
+            'public_key'             => 'PUBLIC-KEY-A-MANO',
+            'access_token'           => 'TOKEN-CARGADO-A-MANO',
+            'user_id'                => $this->user_id(),
+        ]);
 
         $this->migracion_de_copia()->up();
 
-        $conector = $this->conector_mp();
-        $conector->access_token = 'TOKEN-NUEVO-POR-OAUTH';
-        $conector->save();
+        $this->assertNull($this->conector_mp(), 'La migración eligió una precedencia entre las dos fuentes y creó un conector.');
+
+        $configuracion->refresh();
+        $payment_method->refresh();
+
+        $this->assertSame('TOKEN-DE-ONLINE-CONFIG', $configuracion->mp_access_token);
+        $this->assertSame('TOKEN-CARGADO-A-MANO', $payment_method->access_token);
+    }
+
+    /**
+     * Y no toca el conector del comercio que SÍ conectó a mano después del despliegue: ni se lo
+     * borra, ni se lo pisa.
+     *
+     * @return void
+     */
+    public function test_no_toca_el_conector_de_un_comercio_que_conecto_a_mano()
+    {
+        $this->sin_conector_mp();
+
+        $conector = PlatformConnector::create([
+            'user_id'      => $this->user_id(),
+            'platform_id'  => $this->plataforma_mp()->id,
+            'status'       => PlatformConnector::STATUS_CONECTADO,
+            'access_token' => 'TOKEN-CONECTADO-A-MANO',
+        ]);
 
         $this->migracion_de_copia()->up();
 
         $conector->refresh();
 
         $this->assertSame(
-            'TOKEN-NUEVO-POR-OAUTH',
+            'TOKEN-CONECTADO-A-MANO',
             $conector->access_token,
-            'Una segunda corrida de la migración pisó el token que el comercio consiguió por OAuth '.
-            'después del deploy.'
+            'La migración pisó el token de un comercio que conectó por OAuth de verdad.'
         );
+        $this->assertSame(PlatformConnector::STATUS_CONECTADO, $conector->status);
     }
 
     /**
