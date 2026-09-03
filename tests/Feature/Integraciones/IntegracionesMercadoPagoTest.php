@@ -175,6 +175,49 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
     }
 
     /**
+     * `connect` devuelve la URL de autorización con un `state` ALEATORIO ya persistido y atado
+     * al conector de Mercado Pago del comercio — no el id del conector, que es lo que manda el
+     * OAuth genérico y es predecible, reusable y sin vencimiento.
+     *
+     * @return void
+     */
+    public function test_el_connect_arma_la_url_con_un_state_aleatorio_atado_al_conector()
+    {
+        $respuesta = $this->getJson('/api/integraciones/mercadopago/connect');
+
+        $respuesta->assertStatus(200);
+
+        $url = $respuesta->json('url');
+
+        $this->assertStringStartsWith('https://auth.mercadopago.com.ar/authorization?', $url);
+        $this->assertStringContainsString('client_id=app-id-de-prueba', $url);
+
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+        $this->assertArrayHasKey('state', $query);
+
+        $guardado = OauthState::where('state', $query['state'])->first();
+
+        $this->assertNotNull($guardado, 'El state de la URL no quedó persistido en oauth_states.');
+        $this->assertNotNull(
+            $guardado->platform_connector_id,
+            'El state se generó sin atarlo al conector: el callback no va a poder resolverlo.'
+        );
+        $this->assertSame($this->user_id(), (int) $guardado->user_id);
+
+        $conector = PlatformConnector::find($guardado->platform_connector_id);
+
+        $this->assertNotNull($conector, 'El connect no dejó creado el conector de Mercado Pago.');
+        $this->assertNotSame(
+            (string) $conector->id,
+            (string) $query['state'],
+            'El state es el id del conector: eso es predecible y reusable, justo lo que esta misión sacó.'
+        );
+        $this->assertTrue($guardado->expires_at->isFuture(), 'El state nació vencido.');
+        $this->assertNull($guardado->used_at);
+    }
+
+    /**
      * El callback del OAuth guarda los tokens en el conector y NO en el `online_configuration`.
      *
      * Es el cambio central de la misión: `online_configuration` viaja entera en una respuesta
@@ -261,6 +304,49 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
             'APP_USR-token-flamante',
             (string) $crudo,
             'El valor guardado contiene el token en claro.'
+        );
+    }
+
+    /**
+     * `disconnect` conserva el contrato (200 con la clave `model`), limpia el conector, limpia
+     * las credenciales viejas que le quedaran en `online_configuration` y NO toca
+     * `payment_methods`, que es con lo que la tienda cobra hoy.
+     *
+     * @return void
+     */
+    public function test_el_disconnect_limpia_el_conector_y_no_toca_payment_methods()
+    {
+        $conector = $this->conector_mp();
+        $payment_method = $this->payment_method_mp();
+
+        $configuracion = $this->online_configuration();
+        $configuracion->mp_access_token = 'TOKEN-VIEJO';
+        $configuracion->mp_enabled = true;
+        $configuracion->save();
+
+        $respuesta = $this->postJson('/api/integraciones/mercadopago/disconnect');
+
+        $respuesta->assertStatus(200);
+        $this->assertArrayHasKey('model', $respuesta->json(), 'disconnect perdió la clave "model" del contrato.');
+
+        $conector->refresh();
+
+        $this->assertNull($conector->access_token, 'El disconnect no limpió el token del conector.');
+        $this->assertSame(PlatformConnector::STATUS_SIN_CONECTAR, $conector->status);
+        $this->assertFalse($conector->is_connected());
+
+        $configuracion->refresh();
+
+        $this->assertNull($configuracion->getAttributes()['mp_access_token']);
+        $this->assertFalse((bool) $configuracion->mp_enabled);
+
+        $payment_method->refresh();
+
+        $this->assertSame(
+            'TOKEN-DE-PAYMENT-METHOD',
+            $payment_method->access_token,
+            'El disconnect borró payment_methods.access_token: eso deja al comercio sin poder cobrar '.
+            'mientras tienda-api no esté desplegada con el orden nuevo.'
         );
     }
 

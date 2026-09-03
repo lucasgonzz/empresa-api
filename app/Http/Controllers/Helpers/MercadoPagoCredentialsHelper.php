@@ -6,6 +6,7 @@ use App\Models\PaymentMethod;
 use App\Models\PaymentMethodType;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Resuelve con qué credenciales de Mercado Pago cobra un comercio.
@@ -46,16 +47,32 @@ class MercadoPagoCredentialsHelper
         $connector = PlatformConnector::find_for_user_and_slug($user_id, Platform::SLUG_MERCADO_PAGO);
 
         if ($connector && $connector->is_connected()) {
-            return [
-                'access_token' => $connector->access_token,
-                // El conector puede no tener public_key si Mercado Pago no la devolvió en el
-                // canje: en ese caso se completa con la de `payment_methods`, que no es secreta
-                // y viaja al navegador igual.
-                'public_key'   => !empty($connector->public_key)
-                    ? $connector->public_key
-                    : self::public_key_de_payment_method($user_id),
-                'origen'       => 'platform_connector',
-            ];
+            // `is_connected()` mira el atributo crudo, sin desencriptar. El desencriptado real
+            // pasa acá y puede fallar (APP_KEY rotada, o una fila escrita en plano antes de que
+            // corriera la migración de cifrado). En ese caso no se propaga la excepción: se
+            // avisa y se cae al fallback, que es lo que deja al comercio cobrando igual.
+            try {
+                $access_token = $connector->access_token;
+            } catch (\Throwable $e) {
+                Log::error(
+                    "MercadoPagoCredentialsHelper: no se pudo leer el access_token del platform_connector ".
+                    "{$connector->id}: " . $e->getMessage()
+                );
+                $access_token = null;
+            }
+
+            if (!empty($access_token)) {
+                return [
+                    'access_token' => $access_token,
+                    // El conector puede no tener public_key si Mercado Pago no la devolvió en el
+                    // canje: en ese caso se completa con la de `payment_methods`, que no es
+                    // secreta y viaja al navegador igual.
+                    'public_key'   => !empty($connector->public_key)
+                        ? $connector->public_key
+                        : self::public_key_de_payment_method($user_id),
+                    'origen'       => 'platform_connector',
+                ];
+            }
         }
 
         $payment_method = self::payment_method_mercado_pago($user_id);
