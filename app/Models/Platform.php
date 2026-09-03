@@ -54,6 +54,26 @@ class Platform extends Model
     ];
 
     /**
+     * Plataformas que el ABM genérico de conectores (solapa "Sistema") sabe conectar.
+     *
+     * Son exactamente las que tienen una rama en `PlatformConnector::getAuthUrlAttribute()`.
+     * Mercado Pago NO está: se conecta por su propia pantalla, con
+     * `GET integraciones/mercadopago/connect`, porque su URL de autorización necesita un `state`
+     * aleatorio recién generado y eso no se puede hacer dentro de un accessor que corre en cada
+     * serialización (escribiría una fila de `oauth_states` por conector en cada listado).
+     *
+     * Sin este filtro, la fila `mercado_pago` que siembra `PlatformSeeder` aparecía en el select
+     * del ABM y se podían crear conectores de Mercado Pago con `auth_url` vacío: registros
+     * muertos que no conectan nada y que el operador no entiende por qué no funcionan.
+     *
+     * @var array<int, string>
+     */
+    public const SLUGS_CONECTABLES_POR_ABM = [
+        self::SLUG_MERCADO_LIBRE,
+        self::SLUG_TIENDA_NUBE,
+    ];
+
+    /**
      * Scope estándar del proyecto para `fullModel` / listados.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query Query base.
@@ -62,6 +82,17 @@ class Platform extends Model
     public function scopeWithAll($query)
     {
         return $query;
+    }
+
+    /**
+     * Filtra el catálogo a las plataformas que se conectan desde el ABM de conectores.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query Query base.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeConectablesPorAbm($query)
+    {
+        return $query->whereIn('slug', self::SLUGS_CONECTABLES_POR_ABM);
     }
 
     /**

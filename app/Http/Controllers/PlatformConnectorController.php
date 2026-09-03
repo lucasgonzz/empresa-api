@@ -38,7 +38,16 @@ class PlatformConnectorController extends Controller
      */
     public function store(Request $request)
     {
-        Platform::query()->findOrFail((int) $request->platform_id);
+        // El filtro no es solo cosmético del listado: si no se valida acá, un POST directo con el
+        // `platform_id` de Mercado Pago crea igual un conector que nunca va a poder conectarse
+        // (`auth_url` vacío). Mercado Pago se conecta por `integraciones/mercadopago/connect`.
+        $platform = Platform::query()->findOrFail((int) $request->platform_id);
+
+        if (!in_array($platform->slug, Platform::SLUGS_CONECTABLES_POR_ABM, true)) {
+            return response()->json([
+                'message' => 'La plataforma "'.$platform->name.'" no se conecta desde este ABM: tiene su propia pantalla en Integraciones.',
+            ], 422);
+        }
 
         $model = PlatformConnector::create([
             'user_id'            => $this->userId(),
@@ -85,7 +94,16 @@ class PlatformConnectorController extends Controller
             if ($model->status === PlatformConnector::STATUS_CONECTADO) {
                 return response()->json(['message' => 'No se puede cambiar la plataforma de un conector ya conectado.'], 422);
             }
-            Platform::query()->findOrFail((int) $request->platform_id);
+            $platform = Platform::query()->findOrFail((int) $request->platform_id);
+
+            // Mismo criterio que `store()`: no se deja mover un conector a una plataforma que no
+            // se conecta desde este ABM.
+            if (!in_array($platform->slug, Platform::SLUGS_CONECTABLES_POR_ABM, true)) {
+                return response()->json([
+                    'message' => 'La plataforma "'.$platform->name.'" no se conecta desde este ABM: tiene su propia pantalla en Integraciones.',
+                ], 422);
+            }
+
             $model->platform_id = (int) $request->platform_id;
         }
 

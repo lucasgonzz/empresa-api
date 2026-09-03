@@ -309,12 +309,15 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
 
     /**
      * `disconnect` conserva el contrato (200 con la clave `model`), limpia el conector, limpia
-     * las credenciales viejas que le quedaran en `online_configuration` y NO toca
-     * `payment_methods`, que es con lo que la tienda cobra hoy.
+     * las credenciales viejas de `online_configuration` y TAMBIÉN el espejo de
+     * `payment_methods`.
+     *
+     * Lo último es lo que hace que el disconnect no mienta: antes limpiaba solo el conector, la
+     * tarjeta pasaba a "Desconectado" y el comercio seguía cobrando por el fallback del helper.
      *
      * @return void
      */
-    public function test_el_disconnect_limpia_el_conector_y_no_toca_payment_methods()
+    public function test_el_disconnect_limpia_el_conector_y_el_espejo_de_payment_methods()
     {
         $conector = $this->conector_mp();
         $payment_method = $this->payment_method_mp();
@@ -342,12 +345,90 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
 
         $payment_method->refresh();
 
+        $this->assertNull(
+            $payment_method->access_token,
+            'El disconnect dejó la credencial en payment_methods: la tarjeta diría "Desconectado" '.
+            'y el comercio seguiría cobrando igual por el fallback del helper.'
+        );
+
+        $this->assertNotNull(
+            $payment_method->name,
+            'El disconnect borró la fila entera de payment_methods; tiene que limpiar la credencial '.
+            'y dejar la configuración comercial (nombre, descripción, descuento, cuotas).'
+        );
+    }
+
+    /**
+     * El comercio que cargó las claves A MANO y nunca conectó por OAuth no pierde nada cuando
+     * alguien toca "Desconectar": no hay nada conectado que desconectar, y borrarle la credencial
+     * lo dejaría sin poder cobrar por un botón que en su tarjeta ya decía "Desconectado".
+     *
+     * @return void
+     */
+    public function test_el_disconnect_no_toca_payment_methods_si_nunca_hubo_conector_conectado()
+    {
+        $payment_method = $this->payment_method_mp();
+
+        $this->postJson('/api/integraciones/mercadopago/disconnect')->assertStatus(200);
+
+        $payment_method->refresh();
+
         $this->assertSame(
             'TOKEN-DE-PAYMENT-METHOD',
             $payment_method->access_token,
-            'El disconnect borró payment_methods.access_token: eso deja al comercio sin poder cobrar '.
-            'mientras tienda-api no esté desplegada con el orden nuevo.'
+            'El disconnect borró una credencial cargada a mano de un comercio que nunca conectó.'
         );
+    }
+
+    /**
+     * 🔴 El callback ESPEJA la credencial en `payment_methods`.
+     *
+     * Sin esto, un comercio nuevo queda sin ninguna forma de cobrar durante la ventana de
+     * despliegue: la pantalla nueva le sacó los campos para cargar las claves a mano, el OAuth
+     * deja el token en el conector, y la `tienda-api` que todavía está arriba solo sabe leer
+     * `payment_methods`.
+     *
+     * @return void
+     */
+    public function test_el_callback_espeja_la_credencial_en_payment_methods()
+    {
+        $this->fakear_canje_de_token();
+
+        $conector = $this->conector_mp([
+            'status'       => PlatformConnector::STATUS_SIN_CONECTAR,
+            'access_token' => null,
+        ]);
+
+        // Comercio NUEVO: no tiene fila de payment_methods todavía.
+        $type = PaymentMethodType::where('name', 'MercadoPago')->first();
+        if ($type) {
+            PaymentMethod::where('user_id', $this->user_id())
+                ->where('payment_method_type_id', $type->id)
+                ->delete();
+        }
+
+        $state = OauthState::create_for_connector($conector);
+
+        $this->get(self::RUTA_CALLBACK.'?code=CODIGO&state='.$state)
+             ->assertRedirect(self::SPA_REDIRECT.'?mp=ok');
+
+        $credenciales = MercadoPagoCredentialsHelper::credentials($this->user_id());
+
+        $this->assertSame('APP_USR-token-flamante', $credenciales['access_token']);
+
+        $type = PaymentMethodType::where('name', 'MercadoPago')->firstOrFail();
+
+        $payment_method = PaymentMethod::where('user_id', $this->user_id())
+            ->where('payment_method_type_id', $type->id)
+            ->first();
+
+        $this->assertNotNull(
+            $payment_method,
+            'El OAuth no dejó la fila de payment_methods: un comercio nuevo no tendría con qué cobrar '.
+            'hasta que se despliegue tienda-api.'
+        );
+        $this->assertSame('APP_USR-token-flamante', $payment_method->access_token);
+        $this->assertSame('APP_USR-public-key-flamante', $payment_method->public_key);
     }
 
     /**
@@ -548,6 +629,186 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
 
         $this->assertFalse($por_slug['mercado_libre']['connected'], 'Una integración sin conector no puede figurar conectada.');
         $this->assertNull($por_slug['mercado_libre']['expires_at']);
+    }
+
+    /**
+     * 🔴 EL TEST QUE EVITA QUE VUELVA LA REGRESIÓN MÁS CARA DE ESTA MISIÓN.
+     *
+     * Editar un método de pago SIN mandar `access_token` no puede vaciar el token guardado.
+     *
+     * El par que hace esto necesario: `PaymentMethod::$hidden` sacó el token de la respuesta, así
+     * que el formulario de la SPA —que arma el payload con `{...this.model}` sobre lo que devolvió
+     * la API— ya no lo tiene para devolverlo en el PUT. Con la asignación incondicional que había
+     * en `PaymentMethodController@update`, cambiarle el NOMBRE a un método de pago le borraba la
+     * credencial de cobro al comercio, en producción, sin que nadie tocara nada de Mercado Pago.
+     *
+     * @return void
+     */
+    public function test_editar_un_metodo_de_pago_sin_mandar_el_token_no_lo_borra()
+    {
+        $payment_method = $this->payment_method_mp();
+
+        // Exactamente lo que manda la SPA con el token ya oculto: los campos comerciales y nada
+        // de credenciales.
+        $respuesta = $this->putJson('/api/payment-method/'.$payment_method->id, [
+            'name'                   => 'MercadoPago renombrado',
+            'description'            => 'Otra descripción',
+            'discount'               => 5,
+            'payment_method_type_id' => $payment_method->payment_method_type_id,
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $payment_method->refresh();
+
+        $this->assertSame('MercadoPago renombrado', $payment_method->name, 'La edición no guardó el nombre.');
+        $this->assertSame(
+            'TOKEN-DE-PAYMENT-METHOD',
+            $payment_method->access_token,
+            'Editar el método de pago BORRÓ el access_token. Con el token oculto en las respuestas, '.
+            'el request ya no lo trae: la asignación de PaymentMethodController@update tiene que ser '.
+            'condicional o el comercio deja de cobrar al primer cambio de nombre.'
+        );
+        $this->assertSame(
+            'PUBLIC-KEY-DE-PAYMENT-METHOD',
+            $payment_method->public_key,
+            'Editar el método de pago borró la public_key.'
+        );
+    }
+
+    /**
+     * Mandar el campo explícitamente vacío SÍ tiene que poder borrar la credencial: lo que no
+     * puede es borrarse por omisión. (Por eso el controller usa `has()` y no `filled()`.)
+     *
+     * @return void
+     */
+    public function test_mandar_el_token_vacio_a_proposito_si_lo_borra()
+    {
+        $payment_method = $this->payment_method_mp();
+
+        $this->putJson('/api/payment-method/'.$payment_method->id, [
+            'name'                   => $payment_method->name,
+            'payment_method_type_id' => $payment_method->payment_method_type_id,
+            'access_token'           => null,
+        ])->assertStatus(200);
+
+        $payment_method->refresh();
+
+        $this->assertNull($payment_method->access_token);
+    }
+
+    /**
+     * 🔴 `GET /api/payment-method` no puede devolver el token de cobro del comercio.
+     *
+     * `tienda-api` ya ocultaba esta misma columna en su propio modelo; acá faltaba, y es el mismo
+     * agujero que esta misión vino a cerrar, en el ABM que esta misión toca.
+     *
+     * @return void
+     */
+    public function test_el_listado_de_metodos_de_pago_no_serializa_el_token()
+    {
+        $this->payment_method_mp('SECRETO-DEL-METODO-DE-PAGO');
+
+        $respuesta = $this->getJson('/api/payment-method');
+
+        $respuesta->assertStatus(200);
+
+        $cuerpo = $respuesta->getContent();
+
+        $this->assertStringNotContainsString('SECRETO-DEL-METODO-DE-PAGO', $cuerpo, 'El listado de métodos de pago devolvió el access_token en claro.');
+        $this->assertStringNotContainsString('access_token', $cuerpo, 'El listado de métodos de pago sigue serializando la clave access_token.');
+
+        // La public key NO es secreta: la tienda la necesita para tokenizar la tarjeta.
+        $this->assertStringContainsString('public_key', $cuerpo, 'Se ocultó también la public_key, que no es secreta y la tienda necesita.');
+    }
+
+    /**
+     * Mercado Pago no se ofrece como plataforma del ABM de conectores: se conecta por su propia
+     * pantalla. Si figurara, se podrían crear conectores con `auth_url` vacío — registros muertos
+     * que el operador no entiende por qué no conectan.
+     *
+     * @return void
+     */
+    public function test_el_abm_de_conectores_no_ofrece_mercado_pago()
+    {
+        $this->plataforma_mp();
+
+        $json = $this->getJson('/api/platform')->assertStatus(200)->json();
+
+        $slugs = [];
+        foreach ($json['models'] as $model) {
+            $slugs[] = $model['slug'];
+        }
+
+        $this->assertNotContains(Platform::SLUG_MERCADO_PAGO, $slugs, 'El ABM de conectores ofrece Mercado Pago.');
+        $this->assertContains(Platform::SLUG_MERCADO_LIBRE, $slugs, 'El filtro se llevó puesto a Mercado Libre.');
+        $this->assertContains(Platform::SLUG_TIENDA_NUBE, $slugs, 'El filtro se llevó puesto a Tienda Nube.');
+    }
+
+    /**
+     * Y tampoco se puede forzar por POST directo, que es lo que hace que el filtro sea una
+     * validación y no solo una cosmética del listado.
+     *
+     * @return void
+     */
+    public function test_no_se_puede_crear_un_conector_de_mercado_pago_por_el_abm()
+    {
+        $this->postJson('/api/platform-connector', ['platform_id' => $this->plataforma_mp()->id])
+             ->assertStatus(422);
+    }
+
+    /**
+     * `GET /api/platform-connector` no serializa el `auth_code`. Es un code ya canjeado y de un
+     * solo uso, pero es material de OAuth y no tiene por qué llegar al navegador.
+     *
+     * @return void
+     */
+    public function test_el_listado_de_conectores_no_serializa_el_auth_code()
+    {
+        $this->conector_mp(['auth_code' => 'CODE-DE-OAUTH-SECRETO']);
+
+        $cuerpo = $this->getJson('/api/platform-connector')->assertStatus(200)->getContent();
+
+        $this->assertStringNotContainsString('CODE-DE-OAUTH-SECRETO', $cuerpo);
+        $this->assertStringNotContainsString('auth_code', $cuerpo);
+    }
+
+    /**
+     * 🔴 Un `state` aleatorio YA CONSUMIDO no se puede resolver por el camino del formato viejo.
+     *
+     * `Str::random()` devuelve alfanumérico, así que un state que arranca con dígitos castea a
+     * ese número: medido con el binario 7.4 sobre 10.000 states, 1429 (14%) dan un entero
+     * distinto de cero, y 3, 4, 5 y 9 son ids reales de `platform_connectors`. Sin la guarda de
+     * `ctype_digit()`, un replay caía en `PlatformConnector::find((int) $state)` y devolvía el
+     * conector de OTRO comercio.
+     *
+     * @return void
+     */
+    public function test_un_state_aleatorio_consumido_no_resuelve_un_conector_por_id()
+    {
+        $conector = $this->conector_mp();
+
+        $metodo = new ReflectionMethod(PlatformConnectorOAuthService::class, 'resolver_conector_del_state');
+        $metodo->setAccessible(true);
+        $service = new PlatformConnectorOAuthService();
+
+        // Un state con la forma real del problema: arranca con el id de un conector existente y
+        // sigue con letras, tal cual sale de Str::random() una de cada siete veces.
+        $state_alfanumerico = $conector->id.'aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXy';
+
+        $this->assertSame(
+            $conector->id,
+            (int) $state_alfanumerico,
+            'El escenario del test dejó de reproducir el problema: este state ya no castea al id.'
+        );
+
+        $resuelto = $metodo->invoke($service, $state_alfanumerico);
+
+        $this->assertNull(
+            $resuelto,
+            'Un state alfanumérico que no está en oauth_states resolvió un conector por el cast a '.
+            'entero. Eso es exactamente el replay que la guarda de ctype_digit tiene que frenar.'
+        );
     }
 
     /**

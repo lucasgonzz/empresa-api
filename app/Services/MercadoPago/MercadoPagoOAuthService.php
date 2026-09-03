@@ -4,6 +4,8 @@ namespace App\Services\MercadoPago;
 
 use App\Models\OauthState;
 use App\Models\OnlineConfiguration;
+use App\Models\PaymentMethod;
+use App\Models\PaymentMethodType;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
 use Carbon\Carbon;
@@ -243,6 +245,15 @@ class MercadoPagoOAuthService
             $connector->status = PlatformConnector::STATUS_CONECTADO;
             $connector->error_message = null;
             $connector->save();
+
+            // Espejo TRANSITORIO en `payment_methods` (ver el docblock de
+            // MercadoPagoCredentialsHelper): mientras `tienda-api` no se despliegue, es el único
+            // lugar de donde la tienda sabe cobrar.
+            $this->espejar_en_payment_methods(
+                (int) $connector->user_id,
+                $data['access_token'],
+                isset($data['public_key']) ? $data['public_key'] : null
+            );
         } catch (\Throwable $e) {
             // El mensaje de la excepción va SOLO al log, nunca a `error_message`: si lo que falló
             // fue el `save()` de acá arriba, la excepción es una QueryException y su mensaje trae
@@ -267,8 +278,15 @@ class MercadoPagoOAuthService
      * desconectarse, y dejarle los tokens viejos guardados en la otra tabla sería exactamente
      * el problema que esta misión viene a resolver.
      *
-     * `payment_methods.access_token` NO se toca: es lo que hoy usa la tienda para cobrar y
-     * borrarlo dejaría al comercio sin poder cobrar.
+     * El espejo de `payment_methods` TAMBIÉN se limpia, pero solo si el conector estaba
+     * realmente conectado. Sin eso el disconnect mentía: la tarjeta pasaba a "Desconectado" y el
+     * comercio seguía cobrando por el fallback de `MercadoPagoCredentialsHelper`. Se limpia solo
+     * en ese caso para no borrarle las credenciales al comercio que las cargó a mano y nunca
+     * conectó por OAuth — ése no tiene nada que desconectar y su tarjeta ya dice lo mismo.
+     *
+     * El caso de borde (cargó a mano, después conectó, después desconectó) pierde lo que había
+     * cargado a mano. Es aceptable: el confirm de la pantalla ya le avisa que va a dejar de poder
+     * cobrar con Mercado Pago.
      *
      * @param int $user_id Comercio (owner) autenticado.
      * @return OnlineConfiguration|null La configuración online del comercio, si tiene una.
@@ -278,7 +296,15 @@ class MercadoPagoOAuthService
         $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_MERCADO_PAGO);
 
         if ($connector) {
+            // Se pregunta ANTES de limpiar: después el conector ya no tiene token y no habría
+            // forma de distinguir "estaba conectado" de "nunca lo estuvo".
+            $estaba_conectado = !empty($connector->getAttributes()['access_token']);
+
             $this->mark_disconnected($connector);
+
+            if ($estaba_conectado) {
+                $this->limpiar_espejo_de_payment_methods((int) $user_id);
+            }
         }
 
         $configuration = OnlineConfiguration::where('user_id', $user_id)
@@ -349,6 +375,15 @@ class MercadoPagoOAuthService
             $connector->error_message = null;
             $connector->save();
 
+            // El espejo tiene que seguir al token rotado: si se quedara con el viejo, la tienda
+            // seguiría cobrando con un access_token vencido y nadie se enteraría hasta que un
+            // comprador no pueda pagar.
+            $this->espejar_en_payment_methods(
+                (int) $connector->user_id,
+                $data['access_token'],
+                isset($data['public_key']) ? $data['public_key'] : null
+            );
+
             return true;
         } catch (\Throwable $e) {
             Log::error("MercadoPagoOAuthService: excepción al refrescar token de platform_connector {$connector->id}: " . $e->getMessage());
@@ -375,6 +410,84 @@ class MercadoPagoOAuthService
         $connector->auth_code = null;
         $connector->status = PlatformConnector::STATUS_SIN_CONECTAR;
         $connector->save();
+    }
+
+    /**
+     * Copia la credencial recién obtenida a la fila de `payment_methods` del tipo MercadoPago
+     * del comercio, creándola si no existe.
+     *
+     * 🔴 ESTO ES UN ESPEJO TRANSITORIO Y SE SACA EN LA MISIÓN DE LIMPIEZA. Existe por un motivo
+     * concreto: `tienda-api` todavía no está desplegada con el orden nuevo, y hasta que lo esté
+     * cobra leyendo `payment_methods.access_token` y nada más. Como esta misión le saca al ABM
+     * los campos donde se cargaban las claves a mano, un comercio NUEVO quedaría sin ninguna
+     * forma de cobrar: no tiene dónde escribirlas, conecta por OAuth, el token va al conector, y
+     * la tienda vieja no lo lee. Eso es una regresión contra lo que había antes de la misión, y
+     * la regla de compatibilidad hacia atrás dice que el consumidor tiene que seguir andando
+     * aunque el proveedor no esté desplegado.
+     *
+     * Escribir el token acá no reabre el agujero que la misión vino a cerrar: `PaymentMethod`
+     * ahora tiene `access_token` en `$hidden`, así que no sale en ninguna respuesta.
+     *
+     * @param int $user_id Comercio (owner).
+     * @param string $access_token Token recién obtenido de Mercado Pago.
+     * @param string|null $public_key Public key de la cuenta conectada, si Mercado Pago la mandó.
+     * @return PaymentMethod
+     */
+    protected function espejar_en_payment_methods($user_id, $access_token, $public_key)
+    {
+        $type = PaymentMethodType::firstOrCreate(['name' => 'MercadoPago']);
+
+        $payment_method = PaymentMethod::where('user_id', $user_id)
+            ->where('payment_method_type_id', $type->id)
+            ->orderBy('id', 'ASC')
+            ->first();
+
+        if (!$payment_method) {
+            // Comercio que nunca cargó el método de pago a mano: se crea con los mismos textos
+            // que usa `PaymentMethodSeeder`, para que la tienda lo muestre igual que siempre.
+            $payment_method = new PaymentMethod();
+            $payment_method->user_id = $user_id;
+            $payment_method->payment_method_type_id = $type->id;
+            $payment_method->name = 'MercadoPago';
+            $payment_method->description = 'Paga Online con tu cuenta de MercadoPago';
+        }
+
+        $payment_method->access_token = $access_token;
+
+        // La public key solo se pisa si Mercado Pago mandó una: si no vino en el canje, la que
+        // ya estuviera cargada sigue siendo mejor que null.
+        if (!empty($public_key)) {
+            $payment_method->public_key = $public_key;
+        }
+
+        $payment_method->save();
+
+        return $payment_method;
+    }
+
+    /**
+     * Limpia la credencial del espejo de `payment_methods` cuando el comercio se desconecta.
+     *
+     * La fila NO se borra: guarda la configuración comercial del método de pago (nombre,
+     * descripción, descuento, cuotas) que no tiene nada que ver con estar conectado o no.
+     *
+     * @param int $user_id Comercio (owner).
+     * @return void
+     */
+    protected function limpiar_espejo_de_payment_methods($user_id)
+    {
+        $type = PaymentMethodType::where('name', 'MercadoPago')->first();
+
+        if (!$type) {
+            return;
+        }
+
+        PaymentMethod::where('user_id', $user_id)
+            ->where('payment_method_type_id', $type->id)
+            ->update([
+                'access_token' => null,
+                'public_key'   => null,
+            ]);
     }
 
     /**

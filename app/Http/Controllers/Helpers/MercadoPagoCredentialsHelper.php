@@ -27,6 +27,23 @@ use Illuminate\Support\Facades\Log;
  *
  * `tienda-api` va a duplicar este mismo orden en su propio repo (la base es compartida, el
  * codigo no). Si el orden cambia acá, cambia allá.
+ *
+ * ---
+ *
+ * 🔴 MIENTRAS TANTO, EL OAUTH ESCRIBE LAS DOS. `MercadoPagoOAuthService` copia la credencial
+ * recien obtenida tambien a `payment_methods` (`espejar_en_payment_methods()`), y el disconnect
+ * limpia las dos. Es un ESPEJO TRANSITORIO, no el diseño final, y tiene dos motivos:
+ *
+ * - Sin el, un comercio NUEVO no puede cobrar de ninguna manera durante la ventana de
+ *   despliegue: la pantalla nueva le saco los campos para cargar las claves a mano, conecta por
+ *   OAuth, el token va al conector, y la `tienda-api` que todavia esta arriba solo sabe leer
+ *   `payment_methods`. Eso seria una regresion contra lo que habia antes de la mision.
+ * - Con el, el disconnect deja de mentir: antes limpiaba el conector, la tarjeta decia
+ *   "Desconectado" y el comercio seguia cobrando por el fallback (2) de este helper.
+ *
+ * 🔴 SE SACA EN LA MISION DE LIMPIEZA, junto con la fuente (2), cuando `tienda-api` este
+ * desplegada leyendo del conector. Hasta entonces no se toca: sacarlo antes deja comercios sin
+ * cobrar.
  */
 class MercadoPagoCredentialsHelper
 {
