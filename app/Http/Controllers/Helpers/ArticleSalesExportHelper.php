@@ -72,8 +72,8 @@ class ArticleSalesExportHelper {
 
 	static function getUnidadesVendidas($article, $user, $from_date, $until_date, $article_id) {
 		$sales = Sale::where('user_id', $user->id)
-            			->whereDate('created_at', '>=', $from_date)
-                        ->whereDate('created_at', '<=', $until_date)
+						/* Mismo criterio de fechado que el listado y que los demas reportes de ventas. */
+						->enRangoDeFechas($from_date, $until_date, $user)
                         ->whereHas('articles', function(Builder $query) use ($article_id) {
                             $query->where('article_id', $article_id);
                         })
