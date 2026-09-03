@@ -67,7 +67,15 @@ class AfipTicketController extends Controller
                                                     */
                                                    ->whereNull('consolidacion_facturacion_id');
                                             })
-                                            ->with('sale.afip_tickets.afip_observations', 'sale.afip_tickets.afip_errors')
+                                            /*
+                                             * address y employee: la tabla de la pestaña "Facturacion" de Alertas
+                                             * tiene columnas de sucursal y empleado que quedaban SIEMPRE vacias.
+                                             * Eran dos defectos apilados: el front leia `address.stree` (typo) con
+                                             * la key del item en ingles (`employee` vs columna `empleado`), y aun
+                                             * arreglado eso, este endpoint no cargaba las relaciones. Exploracion
+                                             * del modulo Alertas, 3/9/2026.
+                                             */
+                                            ->with('sale.afip_tickets.afip_observations', 'sale.afip_tickets.afip_errors', 'sale.address', 'sale.employee')
                                             ->orderBy('created_at', 'DESC')
                                             ->get();
 
