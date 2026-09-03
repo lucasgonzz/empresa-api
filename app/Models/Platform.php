@@ -23,6 +23,12 @@ class Platform extends Model
     /** Slug persistido para Tienda Nube. */
     public const SLUG_TIENDA_NUBE = 'tienda_nube';
 
+    /**
+     * Slug persistido para Mercado Pago. Es la plataforma que ancla el conector de cobros de
+     * cada comercio: hasta esta mision sus tokens vivian en `online_configurations.mp_*`.
+     */
+    public const SLUG_MERCADO_PAGO = 'mercado_pago';
+
     protected $guarded = [];
 
     /**
@@ -36,10 +42,15 @@ class Platform extends Model
     ];
 
     /**
+     * `client_secret` usa el cast nativo `encrypted` de Laravel: es el secreto de la APLICACION
+     * de ComercioCity en cada plataforma y hasta esta mision se guardaba en texto plano. La
+     * migracion `encrypt_platform_connector_tokens` cifra las filas de ML/TN ya existentes.
+     *
      * @var array<string, string>
      */
     protected $casts = [
-        'extra_config' => 'array',
+        'extra_config'  => 'array',
+        'client_secret' => 'encrypted',
     ];
 
     /**

@@ -59,5 +59,30 @@ class PlatformSeeder extends Seeder
                 'extra_config'  => $tn_extra,
             ]
         );
+
+        // Mercado Pago: la fila que ancla el conector de cobros de cada comercio. Las
+        // credenciales son las de la APLICACION de ComercioCity en Mercado Pago Developers
+        // (MP_APP_ID / MP_APP_SECRET del .env), nunca las del comercio — esas se guardan por
+        // comercio en `platform_connectors` cuando completa el OAuth.
+        //
+        // Mismo patron que ML de mas arriba: si faltan en el .env se siembran como null y solo
+        // se avisa, para no frenar el seeder de una instancia que todavia no conecto Mercado
+        // Pago. Prohibido escribir el valor real como default: el repositorio es publico.
+        $mp_app_id     = env('MP_APP_ID');
+        $mp_app_secret = env('MP_APP_SECRET');
+
+        if ((empty($mp_app_id) || empty($mp_app_secret)) && $this->command) {
+            $this->command->warn('PlatformSeeder: MP_APP_ID / MP_APP_SECRET no estan configurados, se sembraron como null.');
+        }
+
+        Platform::query()->updateOrCreate(
+            ['slug' => Platform::SLUG_MERCADO_PAGO],
+            [
+                'name'          => 'Mercado Pago',
+                'client_id'     => empty($mp_app_id) ? null : $mp_app_id,
+                'client_secret' => empty($mp_app_secret) ? null : $mp_app_secret,
+                'extra_config'  => null,
+            ]
+        );
     }
 }

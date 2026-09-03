@@ -38,12 +38,35 @@ class PlatformConnector extends Model
     ];
 
     /**
+     * Secretos que nunca deben viajar en una respuesta JSON de la API.
+     *
+     * Mismo criterio que `OnlineConfiguration::$hidden` (mail_password, mp_access_token): los
+     * tokens OAuth del comercio se guardan cifrados y ademas se ocultan de toda serializacion.
+     * La UI se entera del estado de la conexion por `GET /api/integraciones`
+     * (`IntegracionesController`), nunca del token crudo.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [
+        'access_token',
+        'refresh_token',
+    ];
+
+    /**
      * Casts de columnas nativas.
+     *
+     * `access_token` / `refresh_token` usan el cast nativo `encrypted` de Laravel (encripta y
+     * desencripta con la APP_KEY al escribir y leer el atributo), igual que
+     * `OnlineConfiguration::$casts['mp_access_token']`. Hasta esta mision estos dos se guardaban
+     * en texto plano: mudar Mercado Pago aca sin llevarse el cifrado habria sido un retroceso.
+     * La migracion `encrypt_platform_connector_tokens` cifra las filas de ML/TN que ya existian.
      *
      * @var array<string, string>
      */
     protected $casts = [
-        'expires_at' => 'datetime',
+        'expires_at'    => 'datetime',
+        'access_token'  => 'encrypted',
+        'refresh_token' => 'encrypted',
     ];
 
     /**
@@ -105,6 +128,83 @@ class PlatformConnector extends Model
         return static::mercadoLibreConnected()
             ->where('platform_user_id', $platform_user_id)
             ->first();
+    }
+
+    /**
+     * Conector del comercio hacia una plataforma dada por slug, sin crearlo si no existe.
+     *
+     * @param int $user_id Comercio (owner) dueño del conector.
+     * @param string $platform_slug Slug de `platforms` (ver constantes de `Platform`).
+     * @return self|null
+     */
+    public static function find_for_user_and_slug(int $user_id, string $platform_slug): ?self
+    {
+        return static::with('platform')
+            ->where('user_id', $user_id)
+            ->whereHas('platform', function ($platform_query) use ($platform_slug) {
+                $platform_query->where('slug', $platform_slug);
+            })
+            ->orderBy('id', 'DESC')
+            ->first();
+    }
+
+    /**
+     * Igual que `find_for_user_and_slug()`, pero si el comercio todavia no tiene conector para
+     * esa plataforma lo crea en estado `sin_conectar`. Devuelve null solo si la plataforma no
+     * existe en el catalogo (`platforms`), caso en el que no hay a que apuntar `platform_id`.
+     *
+     * @param int $user_id Comercio (owner) dueño del conector.
+     * @param string $platform_slug Slug de `platforms`.
+     * @return self|null
+     */
+    public static function find_or_create_for_user_and_slug(int $user_id, string $platform_slug): ?self
+    {
+        $platform_connector = static::find_for_user_and_slug($user_id, $platform_slug);
+
+        if ($platform_connector) {
+            return $platform_connector;
+        }
+
+        $platform = Platform::where('slug', $platform_slug)->first();
+
+        if (!$platform) {
+            return null;
+        }
+
+        $platform_connector = static::create([
+            'user_id'          => $user_id,
+            'platform_id'      => $platform->id,
+            'status'           => self::STATUS_SIN_CONECTAR,
+            'auth_code'        => null,
+            'access_token'     => null,
+            'refresh_token'    => null,
+            'expires_at'       => null,
+            'platform_user_id' => null,
+            'error_message'    => null,
+        ]);
+
+        $platform_connector->setRelation('platform', $platform);
+
+        return $platform_connector;
+    }
+
+    /**
+     * Indica si el conector tiene una credencial usable, sin exponer ni desencriptar el token.
+     *
+     * Mismo criterio exacto que `OnlineConfiguration::getMpConnectedAttribute()`, que es de
+     * donde se muda Mercado Pago: hay access_token guardado Y (no hay fecha de vencimiento
+     * registrada, o esa fecha todavia es futura). Se lee el atributo crudo (`attributes`) en vez
+     * de `$this->access_token` para no forzar el desencriptado del cast solo para ver si esta
+     * vacio.
+     *
+     * @return bool
+     */
+    public function is_connected(): bool
+    {
+        $has_token = !empty($this->attributes['access_token']);
+        $not_expired = empty($this->expires_at) || $this->expires_at->isFuture();
+
+        return $has_token && $not_expired;
     }
 
     /**
