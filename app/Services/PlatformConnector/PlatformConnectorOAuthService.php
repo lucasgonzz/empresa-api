@@ -2,6 +2,7 @@
 
 namespace App\Services\PlatformConnector;
 
+use App\Models\OauthState;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
 use App\Services\MercadoLibre\MercadoLibreService;
@@ -120,7 +121,7 @@ class PlatformConnectorOAuthService
         if (!$code || !$state) {
             return response('Faltan parámetros code o state en la URL de retorno.', 400);
         }
-        $connector = PlatformConnector::with('platform')->find((int) $state);
+        $connector = $this->resolver_conector_del_state((string) $state);
         if (!$connector) {
             return response('Conector no encontrado.', 404);
         }
@@ -148,4 +149,33 @@ class PlatformConnectorOAuthService
         );
     }
 
+    /**
+     * Resuelve el conector a partir del `state` del callback aceptando LOS DOS FORMATOS.
+     *
+     * 1. State aleatorio de `oauth_states` (el bueno, el que usa Mercado Pago desde el prompt
+     *    598 y al que van a migrar ML y TN): se busca la fila, se valida que no haya vencido ni
+     *    se haya usado, y se consume. El conector sale de `platform_connector_id`, no de la URL.
+     * 2. Id del conector como state (el formato viejo, el unico que ML y TN mandan HOY en
+     *    produccion): `PlatformConnector::find((int) $state)`.
+     *
+     * Los dos tienen que seguir andando: cuando esta mision se despliegue va a haber ventanas de
+     * autorizacion de ML/TN ya abiertas en el navegador de algun comercio, con el id del conector
+     * pegado en la URL de Mercado Libre. Si el callback dejara de aceptarlo, esas conexiones
+     * fallarian sin que nadie entienda por que.
+     *
+     * @param string $state Valor recibido en el query `state`.
+     * @return PlatformConnector|null
+     */
+    protected function resolver_conector_del_state(string $state)
+    {
+        $oauth_state = OauthState::consume($state);
+
+        if ($oauth_state && !empty($oauth_state->platform_connector_id)) {
+            return PlatformConnector::with('platform')->find((int) $oauth_state->platform_connector_id);
+        }
+
+        // Formato viejo: el state ES el id del conector. `(int)` sobre un state aleatorio de 64
+        // caracteres da 0 y no matchea ninguna fila, asi que no hay ambiguedad entre formatos.
+        return PlatformConnector::with('platform')->find((int) $state);
+    }
 }

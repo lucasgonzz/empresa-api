@@ -50,8 +50,14 @@ class MercadoPagoOAuthController extends Controller
     }
 
     /**
-     * Desconecta la cuenta de Mercado Pago del comercio autenticado: limpia sus tokens y apaga
-     * el master switch (`mp_enabled`).
+     * Desconecta la cuenta de Mercado Pago del comercio autenticado: limpia los tokens de su
+     * `platform_connector` y, si todavía le quedaban credenciales viejas en
+     * `online_configuration`, también las limpia y apaga ahí el master switch (`mp_enabled`).
+     *
+     * Contrato conservado (mismo path, misma clave `model` con el `online_configuration`). Lo
+     * único que cambió: antes, un comercio sin `online_configuration` recibía 422 y no se
+     * desconectaba nada; ahora la desconexión se completa igual sobre el conector y se responde
+     * 200 con `model: null`. El 422 anterior describía un fracaso que ya no ocurre.
      *
      * @return \Illuminate\Http\JsonResponse
      */
@@ -60,10 +66,8 @@ class MercadoPagoOAuthController extends Controller
         $service = new MercadoPagoOAuthService();
         $configuration = $service->disconnect($this->userId());
 
-        if (!$configuration) {
-            return response()->json(['message' => 'No existe una configuración online para este comercio.'], 422);
-        }
-
-        return response()->json(['model' => $this->fullModel('OnlineConfiguration', $configuration->id)], 200);
+        return response()->json([
+            'model' => $configuration ? $this->fullModel('OnlineConfiguration', $configuration->id) : null,
+        ], 200);
     }
 }
