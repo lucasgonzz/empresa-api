@@ -235,7 +235,21 @@ class Ajustar_cantidad_al_confirmar_Test extends EmpresaTestCase
     {
         $cliente = $this->cliente_cc();
 
-        $cuenta = $this->fijar_limite_en_pesos($cliente, 200);
+        /*
+         * El limite se fija RELATIVO al saldo que el cliente ya arrastra, no en un absoluto:
+         * el chequeo del backend compara saldo_actual + total contra el limite, y el cliente
+         * del fixture acumula deuda real de otras corridas (la base del slot no se resiembra).
+         * Con el limite fijo en 200 este test daba 422 en cualquier base con historia --
+         * exploracion de Alertas, 3/9/2026. El margen disponible sigue siendo 200: deja pasar
+         * el total nuevo (150) y rechaza el viejo (350), que es lo que el test mide.
+         */
+        $margen = 200;
+
+        $cuenta_para_saldo = $this->fijar_limite_en_pesos($cliente, $margen);
+
+        $saldo_actual = (float) CurrentAcountHelper::getSaldo($cuenta_para_saldo->id);
+
+        $cuenta = $this->fijar_limite_en_pesos($cliente, $saldo_actual + $margen);
 
         $saldo_previo = (float) CurrentAcountHelper::getSaldo($cuenta->id);
 
@@ -255,9 +269,12 @@ class Ajustar_cantidad_al_confirmar_Test extends EmpresaTestCase
                 .$this->total_esperado().').'
         );
 
+        // Redondeado a centavos: con un saldo previo con decimales (la base del slot acumula
+        // deuda real), la suma en float deja un residuo de 1e-13 que no es plata y hacia fallar
+        // la comparacion exacta. Con saldo previo 0 el residuo no aparecia y el test pasaba.
         $this->assertEquals(
-            $saldo_previo + $this->total_con_cantidades_nuevas(),
-            (float) CurrentAcountHelper::getSaldo($cuenta->id),
+            round($saldo_previo + $this->total_con_cantidades_nuevas(), 2),
+            round((float) CurrentAcountHelper::getSaldo($cuenta->id), 2),
             'El saldo no se movio por el importe nuevo.'
         );
     }

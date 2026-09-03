@@ -31,11 +31,12 @@ trait PedidosDePrueba
     public static $ESTADOS_PEDIDO = ['Sin confirmar', 'Confirmado', 'Terminado', 'Entregado', 'Cancelado'];
 
     /**
-     * Siembra los `order_statuses`, que el fixture de testing no trae.
+     * Siembra los `order_statuses` si hiciera falta.
      *
-     * `TestingFerreteriaSeeder` no llama a `OrderStatusSeeder`: la tabla llega vacía. Se siembra
-     * con `firstOrCreate` para ser idempotente y para no tocar el seeder compartido, que otras
-     * suites ya dan por conocido.
+     * Desde la exploracion de Alertas (3/9/2026) `TestingFerreteriaSeeder` ya los siembra con
+     * ids canonicos (la pestania Pedidos Online los necesita: el controller hardcodea
+     * `order_status_id = 1`). Este metodo queda como red para bases sembradas antes de eso:
+     * `firstOrCreate` por NOMBRE es idempotente y convive con cualquiera de los dos origenes.
      *
      * @return void
      */
