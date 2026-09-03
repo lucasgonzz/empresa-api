@@ -306,6 +306,27 @@ class UserController extends Controller
             $owner_user->save();
         }
 
+        /**
+         * Preferencia del comercio sobre por qué fecha se fechan las ventas en el listado y en los
+         * reportes (`Sale::scopeEnRangoDeFechas`).
+         *
+         * 🔴 Va en `$owner_user` y no en `$model`, igual que `listas_de_precio` y que
+         * `sale_factura_print_option`: quien guarda el formulario puede ser un empleado, y
+         * `Sale::fechaDeReportePorPedido()` siempre resuelve al dueño. Escribirla en la fila del
+         * empleado la guardaría en un lugar que ningún reporte lee, y el tilde quedaría prendido en
+         * pantalla sin cambiar un solo número.
+         *
+         * Guard `has()` + descarte del null, mismo motivo que `aplicar_iva_al_costo`: `ModelForm`
+         * postea el modelo entero, así que un request viejo sin esta clave la dejaría en null, que
+         * en una columna boolean se persiste como 0 — o sea, un guardado cualquiera de otro campo
+         * le apagaría el criterio de fechado al comercio sin que nadie lo pidiera.
+         */
+        if ($owner_user && $request->has('fechar_ventas_por_fecha_de_entrega')
+            && !is_null($request->fechar_ventas_por_fecha_de_entrega)) {
+            $owner_user->fechar_ventas_por_fecha_de_entrega = (int) $request->fechar_ventas_por_fecha_de_entrega;
+            $owner_user->save();
+        }
+
 
         /**
          * Marca de cotización manual cuando el dólar se cambió a mano desde el formulario de

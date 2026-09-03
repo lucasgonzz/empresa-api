@@ -165,6 +165,31 @@ class Fecha_De_Pedido_En_Reportes_Test extends TestCase
     }
 
     /**
+     * El tilde del formulario de configuracion tiene que LLEGAR a la columna del dueño.
+     *
+     * `UserController::update()` asigna campo por campo (no hay fill ni mass assignment), asi que
+     * una preferencia nueva que no este nombrada ahi se guarda en ningun lado: el PUT devuelve 200,
+     * el tilde queda prendido en pantalla hasta que se recarga, y no cambia un solo numero. Medido
+     * el 3/9/2026: sin la asignacion, este mismo PUT dejaba la columna en 0.
+     *
+     * @group sales
+     * @test
+     */
+    public function el_formulario_de_configuracion_guarda_la_preferencia_en_el_dueno()
+    {
+        $user = $this->preferencia(0);
+
+        $payload = $user->toArray();
+        $payload['fechar_ventas_por_fecha_de_entrega'] = 1;
+
+        $response = $this->putJson('api/user/' . $this->user_id, $payload);
+        $response->assertStatus(200);
+
+        $this->assertEquals(1, User::find($this->user_id)->fechar_ventas_por_fecha_de_entrega,
+            'El PUT de configuracion tiene que persistir la preferencia en el usuario dueño.');
+    }
+
+    /**
      * Prende o apaga la preferencia en el usuario dueño y lo deja como usuario autenticado.
      *
      * @param  int $valor
