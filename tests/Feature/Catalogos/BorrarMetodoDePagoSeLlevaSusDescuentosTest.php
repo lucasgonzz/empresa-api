@@ -132,6 +132,55 @@ class BorrarMetodoDePagoSeLlevaSusDescuentosTest extends TestCase
     }
 
     /**
+     * 🔴 EL FILTRO QUE PROTEGE A TODO EL SPA: el index no devuelve descuentos huerfanos.
+     *
+     * Un descuento cuyo metodo fue borrado deja la relacion en null, y el SPA le lee `.name` en
+     * SEIS lugares sin preguntar — incluido vender_set_total.js, que calcula el total de una venta.
+     * Filtrarlo en el index protege a los seis de una, y a los que se escriban despues.
+     *
+     * Este test crea el huerfano a mano (con un id de metodo que no existe) porque desde que
+     * destroy() limpia, el camino normal ya no los genera: lo que se prueba es la red para los que
+     * quedaron de antes o los que aparezcan por otro camino.
+     *
+     * @test
+     */
+    public function el_index_no_devuelve_descuentos_cuyo_metodo_no_existe()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+        $this->actingAs($user, 'web');
+
+        $metodo = CurrentAcountPaymentMethod::create(['name' => 'Metodo vivo']);
+
+        $sano = CurrentAcountPaymentMethodDiscount::create([
+            'current_acount_payment_method_id' => $metodo->id,
+            'discount_percentage'              => -5,
+            'user_id'                          => $user->id,
+        ]);
+
+        /* Id de metodo que con seguridad no existe: el huerfano que rompia el listado. */
+        $huerfano = CurrentAcountPaymentMethodDiscount::create([
+            'current_acount_payment_method_id' => 99999999,
+            'discount_percentage'              => -20,
+            'user_id'                          => $user->id,
+        ]);
+
+        $respuesta = $this->getJson('/api/cc-payment-method-discount');
+        $respuesta->assertStatus(200);
+
+        $ids = collect($respuesta->json('models'))->pluck('id')->all();
+
+        $this->assertContains($sano->id, $ids, 'El descuento sano no viajo.');
+        $this->assertNotContains(
+            $huerfano->id,
+            $ids,
+            'El descuento huerfano viajo al SPA: es lo que tira el TypeError y voltea el listado.'
+        );
+    }
+
+    /**
      * Borrar un id que no existe no revienta.
      *
      * Antes `find()` devolvia null y el `->delete()` siguiente tiraba un error 500 sobre null.
