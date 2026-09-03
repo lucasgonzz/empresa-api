@@ -2,21 +2,32 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\PaymentMethod;
-use App\Models\PaymentMethodType;
+use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
 use Illuminate\Http\Request;
 
 class MercadoPagoController extends Controller
 {
+    /**
+     * Consulta un pago en la API de Mercado Pago con las credenciales vigentes del comercio.
+     *
+     * El access_token sale de `MercadoPagoCredentialsHelper`, el unico lugar que conoce el orden
+     * conector conectado -> `payment_methods`. Antes se leia derecho de `payment_methods` y el
+     * metodo explotaba con "Call to a member function on null" si el comercio no tenia esa fila
+     * (o si faltaba el payment_method_type "MercadoPago"); ahora eso responde 422.
+     *
+     * @param string|int $payment_id Id del pago en Mercado Pago.
+     * @return \Illuminate\Http\JsonResponse
+     */
     function payment($payment_id) {
-        $mercadopago_pm_type = PaymentMethodType::where('name', 'MercadoPago')
-                                                                ->first();
-        $payment_method = PaymentMethod::where('user_id', $this->userId())
-                                        ->where('payment_method_type_id', $mercadopago_pm_type->id)
-                                        ->first();
-        $access_token = $payment_method->access_token;
+        $access_token = MercadoPagoCredentialsHelper::access_token($this->userId());
 
-        $curl = curl_init(); 
+        if (empty($access_token)) {
+            return response()->json([
+                'message' => 'El comercio no tiene una cuenta de Mercado Pago conectada.',
+            ], 422);
+        }
+
+        $curl = curl_init();
         curl_setopt($curl, CURLOPT_URL, 'https://api.mercadopago.com/v1/payments/'.$payment_id);
         curl_setopt($curl, CURLOPT_HTTPHEADER, [
             'Content-Type: application/json',
