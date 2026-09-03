@@ -219,6 +219,12 @@ return [
         // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
         // con ?mp=ok o ?mp=error agregado. Configurable porque empresa-api y empresa-spa pueden
         // vivir en dominios distintos según el cliente.
+        //
+        // Desde la misión de ABM -> Integraciones apunta a `/abm/integraciones` (solapa "Tienda
+        // online"), no más al viejo `/integraciones` del bloque de Configuración online. Ojo al
+        // desplegar: este valor vive en el `.env` de cada cliente, así que actualizarlo es parte
+        // del deploy — si queda el viejo, el comercio conecta bien pero vuelve a una pantalla
+        // que ya no existe.
         'spa_redirect_url'   => env('MP_OAUTH_SPA_REDIRECT_URL'),
         // Mismo problema de cURL error 60 en WAMP/Windows que mercadolibre/google_custom_search:
         // sin CA bundle, verify=false salvo en producción.
