@@ -24,9 +24,47 @@ class SearchController extends Controller
     /**
      * @param bool $return_raw_models Si true (solo uso interno), devuelve la colección/paginador sin armar JSON ni log de historial.
      */
+    /**
+     * Query base del modelo, con el filtro por usuario SOLO si la tabla lo admite.
+     *
+     * 🔴 NO TODAS LAS TABLAS SON POR USUARIO, Y APLICARLES EL FILTRO ES UN 500.
+     *
+     * `current_acount_payment_methods`, por ejemplo, es un catalogo GLOBAL de la base: no tiene
+     * columna `user_id` y su propio index() no filtra. Cuando el buscador le aplicaba el filtro
+     * igual, el `paginate()` de mas abajo reventaba con
+     *
+     *     SQLSTATE[42S22]: Unknown column 'user_id' in 'WHERE'
+     *     (select count(*) as aggregate from `current_acount_payment_methods` where `user_id` = 2700)
+     *
+     * Medido en la produccion de masquito el 3/9/2026: diez veces en un solo dia, y le pasa a
+     * cualquier cliente en 4.x que abra ese buscador.
+     *
+     * Es la misma clase de problema que ya estaba resuelta para `withAll()` unas lineas mas abajo,
+     * y por el mismo motivo: este endpoint dejo de usarse a mano y ahora lo dispara el listado por
+     * defecto de cada modulo con solo entrar, asi que llega a modelos a los que antes nadie lo
+     * llevaba. Aquello se blindo con method_exists; esto faltaba.
+     *
+     * ⚠️ Que una tabla global no se filtre NO afloja ningun aislamiento entre clientes: cada
+     * cliente tiene su propia base de datos. El `user_id` de estas tablas separa a los usuarios de
+     * UN mismo comercio, y las que no lo tienen es porque su contenido es del comercio entero.
+     *
+     * @param  string  $model_name  Clase del modelo, con namespace.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private function query_base_del_modelo($model_name)
+    {
+        $instancia = new $model_name();
+
+        if (! Schema::hasColumn($instancia->getTable(), 'user_id')) {
+            return $model_name::query();
+        }
+
+        return $model_name::where('user_id', $this->userId());
+    }
+
     function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false, $return_raw_models = false) {
         $model_name = GeneralHelper::getModelName($model_name_param);
-        $models = $model_name::where('user_id', $this->userId());
+        $models = $this->query_base_del_modelo($model_name);
 
         $auth_user = $this->user(false);
         if (!is_null($auth_user)) {
@@ -193,7 +231,7 @@ class SearchController extends Controller
 
     function searchFromModal(Request $request, $model_name_param) {
         $model_name = GeneralHelper::getModelName($model_name_param);
-        $models = $model_name::where('user_id', $this->userId())
+        $models = $this->query_base_del_modelo($model_name)
                                 ->withAll();
 
         $models = $models->where(function ($query) use ($request, $model_name_param) {
@@ -378,7 +416,7 @@ class SearchController extends Controller
 
         // Query base: solo el filtro por usuario. El withAll() se aplica aparte (ver abajo), porque
         // no todos los modelos lo definen.
-        $models = $model_name::where('user_id', $this->userId());
+        $models = $this->query_base_del_modelo($model_name);
 
         // withAll() solo si el modelo lo define. De los ~273 modelos en app/Models, solo ~197
         // definen scopeWithAll; los ~76 restantes tiraban BadMethodCallException (500) apenas se
