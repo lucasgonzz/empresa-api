@@ -50,6 +50,11 @@ class PlatformConnector extends Model
     protected $hidden = [
         'access_token',
         'refresh_token',
+        // `auth_code` es el code de OAuth ya canjeado. Es de un solo uso y no sirve para volver
+        // a pedir un token, pero es material de OAuth y no tiene por qué viajar en el JSON de
+        // `GET /api/platform-connector`. Se sigue guardando (sirve para diagnosticar un canje
+        // fallido), solo deja de serializarse.
+        'auth_code',
     ];
 
     /**

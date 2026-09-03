@@ -244,9 +244,12 @@ class MercadoPagoOAuthService
             $connector->error_message = null;
             $connector->save();
         } catch (\Throwable $e) {
-            // Se loguea solo el mensaje de la excepción, nunca variables que puedan contener tokens.
+            // El mensaje de la excepción va SOLO al log, nunca a `error_message`: si lo que falló
+            // fue el `save()` de acá arriba, la excepción es una QueryException y su mensaje trae
+            // el SQL con los bindings, o sea el `auth_code` y el token. `error_message` se
+            // serializa en `GET /api/platform-connector`, así que ahí va un texto fijo.
             Log::error('MercadoPagoOAuthService: excepción al canjear el code de Mercado Pago: ' . $e->getMessage());
-            $this->marcar_error($connector, $e->getMessage());
+            $this->marcar_error($connector, 'No se pudo completar la conexión con Mercado Pago. El detalle quedó en el log del servidor.');
 
             return $this->redirect_to_spa(false);
         }
@@ -378,14 +381,21 @@ class MercadoPagoOAuthService
      * Deja el conector en estado `error` con el motivo, sin tocar los tokens que ya tuviera:
      * un canje fallido no tiene por qué desconectar una cuenta que venía andando.
      *
+     * 🔴 ACÁ SOLO VAN MENSAJES FIJOS, NUNCA `$e->getMessage()`. `error_message` NO está en el
+     * `$hidden` de `PlatformConnector` y `PlatformConnectorController` lo serializa en index,
+     * show y update: cualquier cosa que se escriba acá termina en el navegador. El mensaje de
+     * una `QueryException` incluye el SQL con sus bindings, así que pasarle una excepción cruda
+     * publicaría el `auth_code` y el token. El truncado de abajo es el segundo cinturón, por si
+     * alguien igual le pasa algo largo.
+     *
      * @param PlatformConnector $connector
-     * @param string $mensaje
+     * @param string $mensaje Texto fijo, escrito acá o por el llamador. Nunca de una excepción.
      * @return void
      */
     protected function marcar_error(PlatformConnector $connector, $mensaje)
     {
         $connector->status = PlatformConnector::STATUS_ERROR;
-        $connector->error_message = $mensaje;
+        $connector->error_message = mb_substr((string) $mensaje, 0, 200);
         $connector->save();
     }
 
