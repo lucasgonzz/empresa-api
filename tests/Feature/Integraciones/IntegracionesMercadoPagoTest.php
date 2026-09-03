@@ -119,6 +119,23 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
     }
 
     /**
+     * Crea un conector de Mercado Libre para el comercio del fixture: el caso de control, la
+     * plataforma que SÍ se maneja desde el ABM de conectores.
+     *
+     * @return PlatformConnector
+     */
+    protected function conector_ml()
+    {
+        $platform = Platform::where('slug', Platform::SLUG_MERCADO_LIBRE)->firstOrFail();
+
+        return PlatformConnector::create([
+            'user_id'     => $this->user_id(),
+            'platform_id' => $platform->id,
+            'status'      => PlatformConnector::STATUS_SIN_CONECTAR,
+        ]);
+    }
+
+    /**
      * Crea (o completa) la fila de `payment_methods` del tipo MercadoPago del comercio, que es
      * la credencial vieja: la que `tienda-api` usa HOY para cobrar.
      *
@@ -755,6 +772,75 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
     {
         $this->postJson('/api/platform-connector', ['platform_id' => $this->plataforma_mp()->id])
              ->assertStatus(422);
+    }
+
+    /**
+     * 🔴 EL CONECTOR DE MERCADO PAGO NO SE LISTA EN EL ABM DE CONECTORES.
+     *
+     * Tres piezas que por separado están bien y juntas dejaban un fantasma: el catálogo ya no
+     * ofrece Mercado Pago (`PlatformController@index`), pero la migración de copia le crea un
+     * conector `mercado_pago` a CASI TODO COMERCIO que hoy tenga credencial, y este listado los
+     * devolvía todos. En la solapa "Sistema" aparecía una fila cuyo título no resuelve —
+     * `platform_id` es el `is_title` y se muestra contra el store `platform`, que ya no tiene la
+     * fila de MP—, sin `auth_url` y con el botón de borrar habilitado.
+     *
+     * @return void
+     */
+    public function test_el_abm_de_conectores_no_lista_el_conector_de_mercado_pago()
+    {
+        $conector_mp = $this->conector_mp();
+        $conector_ml = $this->conector_ml();
+
+        $json = $this->getJson('/api/platform-connector')->assertStatus(200)->json();
+
+        $ids = [];
+        foreach ($json['models'] as $model) {
+            $ids[] = (int) $model['id'];
+        }
+
+        $this->assertNotContains(
+            (int) $conector_mp->id,
+            $ids,
+            'El ABM de conectores lista el conector de Mercado Pago: aparece como una fila sin '.
+            'nombre, sin auth_url y con botón de borrar.'
+        );
+        $this->assertContains(
+            (int) $conector_ml->id,
+            $ids,
+            'El filtro se llevó puesto al conector de Mercado Libre, que sí va en este ABM.'
+        );
+    }
+
+    /**
+     * 🔴 Y BORRARLO POR DELETE DIRECTO TAMPOCO.
+     *
+     * Filtrar solo el listado deja pasar un DELETE a mano, que es la misma lección que ya se
+     * aplicó en store y update. Y acá el costo es concreto: borrar esa fila se lleva puesto el
+     * token OAuth. El comercio sigue cobrando (lo cubre el espejo de `payment_methods`), pero la
+     * tarjeta de Tienda online pasa a decir "Desconectado" con el cobro vivo — el mismo
+     * "disconnect que miente" que esta misión arregló, reabierto por otra puerta.
+     *
+     * @return void
+     */
+    public function test_no_se_puede_borrar_el_conector_de_mercado_pago_desde_el_abm()
+    {
+        $conector = $this->conector_mp();
+
+        $this->deleteJson('/api/platform-connector/'.$conector->id)
+             ->assertStatus(404);
+
+        $this->assertNotNull(
+            PlatformConnector::find($conector->id),
+            'El ABM borró el conector de Mercado Pago, y con él el token OAuth del comercio.'
+        );
+
+        $credenciales = MercadoPagoCredentialsHelper::credentials($this->user_id());
+
+        $this->assertSame(
+            'TOKEN-DEL-CONECTOR',
+            $credenciales['access_token'],
+            'El borrado se llevó la credencial vigente del comercio.'
+        );
     }
 
     /**
