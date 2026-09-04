@@ -320,8 +320,22 @@ class UserController extends Controller
          * postea el modelo entero, así que un request viejo sin esta clave la dejaría en null, que
          * en una columna boolean se persiste como 0 — o sea, un guardado cualquiera de otro campo
          * le apagaría el criterio de fechado al comercio sin que nadie lo pidiera.
+         *
+         * 🔴 Y SOLO SI QUIEN GUARDA ES EL DUEÑO. Este es el guard que importa y no es teórico:
+         * `AuthController::set_employee_props()` copia del dueño al empleado solo `owner_extencions`,
+         * `owner_configuration`, `iva_included`, `ask_amount_in_vender` y el objeto `owner` — esta
+         * columna NO. O sea que el modelo que la SPA tiene para un empleado trae la columna PROPIA
+         * del empleado, que es 0 y que nadie escribe nunca. Sin este guard, el empleado que entra a
+         * Configuración a cambiarse la contraseña postea ese 0, se lo escribe al dueño, y el
+         * comercio pierde el criterio de fechado sin ningún error: los reportes vuelven solos a
+         * fecha de carga.
+         *
+         * Esconder el control en la SPA (que también se hace, con `is_owner_v_if_function`) NO
+         * alcanza: `ModelForm` postea el modelo entero, props ocultas incluidas. El arreglo tiene
+         * que estar de este lado.
          */
-        if ($owner_user && $request->has('fechar_ventas_por_fecha_de_entrega')
+        if ($owner_user && is_null($model->owner_id)
+            && $request->has('fechar_ventas_por_fecha_de_entrega')
             && !is_null($request->fechar_ventas_por_fecha_de_entrega)) {
             $owner_user->fechar_ventas_por_fecha_de_entrega = (int) $request->fechar_ventas_por_fecha_de_entrega;
             $owner_user->save();

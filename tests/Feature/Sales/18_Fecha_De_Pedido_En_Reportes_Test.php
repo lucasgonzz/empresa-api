@@ -34,6 +34,9 @@ class Fecha_De_Pedido_En_Reportes_Test extends TestCase
 
     public $user_id = 500;
 
+    /** Empleado del dueño 500 (owner_id = 500) en el fixture del slot. */
+    public $empleado_id = 501;
+
     /**
      * Fechas fijas y lejanas, en dos meses DISTINTOS. Aislan el test de cualquier venta que ya
      * exista en la base compartida del slot, y son justamente el caso que el defecto rompia: una
@@ -190,6 +193,77 @@ class Fecha_De_Pedido_En_Reportes_Test extends TestCase
     }
 
     /**
+     * 🔴 UN EMPLEADO QUE GUARDA CONFIGURACION NO PUEDE APAGARLE LA PREFERENCIA AL DUEÑO.
+     *
+     * No es hipotetico. `AuthController::set_employee_props()` copia del dueño al empleado solo
+     * `owner_extencions`, `owner_configuration`, `iva_included`, `ask_amount_in_vender` y el objeto
+     * `owner`; esta columna no. Asi que el modelo que la SPA tiene para un empleado trae la columna
+     * PROPIA del empleado, que es 0 y que nadie escribe nunca — y `ModelForm` postea el modelo
+     * entero. Sin el guard de dueño en `UserController::update()`, el empleado que entra a
+     * cambiarse la contraseña postea ese 0 y el comercio pierde el criterio de fechado sin que
+     * salte ningun error: los reportes vuelven solos a fecha de carga.
+     *
+     * @group sales
+     * @test
+     */
+    public function un_empleado_que_guarda_configuracion_no_le_apaga_la_preferencia_al_dueno()
+    {
+        $dueno = User::find($this->user_id);
+        $dueno->fechar_ventas_por_fecha_de_entrega = 1;
+        $dueno->save();
+
+        $empleado = User::find($this->empleado_id);
+        $this->assertEquals($this->user_id, $empleado->owner_id,
+            'El fixture tiene que dar un empleado del dueño 500; si no, el test no mide nada.');
+
+        $this->actingAs($empleado, 'web');
+
+        /* Exactamente lo que postea ModelForm: el modelo del empleado, con su propia columna en 0. */
+        $payload = $empleado->toArray();
+        $payload['fechar_ventas_por_fecha_de_entrega'] = 0;
+
+        $response = $this->putJson('api/user/' . $this->empleado_id, $payload);
+        $response->assertStatus(200);
+
+        $this->assertEquals(1, User::find($this->user_id)->fechar_ventas_por_fecha_de_entrega,
+            'El empleado no puede pisarle al dueño el criterio de fechado de todo el comercio.');
+    }
+
+    /**
+     * El grafico que el comercio realmente mira (`chart/from-date`, CajaChartsHelper) tiene que
+     * fechar igual que el listado.
+     *
+     * Es un endpoint distinto del de `el_grafico_y_rendimiento_...`: aquel mide SaleChartHelper
+     * (`sale/charts`), que hoy no lo llama nadie en la SPA. El que monta la pantalla sale de
+     * src/store/chart.js y pega aca. Si este se queda en fecha de carga, prendida la preferencia el
+     * comercio ve el listado en un mes y el grafico en otro.
+     *
+     * @group sales
+     * @test
+     */
+    public function el_grafico_de_caja_vieja_fecha_igual_que_el_listado()
+    {
+        $this->preferencia(1);
+
+        $con_pedido = $this->crear_venta(1000, $this->fecha_de_pedido);
+        $sin_pedido = $this->crear_venta(500, null);
+
+        $listado_enero = $this->listado($this->mes_de_pedido_desde, $this->mes_de_pedido_hasta);
+        $this->assertContains($con_pedido->id, $listado_enero);
+        $this->assertNotContains($sin_pedido->id, $listado_enero);
+
+        $grafico_enero = $this->grafico_de_caja($this->mes_de_pedido_desde, $this->mes_de_pedido_hasta);
+        $this->assertEquals(count($listado_enero), $grafico_enero['cantidad_ventas'],
+            'El grafico de la pantalla tiene que contar las mismas ventas que el listado.');
+        $this->assertEquals(1000, $grafico_enero['total_ventas'],
+            'Y sumar su total: solo la venta de 1000 pertenece a enero por fecha de pedido.');
+
+        $grafico_marzo = $this->grafico_de_caja($this->mes_de_carga_desde, $this->mes_de_carga_hasta);
+        $this->assertEquals(500, $grafico_marzo['total_ventas'],
+            'En marzo tiene que quedar solo la venta sin fecha de entrega, por el COALESCE.');
+    }
+
+    /**
      * Prende o apaga la preferencia en el usuario dueño y lo deja como usuario autenticado.
      *
      * @param  int $valor
@@ -266,6 +340,21 @@ class Fecha_De_Pedido_En_Reportes_Test extends TestCase
         $response->assertStatus(200);
 
         return $response->json('charts');
+    }
+
+    /**
+     * Totales del grafico que monta la pantalla (CajaViejaController@charts -> CajaChartsHelper).
+     *
+     * @param  string $desde
+     * @param  string $hasta
+     * @return array
+     */
+    function grafico_de_caja($desde, $hasta)
+    {
+        $response = $this->get('api/chart/from-date/' . $desde . '/' . $hasta);
+        $response->assertStatus(200);
+
+        return $response->json('models');
     }
 
     /**
