@@ -159,6 +159,16 @@ class MasiveUpdateHelper
         $changes_count = 0;
         $non_article_items = [];
 
+        /*
+         * Usuario del comercio, resuelto UNA sola vez para toda la masiva.
+         *
+         * Se resuelve al objeto y no se pasa el id: `debe_aplicar_al_asignar()` hace `User::find()`
+         * cuando recibe un id numerico, y aca eso serian hasta 3000 SELECT extra por corrida
+         * —tambien con la preferencia apagada, porque la consulta pasa antes de leer la columna—.
+         * Con el objeto ya resuelto no hay ninguna query por articulo.
+         */
+        $user_del_comercio = $model_name == 'article' ? User::find($masive_update->user_id) : null;
+
         foreach ($models as $model) {
             if (!$model) {
                 continue;
@@ -218,7 +228,7 @@ class MasiveUpdateHelper
                     ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor(
                         $model,
                         $provider_id_previo,
-                        $masive_update->user_id
+                        $user_del_comercio
                     );
 
                     ArticleHelper::setFinalPrice(
@@ -483,6 +493,9 @@ class MasiveUpdateHelper
     {
         $parent_masive_update->load('articles');
 
+        /* Mismo motivo que en process_update(): resuelto una vez, cero queries por articulo. */
+        $user_del_comercio = User::find($parent_masive_update->user_id);
+
         foreach ($parent_masive_update->articles as $article) {
             $changes = json_decode($article->pivot->changes_json, true);
             if (!is_array($changes)) {
@@ -530,17 +543,41 @@ class MasiveUpdateHelper
              *
              * `$revert_changes['provider_id']['old']` es el proveedor que el articulo tenia JUSTO
              * ANTES de revertir (lo escribe el foreach de arriba como `$old_before_revert`), que es
-             * el que hay que barrer; el `provider_id` que quedo en el modelo es el original, que es
-             * el que hay que recrear.
+             * el que hay que barrer; el `provider_id` que quedo en el modelo es el original.
+             *
+             * 🔴 SON DOS CAMINOS, no uno, y el segundo se descubrio en el revisor de merge:
+             *
+             *   - Si el proveedor original NO era null (masiva A -> B), alcanza con el helper de
+             *     asignacion: barre los de B y recrea los de A.
+             *   - Si el proveedor original ERA null (masiva null -> B, que es el caso mas comun de
+             *     una masiva: asignarle proveedor a los que no tenian), el helper de asignacion sale
+             *     por su guarda de "sin proveedor nuevo no se toca nada" — la que protege al usuario
+             *     que le saca el proveedor a un articulo a mano — y los descuentos de B quedaban
+             *     huerfanos, con el setFinalPrice() de abajo recalculando el costo con ellos puestos.
+             *     Para ese caso va el metodo dedicado, que barre porque ACA sabemos que esos
+             *     descuentos los puso esta misma masiva (ver su docblock).
              *
              * Usuario explicito, mismo motivo que en process_update(): esto tambien corre en cola.
              */
             if (isset($revert_changes['provider_id'])) {
-                ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor(
-                    $model,
-                    $revert_changes['provider_id']['old'],
-                    $parent_masive_update->user_id
-                );
+
+                $provider_id_de_la_masiva = $revert_changes['provider_id']['old'];
+
+                if (!is_null($model->provider_id)) {
+
+                    ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor(
+                        $model,
+                        $provider_id_de_la_masiva,
+                        $user_del_comercio
+                    );
+                } else {
+
+                    ArticleProviderDiscountHelper::revertir_materializacion_de_masiva(
+                        $model,
+                        $provider_id_de_la_masiva,
+                        $user_del_comercio
+                    );
+                }
             }
 
             ArticleHelper::setFinalPrice(

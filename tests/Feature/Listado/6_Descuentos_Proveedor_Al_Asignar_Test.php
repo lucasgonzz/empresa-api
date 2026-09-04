@@ -676,6 +676,96 @@ class Descuentos_Proveedor_Al_Asignar_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Revertir una masiva que asigno proveedor a articulos que NO tenian ninguno.
+     *
+     * Es el caso mas comun de una masiva de proveedor —asignarselo a los que no lo tenian— y el que
+     * encontro el revisor de merge: la guarda que protege "quitar el proveedor no borra descuentos"
+     * tambien apagaba la reversion cuando el proveedor original era null, y el articulo quedaba sin
+     * proveedor pero CON los descuentos huerfanos del proveedor de la masiva, con el costo
+     * recalculado sobre ellos. Sin error y sin aviso.
+     *
+     * El complemento del test de A -> B -> revert: aquel pasaba igual con este defecto puesto.
+     *
+     * @test
+     */
+    public function prendida_revertir_una_masiva_de_null_a_proveedor_saca_los_descuentos()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_con_descuentos(self::PROVEEDOR, [10]);
+
+        /* Articulo SIN proveedor: es el estado al que la reversion tiene que devolverlo. */
+        $alta = $this->postJson('api/article', $this->payload_alta([
+            'name'        => 'zz Articulo masiva desde sin proveedor',
+            'provider_id' => null,
+        ]));
+
+        $alta->assertStatus(201);
+
+        $article = Article::find(json_decode($alta->getContent(), true)['model']['id']);
+
+        $this->assertCount(
+            0,
+            $this->descuentos_tagueados($article->id),
+            'Precondicion: nace sin descuentos porque nace sin proveedor.'
+        );
+
+        $response = $this->putJson('api/update/article', [
+            'from_filter' => 0,
+            'models_id'   => [$article->id],
+            'update_form' => [
+                [
+                    'type'  => 'search',
+                    'key'   => 'provider_id',
+                    'value' => $provider->id,
+                ],
+            ],
+        ]);
+
+        $response->assertStatus(200);
+
+        $this->assertCount(
+            1,
+            $this->descuentos_tagueados($article->id),
+            'Precondicion: la masiva tiene que haberle materializado la bonificacion.'
+        );
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'Precondicion: con el 10% aplicado.'
+        );
+
+        /* Y la vuelta: sin proveedor no puede quedar ningun descuento de ese proveedor. */
+        $masive_update_id = json_decode($response->getContent(), true)['masive_update_id'];
+
+        $revert = $this->postJson('api/masive-update/'.$masive_update_id.'/revert');
+
+        $revert->assertStatus(200);
+
+        $article = $article->fresh();
+
+        $this->assertNull(
+            $article->provider_id,
+            'Precondicion de la reversion: el articulo tiene que volver a quedar sin proveedor.'
+        );
+
+        $this->assertCount(
+            0,
+            $this->descuentos_tagueados($article->id),
+            'Sin proveedor no pueden quedar descuentos huerfanos del proveedor que puso la masiva.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1000,
+            (float) $article->costo_real,
+            self::DELTA,
+            'Y el costo real tiene que volver al costo bruto, sin el descuento.'
+        );
+    }
+
+    /**
      * Y el mismo camino con la preferencia APAGADA: la masiva cambia el proveedor y no toca ningun
      * descuento, exactamente como en develop.
      *

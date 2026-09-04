@@ -378,4 +378,53 @@ class ArticleProviderDiscountHelper {
 
         return true;
     }
+
+    /**
+     * Saca los `article_discounts` tagueados a un proveedor cuando el articulo se queda SIN
+     * proveedor. Es la contraparte de `aplicar_al_asignar_proveedor()` para el unico caso en que
+     * quedarse sin proveedor sí tiene que barrer: la REVERSION de una actualizacion masiva que
+     * habia asignado ese proveedor a un articulo que no tenia ninguno.
+     *
+     * 🔴 POR QUE ESTO NO CONTRADICE LA GUARDA DE `aplicar_al_asignar_proveedor()`, que existe
+     * justamente para que quitar el proveedor NO borre descuentos:
+     *
+     * La diferencia es quien llama y que sabe. Cuando un usuario le saca el proveedor a un articulo
+     * desde la ficha, nadie sabe de donde salieron esos descuentos: pueden ser de una compra real
+     * con bonificaciones negociadas, y borrarlos pierde un dato irrecuperable. Al revertir una
+     * masiva, en cambio, el llamador SI sabe: el articulo no tenia proveedor antes de esa masiva,
+     * asi que tampoco tenia descuentos tagueados, y los que hay ahora los puso esa misma masiva
+     * hace un rato. Revertir es devolver el articulo al estado previo, y ese estado no los incluia.
+     *
+     * Sin esto, revertir una masiva de "null -> proveedor B" dejaba el articulo sin proveedor pero
+     * CON los descuentos de B, y el setFinalPrice() siguiente le recalculaba el costo con esos
+     * descuentos huerfanos aplicados. Sin error y sin aviso.
+     *
+     * ⚠️ Un caso que este metodo pisa a proposito: si entre la masiva y su reversion alguien le
+     * cargo una COMPRA a ese mismo proveedor, los descuentos tagueados ya no son los de la masiva
+     * sino los de la compra, y se van igual. Es coherente con lo que la reversion ya hace con el
+     * resto de las columnas (restaura el valor previo pisando lo que haya pasado en el medio), pero
+     * vale tenerlo escrito.
+     *
+     * Gateado por la preferencia: con la preferencia apagada la masiva no materializo nada, asi que
+     * no hay nada que barrer y cualquier descuento tagueado que el articulo tenga es de otro origen.
+     *
+     * @param  \App\Models\Article $article     Articulo ya revertido (sin proveedor).
+     * @param  int|null            $provider_id Proveedor que la masiva le habia asignado.
+     * @param  \App\Models\User|int|null $user  Usuario/comercio, explicito: esto corre en cola.
+     * @return bool  true si se barrio algo (quien llama tiene que recalcular el precio).
+     */
+    static function revertir_materializacion_de_masiva($article, $provider_id, $user = null) {
+
+        if (is_null($article) || is_null($provider_id) || !self::debe_aplicar_al_asignar($user)) {
+            return false;
+        }
+
+        self::delete_tagged_discounts($article, $provider_id);
+
+        // Mismo motivo que en aplicar_al_asignar_proveedor(): el setFinalPrice() del llamador lee
+        // esta relacion inmediatamente despues.
+        $article->unsetRelation('article_discounts');
+
+        return true;
+    }
 }
