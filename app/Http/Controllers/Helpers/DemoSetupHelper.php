@@ -735,6 +735,15 @@ class DemoSetupHelper
             'CAPaymentMethodTypeSeeder',
 
             /*
+                Tipos de metodo de pago de la TIENDA ONLINE. Es otro seeder que el `CA...` de
+                arriba (ese es el de cuenta corriente), y hasta el 3/9/2026 no lo llamaba nadie:
+                la demo quedaba con el desplegable "Tipo" vacio en ABM -> Tienda online ->
+                Metodos de pago, o sea sin forma de dar de alta el cobro online. Es la razon por
+                la que la demo 1 no tenia NINGUN metodo de pago cargado.
+            */
+            'PaymentMethodTypeSeeder',
+
+            /*
                 D3 (misión 63): catálogos estructurales que `DatabaseSeeder::common_seeders()`
                 siembra para todos y que la lista de la demo nunca tuvo.
 

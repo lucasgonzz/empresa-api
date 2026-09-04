@@ -25,15 +25,24 @@ class CajaChartsHelper {
 			$user_id = $instance->userId();
 		}
 
+		/*
+		 * ESTE es el grafico que el comercio mira de verdad: `chart/from-date/{from}/{until}` ->
+		 * CajaViejaController@charts, que es a lo que pega src/store/chart.js desde
+		 * caja-vieja/NavComponent.vue. (SaleChartHelper, el otro grafico de ventas, cuelga de
+		 * `sale/charts/{from}/{to}` y hoy no lo llama nadie en la SPA.) Por eso tiene que fechar con
+		 * el mismo criterio que el listado: si no, prendida la preferencia el listado se mueve y el
+		 * grafico se queda en fecha de carga, que es justo el acoplamiento que esta mision cierra.
+		 *
+		 * El scope reproduce las dos ramas de aca tal cual (rango con until_date, o un solo dia sin
+		 * el), asi que con la preferencia apagada el SQL es el mismo de siempre. La unica diferencia
+		 * de forma esta en dos casos que esta funcion no recibe: un $from_date nulo/vacio (el scope
+		 * no filtra; el codigo viejo comparaba contra null) y un $until_date cadena vacia (el scope
+		 * lo trata como "un solo dia"). Los tres llamadores pasan o un parametro de ruta o un Carbon.
+		 */
 		$sales = Sale::where('user_id', $user_id)
-                        ->orderBy('created_at', 'ASC');
-        if (!is_null($until_date)) {
-            $sales = $sales->whereDate('created_at', '>=', $from_date)
-                            ->whereDate('created_at', '<=', $until_date);
-        } else {
-            $sales = $sales->whereDate('created_at', $from_date);
-        }
-		$sales = $sales->get();
+                        ->orderBy('created_at', 'ASC')
+                        ->enRangoDeFechas($from_date, $until_date, $user_id)
+                        ->get();
 
 		foreach ($sales as $sale) {
 			$cantidad_ventas++;

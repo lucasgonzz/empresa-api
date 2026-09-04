@@ -17,8 +17,13 @@ class SaleChartHelper {
 		$sales = Sale::where('user_id', $instace->userId())
 						/** Excluye ventas contenedoras de facturación: no son ventas reales. */
 						->soloVentasReales()
-						->where('created_at', '>=', $from)
-						->where('created_at', '<=', $until)
+						/*
+						 * Mismo criterio de fechado que el listado y que Rendimiento (ver el scope).
+						 * El ultimo parametro va en false a proposito: este sitio siempre comparo el
+						 * datetime completo y no solo la parte fecha, y se respeta tal cual para que
+						 * el camino con la preferencia apagada siga emitiendo el SQL de siempre.
+						 */
+						->enRangoDeFechas($from, $until, $instace->userId(), false)
 						->get();
 		foreach ($sales as $sale) {
 			$cantidad_ventas++;
