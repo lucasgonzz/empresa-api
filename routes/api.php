@@ -444,6 +444,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // GET provider/{provider} para el show, y esa ruta captura "options" como si fuera un id
     // si queda declarada primero (4/8/2026).
     Route::get('provider/options', 'ProviderController@options');
+    // Propagar a los articulos un cambio en los descuentos del proveedor (mision
+    // descuentos-proveedor-propagar). Van ANTES del resource por el mismo motivo que la ruta de
+    // arriba: el show del resource captura cualquier `provider/{algo}`.
+    Route::get('provider/{id}/propagar-descuentos/preview', 'ProviderController@propagar_descuentos_preview');
+    Route::put('provider/{id}/propagar-descuentos', 'ProviderController@propagar_descuentos');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');

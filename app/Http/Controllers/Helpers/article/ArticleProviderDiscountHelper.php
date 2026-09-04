@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
 use App\Models\User;
@@ -426,5 +427,209 @@ class ArticleProviderDiscountHelper {
         $article->unsetRelation('article_discounts');
 
         return true;
+    }
+
+    /**
+     * Clasifica un articulo frente a los descuentos ACTUALES de su proveedor.
+     *
+     * Devuelve una de estas tres:
+     *   'al_dia'          -> sus descuentos tagueados son exactamente los del proveedor hoy.
+     *   'desactualizado'  -> difieren y nadie los edito: corresponde actualizarlos sin preguntar.
+     *                        Cubre tambien al articulo al que le FALTA un descuento que el proveedor
+     *                        agrego, y al que le SOBRA uno que el proveedor borro.
+     *   'editado_a_mano'  -> alguno de sus descuentos tiene la marca `editado_a_mano`, o sea que una
+     *                        persona le cambio el porcentaje a proposito para ESE articulo.
+     *
+     * 🔴 "Editado a mano" gana sobre todo lo demas: ante la duda se le pregunta al usuario en vez de
+     * pisarle una decision comercial.
+     *
+     * @param  \Illuminate\Support\Collection $tagueados article_discounts del articulo tagueados a
+     *                                                   ESE proveedor.
+     * @param  array $percentages_actuales Porcentajes que el proveedor tiene hoy.
+     * @return string
+     */
+    static function clasificar_articulo($tagueados, $percentages_actuales) {
+
+        $del_articulo = [];
+
+        foreach ($tagueados as $descuento) {
+
+            // 🔴 La marca la puso ArticleDiscountController::update() en el momento en que una
+            // persona cambio el porcentaje. No se deduce comparando numeros: la primera version de
+            // esta mision lo intentaba asi y un test la puso en rojo, porque al borrar un descuento
+            // del proveedor su porcentaje desaparece de toda referencia y los articulos que lo
+            // tenian copiado pasaban por editados a mano.
+            if ($descuento->editado_a_mano) {
+                return 'editado_a_mano';
+            }
+
+            $del_articulo[] = self::normalizar_porcentaje($descuento->percentage);
+        }
+
+        sort($del_articulo);
+        $actuales_ordenados = $percentages_actuales;
+        sort($actuales_ordenados);
+
+        // Compara los dos conjuntos completos: asi tambien cae como desactualizado el articulo al
+        // que le falta un descuento que el proveedor agrego, o al que le sobra uno que el proveedor
+        // borro — no solo el que tiene un porcentaje viejo.
+        if ($del_articulo === $actuales_ordenados) {
+            return 'al_dia';
+        }
+
+        return 'desactualizado';
+    }
+
+    /**
+     * Normaliza un porcentaje a string con dos decimales, para poder compararlos con `===` sin que
+     * "10", "10.0", 10.00 y "10.00" cuenten como distintos. La columna es decimal(10,2) en las dos
+     * tablas, asi que dos decimales es exactamente su precision.
+     *
+     * @param  mixed $valor
+     * @return string|null
+     */
+    static function normalizar_porcentaje($valor) {
+
+        if (is_null($valor) || $valor === '') {
+            return null;
+        }
+
+        return number_format((float) $valor, 2, '.', '');
+    }
+
+    /**
+     * Cuenta como quedaria una propagacion ANTES de hacerla, para la ventana de confirmacion.
+     * No modifica nada.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  \App\Models\User|int|null $user
+     * @return array{al_dia:int,desactualizados:int,editados_a_mano:int,total:int,preferencia_activa:bool}
+     */
+    static function preview_propagacion($provider, $user = null) {
+
+        $vacio = [
+            'al_dia'             => 0,
+            'desactualizados'    => 0,
+            'editados_a_mano'    => 0,
+            'total'              => 0,
+            'preferencia_activa' => self::debe_aplicar_al_asignar($user),
+        ];
+
+        if (is_null($provider)) {
+            return $vacio;
+        }
+
+        $percentages_actuales = [];
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+
+            $actual = self::normalizar_porcentaje($provider_discount->percentage);
+            if (!is_null($actual)) {
+                $percentages_actuales[] = $actual;
+            }
+        }
+
+        $resultado = $vacio;
+
+        // Solo los articulos que TIENEN descuentos tagueados de este proveedor: a los que no tienen
+        // ninguno no se les toca nada, ni se los cuenta. Asignarles descuentos por primera vez es
+        // el trabajo de aplicar_al_asignar_proveedor(), no de una propagacion.
+        $articulos = ArticleDiscount::where('provider_id', $provider->id)
+                                        ->get()
+                                        ->groupBy('article_id');
+
+        foreach ($articulos as $tagueados) {
+
+            $clase = self::clasificar_articulo($tagueados, $percentages_actuales);
+
+            if ($clase === 'al_dia') {
+                $resultado['al_dia']++;
+            } else if ($clase === 'desactualizado') {
+                $resultado['desactualizados']++;
+            } else {
+                $resultado['editados_a_mano']++;
+            }
+
+            $resultado['total']++;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Propaga los descuentos ACTUALES del proveedor a sus articulos: re-materializa los
+     * `article_discounts` tagueados con los porcentajes de hoy.
+     *
+     * 🔴 Re-materializar es el punto, y es lo que el pedido literal ("actualizar el precio") NO
+     * hace. El recalculo de precios que ya existia (ProviderController -> ProcessSetFinalPrices)
+     * lee los `article_discounts`, que son COPIAS con su propio porcentaje: recalcular sin tocarlas
+     * da exactamente el mismo precio de antes. El sistema trabaja y nada se mueve.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  bool  $pisar_editados Si es true, tambien se rehacen los articulos cuyo descuento
+     *                               alguien edito a mano. Por defecto NO se tocan.
+     * @param  \App\Models\User|int|null $user Usuario/comercio, explicito para poder correr sin sesion.
+     * @return array{actualizados:int,respetados:int}
+     */
+    static function propagar_a_articulos($provider, $pisar_editados = false, $user = null) {
+
+        $resultado = ['actualizados' => 0, 'respetados' => 0];
+
+        // 🔴 Gateado por la preferencia del comercio: con la preferencia apagada este comercio nunca
+        // quiso descuentos copiados en sus articulos, y propagarlos le moveria los costos sin
+        // haberlo pedido.
+        if (is_null($provider) || !self::debe_aplicar_al_asignar($user)) {
+            return $resultado;
+        }
+
+        $percentages_actuales = [];
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+
+            $actual = self::normalizar_porcentaje($provider_discount->percentage);
+            if (!is_null($actual)) {
+                $percentages_actuales[] = $actual;
+            }
+        }
+
+        $articulos = ArticleDiscount::where('provider_id', $provider->id)
+                                        ->get()
+                                        ->groupBy('article_id');
+
+        foreach ($articulos as $article_id => $tagueados) {
+
+            $clase = self::clasificar_articulo($tagueados, $percentages_actuales);
+
+            if ($clase === 'al_dia') {
+                continue;
+            }
+
+            if ($clase === 'editado_a_mano' && !$pisar_editados) {
+                $resultado['respetados']++;
+                continue;
+            }
+
+            $article = Article::find($article_id);
+
+            if (is_null($article)) {
+                continue;
+            }
+
+            // Barrido ACOTADO a este proveedor: los tagueados de otros proveedores no son de esta
+            // operacion, y los manuales (provider_id null) nunca se tocan (lo garantiza el
+            // whereNotNull de delete_tagged_discounts).
+            self::delete_tagged_discounts($article, $provider->id);
+
+            self::create_tagged_discounts($article, $provider->id, $provider->provider_discounts);
+
+            // Clase de error del 31/8/2026: setFinalPrice lee esta relacion justo abajo.
+            $article->unsetRelation('article_discounts');
+
+            ArticleHelper::setFinalPrice($article);
+
+            $resultado['actualizados']++;
+        }
+
+        return $resultado;
     }
 }

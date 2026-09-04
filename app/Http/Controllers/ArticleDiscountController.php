@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\ArticleDiscount;
 use Illuminate\Http\Request;
 
@@ -41,6 +42,30 @@ class ArticleDiscountController extends Controller
 
     public function update(Request $request, $id) {
         $model = ArticleDiscount::find($id);
+
+        /**
+         * Mision descuentos-proveedor-propagar (4/9/2026): si una persona le cambia el porcentaje a
+         * un descuento que habia puesto el sistema copiandolo del proveedor (o sea, uno tagueado con
+         * `provider_id`), queda marcado como editado a mano.
+         *
+         * 🔴 La marca decide si una propagacion posterior lo pisa o lo respeta. Se pone ACA y no se
+         * deduce despues comparando numeros: este es el unico momento en que se sabe con certeza
+         * que la mano fue de una persona. Deducirlo por comparacion no funciona —lo demostro un test
+         * en rojo— porque al borrar un descuento del proveedor su porcentaje desaparece de toda
+         * referencia y los articulos que lo tenian copiado pasarian por editados.
+         *
+         * Solo cuenta si el porcentaje REALMENTE cambia: guardar el formulario sin tocar el numero
+         * no convierte en "editado a mano" un descuento que el sistema sigue gobernando.
+         *
+         * Los descuentos manuales del usuario (`provider_id` null) no necesitan la marca: ninguna
+         * propagacion los toca nunca.
+         */
+        if (!is_null($model->provider_id)
+            && ArticleProviderDiscountHelper::normalizar_porcentaje($model->percentage)
+                !== ArticleProviderDiscountHelper::normalizar_porcentaje($request->percentage)) {
+            $model->editado_a_mano = 1;
+        }
+
         $model->percentage                = $request->percentage;
         $model->amount                    = $request->amount;
         $model->show_in_online            = $request->show_in_online;
