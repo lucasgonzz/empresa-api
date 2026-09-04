@@ -503,18 +503,33 @@ class ArticleProviderDiscountHelper {
             }
 
             /*
+             * 🔴 LA MARCA SE LEE ANTES DE CUALQUIER `continue`, y el orden es el defecto en si.
+             *
+             * Una version anterior ponia la guarda de gobernanza arriba, asi que toda fila con monto
+             * salia por el `continue` y su `editado_a_mano` no se leia nunca. El camino es comun: el
+             * formulario del descuento del articulo expone Porcentaje y Monto como dos inputs, y el
+             * usuario que decide "a este articulo el proveedor me lo bonifica con $500 fijos, no con
+             * el 5%" borra el porcentaje y escribe el monto. Esa edicion queda marcada... y se
+             * ignoraba. El articulo salia 'desactualizado', la ventana lo ofrecia como rutina, el
+             * tilde de "pisar" ni aparecia (la SPA lo muestra solo si hay editados), no se barria
+             * nada —la fila tiene monto— y se le creaba la ficha ENCIMA: terminaba descontando los
+             * $500 y ademas el porcentaje del proveedor.
+             */
+            if ($descuento->editado_a_mano) {
+                $hay_marca = true;
+            }
+
+            /*
              * 🔴 Los descuentos de MONTO FIJO puro no los gobierna la ficha del proveedor y esta
-             * funcion no opina sobre ellos: `provider_discounts` solo tiene `percentage`, asi que un
-             * `article_discount` tagueado con `amount` solo pudo dejarlo una COMPRA, con la
+             * funcion no opina sobre su valor: `provider_discounts` solo tiene `percentage`, asi que
+             * un `article_discount` tagueado con `amount` solo pudo dejarlo una COMPRA, con la
              * bonificacion negociada de esa compra (NewProviderOrderHelper via ProviderOrderDiscount,
              * que la guarda en `monto`). Ver `gobernado_por_la_ficha()`.
+             *
+             * No aporta porcentaje a la comparacion, pero su marca ya quedo registrada arriba.
              */
             if (!self::gobernado_por_la_ficha($descuento)) {
                 continue;
-            }
-
-            if ($descuento->editado_a_mano) {
-                $hay_marca = true;
             }
 
             $del_articulo[] = self::normalizar_porcentaje($descuento->percentage);
@@ -577,9 +592,13 @@ class ArticleProviderDiscountHelper {
     /**
      * Indica si un `article_discount` trae monto fijo cargado.
      *
-     * `amount = 0` NO cuenta como monto: no descuenta nada (`ArticlePricesHelper::aplicar_descuentos`
-     * resta el amount tal cual) y tratarlo como "de una compra" dejaria filas muertas fuera del
-     * alcance de la ficha para siempre.
+     * `amount = 0` NO cuenta como monto: no descuenta nada y tratarlo como "de una compra" dejaria
+     * filas muertas fuera del alcance de la ficha para siempre.
+     *
+     * ⚠️ Precision sobre como se aplica: `ArticlePricesHelper::aplicar_descuentos()` usa el
+     * porcentaje SI la fila lo tiene, y recien si no lo tiene resta el monto. O sea que en una fila
+     * con los dos cargados el monto no se resta nunca — por eso esa combinacion se trata aparte
+     * (`tiene_porcentaje_y_monto`) en vez de darla por "de monto".
      *
      * @param  \App\Models\ArticleDiscount|object $descuento
      * @return bool

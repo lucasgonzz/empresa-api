@@ -825,6 +825,88 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 LA MARCA PROTEGE TAMBIEN CUANDO LA EDICION CAMBIO EL PORCENTAJE POR UN MONTO.
+     *
+     * Tercer agujero de la misma familia, y el mas escondido: la guarda que saltea las filas de
+     * monto estaba ANTES de leer la marca, asi que una edicion a mano registrada se ignoraba si esa
+     * fila tenia monto.
+     *
+     * El camino es comun: el formulario del descuento del articulo tiene Porcentaje y Monto como dos
+     * inputs, y el usuario que decide "a este articulo el proveedor me lo bonifica con $500 fijos,
+     * no con el 5%" borra el porcentaje y escribe el monto. El articulo salia 'desactualizado', la
+     * ventana lo ofrecia como rutina, el tilde de pisar ni aparecia, no se barria nada —la fila
+     * tiene monto— y se le creaba la ficha ENCIMA: descontaba los $500 y ademas el porcentaje.
+     *
+     * @test
+     */
+    public function la_marca_protege_cuando_la_edicion_reemplazo_el_porcentaje_por_un_monto()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 5]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Editado a monto', 5);
+
+        $descuento = $this->descuentos_tagueados($article->id)->first();
+
+        /* El usuario cambia el 5% por $500 fijos, desde el formulario real del articulo. */
+        $this->putJson('api/article-discount/'.$descuento->id, [
+            'percentage'     => null,
+            'amount'         => 500,
+            'show_in_online' => 0,
+        ])->assertStatus(200);
+
+        $this->assertEquals(
+            1,
+            (int) ArticleDiscount::find($descuento->id)->editado_a_mano,
+            'Precondicion: cambiar el porcentaje por un monto es una edicion a mano y queda marcada.'
+        );
+
+        $response = $this->getJson('api/provider/'.$provider->id.'/propagar-descuentos/preview');
+
+        $preview = json_decode($response->getContent(), true);
+
+        $this->assertEquals(
+            1,
+            $preview['editados_a_mano'],
+            'La ventana tiene que contarlo entre los editados a mano, o el tilde para pisarlo ni aparece.'
+        );
+
+        $this->assertEquals(
+            0,
+            $preview['desactualizados'],
+            'Y NO puede ofrecerlo como una actualizacion de rutina.'
+        );
+
+        /* Sin el tilde: ni se le borra el monto ni se le suma el porcentaje del proveedor. */
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [])
+                ->assertStatus(200);
+
+        $vigentes = $this->descuentos_tagueados($article->id);
+
+        $this->assertCount(
+            1,
+            $vigentes,
+            'No se le puede agregar el descuento de la ficha encima del monto que el usuario puso.'
+        );
+
+        $this->assertEqualsWithDelta(
+            500,
+            (float) $vigentes->first()->amount,
+            self::DELTA,
+            'Y el monto que puso el usuario sigue intacto.'
+        );
+
+        $this->assertEqualsWithDelta(
+            500,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'El costo real refleja SOLO los $500, no los $500 mas el 5% del proveedor.'
+        );
+    }
+
+    /**
      * La clasificacion es la pieza que decide todo lo demas, y se prueba aparte de la base para
      * cubrir las combinaciones sin fabricar un artículo por cada una.
      *
