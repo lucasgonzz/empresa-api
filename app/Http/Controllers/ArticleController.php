@@ -367,6 +367,19 @@ class ArticleController extends Controller
 
         GeneralHelper::attachModels($model, 'tags', $request->tags);
 
+        /**
+         * Dinamica anterior al merge de refractor, detras de la preferencia del comercio
+         * `users.aplicar_descuentos_proveedor_al_asignar` (APAGADA por defecto): crear un articulo
+         * con proveedor le materializa los descuentos de ese proveedor.
+         *
+         * Va ANTES de setFinalPrice porque es justamente el costo_real lo que tiene que salir con
+         * los descuentos ya aplicados. Con la preferencia apagada cuesta un solo acceso a columna y
+         * el articulo se guarda exactamente igual que antes.
+         *
+         * Sin proveedor anterior: el articulo se acaba de crear.
+         */
+        ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor($model, null);
+
         $model = ArticleHelper::setFinalPrice($model);
 
         // Relacionar proveedor y codigo de proveedor
@@ -551,6 +564,19 @@ class ArticleController extends Controller
         ArticlePriceTypeMonedaHelper::attach_price_type_monedas($model, $request->price_type_monedas);
         
         ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
+
+        /**
+         * Mismo criterio que en store(), con el proveedor que el articulo tenia ANTES de este
+         * guardado (`$actual_provider_id`, capturado arriba de todo, antes de pisar la propiedad).
+         *
+         * En la practica cubre el hueco de "articulo sin proveedor al que se le pone uno": el
+         * cambio A -> B desde el listado no llega hasta aca, lo intercepta el modal de confirmacion
+         * (ChangeProvider.vue) y pega contra `change_provider`, que tiene sus propios flags y NO
+         * depende de esta preferencia. El helper se llama igual para cualquier cambio real de
+         * proveedor —incluido A -> B por si alguna vez llega por esta via— y sale solo cuando el
+         * proveedor no cambio.
+         */
+        ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor($model, $actual_provider_id);
 
         $model = ArticleHelper::setFinalPrice($model);
 

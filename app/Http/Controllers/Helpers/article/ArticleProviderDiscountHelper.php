@@ -3,8 +3,10 @@
 namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
+use App\Models\User;
 
 /**
  * ArticleProviderDiscountHelper
@@ -237,5 +239,107 @@ class ArticleProviderDiscountHelper {
             'descuentos_proveedor_anterior'         => $descuentos_proveedor_anterior,
             'descuentos_estandar_proveedor_nuevo'    => $descuentos_estandar_proveedor_nuevo,
         ];
+    }
+
+    /**
+     * Indica si el comercio quiere que asignarle un proveedor a un articulo le aplique
+     * automaticamente los descuentos de ese proveedor (`users.aplicar_descuentos_proveedor_al_asignar`).
+     *
+     * Es la dinamica anterior al merge de `refractor`: poner el proveedor y que el articulo quede
+     * con los descuentos de ese proveedor, sin esperar a la compra. Viene APAGADA por defecto.
+     *
+     * La preferencia es del COMERCIO, no de cada empleado: siempre se resuelve al usuario dueño,
+     * igual que `UserHelper::uses_listas_de_precio()` y `Sale::fechaDeReportePorPedido()`. Un
+     * empleado que crea un articulo tiene que obtener el comportamiento del comercio y no el de su
+     * propia fila, que nadie escribe nunca.
+     *
+     * Devuelve `false` —el camino de siempre— cuando no hay usuario resoluble o cuando la columna
+     * todavia no existe en esa base (Eloquent devuelve null para un atributo que no vino del SELECT).
+     *
+     * @param  \App\Models\User|int|null $user Usuario, id de usuario, o null para el de la sesion.
+     * @return bool
+     */
+    static function debe_aplicar_al_asignar($user = null) {
+
+        if (is_null($user)) {
+            $user = UserHelper::user(true);
+        } else if (is_numeric($user)) {
+            $user = User::find($user);
+        }
+
+        if (is_null($user)) {
+            return false;
+        }
+
+        if ($user->owner_id) {
+            $user = User::find($user->owner_id);
+
+            if (is_null($user)) {
+                return false;
+            }
+        }
+
+        return (bool) $user->aplicar_descuentos_proveedor_al_asignar;
+    }
+
+    /**
+     * Aplica la dinamica vieja cuando el comercio la tiene prendida: al asignarle un proveedor a un
+     * articulo, se le materializan los `provider_discounts` (bonificaciones estandar) de ese
+     * proveedor como `article_discounts` tagueados.
+     *
+     * Cubre los DOS huecos que dejaba `develop` (los otros caminos ya estaban resueltos y no se
+     * tocan): crear un articulo con proveedor, y asignarle un proveedor a un articulo que no tenia.
+     * El cambio de proveedor A -> B desde el listado sigue pasando por el modal de confirmacion y
+     * su endpoint dedicado (`ArticleController::change_provider`), que no depende de esta
+     * preferencia — decision de Lucas del 4/9/2026.
+     *
+     * 🔴 El barrido es ACOTADO al proveedor anterior (`delete_tagged_discounts` con provider_id),
+     * nunca el barrido total ciego de `sync_provider_discounts()`: aca el usuario cambio un
+     * proveedor, no hizo una compra, y los descuentos tagueados de otros proveedores no son suyos
+     * para borrar. Los descuentos manuales (`provider_id` null) tampoco se tocan nunca.
+     *
+     * 🔴 Deja la relacion `article_discounts` descargada antes de devolver. Quien llama recalcula
+     * el precio inmediatamente despues (`ArticleHelper::setFinalPrice`, que lee esa relacion en
+     * `ArticlePricesHelper::aplicar_descuentos`), y Eloquent cachea las relaciones ya cargadas: sin
+     * el `unsetRelation` el costo se recalcularia con los descuentos de ANTES, sin ninguna
+     * excepcion de por medio, y se guardaria como si estuviera bien. Es la clase de error del
+     * 31/8/2026 (relacion de Eloquent vieja en memoria) y el que desincroniza es el que refresca.
+     *
+     * @param  \App\Models\Article $article          Articulo con el `provider_id` NUEVO ya asignado.
+     * @param  int|null            $old_provider_id  Proveedor que tenia antes (null al crear).
+     * @return bool  true si se materializo algo (quien llama tiene que recalcular el precio).
+     */
+    static function aplicar_al_asignar_proveedor($article, $old_provider_id = null) {
+
+        if (is_null($article) || !self::debe_aplicar_al_asignar()) {
+            return false;
+        }
+
+        $new_provider_id = $article->provider_id;
+
+        // Sin cambio real de proveedor no hay nada que hacer: un guardado que no toco el proveedor
+        // no puede rehacerle los descuentos al articulo (borraria las ediciones manuales que el
+        // usuario le haya hecho a los descuentos tagueados desde que se asigno el proveedor).
+        if ($old_provider_id == $new_provider_id) {
+            return false;
+        }
+
+        if (!is_null($old_provider_id)) {
+            self::delete_tagged_discounts($article, $old_provider_id);
+        }
+
+        if (!is_null($new_provider_id)) {
+
+            $new_provider = Provider::find($new_provider_id);
+            $discounts = $new_provider ? $new_provider->provider_discounts : [];
+
+            self::create_tagged_discounts($article, $new_provider_id, $discounts);
+        }
+
+        // Ver el docblock: sin esto, el setFinalPrice() del llamador calcula con los descuentos
+        // viejos y guarda un costo_real que no se corresponde con las filas de la base.
+        $article->unsetRelation('article_discounts');
+
+        return true;
     }
 }
