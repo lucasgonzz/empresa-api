@@ -569,12 +569,16 @@ class ArticleController extends Controller
          * Mismo criterio que en store(), con el proveedor que el articulo tenia ANTES de este
          * guardado (`$actual_provider_id`, capturado arriba de todo, antes de pisar la propiedad).
          *
-         * En la practica cubre el hueco de "articulo sin proveedor al que se le pone uno": el
-         * cambio A -> B desde el listado no llega hasta aca, lo intercepta el modal de confirmacion
-         * (ChangeProvider.vue) y pega contra `change_provider`, que tiene sus propios flags y NO
-         * depende de esta preferencia. El helper se llama igual para cualquier cambio real de
-         * proveedor —incluido A -> B por si alguna vez llega por esta via— y sale solo cuando el
-         * proveedor no cambio.
+         * En la practica cubre el hueco de "articulo sin proveedor al que se le pone uno". El
+         * cambio A -> B por ELEGIR otro proveedor no llega hasta aca: lo intercepta el modal de
+         * confirmacion (ChangeProvider.vue) y pega contra `change_provider`, que tiene sus propios
+         * flags y NO depende de esta preferencia.
+         *
+         * ⚠️ Lo que SI llega hasta aca es QUITAR el proveedor con la X del campo: ese camino no
+         * pasa por `confirm_change_function` (el hook solo corre al elegir un modelo, no al
+         * limpiar). El helper sale solo en ese caso y no toca ningun descuento — ver la guarda de
+         * "sin proveedor nuevo no se toca nada" en aplicar_al_asignar_proveedor(), que es lo que
+         * evita que quitar el proveedor le borre al articulo los descuentos de una compra.
          */
         ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor($model, $actual_provider_id);
 

@@ -491,12 +491,255 @@ class Descuentos_Proveedor_Al_Asignar_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 QUITAR el proveedor NO le borra los descuentos al articulo.
+     *
+     * Es el defecto que encontro el chequeo adversarial y el que mas caro salia: la X del campo
+     * proveedor en la ficha NO pasa por el modal de confirmacion (el hook `confirm_change_function`
+     * solo corre al ELEGIR un modelo, no al limpiar), asi que el guardado llega derecho a update().
+     * Barrer ahi le habria borrado al articulo los `article_discounts` tagueados — incluidos los que
+     * materializo una COMPRA real, con las bonificaciones negociadas de esa compra — sin aviso, sin
+     * confirmacion y sin registro, y el costo del articulo habria subido solo.
+     *
+     * Se simula el descuento de una compra tal como lo deja NewProviderOrderHelper: tagueado al
+     * proveedor, con un porcentaje que NO es el estandar del proveedor (la compra se negocio al 30%,
+     * el proveedor tiene 10% de lista). Si el codigo lo barre, se pierde justamente el dato que no
+     * se puede reconstruir.
+     *
+     * @test
+     */
+    public function prendida_quitar_el_proveedor_no_borra_los_descuentos_de_la_compra()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_con_descuentos(self::PROVEEDOR, [10]);
+
+        $alta = $this->postJson('api/article', $this->payload_alta([
+            'name'        => 'zz Articulo al que se le quita el proveedor',
+            'provider_id' => $provider->id,
+        ]));
+
+        $alta->assertStatus(201);
+
+        $article = Article::find(json_decode($alta->getContent(), true)['model']['id']);
+
+        /* Se pisa lo materializado con lo que dejaria una compra negociada al 30%. */
+        ArticleDiscount::where('article_id', $article->id)->whereNotNull('provider_id')->delete();
+
+        $de_la_compra = ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => 30,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+        ]);
+
+        $article = $article->fresh();
+
+        /* El usuario toca la X del campo proveedor y guarda. */
+        $edicion = $this->putJson('api/article/'.$article->id, $this->payload_edicion($article, [
+            'provider_id' => null,
+        ]));
+
+        $edicion->assertStatus(200);
+
+        $this->assertNotNull(
+            ArticleDiscount::find($de_la_compra->id),
+            'Quitar el proveedor no puede borrar el descuento que dejo una compra.'
+        );
+
+        $this->assertEqualsWithDelta(
+            30,
+            (float) ArticleDiscount::find($de_la_compra->id)->percentage,
+            self::DELTA,
+            'Y tiene que quedar con el porcentaje negociado en la compra, intacto.'
+        );
+
+        $this->assertEqualsWithDelta(
+            700,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'El costo real no puede subir por quitarle el proveedor: el descuento sigue vigente.'
+        );
+    }
+
+    /**
+     * 🔴 La ACTUALIZACION MASIVA de proveedor desde el listado, ida y vuelta.
+     *
+     * Es el camino que el chequeo independiente encontro sin cubrir, y no es teorico:
+     * `provider_id` tiene `use_to_update: true` en `src/models/article.js`, asi que aparece en el
+     * modal "Actualizar articulos", y `MasiveUpdateHelper::apply_form_change()` asigna cualquier
+     * prop_key de forma generica. Cambiarle el proveedor a 80 articulos de una es literalmente
+     * "cambiar el proveedor a un articulo ya existente" desde el listado.
+     *
+     * Ademas fija que la preferencia se lee con el usuario EXPLICITO: esto corre en
+     * ProcessMasiveUpdateJob (ShouldQueue) y en el worker no hay sesion ni Auth::user(). Si el
+     * helper resolviera por su cuenta, este test daria rojo.
+     *
+     * Y cubre la REVERSION: revertir la masiva tiene que devolver tambien los descuentos, no dejar
+     * el articulo con el proveedor viejo y los descuentos del nuevo.
+     *
+     * @test
+     */
+    public function prendida_la_masiva_de_proveedor_materializa_y_al_revertir_vuelve_atras()
+    {
+        $this->set_preferencia(1);
+
+        $provider_a = $this->proveedor_con_descuentos(self::PROVEEDOR, [10]);
+        $provider_b = $this->proveedor_con_descuentos(self::PROVEEDOR_B, [25]);
+
+        $alta = $this->postJson('api/article', $this->payload_alta([
+            'name'        => 'zz Articulo masiva de proveedor',
+            'provider_id' => $provider_a->id,
+        ]));
+
+        $alta->assertStatus(201);
+
+        $article = Article::find(json_decode($alta->getContent(), true)['model']['id']);
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->costo_real,
+            self::DELTA,
+            'Precondicion: el articulo arranca con el 10% del proveedor A.'
+        );
+
+        /* La masiva real, por el endpoint de verdad. QUEUE sync: el job corre inline. */
+        $response = $this->putJson('api/update/article', [
+            'from_filter' => 0,
+            'models_id'   => [$article->id],
+            'update_form' => [
+                [
+                    'type'  => 'search',
+                    'key'   => 'provider_id',
+                    'value' => $provider_b->id,
+                ],
+            ],
+        ]);
+
+        $response->assertStatus(200);
+
+        $article = $article->fresh();
+
+        $this->assertEquals(
+            $provider_b->id,
+            $article->provider_id,
+            'Precondicion de la masiva: tiene que haber cambiado el proveedor.'
+        );
+
+        $tagueados = $this->descuentos_tagueados($article->id);
+
+        $this->assertCount(1, $tagueados, 'Tiene que quedar solo la bonificacion del proveedor nuevo.');
+
+        $this->assertEquals(
+            $provider_b->id,
+            $tagueados->first()->provider_id,
+            'El descuento vigente tiene que ser el del proveedor B.'
+        );
+
+        $this->assertEqualsWithDelta(
+            750,
+            (float) $article->costo_real,
+            self::DELTA,
+            'El costo real tiene que salir con el 25% de B, no con el 10% de A.'
+        );
+
+        /* Y ahora la vuelta: revertir tiene que devolver proveedor Y descuentos. */
+        $masive_update_id = json_decode($response->getContent(), true)['masive_update_id'];
+
+        $revert = $this->postJson('api/masive-update/'.$masive_update_id.'/revert');
+
+        $revert->assertStatus(200);
+
+        $article = $article->fresh();
+
+        $this->assertEquals(
+            $provider_a->id,
+            $article->provider_id,
+            'Precondicion de la reversion: tiene que haber vuelto el proveedor A.'
+        );
+
+        $tagueados = $this->descuentos_tagueados($article->id);
+
+        $this->assertCount(1, $tagueados, 'Despues de revertir tiene que quedar un solo descuento.');
+
+        $this->assertEquals(
+            $provider_a->id,
+            $tagueados->first()->provider_id,
+            'Revertir tiene que devolver el descuento del proveedor A, no dejar el de B.'
+        );
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->costo_real,
+            self::DELTA,
+            'Revertir tiene que devolver el costo real al 10% de A.'
+        );
+    }
+
+    /**
+     * Y el mismo camino con la preferencia APAGADA: la masiva cambia el proveedor y no toca ningun
+     * descuento, exactamente como en develop.
+     *
+     * @test
+     */
+    public function apagada_la_masiva_de_proveedor_no_toca_ningun_descuento()
+    {
+        $this->set_preferencia(0);
+
+        $provider_a = $this->proveedor_con_descuentos(self::PROVEEDOR, [10]);
+        $provider_b = $this->proveedor_con_descuentos(self::PROVEEDOR_B, [25]);
+
+        $alta = $this->postJson('api/article', $this->payload_alta([
+            'name'        => 'zz Articulo masiva apagada',
+            'provider_id' => $provider_a->id,
+        ]));
+
+        $alta->assertStatus(201);
+
+        $article = Article::find(json_decode($alta->getContent(), true)['model']['id']);
+
+        $response = $this->putJson('api/update/article', [
+            'from_filter' => 0,
+            'models_id'   => [$article->id],
+            'update_form' => [
+                [
+                    'type'  => 'search',
+                    'key'   => 'provider_id',
+                    'value' => $provider_b->id,
+                ],
+            ],
+        ]);
+
+        $response->assertStatus(200);
+
+        $article = $article->fresh();
+
+        $this->assertEquals(
+            $provider_b->id,
+            $article->provider_id,
+            'La masiva tiene que cambiar el proveedor igual: eso no depende de la preferencia.'
+        );
+
+        $this->assertCount(
+            0,
+            $this->descuentos_tagueados($article->id),
+            'Con la preferencia apagada la masiva no puede crear ningun descuento.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1000,
+            (float) $article->costo_real,
+            self::DELTA,
+            'Y el costo real tiene que quedar en el costo bruto.'
+        );
+    }
+
+    /**
      * La preferencia es del COMERCIO y se resuelve al dueño: un empleado que crea el articulo
      * obtiene el comportamiento del comercio, no el de su propia fila (que nadie escribe nunca).
      *
      * @test
      */
-    public function la_preferencia_se_resuelve_al_dueño_para_un_empleado()
+    public function la_preferencia_se_resuelve_al_dueno_para_un_empleado()
     {
         $this->set_preferencia(1);
 

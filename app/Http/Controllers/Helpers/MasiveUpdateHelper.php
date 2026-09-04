@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\Article;
 use App\Models\MasiveUpdate;
 use App\Models\User;
@@ -167,6 +168,17 @@ class MasiveUpdateHelper
             $model_changes = [];
             $model_had_changes = false;
 
+            /*
+             * Proveedor que tenia el articulo ANTES de aplicar los cambios de esta masiva. Se lee
+             * aca porque apply_form_change() asigna y guarda de una, asi que despues del foreach ya
+             * no hay forma de saber cual era.
+             *
+             * `provider_id` entra a la masiva porque en el SPA la propiedad tiene
+             * `use_to_update: true` (src/models/article.js), y apply_form_change() asigna cualquier
+             * prop_key de forma generica (`$model->{$prop_key}`), sin nombrar ninguna columna.
+             */
+            $provider_id_previo = $model_name == 'article' ? $model->provider_id : null;
+
             foreach ($update_form as $form) {
                 $change = self::apply_form_change($model, $form);
                 if ($change) {
@@ -188,6 +200,27 @@ class MasiveUpdateHelper
 
             if ($model_had_changes) {
                 if ($model_name == 'article') {
+                    /*
+                     * Mision descuentos-proveedor-al-asignar (4/9/2026): cambiar el proveedor en
+                     * tanda desde el listado es el mismo acto que cambiarlo de a uno, y el comercio
+                     * que prendio la preferencia lo espera igual. Antes del merge de refractor este
+                     * camino andaba solo, porque el mecanismo viejo vivia DENTRO del pipeline de
+                     * precio (ArticlePricesHelper::aplicar_provider_discounts, eliminada en el
+                     * prompt 261) y cualquier setFinalPrice lo disparaba.
+                     *
+                     * 🔴 El usuario va EXPLICITO. Esto corre en ProcessMasiveUpdateJob, que es
+                     * ShouldQueue: en el worker no hay sesion ni Auth::user(), asi que dejar que el
+                     * helper resuelva por su cuenta daria false siempre y la preferencia quedaria
+                     * muerta acá, sin ningun error que lo delate.
+                     *
+                     * Va antes de setFinalPrice, que es quien tiene que ver los descuentos nuevos.
+                     */
+                    ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor(
+                        $model,
+                        $provider_id_previo,
+                        $masive_update->user_id
+                    );
+
                     ArticleHelper::setFinalPrice(
                         $model,
                         $masive_update->user_id,
@@ -487,6 +520,29 @@ class MasiveUpdateHelper
             }
 
             $model->save();
+
+            /*
+             * Contraparte de la materializacion que hace process_update(): si la masiva que se esta
+             * revirtiendo cambio el proveedor, revertirla tiene que devolver tambien los descuentos
+             * al estado del proveedor original. Sin esto, revertir dejaria el articulo con el
+             * proveedor viejo pero con los descuentos del nuevo — el peor de los dos estados, y
+             * ademas silencioso.
+             *
+             * `$revert_changes['provider_id']['old']` es el proveedor que el articulo tenia JUSTO
+             * ANTES de revertir (lo escribe el foreach de arriba como `$old_before_revert`), que es
+             * el que hay que barrer; el `provider_id` que quedo en el modelo es el original, que es
+             * el que hay que recrear.
+             *
+             * Usuario explicito, mismo motivo que en process_update(): esto tambien corre en cola.
+             */
+            if (isset($revert_changes['provider_id'])) {
+                ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor(
+                    $model,
+                    $revert_changes['provider_id']['old'],
+                    $parent_masive_update->user_id
+                );
+            }
+
             ArticleHelper::setFinalPrice(
                 $model,
                 $parent_masive_update->user_id,

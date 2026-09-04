@@ -307,20 +307,59 @@ class ArticleProviderDiscountHelper {
      *
      * @param  \App\Models\Article $article          Articulo con el `provider_id` NUEVO ya asignado.
      * @param  int|null            $old_provider_id  Proveedor que tenia antes (null al crear).
+     * @param  \App\Models\User|int|null $user       Usuario/comercio del que leer la preferencia.
+     *                                               🔴 OBLIGATORIO desde un job en cola: la
+     *                                               actualizacion masiva corre en
+     *                                               ProcessMasiveUpdateJob (ShouldQueue), donde no
+     *                                               hay sesion ni Auth::user() — resolver por
+     *                                               defecto ahi daria false SIEMPRE y la
+     *                                               preferencia quedaria muerta sin ningun error.
+     *                                               Desde un controller se puede omitir.
      * @return bool  true si se materializo algo (quien llama tiene que recalcular el precio).
      */
-    static function aplicar_al_asignar_proveedor($article, $old_provider_id = null) {
+    static function aplicar_al_asignar_proveedor($article, $old_provider_id = null, $user = null) {
 
-        if (is_null($article) || !self::debe_aplicar_al_asignar()) {
+        if (is_null($article) || !self::debe_aplicar_al_asignar($user)) {
             return false;
         }
 
-        $new_provider_id = $article->provider_id;
+        /*
+         * Normalizacion antes de comparar: `$article->provider_id` puede venir de un request como
+         * string ('5') o como cadena vacia, y `$old_provider_id` sale de la base como int. En PHP
+         * 7.4 `5 == ''` es FALSE, asi que un payload con `provider_id: ''` sobre un articulo con
+         * proveedor entraria por la rama "cambio" y le barreria los descuentos. Se comparan los dos
+         * como int-o-null, y con `===`.
+         */
+        $old_provider_id = (is_null($old_provider_id) || $old_provider_id === '')
+            ? null
+            : (int) $old_provider_id;
+
+        $new_provider_id = (is_null($article->provider_id) || $article->provider_id === '')
+            ? null
+            : (int) $article->provider_id;
+
+        /*
+         * 🔴 SIN PROVEEDOR NUEVO NO SE TOCA NADA, y esta guarda no es defensiva: es la diferencia
+         * entre esta preferencia y una que borra datos.
+         *
+         * Quitar el proveedor de un articulo (la X del campo en la ficha) llega hasta acá con
+         * `$new_provider_id` en null. Barrer ahi le borraria al articulo los `article_discounts`
+         * tagueados — que NO son solo los que pudo haber puesto esta preferencia: son tambien los
+         * que materializo una COMPRA real, con las bonificaciones negociadas de esa compra
+         * (NewProviderOrderHelper), y los del import de Excel. Se irian sin aviso, sin modal de
+         * confirmacion y sin registro, y el costo del articulo subiria solo.
+         *
+         * Lucas pidio aplicar los descuentos AL ASIGNAR un proveedor. Quitarlo no es asignar, y en
+         * develop ese guardado no tocaba un solo descuento: sigue sin tocarlo.
+         */
+        if (is_null($new_provider_id)) {
+            return false;
+        }
 
         // Sin cambio real de proveedor no hay nada que hacer: un guardado que no toco el proveedor
         // no puede rehacerle los descuentos al articulo (borraria las ediciones manuales que el
         // usuario le haya hecho a los descuentos tagueados desde que se asigno el proveedor).
-        if ($old_provider_id == $new_provider_id) {
+        if ($old_provider_id === $new_provider_id) {
             return false;
         }
 
@@ -328,13 +367,10 @@ class ArticleProviderDiscountHelper {
             self::delete_tagged_discounts($article, $old_provider_id);
         }
 
-        if (!is_null($new_provider_id)) {
+        $new_provider = Provider::find($new_provider_id);
+        $discounts = $new_provider ? $new_provider->provider_discounts : [];
 
-            $new_provider = Provider::find($new_provider_id);
-            $discounts = $new_provider ? $new_provider->provider_discounts : [];
-
-            self::create_tagged_discounts($article, $new_provider_id, $discounts);
-        }
+        self::create_tagged_discounts($article, $new_provider_id, $discounts);
 
         // Ver el docblock: sin esto, el setFinalPrice() del llamador calcula con los descuentos
         // viejos y guarda un costo_real que no se corresponde con las filas de la base.
