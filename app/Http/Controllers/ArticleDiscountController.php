@@ -64,8 +64,23 @@ class ArticleDiscountController extends Controller
          * propagacion los toca nunca.
          */
         if (!is_null($model->provider_id)
-            && ArticleProviderDiscountHelper::normalizar_porcentaje($model->percentage)
-                !== ArticleProviderDiscountHelper::normalizar_porcentaje($request->percentage)) {
+            && (
+                ArticleProviderDiscountHelper::normalizar_porcentaje($model->percentage)
+                    !== ArticleProviderDiscountHelper::normalizar_porcentaje($request->percentage)
+                /*
+                 * 🔴 El MONTO tambien cuenta como edicion, y mirarlo no es simetria decorativa.
+                 * El formulario expone Porcentaje y Monto como dos inputs independientes: alguien
+                 * puede agregarle un monto a un descuento SIN tocar el porcentaje. Mirando solo el
+                 * porcentaje esa edicion no quedaba marcada, y la propagacion siguiente borraba el
+                 * monto tipeado a mano sin contarlo entre los editados ni ofrecer el tilde.
+                 *
+                 * Ese monto era inerte en el precio —`aplicar_descuentos` usa el porcentaje si lo
+                 * hay y solo resta el monto cuando no hay porcentaje—, asi que no movia plata; pero
+                 * era un dato de una persona y se perdia en silencio.
+                 */
+                || ArticleProviderDiscountHelper::normalizar_porcentaje($model->amount)
+                    !== ArticleProviderDiscountHelper::normalizar_porcentaje($request->amount)
+            )) {
             $model->editado_a_mano = 1;
         }
 

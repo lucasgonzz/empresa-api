@@ -1065,7 +1065,7 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
      * Es el mismo daño de las versiones anteriores con el signo invertido: antes se destruia lo que
      * no se podia reponer, despues se duplicaba lo que no habia que tocar.
      *
-     * 🔴 Y es el caso de TODA fila que ya existe en produccion: el backfill las marca como compra.
+     * 🔴 Y es el caso de TODA fila que ya existe en produccion: el backfill las deja sin origen.
      *
      * @test
      */
@@ -1125,6 +1125,60 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             (float) $article->fresh()->costo_real,
             self::DELTA,
             'El costo real sigue siendo 900: un solo 10%, no dos encadenados (810).'
+        );
+    }
+
+    /**
+     * Agregarle un MONTO a un descuento, sin tocar el porcentaje, tambien es editarlo a mano.
+     *
+     * El formulario expone Porcentaje y Monto como dos inputs independientes. Mirando solo el
+     * porcentaje, esta edicion no quedaba marcada: la propagacion siguiente borraba el monto que
+     * tipeo una persona, sin contarlo entre los editados y sin ofrecer el tilde.
+     *
+     * No movia plata —con porcentaje presente el monto es inerte en el calculo del costo— pero era
+     * un dato de una persona y se perdia en silencio. Lo encontro la sexta verificacion.
+     *
+     * @test
+     */
+    public function agregar_un_monto_sin_tocar_el_porcentaje_tambien_marca_la_edicion()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Monto agregado', 10);
+
+        $descuento = $this->descuentos_tagueados($article->id)->first();
+
+        /* Le agrega un monto y deja el porcentaje como estaba. */
+        $this->putJson('api/article-discount/'.$descuento->id, [
+            'percentage'     => 10,
+            'amount'         => 500,
+            'show_in_online' => 0,
+        ])->assertStatus(200);
+
+        $this->assertEquals(
+            1,
+            (int) ArticleDiscount::find($descuento->id)->editado_a_mano,
+            'Agregar un monto es editar el descuento, aunque el porcentaje no se haya tocado.'
+        );
+
+        $this->cambiar_descuento_del_proveedor($descuento_proveedor, 5);
+
+        /* Y por lo tanto la propagacion lo respeta y no le borra el monto sin avisar. */
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [])
+                ->assertStatus(200);
+
+        $vigente = ArticleDiscount::find($descuento->id);
+
+        $this->assertNotNull($vigente, 'El descuento editado no se borra sin el tilde.');
+
+        $this->assertEqualsWithDelta(
+            500,
+            (float) $vigente->amount,
+            self::DELTA,
+            'Y el monto que tipeo la persona sigue ahi.'
         );
     }
 

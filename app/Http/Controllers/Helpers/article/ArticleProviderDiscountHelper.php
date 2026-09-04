@@ -584,47 +584,6 @@ class ArticleProviderDiscountHelper {
     }
 
     /**
-     * Indica si un `article_discount` trae monto fijo cargado.
-     *
-     * `amount = 0` NO cuenta como monto: no descuenta nada y tratarlo como "de una compra" dejaria
-     * filas muertas fuera del alcance de la ficha para siempre.
-     *
-     * ⚠️ Precision sobre como se aplica: `ArticlePricesHelper::aplicar_descuentos()` usa el
-     * porcentaje SI la fila lo tiene, y recien si no lo tiene resta el monto. O sea que en una fila
-     * con los dos cargados el monto no se resta nunca — por eso esa combinacion se trata aparte
-     * (`tiene_porcentaje_y_monto`) en vez de darla por "de monto".
-     *
-     * @param  \App\Models\ArticleDiscount|object $descuento
-     * @return bool
-     */
-    static function tiene_monto($descuento) {
-
-        $amount = isset($descuento->amount) ? $descuento->amount : null;
-
-        return !is_null($amount) && $amount !== '' && (float) $amount != 0;
-    }
-
-    /**
-     * Indica si un `article_discount` trae porcentaje Y monto a la vez.
-     *
-     * Es la fila que no se puede rehacer sin romper algo (ver `clasificar_articulo`): rehacerla
-     * pierde el monto, conservarla mientras se crea la ficha duplica el porcentaje. Solo puede
-     * dejarla una compra, porque el formulario de `provider_order_discounts` expone los dos campos
-     * como inputs independientes y sin exclusividad.
-     *
-     * @param  \App\Models\ArticleDiscount|object $descuento
-     * @return bool
-     */
-    static function tiene_porcentaje_y_monto($descuento) {
-
-        $percentage = isset($descuento->percentage) ? $descuento->percentage : null;
-
-        $tiene_porcentaje = !is_null($percentage) && $percentage !== '' && (float) $percentage != 0;
-
-        return $tiene_porcentaje && self::tiene_monto($descuento);
-    }
-
-    /**
      * Normaliza un porcentaje a string con dos decimales, para poder compararlos con `===` sin que
      * "10", "10.0", 10.00 y "10.00" cuenten como distintos. La columna es decimal(10,2) en las dos
      * tablas, asi que dos decimales es exactamente su precision.
@@ -690,8 +649,9 @@ class ArticleProviderDiscountHelper {
          * ninguno no se les toca nada, ni se los cuenta. Asignarles descuentos por primera vez es
          * el trabajo de aplicar_al_asignar_proveedor(), no de una propagacion.
          *
-         * Se lee por chunks y no con un `get()` entero: un proveedor grande puede tener miles de
-         * filas tagueadas, y esto es un preview que corre en cada guardado de la ficha.
+         * Se seleccionan solo las columnas que la clasificacion necesita (COLUMNAS_PARA_CLASIFICAR)
+         * en vez de traer la fila entera: esto corre en cada guardado de la ficha de un proveedor, y
+         * uno grande puede tener miles de filas tagueadas.
          */
         $articulos = ArticleDiscount::where('provider_id', $provider->id)
                                         ->select(self::COLUMNAS_PARA_CLASIFICAR)
