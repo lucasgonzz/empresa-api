@@ -92,6 +92,14 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // y con la misma trampa del orden — dos segmentos, así que abajo de `user/{id}` caería en
     // UserController@update con id = "set-impresora".
     Route::put('user/set-impresora', 'UserController@set_impresora');
+
+    // Agente de impresion: lo que consume el SPA. El agente en si tiene su propio grupo mas abajo,
+    // fuera de sanctum, porque es un programa y no una persona con sesion.
+    Route::post('print-agents/codigo', 'PrintAgentController@codigo');
+    Route::get('print-agents', 'PrintAgentController@index');
+    Route::delete('print-agents/{id}', 'PrintAgentController@destroy');
+    Route::post('print-jobs', 'PrintAgentController@store_job');
+    Route::get('print-jobs/{id}', 'PrintAgentController@show_job');
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
@@ -1177,4 +1185,32 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_comp
     Route::post('provider-order-scan/{uuid}/visto',     'ProviderOrderScanController@marcar_visto');
     Route::post('provider-order-scan/{uuid}/confirmar', 'ProviderOrderScanController@confirmar');
     Route::post('provider-order-scan/{uuid}/descartar', 'ProviderOrderScanController@descartar');
+});
+
+
+/*
+|--------------------------------------------------------------------------
+| Agente de impresion
+|--------------------------------------------------------------------------
+|
+| Lo que consume el programa instalado en la PC de la caja. Va fuera de sanctum a proposito: no es
+| una persona con sesion sino un ejecutable que se identifica con el token que recibio al
+| vincularse, validado por print.agent.token.
+|
+| `vincular` es la unica sin ese middleware, porque es la que entrega el token.
+|
+| El throttle de `vincular` keyea por IP, y con TrustProxies aceptando X-Forwarded-For de
+| cualquier origen eso se puede esquivar mandando un header distinto en cada request: sirve como
+| freno para un script torpe, NO como defensa real. Lo que hace inviable adivinar un codigo son
+| sus 128 bits de aleatoriedad, no este limite.
+|
+*/
+Route::middleware('throttle:20,1')->group(function () {
+    Route::post('print-agent/vincular', 'PrintAgentApiController@vincular');
+});
+
+Route::middleware(['throttle:print-agent', 'print.agent.token'])->group(function () {
+    Route::post('print-agent/heartbeat', 'PrintAgentApiController@heartbeat');
+    Route::get('print-agent/jobs', 'PrintAgentApiController@jobs');
+    Route::post('print-agent/jobs/{id}/resultado', 'PrintAgentApiController@resultado');
 });
