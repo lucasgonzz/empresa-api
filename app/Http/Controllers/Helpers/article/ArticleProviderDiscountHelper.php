@@ -52,6 +52,7 @@ class ArticleProviderDiscountHelper {
         'amount',
         'show_in_online',
         'editado_a_mano',
+        'origen',
     ];
 
     /**
@@ -67,7 +68,7 @@ class ArticleProviderDiscountHelper {
      *                                         App\Models\ProviderOrderDiscount).
      * @return void
      */
-    static function sync_provider_discounts($article, $provider_id, $discounts) {
+    static function sync_provider_discounts($article, $provider_id, $discounts, $origen = null) {
 
         if (is_null($article) || is_null($provider_id)) {
             return;
@@ -78,7 +79,7 @@ class ArticleProviderDiscountHelper {
         // Los manuales (provider_id null) quedan intactos, nunca se tocan desde acá.
         self::delete_tagged_discounts($article, null);
 
-        self::create_tagged_discounts($article, $provider_id, $discounts);
+        self::create_tagged_discounts($article, $provider_id, $discounts, 0, $origen);
     }
 
     /**
@@ -126,7 +127,7 @@ class ArticleProviderDiscountHelper {
      *                                         App\Models\ProviderOrderDiscount).
      * @return void
      */
-    static function create_tagged_discounts($article, $provider_id, $discounts, $show_in_online = 0) {
+    static function create_tagged_discounts($article, $provider_id, $discounts, $show_in_online = 0, $origen = null) {
 
         // `count()` y no `empty()`: sobre una Collection de Laravel `empty()` es SIEMPRE false
         // (todo objeto es truthy), asi que la guarda historica no cortaba con una coleccion vacia.
@@ -177,6 +178,10 @@ class ArticleProviderDiscountHelper {
                 // propagacion lo pasa en 1 cuando el descuento que reemplaza ya lo tenia activado,
                 // para no apagarle al comercio el precio tachado de la tienda sin avisarle.
                 'show_in_online' => $show_in_online ? 1 : 0,
+                // 🔴 QUIEN lo creo. Es lo que despues decide si una propagacion puede rehacerlo;
+                // sin esto hay que adivinarlo mirando la forma del descuento, que es de donde
+                // salieron nueve defectos en cuatro rondas de verificacion. Ver ArticleDiscount.
+                'origen' => $origen,
             ]);
         }
     }
@@ -225,7 +230,7 @@ class ArticleProviderDiscountHelper {
             $new_provider = Provider::find($new_provider_id);
             $discounts = $new_provider ? $new_provider->provider_discounts : [];
 
-            self::create_tagged_discounts($article, $new_provider_id, $discounts);
+            self::create_tagged_discounts($article, $new_provider_id, $discounts, 0, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
         }
 
         // Se asigna el proveedor nuevo recién acá, para no afectar el filtro de "proveedor
@@ -401,7 +406,7 @@ class ArticleProviderDiscountHelper {
         $new_provider = Provider::find($new_provider_id);
         $discounts = $new_provider ? $new_provider->provider_discounts : [];
 
-        self::create_tagged_discounts($article, $new_provider_id, $discounts);
+        self::create_tagged_discounts($article, $new_provider_id, $discounts, 0, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
 
         // Ver el docblock: sin esto, el setFinalPrice() del llamador calcula con los descuentos
         // viejos y guarda un costo_real que no se corresponde con las filas de la base.
@@ -570,23 +575,27 @@ class ArticleProviderDiscountHelper {
      * Indica si un `article_discount` tagueado esta gobernado por la FICHA del proveedor, o sea si
      * una propagacion puede rehacerlo.
      *
-     * 🔴 La distincion existe porque `article_discounts` no tiene columna de origen: la compra, el
-     * import y la ficha del proveedor escriben todos con `provider_id` seteado y
-     * `tipo = TIPO_BONIFICACION_PROVEEDOR`. Lo unico que los separa es la forma del descuento:
-     * `provider_discounts` SOLO tiene `percentage`, asi que un tagueado con `amount` cargado solo
-     * pudo dejarlo una compra, con la bonificacion de monto fijo que se negocio en esa compra
-     * (ProviderOrderDiscount.monto).
+     * 🔴 LO DICE LA COLUMNA `origen`, YA NO SE ADIVINA. Hasta la migracion de 4/9/2026 esto se
+     * deducia mirando la FORMA del descuento (si traia porcentaje, si traia monto, si estaba
+     * marcado), porque las cuatro vias escriben filas identicas. Esa inferencia produjo NUEVE
+     * defectos en cuatro rondas de verificacion, todos de la misma familia: un descuento destruido,
+     * duplicado o pisado sin preguntar, en silencio. Cada arreglo tapaba una combinacion y
+     * destapaba otra.
      *
-     * Rehacerlo seria destruirlo: la ficha del proveedor no tiene de donde reponer ese monto, asi
-     * que el descuento se iria para siempre y el costo del articulo subiria solo. Por eso la
-     * propagacion no los toca ni los cuenta.
+     * Ahora solo se rehace lo que la ficha creo, porque es lo unico que la ficha puede reponer. Un
+     * descuento de una COMPRA trae la bonificacion negociada en esa compra; uno de un IMPORT, la de
+     * esa planilla; y la ficha no tiene de donde sacar ninguna de las dos. Rehacerlos seria
+     * destruirlos. `origen` null (filas anteriores a la columna) tampoco se toca: sin saber quien
+     * la puso, no se pisa.
      *
      * @param  \App\Models\ArticleDiscount|object $descuento
      * @return bool
      */
     static function gobernado_por_la_ficha($descuento) {
 
-        return !self::tiene_monto($descuento);
+        $origen = isset($descuento->origen) ? $descuento->origen : null;
+
+        return $origen === ArticleDiscount::ORIGEN_FICHA_PROVEEDOR;
     }
 
     /**
@@ -874,7 +883,8 @@ class ArticleProviderDiscountHelper {
                     $article,
                     $provider->id,
                     $provider->provider_discounts,
-                    $mostrar_en_online
+                    $mostrar_en_online,
+                    ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
                 );
             });
 

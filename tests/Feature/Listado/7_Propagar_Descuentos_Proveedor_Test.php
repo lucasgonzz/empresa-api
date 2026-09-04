@@ -100,6 +100,8 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
                 'percentage'     => $percentage,
                 'tipo'           => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
                 'editado_a_mano' => $editado_a_mano ? 1 : 0,
+                // Simula lo que deja la preferencia al asignar el proveedor: lo creo la FICHA.
+                'origen'         => ArticleDiscount::ORIGEN_FICHA_PROVEEDOR,
             ]);
         }
 
@@ -512,6 +514,7 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             'percentage'  => null,
             'amount'      => 1500,
             'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'origen'      => ArticleDiscount::ORIGEN_COMPRA,
         ]);
 
         /*
@@ -735,6 +738,7 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             'percentage'     => 10,
             'tipo'           => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
             'editado_a_mano' => 1,
+            'origen'         => ArticleDiscount::ORIGEN_FICHA_PROVEEDOR,
         ]);
 
         $response = $this->getJson('api/provider/'.$provider->id.'/propagar-descuentos/preview');
@@ -801,6 +805,7 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             'percentage'  => 10,
             'amount'      => 500,
             'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'origen'      => ArticleDiscount::ORIGEN_COMPRA,
         ]);
 
         $this->cambiar_descuento_del_proveedor($descuento_proveedor, 15);
@@ -960,6 +965,77 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 LA COLUMNA `origen` ES LA QUE DECIDE, Y NO SE DEDUCE DE LA FORMA DEL DESCUENTO.
+     *
+     * Es el arreglo de fondo de esta mision. Antes, saber si un descuento se podia rehacer se
+     * inferia mirando si traia porcentaje, si traia monto y si estaba marcado — porque los cuatro
+     * caminos que escriben `article_discounts` dejan filas identicas. Esa inferencia produjo nueve
+     * defectos en cuatro rondas de verificacion, todos de la misma familia.
+     *
+     * Este test fija lo que la columna garantiza, con TRES filas de la misma forma exacta (mismo
+     * porcentaje, sin monto, sin marca) y distinto origen: la de la ficha se rehace, la de la compra
+     * y la del import se conservan. Con el mecanismo viejo las tres eran indistinguibles.
+     *
+     * @test
+     */
+    public function el_origen_decide_que_se_rehace_y_no_la_forma_del_descuento()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Tres origenes', 10);
+
+        /* Mismo porcentaje, misma forma, distinto origen. */
+        $de_compra = ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => 10,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'origen'      => ArticleDiscount::ORIGEN_COMPRA,
+        ]);
+
+        $de_import = ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => 10,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'origen'      => ArticleDiscount::ORIGEN_IMPORT,
+        ]);
+
+        $this->cambiar_descuento_del_proveedor($descuento_proveedor, 15);
+
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $this->assertNotNull(
+            ArticleDiscount::find($de_compra->id),
+            'El descuento de la COMPRA se conserva: trae la bonificacion negociada en esa compra.'
+        );
+
+        $this->assertNotNull(
+            ArticleDiscount::find($de_import->id),
+            'El del IMPORT tambien: trae el valor de esa planilla, que la ficha no puede reponer.'
+        );
+
+        $de_la_ficha = $this->descuentos_tagueados($article->id)
+                                ->filter(function ($d) {
+                                    return $d->origen === ArticleDiscount::ORIGEN_FICHA_PROVEEDOR;
+                                });
+
+        $this->assertCount(1, $de_la_ficha, 'Y de la ficha queda exactamente uno, el nuevo.');
+
+        $this->assertEqualsWithDelta(
+            15,
+            (float) $de_la_ficha->first()->percentage,
+            self::DELTA,
+            'Con el porcentaje nuevo del proveedor: es lo unico que la propagacion rehace.'
+        );
+    }
+
+    /**
      * La clasificacion es la pieza que decide todo lo demas, y se prueba aparte de la base para
      * cubrir las combinaciones sin fabricar un artículo por cada una.
      *
@@ -967,12 +1043,16 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
      */
     public function la_clasificacion_distingue_las_tres_situaciones()
     {
-        /* Cada item es [porcentaje, editado_a_mano]. */
+        /*
+         * Cada item es [porcentaje, editado_a_mano, origen]. El origen por defecto es la FICHA,
+         * que es lo que la propagacion gobierna; los casos que necesitan otro lo pasan explicito.
+         */
         $con = function ($items) {
             return collect($items)->map(function ($item) {
                 return (object) [
                     'percentage'     => $item[0],
                     'editado_a_mano' => isset($item[1]) ? $item[1] : 0,
+                    'origen'         => isset($item[2]) ? $item[2] : ArticleDiscount::ORIGEN_FICHA_PROVEEDOR,
                 ];
             });
         };

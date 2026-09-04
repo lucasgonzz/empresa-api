@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -166,7 +167,7 @@ class NewProviderOrderHelper {
                 continue;
             }
 
-            ArticleProviderDiscountHelper::sync_provider_discounts($articulo, $provider_id, $discounts);
+            ArticleProviderDiscountHelper::sync_provider_discounts($articulo, $provider_id, $discounts, ArticleDiscount::ORIGEN_COMPRA);
 
             Log::info('materializar_descuentos_proveedor_en_articulos: descuentos del proveedor '.$provider_id.' materializados en '.$articulo->name);
 

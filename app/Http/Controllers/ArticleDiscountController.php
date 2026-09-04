@@ -28,6 +28,9 @@ class ArticleDiscountController extends Controller
             'show_in_online'        => $request->show_in_online,
             // Naturaleza contable del descuento (Prompt 260). Nullable, sin UI todavía.
             'tipo'                  => $request->tipo,
+            // Quién lo creó: este endpoint es el formulario de la ficha del artículo, así que
+            // siempre lo cargó una persona. Ninguna propagación toca un descuento manual.
+            'origen'                => ArticleDiscount::ORIGEN_MANUAL,
         ]);
         if (!is_null($request->model_id)) {
             ArticleHelper::setFinalPrice($model->article);

@@ -18,6 +18,28 @@ class ArticleDiscount extends Model
     const TIPO_BONIFICACION_PROVEEDOR = 'bonificacion_proveedor';
     const TIPO_OTRO = 'otro';
 
+    /**
+     * Valores de `origen`: QUIÉN creó el descuento (misión descuentos-proveedor-propagar, 4/9/2026).
+     *
+     * 🔴 No confundir con `tipo`, que dice qué ES el descuento (su naturaleza contable). `origen`
+     * dice de dónde SALIÓ, y es lo único que permite saber si se puede rehacer: los cuatro caminos
+     * escriben filas con la misma forma, así que sin esto hay que adivinar mirando el dato.
+     *
+     * Quién puede rehacer qué:
+     *   - FICHA_PROVEEDOR: lo copió el sistema de la ficha del proveedor. Es lo único que una
+     *     propagación puede rehacer, porque es lo único que la ficha puede reponer.
+     *   - COMPRA / IMPORT: trae la bonificación negociada de esa compra o de esa planilla. La ficha
+     *     no tiene con qué reponerlo: se conserva siempre.
+     *   - MANUAL: lo cargó una persona desde la ficha del artículo. No se toca nunca.
+     *
+     * `null` es "origen desconocido" (filas anteriores a la columna que no entraron al backfill) y
+     * se trata como no-rehacible: sin saber quién la puso, no se pisa.
+     */
+    const ORIGEN_FICHA_PROVEEDOR = 'ficha_proveedor';
+    const ORIGEN_COMPRA = 'compra';
+    const ORIGEN_IMPORT = 'import';
+    const ORIGEN_MANUAL = 'manual';
+
     function scopeWithAll($q) {
 
     }
