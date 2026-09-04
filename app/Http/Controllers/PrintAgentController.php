@@ -116,6 +116,13 @@ class PrintAgentController extends Controller
             return response()->json(['error' => 'not found'], 404);
         }
 
+        /*
+         * Los trabajos se van con el equipo. No hay foreign key, asi que sin esto quedarian filas
+         * apuntando a un print_agent_id inexistente: show_job joinea contra print_agents, o sea que
+         * nadie las puede ver ni borrar nunca mas, y el payload de cada una se queda en la base.
+         */
+        PrintJob::where('print_agent_id', $print_agent->id)->delete();
+
         $print_agent->delete();
 
         return response()->json(['ok' => true], 200);
@@ -157,6 +164,24 @@ class PrintAgentController extends Controller
             ], 409);
         }
 
+        /*
+         * La impresora tiene que ser una de las que ESE equipo reporto. Es defensa en profundidad:
+         * el nombre viaja hasta un programa que lo usa como nombre de impresora de Windows, y sin
+         * este filtro un empleado autenticado puede mandar cualquier string.
+         *
+         * Si el equipo todavia no reporto ninguna (recien vinculado), no se bloquea: seria dejarlo
+         * inutilizable hasta el primer heartbeat.
+         */
+        $impresoras = $print_agent->impresoras_array;
+
+        if (count($impresoras) && ! in_array($request->printer_name, $impresoras)) {
+            return response()->json([
+                'error' => 'La impresora "' . $request->printer_name . '" ya no esta en ese equipo',
+            ], 422);
+        }
+
+        $this->purgar_trabajos_viejos($print_agent);
+
         $job = PrintJob::create([
             'print_agent_id' => $print_agent->id,
             'user_id'        => $user->id,
@@ -190,5 +215,22 @@ class PrintAgentController extends Controller
         }
 
         return response()->json(['model' => $job], 200);
+    }
+
+    /**
+     * Borra los trabajos terminados con mas de una semana.
+     *
+     * Se hace al encolar y no con una tarea programada porque no hay scheduler garantizado en el
+     * hosting de cada cliente. Sin esto la tabla crece para siempre: un comercio de 200 ventas por
+     * dia deja cientos de miles de filas al año en una base compartida.
+     *
+     * @param  \App\Models\PrintAgent  $print_agent
+     * @return void
+     */
+    private function purgar_trabajos_viejos($print_agent) {
+        PrintJob::where('print_agent_id', $print_agent->id)
+            ->whereIn('status', [PrintJob::STATUS_IMPRESO, PrintJob::STATUS_ERROR])
+            ->where('created_at', '<', Carbon::now()->subDays(7))
+            ->delete();
     }
 }

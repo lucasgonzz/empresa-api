@@ -342,6 +342,116 @@ class Agente_De_Impresion_Test extends TestCase
     }
 
     /**
+     * Un equipo no puede cerrar los trabajos de otro: sin el filtro por print_agent_id, adivinar
+     * un numero alcanzaria para marcar como impreso el ticket de otro comercio.
+     *
+     * @group impresion
+     * @test
+     */
+    public function un_equipo_no_puede_cerrar_los_trabajos_de_otro()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        list($print_agent, $token) = $this->vincular_un_equipo($user);
+
+        $this->actingAs($user, 'web');
+
+        $creacion = $this->postJson('api/print-jobs', [
+            'print_agent_id' => $print_agent->id,
+            'printer_name'   => 'XP-80',
+            'payload_base64' => base64_encode("hola
+"),
+        ]);
+
+        $job_id = $creacion->json('model.id');
+
+        $this->withHeaders(['X-Print-Agent-Token' => $token])->getJson('api/print-agent/jobs');
+
+        /* Un segundo equipo, con su propio token. */
+        list($otro_agente, $otro_token) = $this->vincular_un_equipo($user);
+
+        $intruso = $this->withHeaders(['X-Print-Agent-Token' => $otro_token])
+            ->postJson('api/print-agent/jobs/' . $job_id . '/resultado', [
+                'status' => 'impreso',
+            ]);
+
+        $intruso->assertStatus(404);
+
+        /* Y el trabajo sigue como estaba. */
+        $this->assertEquals(PrintJob::STATUS_TOMADO, PrintJob::find($job_id)->status);
+    }
+
+    /**
+     * Un trabajo que quedo tomado y nunca se cerro vuelve a la cola.
+     *
+     * Es el caso del corte de luz entre que el agente lo levanta y lo imprime, y el del aviso de
+     * vuelta que se pierde. Sin el rescate, el ticket desaparece en silencio.
+     *
+     * @group impresion
+     * @test
+     */
+    public function un_trabajo_colgado_vuelve_a_la_cola()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        list($print_agent, $token) = $this->vincular_un_equipo($user);
+
+        $this->actingAs($user, 'web');
+
+        $creacion = $this->postJson('api/print-jobs', [
+            'print_agent_id' => $print_agent->id,
+            'printer_name'   => 'XP-80',
+            'payload_base64' => base64_encode("hola
+"),
+        ]);
+
+        $job_id = $creacion->json('model.id');
+
+        $this->withHeaders(['X-Print-Agent-Token' => $token])->getJson('api/print-agent/jobs');
+
+        /* Se lo envejece a mano en vez de esperar los minutos de la ventana. */
+        PrintJob::where('id', $job_id)->update(['tomado_at' => Carbon::now()->subMinutes(10)]);
+
+        $sondeo = $this->withHeaders(['X-Print-Agent-Token' => $token])
+            ->getJson('api/print-agent/jobs');
+
+        $sondeo->assertStatus(200);
+        $this->assertCount(1, $sondeo->json('jobs'));
+        $this->assertEquals($job_id, $sondeo->json('jobs.0.id'));
+    }
+
+    /**
+     * @group impresion
+     * @test
+     */
+    public function no_se_puede_encolar_en_una_impresora_que_el_equipo_no_reporto()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        list($print_agent, $token) = $this->vincular_un_equipo($user);
+
+        $this->actingAs($user, 'web');
+
+        $creacion = $this->postJson('api/print-jobs', [
+            'print_agent_id' => $print_agent->id,
+            'printer_name'   => 'UNA-QUE-NO-EXISTE',
+            'payload_base64' => base64_encode("hola
+"),
+        ]);
+
+        $creacion->assertStatus(422);
+    }
+
+    /**
      * @group impresion
      * @test
      */

@@ -6,6 +6,7 @@ use App\Models\PrintAgent;
 use App\Models\PrintJob;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Lo que consume el AGENTE de impresion instalado en la PC del comercio.
@@ -85,6 +86,7 @@ class PrintAgentApiController extends Controller
         $print_agent = $request->attributes->get('print_agent');
 
         $print_agent->last_seen_at = Carbon::now();
+        $print_agent->save();
 
         /*
          * Solo se pisan las impresoras si el agente mando la lista. Un heartbeat sin `impresoras`
@@ -92,9 +94,8 @@ class PrintAgentApiController extends Controller
          */
         if ($request->has('impresoras')) {
             $print_agent->impresoras = json_encode($request->impresoras ? $request->impresoras : []);
+            $print_agent->save();
         }
-
-        $print_agent->save();
 
         return response()->json(['ok' => true], 200);
     }
@@ -111,22 +112,38 @@ class PrintAgentApiController extends Controller
     function jobs(Request $request) {
         $print_agent = $request->attributes->get('print_agent');
 
-        $print_agent->last_seen_at = Carbon::now();
-        $print_agent->save();
+        $this->marcar_presencia($print_agent);
+        $this->rescatar_trabajos_colgados($print_agent);
 
-        $jobs = PrintJob::where('print_agent_id', $print_agent->id)
-            ->where('status', PrintJob::STATUS_PENDIENTE)
-            ->orderBy('id')
-            ->limit(10)
-            ->get();
+        /*
+         * 🔴 La lectura y el marcado van en UNA transaccion con lockForUpdate, no en un select
+         * suelto seguido de updates.
+         *
+         * Sin el lock, dos sondeos solapados leen los mismos "pendiente" antes de que ninguno
+         * alcance a marcarlos, y el ticket sale DOS VECES por la comandera. No es teorico: el
+         * agente sondea cada 2 segundos y en hosting compartido un request puede tardar mas que
+         * eso. Con el lock, el segundo sondeo espera al primero y despues ya los ve en "tomado".
+         */
+        $jobs = DB::transaction(function () use ($print_agent) {
+            $models = PrintJob::where('print_agent_id', $print_agent->id)
+                ->where('status', PrintJob::STATUS_PENDIENTE)
+                ->orderBy('id')
+                ->limit(10)
+                ->lockForUpdate()
+                ->get();
+
+            foreach ($models as $job) {
+                $job->status    = PrintJob::STATUS_TOMADO;
+                $job->tomado_at = Carbon::now();
+                $job->save();
+            }
+
+            return $models;
+        });
 
         $respuesta = [];
 
         foreach ($jobs as $job) {
-            $job->status    = PrintJob::STATUS_TOMADO;
-            $job->tomado_at = Carbon::now();
-            $job->save();
-
             $respuesta[] = [
                 'id'             => $job->id,
                 'printer_name'   => $job->printer_name,
@@ -167,8 +184,60 @@ class PrintAgentApiController extends Controller
         $job->status       = $request->status;
         $job->error        = $request->error;
         $job->terminado_at = Carbon::now();
+
+        /*
+         * El ticket ya salio (o ya fallo): el payload no sirve mas y ocupa lugar. Vaciarlo al
+         * cerrar el trabajo es lo que evita que la tabla se coma la base del cliente -- son varios
+         * KB por cada venta de cada caja, todos los dias, en hosting compartido.
+         */
+        $job->payload_base64 = '';
         $job->save();
 
         return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * Marca que el equipo sigue sondeando, sin escribir en cada request.
+     *
+     * El agente pregunta cada 2 segundos: guardar siempre serian ~40 UPDATE por segundo contra el
+     * MySQL compartido con 40 comercios, todos para mover un timestamp. Con el umbral alcanza:
+     * lo unico que se decide con este dato es si el equipo figura en linea, y el corte es de 30s.
+     *
+     * @param  \App\Models\PrintAgent  $print_agent
+     * @return void
+     */
+    private function marcar_presencia($print_agent) {
+        $ahora = Carbon::now();
+
+        if (! is_null($print_agent->last_seen_at) && $print_agent->last_seen_at->diffInSeconds($ahora) < 10) {
+            return;
+        }
+
+        $print_agent->last_seen_at = $ahora;
+        $print_agent->save();
+    }
+
+    /**
+     * Devuelve a la cola los trabajos que quedaron tomados y nunca se cerraron.
+     *
+     * 🔴 Sin esto se pierden en silencio, que es justo lo que este modulo vino a eliminar. Pasa de
+     * dos formas: el agente levanta el ticket y se corta la luz antes de imprimirlo, o imprime bien
+     * pero el aviso de vuelta no llega (timeout, 500). En los dos casos el trabajo queda en
+     * "tomado" para siempre y nadie lo vuelve a entregar.
+     *
+     * El riesgo del rescate es reimprimir algo que ya salio, por eso la ventana es amplia: el
+     * agente reintenta el aviso con backoff durante bastante menos que esto.
+     *
+     * @param  \App\Models\PrintAgent  $print_agent
+     * @return void
+     */
+    private function rescatar_trabajos_colgados($print_agent) {
+        PrintJob::where('print_agent_id', $print_agent->id)
+            ->where('status', PrintJob::STATUS_TOMADO)
+            ->where('tomado_at', '<', Carbon::now()->subMinutes(3))
+            ->update([
+                'status'    => PrintJob::STATUS_PENDIENTE,
+                'tomado_at' => null,
+            ]);
     }
 }

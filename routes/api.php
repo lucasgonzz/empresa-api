@@ -1192,15 +1192,19 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_comp
 | una persona con sesion sino un ejecutable que se identifica con el token que recibio al
 | vincularse, validado por print.agent.token.
 |
-| `vincular` es la unica sin ese middleware, porque es la que entrega el token. Lleva throttle
-| propio: es la unica puerta donde alguien podria probar codigos a repeticion.
+| `vincular` es la unica sin ese middleware, porque es la que entrega el token.
+|
+| El throttle de `vincular` keyea por IP, y con TrustProxies aceptando X-Forwarded-For de
+| cualquier origen eso se puede esquivar mandando un header distinto en cada request: sirve como
+| freno para un script torpe, NO como defensa real. Lo que hace inviable adivinar un codigo son
+| sus 128 bits de aleatoriedad, no este limite.
 |
 */
 Route::middleware('throttle:20,1')->group(function () {
     Route::post('print-agent/vincular', 'PrintAgentApiController@vincular');
 });
 
-Route::middleware('print.agent.token')->group(function () {
+Route::middleware(['throttle:print-agent', 'print.agent.token'])->group(function () {
     Route::post('print-agent/heartbeat', 'PrintAgentApiController@heartbeat');
     Route::get('print-agent/jobs', 'PrintAgentApiController@jobs');
     Route::post('print-agent/jobs/{id}/resultado', 'PrintAgentApiController@resultado');
