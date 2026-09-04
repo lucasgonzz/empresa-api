@@ -609,6 +609,35 @@ class UserController extends Controller
     }
 
     /**
+     * Guarda la impresora del Ticket 2.0 de la persona AUTENTICADA.
+     *
+     * Mismo criterio que set_dark_mode: se resuelve con Auth::user() y no con
+     * $this->userId(), porque cada persona imprime en la suya y con el userId la
+     * eleccion de un empleado quedaria grabada en la fila del dueño.
+     *
+     * Hasta esta version la columna `impresora` no tenia NINGUN camino de escritura:
+     * se llenaba una sola vez al crear la cuenta con el literal 'comerciocity'
+     * (UserSetupHelper), y de ahi salia la obligacion de renombrar la impresora en
+     * Windows para que el nombre coincidiera.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function set_impresora(Request $request) {
+        $request->validate([
+            'impresora' => 'nullable|string|max:255',
+        ]);
+
+        $model = Auth::user();
+        $model->impresora = $request->impresora;
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json(['impresora' => $model->impresora], 200);
+    }
+
+    /**
      * Guarda las preferencias de UI del chat con el asistente de IA de la
      * persona AUTENTICADA (dueño o empleado): la posición del botón flotante
      * y el ancho de la sidebar del panel.

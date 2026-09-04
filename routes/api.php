@@ -77,6 +77,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // en UserController@update con id = "set-chat-ia-preferencias" (set-dark-mode zafa solo
     // porque sus tres segmentos no calzan en el comodín de dos).
     Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
+    // Impresora del Ticket 2.0. Misma familia que las dos de arriba: preferencia POR PERSONA,
+    // y con la misma trampa del orden — dos segmentos, así que abajo de `user/{id}` caería en
+    // UserController@update con id = "set-impresora".
+    Route::put('user/set-impresora', 'UserController@set_impresora');
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');
