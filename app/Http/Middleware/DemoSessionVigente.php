@@ -4,7 +4,6 @@ namespace App\Http\Middleware;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Models\DemoIngresoToken;
-use Carbon\Carbon;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -19,14 +18,26 @@ use Illuminate\Support\Facades\Auth;
  * sesion iniciada) este middleware no debe pegarle a la base ni tocar la sesion, y
  * simplemente deja pasar el request sin hacer nada mas.
  *
+ * 🔴 Desde el 4/9/2026 (pedido de Lucas) este middleware YA NO corta por vencimiento de
+ * turno (`expires_at`). Una sesion de demo ya abierta no se corta sola: solo se corta si
+ * el registro no existe, o si fue revocado a mano (`revoked_at`, boton "Revocar" del panel
+ * del lead en el admin). El vencimiento del turno sigue vigente para OTRA cosa que este
+ * middleware no toca: `DemoIngresoTokenHelper::resolver()` sigue exigiendo `expires_at` no
+ * vencido para CANJEAR el token y arrancar una sesion nueva — eso es el gate de entrada, no
+ * el corte de una sesion en curso.
+ *
  * Solo cuando la sesion actual fue iniciada por DemoIngresoController (prompt 02) y
  * lleva ese marcador, se resuelve el token contra `demo_ingreso_tokens` y se corta el
- * acceso si ya expiro o fue revocado despues de que el lead habia entrado.
+ * acceso si el registro no existe o fue revocado.
  */
 class DemoSessionVigente
 {
     /**
      * Resuelve si la sesion demo actual sigue vigente y corta el acceso si no.
+     *
+     * Vigente = el registro existe y no fue revocado (o, en local, el bypass de
+     * `DemoIngresoTokenHelper::bypass_vigencia_local()` tambien lo deja pasar). Ya NO
+     * mira `expires_at`: el vencimiento del turno no corta una sesion en curso.
      *
      * @param Request $request Request HTTP entrante.
      * @param Closure $next Siguiente middleware / controlador.
@@ -71,18 +82,16 @@ class DemoSessionVigente
         $registro = DemoIngresoToken::find($token_id);
 
         /**
-         * Vigente = existe, no fue revocado y todavia no llego su expiracion. En local se
-         * ignoran las ultimas dos condiciones (DemoIngresoTokenHelper::bypass_vigencia_local()),
-         * pero el registro SIEMPRE tiene que existir: un token_id que no resuelve a ninguna
-         * fila sigue sin dejar pasar, en cualquier entorno.
+         * Vigente = existe y no fue revocado. Ya NO mira `expires_at`: el vencimiento del
+         * turno agendado no corta una sesion ya abierta (pedido de Lucas, 4/9/2026). En
+         * local se ignora la condicion de revocacion (DemoIngresoTokenHelper::
+         * bypass_vigencia_local()), pero el registro SIEMPRE tiene que existir: un
+         * token_id que no resuelve a ninguna fila sigue sin dejar pasar, en cualquier
+         * entorno.
          */
         $vigente = !is_null($registro) && (
             DemoIngresoTokenHelper::bypass_vigencia_local()
-            || (
-                is_null($registro->revoked_at)
-                && !is_null($registro->expires_at)
-                && $registro->expires_at->greaterThan(Carbon::now())
-            )
+            || is_null($registro->revoked_at)
         );
 
         $request->attributes->set('demo_session_vigente', $vigente);
