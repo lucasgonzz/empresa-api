@@ -535,11 +535,36 @@ class PerformanceHelper
         }
     }
 
+    /**
+     * Ventas del periodo para Rendimiento.
+     *
+     * 🔴 EL UNICO SITIO DE LA MISION QUE NO ENTRA ENTERO EN EL SCOPE, y el `if` va explicito aca y
+     * no escondido adentro: el scope resuelve el caso simple (un rango sobre una fecha) y este es el
+     * unico que no lo es. Meterlo adentro obligaria al scope a saber de `terminada_at`, que no es su
+     * asunto.
+     *
+     * Lo que lo hace especial es que su filtro historico es un OR: la venta entra si `created_at` O
+     * `terminada_at` cae en el mes. Con la preferencia de fecha de pedido prendida, esa segunda rama
+     * vuelve a meter en el mes exactamente lo que el cambio saca —`terminada_at` sigue la fecha de
+     * carga; en 228 de las 299 ventas de agosto de 2026 de Truvari cae el mismo dia que `created_at`—
+     * y Rendimiento quedaria peleado con el listado, que es el defecto que esta mision viene a cerrar.
+     *
+     * @return void
+     */
     function set_sales() {
-        $this->sales = Sale::where('user_id', $this->user_id)
+        $query = Sale::where('user_id', $this->user_id)
                             /** Excluye ventas contenedoras de facturación: no son ventas reales. */
-                            ->soloVentasReales()
-                            ->where(function ($query) {
+                            ->soloVentasReales();
+
+        if (Sale::fechaDeReportePorPedido($this->user_id)) {
+
+            /* Comercio que fecha por fecha de pedido: una sola condicion, la misma del listado. */
+            $query = $query->enRangoDeFechas($this->mes_inicio, $this->mes_fin, $this->user_id);
+
+        } else {
+
+            /* Camino de siempre, intacto: entra por created_at O por terminada_at. */
+            $query = $query->where(function ($query) {
 
                                 $query->where(function ($subQuery) {
                                     $subQuery->whereDate('created_at', '>=', $this->mes_inicio)
@@ -549,8 +574,10 @@ class PerformanceHelper
                                     $subQuery->whereDate('terminada_at', '>=', $this->mes_inicio)
                                              ->whereDate('terminada_at', '<=', $this->mes_fin);
                                 });
-                            })
-                            ->where('terminada', 1)
+                            });
+        }
+
+        $this->sales = $query->where('terminada', 1)
                             ->with('articles')
                             ->get();
     }

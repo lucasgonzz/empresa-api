@@ -91,14 +91,15 @@ class SaleController extends Controller
 
         if (!is_null($from_date)) {
 
-            if (!is_null($until_date)) {
-                $models = $models->whereDate('created_at', '>=', $from_date)
-                                ->whereDate('created_at', '<=', $until_date);
-            } else {
-                $models = $models->whereDate('created_at', $from_date);
-            }
+            /*
+             * El criterio de fechado vive en Sale::scopeEnRangoDeFechas() y NO se copia aca: el
+             * listado, los dos Excel, el grafico y Rendimiento tienen que moverse juntos o el
+             * comercio ve el mismo mes con dos numeros distintos. Con la preferencia apagada este
+             * scope emite exactamente el mismo SQL sobre created_at que habia escrito aca.
+             */
+            $models = $models->enRangoDeFechas($from_date, $until_date, $this->userId());
 
-        } 
+        }
         // else {
 
         //     // Si entra aca es porque se esta llamando desde DEPOSITO
@@ -1084,14 +1085,10 @@ class SaleController extends Controller
 
         if (!is_null($from_date)) {
 
-            if (!is_null($until_date)) {
-                $models = $models->whereDate('created_at', '>=', $from_date)
-                                ->whereDate('created_at', '<=', $until_date);
-            } else {
-                $models = $models->whereDate('created_at', $from_date);
-            }
+            /* Mismo criterio de fechado que el listado y que los demas reportes (ver el scope). */
+            $models = $models->enRangoDeFechas($from_date, $until_date, $this->userId());
 
-        } 
+        }
         $models = $models->get();
 
         return Excel::download(new SalesFullExport($models), 'ventas_'.date_format(Carbon::now(), 'd-m-y').'.xlsx');
@@ -1108,12 +1105,8 @@ class SaleController extends Controller
 
         if (!is_null($from_date)) {
 
-            if (!is_null($until_date)) {
-                $models = $models->whereDate('created_at', '>=', $from_date)
-                                ->whereDate('created_at', '<=', $until_date);
-            } else {
-                $models = $models->whereDate('created_at', $from_date);
-            }
+            /* Mismo criterio de fechado que el listado y que los demas reportes (ver el scope). */
+            $models = $models->enRangoDeFechas($from_date, $until_date, $this->userId());
 
         }
         $models = $models->get();
@@ -1519,14 +1512,14 @@ class SaleController extends Controller
                         ->withAll()
                         ->orderBy('created_at', 'DESC');
 
-            if (!is_null($from_date) && $from_date !== '') {
-                if (!is_null($until_date) && $until_date !== '') {
-                    $query = $query->whereDate('created_at', '>=', $from_date)
-                                    ->whereDate('created_at', '<=', $until_date);
-                } else {
-                    $query = $query->whereDate('created_at', $from_date);
-                }
-            }
+            /*
+             * 🔴 Este sitio NO estaba en la lista original de la mision (que hablaba de tres) y va
+             * igual: es el que usa de verdad el boton de Excel de la pantalla de Ventas
+             * (POST api/sales/excel/*), mientras que excel_export()/excel_breakdown_export() de mas
+             * arriba son las rutas GET viejas de routes/web.php. Dejarlo afuera hacia justo lo que
+             * esta mision viene a evitar: el Excel de la pantalla fechando distinto que la pantalla.
+             */
+            $query = $query->enRangoDeFechas($from_date, $until_date, $this->userId());
 
             $models = $query->get();
         }
