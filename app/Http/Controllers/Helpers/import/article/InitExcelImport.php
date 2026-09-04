@@ -96,11 +96,30 @@ class InitExcelImport
 
         /*
          * Flag opcional que separa la decisión "repetido dentro del propio archivo"
-         * de "repetido contra la base" (prompt 04, grupo 265). Antes de este prompt,
+         * de "repetido contra la base" (prompt 04, grupo 265). Antes de ese prompt,
          * ambas decisiones compartían permitir_provider_code_repetido. Cualquier valor
          * que no sea exactamente uno de los dos reconocidos (incluido null, si no
-         * viene el parámetro) cae al default 'ultima_gana', que preserva el
-         * comportamiento histórico: cambio 100% aditivo para llamadores viejos.
+         * viene el parámetro) cae al default 'ultima_gana'.
+         *
+         * 🔴 Ese default YA NO es "el comportamiento histórico" para un llamador que
+         * además mande permitir_provider_code_repetido = 1. Hasta el 2/9/2026 la
+         * separación estaba a medias: ProcessRow::esta_repetido() seguía apagando la
+         * detección intra-archivo con el flag viejo, así que un llamador con permitir=1
+         * y sin esta clave creaba un artículo por fila repetida. Desde el fix de ese día
+         * fusiona con "última gana", que es lo que el default siempre dijo que hacía.
+         *
+         * A quién afecta ese cambio, medido el 2/9/2026 y no supuesto:
+         *   - `AiExcelImportController` (el modal con IA) manda las dos claves siempre.
+         *     Es el caso que el fix vino a arreglar.
+         *   - `ArticleController@import` SÍ pasa esta clave, pero la toma del request, y
+         *     ningún cliente de la SPA la manda: la importación clásica de artículos salió
+         *     de Listado/Clientes/Proveedores y hoy sólo queda la de compras, que va por
+         *     otro pipeline (`ProviderOrderController@import_excel_articles`). O sea que el
+         *     cambio ahí es teórico salvo que alguien pegue al endpoint desde afuera.
+         *   - `AdminSync\AiExcelImportController` NO manda esta clave, pero tampoco manda
+         *     `permitir_provider_code_repetido` (queda en false), así que su escalón 4 ya
+         *     corría antes: para el admin no cambia nada. Verificado contra su único
+         *     consumidor, `admin-api ImplementationImportService`.
          */
         $this->filas_repetidas_del_archivo = $this->normalizar_filas_repetidas_del_archivo(
             $data['filas_repetidas_del_archivo'] ?? null

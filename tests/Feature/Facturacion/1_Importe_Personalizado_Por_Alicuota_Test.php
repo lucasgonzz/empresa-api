@@ -46,8 +46,8 @@ class Importe_Personalizado_Por_Alicuota_Test extends EmpresaTestCase
 
     /**
      * Porcentaje REAL de cada clave interna de alicuota. Espejo de
-     * `AfipImportesCalculator::porcentajes_reales()`, escrito a mano a proposito: si el test
-     * lo leyera del codigo bajo prueba, no mediria nada.
+     * `AfipImportesResolver::alicuotas()` (la fuente unica), escrito a mano a proposito: si el
+     * test lo leyera del codigo bajo prueba, no mediria nada.
      *
      * @return array
      */

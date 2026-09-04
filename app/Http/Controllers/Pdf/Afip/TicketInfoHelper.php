@@ -244,15 +244,17 @@ class TicketInfoHelper
             $pdf->SetFont('Arial', 'B', 9);
             $pdf->Cell(40, 5, '$'.Numbers::price($importes['gravado']), 1, 1, 'L');
 
-            foreach ($importes['ivas'] as $iva => $importe) {
-                if (($importe['Importe'] ?? 0) <= 0) {
-                    continue;
-                }
+            /**
+             * 🔴 Se imprime la ETIQUETA, no la clave del bucket: la clave '10' vale 10,5 %.
+             * El filtro de importe > 0 tambien vive en `renglones_de_iva()`, unico para los
+             * cuatro renderers.
+             */
+            foreach (AfipImportesResolver::renglones_de_iva($importes) as $renglon) {
                 $pdf->x = 125;
                 $pdf->SetFont('Arial', '', 9);
-                $pdf->Cell(40, 5, 'IVA '.$iva.'%:', 1, 0, 'L');
+                $pdf->Cell(40, 5, 'IVA '.$renglon['etiqueta'].'%:', 1, 0, 'L');
                 $pdf->SetFont('Arial', 'B', 9);
-                $pdf->Cell(40, 5, '$'.Numbers::price($importe['Importe']), 1, 1, 'L');
+                $pdf->Cell(40, 5, '$'.Numbers::price($renglon['importe']), 1, 1, 'L');
             }
         }
 

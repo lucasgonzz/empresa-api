@@ -45,6 +45,36 @@ class FinalizeArticleImport implements ShouldQueue
 
         if ($import_status) {
             if ((int) $import_status->processed_chunks < (int) $import_status->total_chunks) {
+
+                /*
+                 * Faltan chunks, pero la importación puede estar cerrada hace rato. Si está en
+                 * 'fallo', ningún chunk la va a procesar (ProcessArticleChunk::handle() corta
+                 * apenas lee ese estado), así que processed_chunks no avanza nunca más y el
+                 * re-dispatch de abajo gira para siempre. San Cayetano tenía tres importaciones
+                 * reencolándose cada 10 segundos desde el 31/8/2026.
+                 *
+                 * 🔴 Sólo 'fallo', y en las dos tablas. NUNCA 'completado' ni 'terminado': esos
+                 * dos los deja el ÚLTIMO CHUNK, antes de que este job exista (ver
+                 * ProcessArticleChunk::update_import_status() y update_import_history()). Una
+                 * guarda que los mirara cortaría el cierre de TODAS las importaciones que
+                 * terminan bien, y en silencio.
+                 *
+                 * Va acá adentro y no antes del chequeo de chunks a propósito: así los dos
+                 * `return` quedan en el mismo brazo, del que el cierre ya era inalcanzable.
+                 * Subirla sería meter una salida nueva en un camino que hoy sí llega a cerrar.
+                 */
+                if ($this->import_esta_cerrado($import_status)) {
+                    Log::warning('FinalizeArticleImport: el import ya no está activo, corto el re-dispatch', [
+                        'import_status_id' => $import_status->id,
+                        'import_history_id' => $this->import_history_id,
+                        'import_status' => $import_status->status,
+                        'processed_chunks' => $import_status->processed_chunks,
+                        'total_chunks' => $import_status->total_chunks,
+                    ]);
+
+                    return;
+                }
+
                 Log::warning('FinalizeArticleImport: aún faltan chunks, re-dispatch', [
                     'import_status_id' => $import_status->id,
                     'processed_chunks' => $import_status->processed_chunks,
@@ -125,6 +155,34 @@ class FinalizeArticleImport implements ShouldQueue
         );
 
         $this->generar_embeddings_de_lo_importado();
+    }
+
+    /**
+     * ¿La importación ya está cerrada por fallo, y por lo tanto el re-dispatch no tiene sentido?
+     *
+     * Mira las DOS tablas porque hay dos caminos reales que marcan el ImportHistory y dejan el
+     * ImportStatus intacto:
+     *
+     *  1. El watchdog `imports:detectar-colgadas` con `import_status_id` en null (registros
+     *     anteriores al prompt 500): marca el history y no tiene a quién marcarle el status.
+     *  2. El early-return idempotente de `ImportFailureHandler::registrar()`: si el history ya
+     *     estaba resuelto, ese `return` sale de TODA la función y el bloque que marca el
+     *     ImportStatus nunca llega a ejecutarse.
+     *
+     * Sólo se consulta 'fallo'. El motivo de que 'terminado' no cuente está arriba, en handle().
+     *
+     * @param  \App\Models\ImportStatus  $import_status
+     * @return bool
+     */
+    protected function import_esta_cerrado($import_status)
+    {
+        if ($import_status->status === 'fallo') {
+            return true;
+        }
+
+        $import_history = ImportHistory::select('id', 'status')->find($this->import_history_id);
+
+        return !is_null($import_history) && $import_history->status === 'fallo';
     }
 
     /**

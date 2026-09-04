@@ -57,12 +57,26 @@ abstract class BaseTiendaNubeService
             })
             ->first();
 
-        if (
-            $this->tn_platform_connector
-            && $this->tn_platform_connector->access_token
-            && $this->tn_platform_connector->platform_user_id
-        ) {
-            $this->access_token = $this->tn_platform_connector->access_token;
+        // `access_token` tiene cast `encrypted` desde la mision de ABM -> Integraciones: LEERLO
+        // PUEDE TIRAR si la fila quedo en texto plano (la migracion de cifrado no corrio) o
+        // cifrada con otra APP_KEY. Sin esta guarda esa excepcion reventaba el constructor, y con
+        // el, cualquier uso de Tienda Nube. Se avisa y se cae a las credenciales de entorno, que
+        // es la misma rama que ya existia para "no hay conector conectado".
+        $token_del_conector = null;
+
+        if ($this->tn_platform_connector) {
+            try {
+                $token_del_conector = $this->tn_platform_connector->access_token;
+            } catch (\Throwable $e) {
+                Log::error(
+                    'BaseTiendaNubeService: no se pudo descifrar el access_token del platform_connector '.
+                    $this->tn_platform_connector->id.': '.$e->getMessage()
+                );
+            }
+        }
+
+        if ($token_del_conector && $this->tn_platform_connector->platform_user_id) {
+            $this->access_token = $token_del_conector;
             $this->store_id = (int) $this->tn_platform_connector->platform_user_id;
         } else {
             $this->access_token = env('TN_ACCESS_TOKEN');

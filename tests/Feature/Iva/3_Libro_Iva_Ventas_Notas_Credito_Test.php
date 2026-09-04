@@ -665,16 +665,21 @@ class Libro_Iva_Ventas_Notas_Credito_Test extends EmpresaTestCase
     /**
      * Test 4 — EL SNAPSHOT GANA sobre el recalculo.
      *
-     * ⚠️ Hoy NINGUNA nota de credito tiene snapshot: `AfipNotaCreditoHelper` no lo persiste. Esta
-     * mision estuvo a punto de agregarlo y se dio marcha atras, porque el snapshot emite la clave
-     * de alicuota `'10.5'` mientras que el recalculo emite `'10'`, y el PDF del Libro IVA Ventas
-     * lee `['10']`: darle snapshot a las notas de credito les haria DESAPARECER el renglon de
-     * 10,5 % del mismo reporte que esta mision viene a arreglar. Ver el informe.
+     * ⚠️ Hoy NINGUNA nota de credito tiene snapshot: `AfipNotaCreditoHelper` no lo persiste. La
+     * mision del 1/9/2026 lo construyo (`17725cac`) y se dio marcha atras (`53795146`) porque el
+     * snapshot emitia la clave `'10.5'` mientras que el recalculo emitia `'10'`, y el Libro IVA
+     * Ventas lee `['10']`.
+     *
+     * 🔴 Ese motivo YA NO EXISTE: la rama `mision/unificar-claves-alicuota-iva` unifico las dos
+     * fuentes, que ahora emiten la misma clave interna. El bloqueante esta LEVANTADO. Lo que
+     * queda pendiente a proposito es el snapshot de las notas de credito en si, y por una razon
+     * distinta: `AfipNotaCreditoHelper::interno()` es el UNICO metodo que habla con el webservice
+     * de ARCA y NINGUN test lo cubre, asi que su unica verificacion posible es emitir en
+     * homologacion. Es mision propia, y puede arrancar de `git cherry-pick 17725cac`.
      *
      * El test se queda igual porque la precedencia del snapshot ya existe y ya corre para las
-     * facturas de venta: es el contrato de `AfipImportesResolver::resolve()`, y el dia que se
-     * unifiquen las claves y las notas de credito pasen a tener snapshot, este test es el que
-     * tiene que seguir en verde.
+     * facturas de venta: es el contrato de `AfipImportesResolver::resolve()`, y el dia que las
+     * notas de credito pasen a tener snapshot, este test es el que tiene que seguir en verde.
      *
      * Con `imp_total_enviado` e `iva_detalle_enviado_json` cargados, `get_importes()` tiene que
      * devolver lo que se le declaro a ARCA y NO el recalculo, aunque los dos difieran. Los numeros

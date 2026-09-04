@@ -500,4 +500,116 @@ escribir('11_precio_vs_margen.xlsx', [
     ['7790107', null, null, 'Art dos filas mismo art',  null, 555.0, null, null, '21'],
 ], $cabecera_con_margen);
 
+/* --------------------------------------------------------------------------
+ * 18 - provider_code repetido DENTRO del archivo, con el MISMO nombre en las
+ * tres filas (mision fix-ultima-gana-con-actualizar-todos, 2/9/2026).
+ *
+ * Por que no alcanzaba 07_repetidos_en_el_archivo.xlsx: sus tres filas de
+ * PC-R-Z tienen nombres DISTINTOS ('Solo pc v1/v2/v3'). Con nombres distintos,
+ * apagar el escalon provider_code de esta_repetido() deja la fila sin ningun
+ * escalon que la detecte y el resultado es "no repetida" -- que da la respuesta
+ * correcta para 'productos_distintos' por accidente. Con nombres IGUALES, en
+ * cambio, la fila cae al escalon name, que marca repetido y hace que procesar()
+ * la DESCARTE: gana la primera, se ignora lo que el usuario eligio, y la suite
+ * no lo denuncia.
+ *
+ * O sea: este fixture es la red que atrapa la correccion tentadora del defecto
+ * del 2/9/2026 (condicionar el escalon 4 por filas_repetidas_del_archivo en vez
+ * de sacarle la condicion). Sin el, esa variante equivocada queda verde.
+ *
+ *   F2, F3, F4  mismo provider_code (PC-MN-1) y mismo nombre, sin bar_code ni
+ *               sku, costos 100/200/300 -> con 'ultima_gana' tiene que quedar
+ *               UN articulo con costo 300 (gana la ultima); con
+ *               'productos_distintos', TRES articulos.
+ * -------------------------------------------------------------------------- */
+escribir('18_pc_repetido_mismo_nombre.xlsx', [
+    [null, null, 'PC-MN-1', 'Mismo nombre repetido', 100.0, 150.0, 10.0, '21'],
+    [null, null, 'PC-MN-1', 'Mismo nombre repetido', 200.0, 250.0, 20.0, '21'],
+    [null, null, 'PC-MN-1', 'Mismo nombre repetido', 300.0, 350.0, 30.0, '21'],
+], $cabecera);
+
+/* --------------------------------------------------------------------------
+ * 19 - provider_code repetido en el archivo Y ya repetido en la BASE
+ * (mision fix-ultima-gana-con-actualizar-todos, 2/9/2026, hallazgo del chequeo
+ * independiente).
+ *
+ * Es la celda que ningun test cubria y que es la razon de ser de la opcion
+ * "Actualizar todos los articulos que tengan ese codigo": el codigo del Excel
+ * matchea MAS DE UN articulo existente, y ademas viene repetido en el archivo.
+ *
+ * Contra el escenario sembrado por ImportTestSeeder, PC-DUP existe dos veces en
+ * el proveedor A (A3 y A4). Con permitir_provider_code_repetido = 1 y
+ * 'ultima_gana', la promesa combinada de las dos opciones del paso 3 es:
+ * los DOS articulos existentes quedan con los datos de la ULTIMA fila.
+ *
+ *   F2, F3  mismo provider_code PC-DUP, sin bar_code ni sku, nombres distintos,
+ *           costos 1100 y 1200.
+ * -------------------------------------------------------------------------- */
+escribir('19_pc_repetido_en_archivo_y_base.xlsx', [
+    [null, null, 'PC-DUP', 'Dup en base y archivo v1', 1100.0, 1150.0, 11.0, '21'],
+    [null, null, 'PC-DUP', 'Dup en base y archivo v2', 1200.0, 1250.0, 12.0, '21'],
+], $cabecera);
+
+/* --------------------------------------------------------------------------
+ * 20 - Mismo nombre, pero SOLO UNA de las dos filas trae provider_code
+ * (mision fix-ultima-gana-con-actualizar-todos, 2/9/2026, hallazgo del chequeo
+ * independiente).
+ *
+ * Es la celda que cambio de comportamiento con el fix y que ningun test fijaba:
+ * con permitir_provider_code_repetido = 1, antes la fila 2 caia al escalon name,
+ * que con codigos repetidos habilitados marcaba "repetido por seguridad" cuando
+ * faltaba un provider_code para contrastar -- y procesar() la DESCARTABA (un solo
+ * articulo, ganaba la primera). Ahora el escalon 4 decide: la entrada en cola no
+ * tiene provider_code, no hay coincidencia, y son DOS articulos.
+ *
+ * El comportamiento nuevo es el que permitir = 0 ya daba, asi que el fix alinea
+ * las dos configuraciones en vez de crear una inconsistencia. Pero es un cambio
+ * visible (un articulo de mas) y por eso queda fijado.
+ *
+ *   F2  sin ningun codigo,  nombre 'Mismo nombre sin codigo', costo 100
+ *   F3  provider_code PC-SOLO-UNA, MISMO nombre,              costo 200
+ * -------------------------------------------------------------------------- */
+escribir('20_mismo_nombre_solo_una_con_codigo.xlsx', [
+    [null, null, null,            'Mismo nombre sin codigo', 100.0, 150.0, 10.0, '21'],
+    [null, null, 'PC-SOLO-UNA',   'Mismo nombre sin codigo', 200.0, 250.0, 20.0, '21'],
+], $cabecera);
+
+/* --------------------------------------------------------------------------
+ * 21 - Mismo provider_code repetido, con una columna de PROPIEDAD de variante
+ * (mision fix-ultima-gana-con-actualizar-todos, 2/9/2026, hallazgo del revisor
+ * de merge).
+ *
+ * Es la forma tipica de una lista de indumentaria: un codigo de catalogo, una
+ * fila por color. Cuando la cuenta tiene cargado el ArticlePropertyType 'Color'
+ * y el mapeo incluye esa columna, ProcessRow::build_variant_payload() devuelve
+ * payload y las filas repetidas se absorben como VARIANTES del articulo de la
+ * primera fila, en vez de mergearse campo a campo.
+ *
+ * Ese camino esta ANTES del merge en procesar() y es el diseno original del
+ * sistema, pero hasta el 2/9/2026 no se alcanzaba con permitir=1: el escalon 4
+ * apagado hacia que las filas ni siquiera se detectaran como repetidas. O sea
+ * que el fix no lo invento -- lo volvio alcanzable, igual que ya lo era con
+ * permitir=0.
+ *
+ * Lleva cabecera propia: la comun tiene 8 columnas y esta agrega 'color' al final.
+ *
+ *   F2, F3  mismo provider_code PC-VAR, nombres distintos, colores distintos.
+ * -------------------------------------------------------------------------- */
+$cabecera_con_color = [
+    'codigo_de_barras',
+    'sku',
+    'codigo_de_proveedor',
+    'nombre',
+    'costo',
+    'precio',
+    'stock_actual',
+    'iva',
+    'color',
+];
+
+escribir('21_pc_repetido_con_variantes.xlsx', [
+    [null, null, 'PC-VAR', 'Remera rep rojo', 100.0, 150.0, 10.0, '21', 'Rojo'],
+    [null, null, 'PC-VAR', 'Remera rep azul', 200.0, 250.0, 20.0, '21', 'Azul'],
+], $cabecera_con_color);
+
 echo "\nListo.\n";

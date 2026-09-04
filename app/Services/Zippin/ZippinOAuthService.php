@@ -79,7 +79,7 @@ class ZippinOAuthService
             throw new \RuntimeException('Faltan ZIPPIN_CLIENT_ID / ZIPPIN_OAUTH_REDIRECT_URI / ZIPPIN_AUTHORIZATION_URL en la configuración de Zippin.');
         }
 
-        // El state se persiste en BD (mismo motivo que MercadoPagoOauthState: no depender del
+        // El state se persiste en BD (mismo motivo que OauthState: no depender del
         // driver de cache configurado en cada entorno) con vencimiento corto, para que el
         // callback pueda validarlo y saber a qué comercio corresponde el `code` que Zippin
         // le devuelve.

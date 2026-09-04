@@ -187,8 +187,10 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping(10);
 
         // Renueva los access_token de Mercado Pago próximos a vencer (grupo 170, prompt 598).
-        // Corre para TODOS los comercios con mp_enabled=true (no depende de company_owner /
-        // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
+        // Corre para TODOS los comercios con conector de Mercado Pago (no depende de
+        // company_owner / extensiones), porque el vínculo OAuth es por conector, no por
+        // instancia. Desde la misión de ABM -> Integraciones esos tokens viven en
+        // `platform_connectors` y no más en `online_configurations.mp_*`.
         $schedule->command('mercadopago:refresh-tokens')
             ->daily()
             ->withoutOverlapping();

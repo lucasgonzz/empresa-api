@@ -279,19 +279,32 @@ class ListasDePrecioPorDefectoTest extends ImportTestCase
     }
 
     /**
-     * Con `permitir_provider_code_repetido`, tres filas con el mismo provider_code NUEVO crean
-     * tres articulos distintos, pero ActualizarBBDD::get_article_model_from_cache() los resuelve
-     * a todos al mismo modelo con un ->first() por provider_code.
+     * Tres filas con el mismo provider_code NUEVO crean tres articulos distintos, pero
+     * ActualizarBBDD::get_article_model_from_cache() los resuelve a todos al mismo modelo con
+     * un ->first() por provider_code.
      *
      * Sin la guarda de deduplicacion de asignar_price_types(), el arreglo hacia que el primero
      * terminara con 6 filas de pivot (medido el 24/8/2026): article_price_type NO tiene indice
      * unico, asi que el INSERT IGNORE no deduplica nada.
      *
+     * 🔴 El ESCENARIO cambio el 2/9/2026 (mision fix-ultima-gana-con-actualizar-todos), la
+     * afirmacion no. Este test conseguia sus tres articulos con
+     * `permitir_provider_code_repetido = true` y sin decir nada sobre las filas repetidas del
+     * archivo -- y eso funcionaba por el defecto que esa mision arreglo: el flag de la BASE
+     * apagaba la deteccion de repetidos DENTRO del archivo, asi que cada fila creaba su
+     * articulo aunque el default fuera 'ultima_gana' (fusionar). Ahora los tres articulos se
+     * piden por la via legitima: 'productos_distintos', que es la respuesta del usuario a
+     * "estas filas repetidas son productos distintos".
+     *
+     * No se toco el numero 3 ni ninguna asercion: lo que este test custodia es que NO se
+     * dupliquen las filas de pivot, y para eso hacen falta tres articulos que compartan
+     * provider_code -- da igual por que camino se hayan creado.
+     *
      * ⚠️ Lo que este test NO arregla y queda como limite conocido: los articulos 2 y 3 no reciben
      * filas de asignar_price_types() (el modelo resuelto no es el suyo). En una cuenta normal los
      * rescata setFinalPrice; en una cuenta con `ventas_en_dolares` quedan sin listas. Es el
      * defecto preexistente de get_article_model_from_cache(), que tambien afecta a descuentos y
-     * recargos y esta fuera del alcance de esta mision.
+     * recargos y esta fuera del alcance de aquella mision.
      *
      * @return void
      */
@@ -300,6 +313,7 @@ class ListasDePrecioPorDefectoTest extends ImportTestCase
         $this->importar('07_repetidos_en_el_archivo.xlsx', [
             'provider_id'                     => null,
             'permitir_provider_code_repetido' => true,
+            'filas_repetidas_del_archivo'     => 'productos_distintos',
         ]);
 
         $creados = Article::where('user_id', $this->tenant->id)
