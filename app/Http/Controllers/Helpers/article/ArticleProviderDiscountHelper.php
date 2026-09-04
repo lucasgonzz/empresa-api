@@ -482,49 +482,70 @@ class ArticleProviderDiscountHelper {
 
         $del_articulo = [];
 
+        $hay_marca = false;
+
         foreach ($tagueados as $descuento) {
 
-            // 🔴 Los descuentos de MONTO FIJO no los gobierna la ficha del proveedor y esta funcion
-            // no opina sobre ellos: `provider_discounts` solo tiene `percentage`, asi que un
-            // `article_discount` tagueado con `amount` solo pudo dejarlo una COMPRA, con la
-            // bonificacion negociada de esa compra (NewProviderOrderHelper via ProviderOrderDiscount,
-            // que la guarda en `monto`). Ver `descuentos_gobernados_por_la_ficha()`.
+            /*
+             * 🔴 Una fila con porcentaje Y monto a la vez no se puede rehacer sin romper algo, asi
+             * que decide el usuario.
+             *
+             * Solo puede haberla dejado una COMPRA (`provider_order_discounts` expone los dos campos
+             * como inputs independientes, sin exclusividad). Rehacerla perderia el monto —la ficha
+             * del proveedor no tiene de donde reponerlo—, y conservarla mientras se crea la ficha
+             * DUPLICA el porcentaje: `aplicar_descuentos` recorre fila por fila, asi que el articulo
+             * terminaria con el 10% viejo y el 10% nuevo, y sobre un costo de 1000 daria 810 en vez
+             * de 900. La segunda propagacion lo veria "al dia" y el doble descuento quedaria
+             * horneado para siempre.
+             */
+            if (self::tiene_porcentaje_y_monto($descuento)) {
+                return 'editado_a_mano';
+            }
+
+            /*
+             * 🔴 Los descuentos de MONTO FIJO puro no los gobierna la ficha del proveedor y esta
+             * funcion no opina sobre ellos: `provider_discounts` solo tiene `percentage`, asi que un
+             * `article_discount` tagueado con `amount` solo pudo dejarlo una COMPRA, con la
+             * bonificacion negociada de esa compra (NewProviderOrderHelper via ProviderOrderDiscount,
+             * que la guarda en `monto`). Ver `gobernado_por_la_ficha()`.
+             */
             if (!self::gobernado_por_la_ficha($descuento)) {
                 continue;
             }
 
-            $porcentaje = self::normalizar_porcentaje($descuento->percentage);
-
-            /*
-             * 🔴 La marca la puso ArticleDiscountController::update() en el momento en que una
-             * persona cambio el porcentaje. No se deduce comparando numeros: una version anterior lo
-             * intentaba asi y un test la puso en rojo, porque al borrar un descuento del proveedor
-             * su porcentaje desaparece de toda referencia y los articulos que lo tenian copiado
-             * pasaban por editados a mano.
-             *
-             * Pero la marca sola no alcanza para seguir contandolo como editado: si el valor que
-             * tiene HOY coincide con uno de los del proveedor, no hay nada que decidir ni nada que
-             * perder. Sin esta salida, un articulo que alguien edito una vez y despues dejo igual al
-             * del proveedor quedaba marcado para siempre, y la ventana aparecia en todos los
-             * guardados de ese proveedor aunque no hubiera nada para actualizar — hasta volverse
-             * ruido que el usuario aprende a confirmar sin leer.
-             */
-            if ($descuento->editado_a_mano && !in_array($porcentaje, $percentages_actuales, true)) {
-                return 'editado_a_mano';
+            if ($descuento->editado_a_mano) {
+                $hay_marca = true;
             }
 
-            $del_articulo[] = $porcentaje;
+            $del_articulo[] = self::normalizar_porcentaje($descuento->percentage);
         }
 
         sort($del_articulo);
         $actuales_ordenados = $percentages_actuales;
         sort($actuales_ordenados);
 
-        // Compara los dos conjuntos completos: asi tambien cae como desactualizado el articulo al
-        // que le falta un descuento que el proveedor agrego, o al que le sobra uno que el proveedor
-        // borro — no solo el que tiene un porcentaje viejo.
+        /*
+         * Compara los dos conjuntos COMPLETOS: asi tambien cae como desactualizado el articulo al
+         * que le falta un descuento que el proveedor agrego, o al que le sobra uno que el proveedor
+         * borro — no solo el que tiene un porcentaje viejo.
+         *
+         * 🔴 Y la comparacion va ANTES de mirar la marca, no al reves. Una version anterior la
+         * miraba valor por valor —"si este porcentaje esta entre los del proveedor, la marca no
+         * cuenta"— y eso rompia la proteccion justo en el caso mas comun de un proveedor con dos
+         * bonificaciones: ficha [10, 5], el usuario aplana el 5 a 10 para ese articulo, y como 10
+         * figura entre los del proveedor la marca se ignoraba. El articulo salia 'desactualizado',
+         * la ventana lo contaba como actualizable y NO lo contaba entre los editados, y la edicion
+         * se destruia sin aviso. Comparando conjuntos primero, [10,10] no es [5,10] y la marca hace
+         * su trabajo.
+         */
         if ($del_articulo === $actuales_ordenados) {
+            // Coincide con la ficha: no hay nada que actualizar ni nada que perder, aunque alguna
+            // fila siga marcada de una edicion vieja que despues se realineo.
             return 'al_dia';
+        }
+
+        if ($hay_marca) {
+            return 'editado_a_mano';
         }
 
         return 'desactualizado';
@@ -550,9 +571,44 @@ class ArticleProviderDiscountHelper {
      */
     static function gobernado_por_la_ficha($descuento) {
 
+        return !self::tiene_monto($descuento);
+    }
+
+    /**
+     * Indica si un `article_discount` trae monto fijo cargado.
+     *
+     * `amount = 0` NO cuenta como monto: no descuenta nada (`ArticlePricesHelper::aplicar_descuentos`
+     * resta el amount tal cual) y tratarlo como "de una compra" dejaria filas muertas fuera del
+     * alcance de la ficha para siempre.
+     *
+     * @param  \App\Models\ArticleDiscount|object $descuento
+     * @return bool
+     */
+    static function tiene_monto($descuento) {
+
         $amount = isset($descuento->amount) ? $descuento->amount : null;
 
-        return is_null($amount) || $amount === '' || (float) $amount == 0;
+        return !is_null($amount) && $amount !== '' && (float) $amount != 0;
+    }
+
+    /**
+     * Indica si un `article_discount` trae porcentaje Y monto a la vez.
+     *
+     * Es la fila que no se puede rehacer sin romper algo (ver `clasificar_articulo`): rehacerla
+     * pierde el monto, conservarla mientras se crea la ficha duplica el porcentaje. Solo puede
+     * dejarla una compra, porque el formulario de `provider_order_discounts` expone los dos campos
+     * como inputs independientes y sin exclusividad.
+     *
+     * @param  \App\Models\ArticleDiscount|object $descuento
+     * @return bool
+     */
+    static function tiene_porcentaje_y_monto($descuento) {
+
+        $percentage = isset($descuento->percentage) ? $descuento->percentage : null;
+
+        $tiene_porcentaje = !is_null($percentage) && $percentage !== '' && (float) $percentage != 0;
+
+        return $tiene_porcentaje && self::tiene_monto($descuento);
     }
 
     /**
@@ -602,6 +658,16 @@ class ArticleProviderDiscountHelper {
             if (!is_null($actual)) {
                 $percentages_actuales[] = $actual;
             }
+        }
+
+        /*
+         * 🔴 La MISMA guarda que corta `propagar_a_articulos()`, y por eso esta duplicada: sin ella
+         * el preview y la accion usan criterios distintos, y la ventana promete lo que la accion no
+         * va a hacer. Con un proveedor sin porcentajes utilizables, el preview contaba cada articulo
+         * como "se va a actualizar", el usuario confirmaba, y la propagacion devolvia 0.
+         */
+        if (count($percentages_actuales) === 0) {
+            return $vacio;
         }
 
         $resultado = $vacio;
@@ -738,8 +804,26 @@ class ArticleProviderDiscountHelper {
              * ese worker puede leer el articulo entre el DELETE y el INSERT y guardarle un
              * costo_real calculado con CERO descuentos.
              */
-            $gobernados = collect($tagueados)->filter(function ($descuento) {
-                return self::gobernado_por_la_ficha($descuento);
+            /*
+             * Que se rehace: lo que gobierna la ficha (porcentaje puro).
+             *
+             * 🔴 Y, SOLO si el usuario pidio pisar, tambien las filas con porcentaje Y monto a la
+             * vez. Son las que `clasificar_articulo` mando a 'editado_a_mano' justamente porque no
+             * se pueden rehacer sin romper algo; si el usuario acepto pisar, se van con todo. Si se
+             * dejaran, se conservaria su porcentaje viejo mientras se crea el nuevo y el articulo
+             * terminaria descontando dos veces — el defecto que la clasificacion evita, reaparecido
+             * en el camino del tilde.
+             *
+             * Las de monto PURO no se tocan nunca, ni con el tilde: la ficha no tiene con que
+             * reponer un monto fijo y borrarlo lo pierde para siempre.
+             */
+            $gobernados = collect($tagueados)->filter(function ($descuento) use ($pisar_editados) {
+
+                if (self::gobernado_por_la_ficha($descuento)) {
+                    return true;
+                }
+
+                return $pisar_editados && self::tiene_porcentaje_y_monto($descuento);
             });
 
             $mostrar_en_online = 0;

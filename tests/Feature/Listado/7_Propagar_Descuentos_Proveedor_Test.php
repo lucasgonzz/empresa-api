@@ -684,6 +684,147 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 LA PROTECCION NO SE LEVANTA PORQUE EL VALOR EDITADO COINCIDA CON OTRO DESCUENTO DE LA FICHA.
+     *
+     * Lo encontro la verificacion de los arreglos, y es el caso mas comun de un proveedor con dos
+     * bonificaciones: ficha [10, 5], el usuario aplana el 5 a 10 para ESE articulo. Una version
+     * anterior miraba la marca valor por valor —"si este porcentaje esta entre los del proveedor, la
+     * marca no cuenta"— asi que el 10 editado se colaba, el articulo salia 'desactualizado', la
+     * ventana lo contaba como actualizable y NO entre los editados, y la edicion se destruia sin
+     * aviso ni tilde de por medio.
+     *
+     * O sea: el arreglo que evitaba que la marca molestara de mas habia dejado de proteger, que es
+     * exactamente el daño que esta funcionalidad existe para evitar.
+     *
+     * @test
+     */
+    public function la_marca_protege_aunque_el_valor_editado_exista_en_otra_bonificacion_del_proveedor()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 5]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Aplanado a 10', 10);
+
+        /* La segunda fila: era el 5% del proveedor y el usuario la aplano a 10 para este articulo. */
+        ArticleDiscount::create([
+            'article_id'     => $article->id,
+            'provider_id'    => $provider->id,
+            'percentage'     => 10,
+            'tipo'           => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'editado_a_mano' => 1,
+        ]);
+
+        $response = $this->getJson('api/provider/'.$provider->id.'/propagar-descuentos/preview');
+
+        $preview = json_decode($response->getContent(), true);
+
+        $this->assertEquals(
+            1,
+            $preview['editados_a_mano'],
+            'El articulo tiene una edicion a mano y la ventana la tiene que contar como tal.'
+        );
+
+        $this->assertEquals(
+            0,
+            $preview['desactualizados'],
+            'Y NO puede ofrecerlo como una actualizacion de rutina.'
+        );
+
+        /* Sin el tilde, la edicion sobrevive. */
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [])
+                ->assertStatus(200);
+
+        $this->assertCount(
+            2,
+            $this->descuentos_tagueados($article->id),
+            'Sin pedir pisar, el articulo queda como estaba.'
+        );
+
+        $porcentajes = $this->descuentos_tagueados($article->id)
+                                ->pluck('percentage')
+                                ->map(function ($p) { return (float) $p; })
+                                ->sort()
+                                ->values()
+                                ->all();
+
+        $this->assertEqualsWithDelta(10, $porcentajes[0], self::DELTA);
+        $this->assertEqualsWithDelta(10, $porcentajes[1], self::DELTA, 'El 10 que el usuario puso a mano sigue ahi.');
+    }
+
+    /**
+     * 🔴 Una fila con PORCENTAJE Y MONTO a la vez no se rehace sola: decide el usuario.
+     *
+     * Solo puede dejarla una compra (el formulario de descuentos de compra expone los dos campos sin
+     * exclusividad). Rehacerla pierde el monto; conservarla mientras se crea la ficha DUPLICA el
+     * porcentaje, porque el calculo del costo recorre fila por fila. Con un costo de 1000 y un 10%
+     * duplicado, el costo real daria 810 en vez de 900 — y la propagacion siguiente lo veria "al
+     * dia", dejando el doble descuento horneado para siempre.
+     *
+     * @test
+     */
+    public function prendida_la_fila_con_porcentaje_y_monto_no_se_rehace_sola_ni_duplica()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Fila mixta', null);
+
+        /* Lo que puede dejar una compra: porcentaje Y monto en la misma fila. */
+        ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => 10,
+            'amount'      => 500,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+        ]);
+
+        $this->cambiar_descuento_del_proveedor($descuento_proveedor, 15);
+
+        /* Sin el tilde no se toca, y sobre todo NO se le suma un segundo descuento. */
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [])
+                ->assertStatus(200);
+
+        $this->assertCount(
+            1,
+            $this->descuentos_tagueados($article->id),
+            'No se puede crear el descuento nuevo dejando la fila vieja: seria descontar dos veces.'
+        );
+
+        $vigente = $this->descuentos_tagueados($article->id)->first();
+
+        $this->assertEqualsWithDelta(500, (float) $vigente->amount, self::DELTA, 'El monto de la compra sigue.');
+        $this->assertEqualsWithDelta(10, (float) $vigente->percentage, self::DELTA, 'Y su porcentaje tambien.');
+
+        /* Con el tilde, el usuario acepta perderla: se reemplaza por la ficha, sin duplicar. */
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $vigentes = $this->descuentos_tagueados($article->id);
+
+        $this->assertCount(1, $vigentes, 'Queda solo la bonificacion de la ficha.');
+
+        $this->assertEqualsWithDelta(
+            15,
+            (float) $vigentes->first()->percentage,
+            self::DELTA,
+            'Con el porcentaje nuevo del proveedor.'
+        );
+
+        $this->assertEqualsWithDelta(
+            850,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'Y el costo real con UN solo 15%, no con dos descuentos encadenados.'
+        );
+    }
+
+    /**
      * La clasificacion es la pieza que decide todo lo demas, y se prueba aparte de la base para
      * cubrir las combinaciones sin fabricar un artículo por cada una.
      *
