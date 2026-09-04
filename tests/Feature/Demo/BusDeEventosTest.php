@@ -487,6 +487,112 @@ class BusDeEventosTest extends TestCase
     }
 
     /**
+     * Los tres eventos del motor de tour guiado entran por la lista blanca y quedan persistidos.
+     *
+     * 🔴 Este test existe por el modo de falla que el motor NO puede detectar solo. Si estos tres
+     * nombres no estan en DemoEventoEmitter::NOMBRES_UX, el endpoint los descarta con un 204 mudo
+     * --y del lado del SPA no se ve absolutamente nada, porque la accion `demo/reportar` nunca
+     * rechaza--. O sea que los tours seguirian funcionando perfecto para el lead y el unico
+     * sintoma seria que el panel del admin no muestra un solo tour, semanas despues y sin que
+     * nadie sepa desde cuando.
+     *
+     * Se verifican los tres juntos y no uno solo: la lista blanca es un array literal y agregar
+     * dos de tres es exactamente el error que un test de un solo nombre deja pasar.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_el_endpoint_de_ux_registra_los_eventos_del_tour_guiado()
+    {
+        $this->sin_red();
+        $this->configurar_canal();
+
+        $casos = [
+            ['nombre' => 'tour.iniciado', 'clip_id' => '1.1', 'datos' => ['pasos' => 13]],
+            ['nombre' => 'tour.paso_salteado', 'clip_id' => '1.1', 'datos' => ['paso' => 4, 'total' => 13]],
+            ['nombre' => 'tour.completado', 'clip_id' => '1.1', 'datos' => ['completo' => true, 'pasos' => 13]],
+        ];
+
+        foreach ($casos as $caso) {
+            $respuesta = $this->como_sesion_de_demo()->postJson('/api/demo/evento', $caso);
+
+            $respuesta->assertStatus(200);
+
+            $evento = DemoEvento::where('nombre', $caso['nombre'])->orderBy('id', 'DESC')->first();
+
+            $this->assertNotNull(
+                $evento,
+                'El evento ' . $caso['nombre'] . ' tiene que quedar persistido. Si esto falla, revisa que el nombre este en DemoEventoEmitter::NOMBRES_UX.'
+            );
+
+            $this->assertSame(
+                '1.1',
+                $evento->clip_id,
+                'El evento ' . $caso['nombre'] . ' tiene que viajar con el clip que lo disparo: sin eso el admin no sabe de que tutorial se trata.'
+            );
+        }
+
+        /**
+         * Y `tour.completado` tiene que traer si el lead llego al final o se salio antes. Es el
+         * dato por el que existe el evento: un tour cortado a la mitad y uno terminado dicen
+         * cosas opuestas sobre como le fue al lead.
+         */
+        $completado = DemoEvento::where('nombre', 'tour.completado')->orderBy('id', 'DESC')->first();
+
+        $this->assertTrue(
+            is_array($completado->datos) && array_key_exists('completo', $completado->datos),
+            'tour.completado tiene que traer `completo` en datos.'
+        );
+    }
+
+    /**
+     * `clip.progreso` entra por la lista blanca y persiste su porcentaje.
+     *
+     * 🔴 Mismo modo de falla callado que los tres del tour, y por eso este test existe aparte de
+     * mirar el array a ojo: sin `clip.progreso` en DemoEventoEmitter::NOMBRES_UX el endpoint
+     * responde 204 mudo, `demo/reportar` no rechaza nunca, y el video se sigue mirando igual. El
+     * unico sintoma seria que en el admin todos los leads que no terminaron un video figuran en
+     * 0%, indistinguibles del que ni lo abrio.
+     *
+     * Se verifica tambien `datos.porcentaje`, no solo el 200: el nombre en la lista blanca sin el
+     * porcentaje adentro deja el evento sin la unica informacion por la que se emite.
+     *
+     * @group demo
+     * @return void
+     */
+    public function test_el_endpoint_de_ux_registra_el_progreso_de_un_clip()
+    {
+        $this->sin_red();
+        $this->configurar_canal();
+
+        $respuesta = $this->como_sesion_de_demo()->postJson('/api/demo/evento', [
+            'nombre'  => 'clip.progreso',
+            'clip_id' => '1.4',
+            'datos'   => ['porcentaje' => 40],
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $evento = DemoEvento::where('nombre', 'clip.progreso')->orderBy('id', 'DESC')->first();
+
+        $this->assertNotNull(
+            $evento,
+            'clip.progreso tiene que quedar persistido. Si esto falla, revisa que el nombre este en DemoEventoEmitter::NOMBRES_UX.'
+        );
+
+        $this->assertSame(
+            '1.4',
+            $evento->clip_id,
+            'clip.progreso tiene que viajar con el clip que lo disparo: sin eso el admin no sabe de que video es el porcentaje.'
+        );
+
+        $this->assertTrue(
+            is_array($evento->datos) && isset($evento->datos['porcentaje']) && (int) $evento->datos['porcentaje'] === 40,
+            'clip.progreso tiene que traer `porcentaje` en datos.'
+        );
+    }
+
+    /**
      * Sin el marcador de sesion demo, el endpoint responde 204 mudo y no escribe nada.
      *
      * 204 y no 403 a proposito: el mismo empresa-spa se despliega en las instancias de los

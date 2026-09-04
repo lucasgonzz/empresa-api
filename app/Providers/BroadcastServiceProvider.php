@@ -12,6 +12,32 @@ use Pusher\Pusher;
 class BroadcastServiceProvider extends ServiceProvider
 {
     /**
+     * Reemplaza el canal de broadcast de las notificaciones por el propio.
+     *
+     * 🔴 Este binding es el unico punto de entrada posible:
+     * `ChannelManager::createBroadcastDriver()` (vendor, linea 85) hace
+     * `$this->container->make(Channels\BroadcastChannel::class)`, asi que resolver esa clase a
+     * la nuestra es lo que hace que TODAS las notificaciones del repo pasen por el canal nuevo.
+     *
+     * El canal nuevo solo se comporta distinto con las notificaciones que pidieron
+     * `connection === 'sync'`; el resto sigue el camino identico al de vendor. El motivo de todo
+     * esto esta en el docblock de `InstantBroadcastChannel`.
+     *
+     * Va acá y no en `AppServiceProvider` porque en este provider ya vive todo lo de
+     * broadcasting (el `Broadcast::extend`, las rutas y `channels.php`): partirlo en dos
+     * archivos seria esconder la mitad.
+     *
+     * @return void
+     */
+    public function register()
+    {
+        $this->app->bind(
+            \Illuminate\Notifications\Channels\BroadcastChannel::class,
+            \App\Notifications\Channels\InstantBroadcastChannel::class
+        );
+    }
+
+    /**
      * Bootstrap any application services.
      *
      * @return void

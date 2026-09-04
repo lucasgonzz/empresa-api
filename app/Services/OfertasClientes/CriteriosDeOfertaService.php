@@ -34,6 +34,15 @@ use Illuminate\Support\Facades\DB;
  * se devuelve para que el llamador lo guarde en offer_suggestions.total_clientes_excluidos_por_deuda
  * y se lo muestre al comerciante: es lo que le prueba que el sistema tuvo criterio.
  *
+ * 🔴 A.5.0 — LOS CUATRO CRITERIOS EXIGEN BUYER VINCULADO, no solo los dos que lo necesitan para el
+ * join de tracking. La query que corre la tienda (textual en
+ * database/migrations/2026_08_17_100200_create_client_offers_table.php:16-26) filtra por
+ * `co.client_id = buyers.comercio_city_client_id del buyer logueado`: una oferta de un cliente sin
+ * buyer no la ve nadie, nunca. carrito_abandonado() e interes_en_el_ecommerce() ya lo exigían porque
+ * su fuente de datos (buyer_tracking_events) sale de un JOIN con buyers; afinidad() lo agrega
+ * explícito (:157 y siguientes, subconsulta contra buyers) y reactivacion() lo HEREDA de afinidad()
+ * sin repetirlo — ver el docblock de cada método para el motivo puntual.
+ *
  * No escribe nada en la base. PHP 7.4: sin match, ?->, str_contains ni #[...].
  */
 class CriteriosDeOfertaService
@@ -141,6 +150,18 @@ class CriteriosDeOfertaService
      * A.5.1 — Afinidad de compra. EL NÚCLEO, y funciona sin tracking: article_purchases tiene
      * client_id, o sea que da directo "qué le vendí a quién y cuándo".
      *
+     * 🔴 EL FILTRO DE BUYER VIVE ACÁ Y NO EN candidatos(). Es el único de los cuatro criterios que
+     * no lo traía (carrito_abandonado() e interes_en_el_ecommerce() lo heredan del JOIN con buyers
+     * que necesitan igual para leer el tracking), y sin él el motor generaba sugerencias para
+     * clientes que la tienda nunca le muestra a nadie (ver el docblock de la clase). Filtrarlo acá,
+     * en la query, y no después del array_merge en candidatos(), evita traer a PHP filas que la base
+     * puede descartar sola —medido: 228 pares candidatos de los cuales 73 se tiran— y mantiene a
+     * afinidad() y reactivacion() diciendo la verdad sobre lo que generan.
+     *
+     * reactivacion() NO repite este filtro: hereda el que hay acá porque arma sus candidatos
+     * exclusivamente a partir de $mejores, que sale de llamar a este método (ver su propio
+     * docblock). Agregarlo también ahí sería la misma condición escrita dos veces.
+     *
      * @param  array    $client_ids Acotar a estos clientes (vacío = todos).
      * @param  int|null $dias       Ventana; null = dias_historial_afinidad de la corrida.
      * @return array
@@ -159,6 +180,25 @@ class CriteriosDeOfertaService
             ->where('article_purchases.created_at', '>=', Carbon::now()->subDays($dias))
             ->groupBy('article_purchases.client_id', 'article_purchases.article_id')
             ->havingRaw('COUNT(*) >= ?', [self::MIN_COMPRAS_AFINIDAD]);
+
+        /*
+         * 🔴 whereIn con subconsulta, NO un JOIN buyers: un cliente puede tener más de un Buyer
+         * (vistas_con_tiempo(), :407-411) y con GROUP BY client_id, article_id + COUNT(*) un JOIN
+         * duplicaría filas e inflaría el score. Tampoco whereExists: buyers.comercio_city_client_id
+         * no tiene índice (medido 26/8/2026: SHOW INDEX FROM buyers solo devuelve PRIMARY), y un
+         * EXISTS correlacionado escanearía buyers una vez por fila candidata; el IN con subconsulta
+         * MySQL 8 lo materializa una sola vez. Y sí se filtra por buyers.user_id: el buyer que ve la
+         * oferta es un buyer DE ESTE COMERCIO, el mismo criterio que ya usa
+         * OfertaComunicacionHelper::buyer_del_cliente() (:237-244).
+         */
+        $user_id = $this->user_id;
+
+        $q->whereIn('article_purchases.client_id', function ($sub) use ($user_id) {
+            $sub->select('buyers.comercio_city_client_id')
+                ->from('buyers')
+                ->whereNotNull('buyers.comercio_city_client_id')
+                ->where('buyers.user_id', $user_id);
+        });
 
         if (!empty($client_ids)) {
             $q->whereIn('article_purchases.client_id', $client_ids);
@@ -277,6 +317,15 @@ class CriteriosDeOfertaService
     /**
      * A.5.3 — Reactivación por inactividad. Funciona sin tracking. El artículo sale del propio
      * historial del cliente dormido: ofrecerle algo que nunca compró no es reactivar, es adivinar.
+     *
+     * 🔴 EL FILTRO DE BUYER SE HEREDA DE afinidad(), NO SE AGREGA ACÁ. La query de `dormidos`
+     * (debajo) queda intacta a propósito: sigue trayendo a todos, con o sin buyer. Lo que decide
+     * quién termina en el resultado es $mejores, que sale ÍNTEGRO de llamar a afinidad($ids) y
+     * afinidad($faltantes, $ventana) — los dos únicos lugares que lo llenan. Como afinidad() ya
+     * filtra por buyer, un dormido sin buyer no tiene entrada en $mejores por ninguno de los dos
+     * pases, y el `continue` de más abajo lo descarta solo. Agregar el filtro también sobre
+     * `dormidos` sería la misma condición escrita dos veces, y el día que una de las dos cambie el
+     * motor contestaría distinto según por dónde entre.
      *
      * @return array
      */

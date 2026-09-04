@@ -60,8 +60,16 @@ class GuardiaCaminosDeIvaTest extends TestCase
      * - `ArticlePricesHelper::aplicar_precios_segun_listas_de_precios()` → 1: camino 2 (listas).
      * - `ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias()` → 1: camino 4
      *   (listas por categoría, prompt 03).
-     * - `ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda()` → 1: camino 3
+     * - `ArticlePriceTypeMonedaHelper::calcular_precios_por_price_type_y_moneda()` → 1: camino 3
      *   (listas por moneda, prompt 02).
+     *
+     *   ⚠️ Ese método se llamaba `aplicar_precios_por_price_type_y_moneda()` hasta el 30/8/2026.
+     *   Ese nombre lo tiene ahora un envoltorio de tres líneas —llama al cálculo y después espeja
+     *   el precio en pesos en la pivot `article_price_type`, que es lo que lee la tienda— y el
+     *   cuerpo con toda la lógica pasó a `calcular_...`. **No cambió ninguna llamada de IVA**: la
+     *   única sigue estando donde estaba, dentro del cálculo. Lo que se corrigió acá es a qué
+     *   método apunta la guardia, porque si no vigilaba el envoltorio vacío y contaba 0 — o sea,
+     *   dejaba de vigilar el camino real sin que nada lo dijera.
      *
      * @var array<int, array{archivo: string, metodo: string, esperado: int}>
      */
@@ -70,7 +78,7 @@ class GuardiaCaminosDeIvaTest extends TestCase
         ['archivo' => self::ARTICLE_HELPER, 'metodo' => 'aplicar_descuentos_e_iva', 'esperado' => 1],
         ['archivo' => self::ARTICLE_PRICES_HELPER, 'metodo' => 'aplicar_precios_segun_listas_de_precios', 'esperado' => 1],
         ['archivo' => self::ARTICLE_PRICES_HELPER, 'metodo' => 'aplicar_precios_segun_listas_de_precios_y_categorias', 'esperado' => 1],
-        ['archivo' => self::ARTICLE_PRICE_TYPE_MONEDA_HELPER, 'metodo' => 'aplicar_precios_por_price_type_y_moneda', 'esperado' => 1],
+        ['archivo' => self::ARTICLE_PRICE_TYPE_MONEDA_HELPER, 'metodo' => 'calcular_precios_por_price_type_y_moneda', 'esperado' => 1],
     ];
 
     /**

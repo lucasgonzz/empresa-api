@@ -4,17 +4,27 @@ namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\SalePdfHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\AfipQrPdf;
+use App\Http\Controllers\Pdf\Puntos\PuntosComprobanteHelper;
 use App\Models\AfipInformation;
 use fpdf;
 require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
+
+	/*
+	 * Cache de los renglones de puntos del ticket. Se declara e inicializa en null ACA, y no
+	 * se lee con isset(), porque leer una propiedad dinamica de $this antes de su primera
+	 * asignacion es la familia de error que rompio produccion el 4/8/2026 con total_bruto en
+	 * NewSalePdf. tests/Unit/Pdf/PropiedadesDePdfInicializadasTest la vigila.
+	 */
+	public $puntos_renglones = null;
 
 	function __construct($sale, $afip_ticket = null) {
 		$this->line_height = 5;
@@ -162,9 +172,18 @@ class SaleTicketPdf extends fpdf {
 
 		$this->surchages();
 
+		/*
+		 * El canje va DESPUES de los descuentos/recargos porcentuales y ANTES de los descuentos
+		 * por medio de pago, que es el orden con el que el front arma el total
+		 * (vender_set_total.js: total = bruto - descuentos - descuento_puntos - medio de pago).
+		 */
+		$this->canje_de_puntos();
+
 		$this->payment_method_discounts();
 
 		$this->total();
+
+		$this->puntos_del_cliente();
 
 		$this->ticket_description();
 		
@@ -453,8 +472,17 @@ class SaleTicketPdf extends fpdf {
 		}
 	}
 
+	/*
+	 * El canje de puntos entra en esta condicion junto con los descuentos y los recargos: es
+	 * otra cosa que separa el sub total del total, y sin este renglon el ticket arrancaria
+	 * directo en "Canje 500 pts $116.000" sin decir nunca de cuanto se partia.
+	 */
 	function total_sin_des_rec() {
-		if (count($this->sale->discounts) >= 1 || count($this->sale->surchages) >= 1) {
+		if (
+			count($this->sale->discounts) >= 1
+			|| count($this->sale->surchages) >= 1
+			|| PuntosComprobanteHelper::tiene_canje($this->sale)
+		) {
 		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', 'B', 10);
 			$this->Cell($this->cell_ancho, 7, 'Total $'.Numbers::price($this->total_sale), 'B', 1, 'R');
@@ -481,6 +509,78 @@ class SaleTicketPdf extends fpdf {
 				$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
 	    	}
 	    }
+	}
+
+	/**
+	 * El renglon del canje de puntos, con el mismo formato que los descuentos por medio de pago.
+	 *
+	 * 🔴 Resta de $this->total_sale igual que payment_method_discounts(), y eso es lo que hace
+	 * que el ticket CIERRE: total() compara $this->sale->total contra $this->total_sale para
+	 * decidir si imprime "Total sin descuentos". Sin esta resta, una venta con canje imprimia
+	 * un "Total sin descuentos: $121.000" y abajo un "TOTAL: $116.000" con $5.000 de diferencia
+	 * que el papel no explicaba por ningun lado.
+	 *
+	 * @return void
+	 */
+	function canje_de_puntos() {
+
+		$texto = PuntosComprobanteHelper::renglon_descuento_corto($this->sale);
+
+		if (is_null($texto)) {
+			return;
+		}
+
+		$this->total_sale -= PuntosComprobanteHelper::descuento_del_canje($this->sale);
+
+		$this->SetFont('Arial', 'B', 10);
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho / 2, 7, $texto, 'B', 0, 'L');
+		$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
+	}
+
+	/**
+	 * Los puntos que el cliente sumo con esta compra y los que tiene acumulados.
+	 *
+	 * Va DESPUES de la banda del total: es informacion para el cliente, no un renglon de la
+	 * cuenta. El texto lo decide PuntosComprobanteHelper, que es el que sabe que en una venta
+	 * de cuenta corriente todavia impaga los puntos no existen y no se pueden prometer.
+	 *
+	 * @return void
+	 */
+	function puntos_del_cliente() {
+
+		$renglones = $this->get_puntos_renglones();
+
+		if (!count($renglones)) {
+			return;
+		}
+
+		$this->y += 2;
+		$this->SetFont('Arial', '', 9);
+
+		foreach ($renglones as $renglon) {
+			$this->x = $this->x_incial;
+			$this->MultiCell($this->cell_ancho, 4, $renglon, 0, 'C', 0);
+		}
+	}
+
+	/**
+	 * Los renglones de puntos, calculados una sola vez: getPdfHeight() los necesita para
+	 * reservar el alto del ticket ANTES de dibujar, y detras hay dos consultas.
+	 *
+	 * @return array
+	 */
+	function get_puntos_renglones() {
+
+		if (is_null($this->puntos_renglones)) {
+			/*
+			 * $this->user viene de UserHelper::getFullModel() (el comercio de la sesion). El
+			 * helper lo acepta solo si coincide con sales.user_id; si no, resuelve por la venta.
+			 */
+			$this->puntos_renglones = PuntosComprobanteHelper::renglones_puntos($this->sale, $this->user);
+		}
+
+		return $this->puntos_renglones;
 	}
 
 	function surchages() {
@@ -533,16 +633,18 @@ class SaleTicketPdf extends fpdf {
         	
         	$afip_helper = new AfipHelper($this->afip_ticket);
 
-			$importes = $afip_helper->getImportes();
+			// El `true` es el modo tolerante: esto es una REIMPRESION de un comprobante ya
+			// autorizado. Una alicuota vieja que ARCA no reconoce se loguea y no genera renglon,
+			// pero el ticket sale. La emision llama sin parametro y sigue cortando.
+			$importes = $afip_helper->getImportes(true);
 
 		    $this->x = $this->x_incial;
 			$this->Cell(60, 5, 'Imp Neto Gravado: $'.Numbers::price($importes['gravado']), 0, 1, 'L');
 
-			foreach ($importes['ivas'] as $iva => $importe) {
-				if ($importe['Importe'] > 0) {
-		    		$this->x = $this->x_incial;
-					$this->Cell(40, 5, 'IVA '.$iva.'%: $'.Numbers::price($importe['Importe']), 0, 1, 'L');
-				}
+			// 🔴 Se imprime la ETIQUETA, no la clave del bucket: la clave '10' vale 10,5 %.
+			foreach (AfipImportesResolver::renglones_de_iva($importes) as $renglon) {
+	    		$this->x = $this->x_incial;
+				$this->Cell(40, 5, 'IVA '.$renglon['etiqueta'].'%: $'.Numbers::price($renglon['importe']), 0, 1, 'L');
 			}
 			$this->y += 5;
 		}
@@ -643,7 +745,22 @@ class SaleTicketPdf extends fpdf {
 			}
 			$height += $renglones * 5;
 		}
-		// $height +=
+
+		/*
+		 * El ticket es un rollo continuo: el alto se calcula ANTES de dibujar y lo que no se
+		 * reserve aca queda cortado. El canje suma dos renglones de 7mm (el "Total" del sub
+		 * total, que sin canje no se imprimia, mas el renglon del canje).
+		 */
+		if (PuntosComprobanteHelper::tiene_canje($this->sale)) {
+			$height += 14;
+		}
+
+		/*
+		 * Los informativos de puntos son MultiCell de 4mm, y en un ticket angosto un renglon
+		 * puede partirse en dos: se reservan 8mm por renglon para no cortar el ultimo.
+		 */
+		$height += count($this->get_puntos_renglones()) * 8;
+
 		return $height;
 	}
 

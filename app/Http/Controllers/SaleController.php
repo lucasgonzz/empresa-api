@@ -14,20 +14,20 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
-use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\LimiteCreditoHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
 use App\Http\Controllers\Helpers\SaleProviderOrderHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
+use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
-use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
-use App\Http\Controllers\Helpers\sale\SaleNotaCreditoAfipHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
 use App\Services\SaleWhatsappSenderService;
@@ -42,7 +42,6 @@ use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
 use App\Models\SaleDeliveryInfo;
 use App\Models\SaleSenderInfo;
-use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\SaleModification;
@@ -136,8 +135,22 @@ class SaleController extends Controller
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
+    /**
+     * Guarda anti-duplicados: aborta la venta si hace 5 segundos o menos entro una identica.
+     *
+     * El select() explicito es parte del arreglo de performance del 1/9/2026, no cosmetico: de la
+     * fila solo se leen num, total y created_at (las tres, para el Log de abajo). created_at se sigue
+     * casteando a Carbon -- Eloquent castea CREATED_AT/UPDATED_AT via getDates() sobre el atributo
+     * presente en el modelo, no sobre la lista del SELECT.
+     *
+     * El indice sales_user_id_created_at_idx (migracion 2026_09_01_180000) es lo que hace que esta
+     * guarda FUNCIONE, no solo que sea rapida: medida en lamartina2 el 1/9/2026 tardaba 13 segundos
+     * con una ventana de 5, o sea que terminaba de mirar cuando la venta anterior ya habia quedado
+     * fuera de su propia ventana. Ese era el motivo de las ventas duplicadas.
+     */
     function venta_ya_cread($request) {
-        $sale_ya_creada = Sale::where('user_id', $this->userId())
+        $sale_ya_creada = Sale::select('num', 'total', 'created_at')
+                                ->where('user_id', $this->userId())
                                 ->where('client_id', $request->client_id)
                                 ->where('employee_id', SaleHelper::getEmployeeId($request))
                                 ->where('total', $request->total)
@@ -152,6 +165,38 @@ class SaleController extends Controller
     }
 
     public function store(Request $request) {
+
+        /**
+         * Límite de crédito del cliente (misión 160). La validación de la SPA es guarda de UX; la
+         * autoridad es este 422, porque un POST directo a /sale llega igual hasta acá. Es el mismo
+         * criterio que ya aplica makeAfipTicket() con el tope del importe personalizado.
+         *
+         * Va ANTES de DB::beginTransaction() a propósito: no escribe nada, no consume número de
+         * venta y no deja transacción abierta que después haya que cerrar en el camino del rechazo.
+         * Mismo razonamiento que allá ("se valida ANTES de instanciar MakeAfipTicket, así que un
+         * rechazo no toca ARCA"): un rechazo acá no toca la base.
+         */
+        $error_limite_credito = LimiteCreditoHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_limite_credito)) {
+
+            return response()->json($error_limite_credito, 422);
+        }
+
+        /**
+         * Canje de puntos (misión del 22/8/2026). Mismo lugar y mismo criterio que el límite de
+         * crédito: la validación de VENDER es guarda de UX, la autoridad es este 422 porque un
+         * POST directo a /sale llega igual hasta acá. Va ANTES de DB::beginTransaction() para
+         * que un rechazo no toque la base ni consuma número de venta.
+         *
+         * Sin `puntos_canjeados` en el request sale en la primera línea, sin una sola query.
+         */
+        $error_canje_puntos = PuntosCanjeHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_canje_puntos)) {
+
+            return response()->json($error_canje_puntos, 422);
+        }
 
         DB::beginTransaction();
 
@@ -224,6 +269,19 @@ class SaleController extends Controller
             }
 
             SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
+
+            /**
+             * El canje se escribe ANTES de attachProperies() a propósito. Adentro de
+             * attachProperies() corre el reconciliador que le OTORGA los puntos de esta misma
+             * venta, y si el canje corriera después, el FIFO podría llegar a comerse el lote
+             * que la propia venta acaba de generar: el cliente estaría pagando con puntos que
+             * ganó en la compra que está pagando. La validación de más arriba midió el saldo
+             * anterior a esta venta, así que el orden de acá es el que la respeta.
+             *
+             * `sales.total` ya viene neteado por el front; lo que escribe aplicar() son las dos
+             * columnas que explican esa diferencia y el movimiento negativo con su consumo FIFO.
+             */
+            PuntosCanjeHelper::aplicar($model, $request);
 
             SaleHelper::attachProperies($model, $request);
 
@@ -450,10 +508,71 @@ class SaleController extends Controller
             $model->save();
 
             $model = Sale::find($model->id);
-            
+
+            /**
+             * Límite de crédito del cliente (misión 160), lado update(). A diferencia de store(),
+             * acá corre DENTRO de la transacción (ya viene abierta desde el principio del método,
+             * y para este punto ya se hicieron detachItems, dos $model->save() y attachProperies),
+             * así que un rechazo tiene que hacer DB::rollBack() explícito antes de responder: si
+             * no, la transacción queda abierta y nadie la cierra en este camino.
+             *
+             * Cubre el caso que store() no puede ver: una venta to_check que se confirma editando
+             * (to_check pasa a 0) y recién ahí entra a la cuenta corriente, o una venta que ya
+             * estaba y le suben el total. Ver LimiteCreditoHelper::validar_venta_actualizada().
+             */
+            $error_limite_credito = LimiteCreditoHelper::validar_venta_actualizada($model);
+
+            if (!is_null($error_limite_credito)) {
+
+                DB::rollBack();
+                return response()->json($error_limite_credito, 422);
+            }
+
+            /**
+             * Canje de puntos, lado update(). Son tres pasos y el orden es todo:
+             *
+             *  1. DESHACER el canje anterior de esta venta. Tiene que ir primero porque el
+             *     saldo del cliente todavía incluye el movimiento negativo del canje viejo: si
+             *     validáramos antes de deshacer, editar una venta SIN tocarle el canje se
+             *     rechazaría a sí misma por saldo insuficiente. Es el mismo razonamiento por el
+             *     que LimiteCreditoHelper::validar_venta_actualizada() resta el movimiento
+             *     actual de la cuenta corriente antes de comparar contra el límite.
+             *  2. VALIDAR contra el saldo ya limpio. Corre adentro de la transacción abierta,
+             *     así que el rechazo hace DB::rollBack() explícito — y ese rollback es también
+             *     lo que devuelve el canje viejo a su lugar.
+             *  3. APLICAR el canje nuevo (o ninguno, si la venta se editó sacándolo).
+             *
+             * Va antes de updateCurrentAcountsAndCommissions() porque ese helper recrea el
+             * movimiento de la cuenta corriente leyendo `sales.total`, que es el total que el
+             * front ya mandó neteado por el canje.
+             */
+            PuntosCanjeHelper::deshacer($model);
+
+            $error_canje_puntos = PuntosCanjeHelper::validar_venta_actualizada($model, $request);
+
+            if (!is_null($error_canje_puntos)) {
+
+                DB::rollBack();
+                return response()->json($error_canje_puntos, 422);
+            }
+
+            PuntosCanjeHelper::aplicar($model, $request);
+
             if ($model->client_id && !$model->to_check && !$model->checked) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
             }
+
+            /**
+             * Reconciliación de los puntos GANADOS por esta venta. Va acá y no adentro de
+             * attachProperies() porque en el update attachProperies corre con
+             * $from_store = false y el débito de la cuenta corriente todavía no está en su
+             * estado final: preguntar antes daría "no corresponde" y revertiría puntos buenos.
+             *
+             * Corre SIEMPRE, también cuando la venta no entra a la cuenta corriente: es lo que
+             * cubre la venta de mostrador editada y la que dejó de corresponder (se le sacó el
+             * cliente, se la pasó a to_check, se le devolvió todo). El reconciliador decide.
+             */
+            PuntosAcumulacionHelper::reconciliar_venta($model);
 
 
             $sale_modification->estado_despues_de_actualizar = SaleModificationsHelper::get_estado($model);
@@ -522,60 +641,21 @@ class SaleController extends Controller
             $payment_methods_para_compensacion = $model->current_acount_payment_methods;
         }
 
-        Log::info('Se quiere eliminar sale N° '.$model->num.'. id: '.$model->id.'. Por el empleado: '.Auth()->user()->name.', doc: '.Auth()->user()->doc_number);
-        if (!is_null($model->client)) {
-            Log::info('Y pertenece al cliente '.$model->client->name);
-        }
-
-        $h = new ArticlePurchaseHelper();
-        $h->borrar_article_purchase_actuales($model);
-        
-        if ($model->client_id) {
-
-            /* 
-                Si no es NULL, es porque se genero nota de credito de afip.
-                En ese caso, no se elimina la cuenta corriente de la venta
-                Porque ya tiene la nota de credito en la C/C
-            */ 
-            if (count($model->nota_credito_afip_tickets) == 0) {
-
-                SaleHelper::deleteCurrentAcountFromSale($model);
-            }
-
-            SaleHelper::deleteSellerCommissionsFromSale($model);
-
-            if (is_null($model->client->deleted_at)) {
-
-                // Busca la cuenta de crédito del cliente para la moneda de la venta
-                $credit_account = CreditAccount::where('model_name', 'client')
-                                                    ->where('model_id', $model->client_id)
-                                                    ->where('moneda_id', $model->moneda_id)
-                                                    ->first();
-
-                // Verifica que la cuenta de crédito existe antes de validar saldos
-                if (!is_null($credit_account)) {
-                    CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
-                } else {
-                    Log::info('destroy sale '.$model->id.': el cliente '.$model->client_id.' no tiene credit account para la moneda '.$model->moneda_id.'. Se saltea el chequeo de saldos.');
-                }
-                $this->sendAddModelNotification('client', $model->client_id, false);
-            }
-        }
-        $model->delete();
-
-        if ($compensar_caja && ! is_null($payment_methods_para_compensacion) && $payment_methods_para_compensacion->count()) {
-            $helper_caja_compensacion->crear_movimientos_compensacion(
-                $payment_methods_para_compensacion,
-                DeleteCajaCompensacionHelper::MODEL_TYPE_SALE,
-                null,
-                'Eliminación de venta N° '.$model->num,
-                $model->id
-            );
-        }
-
-        $this->sendDeleteModelNotification('sale', $model->id);
-
-        DeleteSaleHelper::regresar_stock($model);
+        /**
+         * La baja en si vive en DeleteSaleHelper::eliminar_venta(), no aca.
+         *
+         * 🔴 No la vuelvas a inlinear. Tiene dos entradas: este destroy() y la cancelacion de un
+         * pedido online (OrderController@update cuando el estado pasa a "Cancelado"), que tiene que
+         * hacer exactamente lo mismo. Con el cuerpo duplicado, la proxima correccion entra en un
+         * solo lado y los dos caminos empiezan a diferir sin que nada lo denuncie.
+         */
+        DeleteSaleHelper::eliminar_venta(
+            $model,
+            $this,
+            $compensar_caja,
+            $payment_methods_para_compensacion,
+            $helper_caja_compensacion
+        );
 
         return response(null);
     }
@@ -630,23 +710,35 @@ class SaleController extends Controller
                 }
 
                 /**
-                 * 🔴 El tope NO se valida si la venta tiene `descuento`: el sistema calcula ese
-                 * campo de dos maneras incompatibles y el techo sale mal. `SaleHelper.php:1714`
-                 * lo resta como MONTO ABSOLUTO (`$total_articles -= $sale->descuento`) y
-                 * `AfipItemCalculator.php:241` lo aplica como PORCENTAJE
-                 * (`$price -= $price * $descuento / 100`). Sobre una venta de $375 con
-                 * `descuento = 10`, el usuario ve un total de 365,00 y el tope da 337,50: no se
-                 * podria facturar nada. Con `descuento = 100` el tope da 0,00 y con 375 da
-                 * NEGATIVO. Resolver esa inconsistencia esta fuera del alcance de esta mision;
-                 * hasta entonces, no se bloquea con un numero que no es confiable.
+                 * El tope se valida TAMBIEN cuando la venta tiene `descuento` POSITIVO. Hasta la
+                 * tanda correctivos 24/8 aca habia un salteo para CUALQUIER descuento != 0:
+                 * `SaleHelper::getTotalSale()` restaba el descuento como MONTO ABSOLUTO mientras
+                 * `AfipItemCalculator` lo aplicaba como PORCENTAJE, asi que el techo no era un
+                 * numero confiable. Lucas confirmo el 24/8/2026 que `sales.descuento` ES
+                 * porcentaje, `getTotalSale()` quedo corregido a ese criterio, y el tope —que
+                 * sale de `AfipHelper::getImportes()`, que siempre lo aplico como porcentaje—
+                 * volvio a ser el total real de la venta. Ese salteo perdio su motivo.
+                 *
+                 * 🔴 EXCEPCION QUE QUEDA: el descuento NEGATIVO (asi representa el sistema un
+                 * recargo global). `AfipItemCalculator` aplica `sales.descuento` solo con la
+                 * guarda `> 0` (los recargos globales NO llegan al comprobante de ARCA;
+                 * divergencia ya anotada en `PuntosBaseHelper::factor_descuentos_de_venta()`),
+                 * mientras la SPA y `getTotalSale()` los aplican tambien. Sobre una venta de
+                 * $1.000 con `descuento = -10`, la pantalla y `sales.total` dicen $1.100 pero el
+                 * tope de `getImportes()` da $1.000: validar aca rechazaria facturar el total
+                 * que la propia pantalla muestra (`ConfirmAfipTickets.vue::tope_en_pesos()` usa
+                 * `sale.total`). Hasta que Lucas decida si los recargos globales deben llegar a
+                 * ARCA (decision fiscal, fuera de esta tanda), con descuento negativo el tope no
+                 * es un techo confiable y no se bloquea con el.
                  */
-                if (!is_null($sale->descuento) && (float) $sale->descuento != 0) {
+                if (!is_null($sale->descuento) && (float) $sale->descuento < 0) {
 
                     Log::warning(
                         'makeAfipTicket sale id '.$sale->id.': se saltea la validacion del tope del importe '.
-                        'personalizado porque la venta tiene descuento ('.$sale->descuento.') y ese campo se '.
-                        'interpreta como monto absoluto en SaleHelper::getTotal() y como porcentaje en '.
-                        'AfipItemCalculator::get_article_price_with_discounts(). El tope no es determinable.'
+                        'personalizado porque la venta tiene descuento NEGATIVO ('.$sale->descuento.'), o sea un '.
+                        'recargo global. AfipItemCalculator lo aplica solo cuando es > 0, asi que el tope de '.
+                        'AfipHelper::getImportes() quedaria menor al total real y rechazaria facturar el total '.
+                        'que muestra la pantalla.'
                     );
 
                 } else {
@@ -723,6 +815,22 @@ class SaleController extends Controller
         if ($model->client_id) {
             SaleHelper::updateCurrentAcountsAndCommissions($model);
         }
+
+        /*
+         * Puntos para clientes. Cambiar los precios de los renglones cambia el monto base de la
+         * venta, así que los puntos que otorgó dejaron de ser los que corresponden.
+         *
+         * 🔴 VA EXPLÍCITO Y NO POR REBOTE. Una venta de cuenta corriente se reconciliaba igual
+         * porque `updateCurrentAcountsAndCommissions()` termina tocando la cuenta y el enganche
+         * de `CurrentAcountPagoHelper::init()` la agarra de paso; una venta de MOSTRADOR no
+         * pasa por ninguna cuenta corriente y se quedaba con el `monto_base` y los puntos
+         * viejos para siempre. Depender del rebote es depender de un camino que la mitad de las
+         * ventas no recorre.
+         *
+         * Es idempotente y sale sin tocar la base si el comercio no tiene el módulo.
+         */
+        PuntosAcumulacionHelper::reconciliar_venta($model);
+
         // $this->sendAddModelNotification('Sale', $id);
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
@@ -873,7 +981,19 @@ class SaleController extends Controller
         return response()->json(['charts' => $charts], 200);
     }
 
-    function ventas_sin_cobrar() {
+    /**
+     * Las ventas sin cobrar, agrupadas por cliente, para el modulo de alertas.
+     *
+     * El umbral de antiguedad en dias sale de la cascada por rol de siempre (dueño ->
+     * administradores, empleado con columna propia -> la suya, admin sin columna propia ->
+     * administradores). Desde esta mision se le puede pasar un `?dias=N` por query string: si
+     * viene y es valido, PISA el resultado de la cascada. Sin `dias` en el query string el
+     * endpoint se comporta exactamente como antes.
+     *
+     * @param \Illuminate\Http\Request $request Puede traer `dias` por query string.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function ventas_sin_cobrar(Request $request) {
 
         $owner = $this->user();
 
@@ -889,6 +1009,14 @@ class SaleController extends Controller
             $dias = $user->dias_alertar_empleados_ventas_no_cobradas;
         }
 
+        // El input del usuario pisa la cascada, no la reemplaza: si no vino (o vino basura),
+        // `dias_del_input()` devuelve null y queda el $dias que resolvio la cascada de arriba.
+        $dias_input = VentasSinCobrarHelper::dias_del_input($request->query('dias'));
+
+        if (!is_null($dias_input)) {
+            $dias = $dias_input;
+        }
+
         $ver_solo_las_ventas_suyas = true;
 
         if ($this->is_owner()) {
@@ -897,32 +1025,15 @@ class SaleController extends Controller
             $ver_solo_las_ventas_suyas = false;
         }
 
-        $sales = Sale::where('user_id', $this->userId())
-                        ->whereHas('current_acount', function($q) {
-                            return $q->where('debe', '>', 0)
-                                        ->where('status', 'sin_pagar')
-                                        ->orWhere('status', 'pagandose')
-                                        ->where(function ($query) {
-                                            $query->whereNull('pagandose')
-                                            ->orWhereRaw('debe - pagandose > 300');
-                                        });
-                        })
-                        // ->whereHas('client', function ($query) {
-                        //     $query->whereHas(function ($q) {
-                        //         $q->whereHas('credit_account', function($q_c_a) {
-                        //             $q_c_a->where('saldo', '>', 300);
-                        //         })
-                        //     });
-                        //     // $query->where('saldo', '>', 300);
-                        // })
-                        ->whereRaw(
-                            'DATE(`sales`.`created_at`) <= DATE_SUB(CURDATE(), INTERVAL COALESCE(`sales`.`dias_alerta_venta_no_cobrada_personalizado`, ?) DAY)',
-                            [$dias]
-                        );
+        // El recorte vive ahora en el helper: una sola implementacion de la query, compartida
+        // con el recordatorio de cobro por WhatsApp. Es la misma de siempre, extraida tal cual.
+        $employee_id = null;
 
         if ($ver_solo_las_ventas_suyas) {
-            $sales = $sales->where('employee_id', $user->id);
+            $employee_id = $user->id;
         }
+
+        $sales = VentasSinCobrarHelper::query_de_ventas($this->userId(), $employee_id, $dias);
 
         // Log::info('ventas_sin_cobrar de hace '.$dias.' dias');
         // Log::info('ver_solo_las_ventas_suyas: '.$ver_solo_las_ventas_suyas);
@@ -948,12 +1059,12 @@ class SaleController extends Controller
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 201);
     }
 
-    function nota_credito_afip($sale_id) {
-        $sale = Sale::find($sale_id);
-
-        SaleNotaCreditoAfipHelper::crear_nota_de_credito_afip($sale);
-        return response(null, 201);
-    }
+    /*
+     * nota_credito_afip() se eliminó el 24/8/2026 (tanda correctivos 2408, ítem 16) junto
+     * con SaleNotaCreditoAfipHelper y su ruta: era la NC vieja, y su único consumidor era
+     * BtnNotaCredito2.vue, que no estaba importado por ningún componente de la SPA. El
+     * camino vigente de la NC facturada es DevolucionesController + AfipNotaCreditoHelper.
+     */
 
     function clear_actualizandose_por($sale_id) {
         $sale = Sale::find($sale_id);

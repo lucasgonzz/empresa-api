@@ -234,6 +234,8 @@ class AfipController extends Controller
         $sale = null;
         $articles = null;
         $services = [];
+        $descriptions = [];
+        $nota_credito_model = null;
 
         if ($afip_ticket->sale) {
             // Factura de una venta
@@ -242,13 +244,62 @@ class AfipController extends Controller
             Log::info('Factura');
 
         } else if ($afip_ticket->nota_credito) {
-            // Factura de una nota de credito
+            /*
+             * Factura de una nota de credito.
+             *
+             * 🔴 Van las CINCO partes, no solo los articulos. Hasta el 1/9/2026 este bloque pasaba
+             * unicamente `articles` y dejaba `services` en [], sin descripciones y sin el modelo de
+             * la nota de credito — mientras que el camino que la emite ante ARCA
+             * (`AfipNotaCreditoHelper::interno()`) le pasa las cinco. O sea que lo que se le
+             * declaraba a ARCA y lo que despues salia en el Libro IVA Ventas se calculaban con
+             * insumos distintos.
+             *
+             * Lo que se perdia: las lineas de descripcion libre (plata que no viene de ningun
+             * articulo devuelto), los servicios, y los descuentos y recargos de la propia nota de
+             * credito. El efecto es SUBDECLARAR: el archivo de alicuotas informaba menos base
+             * imponible que el comprobante autorizado, y no cerraba contra el total del archivo de
+             * comprobantes, que sale del `imp_total_enviado` persistido.
+             *
+             * 🔴 CONTRA `AfipNotaCreditoHelper::interno()`: las dos construcciones NO son iguales,
+             * y no tienen por que serlo. De los siete argumentos del `AfipHelper`, cinco coinciden
+             * y dos difieren, cada uno por su motivo:
+             *
+             *   - 2º `articles`, 3º `services`, 6º `descriptions`, 7º `nota_credito_model`:
+             *     IDENTICOS a los de `interno()`. Son las cuatro partes que este bloque no pasaba
+             *     hasta el 1/9/2026, y son las que hay que mantener alineadas si alguna vez cambia
+             *     lo que se le declara a ARCA.
+             *   - 4º `user`: null en los dos lados. Aca corre con sesion web y `AfipHelper` lo
+             *     resuelve solo con `$this->user()`. Coincide.
+             *   - 1º `afip_ticket`: DIFIERE, y no esta resuelto. `interno()` pasa el ticket de la
+             *     FACTURA; aca va el ticket de la NOTA DE CREDITO, que es el comprobante que se
+             *     esta exportando. `AfipNotaCreditoHelper::create_afip_ticket()` no le copia al
+             *     ticket de la NC ni `facturar_importe_personalizado` ni
+             *     `importe_personalizado_ivas_json`, asi que si la venta se facturo con importe
+             *     personalizado, `interno()` reparte ESE importe y este metodo lo recalcula desde
+             *     los items. Es una divergencia REAL y conocida que la mision del 1/9/2026 NO
+             *     arreglo: queda anotada para no volver a descubrirla de cero.
+             *   - 5º `sale`: DIFIERE, y esta bien asi. `interno()` pasa null porque su ticket es el
+             *     de la factura y `AfipHelper` resuelve la venta sola con `$afip_ticket->sale`; el
+             *     ticket de la NC tiene `sale_id` en NULL, asi que aca hay que pasarle
+             *     `sale_nota_credito` explicito. Es el MISMO modelo `Sale` por los dos caminos.
+             *
+             * 🔴 O sea: no "emparejes" el 5º argumento poniendolo en null para que se parezca a
+             * `interno()`. `AfipHelper` se quedaria sin venta y el calculo se cae. Lo unico que
+             * tiene que seguir espejado son las cuatro partes de la nota de credito.
+             */
+            $nota_credito = $afip_ticket->nota_credito;
+            $nota_credito->load(['discounts', 'surchages']);
+
             $sale = $afip_ticket->sale_nota_credito;
-            $articles = $afip_ticket->nota_credito->articles;
+            $articles = $nota_credito->articles;
+            $services = $nota_credito->services;
+            $descriptions = $nota_credito->nota_credito_descriptions;
+            $nota_credito_model = $nota_credito;
+
             Log::info('Nota de credito');
         }
 
-        $afip_helper = new AfipHelper($afip_ticket, $articles, $services, null, $sale);
+        $afip_helper = new AfipHelper($afip_ticket, $articles, $services, null, $sale, $descriptions, $nota_credito_model);
 
         /**
          * Usa snapshot fiscal persistido (si existe) para alinear TXT/PDF con AFIP.
@@ -333,6 +384,28 @@ class AfipController extends Controller
         $inicioCarbon = Carbon::parse($inicio)->startOfMonth();
         $finCarbon = Carbon::parse($fin)->endOfMonth();
 
+        $comprobantes = $this->comprobantes_del_libro_iva_ventas($inicioCarbon, $finCarbon);
+
+        $pdf = new LibroIvaVentaPdf($comprobantes, $inicioCarbon, $finCarbon);
+    }
+
+    /**
+     * Arma las filas del libro de IVA ventas del periodo.
+     *
+     * 🔴 Por que esto es un metodo aparte y no el cuerpo de `iva_ventas_pdf()`:
+     * `LibroIvaVentaPdf::__construct()` termina en `$this->Output(); exit;`, o sea que MATA el
+     * proceso. Con el armado adentro de `iva_ventas_pdf()` no habia forma de testear el libro:
+     * cualquier test que lo llamara moria en el `exit`. La costura esta puesta justo antes del
+     * `new`, que es lo unico que no se puede ejercitar.
+     *
+     * 🔴 No lleva ruta propia: no es un endpoint, es la costura de test de `iva_ventas_pdf()`.
+     *
+     * @param Carbon $inicioCarbon Inicio del periodo.
+     * @param Carbon $finCarbon Fin del periodo.
+     * @return array Filas del libro, en el formato que espera LibroIvaVentaPdf.
+     */
+    public function comprobantes_del_libro_iva_ventas($inicioCarbon, $finCarbon) {
+
         $afip_tickets = AfipTicket::whereBetween('created_at', [$inicioCarbon, $finCarbon])
                                     ->whereNotNull('cae')
                                     ->where(function ($q) {
@@ -393,9 +466,9 @@ class AfipController extends Controller
             $cuit = $doc_res['doc_client'] != 'NR' ? $doc_res['doc_client'] : '';
 
             $neto = (float) $importes['gravado'] * $sign;
-            $iva_21 = (float) $importes['ivas']['21']['Importe'] * $sign;
-            $iva_10 = (float) $importes['ivas']['10']['Importe'] * $sign;
-            $iva_27 = (float) $importes['ivas']['27']['Importe'] * $sign;
+            $iva_21 = $this->importe_de_alicuota($importes, '21') * $sign;
+            $iva_10 = $this->importe_de_alicuota($importes, '10') * $sign;
+            $iva_27 = $this->importe_de_alicuota($importes, '27') * $sign;
             $no_gravado = (float) $importes['neto_no_gravado'] * $sign;
             $total = (float) $importes['total'] * $sign;
 
@@ -419,7 +492,33 @@ class AfipController extends Controller
             $comprobantes[] = $comprobante;
         }
 
-        $pdf = new LibroIvaVentaPdf($comprobantes, $inicioCarbon, $finCarbon);
+        return $comprobantes;
+    }
+
+    /**
+     * Lee el importe de IVA de una alicuota puntual del desglose, sin asumir que el bucket exista.
+     *
+     * 🔴 El `isset` no es defensivo porque si: el desglose puede venir del SNAPSHOT de
+     * autorizacion (`AfipImportesResolver::resolve_from_snapshot()`), que arma `ivas` SOLO con
+     * las alicuotas que ARCA devolvio. Un comprobante autorizado con una sola alicuota al 10,5 %
+     * NO tiene la clave '21'.
+     *
+     * 🔴 Y no queda en un Notice que evalua a 0: Laravel 8 convierte cualquier error reportado en
+     * `ErrorException` (`Foundation\Bootstrap\HandleExceptions::handleError()`), asi que el acceso
+     * directo `$importes['ivas']['21']['Importe']` hacia reventar el libro ENTERO con un 500 por
+     * un comprobante. Volver al acceso directo "porque siempre esta" es exactamente el error.
+     *
+     * @param array $importes Estructura de importes ya resuelta.
+     * @param string $key Clave interna de alicuota ('21', '10', '27'; ojo: '10' es 10,5 %).
+     * @return float Importe de IVA de esa alicuota, o 0.0 si el comprobante no la declara.
+     */
+    private function importe_de_alicuota($importes, $key) {
+
+        if (!isset($importes['ivas'][$key]['Importe'])) {
+            return 0.0;
+        }
+
+        return (float) $importes['ivas'][$key]['Importe'];
     }
 
     /**

@@ -3,13 +3,22 @@
 namespace Database\Seeders\testing;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\Seeders\ArticleSeederHelper;
 use App\Models\Address;
+use App\Models\AfipInformation;
+use App\Models\AfipTicket;
+use App\Models\AfipTipoComprobante;
+use App\Models\BudgetStatus;
 use App\Models\Article;
 use App\Models\Caja;
 use App\Models\Client;
 use App\Models\CurrentAcountPaymentMethod;
+use App\Models\CurrentAcountPaymentMethodDiscount;
+use App\Models\Discount;
 use App\Models\ExpenseConcept;
+use App\Models\ExtencionEmpresa;
 use App\Models\Iva;
 use App\Models\IvaCondition;
 use App\Models\Moneda;
@@ -18,10 +27,13 @@ use App\Models\ProviderDiscount;
 use App\Models\SaleChannel;
 use App\Models\SaleTax;
 use App\Models\User;
+use Database\Seeders\AfipTipoComprobanteSeeder;
+use Database\Seeders\BudgetStatusSeeder;
 use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
 use Database\Seeders\CurrentAcountPaymentMethodSeeder;
 use Database\Seeders\DepositSeeder;
+use Database\Seeders\ExtencionSeeder;
 use Database\Seeders\IvaConditionSeeder;
 use Database\Seeders\IvaSeeder;
 use Database\Seeders\MonedaSeeder;
@@ -146,6 +158,56 @@ class TestingFerreteriaSeeder extends Seeder
      * renglon que mostrar en vez del estado vacio.
      */
     const IMPUESTO_IIBB = 'IIBB';
+
+    /**
+     * Porcentaje de descuento por pagar con el metodo "Efectivo" (circuito e2e de ventas).
+     *
+     * Es un `current_acount_payment_method_discount`, o sea el descuento que el sistema aplica SOLO
+     * sobre el monto cobrado con ese metodo -- no es un descuento de la venta. Es la forma tipica
+     * de premiar el pago en efectivo.
+     */
+    const DESCUENTO_EFECTIVO = 10;
+
+    /**
+     * Numero de punto de venta del `afip_information` del fixture.
+     */
+    const PUNTO_VENTA = 1;
+
+    /**
+     * 🔴 CUIT del punto de venta, y NO es un numero cualquiera: tiene que ser el mismo del
+     * certificado de homologacion que el servidor tiene en `storage/app/afip/testing/`
+     * (`CN=comerciocitytester`, `serialNumber=CUIT 20423548984`).
+     *
+     * Con otro CUIT, WSAA rechaza el pedido de ticket de acceso y el error que vuelve no dice en
+     * ningun lado que el problema sea el CUIT: se ve como una falla generica de conexion con AFIP.
+     */
+    const PUNTO_VENTA_CUIT = '20423548984';
+
+    /**
+     * Slug de la extension de tienda online, tal cual lo siembra `ExtencionSeeder`. Es la que
+     * habilita el campo "Disponible en la tienda" del articulo (ver seed_extenciones()).
+     */
+    const EXTENCION_ONLINE = 'online';
+
+    /**
+     * Slug de la extension de presupuestos. Sin ella, el toggle "Guardar como presupuesto" de
+     * VENDER **no se dibuja** (`v-if="hasExtencion('budgets') && client"` en
+     * stage-1/GuardarComoPresupuesto.vue), igual que pasaba con "Disponible en la tienda" y
+     * `online`. Y sin ese toggle no hay forma de probar el circuito de presupuestos por interfaz.
+     */
+    const EXTENCION_PRESUPUESTOS = 'budgets';
+
+    /**
+     * Descuento de VENTA (tabla `discounts`), el que se elige en la etapa 3 de Vender y se resta
+     * del total. Es otra cosa que el descuento por metodo de pago: este se aplica a la venta
+     * entera, aquel solo sobre lo que se cobra con ese metodo.
+     */
+    const DESCUENTO_VENTA = 'Descuento e2e';
+
+    /**
+     * Porcentaje de ese descuento de venta.
+     */
+    const DESCUENTO_VENTA_PORCENTAJE = 15;
 
     /**
      * Id del usuario del fixture, resuelto una sola vez por `USER_EMAIL` (ver user_id_fixture()).
@@ -340,9 +402,24 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_metodos_pago_cta_cte();
 
+        // Circuito e2e completo (31/8/2026): el descuento por metodo de pago y el punto de venta de
+        // homologacion. Los dos son `firstOrCreate`, asi que entran en el bloque que corre SIEMPRE.
+        $this->seed_descuento_metodo_pago();
+
+        $this->seed_afip_information();
+
+        $this->seed_extenciones();
+        $this->seed_estados_de_presupuesto();
+        $this->seed_tipos_de_comprobante();
+        $this->limpiar_comprobantes_sin_cae();
+
+        $this->seed_descuento_de_venta();
+
         $conceptos = $this->seed_conceptos_gasto();
 
         $this->seed_cajas_tesoreria($conceptos);
+
+        $this->abrir_cajas();
 
         $this->seed_impuesto_iibb();
     }
@@ -374,17 +451,49 @@ class TestingFerreteriaSeeder extends Seeder
             'Corre `IvaConditionSeeder` antes de este seeder.'
         );
 
+        /*
+         * 🔴 El CUIT no es decoracion: ARCA lo exige para facturar clase "A", que es la que
+         * corresponde entre dos Responsables Inscriptos. Sin el, la emision vuelve rechazada con
+         * "El campo DocNro es invalido" --y el comprobante queda creado SIN CAE, que ademas hace
+         * aparecer el modal de "Facturas no autorizadas" en todas las pantallas--. Medido el
+         * 31/8/2026 armando el circuito de facturacion.
+         *
+         * 20111111112 es el CUIT de prueba de homologacion de ARCA, y tiene digito verificador
+         * valido: la validacion del front lo chequea antes de mandar nada.
+         */
         $clientes = [
-            self::CLIENTE_CC       => $iva_responsable_inscripto,
-            self::CLIENTE_CONTADO  => $iva_responsable_inscripto,
-            self::CLIENTE_EXENTO   => $iva_exento,
+            self::CLIENTE_CC       => ['iva' => $iva_responsable_inscripto, 'cuit' => '20111111112'],
+            self::CLIENTE_CONTADO  => ['iva' => $iva_responsable_inscripto, 'cuit' => '20111111112'],
+            self::CLIENTE_EXENTO   => ['iva' => $iva_exento,                'cuit' => null],
         ];
 
-        foreach ($clientes as $nombre => $iva_condition) {
-            Client::firstOrCreate(
+        foreach ($clientes as $nombre => $datos) {
+            $cliente = Client::firstOrCreate(
                 ['name' => $nombre, 'user_id' => $user_id],
-                ['iva_condition_id' => $iva_condition->id]
+                ['iva_condition_id' => $datos['iva']->id]
             );
+
+            // `firstOrCreate` no toca al que ya existe: el CUIT se asegura aparte para que un
+            // fixture ya sembrado tambien lo reciba.
+            if ($cliente->cuit !== $datos['cuit']) {
+                $cliente->cuit = $datos['cuit'];
+                $cliente->save();
+            }
+
+            /*
+             * 🔴 La cuenta corriente del cliente no nace con el cliente: la crea
+             * `CreditAccountHelper::crear_credit_accounts()`, que en produccion corre desde
+             * `ClientController`. Un `firstOrCreate` directo como el de arriba se la saltea.
+             *
+             * Sin ella, confirmar un presupuesto revienta con un 500 --"Trying to get property 'id'
+             * of non-object" en `CurrentAcountFromSaleHelper` linea 54-- DESPUES de haber creado la
+             * venta y descontado el stock. Es la falla que el propio `BudgetController::confirmar()`
+             * describe en el comentario de su catch, y la que se comio una corrida del circuito e2e
+             * de presupuestos el 31/8/2026.
+             *
+             * El helper es idempotente (chequea antes de crear) y arma las dos monedas.
+             */
+            CreditAccountHelper::crear_credit_accounts('client', $cliente->id, $user_id);
         }
     }
 
@@ -407,6 +516,271 @@ class TestingFerreteriaSeeder extends Seeder
         CurrentAcountPaymentMethod::firstOrCreate([
             'name' => self::PAGO_TARJETA_CREDITO,
         ]);
+    }
+
+    /**
+     * Descuento por metodo de pago para "Efectivo" (circuito e2e de ventas).
+     *
+     * A diferencia de un descuento de venta, este se aplica sobre el MONTO COBRADO con ese metodo,
+     * automaticamente, cada vez que ese metodo se usa en un cobro. Sin el, el circuito de ventas no
+     * tiene forma de verificar por la interfaz que el descuento por metodo de pago se aplique: en
+     * una base recien sembrada la tabla `current_acount_payment_method_discounts` esta vacia.
+     *
+     * @return void
+     */
+    protected function seed_descuento_metodo_pago()
+    {
+        $efectivo = CurrentAcountPaymentMethod::where('name', self::PAGO_EFECTIVO)->first();
+
+        if (is_null($efectivo)) {
+            return;
+        }
+
+        // La clave del firstOrCreate es (metodo, usuario) y no incluye el porcentaje: si el
+        // descuento ya existe con otro valor, este seeder no lo pisa. Es la misma politica que el
+        // resto del fixture -- sembrar lo que falta, nunca corregir lo que ya esta.
+        CurrentAcountPaymentMethodDiscount::firstOrCreate(
+            [
+                'current_acount_payment_method_id' => $efectivo->id,
+                'user_id'                          => $this->user_id_fixture(),
+            ],
+            [
+                'discount_percentage' => self::DESCUENTO_EFECTIVO,
+                'cuotas'              => null,
+            ]
+        );
+    }
+
+    /**
+     * Punto de venta (`afip_information`) del fixture, en modo HOMOLOGACION.
+     *
+     * Sin esto no se puede facturar una venta ni emitir una nota de credito: lo que decide si una
+     * venta se factura es que se elija un punto de venta, y en una base recien sembrada no hay
+     * ninguno.
+     *
+     * 🔴 `afip_ticket_production` va explicitamente en 0 aunque la columna ya tenga ese default.
+     * Es la unica cosa que separa una emision de prueba contra `wsaahomo.afip.gov.ar` de una
+     * emision REAL contra AFIP produccion, y un fixture de testing no puede depender de que nadie
+     * haya cambiado el default de la migracion.
+     *
+     * @return void
+     */
+    protected function seed_afip_information()
+    {
+        $condicion = IvaCondition::where('name', 'Responsable inscripto')->first();
+
+        if (is_null($condicion)) {
+            return;
+        }
+
+        AfipInformation::firstOrCreate(
+            [
+                'user_id'     => $this->user_id_fixture(),
+                'punto_venta' => self::PUNTO_VENTA,
+            ],
+            [
+                'iva_condition_id'        => $condicion->id,
+                'description'             => 'Punto de venta de homologacion',
+                'razon_social'            => 'ComercioCity Tester',
+                'domicilio_comercial'     => 'Av. Siempreviva 742',
+                // Tiene que ser el CUIT del certificado de homologacion. Ver PUNTO_VENTA_CUIT.
+                'cuit'                    => self::PUNTO_VENTA_CUIT,
+                'ingresos_brutos'         => self::PUNTO_VENTA_CUIT,
+                'inicio_actividades'      => '2020-01-01',
+                'afip_ticket_production'  => 0,
+            ]
+        );
+    }
+
+    /**
+     * Descuento de venta comun (no atado a un cliente), para poder probar por interfaz que un
+     * descuento elegido en la etapa 3 de Vender baja el total.
+     *
+     * La tabla `discounts` nacia vacia, asi que el panel de descuentos de Vender se dibujaba sin
+     * una sola opcion: no habia nada que tildar.
+     *
+     * `client_id` en null a proposito: asi aparece en la seccion "Comunes" y sirve para cualquier
+     * venta, con o sin cliente.
+     *
+     * @return void
+     */
+    protected function seed_descuento_de_venta()
+    {
+        $user_id = $this->user_id_fixture();
+
+        Discount::firstOrCreate(
+            [
+                'name'    => self::DESCUENTO_VENTA,
+                'user_id' => $user_id,
+            ],
+            [
+                'num'        => $this->siguiente_num(Discount::class, $user_id),
+                'percentage' => self::DESCUENTO_VENTA_PORCENTAJE,
+                'client_id'  => null,
+            ]
+        );
+    }
+
+    /**
+     * Deja ABIERTAS las cajas que los circuitos necesitan: `CAJA_EFECTIVO` y `CAJA_MP`.
+     *
+     * 🔴 No es un detalle: el selector de caja de un cobro y el de un pago ofrecen SOLO las cajas
+     * abiertas (`cajas_abiertas` en `src/mixins/vender/cajas.js`). Con las tres cajas cerradas
+     * --como nacian-- el select existe, se dibuja, y esta VACIO: Playwright lo reporta como
+     * "did not find some options", que manda a buscar el problema en el nombre de la caja o en el
+     * vinculo caja-metodo de pago, cuando lo que pasa es que ninguna esta abierta.
+     *
+     * Se abren con el helper de produccion (`CajaAperturaHelper`) en vez de tocar las columnas a
+     * mano: abrir una caja es crear su `apertura_caja` Y marcarla, y una caja marcada abierta sin
+     * apertura es un estado que en una cuenta real no existe.
+     *
+     * Son DOS y no una: el circuito de venta con multiples metodos de pago
+     * (`circuito-multipago-devolucion.spec.js`) reparte el cobro entre dos metodos y le pone a cada
+     * uno SU caja, que es justamente lo que hay que verificar --que cada movimiento cae donde
+     * corresponde y no todo junto en la primera--. Con una sola caja abierta ese circuito no tiene
+     * como existir.
+     *
+     * "Caja Sin Concepto" queda cerrada a proposito: sirve de contraste para el caso de un select
+     * que no la ofrece.
+     *
+     * @return void
+     */
+    protected function abrir_cajas()
+    {
+        $nombres = [self::CAJA_EFECTIVO, self::CAJA_MP];
+
+        foreach ($nombres as $nombre) {
+
+            $caja = Caja::where('name', $nombre)
+                        ->where('user_id', $this->user_id_fixture())
+                        ->first();
+
+            if (is_null($caja) || $caja->abierta) {
+                continue;
+            }
+
+            $helper = new CajaAperturaHelper($caja->id);
+            $helper->abrir_caja();
+        }
+    }
+
+    /**
+     * Siembra los dos estados de presupuesto, que son una tabla GLOBAL de solo lectura.
+     *
+     * 🔴 Sin esto, crear un presupuesto revienta con un 500 y un mensaje que no nombra la tabla:
+     * "Trying to get property 'name' of non-object" en `BudgetHelper::checkStatus()`, que hace
+     * `$budget->budget_status->name` sobre una relacion vacia. Medido el 31/8/2026 armando el
+     * circuito e2e de presupuestos: la extension `budgets` ya estaba prendida --o sea que el
+     * toggle de VENDER se dibujaba y todo el flujo parecia disponible-- y el POST igual moria.
+     *
+     * `BudgetStatusSeeder` usa `create()`, asi que no es idempotente: va detras de un chequeo de
+     * existencia, mismo criterio que IvaConditionSeeder / ExtencionSeeder.
+     *
+     * Los ids importan: `BtnConfirmarAnular.vue` y `BudgetController` tratan al 1 como "Sin
+     * confirmar" y al 2 como "Confirmado". Por eso se siembra con el seeder de produccion y no a
+     * mano en otro orden.
+     *
+     * @return void
+     */
+    protected function seed_estados_de_presupuesto()
+    {
+        if (!BudgetStatus::exists()) {
+            $this->call(BudgetStatusSeeder::class);
+        }
+    }
+
+    /**
+     * Siembra el catalogo de tipos de comprobante de AFIP, que es otra tabla GLOBAL de solo lectura.
+     *
+     * 🔴 Sin esto no se puede facturar: el select "Tipo de comprobante" del modal de facturacion se
+     * dibuja habilitado y **con una sola opcion, la de placeholder**. El boton de emitir queda
+     * deshabilitado y no hay ningun mensaje que diga que falta un catalogo. Medido el 31/8/2026
+     * armando el circuito de facturacion y devolucion.
+     *
+     * Es el mismo genero que `budget_statuses`: una tabla que en produccion viene sembrada desde
+     * siempre y que un `migrate:fresh` de testing deja vacia.
+     *
+     * @return void
+     */
+    protected function seed_tipos_de_comprobante()
+    {
+        if (!AfipTipoComprobante::exists()) {
+            $this->call(AfipTipoComprobanteSeeder::class);
+        }
+    }
+
+    /**
+     * Borra los comprobantes de AFIP que quedaron SIN CAE.
+     *
+     * 🔴 Un comprobante sin CAE es una emision que fallo, y en esta base aparecen solos: alcanza con
+     * que una corrida de los tests intente facturar y ARCA no conteste. El problema es lo que pasa
+     * despues: el modal "Facturas no autorizadas" (`afip-reenviar-facturas`, montado en App.vue) se
+     * abre SOLO en cualquier pantalla mientras exista alguno, y **tapa toda la interfaz** --el
+     * header queda debajo de su overlay, el buscador general no se puede clickear y el foco del
+     * teclado se lo lleva el modal--.
+     *
+     * O sea que un intento fallido de facturar deja la base en un estado en el que los tests que no
+     * tienen nada que ver empiezan a fallar, con timeouts sobre elementos perfectamente visibles.
+     * Costo cuatro corridas el 31/8/2026.
+     *
+     * En una cuenta real ese modal es correcto --hay que reintentar esas facturas--. En una base de
+     * testing es basura de una corrida anterior.
+     *
+     * @return void
+     */
+    protected function limpiar_comprobantes_sin_cae()
+    {
+        AfipTicket::whereNull('cae')->delete();
+    }
+
+    /**
+     * Habilita las extensiones que el fixture necesita para que ciertas pantallas EXISTAN.
+     *
+     * 🔴 Sin ella, el campo **"Disponible en la tienda"** (`articles.online`) NO EXISTE EN NINGUNA
+     * PANTALLA: `src/models/article.js` lo declara con `if_has_extencion: 'online'`, y
+     * `common-vue/mixins/generals.js` filtra de plano las props cuya extension el usuario no tiene.
+     * O sea que no aparece ni en el formulario del articulo ni en la actualizacion masiva, y el
+     * dato igual existe en la base con el default 1 de la migracion: el operador no lo puede tocar.
+     *
+     * Es un hueco del fixture, no del producto -- una cuenta real que vende online tiene la
+     * extension --, y sin taparlo no hay forma de verificar por interfaz que la masiva prenda y
+     * apague la disponibilidad en el ecommerce.
+     *
+     * Lo mismo vale para `budgets`: sin ella el toggle "Guardar como presupuesto" de VENDER no se
+     * dibuja, y el circuito de presupuestos no tiene por donde entrar.
+     *
+     * Se habilitan SOLO esas dos y no el catalogo entero a proposito: cada extension cambia lo que
+     * la SPA dibuja, y prender de mas mueve pantallas que ningun test pidio.
+     *
+     * @return void
+     */
+    protected function seed_extenciones()
+    {
+        // El catalogo de extensiones lo crea `ExtencionSeeder` con `create()`, que no es
+        // idempotente: va detras de un chequeo de existencia, mismo criterio que
+        // IvaConditionSeeder / CAPaymentMethodTypeSeeder mas arriba.
+        if (!ExtencionEmpresa::exists()) {
+            $this->call(ExtencionSeeder::class);
+        }
+
+        $user = User::where('email', self::USER_EMAIL)->first();
+
+        if (is_null($user)) {
+            return;
+        }
+
+        $slugs = [self::EXTENCION_ONLINE, self::EXTENCION_PRESUPUESTOS];
+
+        $ids = ExtencionEmpresa::whereIn('slug', $slugs)->pluck('id')->all();
+
+        if (count($ids) === 0) {
+            return;
+        }
+
+        // `syncWithoutDetaching` y no `attach`: attach agrega una fila mas cada vez que el seeder
+        // se corre, y este metodo corre SIEMPRE (ver run()). Y tampoco `sync()`, que le sacaria al
+        // usuario cualquier otra extension que alguien le haya prendido a mano.
+        $user->extencions()->syncWithoutDetaching($ids);
     }
 
     /**

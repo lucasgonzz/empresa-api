@@ -15,6 +15,7 @@ use App\Models\ProviderOrder;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -60,43 +61,61 @@ class ProviderOrderController extends Controller
     }
 
     public function store(Request $request) {
-        $model = ProviderOrder::create([
-            'num'                                       => $this->num('provider_orders'),
-            'modo_facturacion'                          => $request->modo_facturacion,
-            'total_with_iva'                            => $request->total_with_iva,
-            'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
-            'provider_id'                               => $request->provider_id,
-            'provider_order_status_id'                  => $request->provider_order_status_id,
-            'days_to_advise'                            => $request->days_to_advise,
-            'update_stock'                              => $request->update_stock,
-            'update_prices'                             => $request->update_prices,
-            'precios_incluyen_iva'                      => $request->precios_incluyen_iva,
-            'moneda_id'                                 => $request->moneda_id,
-            'generate_current_acount'                   => $request->generate_current_acount,
-            'address_id'                                => $request->address_id,
-            'numero_comprobante'                        => $request->numero_comprobante,
-            'user_id'                                   => $this->userId(),
-        ]);
 
-        $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
-        
+        /*
+         * Toda la creación va en una transacción (tanda correctivos 2408, ítem 14): entre el
+         * create y procesar_pedido() se escriben la orden, el pivot de artículos, stock,
+         * precios, descuentos materializados y la cuenta corriente del proveedor. Si algo
+         * revienta a mitad de camino, sin transacción quedaba una compra a medias (orden sin
+         * artículos, o stock sumado sin deuda registrada). Mismo criterio que la confirmación
+         * del escaneo (ProviderOrderScanController::confirmar), hasta hoy el único camino
+         * transaccional de compras. La excepción sigue subiendo al handler global (500), igual
+         * que antes: DB::transaction re-lanza después del rollback.
+         */
+        $model = DB::transaction(function () use ($request) {
 
-        $helper = new NewProviderOrderHelper($model, $request->articles);
+            $model = ProviderOrder::create([
+                'num'                                       => $this->num('provider_orders'),
+                'modo_facturacion'                          => $request->modo_facturacion,
+                'total_with_iva'                            => $request->total_with_iva,
+                'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
+                'provider_id'                               => $request->provider_id,
+                'provider_order_status_id'                  => $request->provider_order_status_id,
+                'days_to_advise'                            => $request->days_to_advise,
+                'update_stock'                              => $request->update_stock,
+                'update_prices'                             => $request->update_prices,
+                'precios_incluyen_iva'                      => $request->precios_incluyen_iva,
+                'moneda_id'                                 => $request->moneda_id,
+                'generate_current_acount'                   => $request->generate_current_acount,
+                'address_id'                                => $request->address_id,
+                'numero_comprobante'                        => $request->numero_comprobante,
+                'user_id'                                   => $this->userId(),
+            ]);
 
-        // Prompt 262: al crear la orden, pre-carga las bonificaciones del proveedor como
-        // descuentos editables de esta orden puntual (si el request no trajo descuentos propios).
-        $helper->precargar_bonificaciones_proveedor();
+            $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
 
-        $helper->attach_articles();
 
-        ModoFacturacionHelper::check_modo_facturacion($model, $helper);
+            $helper = new NewProviderOrderHelper($model, $request->articles);
 
-        $helper->procesar_pedido();
+            // Prompt 262: al crear la orden, pre-carga las bonificaciones del proveedor como
+            // descuentos editables de esta orden puntual (si el request no trajo descuentos propios).
+            $helper->precargar_bonificaciones_proveedor();
+
+            $helper->attach_articles();
+
+            ModoFacturacionHelper::check_modo_facturacion($model, $helper);
+
+            $helper->procesar_pedido();
+
+            return $model;
+        });
 
         /**
          * Evento de la demo (mision 50). Va al final, con la orden ya creada y procesada
          * (stock y precios incluidos): antes de eso todavia puede tirar y el evento estaria
-         * reportando una compra que no quedo.
+         * reportando una compra que no quedo. Queda FUERA de la transacción a propósito: si
+         * el emisor tirara, la compra ya commiteada no se revierte por un evento decorativo
+         * (mismo comportamiento visible que antes del ítem 14).
          *
          * En una instancia de cliente real no cuesta ni una query: la primera guarda del
          * emisor mira el marcador de sesion de demo y sale.
@@ -111,33 +130,44 @@ class ProviderOrderController extends Controller
     }
 
     public function update(Request $request, $id) {
-        $model = ProviderOrder::find($id);
 
-        $ya_se_actualizo_stock = $model->update_stock;
+        /*
+         * Misma transacción que store() (tanda correctivos 2408, ítem 14): la actualización
+         * re-adjunta artículos, recalcula stock/precios y rehace la cuenta corriente del
+         * proveedor; a mitad de camino sin transacción quedaba una compra inconsistente.
+         */
+        $model = DB::transaction(function () use ($request, $id) {
 
-        $model->total_with_iva                              = $request->total_with_iva;
-        $model->modo_facturacion                            = $request->modo_facturacion;
-        $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
-        $model->provider_id                                 = $request->provider_id;
-        $model->provider_order_status_id                    = $request->provider_order_status_id;
-        $model->days_to_advise                              = $request->days_to_advise;
-        $model->update_stock                                = $request->update_stock;
-        $model->update_prices                               = $request->update_prices;
-        $model->precios_incluyen_iva                        = $request->precios_incluyen_iva;
-        $model->generate_current_acount                     = $request->generate_current_acount;
-        $model->numero_comprobante                          = $request->numero_comprobante;
-        $model->moneda_id                                   = $request->moneda_id;
-        $model->save();
+            $model = ProviderOrder::find($id);
+
+            $ya_se_actualizo_stock = $model->update_stock;
+
+            $model->total_with_iva                              = $request->total_with_iva;
+            $model->modo_facturacion                            = $request->modo_facturacion;
+            $model->total_from_provider_order_afip_tickets      = $request->total_from_provider_order_afip_tickets;
+            $model->provider_id                                 = $request->provider_id;
+            $model->provider_order_status_id                    = $request->provider_order_status_id;
+            $model->days_to_advise                              = $request->days_to_advise;
+            $model->update_stock                                = $request->update_stock;
+            $model->update_prices                               = $request->update_prices;
+            $model->precios_incluyen_iva                        = $request->precios_incluyen_iva;
+            $model->generate_current_acount                     = $request->generate_current_acount;
+            $model->numero_comprobante                          = $request->numero_comprobante;
+            $model->moneda_id                                   = $request->moneda_id;
+            $model->save();
 
 
-        $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
-        
-        $helper->attach_articles(true);
-        
-        ModoFacturacionHelper::check_modo_facturacion($model, $helper);
+            $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
 
-        $helper->procesar_pedido();
-        
+            $helper->attach_articles(true);
+
+            ModoFacturacionHelper::check_modo_facturacion($model, $helper);
+
+            $helper->procesar_pedido();
+
+            return $model;
+        });
+
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 200);
     }
 
@@ -199,6 +229,14 @@ class ProviderOrderController extends Controller
         $overwrite_articles = $request->boolean('overwrite_articles', false);
 
         try {
+            /*
+             * Hoja elegida por el usuario, 0-based. Las dos claves son OPCIONALES:
+             * ausentes => hoja 0, que es la primera y lo que veia un cliente viejo.
+             *
+             * ⚠️ Hasta esta mision Maatwebsite recorria TODAS las hojas del libro, y aca
+             * eso significaba procesar la compra una vez por hoja (ver
+             * ProviderOrderArticleImport::sheets()). Ahora se recorre una sola.
+             */
             Excel::import(new ProviderOrderArticleImport(
                 $columns,
                 $request->start_row,
@@ -207,6 +245,8 @@ class ProviderOrderController extends Controller
                 $provider_order,
                 $import_type,
                 $overwrite_articles,
+                $request->input('hoja', 0),
+                $request->input('hoja_nombre'),
             ), $archivo_excel_path);
         } catch (\Throwable $exception) {
             Log::error('Error al importar Excel de compra a proveedor', [

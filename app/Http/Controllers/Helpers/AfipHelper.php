@@ -74,12 +74,23 @@ class AfipHelper extends Controller {
     /**
      * Calcula importes AFIP delegando en un calculador dedicado.
      *
+     * 🔴 El parametro va en `false` por DEFAULT a proposito: el camino de EMISION
+     * (`AfipWsfeHelper`, `AfipNotaCreditoHelper`, `MakeAfipTicket`) llama sin argumentos y tiene
+     * que seguir cortando ante una alicuota que ARCA no reconoce. Facturar con una alicuota
+     * inventada es lo unico que no puede pasar en silencio.
+     *
+     * En `true` lo llaman SOLO los caminos de LECTURA —`AfipImportesResolver::resolve()`, que es
+     * el funnel del Libro IVA Ventas y de los dos TXT, mas los dos PDF de ticket que lo llaman
+     * derecho—. Ahi el comprobante ya esta autorizado y romper el reporte del mes entero no le
+     * devuelve el renglon a nadie.
+     *
+     * @param bool $tolerar_alicuota_desconocida Modo lectura: loguea y sigue en vez de tirar.
      * @return array
      */
-    function getImportes() {
+    function getImportes($tolerar_alicuota_desconocida = false) {
         /* Delegación para mantener este helper enfocado en orquestación y compatibilidad. */
         $importes_calculator = new AfipImportesCalculator();
-        return $importes_calculator->calculate($this);
+        return $importes_calculator->calculate($this, $tolerar_alicuota_desconocida);
     }
 
     function get_combo_iva($combo) {

@@ -56,13 +56,42 @@ class RollbackTest extends ImportTestCase
     /**
      * Los artículos creados por la importación se borran, no quedan huérfanos.
      *
+     * 🔴 HISTORIA DE ESTE CONTEO, porque dos misiones llegaron a números distintos y hay
+     * que saber cuál manda.
+     *
+     * El test estuvo rojo de baseline fallando en el conteo PREVIO al rollback, así que la
+     * aserción del rollback nunca llegaba a evaluarse — de ahí la discrepancia con la
+     * prueba manual de Lucas (24/8/2026), que confirmó que el rollback SÍ borra los
+     * creados. Las dos misiones que lo investigaron coincidieron en el mecanismo: el
+     * tercer artículo era el duplicado de PC-1200, porque A12 tiene `provider_code` pero
+     * `provider_id` NULL y el índice sólo indexaba cuando estaban los dos campos.
+     *
+     * Donde se separaron fue en qué hacer con eso:
+     *
+     *  - La tanda de correctivos 2408 (ítem 12) lo tomó como comportamiento FIJADO
+     *    ("no matchea -> crea duplicado") y corrigió el setup a 3.
+     *  - Esta misión lo tomó como un defecto y arregló la causa: un artículo con código de
+     *    proveedor pero sin proveedor asignado AHORA SÍ matchea, cuando la importación no
+     *    eligió proveedor. **Decisión explícita de Lucas del 24/8/2026.**
+     *
+     * Manda la segunda, y por eso el conteo vuelve a 2. El duplicado ya no se crea: la
+     * fila PC-1200 actualiza al A12 existente, que es lo que el fixture asumía desde el
+     * principio. Ver `ArticleIndexCache::build()`/`update()` y
+     * `CodigosDeProveedorTest::test_articulo_con_provider_code_sin_proveedor_matchea`.
+     *
+     * ⚠️ Si alguna vez este conteo vuelve a dar 3, NO es que el fixture esté mal: es que
+     * se revirtió el indexado sin proveedor. Buscá ahí antes de tocar el número.
+     *
+     * La aserción del comportamiento bajo prueba no cambió: después de revertir tiene que
+     * quedar CERO creado vivo, y sobrevivir únicamente el A12 original con PC-1200.
+     *
      * @return void
      */
     public function test_el_rollback_borra_los_articulos_creados()
     {
         $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
 
-        $this->assertCount(2, $this->articulos_creados(), 'PC-RB-1 y PC-RB-2');
+        $this->assertCount(2, $this->articulos_creados(), 'PC-RB-1 y PC-RB-2 (PC-1200 actualiza al A12 existente, no crea duplicado)');
 
         $this->revertir($import);
 
@@ -75,6 +104,25 @@ class RollbackTest extends ImportTestCase
                     ->withTrashed()
                     ->whereNull('deleted_at')
                     ->count()
+        );
+
+        /*
+         * Tiene que sobrevivir exactamente UNO vivo con ese provider_code: el A12 original
+         * del escenario sembrado, que la importación actualizó y el rollback restauró.
+         *
+         * Esta aserción la agregó la tanda de correctivos 2408 para cubrir el duplicado que
+         * en ese momento se creaba. Se conserva aunque el duplicado ya no exista: ahora
+         * vigila lo contrario —que el rollback no borre de más al artículo que actualizó—,
+         * que es un camino que antes no se ejercitaba nunca.
+         */
+        $this->assertSame(
+            1,
+            Article::where('user_id', $this->tenant->id)
+                    ->where('provider_code', 'PC-1200')
+                    ->withTrashed()
+                    ->whereNull('deleted_at')
+                    ->count(),
+            'Tras el rollback tiene que quedar vivo solo el A12 original con PC-1200.'
         );
     }
 

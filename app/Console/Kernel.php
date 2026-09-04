@@ -26,9 +26,18 @@ class Kernel extends ConsoleKernel
         // withoutOverlapping(75) previene que el scheduler arranque un segundo worker en paralelo
         // mientras uno anterior todavía está procesando jobs pesados (timeout = 60 min = 3600 seg).
         // El margen de 75 min asegura que el anterior haya terminado antes de que se permita uno nuevo.
-        $schedule->command('queue:work --stop-when-empty')
-            ->everyMinute()
-            ->withoutOverlapping(75);
+        //
+        // Solo en shared hosting. En el VPS la cola la maneja supervisor, con un queue:work de larga
+        // vida por instancia; si el scheduler ademas programara el suyo, quedarian dos workers
+        // compitiendo por los mismos jobs. La instancia se identifica por VPS=true en su .env, la
+        // misma variable que ya usa config/filesystems.php para decidir el prefijo /public de los
+        // archivos. El default false de env('VPS') deja intacto el comportamiento de toda instancia
+        // que no la declare, que es el caso de todas las del shared.
+        if (! config('app.VPS')) {
+            $schedule->command('queue:work --stop-when-empty')
+                ->everyMinute()
+                ->withoutOverlapping(75);
+        }
 
         // Usuario dueño de la instancia (config app.USER_ID) con extensiones cargadas.
         $company_owner = $this->resolve_company_owner_for_schedule();
@@ -125,6 +134,21 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(30);
         }
 
+        // Vencimiento de puntos de clientes, solo con la extensión puntos_clientes. Mismo patrón
+        // que ofertas:generar: el comando decide adentro si hay programa activo y si vence algo (o
+        // sale en una línea), y ese doble gate es a propósito -- el de acá evita el SELECT, el de
+        // adentro cubre la corrida a mano. 04:30 y no 03:30/04:00/05:00/05:30/06:00: no se pisa con
+        // ninguno de los cinco comandos ya agendados del mismo comercio.
+        //
+        // Costo permanente en los ~40 clientes reales sin el módulo: CERO consultas a la base. El
+        // gate de este if corta antes de que el comando arranque y el $company_owner ya está
+        // resuelto arriba (:34) para el resto del schedule.
+        if ($company_owner && UserHelper::hasExtencion('puntos_clientes', $company_owner)) {
+            $schedule->command('puntos:vencer')
+                ->dailyAt('04:30')
+                ->withoutOverlapping(30);
+        }
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
@@ -163,8 +187,10 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping(10);
 
         // Renueva los access_token de Mercado Pago próximos a vencer (grupo 170, prompt 598).
-        // Corre para TODOS los comercios con mp_enabled=true (no depende de company_owner /
-        // extensiones), porque el vínculo OAuth es por online_configuration, no por instancia.
+        // Corre para TODOS los comercios con conector de Mercado Pago (no depende de
+        // company_owner / extensiones), porque el vínculo OAuth es por conector, no por
+        // instancia. Desde la misión de ABM -> Integraciones esos tokens viven en
+        // `platform_connectors` y no más en `online_configurations.mp_*`.
         $schedule->command('mercadopago:refresh-tokens')
             ->daily()
             ->withoutOverlapping();

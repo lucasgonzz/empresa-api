@@ -9,15 +9,20 @@ use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
+use App\Models\Article;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
+use App\Models\OnlinePriceType;
+use App\Models\OnlineTemplate;
 use App\Models\PriceType;
+use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Helper que concentra la lógica de "configurar un sistema para una demo":
@@ -74,6 +79,30 @@ class DemoSetupHelper
          * seeders y 4,5 el set_company_performances. O sea que este metodo se pasa del
          * max_execution_time con el que corre PHP en casi cualquier servidor web -- el default
          * que trae PHP de fabrica son 30 segundos.
+         *
+         * ⚠️ ESOS 109 SEGUNDOS QUEDARON VIEJOS. Son de ANTES de que la demo pasara a sembrar con
+         * `semilla:datos` (mision del 17/8/2026), que ejecuta un ano entero de operaciones
+         * -- ~523 ventas -- por el camino real del sistema. Medido el 25/8/2026 contra
+         * `empresa_testing_s1`, este metodo de punta a punta con `use_price_lists = false`:
+         * **565,7 segundos (9 minutos 26 segundos)**. La medicion anterior de este bloque
+         * -- 4 m 15 s en `empresa_testing_s2` -- quedo corta: el numero real es mas del doble.
+         *
+         * 🔴 Ese numero hay que mirarlo contra el techo del que lo llama: `admin-api` postea acá
+         * con un timeout propio de **900 segundos** (`services.client_api.demo_setup_timeout`,
+         * que usa `RunDemoSetupService` desde la mision del 25/8/2026).
+         *
+         * Antes ese techo eran los `CLIENT_API_TIMEOUT` x 20 = 300 segundos genericos, y con
+         * 565,7 s de siembra la corrida NO entraba. Lo que pasaba entonces es exactamente la
+         * cadena que motivo el candado de `DemoSetupLockHelper`: el admin daba la corrida por
+         * muerta a los 300 s y marcaba `demo_setup_status = fallido` aunque la instancia
+         * terminara bien de este lado (por el set_time_limit(0) e ignore_user_abort(true) de
+         * abajo), la UI volvia a mostrar el boton, y el segundo disparo le vaciaba la base a la
+         * primera corrida, que todavia estaba sembrando.
+         *
+         * Con 900 s de techo y 565,7 s medidos el margen es de ~334 segundos, pero es margen
+         * prestado: cualquier cosa que agregue trabajo a la siembra se lo come, y pasa a ser un
+         * problema de timeout del lado del admin, no una molestia de tiempo local. Volver a
+         * medir cada vez que se toque `semilla:datos`.
          *
          * - set_time_limit(0): levanta el techo de PHP, y SOLO el de PHP: no toca el
          *   request_terminate_timeout de FPM ni el read timeout del proxy que haya adelante.
@@ -156,6 +185,14 @@ class DemoSetupHelper
         */
         Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
 
+        /*
+            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
+            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
+            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
+            la omitiria en silencio.
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
+
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
@@ -187,8 +224,6 @@ class DemoSetupHelper
 
         self::set_default_sale_factura_print_option($user);
 
-        self::crear_client_con_mail_del_user_demo($data);
-
         // Reportes pre-calculados que usa el dashboard de ventas
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
@@ -201,20 +236,110 @@ class DemoSetupHelper
          * que se verifica en local. Sin '--reset': la base recién vino del migrate:fresh de
          * arriba, así que no hay nada previo que limpiar.
          *
-         * No se chequea el código de salida ni se envuelve en try/catch, A PROPÓSITO: en una
+         * No se envuelve en try/catch ni se propaga ninguna falla, A PROPÓSITO: en una
          * instancia de CLIENTE REAL -- que corre este mismo helper al instalarse -- ni
          * config('app.env') es 'local' ni config('app.FOR_USER') es 'demo', así que la guarda
          * de entorno de semilla:datos sale con código 1 sin sembrar nada. Eso es lo CORRECTO
          * (el cliente no tiene por qué recibir datos de ejemplo), no una falla que haya que
          * propagar.
+         *
+         * El código de salida SÍ se guarda desde la misión 63, y no como manejo de error: es el
+         * único dato que distingue "acá se sembró" (0) de "acá no, porque es un cliente real" (1),
+         * y de eso depende quién calcula la performance histórica más abajo.
          */
-        Artisan::call('semilla:datos');
+        $semilla_sembro = Artisan::call('semilla:datos') === 0;
 
-        // Performance histórica del usuario (costos, márgenes, etc.)
-        Artisan::call('set_company_performances', ['--historico' => true]);
+        /**
+         * 🔴 VA ACÁ, DESPUÉS DE `semilla:datos`, Y NO ANTES (misión 63, siembra-local-igual-a-demo).
+         *
+         * Este Client es el del propio lead (su nombre y su mail salen del formulario), así que es
+         * una diferencia legítima entre una demo y una corrida local: local no tiene formulario y
+         * nunca lo va a tener. Lo que NO era legítimo es que se creara ANTES de la siembra.
+         *
+         * `SembrarDatosDePrueba::cargar_catalogo()` levanta
+         * `Client::where('user_id', ...)->orderBy('num')->get()` y sobre ESA lista rotan
+         * `PERFIL_DE_PAGO` (qué fracción de su deuda paga cada cliente) y `cliente_rotativo()`.
+         * Este Client se crea sin `num`, o sea `num = NULL`, y en MySQL los NULL ordenan PRIMERO
+         * en un ORDER BY ascendente: entraba en la posición 0 y corría un lugar a los 25 clientes
+         * de `ClientSeeder`. Resultado medido el 25/8/2026 sobre `empresa_testing_s2`, comparando
+         * los dos `storage/app/semilla/control.json`: 411 de 773 renglones distintos entre local y
+         * demo -- toda la deuda por cliente, toda la deuda por proveedor, la cobranza de cada mes,
+         * los saldos de las seis cajas y el barrido de efectivo. Los totales del mes (ventas
+         * brutas, costo de mercadería, gastos, IIBB) daban igual, porque salen de la cadencia y no
+         * del catálogo: por eso el desalineo no se veía en el resumen de consola.
+         *
+         * Corriéndolo después, `semilla:datos` ve exactamente los mismos 25 clientes que en local
+         * y el lead sigue encontrando su propio Client en el sistema. Lo único que cambia es que
+         * ese Client queda sin operaciones sembradas, que es lo correcto: es él, no un cliente de
+         * ejemplo.
+         */
+        self::crear_client_con_mail_del_user_demo($data);
 
-        // Tienda online por defecto para que la demo tenga URL pública
-        self::tienda();
+        /**
+         * Performance histórica del usuario (costos, márgenes, etc.), SOLO si `semilla:datos` no
+         * la calculó ya.
+         *
+         * 🔴 POR QUÉ LA CONDICIÓN, QUE PARECE DE MÁS Y NO LO ES (misión 63). Desde esta misión el
+         * propio `semilla:datos` termina llamando a `set_company_performances --historico`, para
+         * que una corrida LOCAL -- que es `migrate:fresh --seed` más ese comando y nada más --
+         * llene el dashboard de ventas igual que una demo. Correrlo de nuevo acá NO es inofensivo:
+         * `CompanyPerformanceController::borrar_los_realizados_durante_el_mes()` borra la fila de
+         * `company_performances` del mes pero no todas sus tablas hijas, así que la segunda
+         * corrida DUPLICA las filas de `company_performance_gasto`,
+         * `company_performance_user_payment_method` y compañía. Medido el 25/8/2026 con las dos
+         * llamadas activas: local terminaba con 288 filas en
+         * `company_performance_address_payment_method` y la demo con 576, y las de la demo eran
+         * las mismas doce, dos veces.
+         *
+         * La llamada NO se borra porque sigue siendo la única que cubre la instalación de un
+         * CLIENTE REAL: ahí `semilla:datos` sale por la guarda de entorno sin sembrar ni calcular
+         * nada, y sin esta línea el cliente quedaría sin ninguna performance histórica.
+         *
+         * El `user_id` va explícito desde la misma misión: el comando lo declara como argumento
+         * con default 500 (`SetCompanyPerformances::$signature`), así que sin pasarlo una
+         * instancia cuyo `USER_ID` no sea 500 calculaba la performance de un usuario que no
+         * existe.
+         */
+        if (!$semilla_sembro) {
+            Artisan::call('set_company_performances', ['user_id' => $user->id, '--historico' => true]);
+        }
+
+        /**
+         * Historial de movimientos de stock variado para el clip 4.4 (Trazabilidad de cada
+         * articulo) de la demo comercial.
+         *
+         * 🔴 POR QUE VA EN EL SETUP Y NO SE CORRE A MANO. Medido el 28/8/2026 barriendo los
+         * primeros 120 articulos de `demo`: solo 5 tenian mas de un concepto de movimiento, y
+         * NINGUNO tenia "Compra a proveedor", "Importacion de excel", "Mov entre depositos" ni
+         * "Ingreso manual". El guion del clip promete textualmente *"cada compra, cada venta,
+         * cada correccion a mano, cada movimiento entre depositos, cada importacion de Excel"*, y
+         * su mejor bloque filtra por "Importacion de excel" — que devolvia VACIO en camara
+         * mientras la voz contaba el caso. Ademas el 100% de los movimientos tenian el mismo
+         * empleado, asi que la columna "Empleado" no podia mostrar los nombres distintos que el
+         * guion pide.
+         *
+         * Correrlo a mano sobre cada demo no alcanza: hace falta SSH a la instancia, el pipeline
+         * de actualizacion no ejecuta comandos sueltos, y una demo recien armada volveria a nacer
+         * sin el historial. Acá queda cubierto de una vez.
+         *
+         * ⚠️ SOLO CUANDO SE SEMBRARON DATOS DE DEMOSTRACION. En la instalacion de un cliente REAL
+         * `semilla:datos` sale por la guarda de entorno sin sembrar nada, y meterle movimientos de
+         * stock inventados a un comercio de verdad seria corromperle el historial.
+         *
+         * El comando es idempotente (marca lo suyo en `observations`) y exige `--article_id` a
+         * proposito: no elige el articulo solo. Se le pasa uno del propio owner en vez de
+         * hardcodear un id, porque el numero depende de como haya quedado la siembra.
+         */
+        if ($semilla_sembro) {
+            self::sembrar_trazabilidad_para_el_clip($user);
+        }
+
+        // Tienda online por defecto para que la demo tenga URL pública.
+        //
+        // Se le pasa `$semilla_sembro` porque es el MISMO dato que distingue "esta instancia
+        // recibió datos de demostración" (0) de "esta es la instalación de un cliente real" (1),
+        // y de eso depende con qué criterio de precios arranca la tienda. Ver `tienda()`.
+        self::tienda($semilla_sembro);
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
@@ -354,9 +479,17 @@ class DemoSetupHelper
         }
     }
 
+    /**
+     * `name` va con el mismo default que `create_demo_user()` ('Demo') y no sin él.
+     *
+     * Esto se llama en la línea 262, o sea DESPUÉS del `migrate:fresh` y de casi toda la
+     * siembra: un `Undefined index: name` acá tiraba la corrida entera con la base ya
+     * vaciada y media hora de trabajo perdida. Y es un camino real, no teórico: el form web
+     * legacy manda `user_name`, nunca `name`, así que ese lado moría acá siempre.
+     */
     static function crear_client_con_mail_del_user_demo($data) {
         $client = Client::create([
-            'name'      => $data['name'],
+            'name'      => $data['name'] ?? 'Demo',
             'user_id'   => config('app.USER_ID'),
             'email'     => $data['email'] ?? null,
         ]);
@@ -367,6 +500,21 @@ class DemoSetupHelper
     /**
      * Crea el registro User principal de la demo con defaults tomados del
      * formulario original. Aísla la carga de campos del setup principal.
+     *
+     * `doc_number`, `email` y `online` llevan `?? null`: hasta el 25/8/2026 se leían derecho
+     * y un payload sin esas claves tiraba `Undefined index` (500) recién acá, con el
+     * `migrate:fresh` ya corrido — o sea, dejaba la base vacía y sin usuario. El endpoint de
+     * admin-sync pasa `$request->all()` tal cual, así que las claves las decide quien llame.
+     *
+     * 🔴 `doc_number` NO lleva un valor por default, y es a propósito. Es el nombre de usuario
+     * del login (`AuthController::login` → `Auth::attempt(['doc_number' => ...])`) y también la
+     * contraseña, así que cualquier default fijo dejaría la demo con usuario y contraseña
+     * adivinables en un dominio público. Con `null` la cuenta queda inservible, que es feo pero
+     * no es un agujero. Y tampoco se valida como requerido en los controllers: admin-api manda
+     * `doc_number = ''` a propósito cuando el formulario de implementación no cargó documento
+     * (`ImplementationUserSetupService`), y las dos puntas no llegan a producción juntas —
+     * rechazar ese payload dejaría sin armar instancias que hoy se arman. La contraseña de ese
+     * caso la resuelve `password_inicial()`, acá abajo.
      *
      * @param array<string, mixed> $data
      *
@@ -383,17 +531,17 @@ class DemoSetupHelper
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
             'image_url'                     => 'https://comerciocity.com/img/logo.95c86b81.jpg',
-            'doc_number'                    => $data['doc_number'],
+            'doc_number'                    => $data['doc_number'] ?? null,
             'impresora'                     => 'XP-80',
-            'email'                         => $data['email'],
+            'email'                         => $data['email'] ?? null,
             'phone'                         => '3444622139',
             'sale_ticket_description'       => '--- Aca iria alguna aclaracion que quieras hacer ---',
-            'password'                      => bcrypt($data['doc_number']),
+            'password'                      => self::password_inicial($data),
             'visible_password'              => null,
             'dollar'                        => 1000,
             'home_position'                 => 1,
             'download_articles'             => 0,
-            'online'                        => $data['online'],
+            'online'                        => $data['online'] ?? null,
             'payment_expired_at'            => Carbon::now()->addMonths(12),
             'total_a_pagar'                 => 15000,
             'plan_id'                       => null,
@@ -416,7 +564,89 @@ class DemoSetupHelper
                 ? (int) $data['google_cuota']
                 : 100,
             'listas_de_precio'              => !empty($data['use_price_lists']) ? 1 : 0,
+            // Pedido de Lucas (25/8/2026): en la demo estos avisos al iniciar sesion quedan apagados por defecto.
+            'show_stock_min_al_iniciar'     => 0,
+            'show_afip_errors_al_iniciar'   => 0,
+
+            /*
+                Pedido de Lucas (27/8/2026): la demo nace con la dinamica de costeo por condicion
+                fiscal ENCENDIDA -- la tilde "Calcular costos segun la condicion de IVA" de las
+                propiedades del usuario -- y como Responsable Inscripto.
+
+                Es el mismo criterio que ya aplica `HelperController::store_user()` a toda cuenta
+                nueva: el `0` que trae por default la migracion
+                `2026_07_27_120000_add_costeo_condicion_fiscal_to_users_table` existe para no
+                moverle el costeo a las cuentas viejas, no para las que se crean de aca en adelante.
+
+                VA EN EL `User::create()` Y NO MAS ABAJO EN `run()`, y eso importa: `semilla:datos`
+                siembra el catalogo y calcula los precios de los articulos despues de este punto, y
+                `ArticlePricesHelper::iva_va_al_costo()` lee estas dos columnas del dueño para
+                decidir si el IVA forma parte del costo. Seteadas despues, la demo quedaria con la
+                tilde prendida pero con los precios calculados por el camino historico.
+
+                🔴 ESTO MUEVE LOS PRECIOS DE LA DEMO, Y ES EL PUNTO. Medido el 27/8/2026 con
+                `php artisan costeo:simular` sobre los 10 articulos del fixture: el precio final
+                sube exactamente la alicuota de IVA de cada articulo (21% en ocho de ellos, 10,5%
+                en los de alicuota reducida) y el costo real no se mueve (0,00% en los diez).
+
+                El motivo es que `users.aplicar_iva_al_costo` trae default `1` desde su migracion
+                (`2026_04_29_115713_add_aplicar_iva_al_costo_to_users`), y este helper nunca lo
+                seteaba: la demo nacia en LEGACY con esa tilde prendida, o sea con
+                `iva_va_al_costo()` en true. Y el pipeline hace `if (!iva_va_al_costo()) aplicar_iva()`,
+                asi que el IVA se daba por incluido dentro del costo cargado y no se sumaba en
+                ningun lado. Con la dinamica nueva y RRII el costo se lee como NETO y el IVA se
+                suma al vender, que es lo correcto para un Responsable Inscripto.
+
+                🔴 Y ALINEA LA DEMO CON UNA CORRIDA LOCAL, que es lo que estaba roto. `UserSeeder`
+                y `UsersTableSeeder` ya dejan toda cuenta sembrada con
+                `usar_condicion_fiscal_en_costeo = 1`, asi que local venia calculando por la
+                dinamica nueva mientras la demo seguia en legacy: mismo costo sembrado, 21% de
+                diferencia en el precio final. Es el mismo modo de falla que cerro la mision 63
+                (`siembra-local-igual-a-demo`) y que este camino todavia tenia abierto.
+            */
+            'condicion_iva_precios'         => User::CONDICION_RRII,
+            'usar_condicion_fiscal_en_costeo' => 1,
         ]);
+    }
+
+    /**
+     * Contraseña inicial del User de la demo.
+     *
+     * 🔴 POR QUÉ NO ES UN `bcrypt($data['doc_number'])` PELADO, ANTES DE QUE ALGUIEN LO
+     * "SIMPLIFIQUE" DE VUELTA:
+     *
+     * El login es `doc_number` + password (`AuthController::login` →
+     * `Auth::attempt(['doc_number' => ..., 'password' => ...])`) y la contraseña inicial de la
+     * demo es el propio documento. Cuando `doc_number` viene con valor, esto hace exactamente
+     * lo de siempre y no hay nada que discutir.
+     *
+     * El problema es el otro caso. admin-api manda `doc_number = ''` A PROPÓSITO cuando el
+     * formulario de implementación no cargó documento (`ImplementationUserSetupService`: "si no
+     * vino del formulario, dejarlo como string vacío explícito"), y un lead de demo puede
+     * llegar con `doc_number` en null (`leads.doc_number` es nullable). Con el bcrypt pelado
+     * esos casos quedaban con `bcrypt('')`, o sea una cuenta que abre con la CONTRASEÑA VACÍA,
+     * en un dominio público y sobre un endpoint sin auth. Hashear un `Str::random(40)` deja esa
+     * misma cuenta igual de inservible que antes (nadie sabe el documento para el usuario) pero
+     * ya no adivinable.
+     *
+     * No se arregla rechazando el payload con un 422: las dos puntas no llegan a producción
+     * juntas —empresa sale por release a los ~40 clientes y el admin lo sube Lucas a mano—, así
+     * que rechazarlo dejaría sin armar instancias que hoy se arman. Compatibilidad hacia atrás:
+     * ningún payload que hoy funciona cambia de comportamiento.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @return string Hash bcrypt listo para guardar.
+     */
+    private static function password_inicial(array $data)
+    {
+        $doc_number = isset($data['doc_number']) ? trim((string) $data['doc_number']) : '';
+
+        if ($doc_number === '') {
+            return bcrypt(Str::random(40));
+        }
+
+        return bcrypt($data['doc_number']);
     }
 
     /**
@@ -449,6 +679,15 @@ class DemoSetupHelper
             'tracking_buyers',
 
             /*
+                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
+                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
+                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
+                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
+            */
+            'asistente_ia',
+            'escaneo_factura_compra',
+
+            /*
                 D2 (18/8/2026): el ítem de menú de WhatsApp lo gatea 'whatsapp'
                 (empresa-spa/src/router/routes.js), no 'whatsapp_ia'. Sin 'whatsapp' el
                 módulo no aparece nunca en el menú, aunque se asigne 'whatsapp_ia' a mano
@@ -475,11 +714,54 @@ class DemoSetupHelper
             'ConceptoStockMovementSeeder',
             'UnidadMedidaSeeder',
             'PermissionSeeder',
+
+            /*
+                D3 (misión 63): los dos permisos de los chats de WhatsApp no están en
+                `PermissionSeeder` -- viven solo en este seeder suelto. Toda demo recibe de base
+                las extensiones 'whatsapp' y 'whatsapp_ia' (ver base_extencions()), así que sin
+                esta línea el módulo aparece en el menú y la pantalla de empleados no tiene con
+                qué darle permiso a nadie. Es `firstOrCreate`, no duplica.
+            */
+            'PermissionEmpresaWhatsappSeeder',
+
             'OrderStatusSeeder',
+
+            /* D3 (misión 63): estados de los pedidos que llegan desde Tienda Nube. */
+            'TiendaNubeOrderStatusSeeder',
+
             'ProviderOrderStatusSeeder',
             'OnlinePriceTypeSeeder',
             'DepositMovementStatusSeeder',
             'CAPaymentMethodTypeSeeder',
+
+            /*
+                Tipos de metodo de pago de la TIENDA ONLINE. Es otro seeder que el `CA...` de
+                arriba (ese es el de cuenta corriente), y hasta el 3/9/2026 no lo llamaba nadie:
+                la demo quedaba con el desplegable "Tipo" vacio en ABM -> Tienda online ->
+                Metodos de pago, o sea sin forma de dar de alta el cobro online. Es la razon por
+                la que la demo 1 no tenia NINGUN metodo de pago cargado.
+            */
+            'PaymentMethodTypeSeeder',
+
+            /*
+                D3 (misión 63): catálogos estructurales que `DatabaseSeeder::common_seeders()`
+                siembra para todos y que la lista de la demo nunca tuvo.
+
+                - `ProvinciaSeeder`: sin provincias, los selects de domicilio de clientes y
+                  sucursales quedan vacíos.
+                - `PaisExportacionSeeder`: los ~309 países con código AFIP que necesita cualquier
+                  comprobante de exportación.
+                - `PlatformSeeder`: las filas de Mercado Libre y Tienda Nube de `platforms`, que
+                  son la clave foránea de `platform_connectors`.
+                - Los tres catálogos de Mercado Libre (tipo de publicación, modo de compra,
+                  condición del ítem).
+            */
+            'ProvinciaSeeder',
+            'PaisExportacionSeeder',
+            'PlatformSeeder',
+            'MeliListingTypeSeeder',
+            'MeliBuyingModeSeeder',
+            'MeliItemConditionSeeder',
 
             'IvaSeeder',
 
@@ -495,9 +777,31 @@ class DemoSetupHelper
 
             'ConceptoMovimientoCajaSeeder',
 
+            /*
+                D3 (misión 63): conceptos 7 a 10 (`Eliminación de Venta`, `de Gasto`, `de Pago de
+                Cliente`, `de Pago a Proveedor`). Tiene que ir DESPUÉS de
+                `ConceptoMovimientoCajaSeeder`, que ocupa los ids 1 a 6. Sin estas cuatro filas,
+                un lead que borra una venta desde la demo deja la caja sin el movimiento de
+                compensación. Es `updateOrInsert` por id, no duplica.
+            */
+            'ConceptoMovimientoCajaCompensacionSeeder',
+
             'AfipTipoComprobanteSeeder',
 
+            /* D3 (misión 63): plantilla de PDF de ofertas de artículos ("Oferta"). */
+            'ArticlePdfSeeder',
+
+            /* D3 (misión 63): las cinco cuotas con recargo que se ofrecen al cobrar una venta. */
+            'CuotaSeeder',
+
             'ProviderSeeder',
+
+            /*
+                D3 (misión 63): DESPUÉS de `ProviderSeeder` -- hardcodea `provider_id => 1`, que
+                es el primer proveedor que crea aquél.
+            */
+            'ProviderDiscountSeeder',
+
             'ProviderPriceListSeeder',
             'ColorSeeder',
             'DepositSeeder',
@@ -534,13 +838,42 @@ class DemoSetupHelper
             'SellerSeeder',
             'ChequeSeeder',
 
+            /*
+                D3 (misión 63): turnos de caja (Mañana / Tarde) y días de entrega, que
+                `DatabaseSeeder` siembra siempre y la demo no tenía. Sin turnos, la pantalla de
+                cierre de caja no ofrece ninguno; sin días de entrega, la tienda no puede
+                proponer fecha.
+            */
+            'TurnoCajaSeeder',
+            'DeliveryDaySeeder',
+
+            /*
+                D3 (misión 63): conector de ejemplo de Mercado Libre. Va DESPUÉS de
+                `PlatformSeeder` (usa `platform_id => 1`). Queda inerte en la demo -- el
+                schedule de sincronización con Meli está gateado por la extensión
+                'usa_mercado_libre', que `base_extencions()` no otorga -- pero es una fila más
+                que local tenía y la demo no.
+            */
+            'MeliPlatformConnectorSeeder',
+
             'ProductionBatchStatusSeeder',
             'ProductionBatchMovementTypeSeeder',
             'RecipeRouteTypeSeeder',
 
+            /*
+                Orden obligatorio: PdfColumnOptionSeeder sincroniza el catalogo global de columnas
+                y los TRES seeders de perfiles que siguen lo necesitan poblado. No reordenar.
+
+                🔴 Son TRES, y el del medio es el que se cae al copiar este bloque. Hasta el
+                28/8/2026 PdfColumnProfileArticleSeeder faltaba aca y en DatabaseSeeder: como la
+                demo se arma por este metodo, nacia sin plantillas de articulo y el item "PDF tabla
+                (plantillas)" del listado mostraba "Sin plantillas". Lo descubrio una sesion que
+                intentaba filmar el clip del catalogo PDF y dio la funcion por inexistente.
+            */
             'SheetTypeSeeder',
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
+            'PdfColumnProfileArticleSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 
@@ -550,6 +883,31 @@ class DemoSetupHelper
                 dueño, y si corriera antes no agarraría a los que la demo acaba de crear.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                D3 (misión 63): las dos únicas extensiones del padrón que `ExtencionSeeder` NO
+                trae y que hasta ahora la demo tampoco sembraba por separado. Medido: local
+                termina con 97 filas en `extencion_empresas` y la demo con 95, y las dos que
+                faltaban eran justamente 'duplicar_presupuestos' y 'ai_excel_import'. Sin la
+                fila, la extensión ni siquiera aparece en /user/extencions/edit para poder
+                otorgarla a mano. Las dos son `firstOrCreate`.
+
+                Los otros seeders sueltos de extensión que corre `common_seeders()`
+                (EnviarMailClientes, CrearArticulosDesdeVender, PersonalizarNombreEnVender,
+                SugerenciasInteligentes, SugerenciasCompras, MotorDeOfertas, TrackingBuyers,
+                AsistenteIa) NO hacen falta acá: sus slugs ya están dentro de `ExtencionSeeder`,
+                que la demo corre antes del sync. Se comprobó slug por slug.
+            */
+            'ExtencionDuplicarPresupuestosSeeder',
+            'ExtencionEmpresaAiExcelImportSeeder',
+
+            /*
+                D3 (misión 63): ÚLTIMO de los seeders de extensión, por el mismo motivo por el
+                que va último en `common_seeders()`: no inserta filas, le escribe la descripción,
+                el módulo y el marcado de desuso a las que ya insertaron los otros. Sin esto, la
+                pantalla de extensiones de una demo muestra slugs pelados.
+            */
+            'ExtencionEmpresaDescriptionSeeder',
 
             /*
                 D1: al final, para que las 4 extensiones de IA (agregadas en base_extencions())
@@ -591,6 +949,21 @@ class DemoSetupHelper
         // Seeder transversal de presupuestos, se encadena al final del bloque de tipo
         $seeders[] = 'FerreteriaArticlesSeeder';
         $seeders[] = 'BudgetSeeder';
+
+        /*
+            D3 (misión 63, siembra-local-igual-a-demo): los pedidos de la tienda y los carritos.
+            Van ACÁ y no en `base_seeders()`, y no es una cuestión de prolijidad: los dos leen el
+            catálogo (`OrderSeeder` hace `Article::take(10)` y `CartSeeder` `Article::take(20)`)
+            y `FerreteriaArticlesSeeder` es la línea de arriba, o sea que desde base_seeders()
+            correrían sin un solo Article en la base y dejarían pedidos y carritos con cero
+            renglones. Es exactamente lo que venía pasando del lado de LOCAL, donde `OrderSeeder`
+            vivía en `DatabaseSeeder::local_y_demo()`, antes del catálogo: medido, 2 filas en
+            `orders` y 0 en `article_order`.
+
+            `BuyerSeeder`, que los dos necesitan, ya está en base_seeders() y corre antes.
+        */
+        $seeders[] = 'OrderSeeder';
+        $seeders[] = 'CartSeeder';
 
         if ($type === 'ferreteria') {
             $extencions[] = 'unidades_individuales_en_articulos';
@@ -650,16 +1023,77 @@ class DemoSetupHelper
     }
 
     /**
+     * Le siembra al catálogo el historial de movimientos variado que necesita el clip 4.4.
+     *
+     * Elige el artículo en vez de hardcodear un id: `demo:sembrar-trazabilidad` exige
+     * `--article_id` a propósito (no lo adivina), pero acá el número depende de cómo haya quedado
+     * la siembra, así que se toma uno del propio owner.
+     *
+     * 🔴 NO ROMPE EL SETUP SI FALLA. Es material para un video de demostración: que no se pueda
+     * sembrar es un problema de una filmación, no de la instancia. Un `throw` acá dejaría la demo
+     * del lead a medio armar por algo que no la afecta, así que se registra y se sigue.
+     *
+     * @param User $user Owner de la instancia recién armada.
+     *
+     * @return void
+     */
+    private static function sembrar_trazabilidad_para_el_clip($user)
+    {
+        try {
+            /*
+             * Se prefiere un artículo que YA tenga movimientos: el clip muestra un historial
+             * mezclado, y sembrar sobre uno sin nada previo lo deja pareciendo inventado.
+             * Si ninguno tiene, se cae a cualquiera del owner.
+             */
+            $article_id = StockMovement::query()
+                ->join('articles', 'articles.id', '=', 'stock_movements.article_id')
+                ->where('articles.user_id', $user->id)
+                ->groupBy('stock_movements.article_id')
+                ->orderByRaw('COUNT(*) DESC')
+                ->value('stock_movements.article_id');
+
+            if (!$article_id) {
+                $article_id = Article::where('user_id', $user->id)->value('id');
+            }
+
+            if (!$article_id) {
+                Log::info('DemoSetup: no hay artículos para sembrar la trazabilidad del clip 4.4.');
+
+                return;
+            }
+
+            Artisan::call('demo:sembrar-trazabilidad', [
+                '--article_id' => $article_id,
+                '--user_id'    => $user->id,
+            ]);
+
+            Log::info('DemoSetup: trazabilidad del clip 4.4 sembrada sobre el artículo ' . $article_id . '.');
+        } catch (\Throwable $e) {
+            Log::warning('DemoSetup: no se pudo sembrar la trazabilidad del clip 4.4: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Crea la OnlineConfiguration por defecto para que la tienda online
      * asociada al usuario quede operativa.
+     *
+     * @param bool $es_instancia_de_demostracion `true` cuando `semilla:datos` sembró en esta
+     *                                           instancia, o sea cuando es una demo (o una corrida
+     *                                           local). `false` en la instalación de un cliente
+     *                                           real.
      */
-    private static function tienda()
+    private static function tienda($es_instancia_de_demostracion = false)
     {
         $online_configuration = [
-            'online_price_type_id'      => 3,
+            'online_price_type_id'      => self::online_price_type_id_inicial($es_instancia_de_demostracion),
+            // Pedido de Lucas (27/8/2026): la tienda nace con la plantilla ComercioCity, no con
+            // Moderno. Ver `online_template_id_comerciocity()`.
+            'online_template_id'        => self::online_template_id_comerciocity(),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
             'pausar_tienda_online'      => 0,
+            // Pedido de Lucas (26/8/2026): en la demo este checkbox queda apagado por defecto.
+            'show_articles_without_images' => 0,
             'user_id'                   => config('app.USER_ID'),
             'facebook'                  => 'htts://facebook.com',
             'instagram'                 => 'htts://instagram.com',
@@ -681,6 +1115,90 @@ class DemoSetupHelper
         ];
 
         OnlineConfiguration::create($online_configuration);
+    }
+
+    /**
+     * Con qué criterio de visibilidad de precios arranca la tienda online.
+     *
+     * 🔴 UNA DEMO ARRANCA EN `all` (misión demo-lista-para-grabar, 25/8/2026). Hasta acá toda
+     * instancia nacía con el id 3, que en `OnlinePriceTypeSeeder` es
+     * `only_buyers_with_comerciocity_client`: "solo los usuarios registrados que estén vinculados
+     * a un Cliente del sistema". En la tienda de la demo eso se veía como un cartel
+     * "Inicie sesion o Solicite alta de cliente para ver precios" en cada tarjeta de producto
+     * (medido el 25/8/2026 en `https://tienda.comerciocity.store`: 38 productos con imagen y marca
+     * real, y ni un precio). O sea que el clip del ecommerce mostraba un catálogo sin precios.
+     *
+     * `all` es el slug exacto que mira `tienda-spa`, verificado en el código de ese repo y no
+     * asumido: `src/mixins/generals.js::puede_ver_precios()` devuelve `false` solo para
+     * `only_registered` (sin sesión) y para `only_buyers_with_comerciocity_client` (sin sesión o
+     * sin Client vinculado); cualquier otro valor —`all` entre ellos— cae al `return true` final.
+     * Del lado de `tienda-api`, `CommerceController` levanta la relación con
+     * `->with('online_configuration.online_price_type')`, así que lo que viaja al SPA es la fila
+     * entera, slug incluido. `users.listas_de_precio` no participa: la tienda no lo mira.
+     *
+     * 🔴 Y NO SE CAMBIA PARA UN CLIENTE REAL. Este helper corre también en la instalación de un
+     * comercio de verdad, y con qué criterio publica sus precios es una decisión suya, no un
+     * default que podamos mover de costado: para esas instancias sigue valiendo el id 3 de
+     * siempre. Por eso el parámetro, y no un cambio del literal.
+     *
+     * Los DOS ids se resuelven por SLUG y no por número, incluido el del cliente real que antes
+     * era un `3` pelado: `OnlinePriceTypeSeeder` está en `base_seeders()`, así que las filas ya
+     * existen cuando esto corre, y atarse a la posición dentro de esa lista es exactamente el tipo
+     * de acoplamiento que hubo que venir a corregir acá. Los fallbacks numéricos son la posición
+     * que hoy ocupa cada slug en el seeder, y cubren una instancia armada por un camino que no lo
+     * haya corrido.
+     *
+     * @param bool $es_instancia_de_demostracion
+     * @return int
+     */
+    private static function online_price_type_id_inicial($es_instancia_de_demostracion)
+    {
+        if ($es_instancia_de_demostracion) {
+            return self::online_price_type_id_por_slug('all', 1);
+        }
+
+        return self::online_price_type_id_por_slug('only_buyers_with_comerciocity_client', 3);
+    }
+
+    /**
+     * Id de un `OnlinePriceType` buscado por slug, con la posición que ocupa en
+     * `OnlinePriceTypeSeeder` como último recurso.
+     *
+     * @param string $slug
+     * @param int $id_por_defecto
+     * @return int
+     */
+    private static function online_price_type_id_por_slug($slug, $id_por_defecto)
+    {
+        $id = OnlinePriceType::where('slug', $slug)->value('id');
+
+        return is_null($id) ? $id_por_defecto : (int) $id;
+    }
+
+    /**
+     * Id de la plantilla de diseño "ComercioCity" con la que arranca la tienda online.
+     *
+     * 🔴 SE RESUELVE POR SLUG Y NO CON UN NUMERO PELADO, por el mismo motivo que
+     * `online_price_type_id_por_slug()` de aca arriba: `online_templates` se puebla con
+     * `OnlineTemplateSeeder`, que esta en `base_seeders()` y corre ANTES que `tienda()` dentro de
+     * `run()`, asi que la fila ya existe cuando esto se ejecuta; atarse a la posicion que ocupa
+     * dentro de ese seeder es exactamente el acoplamiento que hubo que venir a corregir en el
+     * criterio de precios de la tienda.
+     *
+     * Hasta el 27/8/2026 esta clave no se pasaba y la columna caia en su default de migracion, que
+     * es `1` = "Moderno". El fallback de abajo es `3`, la posicion que hoy ocupa 'comerciocity' en
+     * `OnlineTemplateSeeder`, y cubre una instancia armada por un camino que no lo haya corrido.
+     *
+     * El slug tiene que ser 'comerciocity' tal cual: `tienda-spa` arma la clase CSS concatenando
+     * 'plantilla-' + slug, y contra esa clase estan escritos todos los selectores de la plantilla.
+     *
+     * @return int
+     */
+    private static function online_template_id_comerciocity()
+    {
+        $id = OnlineTemplate::where('slug', 'comerciocity')->value('id');
+
+        return is_null($id) ? 3 : (int) $id;
     }
 
     /**

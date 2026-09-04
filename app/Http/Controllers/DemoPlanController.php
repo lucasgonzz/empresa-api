@@ -79,38 +79,142 @@ class DemoPlanController extends Controller
     }
 
     /**
-     * Estado de cada clip segun los eventos locales, en UNA sola query agrupada.
+     * Estado de cada clip segun los eventos locales, en DOS queries acotadas.
      *
      * No se filtra por `sincronizado_at`: para restaurarle la pantalla al lead da exactamente lo
      * mismo si el admin ya se entero o no.
      *
-     * @return array<string, array{abierto:bool, visto:bool}> Mapa clip_id => estado.
+     * 🔴 Son dos queries y no una, y eso NO es un descuido que haya que "optimizar" juntandolas.
+     * La primera agrupa por `clip_id, nombre` y no trae `datos`, que es lo que la hace barata; la
+     * segunda SI necesita leer `datos` --`probado` sale de `tour.completado` con
+     * `datos.completo === true`, y el porcentaje de `datos.porcentaje`--, y un `groupBy` sobre una
+     * columna JSON no agrupa nada util. Meterlas en una sola obligaria a traer `datos` de todas
+     * las filas, incluidas las que no lo usan.
+     *
+     * El volumen esta acotado por construccion: esta tabla es de UNA instancia de demo (un lead),
+     * y son ~10 filas de `clip.progreso` por video mirado.
+     *
+     * @return array<string, array{abierto:bool, visto:bool, probado:bool, porcentaje_visto:int}>
+     *         Mapa clip_id => estado.
      */
     private static function progreso_por_clip()
     {
+        $progreso = [];
+
         $filas = DemoEvento::select('clip_id', 'nombre')
             ->whereIn('nombre', ['clip.abierto', 'clip.terminado'])
             ->whereNotNull('clip_id')
             ->groupBy('clip_id', 'nombre')
             ->get();
 
-        $progreso = [];
-
         foreach ($filas as $fila) {
             $clip_id = (string) $fila->clip_id;
 
             if (!isset($progreso[$clip_id])) {
-                $progreso[$clip_id] = ['abierto' => false, 'visto' => false];
+                $progreso[$clip_id] = self::estado_inicial();
             }
 
             if ($fila->nombre === 'clip.terminado') {
                 $progreso[$clip_id]['visto'] = true;
+                /** El video llego al final: el porcentaje deja de ser una estimacion. */
+                $progreso[$clip_id]['porcentaje_visto'] = 100;
             } else {
                 $progreso[$clip_id]['abierto'] = true;
             }
         }
 
+        $con_datos = DemoEvento::select('clip_id', 'nombre', 'datos')
+            ->whereIn('nombre', ['tour.completado', 'clip.progreso'])
+            ->whereNotNull('clip_id')
+            ->get();
+
+        foreach ($con_datos as $fila) {
+            $clip_id = (string) $fila->clip_id;
+
+            if (!isset($progreso[$clip_id])) {
+                $progreso[$clip_id] = self::estado_inicial();
+            }
+
+            $datos = is_array($fila->datos) ? $fila->datos : [];
+
+            if ($fila->nombre === 'tour.completado') {
+                /**
+                 * 🔴 `completo` es lo unico que separa un tour terminado de uno abandonado: al
+                 * saltear pasos tambien se llega al final, y el motor marca `completo: false`
+                 * cuando se mostro menos de la mitad de los pasos. Sin este chequeo, un tour que
+                 * el lead corto en el paso 2 pintaria el boton verde igual.
+                 *
+                 * Se aceptan las cuatro formas de "si" porque `datos` es JSON libre que entro
+                 * desde el navegador: la nuestra manda un booleano, pero un `"true"` no puede
+                 * quedar en false silencioso.
+                 */
+                $completo = isset($datos['completo']) ? $datos['completo'] : null;
+
+                if ($completo === true || $completo === 1 || $completo === '1' || $completo === 'true') {
+                    $progreso[$clip_id]['probado'] = true;
+                }
+
+                continue;
+            }
+
+            /** `clip.progreso` llega ~10 veces por video: se queda el MAXIMO, nunca el ultimo. */
+            $porcentaje = self::porcentaje_de($datos);
+
+            if ($porcentaje > $progreso[$clip_id]['porcentaje_visto']) {
+                $progreso[$clip_id]['porcentaje_visto'] = $porcentaje;
+            }
+        }
+
         return $progreso;
+    }
+
+    /**
+     * Estado de un clip del que todavia no se leyo ningun evento.
+     *
+     * Vive aparte porque lo arman los dos recorridos de progreso_por_clip(), y un clip puede
+     * entrar por cualquiera de los dos: el que solo tiene `clip.progreso` (miro medio video y no
+     * lo termino) nunca aparece en la primera query.
+     *
+     * @return array
+     */
+    private static function estado_inicial()
+    {
+        return [
+            'abierto' => false,
+            'visto' => false,
+            'probado' => false,
+            'porcentaje_visto' => 0,
+        ];
+    }
+
+    /**
+     * Porcentaje de `datos`, clampeado a 0..100.
+     *
+     * 🔴 `datos` es JSON libre que entro por POST /api/demo/evento desde el navegador: la clave
+     * puede faltar, venir null, venir texto o venir absurda. Cualquiera de esas cosas vale 0 --lo
+     * mismo que no haber mirado nada--, que es el default seguro: se puede quedar corto, nunca
+     * inventa progreso que el lead no hizo.
+     *
+     * @param array $datos
+     * @return int
+     */
+    private static function porcentaje_de(array $datos)
+    {
+        if (!isset($datos['porcentaje']) || !is_numeric($datos['porcentaje'])) {
+            return 0;
+        }
+
+        $porcentaje = (int) round((float) $datos['porcentaje']);
+
+        if ($porcentaje < 0) {
+            return 0;
+        }
+
+        if ($porcentaje > 100) {
+            return 100;
+        }
+
+        return $porcentaje;
     }
 
     /**
@@ -188,13 +292,30 @@ class DemoPlanController extends Controller
                     'id' => $clip_id,
                     'titulo' => isset($clip['titulo']) ? $clip['titulo'] : '',
                     'tipo' => isset($clip['tipo']) ? $clip['tipo'] : 'nucleo',
-                    'practica' => isset($clip['practica']) ? (bool) $clip['practica'] : false,
+                    /**
+                     * Default true y no false: desde el 24/8/2026 la SPA oculta el botón
+                     * "Probar" cuando practica es false EXPLÍCITO. Un plan congelado que no
+                     * traiga el campo tiene que comportarse como siempre (botón visible) — con
+                     * default false, todos los clips de ese lead perderían el botón.
+                     */
+                    'practica' => isset($clip['practica']) ? (bool) $clip['practica'] : true,
                     'url' => isset($urls[$clip_id]) && trim((string) $urls[$clip_id]) !== ''
                         ? (string) $urls[$clip_id]
                         : null,
                     /** Estado restaurado (mision 52). Sin eventos, los dos en false. */
                     'abierto' => isset($progreso[$clip_id]) ? $progreso[$clip_id]['abierto'] : false,
                     'visto' => isset($progreso[$clip_id]) ? $progreso[$clip_id]['visto'] : false,
+                    /**
+                     * Campos AGREGADOS el 1/9/2026, ninguno renombrado ni sacado: un panel viejo
+                     * simplemente no los lee y sigue funcionando igual.
+                     *
+                     * `probado` es lo que hace que el boton "Probar" verde con el check sobreviva
+                     * al F5, por el mismo motivo y con el mismo mecanismo que `visto`: si solo
+                     * viviera en memoria, el lead que recarga ve como no probado un tour que si
+                     * completo.
+                     */
+                    'probado' => isset($progreso[$clip_id]) ? $progreso[$clip_id]['probado'] : false,
+                    'porcentaje_visto' => isset($progreso[$clip_id]) ? $progreso[$clip_id]['porcentaje_visto'] : 0,
                 ];
             }
 

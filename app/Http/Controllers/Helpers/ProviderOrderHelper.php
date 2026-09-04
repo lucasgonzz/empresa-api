@@ -379,7 +379,22 @@ class ProviderOrderHelper {
 
 				$ct_stock_movement = new StockMovementController();
 
-				$amount = -$article->pivot->amount;
+				/*
+					Al borrar la compra se devuelve la cantidad que REALMENTE entró al stock:
+					la recibida si fue completada a mano (incluido 0, "llegaron 0 unidades"),
+					y si vino vacía o null, la pedida. Es la misma semántica de
+					NewProviderOrderHelper::interpretar_cantidad_real(), que es la que usó la
+					compra para SUMAR el stock. Hasta el 24/8/2026 acá se usaba siempre
+					pivot->amount (la pedida): pediste 10, entraron 3, y al borrar salían 10
+					(regla confirmada por Lucas, informe 20260824 §7).
+				*/
+				$cantidad_real = $article->pivot->amount;
+
+				if (!is_null($article->pivot->received) && $article->pivot->received !== '') {
+					$cantidad_real = $article->pivot->received;
+				}
+
+				$amount = -$cantidad_real;
 
 
 		        $data['model_id'] = $article->id;

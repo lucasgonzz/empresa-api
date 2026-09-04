@@ -119,6 +119,42 @@ return [
         'max_calls_batch'  => (int) env('ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH', 300),
     ],
 
+    /**
+     * Escaneo de facturas de compra con IA (misión escaneo-factura-compra): el usuario saca
+     * una foto de la factura del proveedor y el sistema extrae la tabla de artículos y los
+     * datos del comprobante. Reutiliza ANTHROPIC_API_KEY / ca_bundle / verify_ssl del bloque
+     * 'anthropic' de arriba; estas claves son propias de este flujo.
+     */
+    'escaneo_factura_compra' => [
+        /*
+         * Modelo de Claude. Acá NO se usa uno económico: leer una tabla impresa chica y sacar
+         * códigos exactos es la parte cara de la funcionalidad.
+         *
+         * ⚠️ El id va SIN sufijo de fecha, y no es un descuido: los ids vigentes de Anthropic
+         * son completos así como están. Los otros dos bloques de este archivo
+         * (article_image_validation, anthropic) llevan fecha porque se escribieron cuando esa
+         * era la convención, no porque haga falta. No le agregues una.
+         *
+         * Se puede cambiar por .env sin tocar código (ESCANEO_FACTURA_MODEL), que es la salida
+         * si algún cliente necesita otro modelo o si aparece uno mejor para leer facturas.
+         */
+        'model'         => env('ESCANEO_FACTURA_MODEL', 'claude-sonnet-5'),
+        // Timeout en segundos de la request a Anthropic. Varias páginas tardan.
+        'timeout'       => (int) env('ESCANEO_FACTURA_TIMEOUT', 180),
+        // Lado mayor (px) al que se redimensiona cada foto. 1568 es el máximo que Anthropic
+        // procesa sin downsamplear; con 512 (el de la validación de imágenes de producto) los
+        // códigos de artículo impresos chicos quedan ilegibles.
+        'max_side'      => (int) env('ESCANEO_FACTURA_MAX_SIDE', 1568),
+        // Páginas por escaneo. Más de 6 imágenes en una sola llamada empieza a costar caro y
+        // a acercarse al límite de contexto.
+        'max_imagenes'  => (int) env('ESCANEO_FACTURA_MAX_IMAGENES', 6),
+        // Tamaño máximo por archivo subido, en MB, ANTES de redimensionar.
+        'max_mb'        => (int) env('ESCANEO_FACTURA_MAX_MB', 12),
+        // Tokens máximos de la respuesta. Una factura de 80 renglones con confianza por campo
+        // no entra en 2000.
+        'max_tokens'    => (int) env('ESCANEO_FACTURA_MAX_TOKENS', 8000),
+    ],
+
     /*
      * API OpenAI — embeddings vectoriales del catálogo de artículos (text-embedding-3-small).
      * El token se configura en .env como OPENAI_API_KEY.
@@ -183,6 +219,13 @@ return [
         // Pantalla de Integraciones del SPA de empresa a la que se vuelve luego del callback,
         // con ?mp=ok o ?mp=error agregado. Configurable porque empresa-api y empresa-spa pueden
         // vivir en dominios distintos según el cliente.
+        //
+        // Desde la misión de ABM -> Integraciones apunta a `/abm/integraciones/tienda-online`,
+        // no más al viejo `/integraciones` del bloque de Configuración online. El segundo
+        // segmento es obligatorio: el SPA rutea `/abm/:view?/:sub_view?` y sin él abre la solapa
+        // "Sistema", donde el aviso de retorno del OAuth nunca corre. Ojo al desplegar: este
+        // valor vive en el `.env` de cada cliente, así que actualizarlo es parte del deploy — si
+        // queda el viejo, el comercio conecta bien y no se entera.
         'spa_redirect_url'   => env('MP_OAUTH_SPA_REDIRECT_URL'),
         // Mismo problema de cURL error 60 en WAMP/Windows que mercadolibre/google_custom_search:
         // sin CA bundle, verify=false salvo en producción.

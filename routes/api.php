@@ -353,8 +353,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // 
     Route::get('acopio-article-delivery/{sale_id}', 'AcopioArticleDeliveryController@from_sale');
 
-    // Hacer Nota de credito AFIP
-    Route::post('sale/nota-credito-afip/{sale_id}', 'SaleController@nota_credito_afip');
+    // La ruta de la NC vieja (sale/nota-credito-afip) se eliminó el 24/8/2026 junto con
+    // SaleController@nota_credito_afip y SaleNotaCreditoAfipHelper (tanda 2408, ítem 16).
 
 
 
@@ -464,8 +464,6 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('order', 'OrderController');
     Route::get('order/unconfirmed/models', 'OrderController@indexUnconfirmed');
     Route::get('order/from-date/{from_date?}/{until_date?}', 'OrderController@index');
-    Route::put('order/update-status/{order_id}', 'OrderController@updateStatus');
-    Route::put('order/cancel/{order_id}', 'OrderController@cancel');
 
     Route::get('meli-order-status', 'MeliOrderStatusController@index');
     Route::get('meli-order/from-date/{from_date?}/{until_date?}', 'MeLiOrderController@index');
@@ -473,7 +471,16 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('meli-order', 'MeLiOrderController')->except(['index', 'create', 'edit']);
 
 
-    Route::resource('order-status', 'OrderStatusController');
+    /*
+        Solo lectura, a proposito (decision de Lucas, 24/8/2026): "no se debe de poder editar".
+
+        OrderStatusHelper depende de los nombres literales de estas filas para decidir si un pedido
+        puede avanzar. Renombrar "Confirmado" deja todos los pedidos de ese comercio solo
+        cancelables, y borrar un estado deja tapiados a los que estaban en el. No habia ninguna
+        pantalla que los editara ni ningun consumidor de store/update/destroy: eran tres endpoints
+        de escritura regalados contra una tabla de la que depende el modulo entero.
+    */
+    Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 
@@ -499,6 +506,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('service', 'ServiceController@store');
     // Route::resource('budget', 'BudgetController')->except(['index']);
     Route::post('budget/{id}/duplicate', 'BudgetController@duplicate');
+    // Van antes del resource, igual que duplicate: acciones explicitas en vez de confirmar/anular
+    // colando el cambio de estado adentro de un update completo.
+    Route::post('budget/{id}/confirmar', 'BudgetController@confirmar');
+    Route::post('budget/{id}/anular', 'BudgetController@anular');
     Route::resource('budget', 'BudgetController');
     Route::get('budget/from-date/{from_date}/{until_date?}', 'BudgetController@index');
     Route::resource('budget-status', 'BudgetStatusController');
@@ -527,6 +538,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Antes usaba esta ruta para obtener los current_acounts, ahora llamo al controlador de CreditAccount
     // Route::get('/current-acount/{model_name}/{model_id}/{months_ago}', 'CurrentAcountController@index');
     Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CreditAccountController@index');
+    Route::post('/credit-account/limite-credito', 'CreditAccountController@update_limite_credito');
 
     Route::post('/current-acount/pago', 'CurrentAcountController@pago');
     Route::post('/current-acount/nota-credito', 'CurrentAcountController@notaCredito');
@@ -628,6 +640,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('/cupon', 'CuponController');
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
+
+    // Estado de las integraciones del comercio, para pintar las tarjetas de ABM -> Integraciones.
+    // Va ANTES de las rutas `integraciones/{proveedor}/...` para que quede claro que es el
+    // listado del grupo, no un proveedor mas. No serializa ningun token: ese es el motivo de
+    // fondo de haber sacado las credenciales de `online_configuration` (ver IntegracionesController).
+    Route::get('integraciones', 'IntegracionesController@index');
 
     // OAuth de Mercado Pago (grupo 170, prompt 598): el comercio autenticado conecta/desconecta
     // su propia cuenta para cobrar. El callback (público, sin auth) se declara más abajo, fuera
@@ -850,6 +868,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('production-batch-movement-type', 'ProductionBatchMovementTypeController');
 
+    // Multinivel de produccion (misión produccion-v2-multinivel, 26/8/2026)
+    Route::resource('order-production-status-group', 'OrderProductionStatusGroupController');
+    // -- ancla: las rutas de potencial de armado y de duplicar receta van acá abajo --
+    Route::get('potencial-de-armado', 'PotencialDeArmadoController@index');
+    Route::post('recipe/{id}/duplicar', 'RecipeController@duplicar');
+
     Route::resource('c-a-payment-method-type', 'CAPaymentMethodTypeController');
 
 
@@ -902,6 +926,19 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
 
     // Comprobante de venta enviado por el agente (grupo 137, Prompt 05): botón manual del modal de Ventas.
     Route::post('sales/{id}/send-whatsapp-agent', 'SaleController@send_whatsapp_agent');
+
+    // Recordatorio de cobro por WhatsApp desde el módulo de alertas, solapa Cobros (misión
+    // recordatorio-cobro-whatsapp). Van adentro de ESTE grupo y no sueltas: el recordatorio es
+    // del módulo de WhatsApp, así que si la empresa no tiene la extensión no tiene por dónde
+    // mandarlo. Las cuatro piden además el permiso `alerts.recordatorio_cobro` (403 sin él),
+    // que se chequea adentro del controller.
+    //
+    // 🔴 Ninguna recibe `sale_ids`: reciben `client_id` y `dias`, y el backend recalcula la
+    // query con el recorte del usuario autenticado.
+    Route::get('recordatorio-cobro/preview/{client_id}', 'RecordatorioCobroController@preview');
+    Route::post('recordatorio-cobro/enviar', 'RecordatorioCobroController@enviar');
+    Route::post('recordatorio-cobro/enviar-masivo', 'RecordatorioCobroController@enviar_masivo');
+    Route::get('recordatorio-cobro/lote/{lote_uuid}', 'RecordatorioCobroController@estado_lote');
 
     // CRUD de plantillas de WhatsApp (grupo 137, Prompt 04).
     Route::get('whatsapp-templates', 'WhatsappTemplateController@index');
@@ -1025,6 +1062,37 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:costo_en_dolares'])-
     Route::put('dolar-cotizacion/preferencias', 'DolarCotizacionController@preferencias');
 });
 
+// Sistema de puntos para clientes (misión puntos-clientes). Gateado por Sanctum + la extensión
+// 'puntos_clientes' (ExtencionPuntosClientesSeeder), que viene APAGADA por default: sin ella todo
+// este grupo responde 403 y las pantallas de la SPA ni se montan.
+//
+// La extensión es de la EMPRESA; el scope por comercio va adentro de cada controller, que son dos
+// preguntas distintas: el middleware dice "este comercio compró el módulo" y el controller dice
+// "este cliente/este programa es de este comercio". Sin lo segundo, un client_id de otra instancia
+// devolvería el saldo de un desconocido.
+//
+// 🔴 NO hay endpoint de canje, y no es un olvido. El canje viaja adentro del POST/PUT de
+// /api/sale, en `puntos_canjeados` y `descuento_puntos`: un endpoint aparte permitiría canjear sin
+// vender y dejaría el descuento de la venta y el movimiento del libro en dos transacciones
+// distintas, o sea con dos formas de quedar a medio hacer.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:puntos_clientes'])->group(function () {
+    // ABM de la configuración. El nombre en guiones lo espera `routeString('sistema_de_puntos')`
+    // de la SPA (src/common-vue/mixins/generals.js:1521), que reemplaza los guiones bajos.
+    // `except` de create/edit: son las dos rutas de formulario de Blade que Route::resource arma
+    // sola y que este controller no implementa. Sin el except quedan publicadas y contestan un 500
+    // (BadMethodCallException) en vez de un 404, que es lo que corresponde a una ruta que no
+    // existe. Mismo recurso que usa MovimientoCajaController con su `except`.
+    Route::resource('sistema-de-puntos', 'SistemaDePuntosController')->except(['create', 'edit']);
+    Route::get('puntos/cliente/{client_id}',    'PuntoController@cliente');
+    Route::get('puntos/disponible/{client_id}', 'PuntoController@disponible');
+    Route::post('puntos/ajuste',                'PuntoController@ajuste');
+    // El detalle se declara ANTES que el reporte. Hoy son dos rutas literales distintas y el
+    // orden da igual, pero el día que alguien convierta 'puntos/reporte' en 'puntos/reporte/{algo}'
+    // el parámetro se comería el detalle en silencio. Declarado en el orden que sobrevive a eso.
+    Route::get('puntos/reporte/detalle',        'PuntoController@reporte_detalle');
+    Route::get('puntos/reporte',                'PuntoController@reporte');
+});
+
 
 // Plans
 Route::get('plan', 'PlanController@index');
@@ -1065,6 +1133,10 @@ Route::middleware('admin.api.key')
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
+        // Horarios comerciales empujados por admin-api (ClientScheduleSyncService). El contrato viene
+        // CERRADO del emisor: la semana llega YA RESUELTA y acá solo se guarda y se lee.
+        // Idempotente: el push llega por job encolado y puede repetirse con el mismo contenido.
+        Route::put('business-hours', 'AdminSync\\BusinessHoursController@update');
         // Reemision/revocacion del token de ingreso a la demo (grupo 233, prompt 05). Va dentro
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).
@@ -1073,3 +1145,20 @@ Route::middleware('admin.api.key')
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
+
+// Escaneo de facturas de compra con IA (misión escaneo-factura-compra), gateado por auth
+// Sanctum + la extensión 'escaneo_factura_compra' (ver ExtencionEscaneoFacturaCompraSeeder).
+// 🔴 'pendientes' y 'en-curso' van ANTES de '{uuid}': son segmentos fijos y si se declaran
+// después, /provider-order-scan/pendientes matchea el patrón {uuid} y devuelve 404 con un
+// mensaje que no dice nada. Mismo motivo por el que 'analysis-en-curso' va antes de
+// 'analysis/{uuid}' en el bloque de ai-excel-import.
+Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_compra'])->group(function () {
+    Route::get('provider-order-scan/pendientes', 'ProviderOrderScanController@pendientes');
+    Route::get('provider-order-scan/en-curso',   'ProviderOrderScanController@en_curso');
+    Route::post('provider-order-scan',           'ProviderOrderScanController@store');
+    Route::get('provider-order-scan/{uuid}',     'ProviderOrderScanController@show');
+    Route::get('provider-order-scan/{uuid}/imagen/{orden}', 'ProviderOrderScanController@imagen');
+    Route::post('provider-order-scan/{uuid}/visto',     'ProviderOrderScanController@marcar_visto');
+    Route::post('provider-order-scan/{uuid}/confirmar', 'ProviderOrderScanController@confirmar');
+    Route::post('provider-order-scan/{uuid}/descartar', 'ProviderOrderScanController@descartar');
+});

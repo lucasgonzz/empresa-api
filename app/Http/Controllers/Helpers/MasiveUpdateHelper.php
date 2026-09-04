@@ -467,7 +467,14 @@ class MasiveUpdateHelper
             $revert_changes = [];
 
             foreach ($changes as $prop_key => $change) {
-                if (!isset($change['old'])) {
+                /*
+                 * array_key_exists y no isset (tanda correctivos 2408, ítem 6): isset da false
+                 * cuando 'old' existe con valor NULL, que es justo el caso más común de una
+                 * masiva (asignar categoría a artículos que no tenían). Con isset, revertir
+                 * salteaba esos campos y los artículos quedaban con la categoría asignada.
+                 * Restaurar a NULL es restaurar.
+                 */
+                if (!is_array($change) || !array_key_exists('old', $change)) {
                     continue;
                 }
                 $old_before_revert = $model->{$prop_key};
@@ -519,7 +526,9 @@ class MasiveUpdateHelper
                 continue;
             }
             foreach ($item['changes'] as $prop_key => $change) {
-                if (isset($change['old'])) {
+                // Mismo criterio que revert_article_pivot_changes: un old en NULL también
+                // se restaura (array_key_exists, no isset).
+                if (is_array($change) && array_key_exists('old', $change)) {
                     $model->{$prop_key} = $change['old'];
                 }
             }

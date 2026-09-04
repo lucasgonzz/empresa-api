@@ -24,11 +24,66 @@ class FerreteriaArticlesSeeder extends Seeder
     /**
      * Carpeta dentro del disco 'public' donde viven las fotos del catalogo.
      * Queda afuera del repo sola, porque storage/app/public/.gitignore ignora todo
-     * salvo a si mismo. Se llena en local con `php artisan semilla:imagenes`.
+     * salvo a si mismo. Se llena copiando a mano los archivos que Lucas elige y sube
+     * contra su base local (ver database/seeders/data/ferreteria_imagenes.php).
      *
      * @var string
      */
-    const CARPETA_IMAGENES = 'articles-seeder';
+    const CARPETA_IMAGENES = 'article-images-2';
+
+    /**
+     * Alicuota de IVA de todo el catalogo de la semilla, en PORCENTAJE (21, no 0,21).
+     *
+     * Es la misma constante que ya replica `SembrarDatosDePrueba::IVA_ALICUOTA`, y por el mismo
+     * motivo: de este numero dependen cuentas que se calculan afuera de la base.
+     *
+     * @var int
+     */
+    const IVA_ALICUOTA_DEL_CATALOGO = 21;
+
+    /**
+     * Id de `ivas` con el que nace todo el catalogo. `IvaSeeder` siembra las alicuotas en orden
+     * ('27', '21', '10.5', ...), asi que el id 2 es el 21% de `IVA_ALICUOTA_DEL_CATALOGO`.
+     *
+     * 🔴 Las dos constantes tienen que moverse juntas: si alguna vez el catalogo pasa a otra
+     * alicuota, cambiar solo una deja los costos descompuestos con un porcentaje y los
+     * comprobantes emitidos con otro, y no lo denuncia nada.
+     *
+     * @var int
+     */
+    const IVA_ID_DEL_CATALOGO = 2;
+
+    /**
+     * Costo NETO a guardar, a partir del costo BRUTO de la lista del proveedor.
+     *
+     * 🔴 LOS COSTOS DE `get_catalog()` VIENEN CON IVA ADENTRO. Son los precios que la ferreteria
+     * fuente tenia en su lista, copiados tal cual, y por eso son numeros de proveedor y no
+     * inventados. Pero `articles.cost` guarda el costo NETO: desde que las cuentas nuevas nacen
+     * con `usar_condicion_fiscal_en_costeo = 1` (27/8/2026), un Responsable Inscripto recupera el
+     * IVA de sus compras como credito fiscal, asi que el IVA no es costo -- se suma recien al
+     * vender. Guardar el bruto ahi dentro hacia que el IVA se cobrara dos veces: una adentro del
+     * costo y otra al facturar, y el precio final de la demo subia 21%.
+     *
+     * 🔴 SE REDONDEA A DOS DECIMALES Y NO A ENTERO, y esto se midio antes de elegirlo. Redondear
+     * a entero parecia mas prolijo -- la lista de arriba son costos redondeados -- pero rompe
+     * justamente lo que este metodo viene a arreglar en la cola barata del catalogo: hay siete
+     * articulos con costo bruto menor a 30 (3, 4, 10, 12, 21, 24 y 27), y ahi un entero es un
+     * escalon gigante. Medido sobre los 49 articulos con margen 50%:
+     *
+     *   - a entero:        el de costo 3 caia de $4,50 a $3,63 -- 19,33% abajo. Desvio maximo
+     *                      del catalogo: 19,33%.
+     *   - a dos decimales: el mismo articulo da $4,50 contra $4,50. Desvio maximo del catalogo:
+     *                      0,1275%, y es un centavo sobre $6 en el articulo de costo bruto 4.
+     *
+     * `articles.cost` es `decimal(22,6)`, asi que los dos decimales entran de sobra.
+     *
+     * @param  int|float $costo_con_iva Costo bruto tal como figura en `get_catalog()`.
+     * @return float Costo neto, redondeado a dos decimales.
+     */
+    private function costo_neto($costo_con_iva)
+    {
+        return round($costo_con_iva / (1 + (self::IVA_ALICUOTA_DEL_CATALOGO / 100)), 2);
+    }
 
     /**
      * Stock inicial, minimo y maximo por sucursal, en orden de posicion
@@ -137,7 +192,7 @@ class FerreteriaArticlesSeeder extends Seeder
         /** Indice circular para repartir items entre todos los proveedores existentes. */
         $provider_index = 0;
 
-        foreach ($catalog as $indice => $item) {
+        foreach ($catalog as $item) {
             /** Proveedor asignado en forma rotativa para balancear el catalogo. */
             $provider = $providers[$provider_index % count($providers)];
 
@@ -158,15 +213,15 @@ class FerreteriaArticlesSeeder extends Seeder
                 'provider_id' => $provider->id,
                 'category_name' => $parent_category_name,
                 'sub_category_name' => $item['sub_category_name'],
-                'cost' => $item['cost'],
+                'cost' => $this->costo_neto($item['cost']),
                 'stock' => $item['stock'],
                 'percentage_gain' => 50,
-                'iva_id' => 2,
+                'iva_id' => self::IVA_ID_DEL_CATALOGO,
                 'apply_provider_percentage_gain' => 0,
             ];
 
             /** Foto local del articulo; null cuando el articulo va sin foto o cuando falta el archivo. */
-            $url_de_imagen = $this->url_de_imagen($indice, $item);
+            $url_de_imagen = $this->url_de_imagen($item);
 
             if (!is_null($url_de_imagen)) {
                 $article_payload['images'] = [['url' => $url_de_imagen]];
@@ -476,7 +531,7 @@ class FerreteriaArticlesSeeder extends Seeder
      * - No por provider_code: hay un 'SIN-COD-PROV' en el catalogo, que es un valor de
      *   relleno y no un identificador.
      *
-     * El acoplamiento por nombre es el mismo que ya denuncia nombre_de_archivo_de_imagen():
+     * El acoplamiento por nombre es el mismo que ya denuncia archivo_de_imagen_de():
      * si alguien retoca un name en get_catalog() y no lo retoca aca, este metodo no
      * encuentra la entrada. Por eso avisa por log y sigue, en vez de reventar.
      *
@@ -686,48 +741,60 @@ class FerreteriaArticlesSeeder extends Seeder
     }
 
     /**
-     * Nombre del archivo .jpg que le corresponde a un articulo del catalogo.
+     * Ruta del archivo con el mapa nombre de articulo -> archivo de imagen.
      *
-     * Es public static porque el comando `semilla:imagenes` tiene que ESCRIBIR
-     * exactamente el mismo nombre que este seeder despues BUSCA. Con la convencion
-     * duplicada en los dos archivos, un retoque de un lado deja al otro sin encontrar
-     * nada, sin ningun error a la vista: los articulos simplemente quedarian sin foto.
-     *
-     * El prefijo numerico es el indice + 1, y sirve para dos cosas: los archivos se
-     * ordenan en el explorador igual que el catalogo, y los nombres repetidos no se
-     * pisan (hay dos cestos de basura, dos azadas y dos filtros de aire).
-     *
-     * @param int $indice Posicion del articulo en get_catalog().
-     * @param array<string,mixed> $item Fila del catalogo.
-     * @return string|null Null si el articulo va sin foto a proposito.
+     * @var string
      */
-    public static function nombre_de_archivo_de_imagen($indice, $item)
+    const ARCHIVO_IMAGENES = __DIR__ . '/data/ferreteria_imagenes.php';
+
+    /**
+     * Mapa nombre de articulo -> archivo de imagen, leido una sola vez por corrida.
+     *
+     * @var array<string,string>|null
+     */
+    protected $imagenes_del_catalogo = null;
+
+    /**
+     * Nombre del archivo de imagen asignado a mano para este articulo, o null si el
+     * articulo no tiene foto nueva asignada.
+     *
+     * El archivo se lee UNA sola vez por corrida, mismo criterio que descripciones_de()
+     * y embedding_horneado_de(): son 34 entradas y hacer un require por articulo seria
+     * leer el mismo archivo 46 veces.
+     *
+     * @param string $nombre Valor exacto de $item['name'].
+     * @return string|null
+     */
+    protected function archivo_de_imagen_de($nombre)
     {
-        if (!isset($item['imagen_nombre'])) {
+        if (is_null($this->imagenes_del_catalogo)) {
+            $this->imagenes_del_catalogo = require self::ARCHIVO_IMAGENES;
+        }
+
+        if (!isset($this->imagenes_del_catalogo[$nombre])) {
             return null;
         }
 
-        return sprintf('%02d', $indice + 1) . '-' . $item['imagen_nombre'] . '.jpg';
+        return $this->imagenes_del_catalogo[$nombre];
     }
 
     /**
      * URL absoluta de la foto local del articulo, o null si no hay foto que mostrar.
      *
      * 🔴 Este metodo NUNCA puede lanzar una excepcion, y ese es todo su motivo de existir.
-     * La carpeta storage/app/public/articles-seeder no se commitea, asi que en un servidor
+     * La carpeta storage/app/public/article-images-2 no se commitea, asi que en un servidor
      * recien instalado no existe. Este seeder corre adentro de DemoSetupHelper::run(), que
      * arranca con migrate:fresh: una excepcion aca por un archivo faltante voltearia el alta
      * de demos Y la instalacion de un cliente real, dejando la base a medio sembrar. Una foto
      * que falta es un detalle cosmetico; que no se pueda instalar el sistema no lo es.
      *
-     * @param int $indice
      * @param array<string,mixed> $item
      * @return string|null
      */
-    protected function url_de_imagen($indice, $item)
+    protected function url_de_imagen($item)
     {
-        /** Archivo esperado; null en los articulos que van sin foto por decision de catalogo. */
-        $archivo = self::nombre_de_archivo_de_imagen($indice, $item);
+        /** Archivo asignado a mano; null en los articulos que no tienen foto nueva. */
+        $archivo = $this->archivo_de_imagen_de($item['name']);
 
         if (is_null($archivo)) {
             return null;
@@ -779,8 +846,8 @@ class FerreteriaArticlesSeeder extends Seeder
         Log::warning(
             'FerreteriaArticlesSeeder: no se encontraron las fotos en storage/app/public/'
             . self::CARPETA_IMAGENES . ', los articulos se crean SIN imagen. La carpeta no se '
-            . 'commitea: en local se genera con "php artisan semilla:imagenes" y a los servidores '
-            . 'se sube a mano.',
+            . 'commitea: copiala a mano desde donde Lucas subio las fotos elegidas (ver '
+            . 'database/seeders/data/ferreteria_imagenes.php) y a los servidores se sube igual.',
             ['primer_faltante' => $detalle]
         );
     }
@@ -804,29 +871,21 @@ class FerreteriaArticlesSeeder extends Seeder
      * Retorna catalogo de articulos de ferreteria obtenido de excels.
      * Cada entrada incluye nombre, bar_code valido, codigo proveedor y costo redondeado.
      *
+     * 🔴 EL `cost` DE CADA ENTRADA ES BRUTO: tiene el IVA adentro, porque son los precios de la
+     * lista del proveedor copiados tal cual. Lo que se guarda en `articles.cost` es el NETO, que
+     * lo calcula `costo_neto()` en `run()` -- ver el porque en su docblock. Si agregas un articulo
+     * a esta lista, carga el precio con IVA como los demas; no lo netees vos.
+     *
      * Tres claves agregadas para la semilla de demo:
-     *  - imagen_nombre: slug en castellano del sustantivo generico, es el nombre del archivo.
-     *  - imagen_busqueda: el mismo sustantivo en INGLES, que es con lo que semilla:imagenes
-     *    busca en Wikimedia Commons. Va en ingles porque Commons indexa en ingles; buscar
-     *    "azada" no devuelve nada. Los terminos NO son la traduccion literal del SKU sino el
-     *    generico que Commons indexa mejor: "air filter" trae un filtro de gabinete de PC y hay
-     *    que pedir "engine air filter"; "rust" trae una textura oxidada y hay que pedir
-     *    "rust remover bottle" para que aparezca el envase.
-     *    El criterio de Lucas (17/8/2026) es que la foto "coincida un poco" con el articulo y
-     *    que sea de catalogo: fondo blanco y cuadrada. O sea que el termino tiene que acertarle
-     *    al RUBRO, no al SKU exacto, y de elegir la mejor foto entre las que devuelve Commons se
-     *    encarga semilla:imagenes puntuando el fondo. Si agregas un articulo, corré el comando y
-     *    mira el titulo y el puntaje que imprime.
+     *  - imagen_nombre / imagen_busqueda: 🔴 HISTORICAS, YA NO SE USAN (desde el 25/8/2026).
+     *    Eran el slug en castellano y el termino en ingles con los que el comando
+     *    `semilla:imagenes` (borrado) bajaba fotos de Wikimedia Commons a
+     *    storage/app/public/articles-seeder. Ese flujo se reemplazo por fotos elegidas a mano
+     *    por Lucas (ver database/seeders/data/ferreteria_imagenes.php, indexado por `name`).
+     *    Quedan en el catalogo sin limpiar porque sacarlas es un diff de 40+ filas sin ningun
+     *    beneficio: no las lee nada.
      *  - perfil_stock: A / B / C, ver PLANES_DE_STOCK. Vive al lado del articulo en vez de
      *    derivarse del indice en run() porque asi se lee de un vistazo cual es cual.
-     *
-     * Las ultimas 10 filas llevan las dos claves de imagen en null a pedido de Lucas: son los
-     * articulos que quedan sin foto para que la demo muestre tambien como se ve la ficha de un
-     * producto sin imagen cargada, que es el estado real de la mayoria de los catalogos nuevos.
-     *
-     * Es public (y no protected) porque el comando semilla:imagenes lee el catalogo de aca:
-     * si la lista de terminos de busqueda viviera copiada en el comando, agregar un articulo
-     * al catalogo dejaria de bajarle la foto y nadie se enteraria.
      *
      * @return array<int,array<string,mixed>>
      */

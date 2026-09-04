@@ -76,8 +76,10 @@ class ArticlePriceTypeMonedaHelper {
         Con las relaciones y valores ya almacenados por attach_price_type_monedas, calculo y guardo el precio final.
         Recibo el costo SEGUN LA CONDICION FISCAL de la cuenta, no "con IVA" (prompt 379/02: hasta ese
         prompt el docblock decia "con iva", literalmente falso desde el grupo 231 para las cuentas
-        migradas). Ver ArticlePricesHelper::iva_va_al_costo(): para una cuenta migrada RRII el costo
-        llega NETO; para MT o una cuenta legacy con aplicar_iva_al_costo=1 llega CON el IVA ya adentro
+        migradas). Ver ArticlePricesHelper::iva_va_al_costo(): para una cuenta MIGRADA (RRII o MT) el
+        costo llega NETO de este paso; para una cuenta legacy con aplicar_iva_al_costo=1 llega CON el
+        IVA ya adentro. Ojo: desde el 21/8/2026 el costo de un MT migrado ya trae el IVA que pago
+        adentro por otro motivo -se guarda tal cual se cargo- pero el pipeline no le suma ninguno
         (se lo suma antes ArticleHelper::aplicar_descuentos_e_iva(), al calcular costo_real). Por eso
         el parametro se llama `$cost_base` (generico), no `$cost_sin_iva` ni `$cost_con_iva`:
         ninguno de esos dos nombres es cierto siempre, y un nombre que miente en la mitad de los
@@ -97,7 +99,103 @@ class ArticlePriceTypeMonedaHelper {
         es para texto de $des, que esta funcion ni arma). Sin redondeo intermedio, (costo x tipo de
         cambio) x (1 + iva) y (costo x (1 + iva)) x tipo de cambio dan bit a bit el mismo resultado.
     */
+    /**
+     * Recalcula los precios por lista y moneda, y despues ESPEJA el precio en pesos de cada lista
+     * en la pivot `article_price_type`.
+     *
+     * 🔴 POR QUE EL ESPEJO, Y POR QUE ACA. `ArticleHelper` elige entre este helper y
+     * `ArticlePricesHelper::aplicar_precios_segun_listas_de_precios()` con un if/else EXCLUYENTE
+     * sobre la extension `ventas_en_dolares`. O sea que en una cuenta con la extension prendida la
+     * pivot `article_price_type` no se volvia a escribir NUNCA — y esa pivot es la que lee la
+     * TIENDA (`tienda-api`, `ArticleHelper::checkPriceTypes()`).
+     *
+     * Consecuencia, medida en pantalla el 30/8/2026 sobre la demo: se le subio el costo un 20% al
+     * articulo 45, `price_type_monedas` paso de 10.116,80 a 12.140,15 (y el ERP mostro el numero
+     * nuevo), la pivot quedo en 10.429,69, y **la tienda siguio publicando 10.429,69**. No es que
+     * tardara en actualizarse: no se actualizaba nunca. Cualquier comercio con `ventas_en_dolares`
+     * prendida estaba publicando en su tienda precios distintos de los de su sistema, sin ninguna
+     * señal en pantalla.
+     *
+     * ⚠️ SE ARREGLA DE ESTE LADO Y NO EN LA TIENDA, a proposito. Las dos puntas nunca llegan a
+     * produccion al mismo tiempo: `empresa` sale por release a los 40 clientes y cada `tienda` la
+     * despliega Lucas a mano, cliente por cliente. Si el arreglo fuera "que la tienda lea
+     * price_type_monedas", cada cliente seguiria publicando mal hasta que le toque su despliegue.
+     * Espejando acá, **la tienda no se toca**: sigue leyendo exactamente la misma columna de
+     * siempre, y empieza a ver el numero correcto apenas el comercio actualiza su ERP.
+     *
+     * El espejo va envolviendo al calculo y no adentro, porque el calculo tiene varios `return` y
+     * `continue`: envolviendolo, ningun camino de salida se puede olvidar de espejar.
+     *
+     * @param mixed $article Articulo con `price_type_monedas` cargada.
+     * @param mixed $_cost   Costo base, o null.
+     * @param mixed $user    Dueño de la cuenta.
+     *
+     * @return void
+     */
     public static function aplicar_precios_por_price_type_y_moneda($article, $_cost, $user)
+    {
+        self::calcular_precios_por_price_type_y_moneda($article, $_cost, $user);
+
+        self::espejar_precio_en_pesos_en_la_pivot($article);
+    }
+
+    /**
+     * Espeja en `article_price_type` el precio EN PESOS que quedo en `price_type_monedas`.
+     *
+     * La pivot ya es, para una cuenta sin `ventas_en_dolares`, el precio en pesos de la lista: acá
+     * se le mantiene ese mismo significado en vez de inventarle uno nuevo. Quien la lee —la tienda,
+     * los Excel para clientes, los PDF— sigue encontrando lo mismo que esperaba.
+     *
+     * ⚠️ Solo escribe la fila que YA existe (`updateExistingPivot`): si el articulo no esta atado a
+     * esa lista, no se lo ata desde acá. Atar listas es otra decision y tiene su propio camino
+     * (`ArticlePriceTypeHelper::attach_price_types`).
+     *
+     * @param mixed $article Articulo recien recalculado.
+     *
+     * @return void
+     */
+    private static function espejar_precio_en_pesos_en_la_pivot($article)
+    {
+        $ars_id = 1;
+
+        /* Se relee de la base: el calculo de arriba guardo fila por fila con `save()`, y la
+         * coleccion que traia el articulo en memoria puede no reflejar lo ultimo. */
+        $entradas = $article->price_type_monedas()
+            ->where('moneda_id', $ars_id)
+            ->get();
+
+        foreach ($entradas as $entrada) {
+
+            if (is_null($entrada->final_price)) {
+                continue;
+            }
+
+            $relacion = $article->price_types()->find($entrada->price_type_id);
+
+            /* Sin fila en la pivot no hay nada que espejar. No se crea: ver el docblock. */
+            if (is_null($relacion)) {
+                continue;
+            }
+
+            $article->price_types()->updateExistingPivot($entrada->price_type_id, [
+                'final_price' => $entrada->final_price,
+                'percentage'  => $entrada->percentage,
+            ]);
+        }
+    }
+
+    /**
+     * El calculo propiamente dicho. Era el cuerpo de
+     * `aplicar_precios_por_price_type_y_moneda()` y no cambio: se separo para poder espejar en la
+     * pivot despues de cualquiera de sus caminos de salida.
+     *
+     * @param mixed $article Articulo con `price_type_monedas` cargada.
+     * @param mixed $_cost   Costo base, o null.
+     * @param mixed $user    Dueño de la cuenta.
+     *
+     * @return void
+     */
+    private static function calcular_precios_por_price_type_y_moneda($article, $_cost, $user)
     {
         Log::info('entro 2');
         $ars_id = 1;

@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Models\Article;
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Reader\Common\Creator\ReaderEntityFactory;
+use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
 /**
  * Helper estático para calcular estadísticas de duplicados en un archivo Excel
@@ -52,6 +52,8 @@ class ExcelDuplicateStats
      * @param  int|null $provider_code_column_index_0based   Índice 0-based de la columna provider_code (null si no identificada)
      * @param  int|null $provider_id                         ID del proveedor seleccionado (null o 0 si no se pudo inferir)
      * @param  int      $user_id                             ID del usuario propietario para filtrar artículos en BD
+     * @param  array    $opciones                            ['hoja' => int, 'fila_encabezado' => int|null]. TODO opcional:
+     *                                                       AdminSync llama a los analyzers con la firma vieja y no se toca.
      * @return array    Conteos y ejemplos según el contrato:
      *                  [
      *                      'total_filas_datos'                          => int,
@@ -75,8 +77,29 @@ class ExcelDuplicateStats
         ?int $bar_code_column_index_0based,
         ?int $provider_code_column_index_0based,
         ?int $provider_id,
-        int $user_id
+        int $user_id,
+        array $opciones = []
     ): array {
+        $indice_hoja     = isset($opciones['hoja']) ? (int) $opciones['hoja'] : 0;
+        $fila_encabezado = isset($opciones['fila_encabezado']) ? $opciones['fila_encabezado'] : null;
+
+        /*
+         * 🔴 INTERRUPTOR DE SEGURIDAD (§1.3 del plan). Con $fila_encabezado en null o en 1 se
+         * corre la rama de HOY, byte por byte: preservar_filas_vacias = false, saltear la
+         * primera fila del iterador y numerar $total_filas + 1. La rama nueva —números de
+         * fila FÍSICOS del Excel— sólo se enciende con $fila_encabezado > 1, o sea sólo en
+         * los archivos que hoy ya se leen mal.
+         *
+         * NO la unifiques en una sola rama "porque es lo mismo". No es lo mismo: los números
+         * de fila que salen de acá son los que la pantalla le muestra al usuario al lado de
+         * cada código duplicado ("aparece en las filas 12, 47 y 93"), y los dos criterios de
+         * preservar_filas_vacias dan números distintos en cuanto hay una fila vacía en el
+         * medio del archivo. Dejar la rama vieja intacta es lo que acota TODO el riesgo de
+         * esta misión a los archivos que ya estaban rotos.
+         */
+        $usar_numeracion_fisica = (!is_null($fila_encabezado) && (int) $fila_encabezado > 1);
+        $fila_encabezado        = is_null($fila_encabezado) ? 1 : (int) $fila_encabezado;
+
         /* Resultado vacío por defecto: se retorna cuando no hay columnas definidas o si ocurre un error. */
         $empty_result = [
             'total_filas_datos'                           => 0,
@@ -114,85 +137,105 @@ class ExcelDuplicateStats
 
         try {
             /*
-             * Usamos el mismo lector XLSX de OpenSpout que InitExcelImport
-             * para garantizar compatibilidad de formatos.
+             * Mismo lector XLSX de OpenSpout que InitExcelImport, ahora a través de
+             * ExcelWorkbookReader para poder leer la hoja que el usuario eligió y no
+             * siempre la primera.
              */
-            $reader = ReaderEntityFactory::createXLSXReader();
-            /* No preservamos filas vacías para no inflar el conteo total. */
-            $reader->setShouldPreserveEmptyRows(false);
-            $reader->open($excel_path);
+            $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, $usar_numeracion_fisica);
 
-            foreach ($reader->getSheetIterator() as $sheet) {
-                /* Bandera para saltar la primera fila (cabecera). */
-                $header_skipped = false;
+            /* Bandera para saltar la primera fila (cabecera) en la rama vieja. */
+            $header_skipped = false;
 
-                foreach ($sheet->getRowIterator() as $row) {
+            /* Número de fila física dentro de la hoja (sólo tiene sentido en la rama nueva). */
+            $numero_fila = 0;
+
+            foreach ($lectura->filas() as $row) {
+                $numero_fila++;
+
+                if ($usar_numeracion_fisica) {
+                    /* Título, razón social y filas vacías de arriba del encabezado no son datos. */
+                    if ($numero_fila <= $fila_encabezado) {
+                        continue;
+                    }
+                } else {
                     if (!$header_skipped) {
                         $header_skipped = true;
                         continue;
                     }
+                }
 
-                    $total_filas++;
+                /* Extraemos los valores de las celdas como strings simples. */
+                $cells = [];
+                foreach ($row->getCells() as $cell) {
+                    $value = $cell->getValue();
 
-                    /*
-                     * Número de fila real en el Excel (1-based, incluye cabecera).
-                     * La primera fila de datos es la fila 2 (la fila 1 es la cabecera).
-                     */
-                    $excel_row_number = $total_filas + 1;
-
-                    /* Extraemos los valores de las celdas como strings simples. */
-                    $cells = [];
-                    foreach ($row->getCells() as $cell) {
-                        $value = $cell->getValue();
-
-                        if ($value instanceof \DateTime) {
-                            $value = $value->format('Y-m-d');
-                        }
-
-                        $cells[] = trim((string) ($value ?? ''));
+                    if ($value instanceof \DateTime) {
+                        $value = $value->format('Y-m-d');
                     }
 
-                    /* Acumular bar_code si la columna está definida y la celda tiene contenido. */
-                    if (!is_null($bar_code_column_index_0based) && isset($cells[$bar_code_column_index_0based])) {
-                        $bar_code_val = $cells[$bar_code_column_index_0based];
-                        if ($bar_code_val !== '') {
-                            if (!isset($bar_code_data[$bar_code_val])) {
-                                $bar_code_data[$bar_code_val] = ['count' => 0, 'filas' => []];
-                            }
-                            $bar_code_data[$bar_code_val]['count']++;
-                            /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
-                            if (count($bar_code_data[$bar_code_val]['filas']) < 10) {
-                                $bar_code_data[$bar_code_val]['filas'][] = $excel_row_number;
-                            }
-                        }
-                    }
+                    $cells[] = trim((string) ($value ?? ''));
+                }
 
-                    /* Acumular provider_code si la columna está definida y la celda tiene contenido. */
-                    if (!is_null($provider_code_column_index_0based) && isset($cells[$provider_code_column_index_0based])) {
-                        $provider_code_val = $cells[$provider_code_column_index_0based];
-                        if ($provider_code_val !== '') {
-                            if (!isset($provider_code_data[$provider_code_val])) {
-                                $provider_code_data[$provider_code_val] = ['count' => 0, 'filas' => []];
-                            }
-                            $provider_code_data[$provider_code_val]['count']++;
-                            /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
-                            if (count($provider_code_data[$provider_code_val]['filas']) < 10) {
-                                $provider_code_data[$provider_code_val]['filas'][] = $excel_row_number;
-                            }
+                /*
+                 * En la rama nueva se lee con preservar_filas_vacias = true (para que el
+                 * número de fila sea el físico), así que las filas vacías llegan igual y hay
+                 * que descartarlas acá: es lo que hacía el flag en la rama vieja.
+                 */
+                if ($usar_numeracion_fisica && self::fila_esta_vacia($cells)) {
+                    continue;
+                }
+
+                $total_filas++;
+
+                /* Número de fila real en el Excel (1-based, incluye cabecera). */
+                $excel_row_number = $usar_numeracion_fisica ? $numero_fila : ($total_filas + 1);
+
+                /* Acumular bar_code si la columna está definida y la celda tiene contenido. */
+                if (!is_null($bar_code_column_index_0based) && isset($cells[$bar_code_column_index_0based])) {
+                    $bar_code_val = $cells[$bar_code_column_index_0based];
+                    if ($bar_code_val !== '') {
+                        if (!isset($bar_code_data[$bar_code_val])) {
+                            $bar_code_data[$bar_code_val] = ['count' => 0, 'filas' => []];
+                        }
+                        $bar_code_data[$bar_code_val]['count']++;
+                        /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
+                        if (count($bar_code_data[$bar_code_val]['filas']) < 10) {
+                            $bar_code_data[$bar_code_val]['filas'][] = $excel_row_number;
                         }
                     }
                 }
 
-                /* Solo procesamos la primera hoja del libro. */
-                break;
+                /* Acumular provider_code si la columna está definida y la celda tiene contenido. */
+                if (!is_null($provider_code_column_index_0based) && isset($cells[$provider_code_column_index_0based])) {
+                    $provider_code_val = $cells[$provider_code_column_index_0based];
+                    if ($provider_code_val !== '') {
+                        if (!isset($provider_code_data[$provider_code_val])) {
+                            $provider_code_data[$provider_code_val] = ['count' => 0, 'filas' => []];
+                        }
+                        $provider_code_data[$provider_code_val]['count']++;
+                        /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
+                        if (count($provider_code_data[$provider_code_val]['filas']) < 10) {
+                            $provider_code_data[$provider_code_val]['filas'][] = $excel_row_number;
+                        }
+                    }
+                }
             }
 
-            $reader->close();
+            $lectura->cerrar();
 
         } catch (\Throwable $e) {
+            /*
+             * T9: esta degradación deja la pantalla diciendo "0 duplicados" en vez de "no se
+             * pudo leer el archivo", y NO se cambia acá (está fuera del alcance de la misión).
+             * Pero la hoja y la fila de encabezado sí van al contexto del log: el mismo
+             * archivo se lee bien o mal según qué hoja y qué fila se le hayan pedido, así que
+             * sin esos dos datos el próximo que caiga acá no puede reproducir nada.
+             */
             Log::error('ExcelDuplicateStats: error al leer el Excel', [
-                'message' => $e->getMessage(),
-                'file'    => $excel_path,
+                'message'         => $e->getMessage(),
+                'file'            => $excel_path,
+                'hoja'            => $indice_hoja,
+                'fila_encabezado' => $fila_encabezado,
             ]);
             return $empty_result;
         }
@@ -300,6 +343,26 @@ class ExcelDuplicateStats
              */
             'provider_codes_distintos'                    => !is_null($provider_code_column_index_0based) ? array_keys($provider_code_data) : [],
         ];
+    }
+
+    /**
+     * Una fila es "vacía" cuando ninguna de sus celdas tiene contenido.
+     *
+     * Hace falta sólo en la rama de numeración física, donde se lee con
+     * preservar_filas_vacias = true para que el número de fila coincida con el del Excel.
+     *
+     * @param  array $celdas
+     * @return bool
+     */
+    protected static function fila_esta_vacia(array $celdas)
+    {
+        foreach ($celdas as $celda) {
+            if (trim((string) $celda) !== '') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

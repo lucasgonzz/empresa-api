@@ -132,7 +132,7 @@ class ComercioCityMailHelper
      */
     public static function nueva_oferta(ClientOffer $offer)
     {
-        $offer->loadMissing('client', 'article');
+        $offer->loadMissing('client.buyer', 'article');
 
         $email = OfertaComunicacionHelper::email_del_cliente($offer->client_id, $offer->user_id, $offer->client);
 
@@ -156,7 +156,12 @@ class ComercioCityMailHelper
         ClientMailConfigHelper::apply($offer->user_id);
 
         $nombre_articulo = $offer->article && !empty($offer->article->name) ? $offer->article->name : '—';
-        $nombre_cliente  = $offer->client && !empty($offer->client->name) ? $offer->client->name : '—';
+        // El nombre a mostrar es el del comprador de la tienda, cayendo al del cliente del
+        // ERP (OfertaComunicacionHelper::nombre_para_mostrar). El mail sale preferentemente
+        // al buyers.email, así que llamarlo por la razón social del ERP es justo lo que este
+        // cambio viene a arreglar. '—' se conserva como el mismo relleno de siempre.
+        $nombre_cliente_para_mostrar = OfertaComunicacionHelper::nombre_para_mostrar($offer->client, $offer->user_id);
+        $nombre_cliente  = $nombre_cliente_para_mostrar !== '' ? $nombre_cliente_para_mostrar : '—';
         $descuento       = OfertaComunicacionHelper::descripcion_del_descuento($offer);
         $vigencia        = self::format_fecha($offer->desde) . ' al ' . self::format_fecha($offer->hasta);
 

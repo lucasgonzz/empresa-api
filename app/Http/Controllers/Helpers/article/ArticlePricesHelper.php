@@ -558,13 +558,25 @@ class ArticlePricesHelper {
                         // suma antes del margen") lo que en realidad era una cuenta sin migrar, con la
                         // tilde vieja prendida. Si este renglon no separa los dos casos, el diagnostico
                         // equivocado vuelve.
+                        /*
+                         * 🔴 Esta rama quedó inalcanzable el 21/8/2026 y se deja el `if` a propósito.
+                         *
+                         * Para una cuenta MIGRADA `iva_va_al_costo()` ahora devuelve false siempre,
+                         * así que acá sólo llega una cuenta LEGACY con la tilde vieja prendida — la
+                         * rama `else`. La nota del Monotributista migrado la pone el guard de
+                         * `aplicar_iva()`, que es donde ahora se corta.
+                         *
+                         * Distinguir los dos motivos NO es un detalle: el 5/8/2026 se diagnosticó
+                         * como bug ("el IVA se suma antes del margen") lo que en realidad era una
+                         * cuenta sin migrar con la tilde vieja prendida.
+                         */
                         if ($user->usar_condicion_fiscal_en_costeo) {
                             $des_lista[] = DesglosePrecioHelper::linea(
                                 DesglosePrecioHelper::NOTA,
                                 'Acá no se suma IVA',
-                                'sos Monotributista: el IVA no se recupera y ya viene incluido dentro del costo real',
+                                'sos Monotributista: el IVA no participa de tus precios',
                                 null,
-                                'No se suma IVA aca: sos Monotributista, asi que el IVA no se recupera y ya viene incluido dentro del costo real'
+                                'No se suma IVA aca: sos Monotributista, asi que el IVA no participa de tus precios'
                             );
                         } else {
                             $des_lista[] = DesglosePrecioHelper::linea(
@@ -663,7 +675,12 @@ class ArticlePricesHelper {
          * 1. Deshacer el IVA. Misma condicion que usa el camino forward para sumarlo: solo si el
          * IVA no va al costo, y solo si el articulo lo tiene aplicable.
          */
-        if (!Self::iva_va_al_costo($user)) {
+        /*
+         * Simetrico exacto del camino forward: si el IVA no participa del precio, no hay nada que
+         * deshacer. Si esta condicion no acompaniara a la de aplicar_iva(), a un Monotributista se
+         * le restaria un IVA que nunca se le sumo y el precio quedaria 21% abajo.
+         */
+        if (!Self::iva_va_al_costo($user) && Self::el_iva_participa_del_precio($user)) {
 
             $es_monotributista = Self::es_monotributista_para_costeo($user);
 
@@ -794,11 +811,31 @@ class ArticlePricesHelper {
 
         $precio_con_iva = $price;
 
-        // Prompt 609: un Monotributista no recupera IVA, así que el costo real (y cualquier precio
-        // que pase por acá) SIEMPRE lo incorpora, sin importar el flag articles.aplicar_iva —
-        // ese control queda oculto para MT en el listado (prompt 612), así que si el cálculo
-        // dependiera de él y quedara en 0 (ej. cuenta que migró de RRII a MT), el costo se hundiría
-        // en silencio.
+        /*
+         * 🔴 Si el IVA no participa del precio de esta cuenta, no se suma en ningun punto y se sale
+         * antes de mirar cualquier otra cosa. Hoy eso pasa con un Monotributista migrado: su costo
+         * ya es lo que paga, y no le cobra IVA a nadie.
+         *
+         * Este guard es lo que hace que sacar el IVA del costo (iva_va_al_costo -> false) no lo
+         * MUDE al precio de venta: sin el, todos los call sites del pipeline hacen
+         * `if (!iva_va_al_costo(...)) aplicar_iva(...)` y el MT terminaria cobrando un IVA que no
+         * cobra. Ver el test el_iva_no_se_suma_al_precio_de_venta().
+         */
+        if (!Self::el_iva_participa_del_precio($user)) {
+
+            return [
+                'price'   => $price,
+                'des'     => $des,
+            ];
+        }
+
+        /*
+         * Prompt 609: para una cuenta LEGACY (sin migrar) un Monotributista sigue incorporando el
+         * IVA sin importar `articles.aplicar_iva`, porque ese control queda oculto para MT en el
+         * listado (prompt 612) y si el calculo dependiera de el, una cuenta migrada de RRII a MT se
+         * hundiria en silencio. Para una cuenta migrada este renglon ya no se alcanza con MT: lo
+         * corta el guard de arriba.
+         */
         $es_monotributista = Self::es_monotributista_para_costeo($user);
 
         if ($article->aplicar_iva || $es_monotributista) {
@@ -858,21 +895,22 @@ class ArticlePricesHelper {
      * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026) — Resolvedor ÚNICO de la pregunta "el
      * costo que se acaba de cargar, ¿es bruto (con IVA) o neto?".
      *
-     * Lo consultan las DOS vías donde el número siempre es uno recién cargado: la compra a
-     * proveedor y el import de Excel.
+     * Lo consultan las TRES vías que escriben un costo cargado por una persona: el ABM del
+     * listado, la compra a proveedor y el import de Excel.
      *
-     * 🔴 El ABM del listado NO lo usa, y no es un olvido. Ese formulario manda el modelo entero en
-     * cada guardado, así que un guardado que no toca el costo llega con el `cost` que devolvió el
-     * servidor, que ya es NETO. Si ahí se forzara "bruto" por condición fiscal, ese guardado le
-     * sacaría el IVA a un número que ya no lo tiene: 1000 → 826,45 → 683,01, medido por el checker
-     * de la Fase 5. En el ABM manda el formulario, que declara siempre; que el Monotributista no
-     * elija nada se resuelve mostrándole un solo campo. Ver ArticleController::set_costo_desde_request().
+     * 🔴 **El Monotributista migrado no configura nada de IVA, y para él la respuesta es SIEMPRE
+     * false** (misión `iva-fuera-del-costeo-monotributista`, 21/8/2026): carga el costo que le pasa
+     * su proveedor y ese número se guarda tal cual. No hay bruto ni neto que distinguir.
      *
-     * 🔴 **El Monotributista no configura nada de IVA** (decisión de Lucas, 20/8/2026): todo lo que
-     * carga es bruto POR DEFINICIÓN, en las tres vías. No es una preferencia ni un default que se
-     * pueda cambiar — recibe Factura B, donde el IVA no viene discriminado y el neto no figura en
-     * ningún lado. Pedirle que declare cuál de los dos está cargando es pedirle un dato que su
-     * comprobante no tiene. Por eso tampoco se le muestra el flag de la compra ni el de
+     * Que la respuesta sea "no descomponer" es lo que hace seguro consultar este resolvedor también
+     * desde el ABM. Con la regla anterior (MT ⇒ siempre bruto) no se podía: el formulario del
+     * listado manda el modelo entero en cada guardado, así que corregirle el nombre a un artículo
+     * llegaba con el `cost` que devolvió el servidor, y forzar "bruto" le sacaba el IVA a un número
+     * que ya no lo tenía — 1000 → 826,45 → 683,01, un 21% por guardado. "No descomponer" no tiene
+     * ese riesgo: es idempotente.
+     *
+     * Para una cuenta **legacy** (sin migrar) se conserva la regla vieja: el MT carga bruto y se
+     * descompone. Por eso tampoco se le muestra el flag de la compra ni el de
      * `aplicar_iva`: no hay nada que elegir.
      *
      * El Responsable Inscripto sí elige, porque su Factura A le discrimina el neto: en el listado lo
@@ -885,11 +923,76 @@ class ArticlePricesHelper {
      */
     static function el_costo_cargado_es_bruto($user, $declarado)
     {
+        /*
+         * 🔴 Para un Monotributista migrado NUNCA se descompone, y se ignora lo que declare la
+         * carga. Misión `iva-fuera-del-costeo-monotributista` (21/8/2026): el costo que carga es el
+         * que paga, punto — no existe la distinción bruto/neto para él, así que no hay nada que
+         * sacarle.
+         *
+         * Se ignora el `$declarado` a propósito, en vez de confiar en que el formulario mande
+         * false: por la API o por una pantalla vieja puede llegar un `true`, y creerle le hundiría
+         * el costo un 21% en silencio. La decisión es de la condición fiscal, no del que llama.
+         *
+         * Hasta esta misión esta misma rama devolvía `true` (el MT cargaba bruto y se descomponía).
+         * Las dos versiones dan los mismos precios finales —el ida y vuelta se cancelaba—, pero
+         * aquella dejaba guardado en `articles.cost` un número que la persona nunca tipeó.
+         */
+        if (Self::es_monotributista_para_costeo($user)
+            && $user
+            && $user->usar_condicion_fiscal_en_costeo
+        ) {
+            return false;
+        }
+
         if (Self::es_monotributista_para_costeo($user)) {
+            // Cuenta legacy: se conserva el comportamiento historico (el MT carga bruto).
             return true;
         }
 
         return filter_var($declarado, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * Misión `iva-fuera-del-costeo-monotributista` (21/8/2026) — ¿El IVA participa del precio de
+     * esta cuenta, en cualquier punto del pipeline?
+     *
+     * 🔴 Para un **Monotributista migrado, NO participa en ningún lado**: ni entra al costo ni se
+     * suma a la venta. Decisión de Lucas: *"el monotributista no tiene que configurar nada de IVA
+     * (...) el IVA no tiene que cambiar nada del precio en un monotributista"*. Carga el costo que
+     * le pasa su proveedor, ese ES su costo, y sobre ese costo va el margen.
+     *
+     * Antes de esta misión el sistema le hacía un ida y vuelta —le sacaba el IVA al guardar y se lo
+     * volvía a sumar al costear— que se cancelaba y daba los precios bien, pero dejaba en
+     * `articles.cost` un número que la persona nunca tipeó (826,45 sobre un costo cargado de 1000).
+     * Ese número se filtraba a la columna "Costo base" del listado y al export a Excel.
+     *
+     * 🔴 Este predicado y `iva_va_al_costo()` NO son lo mismo, y confundirlos es un error de plata:
+     * `iva_va_al_costo()` responde DÓNDE se suma el IVA (antes o después del margen). Este responde
+     * SI se suma. Si sólo se pone `iva_va_al_costo()` en false para el MT, el IVA no desaparece: se
+     * muda al precio de venta —todos los call sites hacen `if (!iva_va_al_costo(...)) aplicar_iva()`—
+     * y el monotributista termina cobrando un IVA que no cobra.
+     *
+     * Las cuentas **no migradas** (`usar_condicion_fiscal_en_costeo` apagado) no cambian nada: ahí
+     * manda la tilde histórica y la condición fiscal se ignora por completo. Es el interruptor con
+     * el que quedan afuera los clientes que ya están usando el sistema.
+     *
+     * @param  \App\Models\User|null $user
+     * @return bool true si el IVA tiene que participar del precio (comportamiento histórico).
+     */
+    static function el_iva_participa_del_precio($user) {
+
+        if (is_null($user)) {
+            // Sin usuario no se puede resolver la condicion fiscal: se conserva el comportamiento
+            // historico, que es el lado seguro (no dejar de aplicar un IVA que corresponde).
+            return true;
+        }
+
+        if (!$user->usar_condicion_fiscal_en_costeo) {
+            // Cuenta legacy: nada de esta mision le aplica.
+            return true;
+        }
+
+        return !Self::es_monotributista_para_costeo($user);
     }
 
     /**
@@ -920,19 +1023,34 @@ class ArticlePricesHelper {
             return (bool) $user->aplicar_iva_al_costo;
         }
 
-        // Cuenta migrada a la dinamica contable real: manda la condicion fiscal.
-        // Monotributista no recupera IVA, asi que el IVA es costo y entra antes del margen.
-        // Responsable Inscripto lo recupera como credito fiscal, asi que el IVA se suma al vender.
-        return Self::es_monotributista_para_costeo($user);
+        /*
+         * Cuenta migrada: el IVA NO entra al costo, para ninguna condicion fiscal.
+         *
+         * - Responsable Inscripto: lo recupera como credito fiscal, asi que se suma al vender.
+         * - Monotributista: desde la mision `iva-fuera-del-costeo-monotributista` (21/8/2026) el
+         *   costo que carga YA es el que paga (se guarda tal cual, sin back-out), asi que no hay
+         *   ningun IVA que agregarle. Y tampoco se le suma al vender: eso lo corta
+         *   el_iva_participa_del_precio(), que es el predicado que hay que mirar para saber SI el
+         *   IVA participa. Este metodo solo responde DONDE.
+         *
+         * Hasta esta mision devolvia true para MT, que es la mitad "se lo vuelvo a sumar" del ida y
+         * vuelta que la mision saco.
+         */
+        return false;
     }
 
     /**
      * Prompt 514 — "Back-out" de IVA sobre un costo BRUTO, para dejarlo NETO.
      *
      * Convención del sistema (decisión de Lucas, 18/7): `articles.cost` y `article_provider.cost`
-     * son SIEMPRE netos (sin IVA). Cuando el número que cargó una persona viene CON IVA incluido,
-     * hay que sacárselo ANTES de escribir el costo, usando la alícuota propia del artículo — no una
-     * alícuota global — para no inflar el costeo.
+     * son netos (sin IVA). Cuando el número que cargó una persona viene CON IVA incluido, hay que
+     * sacárselo ANTES de escribir el costo, usando la alícuota propia del artículo — no una alícuota
+     * global — para no inflar el costeo.
+     *
+     * 🔴 Con UNA excepción, desde el 21/8/2026: para un **Monotributista migrado** esas columnas
+     * guardan el costo TAL CUAL lo cargó, con el IVA adentro, porque él no lo recupera y ese es su
+     * costo real. Para esa condición fiscal el IVA no participa del pipeline en ningún punto, así
+     * que no hay nada que sacar ni que volver a sumar. Ver el_iva_participa_del_precio().
      *
      * Fórmula: neto = bruto / (1 + alicuota/100).
      *

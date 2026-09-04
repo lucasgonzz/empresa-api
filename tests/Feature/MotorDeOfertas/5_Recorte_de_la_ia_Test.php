@@ -9,6 +9,7 @@ use App\Jobs\GenerarResumenSugerenciaOfertaJob;
 use App\Jobs\GenerateOfferSuggestionChunksJob;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
+use App\Models\Buyer;
 use App\Models\Client;
 use App\Models\OfferSuggestion;
 use App\Models\OfferSuggestionLine;
@@ -70,6 +71,12 @@ class Recorte_de_la_ia_Test extends TestCase
     protected function corrida_terminada($cantidad = 1)
     {
         $cliente = Client::create(['name' => 'Cliente recorte-' . uniqid(), 'user_id' => $this->comercio->id]);
+        // 🔴 SIN ESTO LOS TESTS DE ESTE ARCHIVO NO SE PONEN ROJOS, SE PONEN SKIPPED: el punto A
+        // (buyer vinculado exigido por afinidad()) deja esta corrida sin líneas, y
+        // linea_del_escenario() hace markTestSkipped() cuando no encuentra ninguna (:105). Una
+        // suite "verde" con la mitad del archivo salteado es peor que una roja.
+        Buyer::create(['name' => 'Comprador ' . uniqid(), 'email' => 'buyer-' . uniqid() . '@test.local',
+            'user_id' => $this->comercio->id, 'comercio_city_client_id' => $cliente->id]);
         $article = Article::create([
             'name' => 'zz-recorte-' . uniqid(), 'user_id' => $this->comercio->id,
             'cost' => 1000, 'percentage_gain' => 20, 'aplicar_iva' => 1, 'iva_id' => self::IVA_21,

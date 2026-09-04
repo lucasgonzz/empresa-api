@@ -15,7 +15,7 @@ use Illuminate\Support\Str;
  *   confirmar que el `code` recibido corresponde al comercio que inició el flujo y que no es un
  *   intento de reutilización.
  *
- * Análogo a `App\Models\MercadoPagoOauthState` (prompt 598), en tabla propia para no mezclar
+ * Análogo a `App\Models\OauthState` (prompt 598, entonces `MercadoPagoOauthState`), en tabla propia para no mezclar
  * states de proveedores distintos.
  */
 class ZippinOauthState extends Model

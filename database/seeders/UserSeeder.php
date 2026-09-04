@@ -298,20 +298,53 @@ class UserSeeder extends Seeder
             $models[0]['iva_included'] = 0;
             $models[0]['iva_condition_id'] = 1;
 
+            /*
+                🔴 ESTA LISTA ES UNA COPIA DE `DemoSetupHelper::base_extencions()` MÁS LAS DOS
+                QUE `apply_flag_rules()` OTORGA SIEMPRE ('cajas' e 'imagenes'), Y TIENE QUE
+                SEGUIR SIÉNDOLO (misión 63, siembra-local-igual-a-demo).
+
+                El sentido de la corrida local es ser el control de calidad de la demo, y eso
+                solo se cumple si Lucas ve encendidos los MISMOS módulos que ve un lead. Hasta
+                esta misión no era así: local otorgaba 16 extensiones y una demo 18, y las listas
+                no se pisaban. Local NO tenía 'acopios', 'enviar_mail_a_clientes', 'asistente_ia',
+                'escaneo_factura_compra', 'whatsapp' ni 'whatsapp_ia' -- o sea que el chat de
+                WhatsApp, el asistente de IA y el escaneo de facturas de compra, que todo lead ve,
+                en local no aparecían en el menú. Y al revés, local encendía 'forzar_total',
+                'ventas_con_fecha_de_entrega', 'road_map_detalle_por_articulos_y_no_por_venta' y
+                'cambiar_price_type_en_vender', que ninguna demo enciende.
+
+                'cambiar_price_type_en_vender' se saca además por un motivo propio: en la demo
+                sale de `apply_flag_rules()` y solo si el lead marcó que usa listas de precios.
+                Local no tiene formulario y tampoco siembra listas de precios, así que tenerla
+                encendida mostraba un selector de listas sobre una base sin ninguna.
+
+                'costo_en_dolares' NO va en esta lista y no falta: el foreach de más abajo se lo
+                agrega a mano a cualquier usuario que declare extensiones.
+
+                Las cuatro extensiones de IA ('sugerencias_inteligentes', 'sugerencias_compras',
+                'motor_de_ofertas', 'tracking_buyers') tampoco van acá: las engancha
+                `ExtencionesIaUserSeeder`, que `DatabaseSeeder` llama justo después de este
+                seeder y `DemoSetupHelper` al final de su lista. Repetirlas duplicaría la fila
+                del pivot, porque acá se usa attach() y no syncWithoutDetaching().
+            */
             $models[0]['extencions'] = [
                 // 'support_chat',
 
                 'comerciocity_interno',
-                'budgets',
-                'bar_code_scanner',
                 'ask_save_current_acount',
-                'imagenes',
-                'forzar_total',
-                'cajas',
-                'ventas_con_fecha_de_entrega',
-                'road_map_detalle_por_articulos_y_no_por_venta',
-                'cambiar_price_type_en_vender',
                 'online',
+                'budgets',
+                'acopios',
+                'bar_code_scanner',
+                'enviar_mail_a_clientes',
+                'asistente_ia',
+                'escaneo_factura_compra',
+                'whatsapp',
+                'whatsapp_ia',
+
+                /* Las dos que `DemoSetupHelper::apply_flag_rules()` otorga sin condición. */
+                'cajas',
+                'imagenes',
             ];
 
         } else if ($this->for_user == 'electro_lacarra') {

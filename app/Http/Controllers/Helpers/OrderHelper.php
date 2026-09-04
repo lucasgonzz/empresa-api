@@ -178,16 +178,14 @@ class OrderHelper {
         }
     }
 
-    static function restartArticleStock($model) {
-        foreach ($model->articles as $article) {
-            $_article = Article::find($article->id);
-            if (!is_null($_article->stock)) {
-                $_article->stock += $article->pivot->amount;
-                $_article->timestamps = false;
-                $_article->save();
-            }
-        }
-    }
+    /*
+     * restartArticleStock() se eliminó el 24/8/2026 (tanda correctivos 2408, ítem 16).
+     * Estaba sin llamadores desde que se borró el cancel() viejo de pedidos, y era una
+     * trampa: devolvía stock que el PEDIDO nunca descontó (el pedido de la tienda no toca
+     * stock; el único que descuenta es la venta), así que revivirlo volvía a inflar el
+     * inventario. El stock lo devuelve DeleteSaleHelper::eliminar_venta(), que es quien lo
+     * descontó (ver el comentario largo en OrderController::update()).
+     */
 
     static function saveSaleAfterFinishOrder() {
         $user = UserHelper::getFullModel();

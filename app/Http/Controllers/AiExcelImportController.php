@@ -125,6 +125,28 @@ class AiExcelImportController extends Controller
                     'start_row'         => $request->input('start_row'),
                     'finish_row'        => $request->input('finish_row'),
                     'has_header_row'    => $request->input('has_header_row'),
+
+                    /*
+                     * Hoja elegida por el usuario en el paso 1 y fila de encabezado.
+                     *
+                     * 🔴 Los tres son OPCIONALES y tienen default, y eso no es prolijidad:
+                     * es lo que hace que un cliente viejo siga funcionando. La SPA sin
+                     * desplegar no manda ninguno de los tres, y AdminSync\AiExcelImportController
+                     * —el que usa admin-api en producción— tampoco. Con los defaults de acá
+                     * (hoja 0, sin nombre, sin fila de encabezado) esas dos puntas se comportan
+                     * exactamente como antes de esta misión: primera hoja y detección automática.
+                     *
+                     * Viajan hoja Y hoja_nombre a propósito: el índice lo calcula SheetJS en el
+                     * navegador y OpenSpout es quien después lee, y los dos no están garantizados
+                     * a coincidir si el libro tiene chartsheets. ExcelWorkbookReader::resolver_indice()
+                     * resuelve por nombre primero, y para eso el nombre tiene que llegar hasta el job.
+                     *
+                     * NO se guarda en columnas propias: excel_analysis_runs.payload es longText con
+                     * cast 'array' y el modelo tiene $guarded = [], así que esto no lleva migración.
+                     */
+                    'hoja'              => self::normalizar_hoja($request->input('hoja')),
+                    'hoja_nombre'       => self::normalizar_hoja_nombre($request->input('hoja_nombre')),
+                    'header_row'        => self::normalizar_header_row($request->input('header_row')),
                 ],
             ]);
 
@@ -141,14 +163,38 @@ class AiExcelImportController extends Controller
                 'estado'        => $run->estado,
             ], 202);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /*
+             * 🔴 VA ANTES DEL \Throwable Y ANTES DE CUALQUIER \RuntimeException.
+             * QueryException extiende PDOException, que extiende RuntimeException: su
+             * getMessage() trae el SQL completo con los bindings. Ver
+             * RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE.
+             */
+            Log::error('AiExcelImportController::analyze - error de base al encolar el análisis', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'message' => RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE,
+            ], 500);
+
         } catch (\Throwable $e) {
             Log::error('AiExcelImportController::analyze - error al encolar el análisis', [
                 'message' => $e->getMessage(),
                 'trace'   => $e->getTraceAsString(),
             ]);
 
+            /*
+             * 🔴 El mensaje del usuario NO lleva $e->getMessage(), y no es por prolijidad.
+             * Adentro de esa excepción viaja la ruta absoluta del servidor: la IOException de
+             * OpenSpout dice "Could not open C:\...\storage\app\imported_files\ai_import_1234.xlsx
+             * for reading!", y hasta esta misión eso se concatenaba acá y se le mostraba tal cual
+             * al cliente. El detalle sigue estando —completo, con trace— en el Log::error de arriba,
+             * que es donde sirve para diagnosticar.
+             */
             return response()->json([
-                'message' => 'Ocurrió un error inesperado al iniciar el análisis: ' . $e->getMessage(),
+                'message' => 'Ocurrió un error inesperado al iniciar el análisis. Volvé a intentar en unos minutos; si sigue pasando, avisanos.',
             ], 500);
         }
     }
@@ -322,6 +368,20 @@ class AiExcelImportController extends Controller
             : null;
 
         /*
+         * Hoja y fila de encabezado con las que se analizó el archivo. Opcionales con default
+         * (hoja 0, encabezado automático): un cliente viejo que no los manda recalcula sobre la
+         * primera hoja, que es lo que hacía antes de esta misión.
+         *
+         * Acá no se resuelve por nombre: este endpoint recibe el índice ya elegido en el paso 1,
+         * no el nombre. La resolución por nombre vive en el job, que es el único que arranca
+         * desde lo que mandó el navegador.
+         */
+        $opciones_de_hoja = [
+            'hoja'            => self::normalizar_hoja($request->input('hoja')),
+            'fila_encabezado' => self::normalizar_header_row($request->input('header_row')),
+        ];
+
+        /*
          * Camino rápido (grupo 291, prompt 03): buscamos el último análisis "listo" de
          * este mismo excel_path, para este usuario, con los provider_codes ya extraídos.
          * Filtramos también por usuario para que nadie pueda reusar códigos de otro
@@ -368,7 +428,8 @@ class AiExcelImportController extends Controller
             null,
             $provider_code_column_index,
             $provider_id,
-            $this->userId()
+            $this->userId(),
+            $opciones_de_hoja
         );
 
         return response()->json([
@@ -447,6 +508,9 @@ class AiExcelImportController extends Controller
         /* model === 'article': flujo original con InitExcelImport. */
         $import_uuid = (string) Str::uuid();
 
+        /* Mapeo de columnas confirmado por el usuario: propiedad => índice de columna. */
+        $columns = $request->input('columns', []);
+
         /*
          * Delegamos en InitExcelImport exactamente con los mismos parámetros que
          * ArticleController, respetando el contrato ya definido.
@@ -456,9 +520,9 @@ class AiExcelImportController extends Controller
         $result = $excel_import->importar([
             'import_uuid'           => $import_uuid,
             'archivo_excel'         => $excel_full_path,
-            'columns'               => $request->input('columns', []),
+            'columns'               => $columns,
             // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
-            'blank_flags'           => $request->input('blank_flags', []),
+            'blank_flags'           => $this->resolver_blank_flags($request, $columns),
 
             /*
              * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): la planilla declara si sus
@@ -477,6 +541,38 @@ class AiExcelImportController extends Controller
              */
             'precios_incluyen_iva'  => $request->boolean('precios_incluyen_iva'),
             'create_and_edit'       => $request->input('create_and_edit', false),
+
+            /*
+             * Hoja a importar, 0-based. Default 0 = primera hoja, o sea lo que hacía este
+             * endpoint antes de esta misión.
+             *
+             * 🔴 Acá NO viaja header_row, y es a propósito: la importación real se rige por
+             * start_row, que ya viaja, que el usuario ve en pantalla y que puede corregir a
+             * mano. Mandar además la fila de encabezado sería tener dos fuentes de verdad para
+             * "desde dónde arranco a leer", y la primera vez que difieran se importa de más o
+             * de menos sin que nada avise.
+             *
+             * 🔴 Y OJO con esto (T5 del plan): armar_archivo_csv() vuelca la hoja elegida al CSV
+             * 1:1 con preserveEmptyRows(true), así que línea de CSV = fila del Excel DE ESA HOJA.
+             * start_row/finish_row tienen que venir calculados sobre la MISMA hoja que este
+             * 'hoja'. Si el navegador calculó finish_row mirando la hoja 0 y manda hoja=1, se
+             * importa de menos en silencio (ajustar_finish_row_segun_excel_real() recorta por
+             * arriba, no completa por abajo).
+             */
+            'hoja'                  => self::normalizar_hoja($request->input('hoja')),
+
+            /*
+             * Nombre de la hoja elegida, OPCIONAL (default null = "usá el índice").
+             *
+             * Existe por lo mismo que existe ExcelWorkbookReader::resolver_indice(): el
+             * índice lo calcula SheetJS en el navegador y quien lee después es OpenSpout,
+             * y los dos pueden discrepar (chartsheets de por medio). Cuando el nombre
+             * viaja, gana él; cuando no, se usa el índice crudo y todo queda como estaba.
+             *
+             * Hoy la SPA no lo manda por acá, así que este parámetro no cambia nada de lo
+             * que ya anda: es la mitigación disponible para cuando el índice no alcance.
+             */
+            'hoja_nombre'           => self::normalizar_hoja_nombre($request->input('hoja_nombre')),
             'start_row'             => $request->input('start_row', 2),
             'finish_row'            => $request->input('finish_row', 1000),
             'provider_id'           => $request->input('provider_id'),
@@ -513,6 +609,65 @@ class AiExcelImportController extends Controller
     }
 
     /**
+     * Resuelve el mapa `blank_flags` (propiedad => bool) que consume
+     * ProcessRow::permite_valores_en_blanco().
+     *
+     * El modal con IA no tiene un control por columna como el import clásico: tiene UN solo
+     * checkbox por importación, `vaciar_valores_en_blanco`. Esto es el puente entre las dos
+     * cosas — prendido, equivale a marcar la casilla de TODAS las columnas mapeadas.
+     *
+     * 🔴 Se hace así, y no con un flag global nuevo adentro de ProcessRow, a propósito: el
+     * carril de `blank_flags` ya existe, ya está probado y ya lo usa la importación clásica de
+     * artículos. Un segundo mecanismo en paralelo para expresar lo mismo es exactamente cómo se
+     * terminan teniendo dos criterios que divergen, que es la clase de error que este módulo ya
+     * sufrió dos veces.
+     *
+     * 🔴 Un `blank_flags` explícito en el request GANA. Es lo que mantiene andando a
+     * cualquier cliente que ya lo mandaba por columna (la SPA vieja sin desplegar): el
+     * checkbox nuevo es un atajo, no un reemplazo. `vaciar_valores_en_blanco` ausente o false
+     * deja todo exactamente como antes de esta misión.
+     *
+     * `boolean()` y no `(bool)`: `(bool) 'false'` en PHP da TRUE, así que el cast crudo
+     * vaciaría propiedades justo cuando el usuario no lo pidió. Mismo criterio que
+     * `precios_incluyen_iva` en import().
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  mixed                     $columns  Mapa propiedad => índice de columna
+     * @return array                     Mapa propiedad => bool
+     */
+    protected function resolver_blank_flags(Request $request, $columns)
+    {
+        $blank_flags_explicitos = $request->input('blank_flags');
+
+        if (is_array($blank_flags_explicitos) && count($blank_flags_explicitos) > 0) {
+            return $blank_flags_explicitos;
+        }
+
+        if (!$request->boolean('vaciar_valores_en_blanco')) {
+            return [];
+        }
+
+        $flags = [];
+
+        if (is_array($columns)) {
+            foreach ($columns as $property_key => $column_position) {
+                /*
+                 * Sólo las columnas efectivamente mapeadas. Una propiedad sin posición no se
+                 * lee del Excel, así que marcarla no vaciaría nada — pero dejaría un flag
+                 * prendido esperando a que alguien mapee esa columna en otra importación.
+                 */
+                if (is_null($column_position) || $column_position === '') {
+                    continue;
+                }
+
+                $flags[$property_key] = true;
+            }
+        }
+
+        return $flags;
+    }
+
+    /**
      * Ejecuta la importación de clientes usando Maatwebsite Excel y ClientImport.
      *
      * En este controlador el usuario está autenticado vía Bearer token, por lo que
@@ -537,16 +692,42 @@ class AiExcelImportController extends Controller
             $finish_row = (int) $finish_row;
         }
 
+        /*
+         * Hoja elegida por el usuario en el paso 1 del modal. Opcional con default 0:
+         * un cliente que no la manda importa la primera hoja, como antes de esta mision.
+         *
+         * 🔴 Esto es lo que hacia que el selector MINTIERA para clientes: el modal es
+         * compartido con articulos, le mostraba el selector de hoja al usuario de clientes,
+         * mandaba 'hoja' — y aca no se leia. Peor todavia, sin WithMultipleSheets
+         * Maatwebsite no importaba la primera hoja sino TODAS (ver ClientImport::sheets()),
+         * asi que el usuario terminaba con clientes creados a partir de la hoja de notas.
+         */
+        $hoja        = self::normalizar_hoja($request->input('hoja'));
+        $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
+
+        /*
+         * Checkbox único de la importación: si está prendido, una celda vacía VACÍA la
+         * propiedad en vez de dejar el valor que ya estaba. Opcional con default false, o sea
+         * el comportamiento de siempre: AdminSync no lo manda y no cambia nada.
+         *
+         * Acá sólo se lee del request y se pasa; quien decide qué hacer con él es ClientImport.
+         * Va como último argumento, igual que `hoja`/`hoja_nombre`, para no romper a nadie que
+         * construya la clase con menos argumentos.
+         */
+        $vaciar_valores_en_blanco = $request->boolean('vaciar_valores_en_blanco');
+
         try {
             Excel::import(
-                new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
+                new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar_valores_en_blanco),
                 $excel_full_path
             );
 
             Log::info('AiExcelImportController::import_clients - importación finalizada', [
-                'user_id'    => $this->userId(),
-                'start_row'  => $start_row,
-                'finish_row' => $finish_row,
+                'user_id'     => $this->userId(),
+                'start_row'   => $start_row,
+                'finish_row'  => $finish_row,
+                'hoja'        => $hoja,
+                'hoja_nombre' => $hoja_nombre,
             ]);
 
             return response()->json(['message' => 'Importación de clientes iniciada.'], 200);
@@ -558,8 +739,17 @@ class AiExcelImportController extends Controller
                 'user_id' => $this->userId(),
             ]);
 
+            /*
+             * Sin $e->getMessage(): acá adentro viaja la ruta absoluta del servidor (la
+             * IOException de OpenSpout dice "Could not open C:\...\storage\app\...") y, si el
+             * que se rompió fue MySQL, el SQL entero con los bindings. El detalle completo,
+             * con trace, quedó en el Log::error de arriba.
+             *
+             * El "quedó guardado" no es adorno: el excel_path sigue vivo, así que reintentar
+             * no le pide al usuario volver a subir el archivo.
+             */
             return response()->json([
-                'message' => 'Ocurrió un error al importar clientes: ' . $e->getMessage(),
+                'message' => 'No pudimos importar los clientes. El archivo quedó guardado: volvé a intentar en unos minutos. Si sigue pasando, avisanos.',
             ], 500);
         }
     }
@@ -589,20 +779,29 @@ class AiExcelImportController extends Controller
             $finish_row = (int) $finish_row;
         }
 
+        /* Misma hoja elegida que en import_clients, con el mismo default 0. */
+        $hoja        = self::normalizar_hoja($request->input('hoja'));
+        $hoja_nombre = self::normalizar_hoja_nombre($request->input('hoja_nombre'));
+
+        /* Mismo checkbox único que en import_clients, con el mismo default false. */
+        $vaciar_valores_en_blanco = $request->boolean('vaciar_valores_en_blanco');
+
         try {
             /*
              * El quinto parámetro ($provider_id) es null; en importación de proveedores
              * no se asigna un proveedor padre al registro importado.
              */
             Excel::import(
-                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
+                new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre, $vaciar_valores_en_blanco),
                 $excel_full_path
             );
 
             Log::info('AiExcelImportController::import_providers - importación finalizada', [
-                'user_id'    => $this->userId(),
-                'start_row'  => $start_row,
-                'finish_row' => $finish_row,
+                'user_id'     => $this->userId(),
+                'start_row'   => $start_row,
+                'finish_row'  => $finish_row,
+                'hoja'        => $hoja,
+                'hoja_nombre' => $hoja_nombre,
             ]);
 
             return response()->json(['message' => 'Importación de proveedores iniciada.'], 200);
@@ -614,8 +813,9 @@ class AiExcelImportController extends Controller
                 'user_id' => $this->userId(),
             ]);
 
+            /* Mismo criterio que import_clients(): el detalle técnico va al log, no a la pantalla. */
             return response()->json([
-                'message' => 'Ocurrió un error al importar proveedores: ' . $e->getMessage(),
+                'message' => 'No pudimos importar los proveedores. El archivo quedó guardado: volvé a intentar en unos minutos. Si sigue pasando, avisanos.',
             ], 500);
         }
     }
@@ -705,6 +905,20 @@ class AiExcelImportController extends Controller
                      * análisis y después esta recomendación.
                      */
                     'analysis_uuid'               => $request->input('analysis_uuid'),
+
+                    /*
+                     * Misma hoja y misma fila de encabezado con las que se hizo el análisis del
+                     * que salió este paso 2. Opcionales con default (hoja 0, encabezado
+                     * automático) por la misma razón que en analyze(): la SPA sin desplegar no
+                     * los manda y tiene que seguir andando igual que hoy.
+                     *
+                     * Si no se guardaran, la recomendación se calcularía sobre la hoja 0 mientras
+                     * el usuario eligió otra: los duplicados, los formatos numéricos y la
+                     * política recomendada saldrían de una planilla distinta de la que se va a
+                     * importar, y en pantalla no habría un solo indicio de eso.
+                     */
+                    'hoja'                        => self::normalizar_hoja($request->input('hoja')),
+                    'header_row'                  => self::normalizar_header_row($request->input('header_row')),
                 ],
             ]);
 
@@ -720,15 +934,86 @@ class AiExcelImportController extends Controller
                 'estado'        => $run->estado,
             ], 202);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /* Mismo motivo y mismo orden que en analyze(). Ver MENSAJE_ERROR_DE_BASE. */
+            Log::error('AiExcelImportController::getRecomendacion - error de base al encolar la recomendación', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'message' => RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE,
+            ], 500);
+
         } catch (\Throwable $e) {
             Log::error('AiExcelImportController::getRecomendacion - error al encolar la recomendación', [
                 'message' => $e->getMessage(),
                 'trace'   => $e->getTraceAsString(),
             ]);
 
+            /* Mismo criterio que analyze(): la ruta del servidor va al log, no a la pantalla. */
             return response()->json([
-                'message' => 'Ocurrió un error inesperado al iniciar la recomendación: ' . $e->getMessage(),
+                'message' => 'Ocurrió un error inesperado al iniciar la recomendación. Volvé a intentar en unos minutos; si sigue pasando, avisanos.',
             ], 500);
         }
+    }
+
+    /**
+     * Índice 0-based de hoja recibido del cliente, normalizado.
+     *
+     * Default 0 (primera hoja) para cualquier cosa que no sea un número >= 0: ausente,
+     * vacío, "null", basura. Ese default ES el contrato de compatibilidad hacia atrás
+     * (§1.4 del plan): un cliente que no manda 'hoja' —la SPA sin desplegar, o
+     * AdminSync\AiExcelImportController, que es el que usa admin-api en producción— tiene
+     * que comportarse exactamente como antes de esta misión.
+     *
+     * @param  mixed $valor
+     * @return int
+     */
+    protected static function normalizar_hoja($valor)
+    {
+        if (is_numeric($valor) && (int) $valor >= 0) {
+            return (int) $valor;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Nombre de hoja recibido del cliente, normalizado a string no vacío o null.
+     *
+     * Viaja junto con el índice porque los dos pueden discrepar: el índice lo calcula
+     * SheetJS en el navegador y OpenSpout es quien lee después.
+     * ExcelWorkbookReader::resolver_indice() le da prioridad al nombre.
+     *
+     * @param  mixed $valor
+     * @return string|null
+     */
+    protected static function normalizar_hoja_nombre($valor)
+    {
+        if (is_string($valor) && trim($valor) !== '') {
+            return trim($valor);
+        }
+
+        return null;
+    }
+
+    /**
+     * Fila de encabezado 1-based recibida del cliente, normalizada.
+     *
+     * Default null = "detectala vos". Cualquier valor menor a 1 también cae a null: una
+     * fila 0 no existe en un Excel, y dejarla pasar activaría la rama de encabezado
+     * corrido con un número imposible.
+     *
+     * @param  mixed $valor
+     * @return int|null
+     */
+    protected static function normalizar_header_row($valor)
+    {
+        if (is_numeric($valor) && (int) $valor >= 1) {
+            return (int) $valor;
+        }
+
+        return null;
     }
 }

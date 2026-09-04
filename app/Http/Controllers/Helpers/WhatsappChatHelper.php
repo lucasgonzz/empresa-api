@@ -100,9 +100,17 @@ class WhatsappChatHelper
      *                             si el mensaje es de texto. Va último y con default porque los
      *                             callers existentes pasan seis argumentos posicionales y PHP 7.4
      *                             no tiene argumentos nombrados.
+     * @param  WhatsappChatMessage|null  $stored_message  PARAMETRO DE SALIDA: queda con el mensaje
+     *                             que este llamado acaba de crear. Existe porque el endpoint de
+     *                             simulacion necesita devolverle ese mensaje a la SPA, y buscarlo
+     *                             despues con un `ORDER BY id DESC` tiene una carrera real: si
+     *                             entra un entrante de verdad para el mismo chat en el medio, se
+     *                             devuelve el equivocado, con 201 y sin ningun error a la vista.
+     *                             Va ultimo y con default para no romper a los callers que pasan
+     *                             seis o siete argumentos posicionales.
      * @return WhatsappChat  El chat (nuevo o existente) ya persistido con el mensaje aplicado.
      */
-    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null)
+    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null, &$stored_message = null)
     {
         // Teléfono siempre normalizado (solo dígitos) al persistirlo, así el listado y el
         // matching de auto-vinculación son consistentes.
@@ -190,6 +198,8 @@ class WhatsappChatHelper
         ], $media_columns));
 
         self::broadcast_update($user_id, $chat, $message);
+
+        $stored_message = $message;
 
         return $chat;
     }
@@ -621,6 +631,45 @@ class WhatsappChatHelper
     }
 
     /**
+     * Guarda un mensaje `out` del recordatorio de cobro por WhatsApp que sale del módulo de
+     * alertas (misión recordatorio-cobro-whatsapp) y emite el broadcast.
+     *
+     * 🔴 EXISTE POR EL `source`, Y ESE `source` ES EL FRENO ANTI-DUPLICADO. La regla de "no
+     * reenviarle a un cliente dentro de las 24 h" se resuelve contando filas con
+     * `source = 'recordatorio_cobro'`, así que la fila TIENE que quedar marcada con ese valor
+     * en los DOS caminos (texto libre y plantilla). Sin eso el freno no ve nada y el masivo le
+     * manda el mismo recordatorio al mismo cliente cada vez que alguien aprieta el botón.
+     *
+     * Por qué no alcanzaba ninguno de los wrappers que ya había:
+     * - `store_outbound_manual_message()` clava `source = 'manual'`.
+     * - `store_outbound_document_message()` clava `media_type = 'document'`, y en el camino de
+     *   texto libre no hay adjunto: dejaría una fila con `media_type` seteado y `media_url`
+     *   null, que es una burbuja rota en la conversación.
+     * - `store_outbound_template_message()` clava `source = 'plantilla'`, que es justo el valor
+     *   que el freno no puede distinguir de cualquier otra plantilla mandada a mano.
+     *
+     * Y por qué un wrapper nuevo y no un parámetro más: `store_outbound_message()` son 10
+     * parámetros posicionales con 5 callers, y PHP 7.4 no tiene argumentos nombrados. Meter
+     * algo en el medio obligaba a tocar los cinco. Así no cambia ninguna firma existente.
+     *
+     * @param  WhatsappChat  $chat  Chat del cliente deudor.
+     * @param  string  $body  El mensaje tal cual salió (texto libre armado, o la plantilla ya renderizada).
+     * @param  string|null  $wa_message_id  Id que devolvió Kapso. Nunca null acá: el service corta antes si no hubo envío.
+     * @param  int|null  $sent_by_user_id  Empleado que lo disparó; null si lo mandó el job sin dueño puntual.
+     * @param  string|null  $template_meta_name  Solo en el camino de plantilla (`cc_cli_recordatorio_cobro`).
+     * @param  string|null  $media_url  URL del PDF de cuenta corriente adjunto, solo en el camino de plantilla.
+     * @return WhatsappChatMessage
+     */
+    public static function store_outbound_recordatorio_message(WhatsappChat $chat, $body, $wa_message_id, $sent_by_user_id, $template_meta_name = null, $media_url = null)
+    {
+        // `media_type` acompaña al `media_url`: si no hay adjunto, los dos van null y la
+        // burbuja se dibuja como un mensaje de texto común.
+        $media_type = is_null($media_url) ? null : 'document';
+
+        return self::store_outbound_message($chat, $body, $wa_message_id, 'recordatorio_cobro', $sent_by_user_id, $template_meta_name, $media_type, $media_url);
+    }
+
+    /**
      * Guarda un mensaje `out` con una foto o un audio que mandó el operador desde el composer
      * (endpoint `POST whatsapp-chats/{id}/media`, misión whatsapp-sidebar-multimedia) y emite
      * el broadcast.
@@ -654,7 +703,9 @@ class WhatsappChatHelper
      * @param  WhatsappChat  $chat
      * @param  string  $body
      * @param  string|null  $wa_message_id
-     * @param  string  $source  'ia' | 'manual' | 'plantilla' | 'sistema'.
+     * @param  string  $source  'ia' | 'manual' | 'plantilla' | 'sistema' | 'recordatorio_cobro'.
+     *                          🔴 La columna es `string(20)`: cualquier valor nuevo tiene que
+     *                          entrar en 20 caracteres ('recordatorio_cobro' son 18).
      * @param  int|null  $sent_by_user_id
      * @param  string|null  $template_meta_name  Solo aplica a source 'plantilla'.
      * @param  string|null  $media_type  'document' si el mensaje trae un adjunto (Prompt 05), null si es texto plano.

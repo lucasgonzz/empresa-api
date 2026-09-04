@@ -58,9 +58,12 @@ class ImportTestSeeder
         'A10' => ['name' => 'Art nombre repetido',     'bar_code' => '7790010', 'sku' => 'SKU-010', 'provider_code' => 'PC-1010', 'prov' => 'A',    'cost' => 1000, 'stock' => 100],
         'A11' => ['name' => 'Art nombre repetido',     'bar_code' => '7790011', 'sku' => 'SKU-011', 'provider_code' => 'PC-1111', 'prov' => 'A',    'cost' => 1100, 'stock' => 110],
 
-        /* provider_code CON valor pero provider_id NULL: ArticleIndexCache::build() exige que los
-           dos estén presentes para indexar, así que este artículo es INVISIBLE al escalón
-           provider_code. Está a propósito para fijar ese comportamiento (ver DuplicadosProviderCodeTest). */
+        /* provider_code CON valor pero provider_id NULL. Desde el 24/8/2026 este artículo SÍ es
+           visible al escalón provider_code, pero SOLO cuando la importación no eligió proveedor:
+           ArticleIndexCache::build() lo indexa en un bucket propio en ese caso. Antes exigía los dos
+           campos y el artículo era invisible, así que la fila PC-1200 creaba un duplicado en cada
+           importación. Lo cubre CodigosDeProveedorTest con los dos lados (matchea sin proveedor
+           elegido / no matchea con proveedor elegido). */
         'A12' => ['name' => 'Art sin proveedor',       'bar_code' => '7790012', 'sku' => 'SKU-012', 'provider_code' => 'PC-1200', 'prov' => null,   'cost' => 1200, 'stock' => 120],
 
         /* sku DUPLICADO en base: el escalón sku tampoco tiene bandera, siempre ambiguo. */

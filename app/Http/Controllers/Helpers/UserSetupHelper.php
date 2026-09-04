@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
+use App\Models\OnlineTemplate;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -83,6 +84,23 @@ class UserSetupHelper
 
         // El ExtencionSeeder debe existir antes del sync para tener los registros
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
+
+        /*
+            'whatsapp' NO esta en ExtencionSeeder -- vive solo en este seeder standalone
+            (pensado justamente para correr aparte en bases existentes). Sin esta linea, el
+            whereIn('slug', $extencions) de mas abajo no encuentra la fila y el sync() la
+            omite en silencio, aunque 'whatsapp' este en base_extencions(). Mismo fix que ya
+            tiene DemoSetupHelper.
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEmpresaWhatsappSeeder', '--force' => true]);
+
+        /*
+            Tanda correctivos 24/8 (item 2): mismo caso que 'whatsapp' —
+            'escaneo_factura_compra' tampoco esta en ExtencionSeeder, solo en su seeder
+            standalone (idempotente por firstOrCreate). Sin esta linea el sync() de abajo
+            la omitiria en silencio.
+        */
+        Artisan::call('db:seed', ['--class' => 'ExtencionEscaneoFacturaCompraSeeder', '--force' => true]);
 
         // Vinculamos las extensiones elegidas al usuario
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
@@ -204,10 +222,43 @@ class UserSetupHelper
                 ? trim((string) $data['google_custom_search_api_key'])
                 : self::GOOGLE_API_KEY_FALLBACK,
             // Cuota de Google del usuario real: la manda admin-api (RunUserSetupService, configurable
-            // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 100.
+            // desde admin-spa vía AdminSetting); si no llega (llamada directa, instalación vieja), 300.
+            // Decisión de Lucas (tanda correctivos 24/8): cliente real 300, demo 100 (DemoSetupHelper).
             'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
                 ? (int) $data['google_cuota']
-                : 100,
+                : 300,
+
+            /*
+                Pedido de Lucas (27/8/2026): un cliente real tambien nace con la dinamica de costeo
+                por condicion fiscal ENCENDIDA -- la tilde "Calcular costos segun la condicion de
+                IVA" de las propiedades del usuario -- y como Responsable Inscripto.
+
+                Mismo criterio que `HelperController::store_user()` y que `DemoSetupHelper`: el `0`
+                que trae por default la migracion
+                `2026_07_27_120000_add_costeo_condicion_fiscal_to_users_table` existe para no
+                moverle el costeo a las cuentas viejas, no para las que se crean de aca en adelante.
+
+                🔴 CAMBIA COMO SE INTERPRETA EL COSTO QUE CARGA EL COMERCIO, y hay que saberlo.
+                `users.aplicar_iva_al_costo` trae default `1` desde su migracion
+                (`2026_04_29_115713_add_aplicar_iva_al_costo_to_users`) y este helper nunca lo
+                seteaba: una instalacion nueva nacia en LEGACY con esa tilde prendida, o sea con
+                `iva_va_al_costo()` en true, y el pipeline hace
+                `if (!iva_va_al_costo()) aplicar_iva()` -- el IVA se daba por incluido dentro del
+                costo cargado y no se sumaba en ningun lado. Desde ahora el costo se lee como NETO
+                y el IVA se suma al vender, que es lo correcto para un Responsable Inscripto.
+
+                Medido el 27/8/2026 con `php artisan costeo:simular` sobre el fixture de testing:
+                para el mismo costo y el mismo margen, el precio final sube exactamente la alicuota
+                de IVA del articulo (21% / 10,5%) y el costo real no se mueve.
+
+                Es un cambio para las instalaciones NUEVAS solamente: ningun cliente ya instalado
+                se toca, porque el default `0` de
+                `2026_07_27_120000_add_costeo_condicion_fiscal_to_users_table` los deja donde
+                estaban. Si el comercio es Monotributista, lo cambia desde sus propiedades y el
+                sistema recalcula los precios (`UserController`).
+            */
+            'condicion_iva_precios'         => User::CONDICION_RRII,
+            'usar_condicion_fiscal_en_costeo' => 1,
         ]);
     }
 
@@ -247,6 +298,35 @@ class UserSetupHelper
             'comerciocity_interno',
             'ask_save_current_acount',
             'enviar_mail_a_clientes',
+
+            /*
+                Sin estas 4 extensiones encendidas, los modulos de sugerencias de stock,
+                sugerencias de compra, motor de ofertas y tracking de compradores quedan con
+                las rutas en 403. Mismo fix que ya tiene DemoSetupHelper.
+            */
+            'sugerencias_inteligentes',
+            'sugerencias_compras',
+            'motor_de_ofertas',
+            'tracking_buyers',
+
+            /*
+                Tanda correctivos 24/8 (item 2): el asistente de IA y el escaneo de facturas
+                de compra tambien se otorgan de base. 'asistente_ia' ya esta en ExtencionSeeder;
+                'escaneo_factura_compra' NO, vive solo en su seeder standalone, que por eso se
+                corre aparte antes del sync (mismo mecanismo que 'whatsapp', ver run()).
+            */
+            'asistente_ia',
+            'escaneo_factura_compra',
+
+            /*
+                El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js),
+                no 'whatsapp_ia'. Sin 'whatsapp' el modulo no aparece nunca en el menu, aunque se
+                asigne 'whatsapp_ia' a mano. Van las dos juntas: 'whatsapp_ia' sola no tiene ningun
+                efecto visible porque el modulo que la usa ni se muestra. Mismo fix que ya tiene
+                DemoSetupHelper.
+            */
+            'whatsapp',
+            'whatsapp_ia',
         ];
     }
 
@@ -270,6 +350,12 @@ class UserSetupHelper
             'OnlinePriceTypeSeeder',
             'DepositMovementStatusSeeder',
             'CAPaymentMethodTypeSeeder',
+            // Tipos de metodo de pago de la TIENDA ONLINE. Es otro seeder que el `CA...` de
+            // arriba (ese es el de cuenta corriente) y hasta el 3/9/2026 no lo llamaba nadie:
+            // toda instalacion nueva quedaba con el desplegable "Tipo" vacio en
+            // ABM -> Tienda online -> Metodos de pago, o sea sin forma de dar de alta el cobro
+            // online. Los nombres parecidos taparon el hueco durante mucho tiempo.
+            'PaymentMethodTypeSeeder',
 
             'IvaSeeder',
             'MonedaSeeder',
@@ -316,6 +402,14 @@ class UserSetupHelper
                 create_user(), así que el dueño ya existe cuando este llega.
             */
             'GlobalSearchDefaultsSeeder',
+
+            /*
+                Respaldo idempotente: para cuando las 4 extensiones de IA (agregadas en
+                base_extencions()) ya esten enganchadas al usuario por el sync de mas arriba.
+                Si ya estan, las salta (ver su propio PHPDoc). Mismo fix que ya tiene
+                DemoSetupHelper.
+            */
+            'ExtencionesIaUserSeeder',
         ];
     }
 
@@ -402,6 +496,9 @@ class UserSetupHelper
 
         $online_configuration = [
             'online_price_type_id'      => 3,
+            // Pedido de Lucas (27/8/2026): la tienda nace con la plantilla ComercioCity, no con
+            // Moderno. Ver `online_template_id_comerciocity()`.
+            'online_template_id'        => self::online_template_id_comerciocity(),
             'register_to_buy'           => 1,
             'scroll_infinito_en_home'   => 1,
             'default_article_image_url' => 'http://empresa.local:8000/storage/169705209718205.jpg',
@@ -414,6 +511,31 @@ class UserSetupHelper
         ];
 
         OnlineConfiguration::create($online_configuration);
+    }
+
+    /**
+     * Id de la plantilla de diseño "ComercioCity" con la que arranca la tienda online.
+     *
+     * 🔴 SE RESUELVE POR SLUG Y NO CON UN NUMERO PELADO: `online_templates` se puebla con
+     * `OnlineTemplateSeeder`, que esta en `base_seeders()` y corre ANTES que `tienda()` dentro de
+     * `run()`, asi que la fila ya existe cuando esto se ejecuta. Atarse a la posicion que ocupa
+     * dentro de ese seeder es el acoplamiento que ya hubo que corregir en `DemoSetupHelper` con el
+     * criterio de precios de la tienda.
+     *
+     * Hasta el 27/8/2026 esta clave no se pasaba y la columna caia en su default de migracion, que
+     * es `1` = "Moderno". El fallback de abajo es `3`, la posicion que hoy ocupa 'comerciocity' en
+     * `OnlineTemplateSeeder`, y cubre una instancia armada por un camino que no lo haya corrido.
+     *
+     * El slug tiene que ser 'comerciocity' tal cual: `tienda-spa` arma la clase CSS concatenando
+     * 'plantilla-' + slug, y contra esa clase estan escritos todos los selectores de la plantilla.
+     *
+     * @return int
+     */
+    private static function online_template_id_comerciocity()
+    {
+        $id = OnlineTemplate::where('slug', 'comerciocity')->value('id');
+
+        return is_null($id) ? 3 : (int) $id;
     }
 
     /**

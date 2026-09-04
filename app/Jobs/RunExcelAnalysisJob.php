@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
+use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Models\ExcelAnalysisRun;
 use App\Models\User;
@@ -49,6 +50,27 @@ use Illuminate\Support\Facades\Log;
 class RunExcelAnalysisJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    /**
+     * Lo que ve el usuario cuando lo que se rompió fue la BASE DE DATOS.
+     *
+     * 🔴 Existe por el peor de los agujeros de esta misión:
+     * QueryException extends PDOException extends RuntimeException (verificado). Como los
+     * dos handlers de este job atajaban \RuntimeException y le pasaban el getMessage() crudo
+     * al usuario, CUALQUIER error de base durante el análisis le mostraba el SQL completo
+     * con los bindings:
+     *
+     *     SQLSTATE[HY000] [2002] No connection could be made... (SQL: select * from
+     *     `providers` where `user_id` = 5)
+     *
+     * O sea esquema y datos del comercio, no una ruta. Por eso el catch de QueryException va
+     * SIEMPRE ANTES del de \RuntimeException: el orden es todo el arreglo. Si alguien los da
+     * vuelta, vuelve el agujero y no hay nada que avise. tests/Import/MensajesDeErrorTest.php
+     * lo mide.
+     *
+     * @var string
+     */
+    const MENSAJE_ERROR_DE_BASE = 'No pudimos guardar el resultado del análisis. Volvé a intentar en unos minutos; si sigue pasando, avisanos.';
 
     /**
      * Id de la corrida (excel_analysis_runs.id) a procesar.
@@ -164,6 +186,26 @@ class RunExcelAnalysisJob implements ShouldQueue
 
         try {
             /*
+             * Hoja elegida y fila de encabezado, resueltas antes de tocar el analyzer.
+             *
+             * Las tres claves del payload son opcionales y con default (§1.4 del plan): una
+             * corrida creada por un cliente viejo —la SPA sin desplegar, o AdminSync— no las
+             * tiene, y entonces esto da hoja 0 y fila_encabezado null, que es el
+             * comportamiento de siempre.
+             *
+             * La resolución por NOMBRE se hace acá y no adentro del analyzer porque este es el
+             * único punto que ve lo que mandó el navegador. El índice lo calculó SheetJS y el
+             * que lee es OpenSpout: si el libro tiene chartsheets los dos pueden no coincidir,
+             * y elegir la hoja equivocada no se ve en pantalla (ver T11 del plan).
+             */
+            $opciones = [
+                'hoja'            => $this->resolver_indice_de_hoja($excel_full_path, $payload),
+                'fila_encabezado' => isset($payload['header_row']) && is_numeric($payload['header_row'])
+                                        ? (int) $payload['header_row']
+                                        : null,
+            ];
+
+            /*
              * Elegimos el analizador según el modelo indicado: misma cadena de
              * if que tenía AiExcelImportController::analyze() antes de este
              * cambio, sin modificar ninguno de los analyzers.
@@ -183,7 +225,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'paso'     => 'Analizando el archivo con IA…',
             ]);
 
-            $analysis = $analyzer->analyze($excel_full_path, $original_filename);
+            $analysis = $analyzer->analyze($excel_full_path, $original_filename, $opciones);
 
             /*
              * Armamos el array de resultado con exactamente las mismas claves y
@@ -205,6 +247,23 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'cadena_identificacion' => $analysis['cadena_identificacion'] ?? null,
                 'nombres_duplicados'    => $analysis['nombres_duplicados'] ?? null,
                 'formatos_numericos'    => $analysis['formatos_numericos'] ?? null,
+
+                /*
+                 * 🔴 Estos cinco nombres de clave están congelados y la SPA ya está codeada
+                 * contra ellos: si alguno se renombra acá, el modal no rompe — se queda mudo,
+                 * que es peor. El selector de hoja no aparece, la alerta de columnas sin nombre
+                 * no aparece, y el usuario importa a ciegas.
+                 *
+                 * Los produce el analyzer adentro de analyze(); este job solo los deja pasar,
+                 * sin filtrarlos ni reinterpretarlos. Los defaults cubren dos casos reales:
+                 * model=client/provider, cuyos analyzers pueden no devolver todo, y las corridas
+                 * viejas que quedaron guardadas antes de esta misión.
+                 */
+                'hojas'                 => $analysis['hojas'] ?? [],
+                'hoja_elegida'          => $analysis['hoja_elegida'] ?? null,
+                'encabezado_detectado'  => $analysis['encabezado_detectado'] ?? null,
+                'columnas_sin_nombre'   => $analysis['columnas_sin_nombre'] ?? [],
+                'fusiones_aplicadas'    => $analysis['fusiones_aplicadas'] ?? 0,
             ];
 
             /*
@@ -229,6 +288,35 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $this->notificar_fin($run);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /*
+             * 🔴 ESTE CATCH VA ANTES DEL DE \RuntimeException Y NO ES CASUALIDAD.
+             * QueryException extiende PDOException, que extiende RuntimeException. Puesto
+             * después, no se ejecuta nunca y el catch de abajo le manda el SQL con los
+             * bindings a la pantalla del comerciante. Ver MENSAJE_ERROR_DE_BASE.
+             */
+            Log::error('RunExcelAnalysisJob: error de base durante el análisis', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+                'trace'                  => $e->getTraceAsString(),
+            ]);
+
+            $this->finalizar_con_error($run, self::MENSAJE_ERROR_DE_BASE);
+
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            /*
+             * Timeout o corte de conexión contra Anthropic. Los analizadores ya lo traducen
+             * adentro de call_claude(); esto es la red de atrás, para cualquier otra llamada
+             * HTTP del pipeline. ConnectionException extiende \Exception y NO
+             * \RuntimeException (verificado), así que sin esto caía en el \Throwable de abajo.
+             */
+            Log::warning('RunExcelAnalysisJob: no hubo respuesta del servicio de IA', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, AiExcelAnalyzer::MENSAJE_IA_SIN_RESPUESTA);
+
         } catch (\RuntimeException $e) {
             /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */
             Log::warning('RunExcelAnalysisJob: error de análisis', [
@@ -245,7 +333,19 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'trace'                  => $e->getTraceAsString(),
             ]);
 
-            $this->finalizar_con_error($run, 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage());
+            /*
+             * 🔴 El texto que ve el usuario NO lleva $e->getMessage().
+             *
+             * Adentro viaja la ruta absoluta del servidor: la IOException de OpenSpout con un
+             * .xls viejo dice "Could not open C:\...\storage\app\imported_files\ai_import_1234.xlsx
+             * for reading!", y hasta esta misión eso se concatenaba acá y aparecía tal cual en la
+             * pantalla del cliente. El detalle completo sigue en el Log::error de arriba.
+             *
+             * Los errores que SÍ tienen algo útil para decirle al usuario llegan como
+             * \RuntimeException (ver ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE) y los toma el
+             * catch de arriba, que guarda ese mensaje tal cual porque fue escrito para él.
+             */
+            $this->finalizar_con_error($run, 'Ocurrió un error inesperado al analizar el archivo. Volvé a intentar; si sigue pasando, avisanos.');
         }
     }
 
@@ -298,6 +398,23 @@ class RunExcelAnalysisJob implements ShouldQueue
             }
         }
 
+        /*
+         * Misma hoja y misma fila de encabezado con las que se analizó el archivo en el paso 1.
+         * Opcionales con default: una corrida vieja (o un cliente que no las manda) recalcula
+         * sobre la primera hoja con detección automática, igual que antes de esta misión.
+         *
+         * Acá no hace falta resolver por nombre: /get-recomendacion recibe el índice que ya se
+         * eligió en el paso 1, no el nombre de la hoja.
+         */
+        $opciones = [
+            'hoja'            => isset($payload['hoja']) && is_numeric($payload['hoja'])
+                                    ? (int) $payload['hoja']
+                                    : 0,
+            'fila_encabezado' => isset($payload['header_row']) && is_numeric($payload['header_row'])
+                                    ? (int) $payload['header_row']
+                                    : null,
+        ];
+
         try {
             /* Hito de progreso: por entrar a la parte más pesada del recorrido del archivo. */
             $run->update([
@@ -315,7 +432,8 @@ class RunExcelAnalysisJob implements ShouldQueue
                 $bar_code_column_index,
                 $provider_code_column_index,
                 $provider_id,
-                $run->user_id
+                $run->user_id,
+                $opciones
             );
 
             $analyzer = new AiExcelAnalyzer($run->user_id);
@@ -328,7 +446,13 @@ class RunExcelAnalysisJob implements ShouldQueue
             $formatos_numericos  = ExcelNumericFormatStats::analyze(
                 $excel_full_path,
                 $numeric_columns_map['indices'],
-                $numeric_columns_map['nombres']
+                $numeric_columns_map['nombres'],
+                /*
+                 * $max_ejemplos explícito con su valor por defecto: PHP 7.4 no tiene argumentos
+                 * nombrados, así que para llegar al 5º parámetro hay que pasar el 4º sí o sí.
+                 */
+                6,
+                $opciones
             );
 
             /*
@@ -338,7 +462,15 @@ class RunExcelAnalysisJob implements ShouldQueue
             $duplicados_con_nombres = $analyzer->build_duplicados_con_nombres(
                 $excel_full_path,
                 $stats['detalle_provider_codes_duplicados'] ?? [],
-                $column_mapping
+                $column_mapping,
+                /*
+                 * Misma hoja y mismo encabezado que el resto del paso 2. Si esto quedara en el
+                 * default, los nombres de los artículos repetidos saldrían de la hoja 0 mientras
+                 * los códigos salieron de la elegida: Claude recomendaría una política mirando
+                 * nombres de otra planilla, y en pantalla no habría un solo indicio.
+                 */
+                $opciones['hoja'],
+                $opciones['fila_encabezado']
             );
 
             /* Hito de progreso: por entrar a la llamada a Claude. */
@@ -372,6 +504,25 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $this->notificar_fin($run);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /* Mismo motivo y mismo orden que en handle_analisis(). Ver MENSAJE_ERROR_DE_BASE. */
+            Log::error('RunExcelAnalysisJob: error de base durante la recomendación', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+                'trace'                  => $e->getTraceAsString(),
+            ]);
+
+            $this->finalizar_con_error($run, self::MENSAJE_ERROR_DE_BASE);
+
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            /* Igual que en handle_analisis(): extiende \Exception, no \RuntimeException. */
+            Log::warning('RunExcelAnalysisJob: no hubo respuesta del servicio de IA', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+
+            $this->finalizar_con_error($run, AiExcelAnalyzer::MENSAJE_IA_SIN_RESPUESTA);
+
         } catch (\RuntimeException $e) {
             /* Mismo caso que antes devolvía 422 con el mensaje propio del analyzer. */
             Log::warning('RunExcelAnalysisJob: error de recomendación', [
@@ -388,7 +539,8 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'trace'                  => $e->getTraceAsString(),
             ]);
 
-            $this->finalizar_con_error($run, 'Error inesperado al generar la recomendación: ' . $e->getMessage());
+            /* Mismo criterio que handle_analisis(): la ruta del servidor va al log, no a la pantalla. */
+            $this->finalizar_con_error($run, 'Ocurrió un error inesperado al generar la recomendación. Volvé a intentar; si sigue pasando, avisanos.');
         }
     }
 
@@ -534,7 +686,46 @@ class RunExcelAnalysisJob implements ShouldQueue
 
         /* Si por alguna carrera rarísima ya quedó "listo", no lo pisamos con error. */
         if (!is_null($run) && $run->estado !== 'listo') {
-            $this->finalizar_con_error($run, 'El análisis falló inesperadamente: ' . $exception->getMessage());
+            /*
+             * Sin $exception->getMessage(), mismo motivo que los catch de handle_analisis() y
+             * handle_recomendacion(): por acá también pasan excepciones de OpenSpout con la ruta
+             * absoluta del servidor adentro, y este texto se le muestra al cliente. El detalle,
+             * con trace, quedó en el Log::error de arriba.
+             */
+            $this->finalizar_con_error($run, 'El análisis falló inesperadamente. Volvé a intentar; si sigue pasando, avisanos.');
         }
+    }
+
+    /**
+     * Índice 0-based de la hoja a analizar, resuelto a partir de lo que mandó el cliente.
+     *
+     * Prioridad: nombre exacto -> índice en rango -> 0, que es la de
+     * ExcelWorkbookReader::resolver_indice().
+     *
+     * El atajo del principio no es una micro-optimización: `hoja` ausente o 0 y sin
+     * `hoja_nombre` es EXACTAMENTE el caso del cliente viejo (SPA sin desplegar, AdminSync),
+     * y en ese caso no se abre el libro de más. resolver_indice() lista las hojas, lo que
+     * implica abrir el libro una vez más: se paga sólo cuando el usuario efectivamente eligió
+     * una hoja.
+     *
+     * @param  string $excel_full_path
+     * @param  array  $payload          payload de la corrida
+     * @return int
+     *
+     * @throws \RuntimeException  si el archivo no se puede abrir (mensaje limpio, sin la ruta)
+     */
+    protected function resolver_indice_de_hoja($excel_full_path, array $payload)
+    {
+        $hoja = isset($payload['hoja']) && is_numeric($payload['hoja']) ? (int) $payload['hoja'] : 0;
+
+        $hoja_nombre = isset($payload['hoja_nombre']) && is_string($payload['hoja_nombre']) && trim($payload['hoja_nombre']) !== ''
+            ? trim($payload['hoja_nombre'])
+            : null;
+
+        if ($hoja <= 0 && is_null($hoja_nombre)) {
+            return 0;
+        }
+
+        return ExcelWorkbookReader::resolver_indice($excel_full_path, $hoja, $hoja_nombre);
     }
 }

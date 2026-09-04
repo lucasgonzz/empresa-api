@@ -588,8 +588,14 @@ class ProcessRow {
         return $data;
     }
 
+    /*
+     * Desde la mision `listas-de-precio-por-defecto-al-importar` (24/8/2026) este flag YA NO es
+     * el interruptor global de las listas: gobierna solo el camino de ACTUALIZACION de un
+     * articulo que ya existe. Para los articulos que la importacion crea, el criterio es
+     * "siempre, si la cuenta usa listas" (ver obtener_price_types()).
+     */
     function set_se_importaron_price_types() {
-                
+
         foreach ($this->price_types as $price_type) {
 
             $row_setear_name = $this->get_price_type_row_name('setear_precio_final_', $price_type);
@@ -1323,7 +1329,9 @@ class ProcessRow {
                     el % por defecto del price_type 
             */
             $this->iniciar();
-            $price_types_data = $this->obtener_price_types($row);
+            /* El true final es "esta fila crea un articulo": pide las listas por defecto aunque
+               el Excel no traiga ninguna columna de lista. Ver obtener_price_types(). */
+            $price_types_data = $this->obtener_price_types($row, null, true);
             $data['price_types_data'] = $price_types_data;
             $this->terminar('crear: obtener_price_types');
 
@@ -1544,7 +1552,10 @@ class ProcessRow {
         $baseline_para_diffs = new Article($merged);
 
         $this->iniciar();
-        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs);
+        /* $baseline_para_diffs es un Article NO persistido: esta fila tambien termina creando.
+           Sin el true, obtener_price_types() devolveria [] y ese [] se pisa entero abajo, o sea
+           que esta fila le borraria al articulo las listas que la fila anterior le consiguio. */
+        $price_types_data = $this->obtener_price_types($row, $baseline_para_diffs, true);
         $merged['price_types_data'] = $price_types_data;
         $this->terminar('merge pendiente: obtener_price_types');
 
@@ -1836,6 +1847,9 @@ class ProcessRow {
 
 
         $this->iniciar();
+        /* Sin el tercer argumento a proposito: este es el UNICO call site de un articulo
+           persistido de verdad (los fakes de la cola de creacion se desvian antes, al merge), y
+           el alcance que fijo Lucas es solo lo que la importacion crea. */
         $price_types_data = $this->obtener_price_types($row, $articulo_ya_creado);
         $price_types_data = $this->filter_only_changed_price_types($articulo_ya_creado, $price_types_data);
         if (!empty($price_types_data)) {
@@ -2367,9 +2381,34 @@ class ProcessRow {
 
         // --- 2. Es un artículo real de BD, ya encolado en articulosParaActualizar ---
         $match_key_buscado = $campo . '|' . $valor;
-        $idx_encontrado = null;
 
-        foreach ($this->articulosParaActualizar as $idx => $art) {
+        /*
+         * TODOS los articulos que esa clave dejo encolados, no uno solo.
+         *
+         * 🔴 Hasta el 2/9/2026 esto se quedaba con la ULTIMA entrada que matcheaba y
+         * reprocesaba UN articulo. Con un provider_code que en la base pertenece a VARIOS
+         * articulos y la opcion "Actualizar todos los articulos que tengan ese codigo"
+         * (permitir_provider_code_repetido = 1), la primera fila del Excel encola una
+         * entrada por cada articulo matcheado -- y la segunda fila repetida le aplicaba sus
+         * datos a uno solo. Resultado: la mitad de los articulos quedaba con la fila vieja,
+         * mientras el reporte de sobrescritura le decia al usuario que la ultima habia
+         * ganado. Las dos opciones prometen lo contrario: "actualiza TODOS los que tengan
+         * ese codigo" + "queda la informacion de la ULTIMA aparicion".
+         *
+         * Se deduplica por article_id porque procesar_articulo_ya_creado() APPENDEA una
+         * entrada nueva por fila en vez de pisar la anterior (ver el comentario de abajo):
+         * el mismo articulo aparece varias veces en la cola y no hay que reprocesarlo dos
+         * veces por eso.
+         *
+         * Lo encontro el chequeo independiente de la mision fix-ultima-gana-con-actualizar-todos,
+         * y era una regresion introducida por esa misma mision: antes del arreglo del escalon 4,
+         * la segunda fila ni siquiera se detectaba como repetida y volvia a pasar por
+         * find_with_index(), que si actualizaba a los dos. Lo cubre
+         * RepetidosConPermitirRepetidoTest::test_repetido_en_archivo_y_en_base_actualiza_los_dos_con_la_ultima_fila.
+         */
+        $ids_encontrados = [];
+
+        foreach ($this->articulosParaActualizar as $art) {
 
             $coincide = false;
 
@@ -2379,63 +2418,62 @@ class ProcessRow {
                 $coincide = true;
             }
 
-            if ($coincide) {
-                // Sin break: se queda con la ÚLTIMA entrada que matchea, no la primera
-                // (mismo motivo que buscar_fila_origen_repetida()).
-                $idx_encontrado = $idx;
+            if ($coincide && !empty($art['id'])) {
+                $ids_encontrados[(int) $art['id']] = true;
             }
         }
 
-        if (is_null($idx_encontrado)) {
+        if (empty($ids_encontrados)) {
             $this->log('merge_fila_duplicada: WARNING — ' . $campo . '=' . $valor . ' no encontrado en ninguna cola');
             return;
         }
 
-        $article_id = $this->articulosParaActualizar[$idx_encontrado]['id'];
+        foreach (array_keys($ids_encontrados) as $article_id) {
 
-        /*
-         * Recargar el Article REAL desde BD (no un array_merge superficial) para no
-         * perder el calculo de diffs de stock/price_types de procesar_articulo_ya_creado().
-         * Ese método hace un push() de una entrada NUEVA a articulosParaActualizar (no
-         * pisa la entrada anterior in-place): es intencional, ActualizarBBDD::
-         * merge_articulos_para_actualizar_ultima_fila_gana() ya fusiona por id con
-         * "última fila gana" antes de armar el UPDATE. Lo que hay que garantizar acá
-         * es que la entrada vigente para este id quede marcada con __match_key y
-         * __fila_origen correctos, para que buscar_fila_origen_repetida() encadene
-         * bien la PRÓXIMA repetición (ver bloque de abajo).
-         */
-        $articulo_real = \App\Models\Article::find($article_id);
+            /*
+             * Recargar el Article REAL desde BD (no un array_merge superficial) para no
+             * perder el calculo de diffs de stock/price_types de procesar_articulo_ya_creado().
+             * Ese método hace un push() de una entrada NUEVA a articulosParaActualizar (no
+             * pisa la entrada anterior in-place): es intencional, ActualizarBBDD::
+             * merge_articulos_para_actualizar_ultima_fila_gana() ya fusiona por id con
+             * "última fila gana" antes de armar el UPDATE. Lo que hay que garantizar acá
+             * es que la entrada vigente para este id quede marcada con __match_key y
+             * __fila_origen correctos, para que buscar_fila_origen_repetida() encadene
+             * bien la PRÓXIMA repetición (ver bloque de abajo).
+             */
+            $articulo_real = \App\Models\Article::find($article_id);
 
-        if (is_null($articulo_real)) {
-            $this->log('merge_fila_duplicada: WARNING — articulo id=' . $article_id . ' no encontrado en BD para ' . $campo . '=' . $valor);
-            return;
-        }
-
-        $this->procesar_articulo_ya_creado($articulo_real, $data, $row);
-
-        /*
-         * FIX (prompt 03, grupo 265, corrección de checker): procesar_articulo_ya_creado()
-         * ya deja __match_key/__fila_origen en la entrada que appendea SI hubo cambios
-         * (get_modified_fields no vacío). Si no hubo cambios, no se appendeó nada nuevo
-         * y la entrada vigente sigue siendo la anterior con su __fila_origen viejo: se
-         * re-marca acá explícitamente para que la fila actual quede como origen vigente
-         * de todas formas (esta fila "ganó" la repetición aunque no haya cambiado ningún
-         * valor concreto).
-         */
-        $idx_final = null;
-        foreach ($this->articulosParaActualizar as $idx => $art) {
-            if ((int) ($art['id'] ?? 0) === (int) $article_id) {
-                // Última entrada con este id: la recién appendeada, o la única si no hubo cambios.
-                $idx_final = $idx;
+            if (is_null($articulo_real)) {
+                $this->log('merge_fila_duplicada: WARNING — articulo id=' . $article_id . ' no encontrado en BD para ' . $campo . '=' . $valor);
+                continue;
             }
-        }
 
-        if (!is_null($idx_final)) {
-            $this->articulosParaActualizar[$idx_final]['__match_key'] = $match_key_buscado;
-            $this->articulosParaActualizar[$idx_final]['__fila_origen'] = $this->fila_actual;
-        }
+            $this->procesar_articulo_ya_creado($articulo_real, $data, $row);
 
-        $this->log('merge_fila_duplicada: ' . $campo . '=' . $valor . ' reprocesado via procesar_articulo_ya_creado (id=' . $article_id . ')');
+            /*
+             * FIX (prompt 03, grupo 265, corrección de checker): procesar_articulo_ya_creado()
+             * ya deja __match_key/__fila_origen en la entrada que appendea SI hubo cambios
+             * (get_modified_fields no vacío). Si no hubo cambios, no se appendeó nada nuevo
+             * y la entrada vigente sigue siendo la anterior con su __fila_origen viejo: se
+             * re-marca acá explícitamente para que la fila actual quede como origen vigente
+             * de todas formas (esta fila "ganó" la repetición aunque no haya cambiado ningún
+             * valor concreto).
+             */
+            $idx_final = null;
+            foreach ($this->articulosParaActualizar as $idx => $art) {
+                if ((int) ($art['id'] ?? 0) === (int) $article_id) {
+                    // Última entrada con este id: la recién appendeada, o la única si no hubo cambios.
+                    $idx_final = $idx;
+                }
+            }
+
+            if (!is_null($idx_final)) {
+                $this->articulosParaActualizar[$idx_final]['__match_key'] = $match_key_buscado;
+                $this->articulosParaActualizar[$idx_final]['__fila_origen'] = $this->fila_actual;
+            }
+
+            $this->log('merge_fila_duplicada: ' . $campo . '=' . $valor . ' reprocesado via procesar_articulo_ya_creado (id=' . $article_id . ')');
+        }
     }
 
     /**
@@ -2552,19 +2590,16 @@ class ProcessRow {
      *   1) id            -> compara. return.
      *   2) bar_code      -> compara. return.
      *   3) sku           -> compara. return.
-     *   4) provider_code -> compara, solo si !permitir_provider_code_repetido. return.
-     *   5) name          -> logica propia (contraste con provider_code cuando los
-     *                        repetidos estan habilitados).
+     *   4) provider_code -> compara. return.
+     *   5) name          -> solo se alcanza si la fila NO trae provider_code.
      *
-     * El codigo de proveedor es el UNICO escalon con bandera de configuracion
-     * (permitir_provider_code_repetido) porque es la unica de estas columnas que
-     * puede repetirse legitimamente entre productos distintos (ej. varios articulos
-     * de un mismo proveedor bajo el mismo codigo de catalogo). id, bar_code y sku
-     * identifican al producto por si solos: si la fila ya trae valor en alguno de
-     * esos tres, ese valor la identifica y un provider_code repetido es irrelevante
-     * (no llega a evaluarse el escalon 4). La pregunta "¿permito repetidos de
-     * provider_code?" solo tiene sentido cuando el provider_code es lo unico que
-     * identifica a la fila.
+     * 🔴 NINGUN escalon mira aca la configuracion. Este metodo DETECTA que dos filas
+     * son el mismo producto; QUE HACER con esa deteccion se decide una capa mas
+     * arriba, en procesar() (ver $tratar_repeticion_como_producto_distinto, que lee
+     * filas_repetidas_del_archivo). Hasta el 2/9/2026 el escalon 4 estaba condicionado
+     * por permitir_provider_code_repetido y ese era un defecto: ese flag responde otra
+     * pregunta -- "el codigo puede estar repetido entre articulos que YA EXISTEN en la
+     * base" -- y apagaba la deteccion DENTRO del archivo. Detalle abajo, en el escalon 4.
      *
      * Comparacion con === (no ==): los codigos vienen como string desde el Excel y
      * un == haria que '0012' y '12' matcheen.
@@ -2645,8 +2680,33 @@ class ProcessRow {
             return false;
         }
 
-        // 4) Coincidencia por provider_code (solo si NO se permiten repetidos)
-        if (!empty($data['provider_code']) && !$codigos_repetidos) {
+        /*
+         * 4) Coincidencia por provider_code dentro del MISMO archivo.
+         *
+         * 🔴 NO volver a colgar este escalon de permitir_provider_code_repetido. Lo estuvo hasta
+         * el 2/9/2026 y ese era el defecto: elegir "Es el mismo producto, cargado mas de una vez"
+         * (filas_repetidas_del_archivo = ultima_gana) junto con "Actualizar todos los articulos
+         * que tengan ese codigo" (que viaja como permitir_provider_code_repetido = 1) NO fusionaba
+         * las filas repetidas -- creaba una por fila, al reves de lo que la pantalla promete.
+         * Son dos preguntas distintas: ese flag habla de la BASE (¿el codigo puede estar repetido
+         * entre articulos que ya existen?) y este metodo decide sobre el ARCHIVO (¿estas dos filas
+         * son el mismo producto?). La pregunta del archivo la contesta filas_repetidas_del_archivo
+         * y se aplica en procesar(), no aca.
+         *
+         * 🔴 Y tampoco condicionarlo por filas_repetidas_del_archivo === 'ultima_gana', que es la
+         * simplificacion tentadora y parece la correccion natural: apagar el escalon con
+         * 'productos_distintos' NO devuelve la fila al camino "no repetida", la hace caer al
+         * escalon 5 (name), donde dos filas con el mismo nombre se marcan repetidas y procesar()
+         * las DESCARTA (bucket fila_repetida_en_excel, gana la primera) -- exactamente lo contrario
+         * de lo que el usuario pidio. Con la deteccion siempre prendida, las cuatro combinaciones
+         * de (permitir_provider_code_repetido x filas_repetidas_del_archivo) dan bien.
+         *
+         * Medido el 2/9/2026: 07_repetidos_en_el_archivo.xlsx NO alcanza para cubrir esto (sus
+         * filas repetidas tienen nombres DISTINTOS, asi que la variante equivocada quedaria verde
+         * por suerte del fixture). Lo cubre 18_pc_repetido_mismo_nombre.xlsx, en
+         * RepetidosConPermitirRepetidoTest.
+         */
+        if (!empty($data['provider_code'])) {
 
             // Ver comentario del escalón bar_code: mismo motivo y misma prioridad de __match_key.
             if (isset($art['__match_key'])) {
@@ -2665,17 +2725,29 @@ class ProcessRow {
             return false;
         }
 
-        // 5) Coincidencia por name
+        /*
+         * 5) Coincidencia por name.
+         *
+         * Desde el fix del 2/9/2026 este escalon solo se alcanza cuando la fila NO trae
+         * provider_code: si lo trae, el escalon 4 decide y retorna siempre. O sea que el
+         * if de $codigos_repetidos de aca abajo quedo sin efecto observable -- sus dos
+         * ramas terminan marcando 'name' igual, porque la rama que las diferenciaba
+         * (comparar los dos provider_code) es inalcanzable con $data['provider_code'] vacio.
+         *
+         * Se deja en pie a proposito y no se borra en el mismo commit que el arreglo de
+         * comportamiento: un diff que mezcla las dos cosas es mucho mas caro de revisar.
+         * Limpiarlo es una tarea aparte, y cuando se haga hay que mirar tambien que este
+         * escalon NUNCA mergea (procesar() lo manda al descarte, gana la PRIMERA fila), que
+         * es una asimetria propia y anterior a este fix.
+         */
         if (!empty($data['name'])) {
 
             if (!empty($art['name']) && $art['name'] === $data['name']) {
 
-                // --- REGLA NUEVA ---
-                // Si se permiten codigos de proveedor repetidos, SOLO marcamos repetido
-                // cuando el provider_code también coincide (si ambos existen).
                 if ($codigos_repetidos) {
 
-                    // Si ambos tienen provider_code y SON IGUALES => repetido = true
+                    // Rama inalcanzable desde el fix del 2/9/2026 (ver el comentario de arriba):
+                    // si la fila trajera provider_code, el escalon 4 ya habria retornado.
                     if (!empty($data['provider_code']) && !empty($art['provider_code'])) {
                         if ($art['provider_code'] === $data['provider_code']) {
                             $this->escalon_repeticion = 'name';
@@ -3262,13 +3334,70 @@ class ProcessRow {
     }
 
 
-    private function obtener_price_types($row, $articulo_ya_creado = null) {
+    /**
+     * Arma las filas de `article_price_type` que le corresponden a esta fila del Excel.
+     *
+     * @param  array                    $row                  Fila del Excel.
+     * @param  \App\Models\Article|null $articulo_ya_creado   Base contra la que se diffean los
+     *                                                        valores. OJO: puede ser un modelo
+     *                                                        NO persistido (ver el call site del
+     *                                                        merge, ~1547).
+     * @param  bool                     $es_articulo_a_crear  true si esta fila termina en un
+     *                                                        articulo NUEVO, aunque venga con
+     *                                                        $articulo_ya_creado cargado.
+     * @return array
+     */
+    private function obtener_price_types($row, $articulo_ya_creado = null, $es_articulo_a_crear = false) {
         // $this->log('obtener_price_types: '.UserHelper::uses_listas_de_precio($this->user));
         $price_types_data = [];
 
+        /*
+         * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026), pedido de Lucas: un
+         * articulo que la importacion CREA tiene que quedar relacionado con TODAS las listas de
+         * la cuenta aunque el Excel no traiga ni una sola columna de lista, con el margen por
+         * defecto de cada lista. Los tres valores del pivot viajan en null y los defaults los
+         * resuelve la capa de abajo: ActualizarBBDD::get_price_type_percetange(),
+         * get_setear_precio_final() y get_incluir_en_excel_para_clientes().
+         *
+         * Antes de esto el `&& $this->se_importaron_price_types` mandaba solo, y ese flag se
+         * prende unicamente si el mapeo trae alguna columna %_<lista>, $_final_<lista> o
+         * setear_precio_final_<lista>. O sea: importar sin hablar de listas dejaba al articulo
+         * nuevo sin ninguna fila en article_price_type. Con la extension `ventas_en_dolares`
+         * eso se veia completo -- CERO listas --, porque el otro camino que relaciona
+         * (ArticlePricesHelper::aplicar_precios_segun_listas_de_precios(), via
+         * ActualizarBBDD::set_precios_finales()) no corre para esas cuentas: setFinalPrice
+         * rutea a ArticlePriceTypeMonedaHelper, que no toca article_price_type en ningun lado.
+         *
+         * 🔴 Ojo con "simplificar" esto de las dos maneras obvias, porque las dos estan mal:
+         *
+         * 1) Sacar $this->se_importaron_price_types y dejar solo uses_listas_de_precio(). Eso le
+         *    mete price_types_data tambien a los articulos YA EXISTENTES, que terminan en el
+         *    UPDATE masivo de ActualizarBBDD::asignar_price_types() y en los diffs de
+         *    track_price_type_relation_diff(). Una importacion que no habla de listas pasaria a
+         *    reescribir los pivots de miles de articulos y a llenar el historial de cambios que
+         *    nadie pidio. El alcance que fijo Lucas es SOLO lo que se crea.
+         *    Lo cubre ListasDePrecioPorDefectoTest::test_los_articulos_que_ya_existian_no_cambian_de_listas.
+         *
+         * 2) Deducir el flag de $articulo_ya_creado (un `if (!$articulo_ya_creado)`) en vez de
+         *    recibirlo. El call site del merge (~1547) le pasa un `new Article($merged)` que NO
+         *    esta persistido: es la base para diffear la fila actual contra lo que ya quedo en
+         *    la cola de creacion. Con la deduccion, esa fila se trataria como articulo existente,
+         *    devolveria [] y ese [] se pisa ENTERO sobre $merged['price_types_data'] -- o sea que
+         *    una segunda fila del mismo codigo le BORRARIA las listas que la primera le habia
+         *    conseguido. Por eso el flag es un parametro explicito.
+         *    Lo cubre ListasDePrecioPorDefectoTest::test_dos_filas_que_crean_el_mismo_articulo_no_duplican_las_listas.
+         *
+         * Y esto no inventa un criterio nuevo: si el usuario mapea UNA sola columna de UNA sola
+         * lista, el foreach de abajo ya recorre TODAS las listas y las que no tienen columna
+         * quedan con los tres valores en null, o sea con el default. El cambio es que "cero
+         * columnas" se comporte igual que "una columna".
+         */
         if (
             UserHelper::uses_listas_de_precio($this->user)
-            && $this->se_importaron_price_types
+            && (
+                $this->se_importaron_price_types
+                || $es_articulo_a_crear
+            )
         ) {
 
             foreach ($this->price_types as $price_type) {
@@ -3382,6 +3511,28 @@ class ProcessRow {
                 'setear_precio_final'   => !is_null($setear) ? $setear : null,
                 'percentage'            => !is_null($percentage) ? $percentage : null,
                 'final_price'           => !is_null($final_price) ? $final_price : null,
+
+                /*
+                 * Mision `listas-de-precio-por-defecto-al-importar` (24/8/2026). Marca las filas
+                 * que salen del camino nuevo: articulo que se crea y Excel que NO trae ninguna
+                 * columna de lista. Con el flag prendido, ActualizarBBDD::get_setear_precio_final()
+                 * NO propaga el `setear_precio_final` de la lista.
+                 *
+                 * 🔴 Por que, medido el 24/8/2026 y no razonado: propagarlo dejaba el precio de
+                 * esa lista CONGELADO. La secuencia es asignar_price_types() inserta el pivot con
+                 * setear=1 y final_price NULL, despues set_precios_finales() calcula el precio por
+                 * margen y lo escribe en final_price, y a partir de ahi
+                 * ArticlePricesHelper::aplicar_precios_segun_listas_de_precios() (linea ~386) lo
+                 * lee como "precio fijado a mano" y deriva el margen al reves. Al duplicar el
+                 * costo de un articulo importado, la lista con setear=1 quedaba clavada en 169.40
+                 * con margen -30%, mientras la lista sin la bandera pasaba de 157.30 a 314.60.
+                 *
+                 * El punto es que ese precio NO lo fijo nadie a mano: lo calculo el sistema con el
+                 * margen por defecto. Un Excel que no habla de listas no puede estar fijando un
+                 * precio final. Cuando el Excel SI trae columnas de lista, el flag queda en false
+                 * y se propaga el default de la lista, exactamente como antes.
+                 */
+                'sin_datos_de_lista_en_el_excel' => !$this->se_importaron_price_types,
             ]
         ];
         return $price_types_data;

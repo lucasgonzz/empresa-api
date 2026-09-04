@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
+use App\Jobs\RunExcelAnalysisJob;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -105,6 +106,25 @@ class AiExcelImportController extends Controller
                 'row_count'           => $analysis['row_count'] ?? 0,
             ], 200);
 
+        } catch (\Illuminate\Database\QueryException $e) {
+            /*
+             * 🔴 VA ANTES DEL CATCH DE \RuntimeException Y NO ES CASUALIDAD.
+             * QueryException extiende PDOException, que extiende RuntimeException: puesto
+             * después no corre nunca, y el catch de abajo devuelve el getMessage() tal cual,
+             * o sea el SQL con los bindings. Y este controlador es el que le contesta a
+             * admin-api, así que ese texto termina en lo que el admin le muestra al cliente.
+             * Ver RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE.
+             */
+            Log::error('AdminSync\\AiExcelImportController::analyze - error de base', [
+                'message' => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+                'user_id' => $user_id,
+            ]);
+
+            return response()->json([
+                'message' => RunExcelAnalysisJob::MENSAJE_ERROR_DE_BASE,
+            ], 500);
+
         } catch (\RuntimeException $e) {
             Log::warning('AdminSync\\AiExcelImportController::analyze - error de análisis', [
                 'message' => $e->getMessage(),
@@ -122,8 +142,13 @@ class AiExcelImportController extends Controller
                 'user_id' => $user_id,
             ]);
 
+            /*
+             * Sin $e->getMessage(): adentro viaja la ruta absoluta del servidor. Del otro lado
+             * de este endpoint hay un admin de ComercioCity, no el comerciante, por eso el
+             * cierre es "avisá al equipo" y no "avisanos".
+             */
             return response()->json([
-                'message' => 'Ocurrió un error inesperado al analizar el archivo: ' . $e->getMessage(),
+                'message' => 'No pudimos analizar el archivo. Revisá que sea un Excel válido y volvé a intentar; si sigue pasando, avisá al equipo.',
             ], 500);
         }
     }
@@ -287,8 +312,9 @@ class AiExcelImportController extends Controller
                 'user_id' => $user_id,
             ]);
 
+            /* Mismo criterio que analyze(): el detalle técnico va al log, no a la respuesta. */
             return response()->json([
-                'message' => 'Ocurrió un error al importar clientes: ' . $e->getMessage(),
+                'message' => 'No pudimos importar los clientes de este archivo. Volvé a intentar; si sigue pasando, avisá al equipo.',
             ], 500);
         }
     }
@@ -352,8 +378,9 @@ class AiExcelImportController extends Controller
                 'user_id' => $user_id,
             ]);
 
+            /* Mismo criterio que analyze(): el detalle técnico va al log, no a la respuesta. */
             return response()->json([
-                'message' => 'Ocurrió un error al importar proveedores: ' . $e->getMessage(),
+                'message' => 'No pudimos importar los proveedores de este archivo. Volvé a intentar; si sigue pasando, avisá al equipo.',
             ], 500);
         }
     }

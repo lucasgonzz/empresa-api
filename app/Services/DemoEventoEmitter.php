@@ -37,6 +37,38 @@ class DemoEventoEmitter
         'clip.terminado',
         'nota.escrita',
         'seccion.completada',
+        /**
+         * Los tres del motor de tour guiado (mision del 30/8/2026). El lead los dispara al
+         * apretar "Probar" debajo de un video: `tour.iniciado` al arrancar, `tour.paso_salteado`
+         * si corta a mitad de camino, y `tour.completado` al terminar --con `datos.completo`
+         * diciendo si llego hasta el final o se salio antes--.
+         *
+         * 🔴 Sin estos tres nombres aca, el endpoint los descarta con un 204 mudo y un Log::info.
+         * Del lado del SPA no se ve NADA: la accion `demo/reportar` nunca rechaza, asi que el
+         * tour funciona igual y el unico sintoma es que el panel del admin no muestra un solo
+         * tour. Es el modo de falla callado que este comentario existe para evitar.
+         */
+        'tour.iniciado',
+        'tour.paso_salteado',
+        'tour.completado',
+        /**
+         * Cuanto del video vio el lead, en porcentaje (mision del 1/9/2026). Lo emite
+         * `TarjetaClip.vue` cada vez que el video cruza un decimo nuevo y al pausar, con
+         * `datos.porcentaje` entero de 1 a 99.
+         *
+         * 🔴 A proposito NO esta en NOMBRES_CON_PUSH_INMEDIATO, y el motivo es de volumen, no
+         * de importancia: son ~10 eventos por video mirado, contra 1 de `clip.terminado`. Con
+         * push inmediato, un lead que mira seis videos seguidos dispara ~60 envios al canal del
+         * admin en pocos minutos, y ninguno de ellos le cambia nada a Tomas mirando el feed en
+         * vivo: el porcentaje solo importa para el lead que NO llego al final, y eso se lee
+         * despues, no en el segundo. Viaja con el barrido del minuto, que es exactamente para lo
+         * que existe.
+         *
+         * ⚠️ Sin este nombre aca el endpoint lo descarta con un 204 mudo y del lado del SPA no se
+         * ve NADA --`demo/reportar` nunca rechaza--: es el mismo modo de falla callado que
+         * documenta el bloque de los tres del tour, arriba.
+         */
+        'clip.progreso',
     ];
 
     /**
@@ -94,6 +126,16 @@ class DemoEventoEmitter
          * el envio en app()->terminating(), o sea DESPUES de que este request ya respondio.
          */
         'demo.setup.completado',
+        /**
+         * Mismo criterio que `clip.terminado`, que es su hermano exacto: los dos son el hito de
+         * progreso que Tomas mira en el feed en vivo mientras el lead esta adentro de la demo, y
+         * llegar un minuto tarde le saca justamente el valor de mirarlo en vivo.
+         *
+         * `tour.iniciado` y `tour.paso_salteado` quedan AFUERA a proposito: son ruido para el feed
+         * --un lead puede arrancar y cortar un tour varias veces sobre el mismo clip-- y llegan
+         * igual con el barrido del minuto.
+         */
+        'tour.completado',
     ];
 
     /** Tope de `datos` ya serializado. El campo de notas del panel manda texto libre del lead. */

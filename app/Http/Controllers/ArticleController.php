@@ -221,25 +221,21 @@ class ArticleController extends Controller
         }
 
         /*
-         * 🔴 Acá manda el formulario y SOLO el formulario. No hay branch por condición fiscal, y
-         * meterlo es un error que esta misión ya cometió y midió.
+         * Para un Responsable Inscripto manda el formulario: declara en cuál de los dos inputs se
+         * tipeó. Para un Monotributista migrado no se descompone nunca y el resolvedor ignora lo
+         * declarado — ver el bloque en ArticlePricesHelper::el_costo_cargado_es_bruto().
          *
-         * El motivo es que este request no siempre trae un número recién tipeado: el formulario del
-         * listado manda el modelo entero en cada guardado, así que corregirle el nombre a un
-         * artículo llega con el `cost` que devolvió el servidor, que YA es neto. Si acá se forzara
-         * "bruto" por ser Monotributista, ese guardado le sacaría el IVA a un número que ya no lo
-         * tiene: 1000 → 826,45 → 683,01, un 21% por guardado, en la acción más común del listado.
-         *
-         * Que el Monotributista no configure nada de IVA se resuelve en la PANTALLA, que es donde
-         * corresponde: a un MT el formulario le muestra un solo campo, el del costo con IVA, y ese
-         * campo declara `cost_incluye_iva = true` cuando alguien escribe en él. El MT no elige nada;
-         * simplemente no existe la otra opción para él.
-         *
-         * La compra y el import sí resuelven por condición fiscal
-         * (ArticlePricesHelper::el_costo_cargado_es_bruto), y pueden hacerlo porque ahí el número
-         * SIEMPRE es uno recién cargado: no existe el caso "me devolvieron lo que ya estaba".
+         * 🔴 Que para el MT la respuesta sea SIEMPRE "no descomponer" es lo que hace seguro usar el
+         * resolvedor acá. Con la regla anterior (MT ⇒ siempre bruto) esto no se podía: el formulario
+         * manda el modelo entero en cada guardado, así que corregirle el nombre a un artículo llega
+         * con el `cost` que devolvió el servidor, y forzar "bruto" le sacaba el IVA a un número que
+         * ya no lo tenía — 1000 → 826,45 → 683,01, un 21% por guardado, medido por el checker de la
+         * Fase 5 de la misión anterior. "No descomponer" no tiene ese riesgo: es idempotente.
          */
-        $lo_tipeado_es_bruto = filter_var($request->cost_incluye_iva, FILTER_VALIDATE_BOOLEAN);
+        $lo_tipeado_es_bruto = ArticlePricesHelper::el_costo_cargado_es_bruto(
+            UserHelper::user(),
+            $request->cost_incluye_iva
+        );
 
         if (!$lo_tipeado_es_bruto) {
             $model->cost = $cost;
@@ -687,8 +683,31 @@ class ArticleController extends Controller
              */
             'precios_incluyen_iva'  => filter_var($request->precios_incluyen_iva, FILTER_VALIDATE_BOOLEAN),
             'create_and_edit'       => $request->create_and_edit,
-            'start_row'             => $request->start_row, 
-            'finish_row'            => $request->finish_row, 
+
+            /*
+             * Hoja a importar, 0-based. Default 0 = primera hoja: un FormData que no manda
+             * 'hoja' (la SPA sin desplegar) importa exactamente lo que importaba hasta hoy.
+             *
+             * No va acompañado de una fila de encabezado: la importación se rige por start_row,
+             * que ya viaja y que el usuario ve. Y start_row/finish_row tienen que estar
+             * calculados sobre ESTA hoja — el CSV que arma InitExcelImport es la hoja elegida,
+             * 1:1, así que el número de fila cambia de significado al cambiar de hoja.
+             */
+            'hoja'                  => $request->input('hoja', 0),
+
+            /*
+             * Nombre de la hoja elegida, OPCIONAL (default null = "usá el índice").
+             *
+             * Existe por lo mismo que existe ExcelWorkbookReader::resolver_indice(): el
+             * índice lo calcula SheetJS en el navegador y quien lee después es OpenSpout,
+             * y los dos pueden discrepar. En el camino con IA eso queda tapado porque hay
+             * ida y vuelta con el backend; acá, en el import clásico, el índice del
+             * navegador va derecho a armar_archivo_csv() y nadie lo revisa. Cuando el
+             * nombre viaja, gana él; cuando no, se usa el índice crudo, como hasta hoy.
+             */
+            'hoja_nombre'           => $request->input('hoja_nombre'),
+            'start_row'             => $request->start_row,
+            'finish_row'            => $request->finish_row,
             'provider_id'           => $request->provider_id, 
             'user'                  => $owner, 
             'auth_user_id'          => Auth()->user()->id, 

@@ -8,7 +8,7 @@ use App\Models\WhatsappBotConfig;
 use Illuminate\Database\Seeder;
 
 /**
- * Precarga las 5 plantillas estándar de WhatsApp (`cc_cli_*`) para cada empresa que ya
+ * Precarga las 6 plantillas estándar de WhatsApp (`cc_cli_*`) para cada empresa que ya
  * tiene el bot configurado (grupo 137, Prompt 04). Solo itera owners (regla del
  * CLAUDE.md: los recursos de configuración por negocio son por owner, no por cada fila
  * de `users`) que tengan un `WhatsappBotConfig` propio, ya que sin bot configurado no
