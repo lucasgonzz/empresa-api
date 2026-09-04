@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Listado;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -101,6 +102,15 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
                 'editado_a_mano' => $editado_a_mano ? 1 : 0,
             ]);
         }
+
+        /*
+         * El articulo arranca con su costo_real ya calculado, como cualquier articulo real del
+         * sistema. Sin esto queda en 0 y un test que afirma "el costo no se movio" pasaria por el
+         * motivo equivocado: no porque el codigo lo respete, sino porque nunca hubo un numero.
+         */
+        $article = $article->fresh();
+
+        ArticleHelper::setFinalPrice($article, $this->owner()->id);
 
         return $article->fresh();
     }
@@ -468,6 +478,170 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             self::DELTA,
             'La propagacion tiene que respetar el descuento que la persona edito.'
         );
+    }
+
+    /**
+     * 🔴 EL DESCUENTO DE MONTO FIJO QUE DEJO UNA COMPRA SOBREVIVE A LA PROPAGACION.
+     *
+     * Lo encontro el chequeo independiente y era el hallazgo mas caro. `article_discounts` no tiene
+     * columna de origen: la compra, el import y la ficha del proveedor escriben todos con
+     * `provider_id` y `tipo = bonificacion_proveedor`. Lo unico que los separa es la forma: la ficha
+     * del proveedor SOLO tiene porcentajes, asi que un tagueado con `amount` solo pudo dejarlo una
+     * compra, con la bonificacion de monto fijo que se negocio ahi.
+     *
+     * La primera version barria todos los tagueados del proveedor y recreaba desde la ficha: los
+     * $1500 de una compra se iban para siempre, el costo del articulo subia, y no habia con que
+     * reponerlos. Encima el articulo caia SIEMPRE en "desactualizado", asi que el modal lo ofrecia
+     * como una actualizacion de rutina.
+     *
+     * @test
+     */
+    public function prendida_no_borra_el_descuento_de_monto_fijo_que_dejo_una_compra()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Propagar con monto de compra', 10);
+
+        /* Lo que deja NewProviderOrderHelper al confirmar una compra con bonificacion en pesos. */
+        $de_la_compra = ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => null,
+            'amount'      => 1500,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+        ]);
+
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $vivo = ArticleDiscount::find($de_la_compra->id);
+
+        $this->assertNotNull(
+            $vivo,
+            'El descuento de monto fijo de una compra no se puede borrar: la ficha del proveedor no tiene con que reponerlo.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1500,
+            (float) $vivo->amount,
+            self::DELTA,
+            'Y tiene que conservar el monto negociado en esa compra.'
+        );
+    }
+
+    /**
+     * 🔴 UN PROVEEDOR SIN DESCUENTOS EN LA FICHA NO VACIA A SUS ARTICULOS.
+     *
+     * El otro hallazgo caro del chequeo: propagar "nada" era destruir. Se borraban los descuentos
+     * tagueados que habian dejado las compras y el import, no se creaba ninguno, y un catalogo
+     * entero pasaba a costo bruto de golpe — con la ventana presentandolo como rutina.
+     *
+     * @test
+     */
+    public function prendida_un_proveedor_sin_descuentos_no_borra_nada()
+    {
+        $this->set_preferencia(1);
+
+        /* proveedor_de_la_suite() deja la ficha SIN provider_discounts. */
+        $provider = $this->proveedor_de_la_suite();
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Propagar sin descuentos en ficha', 10);
+
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $this->assertCount(
+            1,
+            $this->descuentos_tagueados($article->id),
+            'Sin descuentos en la ficha del proveedor no hay nada que propagar, y menos que borrar.'
+        );
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'El costo real no puede saltar al bruto.'
+        );
+    }
+
+    /**
+     * 🔴 El "Mostrar en la tienda online" sobrevive a la propagacion.
+     *
+     * Sin esto, cada propagacion apagaba el tilde en silencio (la columna es default 0) y el
+     * articulo perdia el precio tachado y el badge de oferta en el ecommerce —lo que arma
+     * `tienda-spa/src/mixins/generals.js`, que filtra por ese flag—. El precio que paga el comprador
+     * no cambiaba, asi que es la clase de cosa que nadie reporta durante meses.
+     *
+     * @test
+     */
+    public function prendida_conserva_el_mostrar_en_la_tienda_online()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Propagar con tienda online', 10);
+
+        $tagueado = $this->descuentos_tagueados($article->id)->first();
+        $tagueado->show_in_online = 1;
+        $tagueado->save();
+
+        $this->cambiar_descuento_del_proveedor($descuento_proveedor, 15);
+
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [])
+                ->assertStatus(200);
+
+        $vigente = $this->descuentos_tagueados($article->id)->first();
+
+        $this->assertEqualsWithDelta(
+            15,
+            (float) $vigente->percentage,
+            self::DELTA,
+            'Precondicion: el descuento se actualizo.'
+        );
+
+        $this->assertEquals(
+            1,
+            (int) $vigente->show_in_online,
+            'Y tiene que seguir mostrandose en la tienda online, como lo habia dejado el comercio.'
+        );
+    }
+
+    /**
+     * Un descuento marcado como editado a mano que HOY coincide con el del proveedor deja de contar
+     * como editado: no hay nada que decidir ni nada que perder.
+     *
+     * Sin esta salida, un articulo que alguien edito una vez y despues dejo igual al del proveedor
+     * quedaba marcado para siempre, y la ventana aparecia en todos los guardados de ese proveedor
+     * aunque no hubiera nada para actualizar — hasta volverse ruido que se confirma sin leer.
+     *
+     * @test
+     */
+    public function la_marca_no_cuenta_si_el_valor_volvio_a_coincidir_con_el_del_proveedor()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        /* Marcado, pero con el MISMO porcentaje que tiene el proveedor hoy. */
+        $article = $this->articulo_con_descuento_de($provider, 'zz Marca que ya no aplica', 10, true);
+
+        $response = $this->getJson('api/provider/'.$provider->id.'/propagar-descuentos/preview');
+
+        $response->assertStatus(200);
+
+        $preview = json_decode($response->getContent(), true);
+
+        $this->assertEquals(0, $preview['editados_a_mano'], 'Ya no difiere del proveedor: no hay nada que preguntar.');
+        $this->assertEquals(1, $preview['al_dia']);
+        $this->assertEquals(0, $preview['desactualizados']);
     }
 
     /**

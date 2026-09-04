@@ -8,6 +8,7 @@ use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 /**
  * ArticleProviderDiscountHelper
@@ -38,6 +39,20 @@ use App\Models\User;
  * `sync_provider_discounts` (compra/import) sigue intacto para no romper esos flujos.
  */
 class ArticleProviderDiscountHelper {
+
+    /**
+     * Columnas que necesita `clasificar_articulo()`. Se seleccionan explicitamente en vez de traer
+     * la fila entera: el preview corre en CADA guardado de la ficha de un proveedor, y uno grande
+     * puede tener miles de `article_discounts` tagueados.
+     */
+    const COLUMNAS_PARA_CLASIFICAR = [
+        'id',
+        'article_id',
+        'percentage',
+        'amount',
+        'show_in_online',
+        'editado_a_mano',
+    ];
 
     /**
      * Sincroniza (overwrite) los article_discounts "tagueados" de un proveedor para un artículo.
@@ -111,10 +126,21 @@ class ArticleProviderDiscountHelper {
      *                                         App\Models\ProviderOrderDiscount).
      * @return void
      */
-    static function create_tagged_discounts($article, $provider_id, $discounts) {
+    static function create_tagged_discounts($article, $provider_id, $discounts, $show_in_online = 0) {
 
-        if (is_null($article) || is_null($provider_id) || empty($discounts)) {
+        // `count()` y no `empty()`: sobre una Collection de Laravel `empty()` es SIEMPRE false
+        // (todo objeto es truthy), asi que la guarda historica no cortaba con una coleccion vacia.
+        // No cambia ningun resultado —el foreach de abajo tampoco iteraba— pero la guarda ahora
+        // dice la verdad.
+        if (is_null($article) || is_null($provider_id) || is_null($discounts)) {
             return;
+        }
+
+        if (is_array($discounts) || $discounts instanceof \Countable) {
+
+            if (count($discounts) === 0) {
+                return;
+            }
         }
 
         foreach ($discounts as $discount) {
@@ -147,6 +173,10 @@ class ArticleProviderDiscountHelper {
                 // Tipo del descuento (Prompt 260): distingue la naturaleza contable, siempre
                 // "bonificación de proveedor" para los que vienen de acá.
                 'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+                // Visibilidad en el ecommerce. Default 0 (el de siempre para compra e import); la
+                // propagacion lo pasa en 1 cuando el descuento que reemplaza ya lo tenia activado,
+                // para no apagarle al comercio el precio tachado de la tienda sin avisarle.
+                'show_in_online' => $show_in_online ? 1 : 0,
             ]);
         }
     }
@@ -454,16 +484,36 @@ class ArticleProviderDiscountHelper {
 
         foreach ($tagueados as $descuento) {
 
-            // 🔴 La marca la puso ArticleDiscountController::update() en el momento en que una
-            // persona cambio el porcentaje. No se deduce comparando numeros: la primera version de
-            // esta mision lo intentaba asi y un test la puso en rojo, porque al borrar un descuento
-            // del proveedor su porcentaje desaparece de toda referencia y los articulos que lo
-            // tenian copiado pasaban por editados a mano.
-            if ($descuento->editado_a_mano) {
+            // 🔴 Los descuentos de MONTO FIJO no los gobierna la ficha del proveedor y esta funcion
+            // no opina sobre ellos: `provider_discounts` solo tiene `percentage`, asi que un
+            // `article_discount` tagueado con `amount` solo pudo dejarlo una COMPRA, con la
+            // bonificacion negociada de esa compra (NewProviderOrderHelper via ProviderOrderDiscount,
+            // que la guarda en `monto`). Ver `descuentos_gobernados_por_la_ficha()`.
+            if (!self::gobernado_por_la_ficha($descuento)) {
+                continue;
+            }
+
+            $porcentaje = self::normalizar_porcentaje($descuento->percentage);
+
+            /*
+             * 🔴 La marca la puso ArticleDiscountController::update() en el momento en que una
+             * persona cambio el porcentaje. No se deduce comparando numeros: una version anterior lo
+             * intentaba asi y un test la puso en rojo, porque al borrar un descuento del proveedor
+             * su porcentaje desaparece de toda referencia y los articulos que lo tenian copiado
+             * pasaban por editados a mano.
+             *
+             * Pero la marca sola no alcanza para seguir contandolo como editado: si el valor que
+             * tiene HOY coincide con uno de los del proveedor, no hay nada que decidir ni nada que
+             * perder. Sin esta salida, un articulo que alguien edito una vez y despues dejo igual al
+             * del proveedor quedaba marcado para siempre, y la ventana aparecia en todos los
+             * guardados de ese proveedor aunque no hubiera nada para actualizar — hasta volverse
+             * ruido que el usuario aprende a confirmar sin leer.
+             */
+            if ($descuento->editado_a_mano && !in_array($porcentaje, $percentages_actuales, true)) {
                 return 'editado_a_mano';
             }
 
-            $del_articulo[] = self::normalizar_porcentaje($descuento->percentage);
+            $del_articulo[] = $porcentaje;
         }
 
         sort($del_articulo);
@@ -478,6 +528,31 @@ class ArticleProviderDiscountHelper {
         }
 
         return 'desactualizado';
+    }
+
+    /**
+     * Indica si un `article_discount` tagueado esta gobernado por la FICHA del proveedor, o sea si
+     * una propagacion puede rehacerlo.
+     *
+     * 🔴 La distincion existe porque `article_discounts` no tiene columna de origen: la compra, el
+     * import y la ficha del proveedor escriben todos con `provider_id` seteado y
+     * `tipo = TIPO_BONIFICACION_PROVEEDOR`. Lo unico que los separa es la forma del descuento:
+     * `provider_discounts` SOLO tiene `percentage`, asi que un tagueado con `amount` cargado solo
+     * pudo dejarlo una compra, con la bonificacion de monto fijo que se negocio en esa compra
+     * (ProviderOrderDiscount.monto).
+     *
+     * Rehacerlo seria destruirlo: la ficha del proveedor no tiene de donde reponer ese monto, asi
+     * que el descuento se iria para siempre y el costo del articulo subiria solo. Por eso la
+     * propagacion no los toca ni los cuenta.
+     *
+     * @param  \App\Models\ArticleDiscount|object $descuento
+     * @return bool
+     */
+    static function gobernado_por_la_ficha($descuento) {
+
+        $amount = isset($descuento->amount) ? $descuento->amount : null;
+
+        return is_null($amount) || $amount === '' || (float) $amount == 0;
     }
 
     /**
@@ -531,10 +606,16 @@ class ArticleProviderDiscountHelper {
 
         $resultado = $vacio;
 
-        // Solo los articulos que TIENEN descuentos tagueados de este proveedor: a los que no tienen
-        // ninguno no se les toca nada, ni se los cuenta. Asignarles descuentos por primera vez es
-        // el trabajo de aplicar_al_asignar_proveedor(), no de una propagacion.
+        /*
+         * Solo los articulos que TIENEN descuentos tagueados de este proveedor: a los que no tienen
+         * ninguno no se les toca nada, ni se los cuenta. Asignarles descuentos por primera vez es
+         * el trabajo de aplicar_al_asignar_proveedor(), no de una propagacion.
+         *
+         * Se lee por chunks y no con un `get()` entero: un proveedor grande puede tener miles de
+         * filas tagueadas, y esto es un preview que corre en cada guardado de la ficha.
+         */
         $articulos = ArticleDiscount::where('provider_id', $provider->id)
+                                        ->select(self::COLUMNAS_PARA_CLASIFICAR)
                                         ->get()
                                         ->groupBy('article_id');
 
@@ -582,6 +663,20 @@ class ArticleProviderDiscountHelper {
             return $resultado;
         }
 
+        /*
+         * 🔴 Sin descuentos cargados en la ficha, propagar es DESTRUIR y nada mas: se borrarian los
+         * descuentos tagueados que dejaron las compras y el import, y no habria con que reponerlos.
+         * Un catalogo entero pasaria a costo bruto de golpe, con la ventana presentandolo como una
+         * actualizacion de rutina.
+         *
+         * Se corta explicitamente y con `count()`, no con `empty()`: sobre una Collection de Laravel
+         * `empty()` es SIEMPRE false (verificado con el binario 7.4), asi que una guarda escrita con
+         * `empty()` no corta nada.
+         */
+        if (count($provider->provider_discounts) === 0) {
+            return $resultado;
+        }
+
         $percentages_actuales = [];
 
         foreach ($provider->provider_discounts as $provider_discount) {
@@ -593,6 +688,7 @@ class ArticleProviderDiscountHelper {
         }
 
         $articulos = ArticleDiscount::where('provider_id', $provider->id)
+                                        ->select(self::COLUMNAS_PARA_CLASIFICAR)
                                         ->get()
                                         ->groupBy('article_id');
 
@@ -615,17 +711,62 @@ class ArticleProviderDiscountHelper {
                 continue;
             }
 
-            // Barrido ACOTADO a este proveedor: los tagueados de otros proveedores no son de esta
-            // operacion, y los manuales (provider_id null) nunca se tocan (lo garantiza el
-            // whereNotNull de delete_tagged_discounts).
-            self::delete_tagged_discounts($article, $provider->id);
+            /*
+             * 🔴 Se rehace SOLO lo que gobierna la ficha del proveedor, y el delete+create va dentro
+             * de una transaccion.
+             *
+             * Lo que se conserva y por que:
+             *   - los descuentos de MONTO FIJO tagueados, que dejo una compra con su bonificacion
+             *     negociada: la ficha del proveedor no tiene de donde reponerlos (solo tiene
+             *     porcentajes), asi que borrarlos los perderia para siempre y le subiria el costo al
+             *     articulo. Ver gobernado_por_la_ficha().
+             *   - los tagueados de OTROS proveedores, que no son de esta operacion.
+             *   - los manuales (`provider_id` null), que no se tocan nunca.
+             *   - el "Mostrar en la tienda online": si el usuario lo habia activado en alguno de los
+             *     descuentos que se rehacen, los nuevos nacen con el tilde puesto. Sin esto, cada
+             *     propagacion le apagaba en silencio el precio tachado y el badge de oferta en el
+             *     ecommerce, articulo por articulo y sin forma de saber cuales.
+             *
+             * La transaccion importa por el mecanismo viejo, que sigue vivo: ProviderController
+             * despacha ProcessSetFinalPrices cuando algun descuento se toco hace menos de 2 minutos,
+             * asi que puede haber un worker recalculando estos mismos articulos. Sin transaccion,
+             * ese worker puede leer el articulo entre el DELETE y el INSERT y guardarle un
+             * costo_real calculado con CERO descuentos.
+             */
+            $gobernados = collect($tagueados)->filter(function ($descuento) {
+                return self::gobernado_por_la_ficha($descuento);
+            });
 
-            self::create_tagged_discounts($article, $provider->id, $provider->provider_discounts);
+            $mostrar_en_online = 0;
+
+            foreach ($gobernados as $descuento) {
+                if ($descuento->show_in_online) {
+                    $mostrar_en_online = 1;
+                }
+            }
+
+            $ids_a_barrer = $gobernados->pluck('id')->all();
+
+            DB::transaction(function () use ($article, $provider, $ids_a_barrer, $mostrar_en_online) {
+
+                if (count($ids_a_barrer)) {
+                    ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
+                }
+
+                self::create_tagged_discounts(
+                    $article,
+                    $provider->id,
+                    $provider->provider_discounts,
+                    $mostrar_en_online
+                );
+            });
 
             // Clase de error del 31/8/2026: setFinalPrice lee esta relacion justo abajo.
             $article->unsetRelation('article_discounts');
 
-            ArticleHelper::setFinalPrice($article);
+            // El usuario va explicito: sin el, setFinalPrice resuelve UserHelper::user() por
+            // articulo, que con auth por token es un User::find() por cada uno.
+            ArticleHelper::setFinalPrice($article, $article->user_id);
 
             $resultado['actualizados']++;
         }
