@@ -824,17 +824,24 @@ class ArticleProviderDiscountHelper {
              * costo_real calculado con CERO descuentos.
              */
             /*
-             * Que se rehace: lo que gobierna la ficha (porcentaje puro).
+             * Que se rehace, y la regla que ordena las tres familias:
              *
-             * 🔴 Y, SOLO si el usuario pidio pisar, tambien las filas con porcentaje Y monto a la
-             * vez. Son las que `clasificar_articulo` mando a 'editado_a_mano' justamente porque no
-             * se pueden rehacer sin romper algo; si el usuario acepto pisar, se van con todo. Si se
-             * dejaran, se conservaria su porcentaje viejo mientras se crea el nuevo y el articulo
-             * terminaria descontando dos veces — el defecto que la clasificacion evita, reaparecido
-             * en el camino del tilde.
+             *   1. Porcentaje puro -> SIEMPRE. Es lo que la ficha gobierna.
+             *   2. Cualquier fila que una PERSONA edito (`editado_a_mano`) -> solo con el tilde. La
+             *      marca significa "alguien puso esto en reemplazo de lo que traia la ficha", y el
+             *      tilde es el usuario aceptando explicitamente perderlo. Incluye la fila que quedo
+             *      con MONTO despues de que le borraran el porcentaje, que es justo la que la
+             *      ventana ofrece pisar.
+             *   3. Monto sin marca -> NUNCA, ni con el tilde. Ese monto lo dejo una COMPRA, con la
+             *      bonificacion negociada de esa compra; la ficha no tiene con que reponerlo y
+             *      borrarlo lo pierde para siempre.
              *
-             * Las de monto PURO no se tocan nunca, ni con el tilde: la ficha no tiene con que
-             * reponer un monto fijo y borrarlo lo pierde para siempre.
+             * 🔴 Lo que separa 2 de 3 es la MARCA, no la forma del descuento. Una version anterior
+             * miraba la forma —"si tiene monto, no se toca"— y con el tilde puesto dejaba viva la
+             * fila de $500 que el usuario acababa de aceptar perder Y le creaba la ficha al lado: el
+             * articulo terminaba descontando los $500 y ademas el porcentaje, o sea 475 en vez de
+             * los 950 que la ventana prometia. Y en la corrida siguiente salia 'al_dia', con el
+             * doble descuento horneado e invisible para siempre.
              */
             $gobernados = collect($tagueados)->filter(function ($descuento) use ($pisar_editados) {
 
@@ -842,7 +849,9 @@ class ArticleProviderDiscountHelper {
                     return true;
                 }
 
-                return $pisar_editados && self::tiene_porcentaje_y_monto($descuento);
+                // Tiene monto: solo se reemplaza si lo puso una persona y el usuario pidio pisar.
+                return $pisar_editados
+                    && ($descuento->editado_a_mano || self::tiene_porcentaje_y_monto($descuento));
             });
 
             $mostrar_en_online = 0;

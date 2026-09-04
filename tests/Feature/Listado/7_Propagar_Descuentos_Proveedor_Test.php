@@ -501,7 +501,7 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
         $this->set_preferencia(1);
 
         $provider = $this->proveedor_de_la_suite();
-        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+        $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
 
         $article = $this->articulo_con_descuento_de($provider, 'zz Propagar con monto de compra', 10);
 
@@ -513,6 +513,14 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             'amount'      => 1500,
             'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
         ]);
+
+        /*
+         * 🔴 El proveedor cambia su porcentaje, y esto NO es decorado: sin el cambio el articulo
+         * queda 'al_dia', la propagacion lo saltea antes de armar la lista de lo que barre, y el
+         * filtro que este test dice proteger no se ejecuta NUNCA. Asi estaba escrito, y por eso
+         * pasaba en verde aun borrando el monto de la compra — lo encontro la cuarta verificacion.
+         */
+        $this->cambiar_descuento_del_proveedor($descuento_proveedor, 15);
 
         $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
             'pisar_editados_a_mano' => true,
@@ -531,6 +539,18 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             self::DELTA,
             'Y tiene que conservar el monto negociado en esa compra.'
         );
+
+        /* Y el porcentaje que si gobierna la ficha se actualizo, sin duplicarse. */
+        $porcentajes = $this->descuentos_tagueados($article->id)
+                                ->filter(function ($d) { return !is_null($d->percentage); })
+                                ->pluck('percentage')
+                                ->map(function ($p) { return (float) $p; })
+                                ->values()
+                                ->all();
+
+        $this->assertCount(1, $porcentajes, 'Un solo descuento porcentual, no dos.');
+
+        $this->assertEqualsWithDelta(15, $porcentajes[0], self::DELTA);
     }
 
     /**
@@ -903,6 +923,39 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             (float) $article->fresh()->costo_real,
             self::DELTA,
             'El costo real refleja SOLO los $500, no los $500 mas el 5% del proveedor.'
+        );
+
+        /*
+         * 🔴 Y con el tilde: la ventana promete "van a quedar con los descuentos del proveedor y se
+         * pierde el valor que les habias puesto". Tiene que cumplirlo EXACTO.
+         *
+         * Una version anterior dejaba viva la fila de $500 —porque el filtro miraba la forma del
+         * descuento y no la marca— y le creaba la ficha al lado: el articulo terminaba descontando
+         * los $500 y ademas el 5%, o sea 475 en vez de 950. Y en la corrida siguiente salia
+         * 'al_dia', con el doble descuento horneado e invisible para siempre.
+         */
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $vigentes = $this->descuentos_tagueados($article->id);
+
+        $this->assertCount(
+            1,
+            $vigentes,
+            'Con el tilde, la fila que el usuario acepto perder se reemplaza: no se apila con la de la ficha.'
+        );
+
+        $this->assertNull(
+            $vigentes->first()->amount,
+            'El monto que el usuario acepto perder ya no esta.'
+        );
+
+        $this->assertEqualsWithDelta(
+            950,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'El costo real es el que la ventana prometio: 1000 menos el 5% de la ficha, no 475.'
         );
     }
 
