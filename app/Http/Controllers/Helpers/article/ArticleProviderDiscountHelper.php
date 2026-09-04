@@ -487,54 +487,39 @@ class ArticleProviderDiscountHelper {
 
         $del_articulo = [];
 
+        /*
+         * 🔴 Solo se mira lo que la FICHA creo. El origen lo dice la columna; ya no se deduce de la
+         * forma del descuento.
+         */
+        $de_la_ficha = collect($tagueados)->filter(function ($descuento) {
+            return self::gobernado_por_la_ficha($descuento);
+        });
+
+        /*
+         * 🔴 SIN NINGUNA FILA DE LA FICHA NO HAY NADA QUE PROPAGAR, y devolver otra cosa aca duplica
+         * descuentos.
+         *
+         * Un articulo cuyos descuentos vinieron todos de compras o del import nunca tuvo un
+         * descuento puesto por la ficha: agregarle uno ahora no seria "actualizarlo", seria sumarle
+         * un descuento que no tenia. Y como el barrido solo alcanza a las filas de la ficha —o sea,
+         * a ninguna— la fila nueva quedaria ENCIMA de las que ya estaban: sobre un costo de 1000 con
+         * un 10% de compra y un 10% de ficha, 810 en vez de 900. En la corrida siguiente el articulo
+         * ya tendria su fila de ficha y saldria 'al_dia', con el doble descuento horneado para
+         * siempre.
+         *
+         * Es el mismo daño de las versiones anteriores con el signo invertido: antes se destruia lo
+         * que no se podia reponer, ahora se duplicaba lo que no habia que tocar.
+         */
+        if ($de_la_ficha->isEmpty()) {
+            return 'al_dia';
+        }
+
         $hay_marca = false;
 
-        foreach ($tagueados as $descuento) {
+        foreach ($de_la_ficha as $descuento) {
 
-            /*
-             * 🔴 Una fila con porcentaje Y monto a la vez no se puede rehacer sin romper algo, asi
-             * que decide el usuario.
-             *
-             * Solo puede haberla dejado una COMPRA (`provider_order_discounts` expone los dos campos
-             * como inputs independientes, sin exclusividad). Rehacerla perderia el monto —la ficha
-             * del proveedor no tiene de donde reponerlo—, y conservarla mientras se crea la ficha
-             * DUPLICA el porcentaje: `aplicar_descuentos` recorre fila por fila, asi que el articulo
-             * terminaria con el 10% viejo y el 10% nuevo, y sobre un costo de 1000 daria 810 en vez
-             * de 900. La segunda propagacion lo veria "al dia" y el doble descuento quedaria
-             * horneado para siempre.
-             */
-            if (self::tiene_porcentaje_y_monto($descuento)) {
-                return 'editado_a_mano';
-            }
-
-            /*
-             * 🔴 LA MARCA SE LEE ANTES DE CUALQUIER `continue`, y el orden es el defecto en si.
-             *
-             * Una version anterior ponia la guarda de gobernanza arriba, asi que toda fila con monto
-             * salia por el `continue` y su `editado_a_mano` no se leia nunca. El camino es comun: el
-             * formulario del descuento del articulo expone Porcentaje y Monto como dos inputs, y el
-             * usuario que decide "a este articulo el proveedor me lo bonifica con $500 fijos, no con
-             * el 5%" borra el porcentaje y escribe el monto. Esa edicion queda marcada... y se
-             * ignoraba. El articulo salia 'desactualizado', la ventana lo ofrecia como rutina, el
-             * tilde de "pisar" ni aparecia (la SPA lo muestra solo si hay editados), no se barria
-             * nada —la fila tiene monto— y se le creaba la ficha ENCIMA: terminaba descontando los
-             * $500 y ademas el porcentaje del proveedor.
-             */
             if ($descuento->editado_a_mano) {
                 $hay_marca = true;
-            }
-
-            /*
-             * 🔴 Los descuentos de MONTO FIJO puro no los gobierna la ficha del proveedor y esta
-             * funcion no opina sobre su valor: `provider_discounts` solo tiene `percentage`, asi que
-             * un `article_discount` tagueado con `amount` solo pudo dejarlo una COMPRA, con la
-             * bonificacion negociada de esa compra (NewProviderOrderHelper via ProviderOrderDiscount,
-             * que la guarda en `monto`). Ver `gobernado_por_la_ficha()`.
-             *
-             * No aporta porcentaje a la comparacion, pero su marca ya quedo registrada arriba.
-             */
-            if (!self::gobernado_por_la_ficha($descuento)) {
-                continue;
             }
 
             $del_articulo[] = self::normalizar_porcentaje($descuento->percentage);
@@ -833,34 +818,24 @@ class ArticleProviderDiscountHelper {
              * costo_real calculado con CERO descuentos.
              */
             /*
-             * Que se rehace, y la regla que ordena las tres familias:
+             * Que se rehace: EXACTAMENTE lo que la ficha creo, ni mas ni menos.
              *
-             *   1. Porcentaje puro -> SIEMPRE. Es lo que la ficha gobierna.
-             *   2. Cualquier fila que una PERSONA edito (`editado_a_mano`) -> solo con el tilde. La
-             *      marca significa "alguien puso esto en reemplazo de lo que traia la ficha", y el
-             *      tilde es el usuario aceptando explicitamente perderlo. Incluye la fila que quedo
-             *      con MONTO despues de que le borraran el porcentaje, que es justo la que la
-             *      ventana ofrece pisar.
-             *   3. Monto sin marca -> NUNCA, ni con el tilde. Ese monto lo dejo una COMPRA, con la
-             *      bonificacion negociada de esa compra; la ficha no tiene con que reponerlo y
-             *      borrarlo lo pierde para siempre.
+             * Con `origen` en la tabla esto dejo de ser una inferencia. Antes habia que deducirlo de
+             * la forma del descuento —si traia porcentaje, si traia monto, si estaba marcado— y esa
+             * deduccion produjo nueve defectos en cuatro rondas de verificacion.
              *
-             * 🔴 Lo que separa 2 de 3 es la MARCA, no la forma del descuento. Una version anterior
-             * miraba la forma —"si tiene monto, no se toca"— y con el tilde puesto dejaba viva la
-             * fila de $500 que el usuario acababa de aceptar perder Y le creaba la ficha al lado: el
-             * articulo terminaba descontando los $500 y ademas el porcentaje, o sea 475 en vez de
-             * los 950 que la ventana prometia. Y en la corrida siguiente salia 'al_dia', con el
-             * doble descuento horneado e invisible para siempre.
+             * Lo que NO entra, y por que:
+             *   - compra / import: traen la bonificacion negociada en esa compra o el valor de esa
+             *     planilla. La ficha no tiene con que reponerlos; borrarlos los pierde para siempre.
+             *   - manual: lo cargo una persona aparte, no lo gobierna nadie mas.
+             *   - origen desconocido (filas anteriores a la columna): sin saber quien las puso, no
+             *     se pisan.
+             *
+             * La decision de si este articulo se toca ya se tomo en `clasificar_articulo`: un
+             * 'editado_a_mano' sin tilde ni llega hasta aca.
              */
-            $gobernados = collect($tagueados)->filter(function ($descuento) use ($pisar_editados) {
-
-                if (self::gobernado_por_la_ficha($descuento)) {
-                    return true;
-                }
-
-                // Tiene monto: solo se reemplaza si lo puso una persona y el usuario pidio pisar.
-                return $pisar_editados
-                    && ($descuento->editado_a_mano || self::tiene_porcentaje_y_monto($descuento));
+            $gobernados = collect($tagueados)->filter(function ($descuento) {
+                return self::gobernado_por_la_ficha($descuento);
             });
 
             $mostrar_en_online = 0;
@@ -875,9 +850,18 @@ class ArticleProviderDiscountHelper {
 
             DB::transaction(function () use ($article, $provider, $ids_a_barrer, $mostrar_en_online) {
 
-                if (count($ids_a_barrer)) {
-                    ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
+                if (!count($ids_a_barrer)) {
+                    /*
+                     * 🔴 Defensa en profundidad: si no hay nada que reemplazar, tampoco se crea.
+                     * El DELETE ya era condicional y el CREATE no, asi que un articulo sin filas de
+                     * la ficha recibia una fila NUEVA encima de las que ya tenia. Hoy
+                     * `clasificar_articulo` no deja llegar ese caso hasta aca, pero la asimetria
+                     * entre las dos operaciones fue exactamente el defecto, y no vuelve a existir.
+                     */
+                    return;
                 }
+
+                ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
 
                 self::create_tagged_discounts(
                     $article,

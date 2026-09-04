@@ -825,27 +825,43 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
         $this->assertEqualsWithDelta(500, (float) $vigente->amount, self::DELTA, 'El monto de la compra sigue.');
         $this->assertEqualsWithDelta(10, (float) $vigente->percentage, self::DELTA, 'Y su porcentaje tambien.');
 
-        /* Con el tilde, el usuario acepta perderla: se reemplaza por la ficha, sin duplicar. */
+        /*
+         * 🔴 Y con el tilde TAMPOCO se toca, porque la fila es de una COMPRA.
+         *
+         * Esto cambio al agregar `article_discounts.origen`, y el cambio es el arreglo: antes el
+         * codigo deducia por la forma —"trae porcentaje y monto, debe ser algo que el usuario
+         * armo"— y con el tilde la borraba. Pero nadie la habia editado a mano: la dejo una compra,
+         * con su bonificacion negociada, y la ficha del proveedor no tiene con que reponer ese
+         * monto. El usuario tildaba una casilla que dice "se pierde el valor que les habias puesto"
+         * y perdia un dato que no habia puesto el.
+         *
+         * Con el origen explicito la respuesta no depende de la forma: una fila de compra se
+         * conserva siempre.
+         */
         $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
             'pisar_editados_a_mano' => true,
         ])->assertStatus(200);
 
         $vigentes = $this->descuentos_tagueados($article->id);
 
-        $this->assertCount(1, $vigentes, 'Queda solo la bonificacion de la ficha.');
-
-        $this->assertEqualsWithDelta(
-            15,
-            (float) $vigentes->first()->percentage,
-            self::DELTA,
-            'Con el porcentaje nuevo del proveedor.'
+        $this->assertCount(
+            1,
+            $vigentes,
+            'Ni con el tilde: la bonificacion de una compra no se reemplaza ni se le suma la de la ficha.'
         );
 
         $this->assertEqualsWithDelta(
-            850,
-            (float) $article->fresh()->costo_real,
+            500,
+            (float) $vigentes->first()->amount,
             self::DELTA,
-            'Y el costo real con UN solo 15%, no con dos descuentos encadenados.'
+            'El monto negociado en la compra sigue intacto.'
+        );
+
+        $this->assertEqualsWithDelta(
+            10,
+            (float) $vigentes->first()->percentage,
+            self::DELTA,
+            'Y su porcentaje tambien: la ficha no gobierna esta fila.'
         );
     }
 
@@ -1032,6 +1048,83 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
             (float) $de_la_ficha->first()->percentage,
             self::DELTA,
             'Con el porcentaje nuevo del proveedor: es lo unico que la propagacion rehace.'
+        );
+    }
+
+    /**
+     * 🔴 UN ARTICULO SIN NINGUN DESCUENTO DE LA FICHA NO RECIBE UNO NUEVO.
+     *
+     * Es el caso que la columna `origen` reabrio por el otro lado y que encontro la quinta
+     * verificacion: al mirar solo las filas de la ficha, un articulo cuyos descuentos vinieron todos
+     * de compras quedaba con la lista vacia, y "vacia" no coincide con la ficha, asi que salia
+     * 'desactualizado'. El barrido no alcanzaba ninguna fila (ninguna es de la ficha) pero la
+     * creacion corria igual: el articulo terminaba con el 10% de la compra MAS el 10% de la ficha,
+     * o sea 810 sobre 1000 en vez de 900. Y en la corrida siguiente ya tenia su fila de ficha, asi
+     * que salia 'al_dia' con el doble descuento horneado para siempre.
+     *
+     * Es el mismo daño de las versiones anteriores con el signo invertido: antes se destruia lo que
+     * no se podia reponer, despues se duplicaba lo que no habia que tocar.
+     *
+     * 🔴 Y es el caso de TODA fila que ya existe en produccion: el backfill las marca como compra.
+     *
+     * @test
+     */
+    public function prendida_un_articulo_sin_descuentos_de_la_ficha_no_recibe_uno_nuevo()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
+
+        /* Articulo sin descuento de ficha: su unica bonificacion vino de una compra. */
+        $article = $this->articulo_con_descuento_de($provider, 'zz Solo de compra', null);
+
+        ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => 10,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'origen'      => ArticleDiscount::ORIGEN_COMPRA,
+        ]);
+
+        ArticleHelper::setFinalPrice($article, $this->owner()->id);
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'Precondicion: 1000 menos el 10% de la compra.'
+        );
+
+        $this->cambiar_descuento_del_proveedor($descuento_proveedor, 10);
+
+        /* La ventana no lo puede ofrecer: no hay nada de la ficha que actualizar. */
+        $preview = json_decode(
+            $this->getJson('api/provider/'.$provider->id.'/propagar-descuentos/preview')->getContent(),
+            true
+        );
+
+        $this->assertEquals(
+            0,
+            $preview['desactualizados'],
+            'Un articulo sin descuentos de la ficha no es "actualizable": no hay nada que la ficha haya puesto.'
+        );
+
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $this->assertCount(
+            1,
+            $this->descuentos_tagueados($article->id),
+            'No se le puede agregar la bonificacion de la ficha encima de la de la compra.'
+        );
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'El costo real sigue siendo 900: un solo 10%, no dos encadenados (810).'
         );
     }
 
