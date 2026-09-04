@@ -2,7 +2,8 @@
 
 namespace App\Console\Commands;
 
-use App\Models\OnlineConfiguration;
+use App\Models\Platform;
+use App\Models\PlatformConnector;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -12,8 +13,16 @@ use Illuminate\Support\Facades\Log;
  *
  * El access_token OAuth de Mercado Pago vence a los 180 días: sin este refresh periódico el
  * comercio se quedaría sin poder cobrar hasta reconectar manualmente. Corre diario (ver
- * app/Console/Kernel.php) y recorre TODOS los comercios con mp_enabled=true, no solo el de la
- * instancia (config('app.USER_ID')): puede haber más de un online_configuration por instancia.
+ * app/Console/Kernel.php).
+ *
+ * Recorre `platform_connectors` (no `online_configurations`, que es de donde leía antes de esta
+ * misión): los tokens de cobro se mudaron ahí para sacarlos de la fila que `tienda-api` publica
+ * sin autenticación. Recorre TODOS los comercios con conector de Mercado Pago, no solo el de la
+ * instancia (config('app.USER_ID')): puede haber más de un comercio por instancia.
+ *
+ * Un conector sin `expires_at` (credencial cargada a mano que la migración copió desde
+ * `payment_methods`) NO entra en la ventana: no tiene refresh_token con qué renovarse y no
+ * vence. Intentarlo solo lograría marcarlo desconectado y dejar al comercio sin cobrar.
  */
 class mercadopago_refresh_tokens extends Command
 {
@@ -29,7 +38,7 @@ class mercadopago_refresh_tokens extends Command
      *
      * @var string
      */
-    protected $description = 'Renueva los access_token de Mercado Pago próximos a vencer (comercios con mp_enabled=true).';
+    protected $description = 'Renueva los access_token de Mercado Pago próximos a vencer (conectores de platform_connectors).';
 
     /**
      * Create a new command instance.
@@ -42,10 +51,10 @@ class mercadopago_refresh_tokens extends Command
     }
 
     /**
-     * Ejecuta el comando: busca configuraciones con Mercado Pago habilitado cuyo token vence
-     * dentro de la ventana definida (15 días por defecto) y las renueva una por una. Si el
-     * refresh de una falla (por ejemplo el comercio revocó el acceso desde su cuenta de MP), esa
-     * configuración queda marcada como desconectada pero el loop sigue con las demás.
+     * Ejecuta el comando: busca conectores de Mercado Pago cuyo token vence dentro de la ventana
+     * definida (15 días por defecto) y los renueva uno por uno. Si el refresh de uno falla (por
+     * ejemplo el comercio revocó el acceso desde su cuenta de MP), ese conector queda marcado
+     * como desconectado pero el loop sigue con los demás.
      *
      * @return int
      */
@@ -56,26 +65,32 @@ class mercadopago_refresh_tokens extends Command
         // sin cobrar).
         $window_days = 15;
 
-        $configurations = OnlineConfiguration::where('mp_enabled', true)
-            ->whereNotNull('mp_refresh_token')
-            ->whereNotNull('mp_token_expires_at')
-            ->where('mp_token_expires_at', '<=', now()->addDays($window_days))
+        $connectors = PlatformConnector::with('platform')
+            ->whereHas('platform', function ($platform_query) {
+                $platform_query->where('slug', Platform::SLUG_MERCADO_PAGO);
+            })
+            ->whereNotNull('access_token')
+            ->where('access_token', '!=', '')
+            ->whereNotNull('refresh_token')
+            ->where('refresh_token', '!=', '')
+            ->whereNotNull('expires_at')
+            ->where('expires_at', '<=', now()->addDays($window_days))
             ->get();
 
-        $this->info("mercadopago:refresh-tokens: {$configurations->count()} configuración(es) con token próximo a vencer.");
+        $this->info("mercadopago:refresh-tokens: {$connectors->count()} conector(es) con token próximo a vencer.");
 
         $service = new MercadoPagoOAuthService();
         $renewed = 0;
         $disconnected = 0;
 
-        foreach ($configurations as $configuration) {
-            $ok = $service->refresh_configuration($configuration);
+        foreach ($connectors as $connector) {
+            $ok = $service->refresh_connector($connector);
 
             if ($ok) {
                 $renewed++;
             } else {
                 $disconnected++;
-                Log::warning("mercadopago:refresh-tokens: online_configuration {$configuration->id} (user_id {$configuration->user_id}) quedó desconectada.");
+                Log::warning("mercadopago:refresh-tokens: platform_connector {$connector->id} (user_id {$connector->user_id}) quedó desconectado.");
             }
         }
 

@@ -637,6 +637,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('/mercado-pago/payment/{payment_id}', 'MercadoPagoController@payment');
 
+    // Estado de las integraciones del comercio, para pintar las tarjetas de ABM -> Integraciones.
+    // Va ANTES de las rutas `integraciones/{proveedor}/...` para que quede claro que es el
+    // listado del grupo, no un proveedor mas. No serializa ningun token: ese es el motivo de
+    // fondo de haber sacado las credenciales de `online_configuration` (ver IntegracionesController).
+    Route::get('integraciones', 'IntegracionesController@index');
+
     // OAuth de Mercado Pago (grupo 170, prompt 598): el comercio autenticado conecta/desconecta
     // su propia cuenta para cobrar. El callback (público, sin auth) se declara más abajo, fuera
     // de este grupo de middleware, porque es un redirect del navegador del comercio hacia este

@@ -10,13 +10,19 @@ use App\Models\Platform;
 class PlatformController extends Controller
 {
     /**
-     * Lista todas las plataformas ordenadas por nombre (sin filtrar por usuario).
+     * Lista las plataformas conectables desde el ABM de conectores, ordenadas por nombre (sin
+     * filtrar por usuario).
+     *
+     * El filtro es del lado del backend a propósito, y no en el select de la SPA: así no depende
+     * de que el frontend se acuerde de excluir Mercado Pago, que se conecta por su propia
+     * pantalla. Ver `Platform::SLUGS_CONECTABLES_POR_ABM`.
      *
      * @return \Illuminate\Http\JsonResponse
      */
     public function index()
     {
         $models = Platform::query()
+            ->conectablesPorAbm()
             ->orderBy('name')
             ->withAll()
             ->get();

@@ -120,7 +120,7 @@ class MercadoLibreService
         Log::info('method: ');
         Log::info($method);
 
-        $http = $this->meli_http()->withToken($this->platform_connector->access_token);
+        $http = $this->meli_http()->withToken($this->credencial_del_conector('access_token'));
         if (count($request_headers) > 0) {
             $http = $http->withHeaders($request_headers);
         }
@@ -129,7 +129,7 @@ class MercadoLibreService
 
         if ($response->status() === 401) {
             $this->refresh_token();
-            $http = $this->meli_http()->withToken($this->platform_connector->access_token);
+            $http = $this->meli_http()->withToken($this->credencial_del_conector('access_token'));
             if (count($request_headers) > 0) {
                 $http = $http->withHeaders($request_headers);
             }
@@ -184,7 +184,7 @@ class MercadoLibreService
             'grant_type'    => 'refresh_token',
             'client_id'     => $client_id,
             'client_secret' => $client_secret,
-            'refresh_token' => $this->platform_connector->refresh_token,
+            'refresh_token' => $this->credencial_del_conector('refresh_token'),
         ]);
 
         if (!$response->successful()) {
@@ -198,8 +198,13 @@ class MercadoLibreService
 
         $data = $response->json();
 
-        Log::info('refresh_token response:');
-        Log::info($data);
+        // 🔴 NO SE LOGUEA `$data`. Hasta la mision de ABM -> Integraciones acá habia un
+        // `Log::info($data)` con el JSON completo del OAuth, o sea el `access_token` y el
+        // `refresh_token` en texto plano dentro de `storage/logs/laravel.log`, en CADA refresh.
+        // Cifrar la columna y despues dejar el token legible en el log no sirve de nada. Se deja
+        // solo lo que sirve para diagnosticar y no es secreto.
+        Log::info('refresh_token ok: expires_in='.(isset($data['expires_in']) ? $data['expires_in'] : 's/d').
+                  ', refresh rotado='.(!empty($data['refresh_token']) ? 'si' : 'no'));
 
         $this->platform_connector->access_token = $data['access_token'];
         if (!empty($data['refresh_token'])) {
@@ -221,11 +226,57 @@ class MercadoLibreService
     protected function resolve_meli_oauth_app_credentials(): array
     {
         $platform = $this->platform_connector->platform;
-        if ($platform && $platform->client_id && $platform->client_secret) {
-            return [$platform->client_id, $platform->client_secret];
+
+        if ($platform && $platform->client_id) {
+            // `client_secret` tiene cast `encrypted` desde la mision de ABM -> Integraciones:
+            // leerlo puede tirar. Si no se puede descifrar no se propaga la excepcion, se cae al
+            // .env — que es la rama que este metodo ya tenia para "la plataforma no tiene las
+            // credenciales cargadas".
+            try {
+                $client_secret = $platform->client_secret;
+            } catch (\Throwable $e) {
+                Log::error('MercadoLibreService: no se pudo descifrar el client_secret de la plataforma '.$platform->slug.': '.$e->getMessage());
+                $client_secret = null;
+            }
+
+            if ($client_secret) {
+                return [$platform->client_id, $client_secret];
+            }
         }
 
         return [env('MERCADO_LIBRE_CLIENT_ID'), env('MERCADO_LIBRE_CLIENT_SECRET')];
+    }
+
+    /**
+     * Lee un atributo cifrado del conector traduciendo un fallo de descifrado a un error que se
+     * entienda.
+     *
+     * Desde la mision de ABM -> Integraciones, `access_token` y `refresh_token` tienen cast
+     * `encrypted`, asi que leerlos puede tirar `DecryptException` si la fila quedo en texto
+     * plano (la migracion `encrypt_platform_connector_tokens` no corrio) o si esta cifrada con
+     * otra APP_KEY. Sin esto, el sintoma era un 500 pelado en cualquier llamada a Mercado Libre,
+     * sin ninguna pista de que el problema era el descifrado.
+     *
+     * @param string $atributo Nombre del atributo cifrado (`access_token` / `refresh_token`).
+     * @return string|null
+     */
+    protected function credencial_del_conector(string $atributo)
+    {
+        try {
+            return $this->platform_connector->{$atributo};
+        } catch (\Throwable $e) {
+            Log::error(
+                'MercadoLibreService: no se pudo descifrar '.$atributo.' del platform_connector '.
+                $this->platform_connector->id.': '.$e->getMessage()
+            );
+
+            throw new \RuntimeException(
+                'No se pudo leer la credencial de Mercado Libre del conector '.$this->platform_connector->id.'. '.
+                'Puede estar guardada sin cifrar (falta correr la migracion '.
+                'encrypt_platform_connector_tokens) o cifrada con otra APP_KEY. Reconectar la '.
+                'cuenta desde ABM -> Integraciones la vuelve a dejar bien.'
+            );
+        }
     }
 
     /**

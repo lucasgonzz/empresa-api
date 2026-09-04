@@ -2,6 +2,7 @@
 
 namespace App\Services\PlatformConnector;
 
+use App\Models\OauthState;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
 use App\Services\MercadoLibre\MercadoLibreService;
@@ -120,14 +121,32 @@ class PlatformConnectorOAuthService
         if (!$code || !$state) {
             return response('Faltan parámetros code o state en la URL de retorno.', 400);
         }
-        $connector = PlatformConnector::with('platform')->find((int) $state);
+        $connector = $this->resolver_conector_del_state((string) $state);
         if (!$connector) {
             return response('Conector no encontrado.', 404);
         }
         if (!$connector->platform || $connector->platform->slug !== $expected_platform_slug) {
             return response('La plataforma del conector no coincide con esta URL de callback.', 400);
         }
-        if (empty($connector->platform->client_id) || empty($connector->platform->client_secret)) {
+
+        // `client_secret` tiene cast `encrypted` desde la mision de ABM -> Integraciones, asi que
+        // LEERLO PUEDE TIRAR. Esta lectura vive FUERA del try de mas abajo, asi que sin esta
+        // guarda una fila con el secreto en texto plano (APP_KEY rotada, o una instalacion donde
+        // la migracion de cifrado no corrio) devolvia un 500 pelado en el callback de ML/TN, sin
+        // ninguna pista de que el problema era el descifrado.
+        try {
+            $client_secret = $connector->platform->client_secret;
+        } catch (\Throwable $e) {
+            Log::error('PlatformConnector OAuth: no se pudo descifrar el client_secret de la plataforma '.$connector->platform->slug.': '.$e->getMessage());
+
+            return response(
+                'No se pudo leer el client_secret de la plataforma. Puede estar guardado sin cifrar '.
+                '(falta correr la migracion encrypt_platform_connector_tokens) o cifrado con otra APP_KEY.',
+                500
+            );
+        }
+
+        if (empty($connector->platform->client_id) || empty($client_secret)) {
             return response('La plataforma no tiene client_id o client_secret configurados en el catálogo.', 400);
         }
         try {
@@ -148,4 +167,46 @@ class PlatformConnectorOAuthService
         );
     }
 
+    /**
+     * Resuelve el conector a partir del `state` del callback aceptando LOS DOS FORMATOS.
+     *
+     * 1. State aleatorio de `oauth_states` (el bueno, el que usa Mercado Pago desde el prompt
+     *    598 y al que van a migrar ML y TN): se busca la fila, se valida que no haya vencido ni
+     *    se haya usado, y se consume. El conector sale de `platform_connector_id`, no de la URL.
+     * 2. Id del conector como state (el formato viejo, el unico que ML y TN mandan HOY en
+     *    produccion): `PlatformConnector::find((int) $state)`.
+     *
+     * Los dos tienen que seguir andando: cuando esta mision se despliegue va a haber ventanas de
+     * autorizacion de ML/TN ya abiertas en el navegador de algun comercio, con el id del conector
+     * pegado en la URL de Mercado Libre. Si el callback dejara de aceptarlo, esas conexiones
+     * fallarian sin que nadie entienda por que.
+     *
+     * 🔴 LOS DOS FORMATOS SE DISTINGUEN CON `ctype_digit()`, NO CON EL CAST A ENTERO. Este
+     * metodo tenia acá un comentario que afirmaba que `(int)` sobre un state aleatorio da
+     * siempre 0 "asi que no hay ambiguedad". Es FALSO y esta medido: `Str::random()` devuelve
+     * alfanumerico, asi que un state que empieza con digitos castea a ese numero — sobre 10.000
+     * states generados con el binario 7.4, **1429 (14%) dan un entero distinto de cero**, y 3,
+     * 4, 5 y 9 son ids reales de `platform_connectors`. Sin la guarda, un replay de un state
+     * aleatorio ya consumido (que `consume()` rechaza, como corresponde) se caia igual en el
+     * `find()` del formato viejo y conectaba el conector de OTRO comercio.
+     *
+     * @param string $state Valor recibido en el query `state`.
+     * @return PlatformConnector|null
+     */
+    protected function resolver_conector_del_state(string $state)
+    {
+        $oauth_state = OauthState::consume($state);
+
+        if ($oauth_state && !empty($oauth_state->platform_connector_id)) {
+            return PlatformConnector::with('platform')->find((int) $oauth_state->platform_connector_id);
+        }
+
+        // Formato viejo: el state ES el id del conector, o sea SOLO digitos. Cualquier otra cosa
+        // -incluido un state aleatorio ya consumido- no se intenta resolver por id.
+        if (!ctype_digit($state)) {
+            return null;
+        }
+
+        return PlatformConnector::with('platform')->find((int) $state);
+    }
 }

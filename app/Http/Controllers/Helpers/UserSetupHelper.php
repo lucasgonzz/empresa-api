@@ -350,6 +350,12 @@ class UserSetupHelper
             'OnlinePriceTypeSeeder',
             'DepositMovementStatusSeeder',
             'CAPaymentMethodTypeSeeder',
+            // Tipos de metodo de pago de la TIENDA ONLINE. Es otro seeder que el `CA...` de
+            // arriba (ese es el de cuenta corriente) y hasta el 3/9/2026 no lo llamaba nadie:
+            // toda instalacion nueva quedaba con el desplegable "Tipo" vacio en
+            // ABM -> Tienda online -> Metodos de pago, o sea sin forma de dar de alta el cobro
+            // online. Los nombres parecidos taparon el hueco durante mucho tiempo.
+            'PaymentMethodTypeSeeder',
 
             'IvaSeeder',
             'MonedaSeeder',
