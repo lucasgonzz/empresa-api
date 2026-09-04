@@ -42,6 +42,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     */
     Route::get('demo/plan', 'DemoPlanController@index');
 
+    /*
+        Heartbeat de la demo (mision `demo-sesion-magic-link-no-expira`, 4/9/2026). El SPA le
+        pega cada 5 minutos mientras el panel esta montado, solo para que el request pase por
+        `StartSession` y la sesion general de Laravel no se enfrie si el lead pasa un rato
+        largo sin generar otro request (por ejemplo, mirando un video). No persiste nada:
+        el efecto que importa lo hace Laravel solo, con que la ruta este en este grupo
+        autenticado alcanza. Tiene que quedar ADENTRO de este grupo, no afuera: fuera de
+        sesion no tocaria la cookie y no serviria para nada.
+    */
+    Route::post('demo/heartbeat', 'DemoEventoController@heartbeat');
+
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
     // Generals
@@ -77,6 +88,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // en UserController@update con id = "set-chat-ia-preferencias" (set-dark-mode zafa solo
     // porque sus tres segmentos no calzan en el comodín de dos).
     Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
+    // Impresora del Ticket 2.0. Misma familia que las dos de arriba: preferencia POR PERSONA,
+    // y con la misma trampa del orden — dos segmentos, así que abajo de `user/{id}` caería en
+    // UserController@update con id = "set-impresora".
+    Route::put('user/set-impresora', 'UserController@set_impresora');
     Route::put('user/{id}', 'UserController@update');
     Route::put('user-password', 'CommonLaravel\UserController@updatePassword');
     Route::post('user/last-activity', 'CommonLaravel\UserController@setLastActivity');

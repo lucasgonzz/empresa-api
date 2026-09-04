@@ -306,6 +306,41 @@ class UserController extends Controller
             $owner_user->save();
         }
 
+        /**
+         * Preferencia del comercio sobre por qué fecha se fechan las ventas en el listado y en los
+         * reportes (`Sale::scopeEnRangoDeFechas`).
+         *
+         * 🔴 Va en `$owner_user` y no en `$model`, igual que `listas_de_precio` y que
+         * `sale_factura_print_option`: quien guarda el formulario puede ser un empleado, y
+         * `Sale::fechaDeReportePorPedido()` siempre resuelve al dueño. Escribirla en la fila del
+         * empleado la guardaría en un lugar que ningún reporte lee, y el tilde quedaría prendido en
+         * pantalla sin cambiar un solo número.
+         *
+         * Guard `has()` + descarte del null, mismo motivo que `aplicar_iva_al_costo`: `ModelForm`
+         * postea el modelo entero, así que un request viejo sin esta clave la dejaría en null, que
+         * en una columna boolean se persiste como 0 — o sea, un guardado cualquiera de otro campo
+         * le apagaría el criterio de fechado al comercio sin que nadie lo pidiera.
+         *
+         * 🔴 Y SOLO SI QUIEN GUARDA ES EL DUEÑO. Este es el guard que importa y no es teórico:
+         * `AuthController::set_employee_props()` copia del dueño al empleado solo `owner_extencions`,
+         * `owner_configuration`, `iva_included`, `ask_amount_in_vender` y el objeto `owner` — esta
+         * columna NO. O sea que el modelo que la SPA tiene para un empleado trae la columna PROPIA
+         * del empleado, que es 0 y que nadie escribe nunca. Sin este guard, el empleado que entra a
+         * Configuración a cambiarse la contraseña postea ese 0, se lo escribe al dueño, y el
+         * comercio pierde el criterio de fechado sin ningún error: los reportes vuelven solos a
+         * fecha de carga.
+         *
+         * Esconder el control en la SPA (que también se hace, con `is_owner_v_if_function`) NO
+         * alcanza: `ModelForm` postea el modelo entero, props ocultas incluidas. El arreglo tiene
+         * que estar de este lado.
+         */
+        if ($owner_user && is_null($model->owner_id)
+            && $request->has('fechar_ventas_por_fecha_de_entrega')
+            && !is_null($request->fechar_ventas_por_fecha_de_entrega)) {
+            $owner_user->fechar_ventas_por_fecha_de_entrega = (int) $request->fechar_ventas_por_fecha_de_entrega;
+            $owner_user->save();
+        }
+
 
         /**
          * Marca de cotización manual cuando el dólar se cambió a mano desde el formulario de
@@ -606,6 +641,35 @@ class UserController extends Controller
         UserHelper::set_sessions($model);
 
         return response()->json(['dark_mode' => (int) $model->dark_mode], 200);
+    }
+
+    /**
+     * Guarda la impresora del Ticket 2.0 de la persona AUTENTICADA.
+     *
+     * Mismo criterio que set_dark_mode: se resuelve con Auth::user() y no con
+     * $this->userId(), porque cada persona imprime en la suya y con el userId la
+     * eleccion de un empleado quedaria grabada en la fila del dueño.
+     *
+     * Hasta esta version la columna `impresora` no tenia NINGUN camino de escritura:
+     * se llenaba una sola vez al crear la cuenta con el literal 'comerciocity'
+     * (UserSetupHelper), y de ahi salia la obligacion de renombrar la impresora en
+     * Windows para que el nombre coincidiera.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function set_impresora(Request $request) {
+        $request->validate([
+            'impresora' => 'nullable|string|max:255',
+        ]);
+
+        $model = Auth::user();
+        $model->impresora = $request->impresora;
+        $model->save();
+
+        UserHelper::set_sessions($model);
+
+        return response()->json(['impresora' => $model->impresora], 200);
     }
 
     /**
