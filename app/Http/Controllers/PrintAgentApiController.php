@@ -225,8 +225,15 @@ class PrintAgentApiController extends Controller
      * pero el aviso de vuelta no llega (timeout, 500). En los dos casos el trabajo queda en
      * "tomado" para siempre y nadie lo vuelve a entregar.
      *
-     * El riesgo del rescate es reimprimir algo que ya salio, por eso la ventana es amplia: el
-     * agente reintenta el aviso con backoff durante bastante menos que esto.
+     * El riesgo del rescate es reimprimir algo que YA salio, y por eso la ventana es holgada.
+     * Las cuentas del peor caso de un solo trabajo, con los tiempos del agente: 45s de timeout de
+     * impresion + 4 reintentos del aviso a 20s de timeout cada uno + las esperas del backoff
+     * (1+4+9s) = unos 140 segundos. Y como se entregan hasta 10 trabajos con el MISMO tomado_at y
+     * el agente los procesa en serie, el ultimo de un lote puede terminar bastante mas tarde.
+     *
+     * Diez minutos deja margen para todo eso. Lo unico que se paga es que un ticket realmente
+     * perdido (corte de luz) tarda hasta diez minutos en volver a salir, que es preferible a que
+     * uno que salio bien se imprima dos veces.
      *
      * @param  \App\Models\PrintAgent  $print_agent
      * @return void
@@ -234,7 +241,7 @@ class PrintAgentApiController extends Controller
     private function rescatar_trabajos_colgados($print_agent) {
         PrintJob::where('print_agent_id', $print_agent->id)
             ->where('status', PrintJob::STATUS_TOMADO)
-            ->where('tomado_at', '<', Carbon::now()->subMinutes(3))
+            ->where('tomado_at', '<', Carbon::now()->subMinutes(10))
             ->update([
                 'status'    => PrintJob::STATUS_PENDIENTE,
                 'tomado_at' => null,

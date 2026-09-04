@@ -416,7 +416,7 @@ class Agente_De_Impresion_Test extends TestCase
         $this->withHeaders(['X-Print-Agent-Token' => $token])->getJson('api/print-agent/jobs');
 
         /* Se lo envejece a mano en vez de esperar los minutos de la ventana. */
-        PrintJob::where('id', $job_id)->update(['tomado_at' => Carbon::now()->subMinutes(10)]);
+        PrintJob::where('id', $job_id)->update(['tomado_at' => Carbon::now()->subMinutes(20)]);
 
         $sondeo = $this->withHeaders(['X-Print-Agent-Token' => $token])
             ->getJson('api/print-agent/jobs');
