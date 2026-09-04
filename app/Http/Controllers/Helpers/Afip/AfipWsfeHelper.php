@@ -494,9 +494,20 @@ class AfipWsfeHelper extends Controller
         $observations = null;
         if (isset($afip_result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {
             $observations = (array)$afip_result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones->Obs;
-            // $observations = Utf8Helper::convertir_utf8($observations);
-            // Log::info('observations:');
-            // Log::info($observations);
+            /**
+             * 🔴 Esta conversion tiene que ir ACA, antes de la rama de abajo. El 'response' crudo
+             * ya se sanitiza en un solo punto (WS::__call()), pero el Msg de esta observacion NO
+             * sale de ahi: sale del arbol ya deserializado por SoapClient ($afip_result), que WS
+             * no puede tocar sin romper el acceso por '->' que usa todo este archivo. Y la
+             * observacion mas comun de todas -Code 10245, "Condicion Frente al IVA del
+             * receptor... Resolucion General 5616"- entra por la rama que SALTEA
+             * AfipObservation::create() un par de lineas mas abajo, que es la unica que convertia
+             * el Msg. Sin esto, $this->observations quedaba con el byte crudo de ARCA (ISO-8859-1)
+             * para el caso mas comun, y esa propiedad sale de procesar() sin pasar por ningun otro
+             * conversor. Utf8Helper::convertir_utf8() es recursivo y preserva claves: no rompe el
+             * isset('Msg') de aca abajo ni el (array) cast del foreach para mas de una observacion.
+             */
+            $observations = Utf8Helper::convertir_utf8($observations);
             if (isset($observations['Msg'])) {
                 if ($observations['Code'] != 10245) {
                     AfipObservation::create([
