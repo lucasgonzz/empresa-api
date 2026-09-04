@@ -570,6 +570,45 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Una fila de descuento VACIA en la ficha del proveedor tampoco vacia a los articulos.
+     *
+     * Es el mismo destrozo del test de arriba por otro camino, y se encontro verificando el arreglo:
+     * `provider_discounts.percentage` es nullable y el has_many del formulario deja agregar una fila
+     * sin completarla. Una guarda que cuente FILAS deja pasar a ese proveedor —tiene una— aunque no
+     * tenga ni un porcentaje con que rehacer nada. La guarda cuenta porcentajes utilizables.
+     *
+     * @test
+     */
+    public function prendida_una_fila_de_descuento_vacia_no_borra_nada()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+
+        /* Fila creada y nunca completada: existe, pero no tiene porcentaje. */
+        ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => null]);
+
+        $article = $this->articulo_con_descuento_de($provider, 'zz Propagar con fila vacia', 10);
+
+        $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [
+            'pisar_editados_a_mano' => true,
+        ])->assertStatus(200);
+
+        $this->assertCount(
+            1,
+            $this->descuentos_tagueados($article->id),
+            'Una fila de descuento sin completar no habilita a borrar los descuentos de los articulos.'
+        );
+
+        $this->assertEqualsWithDelta(
+            900,
+            (float) $article->fresh()->costo_real,
+            self::DELTA,
+            'Y el costo real no puede saltar al bruto.'
+        );
+    }
+
+    /**
      * 🔴 El "Mostrar en la tienda online" sobrevive a la propagacion.
      *
      * Sin esto, cada propagacion apagaba el tilde en silencio (la columna es default 0) y el

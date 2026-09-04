@@ -663,20 +663,6 @@ class ArticleProviderDiscountHelper {
             return $resultado;
         }
 
-        /*
-         * 🔴 Sin descuentos cargados en la ficha, propagar es DESTRUIR y nada mas: se borrarian los
-         * descuentos tagueados que dejaron las compras y el import, y no habria con que reponerlos.
-         * Un catalogo entero pasaria a costo bruto de golpe, con la ventana presentandolo como una
-         * actualizacion de rutina.
-         *
-         * Se corta explicitamente y con `count()`, no con `empty()`: sobre una Collection de Laravel
-         * `empty()` es SIEMPRE false (verificado con el binario 7.4), asi que una guarda escrita con
-         * `empty()` no corta nada.
-         */
-        if (count($provider->provider_discounts) === 0) {
-            return $resultado;
-        }
-
         $percentages_actuales = [];
 
         foreach ($provider->provider_discounts as $provider_discount) {
@@ -685,6 +671,25 @@ class ArticleProviderDiscountHelper {
             if (!is_null($actual)) {
                 $percentages_actuales[] = $actual;
             }
+        }
+
+        /*
+         * 🔴 Sin porcentajes utilizables en la ficha, propagar es DESTRUIR y nada mas: se borrarian
+         * los descuentos tagueados que dejaron las compras y el import, y no habria con que
+         * reponerlos. Un catalogo entero pasaria a costo bruto de golpe, con la ventana
+         * presentandolo como una actualizacion de rutina.
+         *
+         * 🔴 La guarda va sobre `$percentages_actuales` y NO sobre `provider_discounts`, y la
+         * diferencia no es cosmetica: `provider_discounts.percentage` es nullable, y el has_many del
+         * formulario deja agregar una fila sin completarla. Un proveedor con una fila vacia tiene
+         * `count($provider->provider_discounts) === 1` —o sea que una guarda contando filas lo deja
+         * pasar— pero cero porcentajes con que rehacer nada. Mismo destrozo, por otro camino.
+         *
+         * Y se cuenta con `count()`, no con `empty()`: sobre una Collection de Laravel `empty()` es
+         * SIEMPRE false (verificado con el binario 7.4), asi que una guarda escrita asi no corta.
+         */
+        if (count($percentages_actuales) === 0) {
+            return $resultado;
         }
 
         $articulos = ArticleDiscount::where('provider_id', $provider->id)
