@@ -70,4 +70,22 @@ class DemoEventoController extends Controller
 
         return response()->json(['ok' => true], 200);
     }
+
+    /**
+     * Heartbeat de la demo (mision `demo-sesion-magic-link-no-expira`, 4/9/2026).
+     *
+     * No persiste nada ni lee el marcador de sesion: el efecto que importa lo hace Laravel
+     * solo, ANTES de que este metodo corra. Cualquier request autenticado que pase por
+     * `StartSession` (grupo 'api') actualiza `last_activity` y renueva la cookie de sesion,
+     * asi que con que el SPA le pegue a esta ruta cada tanto alcanza para que la sesion
+     * general nunca se enfrie mientras el lead esta mirando un video largo sin generar otro
+     * request. Por eso este metodo no necesita mirar `demo_ingreso_token_id`: pegarle desde
+     * afuera de una demo no rompe nada, solo mantiene viva una sesion que ya estaba viva.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function heartbeat()
+    {
+        return response()->json(['ok' => true]);
+    }
 }

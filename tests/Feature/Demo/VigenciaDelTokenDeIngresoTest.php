@@ -11,9 +11,10 @@ use Tests\TestCase;
 
 /**
  * Feature tests de la vigencia del token de ingreso a la demo (DemoSessionVigente y
- * DemoIngresoTokenHelper), mision cruzada `demo-vigencia-turno` (17/8/2026).
+ * DemoIngresoTokenHelper), mision cruzada `demo-vigencia-turno` (17/8/2026), actualizados por
+ * la mision `demo-sesion-magic-link-no-expira` (4/9/2026).
  *
- * Dos cosas se prueban aca:
+ * Tres cosas se prueban aca:
  *
  * 1. El 500 de produccion: `DemoSessionVigente::cerrarSesionExpirada()` llamaba a
  *    `Auth::logout()` sin guard. Cuando `auth:sanctum` ya autentico al usuario en el mismo
@@ -22,9 +23,16 @@ use Tests\TestCase;
  *    defecto, y `Auth::logout()` resolvia `RequestGuard` (sin metodo `logout()`) en vez de
  *    `SessionGuard`. Medido en produccion el 17/8/2026 (storage/logs/laravel.log).
  *
- * 2. El bypass de vigencia en local (`APP_ENV=local`): el vencimiento y la revocacion del
- *    token dejan de bloquear, para poder testear la demo sin pelearse con el horario del
- *    turno. La EXISTENCIA del registro nunca se saltea, ni siquiera en local.
+ * 2. El bypass de vigencia en local (`APP_ENV=local`): la revocacion del token deja de
+ *    bloquear, para poder testear la demo sin pelearse con el horario del turno. La
+ *    EXISTENCIA del registro nunca se saltea, ni siquiera en local.
+ *
+ * 3. 🔴 Desde el 4/9/2026 (pedido de Lucas, un lead se comio un 401 a los ~50 minutos en
+ *    pleno uso), `DemoSessionVigente` YA NO corta por vencimiento de turno (`expires_at`):
+ *    una sesion de demo ya abierta no se corta sola, solo por revocacion explicita o porque
+ *    el registro no existe. El vencimiento de turno SIGUE cortando el CANJE de un token
+ *    nuevo (`DemoIngresoTokenHelper::resolver()`, gate de entrada) — eso no cambio, y los
+ *    tests de `resolver_*` mas abajo lo siguen probando igual.
  *
  * Usuario 500 (mismo patron que Catalogos/Expenses/Stock/Sales): sembrado en la base de
  * testing del slot. Si no esta, los tests se saltean en vez de dar un falso rojo.
@@ -60,6 +68,18 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
     }
 
     /**
+     * Mismo criterio que `get_con_sesion_stateful()`, para un POST.
+     *
+     * @param string $uri
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function post_con_sesion_stateful($uri)
+    {
+        return $this->withHeaders(['referer' => 'http://empresa.local:8183/'])
+            ->postJson($uri);
+    }
+
+    /**
      * Crea un token de ingreso para el usuario 500 con la vigencia pedida.
      *
      * @param string|null $plain_token
@@ -86,13 +106,14 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
     // -----------------------------------------------------------------------------------
 
     /**
-     * 🔴 EL TEST QUE PRUEBA EL 500 DE PRODUCCION. Si se revierte el guard explicito
-     * (`Auth::guard('web')->logout()` -> `Auth::logout()`), este test tiene que ponerse
-     * rojo con un 500 y una excepcion, no solo fallar la aserción de status.
+     * 🔴 EL CAMBIO DE COMPORTAMIENTO CENTRAL DE ESTA MISION (4/9/2026). Un turno vencido ya
+     * NO corta una sesion de demo que ya estaba abierta -- solo lo hacia la revocacion
+     * explicita o la inexistencia del registro. Antes de esta mision este mismo caso daba
+     * 401 `demo_expirada`; ahora tiene que dejar pasar el request con 200.
      *
      * @test
      */
-    public function una_sesion_de_demo_vencida_cierra_con_401_y_no_con_500()
+    public function una_sesion_de_demo_vencida_por_turno_sigue_pasando()
     {
         $user = $this->usuario_de_testing();
         if (is_null($user)) {
@@ -107,14 +128,18 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
 
         $response = $this->get_con_sesion_stateful('/api/user');
 
-        $response->assertStatus(401);
-        $response->assertJson([
-            'error'   => 'demo_expirada',
-            'message' => 'Tu turno de demo termino.',
-        ]);
+        $response->assertStatus(200);
     }
 
-    /** @test */
+    /**
+     * 🔴 EL TEST QUE PRUEBA EL 500 DE PRODUCCION. Si se revierte el guard explicito
+     * (`Auth::guard('web')->logout()` -> `Auth::logout()`), este test tiene que ponerse
+     * rojo con un 500 y una excepcion, no solo fallar la aserción de status. Es el unico
+     * camino que sigue pasando por `cerrarSesionExpirada()` en `testing` despues de esta
+     * mision: la revocacion explicita.
+     *
+     * @test
+     */
     public function una_sesion_de_demo_con_token_revocado_tambien_cierra_sin_explotar()
     {
         $user = $this->usuario_de_testing();
@@ -132,6 +157,32 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
 
         $response->assertStatus(401);
         $response->assertJson(['error' => 'demo_expirada']);
+    }
+
+    /**
+     * El caso que de verdad prueba el pedido de Lucas del 4/9/2026: un lead que lleva un buen
+     * rato usando la demo, con el turno terminado hace HORAS (no hace un ratito), sigue
+     * pudiendo usarla. Es la reproduccion del incidente real: un lead entrado por Magic Link
+     * se comio un "Unauthenticated" a los ~50 minutos de uso, en pleno recorrido.
+     *
+     * @test
+     */
+    public function un_turno_vencido_hace_horas_no_corta_una_sesion_de_demo_en_uso()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->subHours(5), null);
+        $this->actingAs($user, 'web');
+        $this->withSession(['demo_ingreso_token_id' => $creado['token']->id]);
+
+        $response = $this->get_con_sesion_stateful('/api/user');
+
+        $response->assertStatus(200);
     }
 
     /** @test */
@@ -175,7 +226,14 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
         $response->assertStatus(200);
     }
 
-    /** @test */
+    /**
+     * Sigue siendo cierto despues de esta mision, pero ya no por el mismo motivo: antes
+     * pasaba por el bypass de local (`bypass_vigencia_local()`), ahora pasa directo porque
+     * `DemoSessionVigente` ni siquiera mira `expires_at`. El test verifica lo mismo desde
+     * afuera y no hace falta tocarlo.
+     *
+     * @test
+     */
     public function en_local_una_sesion_de_demo_vencida_sigue_pasando()
     {
         $user = $this->usuario_de_testing();
@@ -307,5 +365,49 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
 
         config(['app.env' => 'production']);
         $this->assertFalse(DemoIngresoTokenHelper::bypass_vigencia_local());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Heartbeat (mision `demo-sesion-magic-link-no-expira`, 4/9/2026)
+    // -----------------------------------------------------------------------------------
+
+    /**
+     * El caso normal: el SPA le pega desde una sesion de demo con el panel montado. No
+     * necesita persistir nada, solo devolver 200 -- el efecto que importa (refrescar la
+     * sesion) lo hace `StartSession` antes de llegar aca.
+     *
+     * @test
+     */
+    public function heartbeat_con_sesion_de_demo_autenticada_devuelve_200_ok()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token();
+        $this->actingAs($user, 'web');
+        $this->withSession(['demo_ingreso_token_id' => $creado['token']->id]);
+
+        $response = $this->post_con_sesion_stateful('/api/demo/heartbeat');
+
+        $response->assertStatus(200);
+        $response->assertJson(['ok' => true]);
+    }
+
+    /**
+     * Un request sin autenticar contra esta ruta no tiene por que reventar. En la practica
+     * el frontend nunca le pega fuera de una demo, pero la ruta vive en el mismo grupo `api`
+     * que corre para los ~40 clientes reales, y un 500 ahi si seria un problema.
+     *
+     * @test
+     */
+    public function heartbeat_sin_autenticar_no_revienta()
+    {
+        $response = $this->post_con_sesion_stateful('/api/demo/heartbeat');
+
+        $response->assertStatus(401);
     }
 }
