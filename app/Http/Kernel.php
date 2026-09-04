@@ -76,5 +76,7 @@ class Kernel extends HttpKernel
         'check_extencion_empresa' => \App\Http\Middleware\CheckExtencionEmpresa::class,
         /* Valida vigencia del token de ingreso demo en cada request (grupo 233, prompt 03). */
         'demo.session.vigente' => \App\Http\Middleware\DemoSessionVigente::class,
+        /* Autentica al agente de impresion por su token de equipo (X-Print-Agent-Token). */
+        'print.agent.token' => \App\Http\Middleware\PrintAgentToken::class,
     ];
 }
