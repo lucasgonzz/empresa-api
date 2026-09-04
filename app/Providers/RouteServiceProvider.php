@@ -42,6 +42,23 @@ class RouteServiceProvider extends ServiceProvider
             );
         });
 
+        /*
+         * Limite propio para el agente de impresion, keyeado por su token y no por IP.
+         *
+         * 🔴 El agente no esta autenticado como usuario, asi que con `custom-api` caeria en la
+         * rama del ip() -- y TODAS las cajas de un comercio salen por la misma IP publica. Cada
+         * agente sondea cada 2 segundos (30 requests por minuto) mas el heartbeat, asi que con
+         * cinco o seis cajas el comercio entero se comeria 429 y dejaria de imprimir sin ningun
+         * diagnostico: el .exe recibe un 429 donde espera la lista de trabajos.
+         *
+         * Por token, cada equipo tiene su propio cupo y la cantidad de cajas deja de importar.
+         */
+        RateLimiter::for('print-agent', function (Request $request) {
+            $token = $request->header('X-Print-Agent-Token');
+
+            return Limit::perMinute(120)->by($token ? sha1($token) : $request->ip());
+        });
+
         $this->routes(function () {
             Route::middleware('web')
                 ->namespace($this->namespace)

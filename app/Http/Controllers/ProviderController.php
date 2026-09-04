@@ -7,6 +7,7 @@ use App\Jobs\ProcessProviderExportJob;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Imports\ProviderImport;
 use App\Models\Provider;
 use Carbon\Carbon;
@@ -233,7 +234,7 @@ class ProviderController extends Controller
     function hubo_cambios_en_provider_discounts($provider, $should_update_prices) {
 
         foreach ($provider->provider_discounts as $provider_discount) {
-            
+
             if ($provider_discount->updated_at > Carbon::now()->subMinutes(2)) {
 
                 $should_update_prices = true;
@@ -242,5 +243,59 @@ class ProviderController extends Controller
         }
 
         return $should_update_prices;
+    }
+
+    /**
+     * Mision descuentos-proveedor-propagar (4/9/2026): cuenta como quedaria propagar los descuentos
+     * actuales del proveedor a sus articulos, ANTES de hacerlo. Es lo que llena la ventana de
+     * confirmacion que se muestra al guardar el proveedor. No modifica nada.
+     *
+     * @param  int $id Id del proveedor.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function propagar_descuentos_preview($id) {
+
+        $provider = Provider::where('id', $id)
+                                ->where('user_id', $this->userId())
+                                ->first();
+
+        if (is_null($provider)) {
+            return response()->json(['message' => 'No se encontro el proveedor'], 404);
+        }
+
+        return response()->json(
+            ArticleProviderDiscountHelper::preview_propagacion($provider),
+            200
+        );
+    }
+
+    /**
+     * Aplica la propagacion que el usuario confirmo en la ventana.
+     *
+     * `pisar_editados_a_mano` sale del tilde de esa ventana y por defecto es FALSE: un articulo al
+     * que alguien le puso a mano un porcentaje distinto refleja una decision comercial para ese
+     * articulo puntual, y no se pisa salvo que lo pidan explicitamente.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  int $id Id del proveedor.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function propagar_descuentos(Request $request, $id) {
+
+        $provider = Provider::where('id', $id)
+                                ->where('user_id', $this->userId())
+                                ->first();
+
+        if (is_null($provider)) {
+            return response()->json(['message' => 'No se encontro el proveedor'], 404);
+        }
+
+        $pisar_editados = $request->has('pisar_editados_a_mano')
+            ? filter_var($request->pisar_editados_a_mano, FILTER_VALIDATE_BOOLEAN)
+            : false;
+
+        $resultado = ArticleProviderDiscountHelper::propagar_a_articulos($provider, $pisar_editados);
+
+        return response()->json($resultado, 200);
     }
 }

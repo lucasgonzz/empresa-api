@@ -2,6 +2,7 @@
 
 namespace App\Models\Afip;
 
+use App\Http\Controllers\Helpers\Utf8Helper;
 use Illuminate\Support\Facades\Log;
 use SoapVar;
 
@@ -375,12 +376,31 @@ abstract class WS
             // no romper por logging
         }
 
+        /**
+         * 🔴 ARCA contesta en ISO-8859-1, y 'request'/'response' son el XML CRUDO tal como lo
+         * mandamos/recibimos (__getLastRequest / __getLastResponse) — sin pasar por el parser del
+         * SoapClient, que es lo que sí normaliza a UTF-8 el árbol de $result. Si un cliente factura
+         * y ARCA responde con la observación estándar (Code 10245, sobre la Resolución General
+         * 5616), ese texto trae un byte que rompe UTF-8, y como este 'response' se persiste tal
+         * cual en TODA factura (AfipWsfeHelper::update_afip_ticket, corre siempre que Resultado ==
+         * 'A') el JSON de la respuesta HTTP explotaba con 'Malformed UTF-8 characters' al armar
+         * response()->json() sobre el modelo con esa columna adentro.
+         *
+         * Se sanitiza ACA, en el único lugar donde el request/response se arma para CUALQUIER
+         * llamado SOAP de AFIP (WSFE y WSFEX -AfipWsfeHelper y AfipFexHelper- pasan los dos por
+         * este mismo __call, porque los dos heredan de WS/WSN), en vez de repetir la conversión en
+         * cada uno de los puntos de la aplicación que despues persiste 'request'/'response'.
+         * Utf8Helper::convertir_utf8() sobre un string simplemente lo normaliza; no toca $result
+         * (el árbol ya deserializado por SoapClient), que se sigue accediendo con '->' en los
+         * helpers y perdería esa forma si se lo convirtiera acá (convertir_utf8 castea objetos a
+         * array).
+         */
         return [
             'hubo_un_error' => $hubo_un_error,
             'result'        => $result,
             'error'         => $error,
-            'request'       => $last_request,
-            'response'      => $last_response,
+            'request'       => Utf8Helper::convertir_utf8($last_request),
+            'response'      => Utf8Helper::convertir_utf8($last_response),
         ];
     }
 

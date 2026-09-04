@@ -3,8 +3,12 @@
 namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 /**
  * ArticleProviderDiscountHelper
@@ -37,6 +41,21 @@ use App\Models\Provider;
 class ArticleProviderDiscountHelper {
 
     /**
+     * Columnas que necesita `clasificar_articulo()`. Se seleccionan explicitamente en vez de traer
+     * la fila entera: el preview corre en CADA guardado de la ficha de un proveedor, y uno grande
+     * puede tener miles de `article_discounts` tagueados.
+     */
+    const COLUMNAS_PARA_CLASIFICAR = [
+        'id',
+        'article_id',
+        'percentage',
+        'amount',
+        'show_in_online',
+        'editado_a_mano',
+        'origen',
+    ];
+
+    /**
      * Sincroniza (overwrite) los article_discounts "tagueados" de un proveedor para un artículo.
      *
      * @param \App\Models\Article $article     Artículo a actualizar. Si es null, no hace nada.
@@ -49,7 +68,7 @@ class ArticleProviderDiscountHelper {
      *                                         App\Models\ProviderOrderDiscount).
      * @return void
      */
-    static function sync_provider_discounts($article, $provider_id, $discounts) {
+    static function sync_provider_discounts($article, $provider_id, $discounts, $origen = null) {
 
         if (is_null($article) || is_null($provider_id)) {
             return;
@@ -60,7 +79,7 @@ class ArticleProviderDiscountHelper {
         // Los manuales (provider_id null) quedan intactos, nunca se tocan desde acá.
         self::delete_tagged_discounts($article, null);
 
-        self::create_tagged_discounts($article, $provider_id, $discounts);
+        self::create_tagged_discounts($article, $provider_id, $discounts, 0, $origen);
     }
 
     /**
@@ -108,10 +127,21 @@ class ArticleProviderDiscountHelper {
      *                                         App\Models\ProviderOrderDiscount).
      * @return void
      */
-    static function create_tagged_discounts($article, $provider_id, $discounts) {
+    static function create_tagged_discounts($article, $provider_id, $discounts, $show_in_online = 0, $origen = null) {
 
-        if (is_null($article) || is_null($provider_id) || empty($discounts)) {
+        // `count()` y no `empty()`: sobre una Collection de Laravel `empty()` es SIEMPRE false
+        // (todo objeto es truthy), asi que la guarda historica no cortaba con una coleccion vacia.
+        // No cambia ningun resultado —el foreach de abajo tampoco iteraba— pero la guarda ahora
+        // dice la verdad.
+        if (is_null($article) || is_null($provider_id) || is_null($discounts)) {
             return;
+        }
+
+        if (is_array($discounts) || $discounts instanceof \Countable) {
+
+            if (count($discounts) === 0) {
+                return;
+            }
         }
 
         foreach ($discounts as $discount) {
@@ -144,6 +174,14 @@ class ArticleProviderDiscountHelper {
                 // Tipo del descuento (Prompt 260): distingue la naturaleza contable, siempre
                 // "bonificación de proveedor" para los que vienen de acá.
                 'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+                // Visibilidad en el ecommerce. Default 0 (el de siempre para compra e import); la
+                // propagacion lo pasa en 1 cuando el descuento que reemplaza ya lo tenia activado,
+                // para no apagarle al comercio el precio tachado de la tienda sin avisarle.
+                'show_in_online' => $show_in_online ? 1 : 0,
+                // 🔴 QUIEN lo creo. Es lo que despues decide si una propagacion puede rehacerlo;
+                // sin esto hay que adivinarlo mirando la forma del descuento, que es de donde
+                // salieron nueve defectos en cuatro rondas de verificacion. Ver ArticleDiscount.
+                'origen' => $origen,
             ]);
         }
     }
@@ -192,7 +230,7 @@ class ArticleProviderDiscountHelper {
             $new_provider = Provider::find($new_provider_id);
             $discounts = $new_provider ? $new_provider->provider_discounts : [];
 
-            self::create_tagged_discounts($article, $new_provider_id, $discounts);
+            self::create_tagged_discounts($article, $new_provider_id, $discounts, 0, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
         }
 
         // Se asigna el proveedor nuevo recién acá, para no afectar el filtro de "proveedor
@@ -237,5 +275,573 @@ class ArticleProviderDiscountHelper {
             'descuentos_proveedor_anterior'         => $descuentos_proveedor_anterior,
             'descuentos_estandar_proveedor_nuevo'    => $descuentos_estandar_proveedor_nuevo,
         ];
+    }
+
+    /**
+     * Indica si el comercio quiere que asignarle un proveedor a un articulo le aplique
+     * automaticamente los descuentos de ese proveedor (`users.aplicar_descuentos_proveedor_al_asignar`).
+     *
+     * Es la dinamica anterior al merge de `refractor`: poner el proveedor y que el articulo quede
+     * con los descuentos de ese proveedor, sin esperar a la compra. Viene APAGADA por defecto.
+     *
+     * La preferencia es del COMERCIO, no de cada empleado: siempre se resuelve al usuario dueño,
+     * igual que `UserHelper::uses_listas_de_precio()` y `Sale::fechaDeReportePorPedido()`. Un
+     * empleado que crea un articulo tiene que obtener el comportamiento del comercio y no el de su
+     * propia fila, que nadie escribe nunca.
+     *
+     * Devuelve `false` —el camino de siempre— cuando no hay usuario resoluble o cuando la columna
+     * todavia no existe en esa base (Eloquent devuelve null para un atributo que no vino del SELECT).
+     *
+     * @param  \App\Models\User|int|null $user Usuario, id de usuario, o null para el de la sesion.
+     * @return bool
+     */
+    static function debe_aplicar_al_asignar($user = null) {
+
+        if (is_null($user)) {
+            $user = UserHelper::user(true);
+        } else if (is_numeric($user)) {
+            $user = User::find($user);
+        }
+
+        if (is_null($user)) {
+            return false;
+        }
+
+        if ($user->owner_id) {
+            $user = User::find($user->owner_id);
+
+            if (is_null($user)) {
+                return false;
+            }
+        }
+
+        return (bool) $user->aplicar_descuentos_proveedor_al_asignar;
+    }
+
+    /**
+     * Aplica la dinamica vieja cuando el comercio la tiene prendida: al asignarle un proveedor a un
+     * articulo, se le materializan los `provider_discounts` (bonificaciones estandar) de ese
+     * proveedor como `article_discounts` tagueados.
+     *
+     * Cubre los DOS huecos que dejaba `develop` (los otros caminos ya estaban resueltos y no se
+     * tocan): crear un articulo con proveedor, y asignarle un proveedor a un articulo que no tenia.
+     * El cambio de proveedor A -> B desde el listado sigue pasando por el modal de confirmacion y
+     * su endpoint dedicado (`ArticleController::change_provider`), que no depende de esta
+     * preferencia — decision de Lucas del 4/9/2026.
+     *
+     * 🔴 El barrido es ACOTADO al proveedor anterior (`delete_tagged_discounts` con provider_id),
+     * nunca el barrido total ciego de `sync_provider_discounts()`: aca el usuario cambio un
+     * proveedor, no hizo una compra, y los descuentos tagueados de otros proveedores no son suyos
+     * para borrar. Los descuentos manuales (`provider_id` null) tampoco se tocan nunca.
+     *
+     * 🔴 Deja la relacion `article_discounts` descargada antes de devolver. Quien llama recalcula
+     * el precio inmediatamente despues (`ArticleHelper::setFinalPrice`, que lee esa relacion en
+     * `ArticlePricesHelper::aplicar_descuentos`), y Eloquent cachea las relaciones ya cargadas: sin
+     * el `unsetRelation` el costo se recalcularia con los descuentos de ANTES, sin ninguna
+     * excepcion de por medio, y se guardaria como si estuviera bien. Es la clase de error del
+     * 31/8/2026 (relacion de Eloquent vieja en memoria) y el que desincroniza es el que refresca.
+     *
+     * @param  \App\Models\Article $article          Articulo con el `provider_id` NUEVO ya asignado.
+     * @param  int|null            $old_provider_id  Proveedor que tenia antes (null al crear).
+     * @param  \App\Models\User|int|null $user       Usuario/comercio del que leer la preferencia.
+     *                                               🔴 OBLIGATORIO desde un job en cola: la
+     *                                               actualizacion masiva corre en
+     *                                               ProcessMasiveUpdateJob (ShouldQueue), donde no
+     *                                               hay sesion ni Auth::user() — resolver por
+     *                                               defecto ahi daria false SIEMPRE y la
+     *                                               preferencia quedaria muerta sin ningun error.
+     *                                               Desde un controller se puede omitir.
+     * @return bool  true si se materializo algo (quien llama tiene que recalcular el precio).
+     */
+    static function aplicar_al_asignar_proveedor($article, $old_provider_id = null, $user = null) {
+
+        if (is_null($article) || !self::debe_aplicar_al_asignar($user)) {
+            return false;
+        }
+
+        /*
+         * Normalizacion antes de comparar: `$article->provider_id` puede venir de un request como
+         * string ('5') o como cadena vacia, y `$old_provider_id` sale de la base como int. En PHP
+         * 7.4 `5 == ''` es FALSE, asi que un payload con `provider_id: ''` sobre un articulo con
+         * proveedor entraria por la rama "cambio" y le barreria los descuentos. Se comparan los dos
+         * como int-o-null, y con `===`.
+         */
+        $old_provider_id = (is_null($old_provider_id) || $old_provider_id === '')
+            ? null
+            : (int) $old_provider_id;
+
+        $new_provider_id = (is_null($article->provider_id) || $article->provider_id === '')
+            ? null
+            : (int) $article->provider_id;
+
+        /*
+         * 🔴 SIN PROVEEDOR NUEVO NO SE TOCA NADA, y esta guarda no es defensiva: es la diferencia
+         * entre esta preferencia y una que borra datos.
+         *
+         * Quitar el proveedor de un articulo (la X del campo en la ficha) llega hasta acá con
+         * `$new_provider_id` en null. Barrer ahi le borraria al articulo los `article_discounts`
+         * tagueados — que NO son solo los que pudo haber puesto esta preferencia: son tambien los
+         * que materializo una COMPRA real, con las bonificaciones negociadas de esa compra
+         * (NewProviderOrderHelper), y los del import de Excel. Se irian sin aviso, sin modal de
+         * confirmacion y sin registro, y el costo del articulo subiria solo.
+         *
+         * Lucas pidio aplicar los descuentos AL ASIGNAR un proveedor. Quitarlo no es asignar, y en
+         * develop ese guardado no tocaba un solo descuento: sigue sin tocarlo.
+         */
+        if (is_null($new_provider_id)) {
+            return false;
+        }
+
+        // Sin cambio real de proveedor no hay nada que hacer: un guardado que no toco el proveedor
+        // no puede rehacerle los descuentos al articulo (borraria las ediciones manuales que el
+        // usuario le haya hecho a los descuentos tagueados desde que se asigno el proveedor).
+        if ($old_provider_id === $new_provider_id) {
+            return false;
+        }
+
+        if (!is_null($old_provider_id)) {
+            self::delete_tagged_discounts($article, $old_provider_id);
+        }
+
+        $new_provider = Provider::find($new_provider_id);
+        $discounts = $new_provider ? $new_provider->provider_discounts : [];
+
+        self::create_tagged_discounts($article, $new_provider_id, $discounts, 0, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
+
+        // Ver el docblock: sin esto, el setFinalPrice() del llamador calcula con los descuentos
+        // viejos y guarda un costo_real que no se corresponde con las filas de la base.
+        $article->unsetRelation('article_discounts');
+
+        return true;
+    }
+
+    /**
+     * Saca los `article_discounts` tagueados a un proveedor cuando el articulo se queda SIN
+     * proveedor. Es la contraparte de `aplicar_al_asignar_proveedor()` para el unico caso en que
+     * quedarse sin proveedor sí tiene que barrer: la REVERSION de una actualizacion masiva que
+     * habia asignado ese proveedor a un articulo que no tenia ninguno.
+     *
+     * 🔴 POR QUE ESTO NO CONTRADICE LA GUARDA DE `aplicar_al_asignar_proveedor()`, que existe
+     * justamente para que quitar el proveedor NO borre descuentos:
+     *
+     * La diferencia es quien llama y que sabe. Cuando un usuario le saca el proveedor a un articulo
+     * desde la ficha, nadie sabe de donde salieron esos descuentos: pueden ser de una compra real
+     * con bonificaciones negociadas, y borrarlos pierde un dato irrecuperable. Al revertir una
+     * masiva, en cambio, el llamador SI sabe: el articulo no tenia proveedor antes de esa masiva,
+     * asi que tampoco tenia descuentos tagueados, y los que hay ahora los puso esa misma masiva
+     * hace un rato. Revertir es devolver el articulo al estado previo, y ese estado no los incluia.
+     *
+     * Sin esto, revertir una masiva de "null -> proveedor B" dejaba el articulo sin proveedor pero
+     * CON los descuentos de B, y el setFinalPrice() siguiente le recalculaba el costo con esos
+     * descuentos huerfanos aplicados. Sin error y sin aviso.
+     *
+     * ⚠️ Un caso que este metodo pisa a proposito: si entre la masiva y su reversion alguien le
+     * cargo una COMPRA a ese mismo proveedor, los descuentos tagueados ya no son los de la masiva
+     * sino los de la compra, y se van igual. Es coherente con lo que la reversion ya hace con el
+     * resto de las columnas (restaura el valor previo pisando lo que haya pasado en el medio), pero
+     * vale tenerlo escrito.
+     *
+     * Gateado por la preferencia: con la preferencia apagada la masiva no materializo nada, asi que
+     * no hay nada que barrer y cualquier descuento tagueado que el articulo tenga es de otro origen.
+     *
+     * @param  \App\Models\Article $article     Articulo ya revertido (sin proveedor).
+     * @param  int|null            $provider_id Proveedor que la masiva le habia asignado.
+     * @param  \App\Models\User|int|null $user  Usuario/comercio, explicito: esto corre en cola.
+     * @return bool  true si se barrio algo (quien llama tiene que recalcular el precio).
+     */
+    static function revertir_materializacion_de_masiva($article, $provider_id, $user = null) {
+
+        if (is_null($article) || is_null($provider_id) || !self::debe_aplicar_al_asignar($user)) {
+            return false;
+        }
+
+        self::delete_tagged_discounts($article, $provider_id);
+
+        // Mismo motivo que en aplicar_al_asignar_proveedor(): el setFinalPrice() del llamador lee
+        // esta relacion inmediatamente despues.
+        $article->unsetRelation('article_discounts');
+
+        return true;
+    }
+
+    /**
+     * Clasifica un articulo frente a los descuentos ACTUALES de su proveedor.
+     *
+     * Devuelve una de estas tres:
+     *   'al_dia'          -> sus descuentos tagueados son exactamente los del proveedor hoy.
+     *   'desactualizado'  -> difieren y nadie los edito: corresponde actualizarlos sin preguntar.
+     *                        Cubre tambien al articulo al que le FALTA un descuento que el proveedor
+     *                        agrego, y al que le SOBRA uno que el proveedor borro.
+     *   'editado_a_mano'  -> alguno de sus descuentos tiene la marca `editado_a_mano`, o sea que una
+     *                        persona le cambio el porcentaje a proposito para ESE articulo.
+     *
+     * 🔴 "Editado a mano" gana sobre todo lo demas: ante la duda se le pregunta al usuario en vez de
+     * pisarle una decision comercial.
+     *
+     * @param  \Illuminate\Support\Collection $tagueados article_discounts del articulo tagueados a
+     *                                                   ESE proveedor.
+     * @param  array $percentages_actuales Porcentajes que el proveedor tiene hoy.
+     * @return string
+     */
+    static function clasificar_articulo($tagueados, $percentages_actuales) {
+
+        $del_articulo = [];
+
+        /*
+         * 🔴 Solo se mira lo que la FICHA creo. El origen lo dice la columna; ya no se deduce de la
+         * forma del descuento.
+         */
+        $de_la_ficha = collect($tagueados)->filter(function ($descuento) {
+            return self::gobernado_por_la_ficha($descuento);
+        });
+
+        /*
+         * 🔴 SIN NINGUNA FILA DE LA FICHA NO HAY NADA QUE PROPAGAR, y devolver otra cosa aca duplica
+         * descuentos.
+         *
+         * Un articulo cuyos descuentos vinieron todos de compras o del import nunca tuvo un
+         * descuento puesto por la ficha: agregarle uno ahora no seria "actualizarlo", seria sumarle
+         * un descuento que no tenia. Y como el barrido solo alcanza a las filas de la ficha —o sea,
+         * a ninguna— la fila nueva quedaria ENCIMA de las que ya estaban: sobre un costo de 1000 con
+         * un 10% de compra y un 10% de ficha, 810 en vez de 900. En la corrida siguiente el articulo
+         * ya tendria su fila de ficha y saldria 'al_dia', con el doble descuento horneado para
+         * siempre.
+         *
+         * Es el mismo daño de las versiones anteriores con el signo invertido: antes se destruia lo
+         * que no se podia reponer, ahora se duplicaba lo que no habia que tocar.
+         */
+        if ($de_la_ficha->isEmpty()) {
+            return 'al_dia';
+        }
+
+        $hay_marca = false;
+
+        foreach ($de_la_ficha as $descuento) {
+
+            if ($descuento->editado_a_mano) {
+                $hay_marca = true;
+            }
+
+            $del_articulo[] = self::normalizar_porcentaje($descuento->percentage);
+        }
+
+        sort($del_articulo);
+        $actuales_ordenados = $percentages_actuales;
+        sort($actuales_ordenados);
+
+        /*
+         * Compara los dos conjuntos COMPLETOS: asi tambien cae como desactualizado el articulo al
+         * que le falta un descuento que el proveedor agrego, o al que le sobra uno que el proveedor
+         * borro — no solo el que tiene un porcentaje viejo.
+         *
+         * 🔴 Y la comparacion va ANTES de mirar la marca, no al reves. Una version anterior la
+         * miraba valor por valor —"si este porcentaje esta entre los del proveedor, la marca no
+         * cuenta"— y eso rompia la proteccion justo en el caso mas comun de un proveedor con dos
+         * bonificaciones: ficha [10, 5], el usuario aplana el 5 a 10 para ese articulo, y como 10
+         * figura entre los del proveedor la marca se ignoraba. El articulo salia 'desactualizado',
+         * la ventana lo contaba como actualizable y NO lo contaba entre los editados, y la edicion
+         * se destruia sin aviso. Comparando conjuntos primero, [10,10] no es [5,10] y la marca hace
+         * su trabajo.
+         */
+        if ($del_articulo === $actuales_ordenados) {
+            // Coincide con la ficha: no hay nada que actualizar ni nada que perder, aunque alguna
+            // fila siga marcada de una edicion vieja que despues se realineo.
+            return 'al_dia';
+        }
+
+        if ($hay_marca) {
+            return 'editado_a_mano';
+        }
+
+        return 'desactualizado';
+    }
+
+    /**
+     * Indica si un `article_discount` tagueado esta gobernado por la FICHA del proveedor, o sea si
+     * una propagacion puede rehacerlo.
+     *
+     * 🔴 LO DICE LA COLUMNA `origen`, YA NO SE ADIVINA. Hasta la migracion de 4/9/2026 esto se
+     * deducia mirando la FORMA del descuento (si traia porcentaje, si traia monto, si estaba
+     * marcado), porque las cuatro vias escriben filas identicas. Esa inferencia produjo NUEVE
+     * defectos en cuatro rondas de verificacion, todos de la misma familia: un descuento destruido,
+     * duplicado o pisado sin preguntar, en silencio. Cada arreglo tapaba una combinacion y
+     * destapaba otra.
+     *
+     * Ahora solo se rehace lo que la ficha creo, porque es lo unico que la ficha puede reponer. Un
+     * descuento de una COMPRA trae la bonificacion negociada en esa compra; uno de un IMPORT, la de
+     * esa planilla; y la ficha no tiene de donde sacar ninguna de las dos. Rehacerlos seria
+     * destruirlos. `origen` null (filas anteriores a la columna) tampoco se toca: sin saber quien
+     * la puso, no se pisa.
+     *
+     * @param  \App\Models\ArticleDiscount|object $descuento
+     * @return bool
+     */
+    static function gobernado_por_la_ficha($descuento) {
+
+        $origen = isset($descuento->origen) ? $descuento->origen : null;
+
+        return $origen === ArticleDiscount::ORIGEN_FICHA_PROVEEDOR;
+    }
+
+    /**
+     * Normaliza un porcentaje a string con dos decimales, para poder compararlos con `===` sin que
+     * "10", "10.0", 10.00 y "10.00" cuenten como distintos. La columna es decimal(10,2) en las dos
+     * tablas, asi que dos decimales es exactamente su precision.
+     *
+     * @param  mixed $valor
+     * @return string|null
+     */
+    static function normalizar_porcentaje($valor) {
+
+        if (is_null($valor) || $valor === '') {
+            return null;
+        }
+
+        return number_format((float) $valor, 2, '.', '');
+    }
+
+    /**
+     * Cuenta como quedaria una propagacion ANTES de hacerla, para la ventana de confirmacion.
+     * No modifica nada.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  \App\Models\User|int|null $user
+     * @return array{al_dia:int,desactualizados:int,editados_a_mano:int,total:int,preferencia_activa:bool}
+     */
+    static function preview_propagacion($provider, $user = null) {
+
+        $vacio = [
+            'al_dia'             => 0,
+            'desactualizados'    => 0,
+            'editados_a_mano'    => 0,
+            'total'              => 0,
+            'preferencia_activa' => self::debe_aplicar_al_asignar($user),
+        ];
+
+        if (is_null($provider)) {
+            return $vacio;
+        }
+
+        $percentages_actuales = [];
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+
+            $actual = self::normalizar_porcentaje($provider_discount->percentage);
+            if (!is_null($actual)) {
+                $percentages_actuales[] = $actual;
+            }
+        }
+
+        /*
+         * 🔴 La MISMA guarda que corta `propagar_a_articulos()`, y por eso esta duplicada: sin ella
+         * el preview y la accion usan criterios distintos, y la ventana promete lo que la accion no
+         * va a hacer. Con un proveedor sin porcentajes utilizables, el preview contaba cada articulo
+         * como "se va a actualizar", el usuario confirmaba, y la propagacion devolvia 0.
+         */
+        if (count($percentages_actuales) === 0) {
+            return $vacio;
+        }
+
+        $resultado = $vacio;
+
+        /*
+         * Solo los articulos que TIENEN descuentos tagueados de este proveedor: a los que no tienen
+         * ninguno no se les toca nada, ni se los cuenta. Asignarles descuentos por primera vez es
+         * el trabajo de aplicar_al_asignar_proveedor(), no de una propagacion.
+         *
+         * Se seleccionan solo las columnas que la clasificacion necesita (COLUMNAS_PARA_CLASIFICAR)
+         * en vez de traer la fila entera: esto corre en cada guardado de la ficha de un proveedor, y
+         * uno grande puede tener miles de filas tagueadas.
+         */
+        $articulos = ArticleDiscount::where('provider_id', $provider->id)
+                                        ->select(self::COLUMNAS_PARA_CLASIFICAR)
+                                        ->get()
+                                        ->groupBy('article_id');
+
+        foreach ($articulos as $tagueados) {
+
+            $clase = self::clasificar_articulo($tagueados, $percentages_actuales);
+
+            if ($clase === 'al_dia') {
+                $resultado['al_dia']++;
+            } else if ($clase === 'desactualizado') {
+                $resultado['desactualizados']++;
+            } else {
+                $resultado['editados_a_mano']++;
+            }
+
+            $resultado['total']++;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Propaga los descuentos ACTUALES del proveedor a sus articulos: re-materializa los
+     * `article_discounts` tagueados con los porcentajes de hoy.
+     *
+     * 🔴 Re-materializar es el punto, y es lo que el pedido literal ("actualizar el precio") NO
+     * hace. El recalculo de precios que ya existia (ProviderController -> ProcessSetFinalPrices)
+     * lee los `article_discounts`, que son COPIAS con su propio porcentaje: recalcular sin tocarlas
+     * da exactamente el mismo precio de antes. El sistema trabaja y nada se mueve.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  bool  $pisar_editados Si es true, tambien se rehacen los articulos cuyo descuento
+     *                               alguien edito a mano. Por defecto NO se tocan.
+     * @param  \App\Models\User|int|null $user Usuario/comercio, explicito para poder correr sin sesion.
+     * @return array{actualizados:int,respetados:int}
+     */
+    static function propagar_a_articulos($provider, $pisar_editados = false, $user = null) {
+
+        $resultado = ['actualizados' => 0, 'respetados' => 0];
+
+        // 🔴 Gateado por la preferencia del comercio: con la preferencia apagada este comercio nunca
+        // quiso descuentos copiados en sus articulos, y propagarlos le moveria los costos sin
+        // haberlo pedido.
+        if (is_null($provider) || !self::debe_aplicar_al_asignar($user)) {
+            return $resultado;
+        }
+
+        $percentages_actuales = [];
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+
+            $actual = self::normalizar_porcentaje($provider_discount->percentage);
+            if (!is_null($actual)) {
+                $percentages_actuales[] = $actual;
+            }
+        }
+
+        /*
+         * 🔴 Sin porcentajes utilizables en la ficha, propagar es DESTRUIR y nada mas: se borrarian
+         * los descuentos tagueados que dejaron las compras y el import, y no habria con que
+         * reponerlos. Un catalogo entero pasaria a costo bruto de golpe, con la ventana
+         * presentandolo como una actualizacion de rutina.
+         *
+         * 🔴 La guarda va sobre `$percentages_actuales` y NO sobre `provider_discounts`, y la
+         * diferencia no es cosmetica: `provider_discounts.percentage` es nullable, y el has_many del
+         * formulario deja agregar una fila sin completarla. Un proveedor con una fila vacia tiene
+         * `count($provider->provider_discounts) === 1` —o sea que una guarda contando filas lo deja
+         * pasar— pero cero porcentajes con que rehacer nada. Mismo destrozo, por otro camino.
+         *
+         * Y se cuenta con `count()`, no con `empty()`: sobre una Collection de Laravel `empty()` es
+         * SIEMPRE false (verificado con el binario 7.4), asi que una guarda escrita asi no corta.
+         */
+        if (count($percentages_actuales) === 0) {
+            return $resultado;
+        }
+
+        $articulos = ArticleDiscount::where('provider_id', $provider->id)
+                                        ->select(self::COLUMNAS_PARA_CLASIFICAR)
+                                        ->get()
+                                        ->groupBy('article_id');
+
+        foreach ($articulos as $article_id => $tagueados) {
+
+            $clase = self::clasificar_articulo($tagueados, $percentages_actuales);
+
+            if ($clase === 'al_dia') {
+                continue;
+            }
+
+            if ($clase === 'editado_a_mano' && !$pisar_editados) {
+                $resultado['respetados']++;
+                continue;
+            }
+
+            $article = Article::find($article_id);
+
+            if (is_null($article)) {
+                continue;
+            }
+
+            /*
+             * 🔴 Se rehace SOLO lo que gobierna la ficha del proveedor, y el delete+create va dentro
+             * de una transaccion.
+             *
+             * Lo que se conserva y por que:
+             *   - los descuentos de MONTO FIJO tagueados, que dejo una compra con su bonificacion
+             *     negociada: la ficha del proveedor no tiene de donde reponerlos (solo tiene
+             *     porcentajes), asi que borrarlos los perderia para siempre y le subiria el costo al
+             *     articulo. Ver gobernado_por_la_ficha().
+             *   - los tagueados de OTROS proveedores, que no son de esta operacion.
+             *   - los manuales (`provider_id` null), que no se tocan nunca.
+             *   - el "Mostrar en la tienda online": si el usuario lo habia activado en alguno de los
+             *     descuentos que se rehacen, los nuevos nacen con el tilde puesto. Sin esto, cada
+             *     propagacion le apagaba en silencio el precio tachado y el badge de oferta en el
+             *     ecommerce, articulo por articulo y sin forma de saber cuales.
+             *
+             * La transaccion importa por el mecanismo viejo, que sigue vivo: ProviderController
+             * despacha ProcessSetFinalPrices cuando algun descuento se toco hace menos de 2 minutos,
+             * asi que puede haber un worker recalculando estos mismos articulos. Sin transaccion,
+             * ese worker puede leer el articulo entre el DELETE y el INSERT y guardarle un
+             * costo_real calculado con CERO descuentos.
+             */
+            /*
+             * Que se rehace: EXACTAMENTE lo que la ficha creo, ni mas ni menos.
+             *
+             * Con `origen` en la tabla esto dejo de ser una inferencia. Antes habia que deducirlo de
+             * la forma del descuento —si traia porcentaje, si traia monto, si estaba marcado— y esa
+             * deduccion produjo nueve defectos en cuatro rondas de verificacion.
+             *
+             * Lo que NO entra, y por que:
+             *   - compra / import: traen la bonificacion negociada en esa compra o el valor de esa
+             *     planilla. La ficha no tiene con que reponerlos; borrarlos los pierde para siempre.
+             *   - manual: lo cargo una persona aparte, no lo gobierna nadie mas.
+             *   - origen desconocido (filas anteriores a la columna): sin saber quien las puso, no
+             *     se pisan.
+             *
+             * La decision de si este articulo se toca ya se tomo en `clasificar_articulo`: un
+             * 'editado_a_mano' sin tilde ni llega hasta aca.
+             */
+            $gobernados = collect($tagueados)->filter(function ($descuento) {
+                return self::gobernado_por_la_ficha($descuento);
+            });
+
+            $mostrar_en_online = 0;
+
+            foreach ($gobernados as $descuento) {
+                if ($descuento->show_in_online) {
+                    $mostrar_en_online = 1;
+                }
+            }
+
+            $ids_a_barrer = $gobernados->pluck('id')->all();
+
+            DB::transaction(function () use ($article, $provider, $ids_a_barrer, $mostrar_en_online) {
+
+                if (!count($ids_a_barrer)) {
+                    /*
+                     * 🔴 Defensa en profundidad: si no hay nada que reemplazar, tampoco se crea.
+                     * El DELETE ya era condicional y el CREATE no, asi que un articulo sin filas de
+                     * la ficha recibia una fila NUEVA encima de las que ya tenia. Hoy
+                     * `clasificar_articulo` no deja llegar ese caso hasta aca, pero la asimetria
+                     * entre las dos operaciones fue exactamente el defecto, y no vuelve a existir.
+                     */
+                    return;
+                }
+
+                ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
+
+                self::create_tagged_discounts(
+                    $article,
+                    $provider->id,
+                    $provider->provider_discounts,
+                    $mostrar_en_online,
+                    ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
+                );
+            });
+
+            // Clase de error del 31/8/2026: setFinalPrice lee esta relacion justo abajo.
+            $article->unsetRelation('article_discounts');
+
+            // El usuario va explicito: sin el, setFinalPrice resuelve UserHelper::user() por
+            // articulo, que con auth por token es un User::find() por cada uno.
+            ArticleHelper::setFinalPrice($article, $article->user_id);
+
+            $resultado['actualizados']++;
+        }
+
+        return $resultado;
     }
 }

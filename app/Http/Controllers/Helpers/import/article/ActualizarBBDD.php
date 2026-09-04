@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
@@ -739,7 +740,8 @@ class ActualizarBBDD {
             ArticleProviderDiscountHelper::sync_provider_discounts(
                 $article_model,
                 $article_cache['provider_discounts_to_tag_provider_id'],
-                $article_cache['provider_discounts_to_tag']
+                $article_cache['provider_discounts_to_tag'],
+                ArticleDiscount::ORIGEN_IMPORT
             );
         }
 
@@ -755,7 +757,8 @@ class ActualizarBBDD {
             ArticleProviderDiscountHelper::sync_provider_discounts(
                 $article_model,
                 $article_cache['provider_discounts_to_tag_provider_id'],
-                $article_cache['provider_discounts_to_tag']
+                $article_cache['provider_discounts_to_tag'],
+                ArticleDiscount::ORIGEN_IMPORT
             );
         }
 

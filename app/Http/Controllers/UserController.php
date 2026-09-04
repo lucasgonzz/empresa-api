@@ -341,6 +341,41 @@ class UserController extends Controller
             $owner_user->save();
         }
 
+        /**
+         * Preferencia del comercio sobre si asignarle un proveedor a un articulo le aplica
+         * automaticamente los descuentos de ese proveedor
+         * (`ArticleProviderDiscountHelper::debe_aplicar_al_asignar`). Es la dinamica anterior al
+         * merge de refractor, apagada por defecto.
+         *
+         * 🔴 Los tres guards son los mismos que los de `fechar_ventas_por_fecha_de_entrega` y por
+         * los mismos motivos, medidos en la mision ventas-fecha-de-pedido (4/9/2026):
+         *
+         * 1. Va en `$owner_user` y no en `$model`: es preferencia del comercio y la lectura siempre
+         *    resuelve al dueño. Escribirla en la fila del empleado la guardaria en un lugar que
+         *    nadie lee, y el tilde quedaria prendido en pantalla sin cambiar un solo costo.
+         *
+         * 2. `has()` + descarte del null: `ModelForm` postea el modelo entero, asi que un request
+         *    viejo sin esta clave la dejaria en null, que en una columna boolean se persiste como 0
+         *    — o sea, un guardado cualquiera de otro campo le apagaria la preferencia al comercio.
+         *
+         * 3. 🔴 Y SOLO SI QUIEN GUARDA ES EL DUEÑO. `AuthController::set_employee_props()` copia del
+         *    dueño al empleado solo `owner_extencions`, `owner_configuration`, `iva_included`,
+         *    `ask_amount_in_vender` y el objeto `owner` — esta columna NO. El modelo que la SPA
+         *    tiene para un empleado trae la columna PROPIA del empleado, que es 0 y que nadie
+         *    escribe nunca. Sin este guard, el empleado que entra a Configuracion a cambiarse la
+         *    contraseña postea ese 0, se lo escribe al dueño, y el comercio pierde la preferencia
+         *    sin ningun error.
+         *
+         * Esconder el control en la SPA (que tambien se hace, con `is_owner_v_if_function`) NO
+         * alcanza: `ModelForm` postea el modelo entero, props ocultas incluidas.
+         */
+        if ($owner_user && is_null($model->owner_id)
+            && $request->has('aplicar_descuentos_proveedor_al_asignar')
+            && !is_null($request->aplicar_descuentos_proveedor_al_asignar)) {
+            $owner_user->aplicar_descuentos_proveedor_al_asignar = (int) $request->aplicar_descuentos_proveedor_al_asignar;
+            $owner_user->save();
+        }
+
 
         /**
          * Marca de cotización manual cuando el dólar se cambió a mano desde el formulario de
