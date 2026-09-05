@@ -7,10 +7,13 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
+use App\Models\Article;
+use App\Models\ConceptoStockMovement;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\SellerCommission;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -94,16 +97,63 @@ class RestoreSaleFromPapeleraHelper {
     }
 
     /**
-     * Descuenta nuevamente stock, simbológica inversa de DeleteSaleHelper::regresar_stock.
+     * Vuelve a sacar del stock lo que el borrado había repuesto: la inversa exacta de
+     * DeleteSaleHelper::regresar_stock().
      *
-     * Usa movimientos con concepto "Venta" y signo negativo como en el flujo normal de venta.
+     * 🔴 Desde la auditoría de stock (5/9/2026) el borrado repone según el libro de movimientos de
+     * la venta (lo que de verdad se descontó), y la restauración deshace ESO: por cada
+     * (artículo, variante) se suma lo que los "Se elimino la venta" de esta venta devolvieron y
+     * se vuelve a descontar con un "Venta". Así una venta con una devolución sin `returned_amount`
+     * (una NC de Devoluciones sin "actualizar unidades devueltas") no vuelve a descontar lo que ya
+     * había devuelto, y una venta borrada dos veces por un doble clic vuelve a dejar el libro en
+     * su neto original.
+     *
+     * Si la venta no tiene ningún "Se elimino la venta" (se borró antes de que el borrado dejara
+     * movimientos), se cae al criterio de antes: descontar los renglones de la venta, netos de lo
+     * devuelto por NC.
      *
      * @param Sale $sale Venta con artículos/combos/promos cargados.
      * @return void
      */
     public static function descontar_stock_tras_restaurar(Sale $sale) {
 
-        if (!$sale->to_check && !$sale->checked && $sale->discount_stock) {
+        $concepto = ConceptoStockMovement::where('name', 'Se elimino la venta')->first();
+
+        $devueltos = collect();
+
+        if (!is_null($concepto)) {
+            $devueltos = DB::table('stock_movements')
+                            ->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS article_variant_id'), DB::raw('SUM(amount) AS devuelto'))
+                            ->where('sale_id', $sale->id)
+                            ->where('concepto_stock_movement_id', $concepto->id)
+                            ->whereNotNull('article_id')
+                            ->groupBy('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL)'))
+                            ->havingRaw('ABS(SUM(amount)) > 0.0001')
+                            ->get();
+        }
+
+        if ($devueltos->count() > 0) {
+
+            foreach ($devueltos as $renglon) {
+
+                $article = Article::find($renglon->article_id);
+
+                if (is_null($article)) {
+                    continue;
+                }
+
+                ArticleHelper::storeStockMovement(
+                    $article,
+                    $sale->id,
+                    -(float) $renglon->devuelto,
+                    $sale->address_id,
+                    null,
+                    'Venta',
+                    $renglon->article_variant_id
+                );
+            }
+
+        } else if (!$sale->to_check && !$sale->checked && $sale->discount_stock) {
 
             foreach ($sale->articles as $article) {
 
@@ -149,6 +199,10 @@ class RestoreSaleFromPapeleraHelper {
                     }
                 }
             }
+        }
+
+        // El stock de una promoción no pasa por stock_movements: se sigue descontando por su renglón.
+        if (!$sale->to_check && !$sale->checked && $sale->discount_stock) {
 
             foreach ($sale->promocion_vinotecas as $promocion_vinoteca) {
 

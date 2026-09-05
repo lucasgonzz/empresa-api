@@ -30,6 +30,7 @@ use App\Services\MercadoLibre\ProductService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -1217,8 +1218,8 @@ class ArticleHelper {
 
         Log::info('discountStock');
 
-        $res = Self::get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez);
-        
+        $res = Self::get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez, $article_variant_id);
+
         $concepto = $res['concepto'];
         $amount = $res['amount'];
 
@@ -1226,7 +1227,7 @@ class ArticleHelper {
         if ($amount != 0) {
             Self::storeStockMovement($article, $sale->id, $amount, $sale->address_id, null, $concepto, $article_variant_id);
         }
- 
+
     }
 
 
@@ -1234,21 +1235,31 @@ class ArticleHelper {
     /*
         Chequeo si hay previus_articles
             * Si hay, es porque se esta editando una venta
-                Entonces busco la cantidad previa 
+                Entonces busco la cantidad previa
                     Si la encuentro, obtengo la direfencia entre la cantidad previa y la nueva
                     Si no la encuentro, retorno la cantidad original y el concepto de Venta
 
             * Si no hay, retorno la cantidad original y el concepto de Venta
+
+        🔴 La cantidad previa se busca por articulo Y variante, y SUMANDO todos los renglones que
+        coincidan (auditoria de stock, 5/9/2026). Antes se comparaba solo el id y se quedaba con el
+        ULTIMO renglon que matcheara: en una venta con dos variantes del mismo articulo (Remera M
+        x2 y Remera L x3), al actualizarla sin tocar nada, la M leia "antes habia 3" y generaba un
+        Act Venta de +1 que no correspondia; y con la extension `varios_precios` (un articulo con
+        varios renglones de precio) se leia un solo renglon en vez de la suma.
     */
 
-    static function get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez) {
+    static function get_amount_for_stock_movement($sale, $article, $amount, $previus_articles, $se_esta_confirmando_por_primera_vez, $article_variant_id = null) {
         if (!is_null($previus_articles) && !$se_esta_confirmando_por_primera_vez) {
             $previus_amount = null;
             $new_amount = null;
 
             foreach ($previus_articles as $previus_article) {
-                if ($previus_article->id == $article->id) {
-                    $previus_amount = $previus_article->pivot->amount;
+                if (
+                    $previus_article->id == $article->id
+                    && Self::misma_variante($previus_article->pivot->article_variant_id, $article_variant_id)
+                ) {
+                    $previus_amount = (float)$previus_amount + (float)$previus_article->pivot->amount;
                 }
             }
 
@@ -1265,6 +1276,19 @@ class ArticleHelper {
             'amount'    => -(float)$amount,
             'concepto'  => 'Venta',
         ];
+    }
+
+    /**
+     * Si dos ids de variante son "la misma": null, 0 y '' cuentan como "sin variante".
+     *
+     * @param  mixed  $a
+     * @param  mixed  $b
+     * @return bool
+     */
+    static function misma_variante($a, $b) {
+        $a = (is_null($a) || $a === '' || (int)$a == 0) ? null : (int)$a;
+        $b = (is_null($b) || $b === '' || (int)$b == 0) ? null : (int)$b;
+        return $a === $b;
     }
 
     static function storeStockMovement($article, $sale_id, $amount, $from_address_id = null, $to_address_id = null, $concepto = null, $article_variant_id = null) {
@@ -1353,14 +1377,25 @@ class ArticleHelper {
                 }
 
             } else if (count($article->addresses) >= 1) {
-                
-                foreach ($article->addresses as $article_address) {
-                    Log::info('Sumando '.$article_address->pivot->amount.' de '.$article_address->street);
-                    $stock += $article_address->pivot->amount;
-                }
+
+                /*
+                    La suma la hace el SQL en la misma sentencia que escribe: `stock = SUM(depositos)`.
+                    Sumar en PHP y guardar despues dejaba una ventana en la que otro movimiento del
+                    mismo articulo ya habia tocado un deposito, y el ultimo en escribir pisaba con una
+                    suma vieja. Asi el numero que queda es la suma de lo que hay en la base en el
+                    instante de escribir.
+                */
+                DB::table('articles')
+                    ->where('id', $article->id)
+                    ->update([
+                        'stock' => DB::raw('(SELECT COALESCE(SUM(aa.amount), 0) FROM address_article aa WHERE aa.article_id = '.(int)$article->id.')'),
+                    ]);
+
+                $stock = (float)DB::table('articles')->where('id', $article->id)->value('stock');
+
                 Log::info('Se seteo stock con direcciones = '.$stock);
 
-            } 
+            }
 
 
             $article->stock = $stock;

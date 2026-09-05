@@ -203,12 +203,28 @@ class SaleController extends Controller
 
         Log::info($this->user(false)->name.' va a crear venta');
 
-        if ($this->venta_ya_cread($request)) {
-            Log::info('No se volvio a crear la venta');
-            return;
-        }
+        /*
+         * 🔴 Candado por comercio mientras se crea la venta (auditoría de stock, 5/9/2026).
+         *
+         * venta_ya_cread() mira si hay una venta igual de los últimos 5 segundos, pero dos requests
+         * simultáneos (doble clic en "Guardar", un reintento del cliente HTTP) pasaban los dos el
+         * chequeo antes de que ninguno insertara: en Panchito quedaron dos ventas con el MISMO
+         * número (86143) creadas en el mismo segundo, y con ellas el stock descontado dos veces.
+         * El candado nombrado de MySQL serializa la creación por comercio: el segundo request
+         * espera al primero y recién entonces pregunta si la venta ya existe. Se libera en el
+         * `finally`, pase lo que pase.
+         */
+        $candado = 'crear_venta_'.$this->userId();
+
+        DB::select('SELECT GET_LOCK(?, 10)', [$candado]);
 
         try {
+
+            if ($this->venta_ya_cread($request)) {
+                Log::info('No se volvio a crear la venta');
+                DB::rollBack();
+                return response(null, 200);
+            }
 
             /** Checkbox "Enviar correo" en vender: sin extensión no se persiste ni se encola mail. */
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
@@ -352,10 +368,15 @@ class SaleController extends Controller
             report($e);
 
             return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
+
+        } finally {
+
+            // El candado se suelta siempre: con venta creada, con 500 o con la venta repetida.
+            DB::select('SELECT RELEASE_LOCK(?)', [$candado]);
         }
 
 
-    }  
+    }
 
     function update(Request $request, $id) {
 
@@ -383,9 +404,26 @@ class SaleController extends Controller
             /** Misma regla que en store: send_mail solo si el comercio tiene la extensión. */
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
+            /*
+             * 🔴 lockForUpdate sobre la venta (auditoría de stock, 5/9/2026). Dos actualizaciones
+             * simultáneas de la misma venta leían las dos los mismos `previus_articles`: la segunda
+             * no veía los renglones que la primera acababa de agregar y los volvía a descontar como
+             * "Venta" nuevos. Medido en Fénix el 7/8/2026 (venta 53328: cuatro artículos descontados
+             * dos veces en dos guardados con dos minutos de diferencia, el mismo día en que el
+             * hosting tiraba lock wait timeouts) y en Golonorte (182 renglones con "Venta"
+             * repetida en cinco meses). Con el candado, el segundo guardado espera al primero y
+             * lee la venta ya actualizada.
+             */
             $model = Sale::where('id', $id)
-                            ->with('articles')
+                            ->lockForUpdate()
                             ->first();
+
+            if (is_null($model)) {
+                DB::rollBack();
+                return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+            }
+
+            $model->load('articles');
 
             $previus_articles = $model->articles;
             $previus_combos = $model->combos;

@@ -9,9 +9,13 @@ use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Stock\StockMovementController;
+use App\Models\Article;
 use App\Models\ConceptoStockMovement;
 use App\Models\CreditAccount;
+use App\Models\Sale;
 use App\Models\StockMovement;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 
@@ -50,9 +54,59 @@ class DeleteSaleHelper {
 	 * @param  bool              $compensar_caja   Si crea los movimientos que revierten lo que la venta metio en caja.
 	 * @param  mixed             $payment_methods  Copia en memoria de los metodos de pago, tomada ANTES del delete.
 	 * @param  mixed             $helper_caja      Instancia de DeleteCajaCompensacionHelper, o null para crear una.
-	 * @return void
+	 * @return bool  true si la venta se dio de baja; false si ya estaba eliminada y no se hizo nada.
 	 */
 	static function eliminar_venta($model, $instance, $compensar_caja = false, $payment_methods = null, $helper_caja = null) {
+
+		/*
+			🔴 Transaccion + candado sobre la fila de la venta (auditoria de stock, 5/9/2026).
+
+			`destroy()` corria sin transaccion ni lock. Si el usuario apretaba "Eliminar" dos veces
+			antes de que el primer pedido terminara (o el cliente HTTP reintentaba), los dos requests
+			encontraban la venta viva con `Sale::find()` y los dos corrian `regresar_stock()`: cada
+			articulo volvia al stock por duplicado. Medido en fenix el 4/9/2026: tres ventas, 22
+			articulos inflados, corregidos a mano.
+
+			El SELECT ... FOR UPDATE serializa los dos requests: el segundo espera aca hasta el commit
+			del primero y recien entonces vuelve a preguntar si la venta sigue viva. Como `Sale` usa
+			SoftDeletes, `where('id')` ya no la encuentra y la baja no se repite. Es el mismo candado
+			con el que la confirmacion de pedidos y presupuestos cerro su propia carrera.
+
+			Cuando ya hay una transaccion abierta (la cancelacion de un pedido corre adentro de la de
+			`OrderController::update()`), Laravel anida con un savepoint y el lock se sostiene hasta
+			el commit de afuera.
+		*/
+		return DB::transaction(function () use ($model, $instance, $compensar_caja, $payment_methods, $helper_caja) {
+
+			$viva = Sale::where('id', $model->id)
+						->lockForUpdate()
+						->first();
+
+			if (is_null($viva)) {
+
+				Log::info('eliminar_venta: la venta id '.$model->id.' ya estaba eliminada. No se repite la baja ni se devuelve stock.');
+
+				return false;
+			}
+
+			Self::ejecutar_baja($model, $instance, $compensar_caja, $payment_methods, $helper_caja);
+
+			return true;
+		});
+	}
+
+	/**
+	 * El cuerpo de la baja, ya con el candado tomado. No llamar directo: entrar siempre por
+	 * eliminar_venta().
+	 *
+	 * @param  \App\Models\Sale  $model
+	 * @param  mixed             $instance
+	 * @param  bool              $compensar_caja
+	 * @param  mixed             $payment_methods
+	 * @param  mixed             $helper_caja
+	 * @return void
+	 */
+	static function ejecutar_baja($model, $instance, $compensar_caja, $payment_methods, $helper_caja) {
 
 		if (is_null($helper_caja)) {
 			$helper_caja = new DeleteCajaCompensacionHelper();
@@ -138,32 +192,62 @@ class DeleteSaleHelper {
 		Self::regresar_stock($model);
 	}
 
+	/**
+	 * Devuelve al stock lo que la venta REALMENTE le sacó, leyendo su propio libro de movimientos.
+	 *
+	 * 🔴 Hasta la auditoría de stock (5/9/2026) se reponía la cantidad del renglón (`pivot->amount`,
+	 * menos lo devuelto por NC). Eso reponía cosas que nunca se habían descontado, y la auditoría
+	 * las midió en producción:
+	 *
+	 *  - renglones agregados cuando el artículo todavía no llevaba stock (stock NULL: no hubo
+	 *    "Venta"), y que al borrar la venta —con el artículo ya con stock— volvían enteros
+	 *    (Ferretotal 18000: +20 y +3 fantasma; FerreMas: 26 ventas borradas el 5/8 con 49
+	 *    renglones inflados);
+	 *  - devoluciones hechas desde Devoluciones sin "actualizar unidades devueltas":
+	 *    `returned_amount` quedaba en NULL, y al borrar la venta lo devuelto volvía por segunda
+	 *    vez;
+	 *  - la NC del panel de Vender, que quedaba etiquetada "Ingreso manual" y por eso no se
+	 *    restaba.
+	 *
+	 * Con el libro no hay nada que adivinar: por cada (artículo, variante) se suma todo lo que
+	 * la venta movió (ventas, ajustes, renglones sacados, notas de crédito, combos) y se crea UN
+	 * movimiento "Se elimino la venta" que lo deja en cero. Una venta que nunca descontó (to_check,
+	 * discount_stock en 0, artículo sin stock) no tiene nada en el libro y no repone nada; una que
+	 * descontó dos veces por un doble envío repone las dos. Después del borrado, el neto de la
+	 * venta en `stock_movements` es 0 siempre.
+	 *
+	 * @param  \App\Models\Sale  $sale
+	 * @return void
+	 */
 	static function regresar_stock($sale) {
 
-        // Solo se revierte el stock si la venta estaba configurada para descontarlo
+        foreach (Self::neto_por_renglon($sale) as $renglon) {
+
+            $article = Article::find($renglon->article_id);
+
+            // Artículo borrado o inexistente: no lleva stock que devolver.
+            if (is_null($article)) {
+                continue;
+            }
+
+            $data = [
+                'model_id'                      => $article->id,
+                'amount'                        => -(float)$renglon->neto,
+                'sale_id'                       => $sale->id,
+                'article_variant_id'            => $renglon->article_variant_id,
+                'concepto_stock_movement_name'  => 'Se elimino la venta',
+            ];
+
+            if (count($article->addresses) >= 1) {
+                $data['to_address_id'] = $sale->address_id;
+            }
+
+            $ct = new StockMovementController();
+            $ct->crear($data, false);
+        }
+
+        // El stock de una promoción no pasa por stock_movements: se sigue reponiendo por su renglón.
         if (!$sale->to_check && !$sale->checked && $sale->discount_stock) {
-
-            foreach ($sale->articles as $article) {
-                if (!is_null($article->stock)) {
-
-                    $amount = $article->pivot->amount;
-                    $amount -= self::get_unidades_ya_devueltas_en_nota_de_credito($sale, $article);
-                    
-                    ArticleHelper::resetStock($article, $amount, $sale);
-                }
-            }
-
-            foreach ($sale->combos as $combo) {
-                
-                foreach ($combo->articles as $article) {
-                    
-                    if (!is_null($article->stock)) {
-
-                        $amount = $combo->pivot->amount * $article->pivot->amount;
-                        ArticleHelper::resetStock($article, $amount, $sale);
-                    }
-                }
-            }
 
             foreach ($sale->promocion_vinotecas as $promocion_vinoteca) {
 
@@ -171,6 +255,23 @@ class DeleteSaleHelper {
                 $promocion_vinoteca->save();
             }
         }
+	}
+
+	/**
+	 * Neto de movimientos de stock de la venta por (artículo, variante), sólo los que no dan cero.
+	 *
+	 * @param  \App\Models\Sale  $sale
+	 * @return \Illuminate\Support\Collection  Objetos con article_id, article_variant_id y neto.
+	 */
+	static function neto_por_renglon($sale) {
+
+        return DB::table('stock_movements')
+                    ->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS article_variant_id'), DB::raw('SUM(amount) AS neto'))
+                    ->where('sale_id', $sale->id)
+                    ->whereNotNull('article_id')
+                    ->groupBy('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL)'))
+                    ->havingRaw('ABS(SUM(amount)) > 0.0001')
+                    ->get();
 	}
 
     static function get_unidades_ya_devueltas_en_nota_de_credito($sale, $article) {

@@ -37,6 +37,7 @@ use App\Http\Controllers\SellerCommissionController;
  * antes por la firma vieja de notaCredito(), corregida el 24/8/2026.
  */
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -650,6 +651,20 @@ class SaleHelper extends Controller {
     }
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
+
+            /*
+                Mismo freno que DevolucionesController::store(): la NC del panel de Vender tampoco
+                puede devolver más de lo que la venta tiene sin devolver (auditoría de stock,
+                5/9/2026). Acá se lanza como excepción porque este helper corre adentro de la
+                transacción de SaleController::update(), cuyo catch hace el rollback: la venta no
+                se toca y el usuario ve el motivo.
+            */
+            $motivo = ValidarDevolucionHelper::motivo_por_el_que_no_se_puede_devolver($sale->id, $request->returned_items);
+
+            if (!is_null($motivo)) {
+                throw new \Exception($motivo);
+            }
+
             sleep(1);
             $haber = 0;
 
@@ -772,24 +787,55 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * Devuelve al stock lo que la nota de credito del panel de Vender marca como devuelto.
+     *
+     * 🔴 Va por `crear()` y no por `store()` (auditoria de stock, 5/9/2026). `store()` lee un
+     * puñado de claves del request y nada mas: `nota_credito_id`, `sale_id` y el texto de
+     * `concepto` se perdian, y el movimiento quedaba etiquetado con el concepto por defecto,
+     * "Ingreso manual", sin venta. Dos consecuencias medibles: al borrar la venta despues,
+     * DeleteSaleHelper no encontraba ninguna devolucion con concepto "Nota de credito" y reponia
+     * la cantidad completa (lo devuelto volvia al stock dos veces); y en un articulo con
+     * `unidades_individuales` el "Ingreso manual" multiplicaba la cantidad devuelta.
+     *
+     * El deposito destino solo viaja si el articulo reparte por depositos; si lleva stock global,
+     * la devolucion va al global (CheckToAddress tambien lo frena, pero no hace falta llegar ahi).
+     *
+     * @param  \App\Models\Sale           $sale
+     * @param  \App\Models\CurrentAcount  $nota_credito  La NC recien creada en cuenta corriente.
+     * @param  array                      $items         `returned_items` del request de Vender.
+     * @return void
+     */
     static function returnToStock($sale, $nota_credito, $items) {
-        // Log::info('returnToStock para nota_credito:');
-        // Log::info((array)$nota_credito);
+
         foreach ($items as $item) {
             if (
-                isset($item['returned_amount']) 
-                && !is_null($item['returned_amount']) 
+                isset($item['returned_amount'])
+                && !is_null($item['returned_amount'])
                 && (float)$item['returned_amount'] > 0
             ) {
+                $article = Article::find($item['id']);
+
+                if (is_null($article)) {
+                    continue;
+                }
+
+                $data = [
+                    'model_id'                      => $article->id,
+                    'amount'                        => (float)$item['returned_amount'],
+                    'sale_id'                       => $sale->id,
+                    'nota_credito_id'               => !is_null($nota_credito) ? $nota_credito->id : null,
+                    'article_variant_id'            => Self::getArticleVariantId($item),
+                    'concepto_stock_movement_name'  => 'Nota de credito',
+                    'observations'                  => 'Nota credito Venta N° '.$sale->num,
+                ];
+
+                if (count($article->addresses) >= 1) {
+                    $data['to_address_id'] = $sale->address_id;
+                }
+
                 $ct = new StockMovementController();
-                $request = new \Illuminate\Http\Request();
-                
-                $request->model_id = $item['id'];
-                $request->to_address_id = $sale->address_id;
-                $request->amount = $item['returned_amount'];
-                $request->nota_credito_id = $nota_credito->id;
-                $request->concepto = 'Nota credito Venta N° '.$sale->num;
-                $ct->store($request);
+                $ct->crear($data, false);
             }
         }
 
@@ -971,6 +1017,16 @@ class SaleHelper extends Controller {
 
                     $amount = Self::getAmount($sale, $article);
 
+                    /*
+                        Con `varios_precios` el articulo va a la venta como VARIOS renglones (uno por
+                        precio, cada uno con su cantidad) pero el descuento de stock se hace una sola
+                        vez, aca. Lo que sale del stock es la suma de esos renglones, no la cantidad
+                        del item "padre", que es la que quedo en el formulario antes de repartir.
+                    */
+                    if (isset($article['varios_precios']) && is_array($article['varios_precios'])) {
+                        $amount = Self::get_amount_varios_precios($article['varios_precios']);
+                    }
+
                     if (isset($article['article_variant_id'])) {
                         $article_variant_id = $article['article_variant_id'];
                     } else {
@@ -992,6 +1048,25 @@ class SaleHelper extends Controller {
 
             }
         }
+    }
+
+    /**
+     * Cantidad total que sale del stock con `varios_precios`: la suma de las cantidades de cada
+     * renglon de precio. Un renglon sin cantidad cuenta como 1, igual que en attachArticles().
+     *
+     * @param  array  $varios_precios
+     * @return float
+     */
+    static function get_amount_varios_precios($varios_precios) {
+        $total = 0;
+        foreach ($varios_precios as $otro_precio) {
+            if (!isset($otro_precio['amount']) || $otro_precio['amount'] === '' || is_null($otro_precio['amount'])) {
+                $total += 1;
+            } else {
+                $total += (float)$otro_precio['amount'];
+            }
+        }
+        return $total;
     }
 
     static function usa_stock($article) {
