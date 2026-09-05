@@ -766,9 +766,16 @@ class ActualizarBBDD {
      * 🔴 Se aceptan las DOS claves. La actual es `__provider_discounts_to_tag`: lleva el prefijo de
      * marcador interno, que es lo que la mantiene fuera del INSERT/UPDATE (se descarta por prefijo
      * en los dos caminos de guardar_articulos()) y fuera del "detalle del lote" que ve el comercio,
-     * donde el array de artículos actualizados se serializa ENTERO al pivot `updated_props`. La
-     * vieja, sin prefijo, es del prompt 307 y puede venir en un chunk encolado antes de este
-     * deploy: la cola no se vacía en el deploy y esa entrada tiene que seguir materializándose.
+     * donde el array de artículos actualizados se serializa ENTERO al pivot `updated_props`.
+     *
+     * La vieja, sin prefijo, es la del prompt 307 y hoy NO la escribe nadie: ProcessRow la borra
+     * (set_discounts_de_la_fila()) y nunca la vuelve a poner. Aceptarla es una guarda defensiva,
+     * por si alguien instancia estas clases desde otro camino con un cache armado a la vieja — NO
+     * es compatibilidad con chunks encolados antes del deploy, y esa premisa, que decía este mismo
+     * comentario hasta el 5/9/2026, es falsa y está medida: ProcessArticleChunk::__construct()
+     * recibe el path del CSV y escalares, ninguna fila procesada, y su handle() instancia
+     * ArticleImport, que crea ProcessRow y ActualizarBBDD en la MISMA ejecución. El cache nunca
+     * cruza la cola.
      *
      * @param  array $article_cache
      * @return bool
@@ -788,9 +795,10 @@ class ActualizarBBDD {
      *                          (semántica de siempre, prompt 307).
      *   - barrido 'acotado' -> los descuentos salieron del estándar del proveedor, no de la
      *                          planilla: se barre SOLO lo tagueado al proveedor ANTERIOR (todo) y
-     *                          lo del NUEVO que sea `ficha_proveedor` (nada más). Los tagueados de
-     *                          otros proveedores (una bonificación negociada en una compra real,
-     *                          por ejemplo) no son de esta operación para borrarlos.
+     *                          lo del NUEVO que sea `ficha_proveedor` y no esté editado a mano
+     *                          (nada más). Los tagueados de otros proveedores (una bonificación
+     *                          negociada en una compra real, por ejemplo) no son de esta operación
+     *                          para borrarlos.
      *
      * 🔴 LA ASIMETRÍA ENTRE EL PROVEEDOR ANTERIOR Y EL NUEVO ES A PROPÓSITO, no un descuido:
      *
@@ -799,13 +807,20 @@ class ActualizarBBDD {
      *     tienen por qué seguir descontándole el costo. Es exactamente lo que hace la ficha en
      *     ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor().
      *
-     *   - Del NUEVO se borra SOLO lo de origen `ficha_proveedor`. Eso alcanza para no duplicar el
-     *     estándar —el defecto real: artículo del proveedor A que pasa a B, con B ya teniendo su
-     *     estándar de ficha (25%) materializado en ese artículo, quedaba con 25% + 25% en cascada,
-     *     factor 0,5625 en vez de 0,75, y sobre ese costo se calculan todos los precios de venta—
-     *     y deja intactas las bonificaciones de compra de B (`origen = compra`), las que trajo un
-     *     import (`import`) y las manuales del mismo B. Borrarlas sería destruir la bonificación
-     *     que el comercio negoció de verdad con el proveedor al que el artículo justamente pasa.
+     *   - Del NUEVO se borra SOLO lo de origen `ficha_proveedor` que no esté editado a mano. Eso
+     *     saca el estándar viejo de ficha cuando el proveedor cambió su bonificación (de 25% a 20%:
+     *     si no se borrara, quedarían los dos) y deja intactas las bonificaciones de compra de B
+     *     (`origen = compra`), las que trajo un import (`import`), las manuales del mismo B y las
+     *     de ficha que el comercio editó a mano. Borrarlas sería destruir la bonificación que el
+     *     comercio negoció de verdad con el proveedor al que el artículo justamente pasa.
+     *
+     *   - Lo que evita DUPLICAR el estándar —el defecto real: artículo del proveedor A que pasa a
+     *     B, con B ya teniendo su 25% materializado en ese artículo, quedaba con 25% + 25% en
+     *     cascada, factor 0,5625 en vez de 0,75, y sobre ese costo se calculan todos los precios de
+     *     venta— no es el borrado sino el filtro de
+     *     sacar_porcentajes_que_el_articulo_ya_tiene(), que corre después. El borrado no alcanza
+     *     porque no llega a las filas de `origen` NULL, que en cualquier base con historia son
+     *     todas las tagueadas anteriores a la migración de la columna. Ver ese método.
      *
      * 🔴 El borrado del NUEVO va con query propia y no con
      * ArticleProviderDiscountHelper::delete_tagged_discounts(): ese helper no filtra por origen y
@@ -829,9 +844,15 @@ class ActualizarBBDD {
                         : $article_cache['provider_discounts_to_tag'];
 
         /*
-         * Un cache viejo (chunk encolado antes del deploy de esta misión) trae la lista de items
-         * pelada, sin descriptor, y el proveedor en la clave suelta de al lado. En ese caso valen
-         * los defaults del prompt 307: barrido total y origen `import`.
+         * Un cache armado a la vieja (forma del prompt 307) trae la lista de items pelada, sin
+         * descriptor, y el proveedor en la clave suelta de al lado. En ese caso valen los defaults
+         * de entonces: barrido total y origen `import`.
+         *
+         * 🔴 Es una guarda defensiva, por si alguien reusa estas clases desde otro camino — no una
+         * compatibilidad con chunks encolados antes del deploy. Esa premisa es falsa y está medida:
+         * el cache no cruza la cola (ver la nota de trae_discounts_tagueados()). Se deja porque es
+         * inerte y sacarla es más riesgo que beneficio, pero nadie tiene que construir sobre la
+         * idea de que existe un camino que llega hasta acá con la forma vieja.
          */
         $es_descriptor = is_array($descriptor) && array_key_exists('items', $descriptor);
 
@@ -865,14 +886,28 @@ class ActualizarBBDD {
                 ArticleProviderDiscountHelper::delete_tagged_discounts($article_model, $provider_id_anterior);
             }
 
-            /* Y del proveedor NUEVO, SOLO su estándar de ficha: es lo único que esta operación va a
-               volver a crear, así que es lo único que puede duplicarse. Todo lo demás que el
-               artículo tenga tagueado a ese proveedor —la bonificación de una compra real, lo que
-               trajo un import, lo cargado a mano— se queda. Ver la nota del encabezado. */
+            /* Y del proveedor NUEVO, SOLO su estándar de ficha SIN editar: es lo único que esta
+               operación va a volver a crear tal cual, así que es lo único que puede duplicarse.
+               Todo lo demás que el artículo tenga tagueado a ese proveedor —la bonificación de una
+               compra real, lo que trajo un import, lo cargado a mano— se queda. Ver la nota del
+               encabezado.
+
+               🔴 Y `editado_a_mano` se respeta, igual que la propagación desde la ficha
+               (ArticleProviderDiscountHelper::propagar_a_articulos(), que solo pisa las editadas
+               con el tilde explícito del usuario). El import no tiene por qué ser más destructivo
+               que ella: un comercio que le bajó a mano el 25% de ficha a 18% para un artículo
+               puntual no puede perderlo porque alguien reimportó la lista. Con el filtro de
+               duplicados de abajo, la fila editada que sobrevive tampoco se duplica. */
             ArticleDiscount::where('article_id', $article_model->id)
                                 ->where('provider_id', $provider_id)
                                 ->where('origen', ArticleDiscount::ORIGEN_FICHA_PROVEEDOR)
+                                ->where(function ($query) {
+                                    $query->whereNull('editado_a_mano')
+                                            ->orWhere('editado_a_mano', 0);
+                                })
                                 ->delete();
+
+            $items = $this->sacar_porcentajes_que_el_articulo_ya_tiene($article_model, $provider_id, $items);
 
             ArticleProviderDiscountHelper::create_tagged_discounts($article_model, $provider_id, $items, 0, $origen);
 
@@ -882,6 +917,94 @@ class ActualizarBBDD {
         }
 
         $article_model->unsetRelation('article_discounts');
+    }
+
+    /**
+     * Saca de los items del estándar los porcentajes que el artículo YA tiene tagueados a ESE MISMO
+     * proveedor después del borrado. Devuelve la lista filtrada.
+     *
+     * 🔴 POR QUÉ EXISTE, porque no es una optimización: sin esto la acumulación vuelve por la
+     * ventana con las filas de `origen` NULL. El borrado de arriba filtra
+     * `origen = ficha_proveedor`, y la migración que agregó la columna
+     * (2026_09_04_190000_add_origen_to_article_discounts_table) dejó a propósito en NULL a TODAS las
+     * tagueadas anteriores —solo backfilleó `manual` a las de `provider_id` null—, así que en
+     * cualquier base con historia hay descuentos tagueados sin origen. Artículo del proveedor A que
+     * ya tenía un 25% tagueado a B con `origen` NULL (una compra a B previa a la migración),
+     * importado con proveedor fijo B: se borra todo lo de A, el borrado por `origen` no machea nada,
+     * se crea el estándar de B y el artículo queda con 25% + 25% en cascada — factor 0,5625 en vez
+     * de 0,75, y sobre ese costo se calculan todos los precios de venta. Es exactamente el defecto
+     * que esta misión vino a arreglar.
+     *
+     * 🔴 Y SE FILTRA LO QUE SE VA A CREAR, NO SE AMPLÍA EL BORRADO A `origen` NULL. Una fila de
+     * origen desconocido no se puede reponer, y la regla del sistema es explícita en
+     * ArticleProviderDiscountHelper::gobernado_por_la_ficha(): origen null no lo gobierna la ficha,
+     * o sea no se toca. Filtrar no destruye nada, es idempotente y cubre de una sola vez las filas
+     * de `origen` NULL, las de compra, las de import y las editadas a mano que sobrevivieron.
+     *
+     * El descuento de cada porcentaje se consume DE A UNO (multiconjunto, no set): un proveedor con
+     * estándar [25, 25] sobre un artículo que ya tiene un solo 25% tagueado tiene que quedar con
+     * dos, no con uno. Se comparan con ArticleProviderDiscountHelper::normalizar_porcentaje(), que
+     * es la precisión real de la columna (decimal(10,2)) y evita que "25", 25.0 y "25.00" cuenten
+     * como distintos.
+     *
+     * Los items que no traen porcentaje (un monto) pasan derecho: el barrido acotado hoy solo
+     * materializa porcentajes del estándar, pero la guarda deja el método honesto si mañana no.
+     *
+     * @param  \App\Models\Article $article_model
+     * @param  int                 $provider_id
+     * @param  array               $items
+     * @return array
+     */
+    protected function sacar_porcentajes_que_el_articulo_ya_tiene($article_model, $provider_id, $items) {
+
+        if (empty($items)) return $items;
+
+        $ya_tiene = [];
+
+        $existentes = ArticleDiscount::where('article_id', $article_model->id)
+                                        ->where('provider_id', $provider_id)
+                                        ->whereNotNull('percentage')
+                                        ->pluck('percentage');
+
+        foreach ($existentes as $percentage) {
+
+            $normalizado = ArticleProviderDiscountHelper::normalizar_porcentaje($percentage);
+
+            if (is_null($normalizado)) continue;
+
+            $ya_tiene[] = $normalizado;
+        }
+
+        if (empty($ya_tiene)) return $items;
+
+        $filtrados = [];
+
+        foreach ($items as $item) {
+
+            $item_array = (array) $item;
+
+            $percentage = isset($item_array['percentage']) ? $item_array['percentage'] : null;
+
+            $normalizado = ArticleProviderDiscountHelper::normalizar_porcentaje($percentage);
+
+            if (is_null($normalizado)) {
+                $filtrados[] = $item;
+                continue;
+            }
+
+            $posicion = array_search($normalizado, $ya_tiene, true);
+
+            if ($posicion === false) {
+                $filtrados[] = $item;
+                continue;
+            }
+
+            // Consumido: si el estándar repite el porcentaje, la segunda vuelta ya no lo encuentra
+            // y esa segunda fila sí se crea.
+            unset($ya_tiene[$posicion]);
+        }
+
+        return $filtrados;
     }
 
     function asignar_surchages_percentages() {

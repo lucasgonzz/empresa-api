@@ -967,6 +967,148 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
     }
 
     /**
+     * 🔴 La acumulacion volvia por la ventana con las filas de `origen` NULL, y es el escenario mas
+     * alcanzable de todos: pasa en CUALQUIER base con historia.
+     *
+     * El barrido acotado del proveedor nuevo filtra `origen = ficha_proveedor`, pero la migracion
+     * que agrego la columna (2026_09_04_190000) backfilleo `manual` SOLO a las de `provider_id`
+     * null y dejo a proposito en NULL a todas las tagueadas anteriores. O sea: cualquier descuento
+     * de proveedor materializado antes de esa migracion tiene `origen` NULL y el delete no lo ve.
+     *
+     * Escenario: articulo del proveedor A que ya tenia un 25% tagueado a B con `origen` NULL (una
+     * compra a B previa a la migracion). Import con proveedor fijo B, preferencia prendida: cambia
+     * de proveedor, se borra todo lo de A, el delete por origen no machea NADA, y se crea el
+     * estandar de ficha de B —que tambien es 25%—. Sin el filtro quedaban 25% + 25% en cascada:
+     * factor 0,5625 en vez de 0,75, y sobre ese costo se calculan todos los precios de venta.
+     *
+     * 🔴 Lo arregla ActualizarBBDD::sacar_porcentajes_que_el_articulo_ya_tiene(), que NO amplia el
+     * borrado a `origen` NULL: una fila de origen desconocido no se puede reponer y la regla del
+     * sistema (ArticleProviderDiscountHelper::gobernado_por_la_ficha()) dice que no se toca. Lo que
+     * se hace es no CREAR un porcentaje que el articulo ya tiene tagueado a ese mismo proveedor.
+     *
+     * @return void
+     */
+    public function test_no_duplica_un_porcentaje_que_el_articulo_ya_tenia_con_origen_null()
+    {
+        $this->set_preferencia(1);
+
+        $article = $this->crear_articulo(
+            'zz Art import estandar previo sin origen',
+            '7799818',
+            1000,
+            $this->proveedor_a->id
+        );
+
+        $this->tagear_descuento($article, $this->proveedor_a->id, 10, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
+
+        /* La fila de la discordia: tagueada a B, con el mismo porcentaje que el estandar de B y
+           SIN origen, como quedaron todas las anteriores a la migracion de la columna. */
+        $sin_origen = $this->tagear_descuento($article, $this->proveedor_b->id, 25, null);
+
+        $this->importar(
+            [['7799818', 'zz Art import estandar previo sin origen', 1000]],
+            false,
+            [
+                'provider_id'                            => $this->proveedor_b->id,
+                'actualizar_articulos_de_otro_proveedor' => true,
+            ]
+        );
+
+        $article = $article->fresh();
+
+        $this->assertSame(
+            (int) $this->proveedor_b->id,
+            (int) $article->provider_id,
+            'La importacion tenia que cambiarle el proveedor al articulo.'
+        );
+
+        $this->assertNotNull(
+            ArticleDiscount::find($sin_origen->id),
+            '🔴 La fila de origen desconocido NO se borra: no se puede reponer lo que no se sabe '.
+            'quien puso. El arreglo es no crear el duplicado, no ampliar el barrido.'
+        );
+
+        $this->assertSame(
+            [25.0],
+            $this->porcentajes_tagueados($article, $this->proveedor_b->id),
+            '🔴 Tiene que quedar UN solo 25%. Si aparece [25, 25], el estandar de ficha se encimo '.
+            'sobre la fila de `origen` NULL que el delete no alcanza.'
+        );
+
+        /* 1000 x 0,75 = 750. Con la acumulacion daba 1000 x 0,75 x 0,75 = 562,50. */
+        $this->assertEqualsWithDelta(
+            750,
+            (float) $article->costo_real,
+            self::DELTA,
+            'El costo real tiene que salir con el 25% una sola vez. 562,50 es la cascada de dos.'
+        );
+    }
+
+    /**
+     * 🟡 Un descuento de ficha que el comercio EDITO A MANO no se lo borra el import.
+     *
+     * La propagacion desde la ficha del proveedor las respeta salvo tilde explicito del usuario
+     * (ArticleProviderDiscountHelper::propagar_a_articulos(), rama `editado_a_mano`); el import no
+     * tiene por que ser mas destructivo que ella. Caso real: el comercio le bajo a mano el 25% de
+     * ficha de B a 18% para un articulo puntual, y despues reimporta la lista.
+     *
+     * Y el resultado no es "18% + 25%": con el filtro del test de arriba la fila editada sobrevive
+     * y ademas el estandar se materializa igual, porque 25 no esta entre lo que el articulo ya
+     * tiene. Los dos porcentajes son distintos y los dos son legitimos — el editado es la condicion
+     * puntual de ese articulo, el estandar es la del proveedor.
+     *
+     * @return void
+     */
+    public function test_el_import_no_borra_un_descuento_de_ficha_editado_a_mano()
+    {
+        $this->set_preferencia(1);
+
+        $article = $this->crear_articulo(
+            'zz Art import ficha editada a mano',
+            '7799819',
+            1000,
+            $this->proveedor_a->id
+        );
+
+        $editado = $this->tagear_descuento($article, $this->proveedor_b->id, 18, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
+
+        $editado->editado_a_mano = 1;
+        $editado->save();
+
+        $this->importar(
+            [['7799819', 'zz Art import ficha editada a mano', 1000]],
+            false,
+            [
+                'provider_id'                            => $this->proveedor_b->id,
+                'actualizar_articulos_de_otro_proveedor' => true,
+            ]
+        );
+
+        $article = $article->fresh();
+
+        $this->assertNotNull(
+            ArticleDiscount::find($editado->id),
+            '🔴 El descuento de ficha marcado `editado_a_mano` es una decision del comercio: el '.
+            'import no lo pisa, igual que no lo pisa la propagacion desde la ficha.'
+        );
+
+        $this->assertSame(
+            [18.0, 25.0],
+            $this->porcentajes_tagueados($article, $this->proveedor_b->id),
+            'Tienen que quedar los dos: el 18% que el comercio edito a mano y el 25% del estandar '.
+            'que la importacion materializa, una sola vez cada uno.'
+        );
+
+        /* Cascada: 1000 x 0,82 x 0,75 = 615. */
+        $this->assertEqualsWithDelta(
+            615,
+            (float) $article->costo_real,
+            self::DELTA,
+            'Si da 750, el import se comio la edicion a mano del comercio.'
+        );
+    }
+
+    /**
      * 🔴 Caso MIXTO (columna `descuentos` NO mapeada, `descuentos_montos` SI): la preferencia NO
      * gobierna esta rama. Apagada, el import costea EXACTAMENTE como `origin/develop`.
      *

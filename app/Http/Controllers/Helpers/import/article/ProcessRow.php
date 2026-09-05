@@ -5103,8 +5103,16 @@ class ProcessRow {
      *
      * Los nombres viejos (`provider_discounts_to_tag` y `provider_discounts_to_tag_provider_id`)
      * siguen en esas listas de descarte y los sigue leyendo
-     * ActualizarBBDD::materializar_discounts_tagueados() a proposito: un chunk encolado antes de
-     * este deploy todavia los trae.
+     * ActualizarBBDD::materializar_discounts_tagueados(), pero como GUARDA DEFENSIVA: hoy no los
+     * escribe nadie —este mismo metodo los borra unas lineas mas abajo y nunca los vuelve a poner—
+     * y solo llegarian desde otro camino que instanciara estas clases con un cache armado a la
+     * vieja.
+     *
+     * 🔴 NO es compatibilidad con chunks encolados antes del deploy, como decia este comentario
+     * hasta el 5/9/2026. Esa premisa es falsa y esta medida: ProcessArticleChunk::__construct()
+     * recibe el path del CSV y escalares, ninguna fila procesada, y su handle() instancia
+     * ArticleImport, que crea ProcessRow y ActualizarBBDD en la MISMA ejecucion. El cache vive
+     * adentro de una corrida y no cruza la cola nunca.
      *
      * @param  array                    $destino           $data / $merged / $cambios, por referencia.
      * @param  array                    $row               Fila del Excel.
