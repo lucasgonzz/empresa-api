@@ -768,9 +768,19 @@ class ActualizarBBDD {
      *                          verdad para esta fila: se barre todo lo tagueado y se crea lo nuevo
      *                          (semántica de siempre, prompt 307).
      *   - barrido 'acotado' -> los descuentos salieron del estándar del proveedor, no de la
-     *                          planilla: se barre SOLO lo tagueado al proveedor ANTERIOR. Los
-     *                          tagueados de otros proveedores (una bonificación negociada en una
-     *                          compra real, por ejemplo) no son de esta operación para borrarlos.
+     *                          planilla: se barre SOLO lo tagueado al proveedor ANTERIOR y al
+     *                          NUEVO. Los tagueados de otros proveedores (una bonificación
+     *                          negociada en una compra real, por ejemplo) no son de esta operación
+     *                          para borrarlos.
+     *
+     * 🔴 Por qué el barrido acotado también borra los del proveedor NUEVO: sin eso, cambiarle el
+     * proveedor a un artículo que YA tenía descuentos tagueados a ese proveedor nuevo los ACUMULA.
+     * Caso real: artículo del proveedor A con una bonificación de compra tagueada a B (12%); el
+     * import le cambia el proveedor a B (estándar 25%) y el artículo queda con 12% + 25% en
+     * cascada — factor 0,66 en vez de 0,75, una caída del ~12% del costo_real, en silencio, y sobre
+     * ese costo se calculan todos los precios de venta. En develop no pasaba porque
+     * sync_provider_discounts() barría todo. Es seguro en las dos ramas: cuando el artículo no
+     * cambió de proveedor y no tenía ninguno suyo (la regla 3), el delete es un no-op.
      *
      * 🔴 Deja la relación `article_discounts` descargada. `set_precios_finales()` corre después y
      * lee esa relación (ArticlePricesHelper::aplicar_descuentos); Eloquent cachea las relaciones ya
@@ -785,29 +795,40 @@ class ActualizarBBDD {
     protected function materializar_discounts_tagueados($article_model, $article_cache) {
 
         $provider_id = $article_cache['provider_discounts_to_tag_provider_id'];
-        $items       = $article_cache['provider_discounts_to_tag'];
+        $descriptor  = $article_cache['provider_discounts_to_tag'];
 
-        /* Defaults = el comportamiento del prompt 307, por si un cache viejo (chunk encolado antes
-           del deploy de esta misión) llega sin las claves nuevas. */
-        $origen = isset($article_cache['__provider_discounts_to_tag_origen'])
-                    ? $article_cache['__provider_discounts_to_tag_origen']
+        /*
+         * Un cache viejo (chunk encolado antes del deploy de esta misión) trae la lista de items
+         * pelada, sin descriptor. En ese caso valen los defaults del prompt 307: barrido total y
+         * origen `import`.
+         */
+        $es_descriptor = is_array($descriptor) && array_key_exists('items', $descriptor);
+
+        $items = $es_descriptor ? $descriptor['items'] : $descriptor;
+
+        $origen = ($es_descriptor && isset($descriptor['origen']))
+                    ? $descriptor['origen']
                     : ArticleDiscount::ORIGEN_IMPORT;
 
-        $barrido = isset($article_cache['__provider_discounts_to_tag_barrido'])
-                    ? $article_cache['__provider_discounts_to_tag_barrido']
+        $barrido = ($es_descriptor && isset($descriptor['barrido']))
+                    ? $descriptor['barrido']
                     : 'total';
 
         if ($barrido === 'acotado') {
 
-            $provider_id_anterior = isset($article_cache['__provider_discounts_to_tag_provider_id_anterior'])
-                                        ? $article_cache['__provider_discounts_to_tag_provider_id_anterior']
+            $provider_id_anterior = ($es_descriptor && isset($descriptor['provider_id_anterior']))
+                                        ? $descriptor['provider_id_anterior']
                                         : null;
 
-            // Sin proveedor anterior no se borra nada: el artículo no tenía proveedor (o está
-            // naciendo en esta importación), así que no hay descuentos suyos que reemplazar.
+            /* Sin proveedor anterior no se borra por ese lado: el artículo no tenía proveedor (o
+               está naciendo en esta importación), así que no hay descuentos suyos que reemplazar. */
             if (!is_null($provider_id_anterior)) {
                 ArticleProviderDiscountHelper::delete_tagged_discounts($article_model, $provider_id_anterior);
             }
+
+            /* Y también los del proveedor NUEVO, para no acumular sobre lo que ya había suyo.
+               Ver la nota del encabezado. */
+            ArticleProviderDiscountHelper::delete_tagged_discounts($article_model, $provider_id);
 
             ArticleProviderDiscountHelper::create_tagged_discounts($article_model, $provider_id, $items, 0, $origen);
 
