@@ -610,14 +610,24 @@ class EscaneoFacturaCompraService
         $json     = substr($texto, $inicio, $fin - $inicio + 1);
         $decoded  = json_decode($json, true);
 
-        /* Paso 4: si no decodifica, se loguea la respuesta cruda y se corta con mensaje legible. */
+        /*
+         * Paso 4: si no decodifica, se loguea la respuesta cruda y se corta con mensaje legible.
+         *
+         * 🔴 El mensaje de error se guarda en una variable ANTES de loguear: Log::error() termina
+         * serializando el contexto con json_encode() (vía el formatter de Monolog), y ese
+         * json_encode() interno resetea el json_last_error() global. Llamar json_last_error_msg()
+         * de nuevo después del log siempre devuelve "No error", aunque el decode haya fallado -
+         * medido en demo el 5/9/2026 con una factura de "sources s.a." cuyo JSON venía truncado.
+         */
         if (json_last_error() !== JSON_ERROR_NONE) {
+            $mensaje_error = json_last_error_msg();
+
             Log::error('EscaneoFacturaCompraService: JSON inválido en la respuesta de la IA', [
                 'respuesta_cruda' => mb_substr($texto, 0, 2000),
-                'json_error'      => json_last_error_msg(),
+                'json_error'      => $mensaje_error,
             ]);
 
-            throw new \RuntimeException('La IA no devolvió un JSON válido con los datos de la factura: ' . json_last_error_msg());
+            throw new \RuntimeException('La IA no devolvió un JSON válido con los datos de la factura: ' . $mensaje_error);
         }
 
         if (!is_array($decoded)) {

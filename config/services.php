@@ -150,9 +150,10 @@ return [
         'max_imagenes'  => (int) env('ESCANEO_FACTURA_MAX_IMAGENES', 6),
         // Tamaño máximo por archivo subido, en MB, ANTES de redimensionar.
         'max_mb'        => (int) env('ESCANEO_FACTURA_MAX_MB', 12),
-        // Tokens máximos de la respuesta. Una factura de 80 renglones con confianza por campo
-        // no entra en 2000.
-        'max_tokens'    => (int) env('ESCANEO_FACTURA_MAX_TOKENS', 8000),
+        // Tokens máximos de la respuesta. Con 8000 una factura de muchos renglones y nombres
+        // largos (medido en demo el 5/9/2026: cañas de pescar con descripciones detalladas) corta
+        // el JSON a mitad de camino y el escaneo falla con "JSON inválido".
+        'max_tokens'    => (int) env('ESCANEO_FACTURA_MAX_TOKENS', 16000),
     ],
 
     /*
