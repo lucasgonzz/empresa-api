@@ -360,11 +360,15 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
     }
 
     /**
-     * 🔴 DEFECTO CONOCIDO, fijado a propósito (exploración 1/9/2026). Reportado, espera
-     * decisión de Lucas — toca stock en producción y no se arregla solo.
+     * ✅ CORREGIDO en la auditoría de stock del 5/9/2026 (CheckToAddress ya no abre el primer
+     * depósito de un artículo con stock global por una devolución). Este test fijaba el defecto
+     * a propósito desde la exploración del 1/9/2026, con la instrucción de cambiar la aserción a
+     * 20 el día que se corrigiera: ese día llegó, y la aserción de abajo es la del comportamiento
+     * correcto. Lo que sigue es la descripción del defecto tal como estaba, para entender qué
+     * custodia este test.
      *
      * Para un artículo con STOCK GLOBAL (sin filas en address_article), vender y BORRAR la
-     * venta le PIERDE stock.
+     * venta le PERDÍA stock.
      *
      * CÓMO SE LLEGA A ESE ESTADO POR LA INTERFAZ — medido el 2/9/2026 contra el endpoint
      * real, después de que Lucas señalara (con razón) que el modal de movimiento de stock
@@ -387,16 +391,15 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
      *    ahí count(addresses) > 0: CheckGlobalStock ya no aplica y
      *    setArticleStockFromAddresses PISA el stock global con la suma de depósitos.
      *
-     *  Con stock 20, vender 1 y borrar la venta: 20 → 19 → **1**. Se pierden 18 unidades
-     *  en silencio. La EDICIÓN de la venta no tiene el problema (repone sin to_address).
+     *  Con stock 20, vender 1 y borrar la venta: 20 → 19 → **1**. Se perdían 18 unidades
+     *  en silencio. La EDICIÓN de la venta no tenía el problema (repone sin to_address).
      *
-     * Este test fija el comportamiento REAL de hoy: el día que se corrija se va a poner
-     * rojo, y esa es la señal buscada. Lo correcto sería que el stock volviera a 20.
+     * Ahora el borrado repone sobre el stock global y el artículo sigue sin depósitos.
      *
      * @group exploracion-vender
      * @test
      */
-    public function borrar_la_venta_de_un_articulo_con_stock_global_pisa_el_stock()
+    public function borrar_la_venta_de_un_articulo_con_stock_global_repone_el_stock()
     {
         $user = $this->autenticar();
 
@@ -419,15 +422,14 @@ class Actualizar_venta_stock_y_precio_congelado_Test extends TestCase
         $this->deleteJson('api/sale/' . $venta->id)->assertStatus(200);
 
         /*
-         * 🔴 Comportamiento REAL (defecto): el stock queda en 1 — lo repuesto — en vez de
-         * volver a 20. Cuando el borrado repare el stock global, cambiar esta aserción a 20.
+         * Hasta el 5/9/2026 acá se afirmaba 1.0 (lo repuesto pisaba el stock global). El borrado
+         * ahora repone sobre el stock global: 20 → 19 → 20, y el artículo sigue sin depósitos.
          */
         $this->assertEquals(
-            1.0,
+            20.0,
             $this->stock($articulo),
-            'El comportamiento conocido (defectuoso) cambió: si ahora el stock vuelve a 20, '
-                . 'el defecto del borrado sobre stock global se corrigió — actualizar este test a 20 '
-                . 'y cerrar el hallazgo en la bitácora de exploración.'
+            'Borrar la venta tenía que devolver el stock global a 20 (era el defecto de la '
+                . 'exploración del 1/9/2026: el borrado abría un depósito y pisaba el global con 1).'
         );
     }
 
