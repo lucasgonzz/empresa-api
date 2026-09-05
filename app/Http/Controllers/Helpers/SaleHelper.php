@@ -655,9 +655,9 @@ class SaleHelper extends Controller {
             /*
                 Mismo freno que DevolucionesController::store(): la NC del panel de Vender tampoco
                 puede devolver más de lo que la venta tiene sin devolver (auditoría de stock,
-                5/9/2026). Acá se lanza como excepción porque este helper corre adentro de la
-                transacción de SaleController::update(), cuyo catch hace el rollback: la venta no
-                se toca y el usuario ve el motivo.
+                5/9/2026). SaleController::update() ya lo chequea antes de abrir la transacción y
+                responde 422 con el motivo; esto es la última línea para cualquier otro llamador:
+                la excepción hace que el catch de update() revierta todo y la venta no se toque.
             */
             $motivo = ValidarDevolucionHelper::motivo_por_el_que_no_se_puede_devolver($sale->id, $request->returned_items);
 

@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
+use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
@@ -394,6 +395,25 @@ class SaleController extends Controller
             Log::info('update sale id '.$id.': rechazado. '.$motivo);
 
             return response()->json(['message' => $motivo], 409);
+        }
+
+        /*
+         * Panel "Nota de crédito" de Vender: no se puede devolver más de lo que la venta tiene sin
+         * devolver (auditoría de stock, 5/9/2026). Es el mismo freno que DevolucionesController y va
+         * ANTES de abrir la transacción, para responder 422 con el motivo en vez de que el catch de
+         * abajo lo convierta en un 500 mudo. SaleHelper::checkNotaCredito() lo vuelve a chequear
+         * adentro, como última línea.
+         */
+        if ($request->save_nota_credito) {
+
+            $motivo_devolucion = ValidarDevolucionHelper::motivo_por_el_que_no_se_puede_devolver($id, $request->returned_items);
+
+            if (!is_null($motivo_devolucion)) {
+
+                Log::info('update sale id '.$id.': devolucion rechazada. '.$motivo_devolucion);
+
+                return response()->json(['message' => $motivo_devolucion, 'devolucion_excedida' => true], 422);
+            }
         }
 
         DB::beginTransaction();

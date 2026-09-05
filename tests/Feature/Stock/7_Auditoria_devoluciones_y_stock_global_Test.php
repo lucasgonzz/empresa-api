@@ -151,6 +151,21 @@ class Auditoria_devoluciones_y_stock_global_Test extends AuditoriaStockTestCase
         $pivot = DB::table('article_sale')->where('sale_id', $venta->id)->where('article_id', $articulo->id)->first();
         $this->assertEquals(2.0, (float) $pivot->returned_amount);
 
+        /* Devolver de más desde el mismo panel (quedan 3 sin devolver, se piden 4): 422 con motivo, y nada se mueve. */
+        $renglon_excedido = $renglon;
+        $renglon_excedido['returned_amount'] = 4;
+        $renglon_excedido['unidades_devueltas'] = 4;
+
+        $respuesta = $this->putJson('api/sale/'.$venta->id, $this->payload_venta([$renglon_excedido], [
+            'id'                      => $venta->id,
+            'save_nota_credito'       => 1,
+            'nota_credito_description' => 'Devolucion de mas',
+            'returned_items'          => [$renglon_excedido],
+        ]));
+        $respuesta->assertStatus(422);
+        $this->assertTrue((bool) json_decode($respuesta->getContent(), true)['devolucion_excedida']);
+        $this->assertEquals(17.0, $this->stock($articulo), 'La devolución rechazada no puede mover stock.');
+
         /* Borrar la venta después repone lo que quedaba vendido (3), no las 5. */
         $this->deleteJson('api/sale/'.$venta->id)->assertStatus(200);
 
