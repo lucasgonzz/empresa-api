@@ -829,35 +829,33 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
     }
 
     /**
-     * 🔴 Cambiar a un proveedor que YA tenia descuentos tagueados en ese articulo no los acumula.
+     * 🔴 Cambiar a un proveedor que YA tenia su estandar de ficha materializado en ese articulo no
+     * lo duplica.
      *
-     * Caso real: articulo del proveedor A con una bonificacion de compra tagueada a B (12%). El
-     * import le cambia el proveedor a B, cuyo estandar es 25%. Si el barrido acotado borra solo los
-     * del proveedor ANTERIOR, el articulo queda con 12% + 25% en cascada: factor 0,66 en vez de
-     * 0,75, una caida del ~12% del costo_real en silencio, y sobre ese costo se calculan todos los
+     * Caso real: articulo del proveedor A que ya tenia tagueado el estandar de ficha de B (25%, de
+     * una asignacion anterior). El import le cambia el proveedor a B, cuyo estandar es ese mismo
+     * 25%. Si el barrido acotado borrara solo los del proveedor ANTERIOR, el articulo quedaria con
+     * 25% + 25% en cascada: factor 0,5625 en vez de 0,75, y sobre ese costo se calculan todos los
      * precios de venta.
-     *
-     * Lo que queda es el estandar de la ficha de B, que es la verdad que corresponde despues de un
-     * cambio de proveedor.
      *
      * @return void
      */
-    public function test_cambiar_a_un_proveedor_que_ya_tenia_tagueados_no_los_acumula()
+    public function test_cambiar_de_proveedor_no_duplica_el_estandar_de_ficha_del_nuevo()
     {
         $this->set_preferencia(1);
 
         $article = $this->crear_articulo(
-            'zz Art import cambio con tagueados previos',
+            'zz Art import cambio con estandar previo',
             '7799810',
             1000,
             $this->proveedor_a->id
         );
 
         $this->tagear_descuento($article, $this->proveedor_a->id, 10, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
-        $this->tagear_descuento($article, $this->proveedor_b->id, 12, ArticleDiscount::ORIGEN_COMPRA);
+        $this->tagear_descuento($article, $this->proveedor_b->id, 25, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
 
         $this->importar(
-            [['7799810', 'zz Art import cambio con tagueados previos', 1000]],
+            [['7799810', 'zz Art import cambio con estandar previo', 1000]],
             false,
             [
                 'provider_id'                            => $this->proveedor_b->id,
@@ -876,17 +874,18 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
         $this->assertCount(
             0,
             $this->tagueados($article, $this->proveedor_a->id),
-            'Los descuentos del proveedor anterior tienen que haberse ido.'
+            'Los descuentos del proveedor anterior tienen que haberse ido, sin mirar el origen: el '.
+            'articulo dejo de ser de ese proveedor.'
         );
 
         $this->assertSame(
             [25.0],
             $this->porcentajes_tagueados($article, $this->proveedor_b->id),
-            '🔴 El estandar del proveedor nuevo tiene que quedar UNA sola vez. Si aparece [12, 25], '.
-            'el barrido acotado dejo lo que el articulo ya tenia de B y le encimo el estandar.'
+            '🔴 El estandar del proveedor nuevo tiene que quedar UNA sola vez. Si aparece [25, 25], '.
+            'el barrido acotado dejo el estandar viejo de B y le encimo el nuevo.'
         );
 
-        /* 1000 x 0,75 = 750. Con la acumulacion daba 1000 x 0,88 x 0,75 = 660. */
+        /* 1000 x 0,75 = 750. Con la duplicacion daba 1000 x 0,75 x 0,75 = 562,50. */
         $this->assertEqualsWithDelta(
             750,
             (float) $article->costo_real,
@@ -896,21 +895,104 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
     }
 
     /**
-     * 🔴 Caso MIXTO (columna `descuentos` NO mapeada, `descuentos_montos` SI) con la preferencia
-     * APAGADA: los porcentajes tagueados que el articulo ya tenia SOBREVIVEN.
+     * 🔴 La otra mitad de la asimetria del barrido acotado: la bonificacion de una COMPRA real del
+     * proveedor NUEVO sobrevive al cambio de proveedor.
      *
-     * Es el camino que rompia a los ~40 comercios que no prendieron la preferencia. Esta fila cae
-     * en el barrido TOTAL (la planilla trae descuentos), que borra los tagueados de cualquier
-     * proveedor; con el estandar apagado por la preferencia no se reponia ningun porcentaje, asi
-     * que se perdian —incluida la bonificacion de una compra real— y el costo del articulo SUBIA en
-     * silencio. En develop se reponian con el estandar del proveedor, que no estaba gateado.
+     * Caso real: articulo del proveedor A que pasa a B, donde B ya le habia dado a ese articulo una
+     * bonificacion negociada en una compra (12%, origen `compra`), ademas de su estandar de ficha
+     * (25%). Del proveedor nuevo se borra SOLO lo de origen `ficha_proveedor` —que es lo unico que
+     * esta operacion va a volver a crear, o sea lo unico que puede duplicarse—; el 12% de la compra
+     * se queda, porque es una condicion que el comercio negocio de verdad con el proveedor al que el
+     * articulo justamente esta pasando. Borrarlo seria destruir informacion que ningun import puede
+     * reponer.
      *
-     * La preferencia apagada significa "no me materialices el estandar del proveedor", nunca
-     * "borrame lo que tengo".
+     * Es la diferencia con el proveedor ANTERIOR, del que se borra TODO: ese ya no es el proveedor
+     * del articulo y sus condiciones no tienen por que seguir descontandole el costo.
      *
      * @return void
      */
-    public function test_caso_mixto_con_la_preferencia_apagada_preserva_los_porcentajes()
+    public function test_cambiar_de_proveedor_respeta_la_bonificacion_de_compra_del_nuevo()
+    {
+        $this->set_preferencia(1);
+
+        $article = $this->crear_articulo(
+            'zz Art import cambio con compra del nuevo',
+            '7799814',
+            1000,
+            $this->proveedor_a->id
+        );
+
+        $this->tagear_descuento($article, $this->proveedor_a->id, 10, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
+        $this->tagear_descuento($article, $this->proveedor_b->id, 25, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
+        $compra_de_b = $this->tagear_descuento($article, $this->proveedor_b->id, 12, ArticleDiscount::ORIGEN_COMPRA);
+
+        $this->importar(
+            [['7799814', 'zz Art import cambio con compra del nuevo', 1000]],
+            false,
+            [
+                'provider_id'                            => $this->proveedor_b->id,
+                'actualizar_articulos_de_otro_proveedor' => true,
+            ]
+        );
+
+        $article = $article->fresh();
+
+        $this->assertNotNull(
+            ArticleDiscount::find($compra_de_b->id),
+            '🔴 La bonificacion negociada en una compra con el proveedor NUEVO no es del import '.
+            'para borrarla: el articulo esta pasando justamente a ese proveedor.'
+        );
+
+        $this->assertSame(
+            [12.0, 25.0],
+            $this->porcentajes_tagueados($article, $this->proveedor_b->id),
+            'Tienen que quedar los dos: el 12% de la compra que ya estaba y el 25% del estandar, '.
+            'una sola vez cada uno.'
+        );
+
+        $this->assertCount(
+            0,
+            $this->tagueados($article, $this->proveedor_a->id),
+            'Del proveedor ANTERIOR se va todo, sin mirar el origen.'
+        );
+
+        /* Cascada: 1000 x 0,88 x 0,75 = 660. */
+        $this->assertEqualsWithDelta(
+            660,
+            (float) $article->costo_real,
+            self::DELTA,
+            'Si da 750, el import se comio la bonificacion de compra de B y le subio el costo al '.
+            'comercio sin avisar.'
+        );
+    }
+
+    /**
+     * 🔴 Caso MIXTO (columna `descuentos` NO mapeada, `descuentos_montos` SI): la preferencia NO
+     * gobierna esta rama. Apagada, el import costea EXACTAMENTE como `origin/develop`.
+     *
+     * Es la contracara del test de mas abajo (el mismo escenario con la preferencia prendida): los
+     * dos tienen que dar el MISMO resultado, y eso es justamente lo que fija este test.
+     *
+     * 🔴 Por que el gate de la preferencia no esta en el CASO B, y por que este test dice hoy lo
+     * contrario de lo que decia el 5/9/2026 a la mañana:
+     *
+     * Con alguna columna de descuentos mapeada la fila cae en el barrido TOTAL de
+     * sync_provider_discounts(), que borra los tagueados de CUALQUIER proveedor. Si ademas se
+     * gateara el estandar por la preferencia, no se repondria ningun porcentaje y el articulo
+     * perderia los que tenia —incluida la bonificacion de una compra real— con el costo subiendo en
+     * silencio. Se intento tapar ese agujero preservando lo existente, y salio PEOR: se preservaba
+     * mirando los tagueados de cualquier proveedor y se re-creaban tagueados al proveedor de la
+     * fila con origen `import`, o sea un 12% negociado con A terminaba figurando como negociado con
+     * B. Migrar descuentos entre proveedores es destructivo e irreversible; dejar el CASO B igual a
+     * develop no rompe nada. Se eligio lo segundo (Lucas, 5/9/2026).
+     *
+     * Lo que la preferencia SI gobierna es el CASO A —ninguna columna de descuentos mapeada—, que
+     * es donde el estandar del proveedor se materializa sin que la planilla lo pida. Ver
+     * test_con_la_preferencia_apagada_el_import_no_materializa_el_estandar().
+     *
+     * @return void
+     */
+    public function test_caso_mixto_con_la_preferencia_apagada_se_comporta_como_develop()
     {
         $this->set_preferencia(0);
 
@@ -921,7 +1003,7 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
             $this->proveedor_a->id
         );
 
-        $this->tagear_descuento($article, $this->proveedor_a->id, 10, ArticleDiscount::ORIGEN_COMPRA);
+        $this->tagear_descuento($article, $this->proveedor_a->id, 30, ArticleDiscount::ORIGEN_COMPRA);
 
         /* Columna `descuentos` NO mapeada, `descuentos_montos` SI: la celda de la posicion 4 va
            vacia justamente para que no se mapee nada por accidente. */
@@ -935,11 +1017,19 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
         $article = $article->fresh();
 
         $this->assertSame(
-            [10.0],
+            [5.0, 10.0],
             $this->porcentajes_tagueados($article, $this->proveedor_a->id),
-            '🔴 El porcentaje tagueado que el articulo ya tenia no se puede perder: con la '.
-            'preferencia apagada no se materializa nada nuevo, pero tampoco se destruye lo que hay.'
+            'La preferencia no toca el CASO B: el estandar del proveedor se vuelca como parte de la '.
+            'fila y el 30% que habia queda reemplazado, igual que en develop.'
         );
+
+        foreach ($this->tagueados($article, $this->proveedor_a->id) as $descuento) {
+            $this->assertSame(
+                ArticleDiscount::ORIGEN_IMPORT,
+                $descuento->origen,
+                'Una fila que trae alguna columna de descuentos es CASO B: el origen es `import`.'
+            );
+        }
 
         $this->assertSame(
             [50.0],
@@ -947,13 +1037,13 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
             'El monto de la planilla si tiene que aplicarse: la columna esta mapeada.'
         );
 
-        /* Primero el porcentaje y despues el monto: 1000 x 0,90 = 900; 900 - 50 = 850. */
+        /* 1000 x 0,90 x 0,95 = 855; 855 - 50 = 805. El mismo numero que con la preferencia
+           prendida, que es todo el punto de este test. */
         $this->assertEqualsWithDelta(
-            850,
+            805,
             (float) $article->costo_real,
             self::DELTA,
-            'Si da 950, el import se llevo puesto el 10% que el articulo ya tenia y le subio el '.
-            'costo al comercio sin avisar.'
+            'Con la preferencia apagada el CASO B tiene que costear igual que con ella prendida.'
         );
     }
 
@@ -1025,9 +1115,16 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
      * lineas de cambio en el "detalle del lote" que ve el comercio.
      *
      * El array de articulos actualizados se serializa ENTERO al pivot `updated_props` del chunk, y
-     * esa pantalla imprime una linea por cada clave de primer nivel que no empiece con `__diff__`.
-     * Por eso la decision viaja anidada adentro de `provider_discounts_to_tag` y no como claves
-     * sueltas al lado: sueltas, el comercio veia tres renglones con "ficha_proveedor" y "acotado".
+     * esa pantalla imprime una linea por cada clave de primer nivel cuyo valor no sea un objeto.
+     * Por eso la decision entera viaja anidada en UNA sola clave, y esa clave lleva el prefijo `__`
+     * de los marcadores internos de ProcessRow: `provider_discounts_to_tag_provider_id`, que era un
+     * int suelto, imprimia "Provider Discounts To Tag Provider Id: 7" en la pantalla del comercio
+     * desde el prompt 307.
+     *
+     * 🔴 La asercion mira el prefijo `provider_discounts_to_tag` SIN los guiones bajos, a proposito:
+     * asi cubre las dos claves viejas y cualquier otra que alguien agregue con ese nombre. Mirando
+     * `__provider_discounts_to_tag` —como estaba— el test daba verde con la linea impresa en la
+     * pantalla del cliente, que es exactamente lo que venia a impedir.
      *
      * @return void
      */
@@ -1067,7 +1164,7 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
 
             foreach (array_keys($props) as $clave) {
                 $this->assertStringStartsNotWith(
-                    '__provider_discounts_to_tag',
+                    'provider_discounts_to_tag',
                     (string) $clave,
                     '🔴 La clave interna "'.$clave.'" llega al detalle del lote y se imprime como '.
                     'una linea de cambio en la pantalla del comercio.'

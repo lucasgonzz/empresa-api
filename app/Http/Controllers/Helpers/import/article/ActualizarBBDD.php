@@ -736,7 +736,7 @@ class ActualizarBBDD {
         // Artículos nuevos de este chunk que traen descuentos tagueados a un proveedor.
         foreach ($this->articulos_para_crear_CACHE as $article_cache) {
 
-            if (!isset($article_cache['provider_discounts_to_tag'])) continue;
+            if (!$this->trae_discounts_tagueados($article_cache)) continue;
 
             $article_model = $this->get_article_model_from_cache($article_cache);
 
@@ -748,7 +748,7 @@ class ActualizarBBDD {
         // Artículos ya existentes actualizados en este chunk, idem.
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
-            if (!isset($article_cache['provider_discounts_to_tag'])) continue;
+            if (!$this->trae_discounts_tagueados($article_cache)) continue;
 
             $article_model = $this->articulos_actualizados_models[$article_cache['id']] ?? null;
 
@@ -761,6 +761,25 @@ class ActualizarBBDD {
     }
 
     /**
+     * Si la entrada del cache trae la decisión de descuentos tagueados que armó ProcessRow.
+     *
+     * 🔴 Se aceptan las DOS claves. La actual es `__provider_discounts_to_tag`: lleva el prefijo de
+     * marcador interno, que es lo que la mantiene fuera del INSERT/UPDATE (se descarta por prefijo
+     * en los dos caminos de guardar_articulos()) y fuera del "detalle del lote" que ve el comercio,
+     * donde el array de artículos actualizados se serializa ENTERO al pivot `updated_props`. La
+     * vieja, sin prefijo, es del prompt 307 y puede venir en un chunk encolado antes de este
+     * deploy: la cola no se vacía en el deploy y esa entrada tiene que seguir materializándose.
+     *
+     * @param  array $article_cache
+     * @return bool
+     */
+    protected function trae_discounts_tagueados($article_cache) {
+
+        return isset($article_cache['__provider_discounts_to_tag'])
+                || isset($article_cache['provider_discounts_to_tag']);
+    }
+
+    /**
      * Materializa los descuentos tagueados de UN artículo, con el barrido y el origen que decidió
      * ProcessRow::get_provider_discounts_to_tag().
      *
@@ -768,19 +787,30 @@ class ActualizarBBDD {
      *                          verdad para esta fila: se barre todo lo tagueado y se crea lo nuevo
      *                          (semántica de siempre, prompt 307).
      *   - barrido 'acotado' -> los descuentos salieron del estándar del proveedor, no de la
-     *                          planilla: se barre SOLO lo tagueado al proveedor ANTERIOR y al
-     *                          NUEVO. Los tagueados de otros proveedores (una bonificación
-     *                          negociada en una compra real, por ejemplo) no son de esta operación
-     *                          para borrarlos.
+     *                          planilla: se barre SOLO lo tagueado al proveedor ANTERIOR (todo) y
+     *                          lo del NUEVO que sea `ficha_proveedor` (nada más). Los tagueados de
+     *                          otros proveedores (una bonificación negociada en una compra real,
+     *                          por ejemplo) no son de esta operación para borrarlos.
      *
-     * 🔴 Por qué el barrido acotado también borra los del proveedor NUEVO: sin eso, cambiarle el
-     * proveedor a un artículo que YA tenía descuentos tagueados a ese proveedor nuevo los ACUMULA.
-     * Caso real: artículo del proveedor A con una bonificación de compra tagueada a B (12%); el
-     * import le cambia el proveedor a B (estándar 25%) y el artículo queda con 12% + 25% en
-     * cascada — factor 0,66 en vez de 0,75, una caída del ~12% del costo_real, en silencio, y sobre
-     * ese costo se calculan todos los precios de venta. En develop no pasaba porque
-     * sync_provider_discounts() barría todo. Es seguro en las dos ramas: cuando el artículo no
-     * cambió de proveedor y no tenía ninguno suyo (la regla 3), el delete es un no-op.
+     * 🔴 LA ASIMETRÍA ENTRE EL PROVEEDOR ANTERIOR Y EL NUEVO ES A PROPÓSITO, no un descuido:
+     *
+     *   - Del ANTERIOR se borra TODO lo tagueado, sin mirar el origen. El artículo dejó de ser de
+     *     ese proveedor: ni su estándar de ficha ni la bonificación que se le negoció en una compra
+     *     tienen por qué seguir descontándole el costo. Es exactamente lo que hace la ficha en
+     *     ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor().
+     *
+     *   - Del NUEVO se borra SOLO lo de origen `ficha_proveedor`. Eso alcanza para no duplicar el
+     *     estándar —el defecto real: artículo del proveedor A que pasa a B, con B ya teniendo su
+     *     estándar de ficha (25%) materializado en ese artículo, quedaba con 25% + 25% en cascada,
+     *     factor 0,5625 en vez de 0,75, y sobre ese costo se calculan todos los precios de venta—
+     *     y deja intactas las bonificaciones de compra de B (`origen = compra`), las que trajo un
+     *     import (`import`) y las manuales del mismo B. Borrarlas sería destruir la bonificación
+     *     que el comercio negoció de verdad con el proveedor al que el artículo justamente pasa.
+     *
+     * 🔴 El borrado del NUEVO va con query propia y no con
+     * ArticleProviderDiscountHelper::delete_tagged_discounts(): ese helper no filtra por origen y
+     * está fuera del alcance de esta misión. Que el filtro viva acá es lo correcto igual — el
+     * criterio "solo el estándar de ficha" es de esta operación del import, no del helper.
      *
      * 🔴 Deja la relación `article_discounts` descargada. `set_precios_finales()` corre después y
      * lee esa relación (ArticlePricesHelper::aplicar_descuentos); Eloquent cachea las relaciones ya
@@ -794,15 +824,24 @@ class ActualizarBBDD {
      */
     protected function materializar_discounts_tagueados($article_model, $article_cache) {
 
-        $provider_id = $article_cache['provider_discounts_to_tag_provider_id'];
-        $descriptor  = $article_cache['provider_discounts_to_tag'];
+        $descriptor = isset($article_cache['__provider_discounts_to_tag'])
+                        ? $article_cache['__provider_discounts_to_tag']
+                        : $article_cache['provider_discounts_to_tag'];
 
         /*
          * Un cache viejo (chunk encolado antes del deploy de esta misión) trae la lista de items
-         * pelada, sin descriptor. En ese caso valen los defaults del prompt 307: barrido total y
-         * origen `import`.
+         * pelada, sin descriptor, y el proveedor en la clave suelta de al lado. En ese caso valen
+         * los defaults del prompt 307: barrido total y origen `import`.
          */
         $es_descriptor = is_array($descriptor) && array_key_exists('items', $descriptor);
+
+        $provider_id = ($es_descriptor && isset($descriptor['provider_id']))
+                        ? $descriptor['provider_id']
+                        : (isset($article_cache['provider_discounts_to_tag_provider_id'])
+                            ? $article_cache['provider_discounts_to_tag_provider_id']
+                            : null);
+
+        if (is_null($provider_id)) return;
 
         $items = $es_descriptor ? $descriptor['items'] : $descriptor;
 
@@ -826,9 +865,14 @@ class ActualizarBBDD {
                 ArticleProviderDiscountHelper::delete_tagged_discounts($article_model, $provider_id_anterior);
             }
 
-            /* Y también los del proveedor NUEVO, para no acumular sobre lo que ya había suyo.
-               Ver la nota del encabezado. */
-            ArticleProviderDiscountHelper::delete_tagged_discounts($article_model, $provider_id);
+            /* Y del proveedor NUEVO, SOLO su estándar de ficha: es lo único que esta operación va a
+               volver a crear, así que es lo único que puede duplicarse. Todo lo demás que el
+               artículo tenga tagueado a ese proveedor —la bonificación de una compra real, lo que
+               trajo un import, lo cargado a mano— se queda. Ver la nota del encabezado. */
+            ArticleDiscount::where('article_id', $article_model->id)
+                                ->where('provider_id', $provider_id)
+                                ->where('origen', ArticleDiscount::ORIGEN_FICHA_PROVEEDOR)
+                                ->delete();
 
             ArticleProviderDiscountHelper::create_tagged_discounts($article_model, $provider_id, $items, 0, $origen);
 
