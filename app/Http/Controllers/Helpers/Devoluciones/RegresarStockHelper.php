@@ -8,10 +8,16 @@ use App\Models\Sale;
 
 class RegresarStockHelper {
 	
-	static function regresar_stock($request) {
-		// 
+	/**
+	 * @param  \Illuminate\Http\Request        $request
+	 * @param  \App\Models\CurrentAcount|null  $nota_credito  La NC recien creada, para dejar el
+	 *                                                        movimiento atado a ella.
+	 * @return void
+	 */
+	static function regresar_stock($request, $nota_credito = null) {
+		//
 		foreach ($request->items as $item) {
-			
+
 			if (isset($item['is_article'])) {
 
 				if (
@@ -20,14 +26,14 @@ class RegresarStockHelper {
 					&& $item['unidades_devueltas'] > 0
 				) {
 
-					Self::crear_stock_movement($request, $item);
+					Self::crear_stock_movement($request, $item, $nota_credito);
 				}
 
 			}
 		}
 	}
 
-	static function crear_stock_movement($request, $article) {
+	static function crear_stock_movement($request, $article, $nota_credito = null) {
 
 		$ct = new StockMovementController();
 
@@ -37,6 +43,10 @@ class RegresarStockHelper {
 
 		if ($request->sale_id) {
 			$data['sale_id'] = $request->sale_id;
+		}
+
+		if (!is_null($nota_credito)) {
+			$data['nota_credito_id'] = $nota_credito->id;
 		}
 
 		if (
