@@ -60,7 +60,18 @@ class Kernel extends ConsoleKernel
         // solo si el usuario tiene la extensión whatsapp_ia activa.
         // withoutOverlapping(25) previene acumulación si un ciclo tarda más de lo esperado
         // (primer índice completo de catálogos grandes) con margen antes del próximo ciclo de 30 min.
-        if ($company_owner && UserHelper::hasExtencion('whatsapp_ia', $company_owner)) {
+        //
+        // EMBEDDINGS_OMITIR_IMPORTACION apaga este scheduler entero (además del disparo post-import
+        // de FinalizeArticleImport, ver ese archivo). Existe para las instancias de demo: un lead
+        // que sube un Excel de prueba de miles de artículos no tiene que generarle embeddings a
+        // ninguno — la creación manual de un artículo sigue embebiendo al toque igual, porque eso
+        // vive en ArticleObserver/DescriptionObserver y no pasa por acá. Default false: ningún
+        // cliente real nota que esta variable existe.
+        if (
+            $company_owner
+            && UserHelper::hasExtencion('whatsapp_ia', $company_owner)
+            && ! filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)
+        ) {
             $schedule->command('articles:generate-embeddings')
                 ->everyThirtyMinutes()
                 ->withoutOverlapping(25);
