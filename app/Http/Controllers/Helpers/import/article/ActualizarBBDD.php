@@ -723,6 +723,11 @@ class ActualizarBBDD {
      *
      * Se recorre artículo por artículo (no hay bulk-insert acá) porque sync_provider_discounts
      * ya resuelve el delete+insert por artículo; el volumen esperado por chunk es acotado.
+     *
+     * Mision `descuentos-proveedor-en-import` (5/9/2026): el barrido y el origen ya NO se deciden
+     * aca. Los decide ProcessRow, que es el unico que sabe si los descuentos salieron de la
+     * planilla (barrido total, origen `import`) o del estandar del proveedor (barrido acotado al
+     * proveedor anterior, origen `ficha_proveedor`).
      */
     function asignar_discounts_tagueados_a_proveedor() {
 
@@ -737,12 +742,7 @@ class ActualizarBBDD {
 
             if (!$article_model) continue;
 
-            ArticleProviderDiscountHelper::sync_provider_discounts(
-                $article_model,
-                $article_cache['provider_discounts_to_tag_provider_id'],
-                $article_cache['provider_discounts_to_tag'],
-                ArticleDiscount::ORIGEN_IMPORT
-            );
+            $this->materializar_discounts_tagueados($article_model, $article_cache);
         }
 
         // Artículos ya existentes actualizados en este chunk, idem.
@@ -754,15 +754,69 @@ class ActualizarBBDD {
 
             if (!$article_model) continue;
 
-            ArticleProviderDiscountHelper::sync_provider_discounts(
-                $article_model,
-                $article_cache['provider_discounts_to_tag_provider_id'],
-                $article_cache['provider_discounts_to_tag'],
-                ArticleDiscount::ORIGEN_IMPORT
-            );
+            $this->materializar_discounts_tagueados($article_model, $article_cache);
         }
 
         $this->terminar('Descuentos tagueados a proveedor (import)');
+    }
+
+    /**
+     * Materializa los descuentos tagueados de UN artículo, con el barrido y el origen que decidió
+     * ProcessRow::get_provider_discounts_to_tag().
+     *
+     *   - barrido 'total'   -> la planilla trajo los descuentos y es la fuente completa de la
+     *                          verdad para esta fila: se barre todo lo tagueado y se crea lo nuevo
+     *                          (semántica de siempre, prompt 307).
+     *   - barrido 'acotado' -> los descuentos salieron del estándar del proveedor, no de la
+     *                          planilla: se barre SOLO lo tagueado al proveedor ANTERIOR. Los
+     *                          tagueados de otros proveedores (una bonificación negociada en una
+     *                          compra real, por ejemplo) no son de esta operación para borrarlos.
+     *
+     * 🔴 Deja la relación `article_discounts` descargada. `set_precios_finales()` corre después y
+     * lee esa relación (ArticlePricesHelper::aplicar_descuentos); Eloquent cachea las relaciones ya
+     * cargadas, así que sin esto el costo se podría recalcular con los descuentos de ANTES, sin
+     * ninguna excepción de por medio, y guardarse como si estuviera bien. Es la clase de error del
+     * 31/8/2026 y el que desincroniza es el que refresca.
+     *
+     * @param  \App\Models\Article $article_model
+     * @param  array               $article_cache
+     * @return void
+     */
+    protected function materializar_discounts_tagueados($article_model, $article_cache) {
+
+        $provider_id = $article_cache['provider_discounts_to_tag_provider_id'];
+        $items       = $article_cache['provider_discounts_to_tag'];
+
+        /* Defaults = el comportamiento del prompt 307, por si un cache viejo (chunk encolado antes
+           del deploy de esta misión) llega sin las claves nuevas. */
+        $origen = isset($article_cache['__provider_discounts_to_tag_origen'])
+                    ? $article_cache['__provider_discounts_to_tag_origen']
+                    : ArticleDiscount::ORIGEN_IMPORT;
+
+        $barrido = isset($article_cache['__provider_discounts_to_tag_barrido'])
+                    ? $article_cache['__provider_discounts_to_tag_barrido']
+                    : 'total';
+
+        if ($barrido === 'acotado') {
+
+            $provider_id_anterior = isset($article_cache['__provider_discounts_to_tag_provider_id_anterior'])
+                                        ? $article_cache['__provider_discounts_to_tag_provider_id_anterior']
+                                        : null;
+
+            // Sin proveedor anterior no se borra nada: el artículo no tenía proveedor (o está
+            // naciendo en esta importación), así que no hay descuentos suyos que reemplazar.
+            if (!is_null($provider_id_anterior)) {
+                ArticleProviderDiscountHelper::delete_tagged_discounts($article_model, $provider_id_anterior);
+            }
+
+            ArticleProviderDiscountHelper::create_tagged_discounts($article_model, $provider_id, $items, 0, $origen);
+
+        } else {
+
+            ArticleProviderDiscountHelper::sync_provider_discounts($article_model, $provider_id, $items, $origen);
+        }
+
+        $article_model->unsetRelation('article_discounts');
     }
 
     function asignar_surchages_percentages() {

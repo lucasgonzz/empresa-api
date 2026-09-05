@@ -8,11 +8,13 @@ use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportChangeRecorder;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\ArticleDiscount;
 use App\Models\ArticlePropertyType;
 use App\Models\ArticlePropertyValue;
 use App\Models\Brand;
@@ -221,6 +223,19 @@ class ProcessRow {
      * Se llena de forma perezosa en get_provider_standard_discount_percentages().
      */
     protected $provider_standard_discounts_cache = [];
+
+    /**
+     * Mision `descuentos-proveedor-en-import` (5/9/2026): preferencia
+     * `users.aplicar_descuentos_proveedor_al_asignar` del comercio, resuelta una sola vez por
+     * chunk. Null = todavia no se consulto.
+     *
+     * Se memoiza por el mismo motivo que $provider_standard_discounts_cache: se pregunta en CADA
+     * fila del Excel, y si el que importa es un empleado la resolucion al usuario dueño es un
+     * User::find() — uno por fila sobre un archivo de 20.000 filas.
+     *
+     * @var bool|null
+     */
+    protected $debe_aplicar_descuentos_al_asignar = null;
 
     /**
      * Prompt 310: flag "permitir valores en blanco" configurado por columna mapeada.
@@ -1337,21 +1352,11 @@ class ProcessRow {
 
             
             $this->iniciar();
-            // Prompt 307: con provider_id conocido, los descuentos se tagean a ese proveedor
-            // (reusa ArticleProviderDiscountHelper::sync_provider_discounts desde ActualizarBBDD).
-            // Sin provider_id, se mantiene el comportamiento legado (descuentos globales, sin tag).
-            if (empty($provider_id)) {
-                $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-                if (!empty($discounts_diff)) {
-                    $data['discounts'] = $discounts_diff;
-                }
-            } else {
-                $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id);
-                if (!is_null($provider_discounts_to_tag)) {
-                    $data['provider_discounts_to_tag'] = $provider_discounts_to_tag;
-                    $data['provider_discounts_to_tag_provider_id'] = $provider_id;
-                }
-            }
+            /* Prompt 307 + mision `descuentos-proveedor-en-import`: la decision completa (tagueado
+               al proveedor o descuentos globales legados) vive en set_discounts_de_la_fila().
+               `$articulo_ya_creado` es null en esta rama —se llego aca justamente porque no hubo
+               match— y se pasa igual para no depender de eso. */
+            $this->set_discounts_de_la_fila($data, $row, $provider_id, $articulo_ya_creado);
             $this->terminar('crear: discounts_diff');
 
             $this->iniciar();
@@ -1564,29 +1569,7 @@ class ProcessRow {
         // Prompt 307: misma bifurcación que en la creación (ver más arriba en procesar()).
         $provider_id_para_discounts = isset($merged['provider_id']) ? $merged['provider_id'] : null;
 
-        if (empty($provider_id_para_discounts)) {
-
-            $discounts_diff = $this->get_discounts_diff($baseline_para_diffs, $row);
-
-            if (!empty($discounts_diff)) {
-                $merged['discounts'] = $discounts_diff;
-            } else {
-                unset($merged['discounts']);
-            }
-
-        } else {
-
-            unset($merged['discounts']);
-
-            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_para_discounts, $baseline_para_diffs);
-
-            if (!is_null($provider_discounts_to_tag)) {
-                $merged['provider_discounts_to_tag'] = $provider_discounts_to_tag;
-                $merged['provider_discounts_to_tag_provider_id'] = $provider_id_para_discounts;
-            } else {
-                unset($merged['provider_discounts_to_tag'], $merged['provider_discounts_to_tag_provider_id']);
-            }
-        }
+        $this->set_discounts_de_la_fila($merged, $row, $provider_id_para_discounts, $baseline_para_diffs);
 
         $this->terminar('merge pendiente: discounts_diff');
 
@@ -1862,22 +1845,8 @@ class ProcessRow {
         // Prompt 307: misma bifurcación que en la creación (ver procesar()).
         $provider_id_de_la_fila = isset($data['provider_id']) ? $data['provider_id'] : null;
 
-        if (empty($provider_id_de_la_fila)) {
+        $this->set_discounts_de_la_fila($cambios, $row, $provider_id_de_la_fila, $articulo_ya_creado);
 
-            $discounts_diff = $this->get_discounts_diff($articulo_ya_creado, $row);
-            if (!empty($discounts_diff)) {
-                $cambios['discounts'] = $discounts_diff;
-            }
-
-        } else {
-
-            $provider_discounts_to_tag = $this->get_provider_discounts_to_tag($row, $provider_id_de_la_fila, $articulo_ya_creado);
-
-            if (!is_null($provider_discounts_to_tag)) {
-                $cambios['provider_discounts_to_tag'] = $provider_discounts_to_tag;
-                $cambios['provider_discounts_to_tag_provider_id'] = $provider_id_de_la_fila;
-            }
-        }
         $this->terminar('discounts_diff');
 
         $this->iniciar();
@@ -4691,34 +4660,72 @@ class ProcessRow {
      *    amount, según corresponda) leídos de `$existing_article`. Con el flag ON se mantiene
      *    el comportamiento legado (celda vacía → sin items → borrado).
      *
+     * Mision `descuentos-proveedor-en-import` (5/9/2026): el estandar del proveedor pasa a estar
+     * gateado por la preferencia del comercio `users.aplicar_descuentos_proveedor_al_asignar`, y el
+     * caso "ninguna columna de descuentos mapeada" se separa en una rama propia
+     * (get_estandar_del_proveedor_para_tagear) con barrido ACOTADO al proveedor anterior. Ver ahi
+     * el detalle de las reglas que fijo Lucas.
+     *
      * @param  array                     $row              Fila del Excel en proceso.
      * @param  int|null                  $provider_id      Proveedor de esta fila (columna o el fijo del import).
      * @param  \App\Models\Article|null  $existing_article Artículo ya persistido (si existe) para
      *                                                      preservar sus descuentos tagueados cuando
      *                                                      corresponda. Null si el artículo es nuevo.
-     * @return array|null             Lista de items ['percentage'=>x] / ['amount'=>x] a pasar
-     *                                 a sync_provider_discounts(), o null si no corresponde tocar nada.
+     * @return array|null  Descriptor de lo que hay que materializar, o null si no corresponde tocar
+     *                     nada:
+     *                       'items'                => lista ['percentage'=>x] / ['amount'=>x]
+     *                       'origen'               => ArticleDiscount::ORIGEN_*
+     *                       'barrido'              => 'total' | 'acotado'
+     *                       'provider_id'          => proveedor al que se taguea (int)
+     *                       'provider_id_anterior' => proveedor a barrer si el barrido es acotado
      */
     private function get_provider_discounts_to_tag($row, $provider_id, $existing_article = null)
     {
-        // Nunca se tagea un descuento sin proveedor conocido (misma regla que
-        // ArticleProviderDiscountHelper::sync_provider_discounts).
-        if (empty($provider_id)) {
-            return null;
-        }
-
         $col_percent_ignorada = ImportHelper::isIgnoredColumn('descuentos', $this->columns);
         $col_amount_ignorada  = ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns);
 
-        // El estándar del proveedor solo aplica cuando la columna de % NO está mapeada:
-        // la columna del Excel siempre manda por sobre el estándar.
-        $estandar_percentages = $col_percent_ignorada
+        $provider_id = $this->normalizar_provider_id($provider_id);
+
+        /*
+         * Fallback al proveedor del articulo persistido, y SOLO cuando ninguna columna de
+         * descuentos esta mapeada: es lo que hace que la regla 3 (articulo con proveedor P pero sin
+         * ningun descuento tagueado a P) tenga efecto sobre el Excel mas comun de todos, el de
+         * actualizacion de costos sin columna de proveedor.
+         *
+         * 🔴 Con alguna columna mapeada se mantiene el camino legado (descuentos globales, sin tag)
+         * que ya existia para las filas sin proveedor. Cambiarlo convertiria en tagueados
+         * descuentos que hoy son globales, en importaciones que ya andan.
+         */
+        if (is_null($provider_id) && $col_percent_ignorada && $col_amount_ignorada) {
+            $provider_id = $this->provider_id_del_articulo_persistido($existing_article);
+        }
+
+        // Nunca se tagea un descuento sin proveedor conocido (misma regla que
+        // ArticleProviderDiscountHelper::sync_provider_discounts).
+        if (is_null($provider_id)) {
+            return null;
+        }
+
+        /*
+         * El estandar del proveedor aplica cuando se dan DOS condiciones, y las dos son necesarias:
+         *
+         *   1. la columna de % NO esta mapeada — la columna del Excel siempre manda por sobre el
+         *      estandar (regla 1 de Lucas);
+         *   2. el comercio tiene prendida la preferencia.
+         *
+         * 🔴 El usuario va EXPLICITO. El import corre en ProcessArticleChunk, que es ShouldQueue:
+         * en el worker no hay sesion ni Auth::user(), asi que dejar que el helper resuelva por su
+         * cuenta daria false SIEMPRE y la preferencia quedaria muerta aca, sin ningun error que lo
+         * delate. Es el mismo pozo que documenta MasiveUpdateHelper.
+         */
+        $estandar_percentages = ($col_percent_ignorada && $this->debe_aplicar_descuentos_al_asignar())
             ? $this->get_provider_standard_discount_percentages($provider_id)
             : [];
 
-        // Nada mapeado y sin estándar: no hay nada que tagear, se deja intacto lo existente.
-        if ($col_percent_ignorada && $col_amount_ignorada && empty($estandar_percentages)) {
-            return null;
+        // Ninguna columna mapeada: lo unico que se puede materializar es el estandar del proveedor,
+        // y con sus propias reglas de cuando corresponde tocarlo.
+        if ($col_percent_ignorada && $col_amount_ignorada) {
+            return $this->get_estandar_del_proveedor_para_tagear($provider_id, $estandar_percentages, $existing_article);
         }
 
         $items = [];
@@ -4779,7 +4786,216 @@ class ProcessRow {
             }
         }
 
-        return $items;
+        return [
+            'items'                => $items,
+            'origen'               => ArticleDiscount::ORIGEN_IMPORT,
+            /* La planilla es la fuente completa de los descuentos de la fila: barrido total, como
+               desde el prompt 307. */
+            'barrido'              => 'total',
+            'provider_id'          => $provider_id,
+            'provider_id_anterior' => null,
+        ];
+    }
+
+    /**
+     * Mision `descuentos-proveedor-en-import` (5/9/2026): rama del CASO A, o sea cuando el Excel no
+     * trae NINGUNA columna de descuentos y lo unico que se puede materializar es el estandar del
+     * proveedor (`provider_discounts`).
+     *
+     * Las reglas que fijo Lucas y que decide este metodo:
+     *
+     *   - Reimportar la misma lista con el mismo proveedor NO rehace los descuentos: el disparador
+     *     es asignar o cambiar el proveedor, no cada corrida. Rehacerlos en cada import le borraria
+     *     al comercio las ediciones que le haya hecho a los descuentos tagueados desde entonces.
+     *   - Excepcion aprobada: si el articulo tiene proveedor P y NO tiene ningun descuento tagueado
+     *     a P, se le materializan igual aunque P no haya cambiado. Es el catalogo anterior a la
+     *     preferencia: no pisa nada porque no hay nada que pisar, y se pone al dia solo a medida
+     *     que el comercio importa.
+     *
+     * 🔴 El barrido es ACOTADO al proveedor ANTERIOR, nunca el barrido total ciego de
+     * `sync_provider_discounts()`: aca la planilla no trajo descuentos, asi que no es la fuente de
+     * verdad de nada. Los tagueados de OTROS proveedores —que pueden ser la bonificacion negociada
+     * de una compra real— no son de esta operacion para borrarlos.
+     *
+     * @param  int                       $provider_id           Proveedor al que se taguea.
+     * @param  array                     $estandar_percentages  Ya gateado por la preferencia: viene
+     *                                                          vacio si el comercio la tiene apagada.
+     * @param  \App\Models\Article|null  $existing_article      Articulo persistido, si lo hay.
+     * @return array|null
+     */
+    private function get_estandar_del_proveedor_para_tagear($provider_id, $estandar_percentages, $existing_article)
+    {
+        // Sin estandar utilizable (o con la preferencia apagada) no hay nada que tagear: se deja
+        // intacto lo que el articulo ya tuviera.
+        if (empty($estandar_percentages)) {
+            return null;
+        }
+
+        $provider_id_anterior = $this->provider_id_del_articulo_persistido($existing_article);
+
+        $es_asignacion_o_cambio = ($provider_id_anterior !== $provider_id);
+
+        if (
+            !$es_asignacion_o_cambio
+            && !$this->sin_descuentos_tagueados_del_proveedor($existing_article, $provider_id)
+        ) {
+            return null;
+        }
+
+        $items = [];
+
+        foreach ($estandar_percentages as $percentage) {
+            $items[] = ['percentage' => $percentage];
+        }
+
+        return [
+            'items'                => $items,
+            'origen'               => ArticleDiscount::ORIGEN_FICHA_PROVEEDOR,
+            'barrido'              => 'acotado',
+            'provider_id'          => $provider_id,
+            'provider_id_anterior' => $provider_id_anterior,
+        ];
+    }
+
+    /**
+     * Preferencia del comercio, memoizada por chunk (ver $debe_aplicar_descuentos_al_asignar).
+     *
+     * @return bool
+     */
+    private function debe_aplicar_descuentos_al_asignar()
+    {
+        if (is_null($this->debe_aplicar_descuentos_al_asignar)) {
+
+            $this->debe_aplicar_descuentos_al_asignar = ArticleProviderDiscountHelper::debe_aplicar_al_asignar($this->user);
+        }
+
+        return $this->debe_aplicar_descuentos_al_asignar;
+    }
+
+    /**
+     * Normaliza un provider_id a int-o-null.
+     *
+     * 🔴 Existe para poder comparar los dos lados con `===`. El de la fila puede venir del Excel
+     * como string y el del articulo sale de la base como int; en PHP 7.4 `5 == ''` es FALSE, asi
+     * que una comparacion floja manda la fila por la rama equivocada y le barre los descuentos a un
+     * articulo que no cambio de proveedor. Es el mismo cuidado que ya esta escrito en
+     * ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor().
+     *
+     * @param  mixed $provider_id
+     * @return int|null
+     */
+    private function normalizar_provider_id($provider_id)
+    {
+        if (is_null($provider_id) || $provider_id === '' || (int) $provider_id === 0) {
+            return null;
+        }
+
+        return (int) $provider_id;
+    }
+
+    /**
+     * Proveedor del articulo YA PERSISTIDO, normalizado.
+     *
+     * Un articulo sin `id` es uno que esta naciendo en esta misma importacion (el fake de la cola
+     * de creacion): su proveedor "anterior" es null, porque antes de esta corrida no existia. Sin
+     * esta distincion, una fila que mergea sobre un fake con proveedor P veria old === new y no le
+     * materializaria nunca los descuentos al articulo nuevo.
+     *
+     * @param  \App\Models\Article|null $article
+     * @return int|null
+     */
+    private function provider_id_del_articulo_persistido($article)
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return null;
+        }
+
+        return $this->normalizar_provider_id($article->provider_id);
+    }
+
+    /**
+     * Si el articulo NO tiene ningun `article_discount` tagueado a ese proveedor. Es la excepcion
+     * que aprobo Lucas a la regla de "reimportar no rehace nada" (ver
+     * get_estandar_del_proveedor_para_tagear).
+     *
+     * @param  \App\Models\Article|null $article
+     * @param  int                      $provider_id
+     * @return bool
+     */
+    private function sin_descuentos_tagueados_del_proveedor($article, $provider_id)
+    {
+        if (is_null($article) || !($article instanceof Article) || empty($article->id)) {
+            return true;
+        }
+
+        return !ArticleDiscount::where('article_id', $article->id)
+                                    ->where('provider_id', $provider_id)
+                                    ->exists();
+    }
+
+    /**
+     * Mision `descuentos-proveedor-en-import` (5/9/2026): unico lugar donde se decide que hace el
+     * import con los descuentos de una fila, para los tres call sites (crear, mergear sobre un
+     * articulo pendiente de crear, actualizar uno existente).
+     *
+     * Estaba triplicado —la misma bifurcacion `if (empty($provider_id)) { legado } else
+     * { tagueado }` copiada en tres lugares— y esta mision le agregaba una cuarta rama a cada
+     * copia. Se unifica aca: las tres claves del cache se escriben en un solo lado y la decision
+     * vive en un solo lugar.
+     *
+     * Las claves nuevas van con prefijo `__` a proposito: ActualizarBBDD descarta por prefijo en
+     * los DOS caminos (creacion y actualizacion), asi que ninguna puede llegar al INSERT/UPDATE y
+     * tumbar el lote entero con un "Unknown column". Ver la nota larga en
+     * ActualizarBBDD::guardar_articulos().
+     *
+     * @param  array                    $destino           $data / $merged / $cambios, por referencia.
+     * @param  array                    $row               Fila del Excel.
+     * @param  mixed                    $provider_id       Proveedor de la fila (columna o fijo del import).
+     * @param  \App\Models\Article|null $existing_article  Articulo contra el que se compara.
+     * @return void
+     */
+    private function set_discounts_de_la_fila(&$destino, $row, $provider_id, $existing_article = null)
+    {
+        /*
+         * Se limpian siempre las claves antes de decidir: en el merge de la cola de creacion, una
+         * fila posterior tiene que poder DEJAR SIN descuentos lo que dejo una anterior, y no
+         * arrastrar la decision vieja.
+         */
+        unset(
+            $destino['discounts'],
+            $destino['provider_discounts_to_tag'],
+            $destino['provider_discounts_to_tag_provider_id'],
+            $destino['__provider_discounts_to_tag_origen'],
+            $destino['__provider_discounts_to_tag_barrido'],
+            $destino['__provider_discounts_to_tag_provider_id_anterior']
+        );
+
+        $tagueados = $this->get_provider_discounts_to_tag($row, $provider_id, $existing_article);
+
+        if (!is_null($tagueados)) {
+
+            $destino['provider_discounts_to_tag']                        = $tagueados['items'];
+            $destino['provider_discounts_to_tag_provider_id']            = $tagueados['provider_id'];
+            $destino['__provider_discounts_to_tag_origen']               = $tagueados['origen'];
+            $destino['__provider_discounts_to_tag_barrido']              = $tagueados['barrido'];
+            $destino['__provider_discounts_to_tag_provider_id_anterior'] = $tagueados['provider_id_anterior'];
+        }
+
+        /*
+         * Camino legado (descuentos globales, sin tag) para las filas que NO traen proveedor: es el
+         * comportamiento de siempre y se conserva tal cual. Cuando el fallback de arriba resolvio
+         * un proveedor, esto es un no-op: get_discounts_diff() devuelve vacio si ninguna de las dos
+         * columnas de descuentos esta mapeada, que es la unica condicion en la que el fallback
+         * actua.
+         */
+        if (empty($provider_id)) {
+
+            $discounts_diff = $this->get_discounts_diff($existing_article, $row);
+
+            if (!empty($discounts_diff)) {
+                $destino['discounts'] = $discounts_diff;
+            }
+        }
     }
 
     /**
