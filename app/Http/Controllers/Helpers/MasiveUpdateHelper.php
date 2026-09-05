@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\MasiveUpdate;
 use App\Models\User;
@@ -190,7 +191,7 @@ class MasiveUpdateHelper
             $provider_id_previo = $model_name == 'article' ? $model->provider_id : null;
 
             foreach ($update_form as $form) {
-                $change = self::apply_form_change($model, $form);
+                $change = self::apply_form_change($model, $form, $user_del_comercio, $masive_update->employee_id);
                 if ($change) {
                     $model_had_changes = true;
                     $changes_count++;
@@ -335,13 +336,87 @@ class MasiveUpdateHelper
     }
 
     /**
+     * Si la propiedad que la masiva quiere tocar es el stock de un articulo.
+     *
+     * @param  mixed   $model
+     * @param  string  $prop_key
+     * @return bool
+     */
+    protected static function es_stock_de_articulo($model, $prop_key)
+    {
+        return $model instanceof Article && $prop_key === 'stock';
+    }
+
+    /**
+     * Lleva el stock de un articulo al valor que pide la masiva, pero POR UN MOVIMIENTO DE STOCK
+     * y no escribiendo la columna (auditoria de stock, 5/9/2026).
+     *
+     * Escribir `articles.stock` a mano era el unico camino de la aplicacion que cambiaba el stock
+     * sin dejar rastro en `stock_movements`: el historial del articulo no explicaba el salto, y en
+     * un articulo con depositos la columna quedaba desalineada de la suma de depositos hasta el
+     * siguiente movimiento, que la pisaba (era ademas el estado desde el que borrar una venta
+     * perdia stock, ver el test 17 de ventas). Por eso:
+     *
+     *  - Un articulo con stock GLOBAL (sin depositos ni variantes) recibe un "Ingreso manual" por
+     *    la diferencia, con la observacion que dice de donde salio. La cantidad ya esta en
+     *    unidades (`sin_unidades_individuales`), porque la masiva escribe el stock final que el
+     *    usuario ve en el listado, no bultos.
+     *  - Un articulo con depositos o variantes NO se toca: su stock es la suma de esas partes y un
+     *    numero global no dice a cual deposito o variante va. Se saltea y se deja constancia en el
+     *    log; el articulo no cuenta como modificado.
+     *
+     * @param  \App\Models\Article    $model
+     * @param  float                  $nuevo        Stock final que pide la masiva.
+     * @param  string                 $operation    set | increment | decrement | revert (para el registro).
+     * @param  string                 $form_key
+     * @param  \App\Models\User|null  $owner        Dueño del comercio (la masiva corre en cola, sin sesion).
+     * @param  int|null               $employee_id  Quien disparo la masiva.
+     * @return array|null  El cambio aplicado, con la misma forma que devuelve apply_form_change().
+     */
+    protected static function aplicar_stock_por_movimiento($model, $nuevo, $operation, $form_key, $owner = null, $employee_id = null)
+    {
+        $old_value = $model->stock;
+        $actual = is_null($old_value) ? 0 : (float) $old_value;
+        $delta = (float) $nuevo - $actual;
+
+        if (abs($delta) < 0.0001) {
+            return null;
+        }
+
+        if (count($model->addresses) >= 1 || count($model->article_variants) >= 1) {
+            Log::info('Masiva de stock: el articulo '.$model->id.' reparte por depositos o variantes, no se le puede fijar un stock global. Se saltea.');
+            return null;
+        }
+
+        $ct = new StockMovementController();
+        $ct->crear([
+            'model_id'                      => $model->id,
+            'amount'                        => $delta,
+            'concepto_stock_movement_name'  => 'Ingreso manual',
+            'observations'                  => 'Actualizacion masiva del listado ('.$operation.')',
+            'sin_unidades_individuales'     => true,
+        ], false, $owner, $employee_id);
+
+        // El modelo en memoria sigue en uso por el resto de la masiva (precios, sync).
+        $model->stock = $model->fresh()->stock;
+
+        return [
+            'prop_key' => 'stock',
+            'old_value' => $old_value,
+            'new_value' => $model->stock,
+            'operation' => $operation,
+            'form_key' => $form_key,
+        ];
+    }
+
+    /**
      * Aplica un ítem del formulario de actualización y devuelve el cambio si hubo modificación.
      *
      * @param object $model
      * @param array $form
      * @return array|null
      */
-    public static function apply_form_change($model, $form)
+    public static function apply_form_change($model, $form, $owner = null, $employee_id = null)
     {
         if (!is_array($form) || !isset($form['type']) || !isset($form['key'])) {
             return null;
@@ -351,10 +426,16 @@ class MasiveUpdateHelper
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
-            $model->{$prop_key} -= $value;
+            $nuevo = $model->{$prop_key} - $value;
             if (!empty($form['round'])) {
-                $model->{$prop_key} = round($model->{$prop_key}, 0, PHP_ROUND_HALF_UP);
+                $nuevo = round($nuevo, 0, PHP_ROUND_HALF_UP);
             }
+
+            if (self::es_stock_de_articulo($model, $prop_key)) {
+                return self::aplicar_stock_por_movimiento($model, $nuevo, 'decrement', $form['key'], $owner, $employee_id);
+            }
+
+            $model->{$prop_key} = $nuevo;
             $model->save();
 
             if ($old_value == $model->{$prop_key}) {
@@ -374,10 +455,16 @@ class MasiveUpdateHelper
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};
             $value = $model->{$prop_key} * (float) $form['value'] / 100;
-            $model->{$prop_key} += $value;
+            $nuevo = $model->{$prop_key} + $value;
             if (!empty($form['round'])) {
-                $model->{$prop_key} = round($model->{$prop_key}, 0, PHP_ROUND_HALF_UP);
+                $nuevo = round($nuevo, 0, PHP_ROUND_HALF_UP);
             }
+
+            if (self::es_stock_de_articulo($model, $prop_key)) {
+                return self::aplicar_stock_por_movimiento($model, $nuevo, 'increment', $form['key'], $owner, $employee_id);
+            }
+
+            $model->{$prop_key} = $nuevo;
             $model->save();
 
             if ($old_value == $model->{$prop_key}) {
@@ -396,6 +483,11 @@ class MasiveUpdateHelper
         if ($form['type'] == 'number' && strpos($form['key'], 'set_') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 4);
             $old_value = $model->{$prop_key};
+
+            if (self::es_stock_de_articulo($model, $prop_key)) {
+                return self::aplicar_stock_por_movimiento($model, (float) $form['value'], 'set', $form['key'], $owner, $employee_id);
+            }
+
             $model->{$prop_key} = (float) $form['value'];
             $model->save();
 
@@ -524,6 +616,24 @@ class MasiveUpdateHelper
                     continue;
                 }
                 $old_before_revert = $model->{$prop_key};
+
+                /*
+                    El stock se revierte igual que se aplico: con un movimiento, nunca escribiendo
+                    la columna. Si el articulo paso a repartir por depositos entre la masiva y su
+                    reversion, aplicar_stock_por_movimiento() lo saltea y lo deja en el log.
+                */
+                if (self::es_stock_de_articulo($model, $prop_key)) {
+                    $aplicado = self::aplicar_stock_por_movimiento($model, is_null($change['old']) ? 0 : (float) $change['old'], 'revert', 'revert_stock', $user_del_comercio, $revert_masive_update->employee_id);
+                    if ($aplicado) {
+                        $revert_changes[$prop_key] = [
+                            'old' => $old_before_revert,
+                            'new' => $model->stock,
+                            'operation' => 'revert',
+                        ];
+                    }
+                    continue;
+                }
+
                 $model->{$prop_key} = $change['old'];
                 $revert_changes[$prop_key] = [
                     'old' => $old_before_revert,

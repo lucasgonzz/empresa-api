@@ -45,9 +45,17 @@ class DepositMovementHelper {
 
 	function check_status() {
 
-		if (!is_null($this->deposit_movement->deposit_movement_status) 
-			&& $this->deposit_movement->deposit_movement_status->name == 'Recibido') {
-			// && is_null($this->deposit_movement->recibido_at)) {
+		/*
+			🔴 `recibido_at` es la marca de que el traslado YA se aplico al stock (auditoria de
+			stock, 5/9/2026; hallazgo H3 de la exploracion de depositos del 3/9). Sin esta guarda,
+			cada PUT sobre un movimiento en estado Recibido —editarle una nota, reenviar el form,
+			un reintento del cliente HTTP— volvia a restar el origen y sumar el destino, con un
+			segundo juego de movimientos "Mov entre depositos". El stock se traslada una sola vez:
+			la primera que el movimiento llega a Recibido.
+		*/
+		if (!is_null($this->deposit_movement->deposit_movement_status)
+			&& $this->deposit_movement->deposit_movement_status->name == 'Recibido'
+			&& is_null($this->deposit_movement->recibido_at)) {
 
 			$this->set_fecha_recibido();
 
