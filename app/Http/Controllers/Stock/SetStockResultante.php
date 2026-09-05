@@ -4,12 +4,26 @@ namespace App\Http\Controllers\Stock;
 
 use App\Models\ConceptoStockMovement;
 use App\Models\StockMovement;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class SetStockResultante  {
 
     /**
-     * Calcula y persiste el stock_resultante de un movimiento de stock.
+     * Persiste el stock_resultante de un movimiento de stock: el stock REAL del articulo despues
+     * de aplicar el movimiento.
+     *
+     * 🔴 Hasta la auditoria de stock (5/9/2026) el stock_resultante se ENCADENABA: era el
+     * stock_resultante del movimiento anterior mas el amount de este, salvo cuatro conceptos que
+     * lo copiaban del stock del articulo. Esa cadena arrastraba para siempre cualquier desvio
+     * historico (un stock cargado a mano antes de que existieran los movimientos, un movimiento
+     * que no toco el stock, una correccion directa en la base) y hacia que `check_stocks` denunciara
+     * como "mal" a articulos cuyo stock estaba perfecto. Ahora el numero que se guarda es el que
+     * el usuario ve en el listado un segundo despues del movimiento, y las dos cosas no pueden
+     * discrepar porque salen de la misma fila.
+     *
+     * Se lee de la base y no de `$article`, porque SetArticleStock ya actualizo la fila con SQL y
+     * el modelo en memoria puede estar atrasado.
      *
      * @param  \App\Models\StockMovement  $stock_movement  Movimiento de stock recien guardado.
      * @param  \App\Models\Article        $article         Articulo afectado por el movimiento.
@@ -17,70 +31,30 @@ class SetStockResultante  {
      */
     static function set_stock_resultante($stock_movement, $article) {
 
-        // Relacion con el concepto del movimiento. Puede venir null cuando el concepto no se
-        // pudo resolver por nombre (ver SetConcepto).
-        $concepto_movement = $stock_movement->concepto_movement;
-
-        // Nombre del concepto. Queda en null cuando la relacion no existe, y en ese caso el
-        // bloque de los 4 casos especiales de mas abajo no se ejecuta.
-        $concepto = null;
-
-        if (is_null($concepto_movement)) {
-
-            // Decision conservadora: sin concepto se trata el movimiento como uno comun y se
-            // cae al calculo general (stock_resultante a partir del movimiento anterior), en
-            // vez de asumir que es uno de los casos especiales que reinicia el stock_resultante
-            // contra el stock actual del articulo.
-            Log::warning('SetStockResultante: stock_movement sin concepto, se calcula el stock_resultante como movimiento comun. stock_movement_id: '.$stock_movement->id.' concepto_stock_movement_id: '.$stock_movement->concepto_stock_movement_id);
-
-        } else {
-
-            $concepto = $concepto_movement->name;
-        }
-
-        $article->fresh();
-
-        // Si el movimiento es porque se esta repartiendo el stock en depositos
-        // Se pone de stock actual el mismo que el stock del articulo
-        if (
-            $concepto == 'Mov entre depositos'
-            || $concepto == 'Mov manual entre depositos'
-            || $concepto == 'Importacion de excel'
-            || $concepto == 'Creacion de deposito'
-            ) {
-            
-            $stock_movement->stock_resultante = $article->stock;
+        if (is_null($article)) {
+            $stock_movement->stock_resultante = $stock_movement->amount;
             $stock_movement->save();
-
-            // Log::info('Se esta repartiendo stock, concepto: '.$concepto.' se puso stock_resultante con el stock actual de: '.$article->stock);
-
-            Self::set_stock_actual_in_observations($stock_movement, $article);
             return;
         }
 
-        if (!is_null($article)) {
+        $stock_real = DB::table('articles')
+                        ->where('id', $article->id)
+                        ->value('stock');
 
-            $stock_movement_anterior = StockMovement::where('article_id', $article->id)
-                                                    ->orderBy('id', 'DESC')
-                                                    ->where('id', '<', $stock_movement->id)
-                                                    ->first();
+        if (is_null($stock_real)) {
 
-            if (!is_null($stock_movement_anterior)) {
-
-                $stock_resultante = (float)$stock_movement_anterior->stock_resultante + (float)$stock_movement->amount;
-
-                $stock_movement->stock_resultante = $stock_resultante;
-
-            } else {
-                // Log::info('No se hay stock_movement_anterior de ')
-                $stock_movement->stock_resultante = $stock_movement->amount;
-            }
-
-            $stock_movement->save();
-        } else {
+            // Sin stock en la fila (el articulo no lleva stock): el unico dato que hay es el amount.
             $stock_movement->stock_resultante = $stock_movement->amount;
-            $stock_movement->save();
+
+        } else {
+
+            $stock_movement->stock_resultante = (float)$stock_real;
+
+            // El modelo en memoria sigue en uso (avisos, carritos, sync): se lo deja al dia.
+            $article->stock = (float)$stock_real;
         }
+
+        $stock_movement->save();
 
         Self::set_stock_actual_in_observations($stock_movement, $article);
 

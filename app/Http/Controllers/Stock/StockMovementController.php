@@ -69,8 +69,10 @@ class StockMovementController extends Controller
             'to_address_id'         => $request->to_address_id,
             'article_variant_id'    => $request->article_variant_id,
             'observations'          => $request->observations,
+            'sale_id'               => $request->sale_id,
+            'nota_credito_id'       => $request->nota_credito_id,
             'concepto_stock_movement_id'            => $request->concepto_stock_movement_id,
-            'concepto_stock_movement_name'          => $request->concepto_stock_movement_name,
+            'concepto_stock_movement_name'          => Self::resolver_nombre_de_concepto($request),
         ];
 
         $this->crear($data, false);
@@ -79,6 +81,38 @@ class StockMovementController extends Controller
 
         return response(null, 201);
 
+    }
+
+    /**
+     * Nombre de concepto que trae el request, aceptando tambien la clave vieja `concepto`.
+     *
+     * El modal de crear depositos de la SPA (`create-article-addresses`) manda
+     * `concepto: 'Creacion de deposito'`, y este endpoint solo leia `concepto_stock_movement_name`:
+     * el movimiento caia en el concepto por defecto ("Ingreso manual"), que ademas multiplica la
+     * cantidad por `unidades_individuales` (auditoria de stock, 5/9/2026). La clave vieja se acepta
+     * solo cuando su texto es un concepto real de la tabla; cualquier otro texto (los llamadores
+     * viejos mandaban descripciones libres como "Pedido Proveedor N° 12") se ignora y el
+     * comportamiento queda como estaba.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return string|null
+     */
+    static function resolver_nombre_de_concepto(Request $request) {
+
+        if (!is_null($request->concepto_stock_movement_name) && $request->concepto_stock_movement_name !== '') {
+            return $request->concepto_stock_movement_name;
+        }
+
+        if (!is_null($request->concepto) && $request->concepto !== '') {
+
+            $existe = ConceptoStockMovement::where('name', $request->concepto)->exists();
+
+            if ($existe) {
+                return $request->concepto;
+            }
+        }
+
+        return null;
     }
 
     function crear($data, $set_updated_at = false, $owner = null, $auth_user_id = null, $segundos_para_agregar = null) {
@@ -101,7 +135,7 @@ class StockMovementController extends Controller
 
         $concepto_id = SetConcepto::get_concepto($data);
         
-        $amount = $this->check_unidades_individuales($article, (float)$data['amount'], $concepto_id);
+        $amount = $this->check_unidades_individuales($article, (float)$data['amount'], $concepto_id, $data);
 
         // Log::info('observations: '.$data['observations']);
         $stock_movement = StockMovement::create([
@@ -140,9 +174,31 @@ class StockMovementController extends Controller
         return $stock_movement;
     }
 
-    function check_unidades_individuales($article, $amount, $concepto_id) {
+    /**
+     * En un articulo con `unidades_individuales` (se compra por bulto y se vende por unidad), los
+     * ingresos se cargan en bultos y aca se pasan a unidades. Solo para los conceptos de ingreso;
+     * una venta o una devolucion ya vienen en unidades.
+     *
+     * `sin_unidades_individuales` en `$data` lo saltea: es para el llamador que ya calculo la
+     * cantidad en unidades (la actualizacion masiva del listado, que escribe el stock final).
+     *
+     * @param  \App\Models\Article|null  $article
+     * @param  float                     $amount
+     * @param  int|null                  $concepto_id
+     * @param  array                     $data
+     * @return float
+     */
+    function check_unidades_individuales($article, $amount, $concepto_id, $data = []) {
+
+        if (isset($data['sin_unidades_individuales']) && $data['sin_unidades_individuales']) {
+            return $amount;
+        }
 
         $concepto = ConceptoStockMovement::find($concepto_id);
+
+        if (is_null($concepto)) {
+            return $amount;
+        }
 
         if (
             $article
