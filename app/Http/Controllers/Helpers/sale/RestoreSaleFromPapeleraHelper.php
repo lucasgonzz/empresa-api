@@ -122,10 +122,24 @@ class RestoreSaleFromPapeleraHelper {
         $devueltos = collect();
 
         if (!is_null($concepto)) {
+
+            /*
+                Solo el ULTIMO borrado: los "Se elimino la venta" posteriores al ultimo movimiento
+                de cualquier otro concepto de la venta. Una venta que ya fue borrada y restaurada
+                antes tiene en su libro el ciclo anterior completo (Venta, Se elimino, Venta de la
+                restauracion); sumar todos los "Se elimino la venta" de su historia descontaria de
+                mas en cada ciclo nuevo.
+            */
+            $ultimo_de_otro_concepto = (int) DB::table('stock_movements')
+                                            ->where('sale_id', $sale->id)
+                                            ->where('concepto_stock_movement_id', '<>', $concepto->id)
+                                            ->max('id');
+
             $devueltos = DB::table('stock_movements')
                             ->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS article_variant_id'), DB::raw('SUM(amount) AS devuelto'))
                             ->where('sale_id', $sale->id)
                             ->where('concepto_stock_movement_id', $concepto->id)
+                            ->where('id', '>', $ultimo_de_otro_concepto)
                             ->whereNotNull('article_id')
                             ->groupBy('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL)'))
                             ->havingRaw('ABS(SUM(amount)) > 0.0001')

@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
 use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
+use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Models\AfipTicket;
 use App\Models\CreditAccount;
@@ -47,6 +48,18 @@ class DevolucionesController extends Controller
         DB::beginTransaction();
 
         try {
+
+            /*
+                🔴 Candado sobre la venta y re-validación CON candado, como primera lectura de la
+                transacción (auditoría de stock, 5/9/2026). El chequeo de arriba frena el reintento
+                secuencial; éste frena el doble clic simultáneo: el segundo request espera acá a que
+                el primero commitee y recién entonces cuenta lo ya devuelto (con lecturas FOR UPDATE,
+                que ven lo último commiteado y no la foto de la transacción). Si no cierra, la
+                excepción propia cae en su catch y responde 422 con el motivo.
+            */
+            if ($request->sale_id && ($request->regresar_stock || $request->update_unidades_devueltas)) {
+                ValidarDevolucionHelper::exigir($request->sale_id, $request->items);
+            }
 
             $model_id = null;
             $credit_account_id = null;
@@ -136,6 +149,14 @@ class DevolucionesController extends Controller
             DB::commit();
 
             return response(null, 201);
+
+        } catch (DevolucionExcedidaException $e) {
+
+            DB::rollBack();
+
+            Log::info('Devolucion rechazada: '.$e->getMessage());
+
+            return response()->json(['message' => $e->getMessage(), 'devolucion_excedida' => true], 422);
 
         } catch(\Throwable $e) {
 

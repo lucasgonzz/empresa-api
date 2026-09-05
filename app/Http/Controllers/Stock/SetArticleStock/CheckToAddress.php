@@ -110,6 +110,11 @@ class CheckToAddress {
 
             Log::info('CheckToAddress: el articulo '.$article->id.' lleva stock global ('.$article->stock.') y el concepto no reparte stock: el movimiento '.$stock_movement->id.' se aplica al stock global, no se le abre el deposito '.$stock_movement->to_address_id);
 
+            // El libro dice la verdad: el movimiento fue al stock global, no a ese deposito. Si
+            // quedara el to_address_id, cualquier reporte por deposito lo contaria donde no entro.
+            $stock_movement->to_address_id = null;
+            $stock_movement->save();
+
             return;
         }
 

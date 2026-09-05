@@ -1376,6 +1376,17 @@ class ArticleHelper {
                     Log::info('Se actualizaron las addresses en base a las direcciones de las variantes');
                 }
 
+                /*
+                    Con variantes la suma se hizo en PHP: se escribe con una sentencia directa, sin
+                    pasar por save(), que arrastraria cualquier otro atributo sucio del modelo.
+                    🔴 Tiene que estar ADENTRO de esta rama: cuando la variante reparte por depositos,
+                    CheckGlobalStock no toca `articles.stock` (el articulo tiene depositos) y este es
+                    el unico lugar que lo deja igual a la suma de sus variantes.
+                */
+                DB::table('articles')
+                    ->where('id', $article->id)
+                    ->update(['stock' => $stock]);
+
             } else if (count($article->addresses) >= 1) {
 
                 /*
@@ -1394,13 +1405,16 @@ class ArticleHelper {
                 $stock = (float)DB::table('articles')->where('id', $article->id)->value('stock');
 
                 Log::info('Se seteo stock con direcciones = '.$stock);
-
             }
 
-
+            /*
+                El modelo en memoria queda al dia y con el stock marcado como ORIGINAL: asi ningun
+                save() posterior sobre este mismo modelo (SetProvider, SetStockUpdatedAt, los
+                helpers de precio) vuelve a escribir el stock desde memoria y pisa lo que otro
+                movimiento pudo sumar en el medio. Antes aca habia un save() del modelo entero.
+            */
             $article->stock = $stock;
-            $article->timestamps = false;
-            $article->save();
+            $article->syncOriginalAttribute('stock');
 
             if ($check_linkage) {
                 $ct = new InventoryLinkageHelper();

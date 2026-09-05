@@ -15,6 +15,7 @@ use App\Services\Filter\FilterHistoryService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Exception;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class MasiveUpdateHelper
@@ -375,16 +376,43 @@ class MasiveUpdateHelper
      */
     protected static function aplicar_stock_por_movimiento($model, $nuevo, $operation, $form_key, $owner = null, $employee_id = null)
     {
-        $old_value = $model->stock;
-        $actual = is_null($old_value) ? 0 : (float) $old_value;
-        $delta = (float) $nuevo - $actual;
-
-        if (abs($delta) < 0.0001) {
-            return null;
-        }
+        // De la fila, no del modelo: un item anterior de la misma masiva pudo haberlo movido.
+        $old_value = DB::table('articles')->where('id', $model->id)->value('stock');
+        $old_value = is_null($old_value) ? null : (float) $old_value;
 
         if (count($model->addresses) >= 1 || count($model->article_variants) >= 1) {
             Log::info('Masiva de stock: el articulo '.$model->id.' reparte por depositos o variantes, no se le puede fijar un stock global. Se saltea.');
+            return null;
+        }
+
+        /*
+            Un articulo SIN stock (null: no lo lleva) al que se le fija 0 no necesita movimiento:
+            se escribe la columna, que es lo unico que cambia. Revertirlo a null se resuelve en
+            revert_masive_update(), que limpia la columna.
+        */
+        if (is_null($old_value) && (float) $nuevo == 0.0) {
+
+            if ($operation === 'revert') {
+                return null;
+            }
+
+            DB::table('articles')->where('id', $model->id)->update(['stock' => 0]);
+            $model->stock = 0;
+            $model->syncOriginalAttribute('stock');
+
+            return [
+                'prop_key' => 'stock',
+                'old_value' => null,
+                'new_value' => 0,
+                'operation' => $operation,
+                'form_key' => $form_key,
+            ];
+        }
+
+        $actual = is_null($old_value) ? 0 : $old_value;
+        $delta = (float) $nuevo - $actual;
+
+        if (abs($delta) < 0.0001) {
             return null;
         }
 
@@ -399,6 +427,7 @@ class MasiveUpdateHelper
 
         // El modelo en memoria sigue en uso por el resto de la masiva (precios, sync).
         $model->stock = $model->fresh()->stock;
+        $model->syncOriginalAttribute('stock');
 
         return [
             'prop_key' => 'stock',
@@ -624,6 +653,19 @@ class MasiveUpdateHelper
                 */
                 if (self::es_stock_de_articulo($model, $prop_key)) {
                     $aplicado = self::aplicar_stock_por_movimiento($model, is_null($change['old']) ? 0 : (float) $change['old'], 'revert', 'revert_stock', $user_del_comercio, $revert_masive_update->employee_id);
+
+                    /*
+                        Si antes de la masiva el articulo NO llevaba stock (null), revertir es
+                        volver a null: el movimiento de arriba lo deja en 0 (y el libro, en neto
+                        cero) y la columna se limpia aparte, que es lo que "restaurar" significa.
+                    */
+                    if (is_null($change['old']) && !is_null(DB::table('articles')->where('id', $model->id)->value('stock'))) {
+                        DB::table('articles')->where('id', $model->id)->update(['stock' => null]);
+                        $model->stock = null;
+                        $model->syncOriginalAttribute('stock');
+                        $aplicado = true;
+                    }
+
                     if ($aplicado) {
                         $revert_changes[$prop_key] = [
                             'old' => $old_before_revert,

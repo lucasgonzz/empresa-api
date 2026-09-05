@@ -69,8 +69,6 @@ class StockMovementController extends Controller
             'to_address_id'         => $request->to_address_id,
             'article_variant_id'    => $request->article_variant_id,
             'observations'          => $request->observations,
-            'sale_id'               => $request->sale_id,
-            'nota_credito_id'       => $request->nota_credito_id,
             'concepto_stock_movement_id'            => $request->concepto_stock_movement_id,
             'concepto_stock_movement_name'          => Self::resolver_nombre_de_concepto($request),
         ];

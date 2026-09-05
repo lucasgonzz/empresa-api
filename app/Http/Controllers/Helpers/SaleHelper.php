@@ -244,8 +244,22 @@ class SaleHelper extends Controller {
         
         Log::info('1');
 
-        Self::attachPromocionVinotecas($model, $request->items, $previus_promos);
-        Self::attachCombos($model, $request->items, $previus_combos);
+        /*
+            🔴 Si la venta recien ahora empieza a descontar stock (se confirma un presupuesto, o se
+            activa discount_stock en una venta que lo tenia apagado), los combos y promos previos
+            NUNCA descontaron nada: se descuentan enteros, como hace attachArticles() con los
+            articulos sueltos. Restarles el previo (que es lo que hace get_combo_amount() para
+            calcular la diferencia en una actualizacion comun) daba 1 - 1 = 0 y el combo quedaba
+            sin descontar para siempre (auditoria de stock, 5/9/2026).
+
+            Las promos no miran discount_stock (descuentan siempre que la venta este confirmada),
+            asi que para ellas solo cuenta la confirmacion.
+        */
+        $previus_promos_a_restar = $se_esta_confirmando_por_primera_vez ? null : $previus_promos;
+        $previus_combos_a_restar = ($se_esta_confirmando_por_primera_vez || $se_activando_discount_stock) ? null : $previus_combos;
+
+        Self::attachPromocionVinotecas($model, $request->items, $previus_promos_a_restar);
+        Self::attachCombos($model, $request->items, $previus_combos_a_restar);
         Self::attachServices($model, $request->items);
 
         Self::attachSelectedPaymentMethods($model, $request);
@@ -265,6 +279,10 @@ class SaleHelper extends Controller {
             if (!$model->to_check && !$model->checked && !$se_esta_confirmando_por_primera_vez && !$se_activando_discount_stock) {
 
                 UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
+
+                if ((bool)$model->discount_stock) {
+                    UpdateHelper::check_combos_eliminados($model, $request->items, $previus_combos);
+                }
             }
         }
 
@@ -659,11 +677,7 @@ class SaleHelper extends Controller {
                 responde 422 con el motivo; esto es la última línea para cualquier otro llamador:
                 la excepción hace que el catch de update() revierta todo y la venta no se toque.
             */
-            $motivo = ValidarDevolucionHelper::motivo_por_el_que_no_se_puede_devolver($sale->id, $request->returned_items);
-
-            if (!is_null($motivo)) {
-                throw new \Exception($motivo);
-            }
+            ValidarDevolucionHelper::exigir($sale->id, $request->returned_items);
 
             sleep(1);
             $haber = 0;
@@ -820,9 +834,15 @@ class SaleHelper extends Controller {
                     continue;
                 }
 
+                $a_reponer = ValidarDevolucionHelper::unidades_a_reponer($sale, $article->id, Self::getArticleVariantId($item), (float)$item['returned_amount']);
+
+                if ($a_reponer <= 0) {
+                    continue;
+                }
+
                 $data = [
                     'model_id'                      => $article->id,
-                    'amount'                        => (float)$item['returned_amount'],
+                    'amount'                        => $a_reponer,
                     'sale_id'                       => $sale->id,
                     'nota_credito_id'               => !is_null($nota_credito) ? $nota_credito->id : null,
                     'article_variant_id'            => Self::getArticleVariantId($item),

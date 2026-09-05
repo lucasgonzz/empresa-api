@@ -221,12 +221,19 @@ class DeleteSaleHelper {
 	 */
 	static function regresar_stock($sale) {
 
+        /*
+            Se repone lo que el libro de la venta dice que se desconto. Una venta de antes del
+            libro (octubre de 2023), sin ningun movimiento, no repone nada al borrarse: su stock
+            se reconto y se importo muchas veces desde entonces, y sumarle hoy lo que vendio hace
+            anios es exactamente la clase de inflado que la auditoria del 5/9/2026 encontro.
+        */
         foreach (Self::neto_por_renglon($sale) as $renglon) {
 
             $article = Article::find($renglon->article_id);
 
-            // Artículo borrado o inexistente: no lleva stock que devolver.
-            if (is_null($article)) {
+            // Artículo borrado, inexistente o que dejo de llevar stock: no hay stock que devolver
+            // (mismo criterio que tenia el borrado por renglon con !is_null($article->stock)).
+            if (is_null($article) || is_null($article->stock)) {
                 continue;
             }
 

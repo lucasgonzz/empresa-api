@@ -62,7 +62,25 @@ class RegresarStockHelper {
 			$data['to_address_id'] = $request->address_id;
 		}
 		
-		$data['amount'] = $article['unidades_devueltas'];
+		$data['amount'] = (float)$article['unidades_devueltas'];
+
+		// Solo vuelve lo que la venta desconto y no devolvio todavia (ver ValidarDevolucionHelper).
+		if ($request->sale_id) {
+
+			$sale = Sale::withTrashed()->find($request->sale_id);
+
+			if (!is_null($sale)) {
+
+				$variant_id = isset($data['article_variant_id']) ? $data['article_variant_id'] : null;
+
+				$data['amount'] = ValidarDevolucionHelper::unidades_a_reponer($sale, $article['id'], $variant_id, $data['amount']);
+			}
+		}
+
+		if ($data['amount'] <= 0) {
+			return;
+		}
+
 		$data['concepto_stock_movement_name'] = 'Nota de credito';
 
 		$ct->crear($data);

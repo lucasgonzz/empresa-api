@@ -50,8 +50,10 @@ class SetStockResultante  {
 
             $stock_movement->stock_resultante = (float)$stock_real;
 
-            // El modelo en memoria sigue en uso (avisos, carritos, sync): se lo deja al dia.
+            // El modelo en memoria sigue en uso (avisos, carritos, sync): se lo deja al dia, como
+            // valor original, para que un save() posterior no reescriba el stock desde memoria.
             $article->stock = (float)$stock_real;
+            $article->syncOriginalAttribute('stock');
         }
 
         $stock_movement->save();

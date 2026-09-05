@@ -50,8 +50,12 @@ class CheckGlobalStock {
                 ->where('id', $article->id)
                 ->update($cambios);
 
-            // El modelo en memoria sigue en uso mas adelante (avisos, carritos): se lo deja al dia.
+            // El modelo en memoria sigue en uso mas adelante (avisos, carritos): se lo deja al dia,
+            // y se marca como "original" para que ningun save() posterior sobre el mismo modelo
+            // (SetProvider, SetStockUpdatedAt) vuelva a escribir el stock desde memoria y pise lo
+            // que otro movimiento sumo en el medio.
             $article->stock = DB::table('articles')->where('id', $article->id)->value('stock');
+            $article->syncOriginalAttribute('stock');
 
             // if (!isset($request->from_excel_import) || !$request->from_excel_import) {
             //     $ct = new InventoryLinkageHelper(null, $user_id);
