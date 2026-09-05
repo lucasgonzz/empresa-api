@@ -1109,6 +1109,104 @@ class DescuentosProveedorEnImportTest extends EmpresaTestCase
     }
 
     /**
+     * 🔴 EL PROVEEDOR BAJO SU ESTANDAR: es el caso que justifica que el barrido acotado borre las
+     * filas de `origen = ficha_proveedor` del proveedor NUEVO, y el unico de la suite que se pone
+     * rojo si alguien saca ese delete.
+     *
+     * Escenario: articulo que ya tiene materializado el estandar de ficha de B en 25% (de una
+     * asignacion anterior a B, cuando ese era su estandar) y hoy esta en el proveedor A. Desde
+     * entonces B bajo su bonificacion estandar en la ficha (`provider_discounts`) de 25% a 20%. El
+     * import lo vuelve a pasar a B con la preferencia prendida, o sea entra por el barrido acotado.
+     *
+     * Tiene que quedar UN SOLO 20%: la fila vieja de ficha se va con el delete y se materializa la
+     * nueva. Si quedara [20, 25] el articulo costea con 0,80 x 0,75 = 0,60 en vez de 0,80 —600 en
+     * vez de 800 sobre un costo de 1000—, y sobre ese costo se calculan todos los precios de venta.
+     *
+     * 🔴 POR QUE ESTE TEST EXISTE APARTE de test_cambiar_de_proveedor_no_duplica_el_estandar_de_
+     * ficha_del_nuevo(): aquel prueba el estandar que NO cambio (25% viejo, 25% nuevo), y ahi el
+     * que evita la acumulacion es el filtro de sacar_porcentajes_que_el_articulo_ya_tiene() —el
+     * 25% que se iba a crear ya estaba—, asi que sigue verde aunque se saque el delete. Con el
+     * estandar BAJADO el filtro no puede hacer nada: el 20% que se va a crear no esta entre lo que
+     * el articulo ya tiene, y la unica cosa que saca el 25% vencido es el delete por
+     * `origen = ficha_proveedor`. Sin este test, el delete parece redundante y sacarlo no pone
+     * roja a la suite.
+     *
+     * @return void
+     */
+    public function test_si_el_proveedor_bajo_su_estandar_no_queda_conviviendo_el_viejo()
+    {
+        $this->set_preferencia(1);
+
+        $article = $this->crear_articulo(
+            'zz Art import estandar bajado del nuevo',
+            '7799820',
+            1000,
+            $this->proveedor_a->id
+        );
+
+        $this->tagear_descuento($article, $this->proveedor_a->id, 10, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR);
+
+        /* Lo que B le habia materializado a este articulo cuando su estandar todavia era 25%. */
+        $ficha_vencida = $this->tagear_descuento(
+            $article,
+            $this->proveedor_b->id,
+            25,
+            ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
+        );
+
+        /* Y B baja su estandar de ficha a 20%. De aca en mas 25% es un numero vencido. */
+        $this->proveedor_b = $this->proveedor_con_descuentos(self::PROVEEDOR_B, [20]);
+
+        $this->importar(
+            [['7799820', 'zz Art import estandar bajado del nuevo', 1000]],
+            false,
+            [
+                'provider_id'                            => $this->proveedor_b->id,
+                'actualizar_articulos_de_otro_proveedor' => true,
+            ]
+        );
+
+        $article = $article->fresh();
+
+        $this->assertSame(
+            (int) $this->proveedor_b->id,
+            (int) $article->provider_id,
+            'La importacion tenia que cambiarle el proveedor al articulo.'
+        );
+
+        $this->assertSame(
+            [20.0],
+            $this->porcentajes_tagueados($article, $this->proveedor_b->id),
+            '🔴 Tiene que quedar UN SOLO 20%. Si da [20, 25], el 25% vencido quedo conviviendo con '.
+            'el estandar nuevo y el articulo costea con los dos en cascada; si da [25], no se '.
+            'materializo el estandar que el proveedor tiene HOY en su ficha.'
+        );
+
+        $this->assertNull(
+            ArticleDiscount::find($ficha_vencida->id),
+            '🔴 El estandar de ficha VIEJO del proveedor nuevo tiene que borrarse. Es lo unico que '.
+            'hace el delete por `origen = ficha_proveedor`, y por eso no es redundante con el '.
+            'filtro de sacar_porcentajes_que_el_articulo_ya_tiene().'
+        );
+
+        $this->assertCount(
+            0,
+            $this->tagueados($article, $this->proveedor_a->id),
+            'Del proveedor ANTERIOR se va todo, sin mirar el origen.'
+        );
+
+        /* Un solo descuento del 20%: 1000 x 0,80 = 800. Con el 25% vencido encima daba
+           1000 x 0,80 x 0,75 = 600. */
+        $this->assertEqualsWithDelta(
+            800,
+            (float) $article->costo_real,
+            self::DELTA,
+            'El costo real tiene que salir del estandar de HOY y de uno solo: si da 600, el import '.
+            'le dejo al articulo el 25% que el proveedor ya no da.'
+        );
+    }
+
+    /**
      * 🔴 Caso MIXTO (columna `descuentos` NO mapeada, `descuentos_montos` SI): la preferencia NO
      * gobierna esta rama. Apagada, el import costea EXACTAMENTE como `origin/develop`.
      *
