@@ -112,6 +112,15 @@ class CreateSaleOrderHelper {
                 'amount'            => $article->pivot->amount,
                 'cost'              => $article->pivot->cost ?? $article->cost,
                 'price_vender'      => $article->pivot->price,
+                /*
+                    🔴 La variante del renglon del pedido (`article_order.variant_id`, un id de
+                    `article_variants`) tiene que llegar a la venta (auditoria de stock, 5/9/2026).
+                    Sin ella, el movimiento de stock nacia sin variante: en un articulo con
+                    variantes CheckGlobalStock no aplica y setArticleStockFromAddresses recalcula
+                    el stock sumando las variantes, asi que la venta del pedido no descontaba
+                    NADA, y el renglon quedaba en la venta sin decir que talle o color se vendio.
+                */
+                'article_variant_id' => isset($article->pivot->variant_id) ? $article->pivot->variant_id : null,
                 'is_article'        => true
             ];
         }

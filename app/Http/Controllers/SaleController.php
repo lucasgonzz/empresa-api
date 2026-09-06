@@ -27,6 +27,8 @@ use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
+use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
+use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
@@ -199,16 +201,44 @@ class SaleController extends Controller
             return response()->json($error_canje_puntos, 422);
         }
 
+        /*
+         * 🔴 Candado por comercio mientras se crea la venta (auditoría de stock, 5/9/2026).
+         *
+         * venta_ya_cread() mira si hay una venta igual de los últimos 5 segundos, pero dos requests
+         * simultáneos (doble clic en "Guardar", un reintento del cliente HTTP) pasaban los dos el
+         * chequeo antes de que ninguno insertara: en Panchito quedaron dos ventas con el MISMO
+         * número (86143) creadas en el mismo segundo, y con ellas el stock descontado dos veces.
+         * El candado nombrado de MySQL serializa la creación por comercio: el segundo request
+         * espera al primero y recién entonces pregunta si la venta ya existe. Se libera en el
+         * `finally`, pase lo que pase.
+         *
+         * Va ANTES de abrir la transacción, y no adentro: en REPEATABLE READ la primera lectura de
+         * la transacción fija la foto de la base, y si el candado se tomara después de esa lectura,
+         * el segundo request esperaría al primero pero seguiría viendo la foto de antes de que la
+         * venta existiera (la duplicaría igual). Tomado acá, el BEGIN y todas sus lecturas ocurren
+         * después del commit del otro.
+         */
+        $candado = 'crear_venta_'.$this->userId();
+
+        $lock = DB::select('SELECT GET_LOCK(?, 10) AS tomado', [$candado]);
+
+        if (empty($lock) || (int) $lock[0]->tomado !== 1) {
+            // Sin candado se sigue igual (una venta no se puede frenar por esto), pero queda dicho.
+            Log::warning('store sale: no se pudo tomar el candado '.$candado.' en 10 segundos; la venta se crea sin serializar.');
+        }
+
         DB::beginTransaction();
 
         Log::info($this->user(false)->name.' va a crear venta');
-
-        if ($this->venta_ya_cread($request)) {
-            Log::info('No se volvio a crear la venta');
-            return;
-        }
+        $candado = 'crear_venta_'.$this->userId();
 
         try {
+
+            if ($this->venta_ya_cread($request)) {
+                Log::info('No se volvio a crear la venta');
+                DB::rollBack();
+                return response(null, 200);
+            }
 
             /** Checkbox "Enviar correo" en vender: sin extensión no se persiste ni se encola mail. */
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
@@ -317,6 +347,11 @@ class SaleController extends Controller
 
             DB::commit();
 
+            // El candado se suelta apenas la venta existe: lo que sigue (mail, WhatsApp, evento de
+            // la demo) no tiene por qué hacer esperar a la otra caja del mismo comercio. El
+            // `finally` de abajo lo vuelve a soltar por si acaso; la segunda vez es un no-op.
+            DB::select('SELECT RELEASE_LOCK(?)', [$candado]);
+
             ComercioCityMailHelper::new_sale($model);
 
             /**
@@ -352,10 +387,15 @@ class SaleController extends Controller
             report($e);
 
             return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
+
+        } finally {
+
+            // El candado se suelta siempre: con venta creada, con 500 o con la venta repetida.
+            DB::select('SELECT RELEASE_LOCK(?)', [$candado]);
         }
 
 
-    }  
+    }
 
     function update(Request $request, $id) {
 
@@ -375,21 +415,72 @@ class SaleController extends Controller
             return response()->json(['message' => $motivo], 409);
         }
 
+        /*
+         * Panel "Nota de crédito" de Vender: no se puede devolver más de lo que la venta tiene sin
+         * devolver (auditoría de stock, 5/9/2026). Es el mismo freno que DevolucionesController y va
+         * ANTES de abrir la transacción, para responder 422 con el motivo en vez de que el catch de
+         * abajo lo convierta en un 500 mudo. SaleHelper::checkNotaCredito() lo vuelve a chequear
+         * adentro, como última línea.
+         */
+        if ($request->save_nota_credito) {
+
+            $motivo_devolucion = ValidarDevolucionHelper::motivo_por_el_que_no_se_puede_devolver($id, $request->returned_items);
+
+            if (!is_null($motivo_devolucion)) {
+
+                Log::info('update sale id '.$id.': devolucion rechazada. '.$motivo_devolucion);
+
+                return response()->json(['message' => $motivo_devolucion, 'devolucion_excedida' => true], 422);
+            }
+        }
+
+        /*
+         * Se lee ANTES de abrir la transacción, y no adentro, por el candado de más abajo: en
+         * REPEATABLE READ la primera lectura de la transacción fija la foto de la base, y esta
+         * lectura (User + extensiones) era la primera. Ver el comentario del lockForUpdate.
+         */
+        /** Misma regla que en store: send_mail solo si el comercio tiene la extensión. */
+        $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
+
         DB::beginTransaction();
 
         Log::info('Se va a actualizar venta id: '.$id);
         try {
 
-            /** Misma regla que en store: send_mail solo si el comercio tiene la extensión. */
-            $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
-
+            /*
+             * 🔴 lockForUpdate sobre la venta (auditoría de stock, 5/9/2026). Dos actualizaciones
+             * simultáneas de la misma venta leían las dos los mismos `previus_articles`: la segunda
+             * no veía los renglones que la primera acababa de agregar y los volvía a descontar como
+             * "Venta" nuevos. Medido en Fénix el 7/8/2026 (venta 53328: cuatro artículos descontados
+             * dos veces en dos guardados con dos minutos de diferencia, el mismo día en que el
+             * hosting tiraba lock wait timeouts) y en Golonorte (182 renglones con "Venta"
+             * repetida en cinco meses). Con el candado, el segundo guardado espera al primero y
+             * lee la venta ya actualizada.
+             *
+             * 🔴 Y los renglones previos también se leen CON candado (`lockForUpdate` en cada
+             * relación). Una lectura común dentro de la transacción devuelve la foto de la base que
+             * se fijó en la primera lectura de la transacción —la de antes de esperar—, o sea los
+             * renglones viejos: el candado sobre la venta serializaría los requests pero el segundo
+             * igual descontaría de nuevo. Una lectura con candado siempre devuelve lo último
+             * commiteado. Es la primera lectura de esta transacción a propósito.
+             */
             $model = Sale::where('id', $id)
-                            ->with('articles')
+                            ->lockForUpdate()
                             ->first();
 
-            $previus_articles = $model->articles;
-            $previus_combos = $model->combos;
-            $previus_promos = $model->promocion_vinotecas;
+            if (is_null($model)) {
+                DB::rollBack();
+                return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+            }
+
+            $previus_articles = $model->articles()->lockForUpdate()->get();
+            $previus_combos = $model->combos()->lockForUpdate()->get();
+            $previus_promos = $model->promocion_vinotecas()->lockForUpdate()->get();
+
+            // Lo que el resto del update lea como $model->articles tiene que ser esta misma foto.
+            $model->setRelation('articles', $previus_articles);
+            $model->setRelation('combos', $previus_combos);
+            $model->setRelation('promocion_vinotecas', $previus_promos);
 
             $request->items = array_reverse($request->items);
 
@@ -599,6 +690,16 @@ class SaleController extends Controller
 
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
         
+        } catch (DevolucionExcedidaException $e) {
+
+            // La NC del panel de Vender devolvía de más y lo detectó el re-chequeo con candado
+            // (dos guardados simultáneos): se revierte todo y el usuario ve el motivo.
+            DB::rollBack();
+
+            Log::info('update sale id '.$id.': devolucion rechazada con candado. '.$e->getMessage());
+
+            return response()->json(['message' => $e->getMessage(), 'devolucion_excedida' => true], 422);
+
         } catch(\Throwable $e) {
             DB::rollBack();
             // El reporter de errores esta enganchado al handler global (Handler::register ->
@@ -609,7 +710,7 @@ class SaleController extends Controller
             // timeout el 7/8/2026 no dejaron rastro fuera de este archivo de log.
             report($e);
             return response()->json(['error' => true], 500);
-        } 
+        }
     }
 
     public function destroy(Request $request, $id) {

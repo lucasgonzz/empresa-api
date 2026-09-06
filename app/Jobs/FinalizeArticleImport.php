@@ -219,6 +219,22 @@ class FinalizeArticleImport implements ShouldQueue
      */
     protected function generar_embeddings_de_lo_importado()
     {
+        /*
+         * EMBEDDINGS_OMITIR_IMPORTACION corta esto ANTES del Artisan::call, misma variable que
+         * apaga el scheduler en Kernel.php. Pensada para las instancias de demo: un lead que
+         * prueba importar un Excel de miles de artículos no tiene que generarle embeddings a
+         * ninguno de ellos. La creación manual de un artículo no pasa por acá (vive en
+         * ArticleObserver/DescriptionObserver) y sigue embebiendo al toque, con o sin esta
+         * variable. Default false: ningún cliente real nota que existe.
+         */
+        if (filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)) {
+            Log::info('FinalizeArticleImport: se omitió la generación de embeddings post-importación (EMBEDDINGS_OMITIR_IMPORTACION).', [
+                'import_history_id' => $this->import_history_id,
+            ]);
+
+            return;
+        }
+
         Artisan::call('articles:generate-embeddings', [
             '--origen'                        => 'importacion',
             '--ignorar-importacion-en-curso'  => true,

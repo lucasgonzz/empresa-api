@@ -37,6 +37,7 @@ use App\Http\Controllers\SellerCommissionController;
  * antes por la firma vieja de notaCredito(), corregida el 24/8/2026.
  */
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\ArticleVariant;
@@ -243,8 +244,22 @@ class SaleHelper extends Controller {
         
         Log::info('1');
 
-        Self::attachPromocionVinotecas($model, $request->items, $previus_promos);
-        Self::attachCombos($model, $request->items, $previus_combos);
+        /*
+            🔴 Si la venta recien ahora empieza a descontar stock (se confirma un presupuesto, o se
+            activa discount_stock en una venta que lo tenia apagado), los combos y promos previos
+            NUNCA descontaron nada: se descuentan enteros, como hace attachArticles() con los
+            articulos sueltos. Restarles el previo (que es lo que hace get_combo_amount() para
+            calcular la diferencia en una actualizacion comun) daba 1 - 1 = 0 y el combo quedaba
+            sin descontar para siempre (auditoria de stock, 5/9/2026).
+
+            Las promos no miran discount_stock (descuentan siempre que la venta este confirmada),
+            asi que para ellas solo cuenta la confirmacion.
+        */
+        $previus_promos_a_restar = $se_esta_confirmando_por_primera_vez ? null : $previus_promos;
+        $previus_combos_a_restar = ($se_esta_confirmando_por_primera_vez || $se_activando_discount_stock) ? null : $previus_combos;
+
+        Self::attachPromocionVinotecas($model, $request->items, $previus_promos_a_restar);
+        Self::attachCombos($model, $request->items, $previus_combos_a_restar);
         Self::attachServices($model, $request->items);
 
         Self::attachSelectedPaymentMethods($model, $request);
@@ -264,6 +279,10 @@ class SaleHelper extends Controller {
             if (!$model->to_check && !$model->checked && !$se_esta_confirmando_por_primera_vez && !$se_activando_discount_stock) {
 
                 UpdateHelper::check_articulos_eliminados($model, $request->items, $previus_articles, $se_esta_confirmando_por_primera_vez);
+
+                if ((bool)$model->discount_stock) {
+                    UpdateHelper::check_combos_eliminados($model, $request->items, $previus_combos);
+                }
             }
         }
 
@@ -650,6 +669,16 @@ class SaleHelper extends Controller {
     }
     static function checkNotaCredito($sale, $request) {
         if ($request->save_nota_credito) {
+
+            /*
+                Mismo freno que DevolucionesController::store(): la NC del panel de Vender tampoco
+                puede devolver más de lo que la venta tiene sin devolver (auditoría de stock,
+                5/9/2026). SaleController::update() ya lo chequea antes de abrir la transacción y
+                responde 422 con el motivo; esto es la última línea para cualquier otro llamador:
+                la excepción hace que el catch de update() revierta todo y la venta no se toque.
+            */
+            ValidarDevolucionHelper::exigir($sale->id, $request->returned_items);
+
             sleep(1);
             $haber = 0;
 
@@ -772,24 +801,61 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * Devuelve al stock lo que la nota de credito del panel de Vender marca como devuelto.
+     *
+     * 🔴 Va por `crear()` y no por `store()` (auditoria de stock, 5/9/2026). `store()` lee un
+     * puñado de claves del request y nada mas: `nota_credito_id`, `sale_id` y el texto de
+     * `concepto` se perdian, y el movimiento quedaba etiquetado con el concepto por defecto,
+     * "Ingreso manual", sin venta. Dos consecuencias medibles: al borrar la venta despues,
+     * DeleteSaleHelper no encontraba ninguna devolucion con concepto "Nota de credito" y reponia
+     * la cantidad completa (lo devuelto volvia al stock dos veces); y en un articulo con
+     * `unidades_individuales` el "Ingreso manual" multiplicaba la cantidad devuelta.
+     *
+     * El deposito destino solo viaja si el articulo reparte por depositos; si lleva stock global,
+     * la devolucion va al global (CheckToAddress tambien lo frena, pero no hace falta llegar ahi).
+     *
+     * @param  \App\Models\Sale           $sale
+     * @param  \App\Models\CurrentAcount  $nota_credito  La NC recien creada en cuenta corriente.
+     * @param  array                      $items         `returned_items` del request de Vender.
+     * @return void
+     */
     static function returnToStock($sale, $nota_credito, $items) {
-        // Log::info('returnToStock para nota_credito:');
-        // Log::info((array)$nota_credito);
+
         foreach ($items as $item) {
             if (
-                isset($item['returned_amount']) 
-                && !is_null($item['returned_amount']) 
+                isset($item['returned_amount'])
+                && !is_null($item['returned_amount'])
                 && (float)$item['returned_amount'] > 0
             ) {
+                $article = Article::find($item['id']);
+
+                if (is_null($article)) {
+                    continue;
+                }
+
+                $a_reponer = ValidarDevolucionHelper::unidades_a_reponer($sale, $article->id, Self::getArticleVariantId($item), (float)$item['returned_amount']);
+
+                if ($a_reponer <= 0) {
+                    continue;
+                }
+
+                $data = [
+                    'model_id'                      => $article->id,
+                    'amount'                        => $a_reponer,
+                    'sale_id'                       => $sale->id,
+                    'nota_credito_id'               => !is_null($nota_credito) ? $nota_credito->id : null,
+                    'article_variant_id'            => Self::getArticleVariantId($item),
+                    'concepto_stock_movement_name'  => 'Nota de credito',
+                    'observations'                  => 'Nota credito Venta N° '.$sale->num,
+                ];
+
+                if (count($article->addresses) >= 1) {
+                    $data['to_address_id'] = $sale->address_id;
+                }
+
                 $ct = new StockMovementController();
-                $request = new \Illuminate\Http\Request();
-                
-                $request->model_id = $item['id'];
-                $request->to_address_id = $sale->address_id;
-                $request->amount = $item['returned_amount'];
-                $request->nota_credito_id = $nota_credito->id;
-                $request->concepto = 'Nota credito Venta N° '.$sale->num;
-                $ct->store($request);
+                $ct->crear($data, false);
             }
         }
 
@@ -971,6 +1037,16 @@ class SaleHelper extends Controller {
 
                     $amount = Self::getAmount($sale, $article);
 
+                    /*
+                        Con `varios_precios` el articulo va a la venta como VARIOS renglones (uno por
+                        precio, cada uno con su cantidad) pero el descuento de stock se hace una sola
+                        vez, aca. Lo que sale del stock es la suma de esos renglones, no la cantidad
+                        del item "padre", que es la que quedo en el formulario antes de repartir.
+                    */
+                    if (isset($article['varios_precios']) && is_array($article['varios_precios'])) {
+                        $amount = Self::get_amount_varios_precios($article['varios_precios']);
+                    }
+
                     if (isset($article['article_variant_id'])) {
                         $article_variant_id = $article['article_variant_id'];
                     } else {
@@ -992,6 +1068,25 @@ class SaleHelper extends Controller {
 
             }
         }
+    }
+
+    /**
+     * Cantidad total que sale del stock con `varios_precios`: la suma de las cantidades de cada
+     * renglon de precio. Un renglon sin cantidad cuenta como 1, igual que en attachArticles().
+     *
+     * @param  array  $varios_precios
+     * @return float
+     */
+    static function get_amount_varios_precios($varios_precios) {
+        $total = 0;
+        foreach ($varios_precios as $otro_precio) {
+            if (!isset($otro_precio['amount']) || $otro_precio['amount'] === '' || is_null($otro_precio['amount'])) {
+                $total += 1;
+            } else {
+                $total += (float)$otro_precio['amount'];
+            }
+        }
+        return $total;
     }
 
     static function usa_stock($article) {

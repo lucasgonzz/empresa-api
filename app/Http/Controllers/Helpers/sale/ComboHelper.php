@@ -3,21 +3,55 @@
 namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Models\Article;
 
 class ComboHelper {
-	
+
+	/**
+	 * Descuenta del stock los articulos que componen un combo vendido.
+	 *
+	 * 🔴 Mira `discount_stock` y si el articulo lleva stock, igual que SaleHelper::attachArticles()
+	 * para los articulos sueltos (auditoria de stock, 5/9/2026). Antes descontaba siempre, pero
+	 * DeleteSaleHelper::regresar_stock() solo devuelve cuando la venta tiene `discount_stock`: una
+	 * venta marcada para NO descontar stock le restaba los combos igual, y al borrarla no los
+	 * devolvia. Los dos lados tienen que mirar la misma bandera.
+	 *
+	 * @param  \App\Models\Sale  $sale
+	 * @param  array             $combo           Renglon del combo tal como llega de Vender.
+	 * @param  mixed             $previus_combos  Combos que tenia la venta antes de actualizar.
+	 * @return void
+	 */
 	static function discount_articles_stock($sale, $combo, $previus_combos) {
 
-		if (!$sale->to_check && !$sale->checked) {
+		if (!$sale->to_check && !$sale->checked && (bool)$sale->discount_stock) {
 
 			$combo_amount = Self::get_combo_amount($combo, $previus_combos);
-			
+
+			if ($combo_amount == 0) {
+				return;
+			}
+
 			foreach ($combo['articles'] as $article) {
+
+				if (!Self::usa_stock($article)) {
+					continue;
+				}
 
 				Self::crear_stock_movement($sale, $combo, $article, $combo_amount);
 			}
 		}
 
+	}
+
+	/**
+	 * Si el articulo del combo lleva stock (mismo criterio que SaleHelper::usa_stock()).
+	 *
+	 * @param  array  $article
+	 * @return bool
+	 */
+	static function usa_stock($article) {
+		$modelo = Article::find($article['id']);
+		return !is_null($modelo) && !is_null($modelo->stock);
 	}
 
 	static function crear_stock_movement($sale, $combo, $article, $combo_amount) {
@@ -40,9 +74,9 @@ class ComboHelper {
 		$amount = (int)$combo['amount'];
 
 		if (!is_null($previus_combos)) {
-			
+
 			foreach ($previus_combos as $previus_combo) {
-				
+
 				if ($previus_combo->id == $combo['id']) {
 
 					$finded_combo = $previus_combo;

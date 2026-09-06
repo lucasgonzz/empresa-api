@@ -68,7 +68,11 @@ class DepositMovementController extends Controller
         $model->to_address_id               = $request->to_address_id;
         $model->employee_id                 = $request->employee_id;
         $model->deposit_movement_status_id  = $request->deposit_movement_status_id;
-        $model->recibido_at                 = $request->recibido_at;
+        // recibido_at lo fija el helper al pasar a "Recibido" (auditoria de stock, 5/9/2026):
+        // desde el request solo se acepta un valor explicito, nunca se pisa con null.
+        if (!is_null($request->recibido_at)) {
+            $model->recibido_at             = $request->recibido_at;
+        }
         $model->notes                 		= $request->notes;
         $model->save();
 

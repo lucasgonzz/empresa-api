@@ -166,8 +166,22 @@ class Nota_de_credito_desde_vender_Test extends TestCase
 
         /*
          * Devolución parcial desde el panel de vender: 3 unidades a $100 → NC de $300.
+         *
+         * La venta vende 3 unidades (hasta la auditoría de stock del 5/9/2026 este test vendía 1 y
+         * devolvía 3; desde entonces una devolución no puede superar lo vendido y el update la
+         * rechaza). El monto de la NC sigue siendo returned_amount × price_vender.
          */
         $payload = $this->payload_update($e, $articulo, [
+            'sub_total'                => 1500,
+            'total'                    => 1500,
+            'items'                    => [
+                [
+                    'is_article'   => true,
+                    'id'           => $articulo->id,
+                    'price_vender' => 500,
+                    'amount'       => 3,
+                ],
+            ],
             'save_nota_credito'        => 1,
             'nota_credito_description' => 'NC desde vender (test tanda 2408)',
             'returned_items'           => [
@@ -205,11 +219,11 @@ class Nota_de_credito_desde_vender_Test extends TestCase
         $this->assertEquals($e['venta']->id, $nota_credito->sale_id);
 
         /*
-         * El saldo de la cuenta cierra: débito de la venta (500) − NC (300) = 200.
-         * No se asierta sobre qué débito puntual quedó imputado porque el update recrea el
+         * El saldo de la cuenta cierra: débito de la venta (1500, el total del update) − NC (300)
+         * = 1200. No se asierta sobre qué débito puntual quedó imputado porque el update recrea el
          * movimiento de la venta (updateCurrentAcountsAndCommissions); el neto es el contrato.
          */
-        $this->assertEquals(200, (float) $e['credit_account']->fresh()->saldo);
+        $this->assertEquals(1200, (float) $e['credit_account']->fresh()->saldo);
     }
 
     /**

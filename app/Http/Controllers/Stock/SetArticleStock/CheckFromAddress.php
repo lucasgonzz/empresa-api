@@ -17,14 +17,26 @@ class CheckFromAddress {
     static function check_from_address($stock_movement, $article) {
 
         if (
-            !is_null($stock_movement->from_address_id) 
-            && $stock_movement->from_address_id != 0 
+            !is_null($stock_movement->from_address_id)
+            && $stock_movement->from_address_id != 0
             && count($article->addresses) >= 1
         ) {
-            
+
             Log::info('Actualizando stock from addresses para '.$article->name.'. Addresses:');
             Log::info($article->addresses);
-            
+
+            /*
+                Un movimiento de VARIANTE no toca el pivot del articulo: lo lleva CheckVariants y
+                despues setArticleStockFromAddresses() reconstruye los depositos del articulo
+                sumando los de sus variantes. Mismo criterio que CheckToAddress.
+            */
+            if (
+                !is_null($stock_movement->article_variant_id)
+                && $stock_movement->article_variant_id != 0
+            ) {
+                return;
+            }
+
             $article->load('addresses');
 
             $from_address = null;
@@ -38,18 +50,20 @@ class CheckFromAddress {
 
             if (!is_null($from_address)) {
 
-                /* 
+                /*
                     Ahora se va a sumar la cantidad
-                    Porque si es una venta, va a ser un valor negativo
+                    Porque si es una venta, va a ser un valor negativo.
+                    La suma la hace el SQL, no PHP: ver CheckToAddress::sumar_al_deposito().
                 */
-                $new_amount = (float)$from_address->pivot->amount + Self::get_amount_for_from_address($stock_movement);
-
-                $article->addresses()->updateExistingPivot($from_address->id, [
-                    'amount'    => $new_amount,
-                ]);
+                CheckToAddress::sumar_al_deposito($article, $from_address->id, (float)Self::get_amount_for_from_address($stock_movement));
 
             } else {
 
+                /*
+                    El articulo reparte por depositos pero todavia no tiene fila para este. Se abre
+                    con la cantidad del movimiento (negativa si es una venta): el stock de un deposito
+                    puede quedar en negativo, y asi el usuario ve de donde salio.
+                */
                 $article->addresses()->attach($stock_movement->from_address_id, [
                     'amount'    => Self::get_amount_for_from_address($stock_movement),
                 ]);

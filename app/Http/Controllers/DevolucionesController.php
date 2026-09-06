@@ -7,6 +7,8 @@ use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
 use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
+use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
+use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Models\AfipTicket;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -28,9 +30,36 @@ class DevolucionesController extends Controller
 
     function store(Request $request) {
 
+        /*
+            🔴 No se puede devolver más de lo que la venta tiene sin devolver (auditoría de stock,
+            5/9/2026). Es el freno contra la NC DUPLICADA por doble clic: la segunda intenta devolver
+            unidades que la primera ya devolvió, y se rechaza con el detalle. Va ANTES de abrir la
+            transacción porque no escribe nada. Ver ValidarDevolucionHelper.
+        */
+        if ($request->regresar_stock || $request->update_unidades_devueltas) {
+
+            $motivo = ValidarDevolucionHelper::motivo_por_el_que_no_se_puede_devolver($request->sale_id, $request->items);
+
+            if (!is_null($motivo)) {
+                return response()->json(['message' => $motivo, 'devolucion_excedida' => true], 422);
+            }
+        }
+
         DB::beginTransaction();
 
         try {
+
+            /*
+                🔴 Candado sobre la venta y re-validación CON candado, como primera lectura de la
+                transacción (auditoría de stock, 5/9/2026). El chequeo de arriba frena el reintento
+                secuencial; éste frena el doble clic simultáneo: el segundo request espera acá a que
+                el primero commitee y recién entonces cuenta lo ya devuelto (con lecturas FOR UPDATE,
+                que ven lo último commiteado y no la foto de la transacción). Si no cierra, la
+                excepción propia cae en su catch y responde 422 con el motivo.
+            */
+            if ($request->sale_id && ($request->regresar_stock || $request->update_unidades_devueltas)) {
+                ValidarDevolucionHelper::exigir($request->sale_id, $request->items);
+            }
 
             $model_id = null;
             $credit_account_id = null;
@@ -107,7 +136,7 @@ class DevolucionesController extends Controller
             }
 
             if ($request->regresar_stock) {
-                RegresarStockHelper::regresar_stock($request);
+                RegresarStockHelper::regresar_stock($request, $nota_credito);
             }
 
             if ($request->facturar_nota_credito) {
@@ -120,6 +149,14 @@ class DevolucionesController extends Controller
             DB::commit();
 
             return response(null, 201);
+
+        } catch (DevolucionExcedidaException $e) {
+
+            DB::rollBack();
+
+            Log::info('Devolucion rechazada: '.$e->getMessage());
+
+            return response()->json(['message' => $e->getMessage(), 'devolucion_excedida' => true], 422);
 
         } catch(\Throwable $e) {
 

@@ -428,12 +428,15 @@ class MercadoPagoOAuthService
      * Escribir el token acá no reabre el agujero que la misión vino a cerrar: `PaymentMethod`
      * ahora tiene `access_token` en `$hidden`, así que no sale en ninguna respuesta.
      *
+     * Es público porque `DemoSetupHelper::restaurar_mercado_pago()` lo reutiliza al rearmar una
+     * demo: el espejo tiene UNA definición, y es esta.
+     *
      * @param int $user_id Comercio (owner).
      * @param string $access_token Token recién obtenido de Mercado Pago.
      * @param string|null $public_key Public key de la cuenta conectada, si Mercado Pago la mandó.
      * @return PaymentMethod
      */
-    protected function espejar_en_payment_methods($user_id, $access_token, $public_key)
+    public function espejar_en_payment_methods($user_id, $access_token, $public_key)
     {
         $type = PaymentMethodType::firstOrCreate(['name' => 'MercadoPago']);
 
