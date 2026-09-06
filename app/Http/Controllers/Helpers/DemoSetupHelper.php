@@ -15,10 +15,15 @@ use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\OnlinePriceType;
 use App\Models\OnlineTemplate;
+use App\Models\PaymentMethod;
+use App\Models\PaymentMethodType;
+use App\Models\Platform;
+use App\Models\PlatformConnector;
 use App\Models\PriceType;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
+use App\Services\MercadoPago\MercadoPagoOAuthService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -124,6 +129,10 @@ class DemoSetupHelper
          */
         set_time_limit(0);
         ignore_user_abort(true);
+
+        // La conexión de Mercado Pago del dueño se fotografía ANTES del migrate:fresh, que la
+        // borra junto con todo lo demás. Se restaura al final (ver `restaurar_mercado_pago()`).
+        $foto_mercado_pago = self::foto_de_mercado_pago(config('app.USER_ID'));
 
         // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
         Artisan::call('migrate:fresh', ['--force' => true]);
@@ -340,6 +349,9 @@ class DemoSetupHelper
         // recibió datos de demostración" (0) de "esta es la instalación de un cliente real" (1),
         // y de eso depende con qué criterio de precios arranca la tienda. Ver `tienda()`.
         self::tienda($semilla_sembro);
+
+        // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
+        self::restaurar_mercado_pago($user, $foto_mercado_pago);
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
@@ -1115,6 +1127,160 @@ class DemoSetupHelper
         ];
 
         OnlineConfiguration::create($online_configuration);
+    }
+
+    /**
+     * Foto de la conexión de Mercado Pago del dueño de la demo, tomada ANTES del `migrate:fresh`.
+     *
+     * 🔴 POR QUÉ EXISTE. `run()` vacía la base entera y la vuelve a sembrar cada vez que se arma
+     * una demo para un lead. Hasta la misión `mercado-pago-cobro-demo` (5/9/2026) eso borraba
+     * también el conector de Mercado Pago que se conectó por OAuth desde ABM -> Integraciones: la
+     * tienda de la demo cobraba hasta la próxima demo agendada, y ahí quedaba sin ninguna
+     * credencial, en silencio (el checkout sigue mostrando el medio de pago y la preferencia
+     * responde 422). Volver a conectar a mano después de cada demo no es una opción: nadie se
+     * entera de que hace falta.
+     *
+     * Se guarda en memoria lo justo para volver a dejar el conector como estaba: los tokens (ya
+     * descifrados, para poder cifrarlos de vuelta con el mismo cast), el vencimiento, la cuenta y
+     * la public key, más la configuración comercial del espejo en `payment_methods` (nombre,
+     * descripción, descuento, recargo), que es lo que el comercio ve en el ABM.
+     *
+     * Devuelve null —y no rompe el setup— si el dueño no tiene conector conectado, si la tabla
+     * todavía no existe (primer armado de una instancia) o si el token no se puede descifrar
+     * (APP_KEY rotada): en cualquiera de esos casos no hay nada que restaurar y la demo se arma
+     * exactamente como antes de esta misión.
+     *
+     * @param int $user_id Dueño de la demo (`config('app.USER_ID')`): es el mismo id antes y después del fresh.
+     * @return array<string, mixed>|null
+     */
+    private static function foto_de_mercado_pago($user_id)
+    {
+        try {
+            $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_MERCADO_PAGO);
+
+            if (!$connector || !$connector->is_connected()) {
+                return null;
+            }
+
+            $access_token = $connector->access_token;
+
+            if (empty($access_token)) {
+                return null;
+            }
+
+            $foto = [
+                'access_token'     => $access_token,
+                'refresh_token'    => $connector->refresh_token,
+                'expires_at'       => $connector->expires_at ? $connector->expires_at->toDateTimeString() : null,
+                'platform_user_id' => $connector->platform_user_id,
+                'public_key'       => $connector->public_key,
+                'payment_method'   => null,
+            ];
+
+            $type = PaymentMethodType::where('name', 'MercadoPago')->first();
+
+            if ($type) {
+                $payment_method = PaymentMethod::where('user_id', $user_id)
+                    ->where('payment_method_type_id', $type->id)
+                    ->orderBy('id', 'ASC')
+                    ->first();
+
+                if ($payment_method) {
+                    $foto['payment_method'] = [
+                        'name'        => $payment_method->name,
+                        'description' => $payment_method->description,
+                        'discount'    => $payment_method->discount,
+                        'surchage'    => $payment_method->surchage,
+                        'public_key'  => $payment_method->public_key,
+                    ];
+                }
+            }
+
+            Log::info('DemoSetupHelper: foto de la conexión de Mercado Pago tomada antes del rearmado.', [
+                'user_id'          => $user_id,
+                'platform_user_id' => $foto['platform_user_id'],
+            ]);
+
+            return $foto;
+        } catch (\Throwable $e) {
+            // Nunca se loguea el token. Un fallo acá no frena el setup: la demo se arma sin la
+            // conexión, que es lo que pasaba siempre hasta esta misión.
+            Log::warning('DemoSetupHelper: no se pudo tomar la foto de la conexión de Mercado Pago: '.$e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Vuelve a dejar la conexión de Mercado Pago tal como estaba antes del `migrate:fresh`.
+     *
+     * Escribe lo mismo, en los mismos dos lugares, que el callback del OAuth
+     * (`MercadoPagoOAuthService::handle_callback()`): el conector de `platform_connectors` y el
+     * espejo transitorio de `payment_methods` — por eso el espejo se hace llamando al mismo método
+     * del servicio y no con una copia. Así la tienda cobra con la misma cuenta, lea del conector
+     * (tienda nueva) o del espejo (tienda vieja).
+     *
+     * Necesita que `PlatformSeeder` (fila `mercado_pago` de `platforms`) y `PaymentMethodTypeSeeder`
+     * (tipo "MercadoPago") ya hayan corrido: los dos están en `base_seeders()`, así que esto se
+     * llama al final de `run()`, después de `tienda()`.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed>|null $foto Lo que devolvió `foto_de_mercado_pago()`.
+     * @return void
+     */
+    private static function restaurar_mercado_pago(User $user, $foto)
+    {
+        if (empty($foto) || empty($foto['access_token'])) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se restauró la conexión de Mercado Pago.');
+
+                return;
+            }
+
+            $connector->access_token     = $foto['access_token'];
+            $connector->refresh_token    = $foto['refresh_token'];
+            $connector->expires_at       = $foto['expires_at'] ? Carbon::parse($foto['expires_at']) : null;
+            $connector->platform_user_id = $foto['platform_user_id'];
+            $connector->public_key       = $foto['public_key'];
+            $connector->status           = PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message    = null;
+            $connector->save();
+
+            $service = new MercadoPagoOAuthService();
+            $payment_method = $service->espejar_en_payment_methods(
+                (int) $user->id,
+                $foto['access_token'],
+                $foto['public_key']
+            );
+
+            // La configuración comercial del medio de pago (lo que el comercio ve en el ABM) también
+            // vuelve como estaba; el espejo solo repone las credenciales.
+            if (!empty($foto['payment_method'])) {
+                $payment_method->name        = $foto['payment_method']['name'];
+                $payment_method->description = $foto['payment_method']['description'];
+                $payment_method->discount    = $foto['payment_method']['discount'];
+                $payment_method->surchage    = $foto['payment_method']['surchage'];
+
+                if (empty($foto['public_key']) && !empty($foto['payment_method']['public_key'])) {
+                    $payment_method->public_key = $foto['payment_method']['public_key'];
+                }
+
+                $payment_method->save();
+            }
+
+            Log::info('DemoSetupHelper: conexión de Mercado Pago restaurada después del rearmado.', [
+                'user_id'          => $user->id,
+                'platform_user_id' => $foto['platform_user_id'],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$e->getMessage());
+        }
     }
 
     /**
