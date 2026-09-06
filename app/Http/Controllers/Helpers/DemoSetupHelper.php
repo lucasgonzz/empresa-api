@@ -1145,20 +1145,33 @@ class DemoSetupHelper
      * la public key, más la configuración comercial del espejo en `payment_methods` (nombre,
      * descripción, descuento, recargo), que es lo que el comercio ve en el ABM.
      *
-     * Devuelve null —y no rompe el setup— si el dueño no tiene conector conectado, si la tabla
+     * Devuelve null —y no rompe el setup— si el dueño no tiene conector con token, si la tabla
      * todavía no existe (primer armado de una instancia) o si el token no se puede descifrar
      * (APP_KEY rotada): en cualquiera de esos casos no hay nada que restaurar y la demo se arma
      * exactamente como antes de esta misión.
+     *
+     * Un conector con el token VENCIDO pero con refresh_token también se fotografía, con su
+     * vencimiento tal cual: el cron `mercadopago:refresh-tokens` lo habría renovado (mira
+     * `expires_at <= hoy + 15 días`, que incluye lo ya vencido) y después del rearmado lo sigue
+     * pudiendo hacer. Descartarlo por vencido obligaría a rehacer el OAuth a mano, en silencio.
      *
      * @param int $user_id Dueño de la demo (`config('app.USER_ID')`): es el mismo id antes y después del fresh.
      * @return array<string, mixed>|null
      */
     private static function foto_de_mercado_pago($user_id)
     {
+        if ((int) $user_id <= 0) {
+            // Sin USER_ID en el .env de la instancia no hay dueño que fotografiar. Se dice, porque
+            // el resultado es que la demo pierde la conexión en cada rearmado sin ninguna otra señal.
+            Log::warning('DemoSetupHelper: config(app.USER_ID) vacío, no se puede fotografiar la conexión de Mercado Pago.');
+
+            return null;
+        }
+
         try {
             $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_MERCADO_PAGO);
 
-            if (!$connector || !$connector->is_connected()) {
+            if (!$connector) {
                 return null;
             }
 
@@ -1174,6 +1187,7 @@ class DemoSetupHelper
                 'expires_at'       => $connector->expires_at ? $connector->expires_at->toDateTimeString() : null,
                 'platform_user_id' => $connector->platform_user_id,
                 'public_key'       => $connector->public_key,
+                'status'           => $connector->status,
                 'payment_method'   => null,
             ];
 
@@ -1248,7 +1262,8 @@ class DemoSetupHelper
             $connector->expires_at       = $foto['expires_at'] ? Carbon::parse($foto['expires_at']) : null;
             $connector->platform_user_id = $foto['platform_user_id'];
             $connector->public_key       = $foto['public_key'];
-            $connector->status           = PlatformConnector::STATUS_CONECTADO;
+            // El estado vuelve como estaba: un conector vencido a la espera del cron sigue siéndolo.
+            $connector->status           = !empty($foto['status']) ? $foto['status'] : PlatformConnector::STATUS_CONECTADO;
             $connector->error_message    = null;
             $connector->save();
 
@@ -1279,7 +1294,13 @@ class DemoSetupHelper
                 'platform_user_id' => $foto['platform_user_id'],
             ]);
         } catch (\Throwable $e) {
-            Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$e->getMessage());
+            // Una QueryException trae el SQL con los bindings, y el token del espejo de
+            // `payment_methods` va en claro: de esas se loguea solo la clase y el SQLSTATE.
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$detalle);
         }
     }
 

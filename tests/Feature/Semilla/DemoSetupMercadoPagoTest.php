@@ -11,6 +11,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use ReflectionMethod;
 use Tests\EmpresaTestCase;
 
@@ -295,5 +296,83 @@ class DemoSetupMercadoPagoTest extends EmpresaTestCase
             ->update(['access_token' => 'esto-no-es-un-ciphertext-valido']);
 
         $this->assertNull($this->foto(), 'Con un token indescifrable no hay foto, y no hay excepción.');
+    }
+
+    /**
+     * Un conector con el token vencido pero con refresh_token también sobrevive, con su vencimiento
+     * tal cual: el cron `mercadopago:refresh-tokens` lo renueva después. Descartarlo obligaría a
+     * rehacer el OAuth a mano sin que nadie avise.
+     *
+     * @return void
+     */
+    public function test_un_conector_vencido_con_refresh_token_tambien_se_restaura()
+    {
+        $vencido = Carbon::now()->subDays(3)->startOfSecond();
+        $this->conector_conectado(['expires_at' => $vencido]);
+
+        $foto = $this->foto();
+        $this->assertNotNull($foto, 'Un conector vencido con refresh_token tiene que fotografiarse.');
+
+        $this->simular_fresh();
+        $this->restaurar($foto);
+
+        $conector = $this->conector_actual();
+        $this->assertNotNull($conector);
+        $this->assertSame($vencido->toDateTimeString(), $conector->expires_at->toDateTimeString(), 'El vencimiento vuelve tal cual: es lo que hace que el cron lo renueve.');
+        $this->assertSame('TG-REFRESH-DE-PRUEBA', $conector->refresh_token);
+        $this->assertFalse($conector->is_connected(), 'Sigue vencido hasta que el cron lo renueve: no se inventa una vigencia.');
+    }
+
+    /**
+     * Sin `USER_ID` en la instancia no hay dueño que fotografiar, y eso se dice en el log: es la
+     * única señal de que la demo va a perder la conexión en cada rearmado.
+     *
+     * @return void
+     */
+    public function test_sin_user_id_la_foto_avisa_y_no_explota()
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(function ($mensaje) {
+                return strpos($mensaje, 'USER_ID') !== false;
+            });
+
+        $metodo = new ReflectionMethod(DemoSetupHelper::class, 'foto_de_mercado_pago');
+        $metodo->setAccessible(true);
+
+        $this->assertNull($metodo->invoke(null, null));
+    }
+
+    /**
+     * 🔴 EL ORDEN DENTRO DE `run()` ES LA MITAD DEL ARREGLO, y ninguna otra aserción lo mira: la
+     * foto tiene que tomarse ANTES del `migrate:fresh` (después ya no hay nada que fotografiar) y la
+     * restauración tiene que correr DESPUÉS del `foreach` de seeders y de `tienda()` (antes,
+     * `PlatformSeeder` no sembró la fila `mercado_pago` y `find_or_create_for_user_and_slug` devuelve
+     * null: la conexión se pierde con un warning en el log y la suite verde).
+     *
+     * Se lee el fuente de `run()` por reflexión, igual que `AlineacionLocalDemoTest` hace con la
+     * cola de seeders.
+     *
+     * @return void
+     */
+    public function test_la_foto_va_antes_del_fresh_y_la_restauracion_despues_de_los_seeders()
+    {
+        $run = new ReflectionMethod(DemoSetupHelper::class, 'run');
+        $lineas = file($run->getFileName());
+        $fuente = implode('', array_slice($lineas, $run->getStartLine() - 1, $run->getEndLine() - $run->getStartLine() + 1));
+
+        $foto = strpos($fuente, 'self::foto_de_mercado_pago(');
+        $fresh = strpos($fuente, "Artisan::call('migrate:fresh'");
+        $seeders = strpos($fuente, "Artisan::call('db:seed', ['--class' => \$seeder");
+        $tienda = strpos($fuente, 'self::tienda(');
+        $restaurar = strpos($fuente, 'self::restaurar_mercado_pago(');
+
+        foreach (['foto' => $foto, 'fresh' => $fresh, 'seeders' => $seeders, 'tienda' => $tienda, 'restaurar' => $restaurar] as $nombre => $posicion) {
+            $this->assertNotFalse($posicion, "No se encontró '$nombre' en run(); si se renombró, actualizar este test.");
+        }
+
+        $this->assertLessThan($fresh, $foto, 'La foto de Mercado Pago tiene que tomarse ANTES del migrate:fresh.');
+        $this->assertGreaterThan($seeders, $restaurar, 'La restauración tiene que correr DESPUÉS del foreach de seeders (PlatformSeeder, PaymentMethodTypeSeeder).');
+        $this->assertGreaterThan($tienda, $restaurar, 'La restauración tiene que correr DESPUÉS de tienda().');
     }
 }
