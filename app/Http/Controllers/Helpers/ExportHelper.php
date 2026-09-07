@@ -547,77 +547,35 @@ class ExportHelper {
 	}
 	
 	
+	/**
+	 * Arma las cuatro columnas de descuentos y recargos del Excel de artículos.
+	 *
+	 * Delega en las funciones por artículo, que son las únicas que saben separar
+	 * porcentaje de monto (cada ArticleSurchage tiene uno de los dos en null) y
+	 * escribir la 'F' de los recargos que se aplican después del precio final.
+	 *
+	 * Antes esto lo hacía a mano acá adentro y de dos formas mal: recorría TODOS
+	 * los recargos concatenando ->percentage aunque fuera null -- de ahí salían
+	 * celdas como "10.00_" y "_500" --, y no escribía la 'F' en ningún caso. Un
+	 * cliente que exportaba y reimportaba sin tocar nada le sacaba el "después del
+	 * precio final" a todos sus recargos y se le movían los precios. Y las columnas
+	 * en blanco quedaban directamente vacías: llenaba unos campos
+	 * (*_percentage_formated_blanco) que no lee nadie, mientras que mapPreciosBlanco()
+	 * consume discounts_blanco_formated / surchages_blanco_formated, que ninguna
+	 * función seteaba.
+	 *
+	 * @param  \Illuminate\Support\Collection $articles
+	 * @return \Illuminate\Support\Collection
+	 */
 	static function set_descuentos_y_recargos($articles) {
 
 		foreach ($articles as $article) {
 
-			// Descuentos y recargos en negro
-			$article->discounts_percentage_formated = '';
-			$article->surchages_percentage_formated = '';
-			$article->discounts_amount_formated = '';
-			$article->surchages_amount_formated = '';
+			Self::set_article_discounts($article);
+			Self::set_article_surchages($article);
 
-			if (count($article->article_discounts) >= 1) {
-				foreach ($article->article_discounts as $discount) {
-					$article->discounts_percentage_formated .= $discount->percentage.'_';
-				}
-				$article->discounts_percentage_formated = substr($article->discounts_percentage_formated, 0, strlen($article->discounts_percentage_formated)-1);
-			}
-
-			if (count($article->article_surchages) >= 1) {
-				foreach ($article->article_surchages as $surchage) {
-					$article->surchages_percentage_formated .= $surchage->percentage.'_';
-				}
-				$article->surchages_percentage_formated = substr($article->surchages_percentage_formated, 0, strlen($article->surchages_percentage_formated)-1);
-			}
-
-			if (count($article->article_discounts) >= 1) {
-				foreach ($article->article_discounts as $discount) {
-					$article->discounts_amount_formated .= $discount->amount.'_';
-				}
-				$article->discounts_amount_formated = substr($article->discounts_amount_formated, 0, strlen($article->discounts_amount_formated)-1);
-			}
-
-			if (count($article->article_surchages) >= 1) {
-				foreach ($article->article_surchages as $surchage) {
-					$article->surchages_amount_formated .= $surchage->amount.'_';
-				}
-				$article->surchages_amount_formated = substr($article->surchages_amount_formated, 0, strlen($article->surchages_amount_formated)-1);
-			}
-
-			// Descuentos y recargos en blanco
-			$article->discounts_percentage_formated_blanco = '';
-			$article->surchages_percentage_formated_blanco = '';
-			$article->discounts_amount_formated_blanco = '';
-			$article->surchages_amount_formated_blanco = '';
-
-			if (count($article->article_discounts_blanco) >= 1) {
-				foreach ($article->article_discounts_blanco as $discount) {
-					$article->discounts_percentage_formated_blanco .= $discount->percentage.'_';
-				}
-				$article->discounts_percentage_formated_blanco = substr($article->discounts_percentage_formated_blanco, 0, strlen($article->discounts_percentage_formated_blanco)-1);
-			}
-
-			if (count($article->article_surchages_blanco) >= 1) {
-				foreach ($article->article_surchages_blanco as $surchage) {
-					$article->surchages_percentage_formated_blanco .= $surchage->percentage.'_';
-				}
-				$article->surchages_percentage_formated_blanco = substr($article->surchages_percentage_formated_blanco, 0, strlen($article->surchages_percentage_formated_blanco)-1);
-			}
-
-			if (count($article->article_discounts_blanco) >= 1) {
-				foreach ($article->article_discounts_blanco as $discount) {
-					$article->discounts_amount_formated_blanco .= $discount->amount.'_';
-				}
-				$article->discounts_amount_formated_blanco = substr($article->discounts_amount_formated_blanco, 0, strlen($article->discounts_amount_formated_blanco)-1);
-			}
-
-			if (count($article->article_surchages_blanco) >= 1) {
-				foreach ($article->article_surchages_blanco as $surchage) {
-					$article->surchages_amount_formated_blanco .= $surchage->amount.'_';
-				}
-				$article->surchages_amount_formated_blanco = substr($article->surchages_amount_formated_blanco, 0, strlen($article->surchages_amount_formated_blanco)-1);
-			}
+			Self::set_article_discounts_blanco($article);
+			Self::set_article_surchages_blanco($article);
 		}
 
 		return $articles;
@@ -625,100 +583,75 @@ class ExportHelper {
 
 	static function set_article_discounts($article) {
 
-	  	$article->discounts_percentage_formated = '';
-	  	$article->discounts_amount_formated = '';
+		$percentages = [];
+		$amounts     = [];
 
-        if (count($article->article_discounts) >= 1) {
+		foreach ($article->article_discounts as $discount) {
 
-            foreach ($article->article_discounts as $discount) {
-                
-                if (!is_null($discount->percentage)) {
-                	$article->discounts_percentage_formated .= $discount->percentage.'_';
-                } else if (!is_null($discount->amount)) {
-                	$article->discounts_amount_formated .= $discount->amount.'_';
-                }
-            }
+			if (!is_null($discount->percentage)) {
+				$percentages[] = $discount->percentage;
+			} else if (!is_null($discount->amount)) {
+				$amounts[] = $discount->amount;
+			}
+		}
 
-            // Limpio el ultimo _ que se agrego en el foreach
-            $article->discounts_percentage_formated = substr($article->discounts_percentage_formated, 0, strlen($article->discounts_percentage_formated)-1);
-           
-            $article->discounts_amount_formated = substr($article->discounts_amount_formated, 0, strlen($article->discounts_amount_formated)-1);
-        }
+		$article->discounts_percentage_formated = implode('_', $percentages);
+		$article->discounts_amount_formated     = implode('_', $amounts);
 
-        return $article;
+		return $article;
 	}
 
 	static function set_article_discounts_blanco($article) {
 
-	  	$article->discounts_blanco_formated = '';
+		$percentages = [];
 
-        if (count($article->article_discounts_blanco) >= 1) {
+		foreach ($article->article_discounts_blanco as $discount) {
+			$percentages[] = $discount->percentage;
+		}
 
-            foreach ($article->article_discounts_blanco as $discount) {
+		$article->discounts_blanco_formated = implode('_', $percentages);
 
-                $article->discounts_blanco_formated .= $discount->percentage.'_';
-            }
-
-            $article->discounts_blanco_formated = substr($article->discounts_blanco_formated, 0, strlen($article->discounts_blanco_formated)-1);
-        }
-
-        return $article;
+		return $article;
 	}
 
 	static function set_article_surchages($article) {
 
-	  	$article->surchages_percentage_formated = '';
-	  	$article->surchages_amount_formated = '';
+		$percentages = [];
+		$amounts     = [];
 
-        if (count($article->article_surchages) >= 1) {
-            foreach ($article->article_surchages as $surchage) {
+		foreach ($article->article_surchages as $surchage) {
 
-            	Log::info('Recargo de '.$article->name.' luego_del_precio_final: '.$surchage->luego_del_precio_final);
-            	
-            	if (!is_null($surchage->percentage)) {
-                	
-                	$article->surchages_percentage_formated .= $surchage->percentage;
-	        		if ($surchage->luego_del_precio_final) {
-	            		$article->surchages_percentage_formated .= 'F';
-	        		} 
-                	$article->surchages_percentage_formated .= '_';
+			/*
+			 * La 'F' marca que el recargo se aplica DESPUÉS del precio final, o sea que
+			 * no lo multiplica el margen de ganancia. Sin ella, reimportar el mismo Excel
+			 * lo movería al costo y le cambiaría el precio al artículo.
+			 */
+			$final = $surchage->luego_del_precio_final ? 'F' : '';
 
-					Log::info('percentage: '.$surchage->percentage);            	
-            	} else if (!is_null($surchage->amount)) {
+			if (!is_null($surchage->percentage)) {
+				$percentages[] = $surchage->percentage.$final;
+			} else if (!is_null($surchage->amount)) {
+				$amounts[] = $surchage->amount.$final;
+			}
+		}
 
-                	$article->surchages_amount_formated .= $surchage->amount;
-	        		if ($surchage->luego_del_precio_final) {
-	            		$article->surchages_amount_formated .= 'F';
-	        		} 
-                	$article->surchages_amount_formated .= '_';
-					Log::info('amount: '.$surchage->amount);            	
-            	}
-            }
+		$article->surchages_percentage_formated = implode('_', $percentages);
+		$article->surchages_amount_formated     = implode('_', $amounts);
 
-        	Log::info('Quedo asi: '.$article->surchages_percentage_formated);
-
-            $article->surchages_percentage_formated = substr($article->surchages_percentage_formated, 0, strlen($article->surchages_percentage_formated)-1);
-            $article->surchages_amount_formated = substr($article->surchages_amount_formated, 0, strlen($article->surchages_amount_formated)-1);
-        	Log::info('Y despyes asi: '.$article->surchages_percentage_formated);
-        }
-
-        return $article;
+		return $article;
 	}
 
 	static function set_article_surchages_blanco($article) {
 
-	  	$article->surchages_blanco_formated = '';
+		$percentages = [];
 
-        if (count($article->article_surchages_blanco) >= 1) {
-            foreach ($article->article_surchages_blanco as $surchage) {
+		foreach ($article->article_surchages_blanco as $surchage) {
+			$percentages[] = $surchage->percentage;
+		}
 
-                $article->surchages_blanco_formated .= $surchage->percentage.'_';
-            }
+		$article->surchages_blanco_formated = implode('_', $percentages);
 
-            $article->surchages_blanco_formated = substr($article->surchages_blanco_formated, 0, strlen($article->surchages_blanco_formated)-1);
-        }
-
-        return $article;
+		return $article;
 	}
 
 	static function get_price_types_values_in_order($article) {
