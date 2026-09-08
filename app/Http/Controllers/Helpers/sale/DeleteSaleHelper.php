@@ -241,7 +241,7 @@ class DeleteSaleHelper {
                 'model_id'                      => $article->id,
                 'amount'                        => -(float)$renglon->neto,
                 'sale_id'                       => $sale->id,
-                'article_variant_id'            => $renglon->article_variant_id,
+                'article_variant_id'            => $renglon->variant_id_neto,
                 'concepto_stock_movement_name'  => 'Se elimino la venta',
             ];
 
@@ -267,13 +267,18 @@ class DeleteSaleHelper {
 	/**
 	 * Neto de movimientos de stock de la venta por (artículo, variante), sólo los que no dan cero.
 	 *
+	 * 🔴 El alias de la variante NO puede llamarse `article_variant_id`: bajo ONLY_FULL_GROUP_BY
+	 * (activo en la base de Innovate, medido el 8/9/2026) un alias con el mismo nombre que la
+	 * columna real que usa adentro dispara el 1055 "isn't in GROUP BY", aunque el GROUP BY repita
+	 * la expresión entera. Toda venta con movimientos de stock quedaba sin poder borrarse.
+	 *
 	 * @param  \App\Models\Sale  $sale
-	 * @return \Illuminate\Support\Collection  Objetos con article_id, article_variant_id y neto.
+	 * @return \Illuminate\Support\Collection  Objetos con article_id, variant_id_neto y neto.
 	 */
 	static function neto_por_renglon($sale) {
 
         return DB::table('stock_movements')
-                    ->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS article_variant_id'), DB::raw('SUM(amount) AS neto'))
+                    ->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS variant_id_neto'), DB::raw('SUM(amount) AS neto'))
                     ->where('sale_id', $sale->id)
                     ->whereNotNull('article_id')
                     ->groupBy('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL)'))
