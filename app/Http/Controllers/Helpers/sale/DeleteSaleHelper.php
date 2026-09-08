@@ -267,10 +267,16 @@ class DeleteSaleHelper {
 	/**
 	 * Neto de movimientos de stock de la venta por (artículo, variante), sólo los que no dan cero.
 	 *
-	 * 🔴 El alias de la variante NO puede llamarse `article_variant_id`: bajo ONLY_FULL_GROUP_BY
-	 * (activo en la base de Innovate, medido el 8/9/2026) un alias con el mismo nombre que la
-	 * columna real que usa adentro dispara el 1055 "isn't in GROUP BY", aunque el GROUP BY repita
-	 * la expresión entera. Toda venta con movimientos de stock quedaba sin poder borrarse.
+	 * 🔴 El GROUP BY va por POSICIÓN (`1, 2`) y no repitiendo la expresión, y eso no es estilo:
+	 * el hosting compartido corre MariaDB (11.8.8, medido en Innovate el 8/9/2026), y MariaDB
+	 * NO compara expresiones entre el SELECT y el GROUP BY bajo ONLY_FULL_GROUP_BY. Repetir
+	 * `COALESCE(NULLIF(article_variant_id, 0), NULL)` idéntica en los dos lados igual tira
+	 * 1055 "isn't in GROUP BY", y toda venta con movimientos de stock quedaba sin poder
+	 * borrarse. El modo lo pone Laravel mismo (`'strict' => true`), no el hosting: MySQL local
+	 * lo tolera y MariaDB no, así que esto NO se reproduce en los tests del pool.
+	 *
+	 * ⚠️ Si se agrega una columna al SELECT, va DESPUÉS de las dos primeras o hay que corregir
+	 * las posiciones.
 	 *
 	 * @param  \App\Models\Sale  $sale
 	 * @return \Illuminate\Support\Collection  Objetos con article_id, variant_id_neto y neto.
@@ -281,7 +287,7 @@ class DeleteSaleHelper {
                     ->select('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL) AS variant_id_neto'), DB::raw('SUM(amount) AS neto'))
                     ->where('sale_id', $sale->id)
                     ->whereNotNull('article_id')
-                    ->groupBy('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL)'))
+                    ->groupByRaw('1, 2')
                     ->havingRaw('ABS(SUM(amount)) > 0.0001')
                     ->get();
 	}
