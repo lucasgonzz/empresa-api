@@ -327,7 +327,7 @@ class VenderController extends Controller
                                 }
                             }
                         })
-                    ->withAll();
+                    ->withAllSinAcopio();
                     // ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges', 'provider']);
 
         if ($category_id) {
