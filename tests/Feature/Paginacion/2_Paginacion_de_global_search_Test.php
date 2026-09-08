@@ -174,6 +174,10 @@ class Paginacion_de_global_search_Test extends TestCase
             'order_by'        => 'id',
             'order_direction' => 'DESC',
             'per_page'        => 5,
+            // 🔴 `page` va adentro del cuerpo A PROPÓSITO: así lo mandaba el front cuando el bug
+            // estaba vivo. Sin esto el test pasa con el backend roto (medido el 8/9/2026) y deja
+            // de ser un candado: probaría que el endpoint pagina, no que el bug no vuelve.
+            'page'            => 1,
         ];
 
         $ids_pagina_1 = $this->ids_de($this->pedir_pagina(1, $cuerpo));
@@ -207,6 +211,10 @@ class Paginacion_de_global_search_Test extends TestCase
             'relation_props' => [],
             'conector'       => 'or',
             'per_page'       => 5,
+            // 🔴 `page` va adentro del cuerpo A PROPÓSITO: así lo mandaba el front cuando el bug
+            // estaba vivo. Sin esto el test pasa con el backend roto (medido el 8/9/2026) y deja
+            // de ser un candado: probaría que el endpoint pagina, no que el bug no vuelve.
+            'page'           => 1,
         ];
 
         $ids_pagina_1 = $this->ids_de($this->pedir_pagina(1, $cuerpo));
@@ -238,6 +246,10 @@ class Paginacion_de_global_search_Test extends TestCase
             'query_value' => '',
             'props'       => [],
             'per_page'    => 5,
+            // 🔴 `page` va adentro del cuerpo A PROPÓSITO: así lo mandaba el front cuando el bug
+            // estaba vivo. Sin esto el test pasa con el backend roto (medido el 8/9/2026) y deja
+            // de ser un candado: probaría que el endpoint pagina, no que el bug no vuelve.
+            'page'        => 1,
             'filters'     => [
                 [
                     'key'         => 'status',
@@ -277,6 +289,10 @@ class Paginacion_de_global_search_Test extends TestCase
             'order_by'        => 'id',
             'order_direction' => 'DESC',
             'per_page'        => 5,
+            // 🔴 `page` va adentro del cuerpo A PROPÓSITO: así lo mandaba el front cuando el bug
+            // estaba vivo. Sin esto el test pasa con el backend roto (medido el 8/9/2026) y deja
+            // de ser un candado: probaría que el endpoint pagina, no que el bug no vuelve.
+            'page'            => 1,
             'filters'         => [
                 [
                     'key'          => 'name',
@@ -358,6 +374,73 @@ class Paginacion_de_global_search_Test extends TestCase
     }
 
     /**
+     * El endpoint hermano `search()` -por donde pagina la papelera de cada módulo- tiene el mismo
+     * contrato y arrastraba el mismo patrón: paginate() sin página explícita.
+     *
+     * Se blindó junto con globalSearch en vez de esperar a que alguien le mande `page` en el
+     * cuerpo: el error ya se cometió una vez en el endpoint de al lado, y el modo de falla es
+     * silencioso (200, filas correctas, página equivocada).
+     *
+     * @group paginacion
+     * @test
+     */
+    public function search_tampoco_deja_que_el_cuerpo_pise_la_pagina_de_la_url()
+    {
+        $this->preparar_escenario();
+
+        $response = $this->postJson('api/search/provider/null/1?page=2', [
+            'per_page' => 5,
+            'page'     => 1,
+        ]);
+
+        $response->assertStatus(200);
+        // search() devuelve el paginador en la raíz (no envuelto en `models`): con $_filters como
+        // el string 'null' cae en la rama que retorna $models pelado. Así lo consume la papelera.
+        $response->assertJsonPath('current_page', 2);
+    }
+
+    /**
+     * `search()` ordenaba solo por `created_at DESC`, sin desempate: mismo problema de
+     * determinismo que globalSearch, y encima acá pagina la papelera, donde `deleted_at` (un
+     * borrado masivo) empata igual de fácil.
+     *
+     * @group paginacion
+     * @test
+     */
+    public function el_order_by_de_search_termina_en_la_clave_primaria()
+    {
+        $this->preparar_escenario();
+
+        $consultas = [];
+
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = $query->sql;
+        });
+
+        $this->postJson('api/search/provider/null/1?page=2', ['per_page' => 5]);
+
+        $con_order = [];
+
+        foreach ($consultas as $sql) {
+            if (stripos($sql, 'order by') !== false) {
+                $con_order[] = $sql;
+            }
+        }
+
+        $this->assertNotEmpty($con_order, 'search() no genero ninguna consulta con order by.');
+
+        foreach ($con_order as $sql) {
+            $order_by_final = substr($sql, stripos($sql, 'order by'));
+
+            $this->assertMatchesRegularExpression(
+                '/`?id`?\s+(asc|desc)\s*(limit\b.*)?$/i',
+                trim($order_by_final),
+                'El ORDER BY de search() no termina en la clave primaria: ' . $order_by_final
+            );
+        }
+    }
+
+    /**
      * Recorrer todas las páginas tiene que devolver cada fila exactamente una vez: ni repetida
      * ni salteada. Es la propiedad que de verdad importa y la que un test de dos páginas no
      * alcanza a ver.
@@ -376,6 +459,8 @@ class Paginacion_de_global_search_Test extends TestCase
             'relation_props' => [],
             'conector'       => 'or',
             'per_page'       => 7,
+            // Mismo motivo que en los tests de arriba: el cuerpo del front roto.
+            'page'           => 1,
         ];
 
         $vistos = [];

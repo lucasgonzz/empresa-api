@@ -97,6 +97,16 @@ class SearchController extends Controller
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
 
+        // Desempate por clave primaria, mismo motivo que en globalSearch: `created_at` se repite
+        // en todo catálogo importado en lote, y con LIMIT/OFFSET sobre una clave con empates MySQL
+        // puede devolver la misma fila en dos páginas. Por acá pagina la papelera de cada módulo.
+        $tabla_del_modelo = (new $model_name())->getTable();
+        $clave_primaria = (new $model_name())->getKeyName();
+
+        if (Schema::hasColumn($tabla_del_modelo, $clave_primaria)) {
+            $models = $models->orderBy($clave_primaria, 'DESC');
+        }
+
         if ($model_name_param === 'sale') {
             SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
         }
@@ -109,7 +119,19 @@ class SearchController extends Controller
             if ($per_page > 200) {
                 $per_page = 200;
             }
-            $models = $models->paginate($per_page);
+
+            // Página del QUERY STRING, explícita. Misma razón que en globalSearch: si un `page` se
+            // cuela en el cuerpo del POST, $request->input() lo prefiere por sobre el de la URL y
+            // la paginación se rompe entera sin ningún error. Acá todavía no pasó -ningún
+            // consumidor manda `page` en el cuerpo hoy-, pero el endpoint queda blindado igual:
+            // el mismo error ya se cometió una vez en el endpoint de al lado.
+            $pagina_pedida = (int) $request->query('page', 1);
+
+            if ($pagina_pedida < 1) {
+                $pagina_pedida = 1;
+            }
+
+            $models = $models->paginate($per_page, ['*'], 'page', $pagina_pedida);
         } else {
             $models = $models->get();
         }
@@ -290,7 +312,25 @@ class SearchController extends Controller
             $models->where('status', 'active');
         }
 
-        $models = $models->paginate(25);
+        // 🔴 Este paginate no tenía NINGÚN order by. Sin orden explícito, MySQL puede devolver las
+        // filas en cualquier orden -y uno distinto en cada consulta-, así que dos páginas del mismo
+        // buscador podían traer la misma fila o saltearla. Se ordena por clave primaria, que es lo
+        // único único que todo modelo tiene, y la página sale del query string como en el resto del
+        // archivo (ver la nota larga en globalSearch).
+        $tabla_modal = (new $model_name())->getTable();
+        $clave_modal = (new $model_name())->getKeyName();
+
+        if (Schema::hasColumn($tabla_modal, $clave_modal)) {
+            $models = $models->orderBy($clave_modal, 'DESC');
+        }
+
+        $pagina_modal = (int) $request->query('page', 1);
+
+        if ($pagina_modal < 1) {
+            $pagina_modal = 1;
+        }
+
+        $models = $models->paginate(25, ['*'], 'page', $pagina_modal);
 
         return response()->json(['models' => $models], 200);
     }
