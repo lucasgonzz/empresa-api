@@ -563,8 +563,24 @@ class PdfColumnService
                  * después de que el snapshot de abajo ya se persistió. Mismo criterio que ya
                  * usaban item_iva_amount/item_subtotal_with_iva, que por eso nunca tuvieron
                  * este bug.
+                 *
+                 * 🔴 Guarda `!$es_usd` (hallazgo de un chequeo adversarial, 8/9/2026, misión
+                 * pdf-factura-neto-recargo): en una venta en moneda extranjera,
+                 * AfipItemCalculator::get_article_price_raw() YA convierte a pesos por dentro
+                 * (multiplica por sale->valor_dolar), y format_sale_monetary_value() de acá abajo
+                 * vuelve a convertir para mostrar — doble conversión. Ese problema NO lo creó
+                 * este archivo: item_iva_amount/item_subtotal_with_iva (dos casos más abajo) ya
+                 * lo tenían de antes, siempre pasaron por $afip_helper sin esta guarda. Arreglarlo
+                 * de raíz toca get_article_price_raw()/format_sale_monetary_value(), compartidos
+                 * por columnas ajenas a este pedido — queda fuera de esta misión, documentado en
+                 * el informe. Lo que sí es responsabilidad de ESTE fix puntual es no empeorar una
+                 * venta en moneda extranjera respecto de cómo estaba antes de esta misión: por eso
+                 * el camino dinámico se toma solo en la moneda del comercio, y en moneda
+                 * extranjera se cae al snapshot de pivot, exactamente como se comportaba este
+                 * código antes de esta misión (con el bug original de siempre: sin el recargo,
+                 * pero sin la doble conversión tampoco).
                  */
-                if ($afip_helper && $sale) {
+                if ($afip_helper && $sale && ! $es_usd) {
                     return self::format_sale_monetary_value(
                         (float) $afip_helper->getArticlePrice($sale, $item),
                         $numbers,
@@ -602,9 +618,10 @@ class PdfColumnService
             case 'item_subtotal_without_iva':
                 /**
                  * Mismo criterio que item_price_without_iva: primero el cálculo dinámico vía
-                 * $afip_helper, que sí conoce los descuentos/recargos de venta.
+                 * $afip_helper, que sí conoce los descuentos/recargos de venta. Misma guarda
+                 * `!$es_usd` y mismo motivo — ver el comentario largo en item_price_without_iva.
                  */
-                if ($afip_helper) {
+                if ($afip_helper && ! $es_usd) {
                     return self::format_sale_monetary_value(
                         (float) $afip_helper->subTotal($item),
                         $numbers,

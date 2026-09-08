@@ -332,4 +332,88 @@ class Pdf_Factura_Precio_Sin_Iva_Con_Recargo_Test extends EmpresaTestCase
             'incluso sin recargo, "Subtotal sin IVA" + "Importe IVA" tiene que cerrar contra "Total con IVA"'
         );
     }
+
+    /**
+     * Test 3 - guarda de moneda extranjera (hallazgo de un chequeo adversarial, 8/9/2026): en una
+     * venta en USD, `AfipItemCalculator::get_article_price_raw()` ya convierte a pesos por
+     * dentro (multiplica por `sale->valor_dolar`), y `format_sale_monetary_value()` de
+     * `PdfColumnService` vuelve a convertir para mostrar — doble conversión, ~1000x el valor
+     * correcto. Ese bug de fondo YA estaba en "Total con IVA"/"Importe IVA" (siempre pasaron por
+     * `$afip_helper`, ANTES de esta misión) y no se arregla acá — arreglarlo de raíz toca código
+     * compartido por columnas ajenas a este pedido (ver el informe de la misión). Lo que este test
+     * fija es que, en USD, "Precio sin IVA" sigue dando el mismo número (correctamente escalado,
+     * aunque sin el recargo) que daba ANTES de esta misión — el fix no puede empeorar la venta en
+     * moneda extranjera respecto de cómo estaba.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function en_moneda_extranjera_precio_sin_iva_no_duplica_la_conversion()
+    {
+        $user = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+        $client = Client::where('name', TestingFerreteriaSeeder::CLIENTE_CONTADO)->first();
+        $articulo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+
+        $price_usd = 10.00;
+        $valor_dolar = 1000;
+
+        $sale = Sale::create([
+            'user_id'                          => $user->id,
+            'client_id'                        => $client->id,
+            'omitir_en_cuenta_corriente'       => 0,
+            'save_current_acount'              => 0,
+            'terminada'                        => 1,
+            'is_cerrada'                       => 0,
+            'sub_total'                        => $price_usd,
+            'total'                            => $price_usd,
+            'moneda_id'                        => 2,
+            'valor_dolar'                      => $valor_dolar,
+            'descuento'                        => 0,
+            'aplicar_recargos_directo_a_items' => 0,
+        ]);
+
+        $price_sin_iva = SaleHelper::get_price_sin_iva(['id' => $articulo->id], $price_usd);
+
+        $sale->articles()->attach($articulo->id, [
+            'amount'         => 1,
+            'price'          => $price_usd,
+            'price_sin_iva'  => $price_sin_iva,
+            'iva_percentage' => $articulo->iva->percentage,
+        ]);
+
+        $releido = $this->releer_primer_renglon($sale);
+        $sale = $releido['sale'];
+        $item = $releido['item'];
+
+        $afip_helper = $this->armar_afip_helper($sale, $user);
+        $contexto = $this->armar_contexto($sale, $item, $afip_helper);
+
+        /**
+         * El valor correcto, en pesos, para un artículo de 10 USD neteado y convertido a 1000: el
+         * mismo cálculo que hace el snapshot de pivot (que es exactamente lo que este resolver
+         * usaba ANTES de esta misión completa, para CUALQUIER moneda) — se lo pide sin
+         * afip_helper para no duplicar la fórmula a mano.
+         */
+        $contexto_sin_afip_helper = $this->armar_contexto($sale, $item, null);
+        $esperado = PdfColumnService::resolve_value('item_price_without_iva', $contexto_sin_afip_helper);
+        $obtenido = PdfColumnService::resolve_value('item_price_without_iva', $contexto);
+
+        $this->assertSame(
+            $esperado,
+            $obtenido,
+            '"Precio sin IVA" en una venta en USD tiene que seguir dando el mismo valor que daba antes de esta misión (sin doble conversión)'
+        );
+
+        /**
+         * Red de seguridad numérica explícita: si algún día se cambia el orden de nuevo y
+         * reaparece la doble conversión, el valor se dispara a ~$8.260.000 en vez de ~$8.260 —
+         * un assert de rango, no de igualdad exacta, para no atarse al centavo del redondeo.
+         */
+        $numero = $this->a_numero($obtenido);
+        $this->assertLessThan(
+            50000,
+            $numero,
+            '"Precio sin IVA" en USD no puede estar en el orden de los millones — señal de doble conversión de moneda'
+        );
+    }
 }
