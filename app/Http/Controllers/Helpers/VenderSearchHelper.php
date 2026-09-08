@@ -87,25 +87,36 @@ class VenderSearchHelper
     }
 
     /**
-     * Expande las variantes de cada articulo en filas propias, con su propio precio, imagenes y
-     * depositos. Movimiento literal del bloque `article_variants` de `search_nombre`: mismas
-     * claves, mismo orden de casos (coincidencia exacta por barcode de variante primero, despues
-     * las variantes por descripcion, despues el articulo sin variantes).
+     * Decide que pares (articulo, variante|null) son el resultado de la busqueda, SIN construir el
+     * objeto final de cada fila. Extraido de lo que antes era la mitad "decision" del loop de
+     * `expand_variants()` (mismo orden de casos: coincidencia exacta por barcode de variante
+     * primero, despues las variantes por descripcion, despues el articulo sin variantes) para que
+     * los controllers puedan correrlo sobre una consulta LIVIANA (sin las 27 relaciones de
+     * `withAllSinAcopio()`) y recien despues traer completos, con `build_row()`, solo los articulos
+     * de la pagina que se va a mostrar.
      *
-     * Si el cliente no tiene la extension `article_variants`, devuelve la coleccion tal cual.
+     * Si el cliente no tiene la extension `article_variants`, cada articulo de la coleccion es un
+     * descriptor propio (mismo comportamiento que la version anterior de `expand_variants`, que
+     * devolvia la coleccion tal cual sin filtrar nada mas).
      *
-     * @param \Illuminate\Support\Collection $articles Articulos ya traidos con `get()` (withAll,
-     *        con la relacion `article_variants` cargada).
+     * @param \Illuminate\Support\Collection $articles Articulos ya traidos con `get()`. Alcanza con
+     *        `id, name, provider_code, bar_code` y, si la extension esta activa, `article_variants`
+     *        con `id, article_id, bar_code, oculta, variant_description` -- no hace falta ninguna
+     *        relacion pesada para decidir el matching.
      * @param string $query_value Criterio de texto original (se vuelve a separar en palabras, igual
      *        que `search_nombre`).
-     * @return \Illuminate\Support\Collection
+     * @return \Illuminate\Support\Collection Coleccion de objetos `{article_id, variant_id}`
+     *         (`variant_id` es `null` para una fila de articulo sin variante), en el mismo orden en
+     *         que hoy los arma `expand_variants()`.
      */
-    public static function expand_variants($articles, $query_value)
+    public static function match_descriptors($articles, $query_value)
     {
-        // Sin la extension de variantes, no hay nada para expandir: se devuelve la coleccion tal
-        // cual llego (mismo comportamiento que search_nombre).
+        // Sin la extension de variantes, no hay nada que decidir: un descriptor por articulo, sin
+        // filtrar nada (mismo comportamiento que la version anterior de expand_variants).
         if (!UserHelper::hasExtencion('article_variants')) {
-            return $articles;
+            return $articles->map(function ($article) {
+                return (object) ['article_id' => $article->id, 'variant_id' => null];
+            })->values();
         }
 
         // Misma extension usada en search_nombre para decidir si el codigo de barras (de articulo
@@ -115,12 +126,7 @@ class VenderSearchHelper
         // Palabras del criterio de busqueda, mismo criterio de separacion que search_nombre.
         $keywords = explode(' ', trim($query_value));
 
-        // Fix duplicacion (prompt 520 de develop, portado en el merge develop -> refractor):
-        // antes $results arrancaba como $articles y despues se le pusheaban ADEMAS las filas
-        // is_variant de cada articulo con variantes -> el padre quedaba duplicado junto a sus
-        // variantes. Arranca vacio y cada articulo se agrega una sola vez, ya sea como fila normal
-        // (sin variantes disponibles) o como fila(s) is_variant.
-        $results = collect();
+        $descriptors = collect();
 
         foreach ($articles as $article) {
 
@@ -182,24 +188,7 @@ class VenderSearchHelper
 
                     if ($matching_variants_by_bar_code->count() > 0) {
                         foreach ($matching_variants_by_bar_code as $variant) {
-
-                            $variant_final_price = self::get_variant_price($variant);
-
-                            $results->push((object)[
-                                'is_variant'            => true,
-                                'id'                    => $variant->article->id,
-                                'variant_id'            => $variant->id,
-                                'variant_description'   => $variant->variant_description,
-                                'final_price'           => $variant_final_price,
-                                // Capa 3 (Prompt 263): desglose por metodo de pago con precio_base_incluye_tarjeta.
-                                'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, UserHelper::userId()),
-                                'price_types'           => $article->price_types,
-                                'bar_code'              => $variant->bar_code,
-                                'name'                  => $article->name. ' '.$variant->variant_description,
-                                'article'               => $article,
-                                'images'                => self::get_variant_images($variant),
-                                'addresses'             => $variant->addresses,
-                            ]);
+                            $descriptors->push((object) ['article_id' => $article->id, 'variant_id' => $variant->id]);
                         }
 
                         continue;
@@ -219,41 +208,95 @@ class VenderSearchHelper
                     return true;
                 });
 
-                if ($matching_variants->count() > 0) {
-                    foreach ($matching_variants as $variant) {
-
-                        $variant_final_price = self::get_variant_price($variant);
-
-                        $results->push((object)[
-                            'is_variant'            => true,
-                            'id'                    => $variant->article->id,
-                            'variant_id'            => $variant->id,
-                            'variant_description'   => $variant->variant_description,
-                            'final_price'           => $variant_final_price,
-                            // Capa 3 (Prompt 263): desglose por metodo de pago con precio_base_incluye_tarjeta.
-                            'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, UserHelper::userId()),
-                            'price_types'           => $article->price_types,
-                            'bar_code'              => $variant->bar_code,
-                            'name'                  => $article->name. ' '.$variant->variant_description,
-                            'article'               => $article,
-                            'images'                => self::get_variant_images($variant),
-                            'addresses'             => $variant->addresses,
-                        ]);
-                    }
+                foreach ($matching_variants as $variant) {
+                    $descriptors->push((object) ['article_id' => $article->id, 'variant_id' => $variant->id]);
                 }
 
             } else {
                 // Si no tiene variantes, y al menos una keyword matcheo, agregar el articulo.
                 if ($matched_keywords->isNotEmpty()) {
-                    $article->is_variant = false;
-                    // Capa 3 (Prompt 263, hotfix Prompt 313): precios_por_metodo_pago viene del
-                    // accessor del modelo Article, no hace falta asignarlo aca.
-                    $results->push($article);
+                    $descriptors->push((object) ['article_id' => $article->id, 'variant_id' => null]);
                 }
             }
         }
 
-        return $results;
+        return $descriptors;
+    }
+
+    /**
+     * Construye la fila final de un resultado de busqueda: el articulo tal cual (sin variante), o
+     * el objeto plano con precio/imagenes/depositos propios de una variante. Extraido literal de lo
+     * que antes era la mitad "construccion" del loop de `expand_variants()` -- las dos ramas de
+     * variante (match exacto por barcode y match por descripcion) armaban el mismo objeto, ahora es
+     * una sola funcion.
+     *
+     * Es la parte CARA de la busqueda (precio, imagenes, price_types, direcciones): los
+     * controllers la llaman solo para los articulos de la pagina que se va a mostrar, nunca para
+     * todos los que matchean el criterio.
+     *
+     * @param \App\Models\Article $article Articulo completo, con `withAllSinAcopio()` cargado.
+     * @param \App\Models\ArticleVariant|null $variant Variante a mostrar, o `null` para la fila del
+     *        articulo sin variante.
+     * @return \App\Models\Article|object
+     */
+    public static function build_row($article, $variant)
+    {
+        if (is_null($variant)) {
+            // Capa 3 (Prompt 263, hotfix Prompt 313): precios_por_metodo_pago viene del accessor
+            // del modelo Article, no hace falta asignarlo aca.
+            $article->is_variant = false;
+            return $article;
+        }
+
+        $variant_final_price = self::get_variant_price($variant);
+
+        return (object) [
+            'is_variant'              => true,
+            'id'                      => $variant->article->id,
+            'variant_id'              => $variant->id,
+            'variant_description'     => $variant->variant_description,
+            'final_price'             => $variant_final_price,
+            // Capa 3 (Prompt 263): desglose por metodo de pago con precio_base_incluye_tarjeta.
+            'precios_por_metodo_pago' => ArticlePricesHelper::calcular_precios_por_metodo_pago_con_tarjeta_incluida($variant_final_price, UserHelper::userId()),
+            'price_types'             => $article->price_types,
+            'bar_code'                => $variant->bar_code,
+            'name'                    => $article->name . ' ' . $variant->variant_description,
+            'article'                 => $article,
+            'images'                  => self::get_variant_images($variant),
+            'addresses'               => $variant->addresses,
+        ];
+    }
+
+    /**
+     * Expande las variantes de cada articulo en filas propias, con su propio precio, imagenes y
+     * depositos. Composicion de `match_descriptors()` + `build_row()`: mismo comportamiento exacto
+     * que la version anterior (que tenia las dos mitades mezcladas en un solo loop), para cualquier
+     * llamador que le pase una coleccion ya completa (con las 27 relaciones cargadas). Los
+     * controllers de busqueda (`search_nombre`, `globalSearch`) YA NO llaman a este metodo: arman
+     * el paginado real llamando `match_descriptors()` sobre una consulta liviana y `build_row()`
+     * solo sobre los articulos de la pagina pedida. Se mantiene como referencia de equivalencia
+     * (la usa el test de esta migracion) y por si algun llamador futuro necesita el camino simple
+     * de una sola pasada.
+     *
+     * @param \Illuminate\Support\Collection $articles Articulos ya traidos con `get()` (withAll o
+     *        withAllSinAcopio, con la relacion `article_variants` cargada).
+     * @param string $query_value Criterio de texto original (se vuelve a separar en palabras, igual
+     *        que `search_nombre`).
+     * @return \Illuminate\Support\Collection
+     */
+    public static function expand_variants($articles, $query_value)
+    {
+        $descriptors = self::match_descriptors($articles, $query_value);
+        $articles_by_id = $articles->keyBy('id');
+
+        return $descriptors->map(function ($descriptor) use ($articles_by_id) {
+            $article = $articles_by_id->get($descriptor->article_id);
+            $variant = is_null($descriptor->variant_id)
+                ? null
+                : optional($article->article_variants)->firstWhere('id', $descriptor->variant_id);
+
+            return self::build_row($article, $variant);
+        })->values();
     }
 
     /**

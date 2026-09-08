@@ -141,7 +141,9 @@ class RestoreSaleFromPapeleraHelper {
                             ->where('concepto_stock_movement_id', $concepto->id)
                             ->where('id', '>', $ultimo_de_otro_concepto)
                             ->whereNotNull('article_id')
-                            ->groupBy('article_id', DB::raw('COALESCE(NULLIF(article_variant_id, 0), NULL)'))
+                            // GROUP BY por posición: MariaDB no compara expresiones contra el
+                            // SELECT bajo ONLY_FULL_GROUP_BY. Ver DeleteSaleHelper::neto_por_renglon().
+                            ->groupByRaw('1, 2')
                             ->havingRaw('ABS(SUM(amount)) > 0.0001')
                             ->get();
         }

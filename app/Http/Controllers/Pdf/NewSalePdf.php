@@ -130,6 +130,14 @@ class NewSalePdf extends fpdf
         $this->use_current_date = $this->pdf_column_profile
             ? (bool) $this->pdf_column_profile->use_current_date
             : false;
+        /**
+         * Flag para controlar si las observaciones del cliente (clients.description) se
+         * imprimen en el PDF. Default true para mantener el comportamiento legacy (se
+         * imprimían siempre que el cliente tuviera observaciones cargadas).
+         */
+        $this->show_client_description = $this->pdf_column_profile
+            ? $this->normalize_boolean($this->pdf_column_profile->show_client_description, true)
+            : true;
 
         /**
          * Tamaño del logo en mm. Prioridad: perfil (logo_size_mm) -> global del dueño (pdf_image_size) -> 35.
@@ -296,9 +304,11 @@ class NewSalePdf extends fpdf
          * unificado. Se pasa $this->y como $start_y para que la caja arranque donde
          * terminó el header (client_description ahora cierra en $start_y + 20,
          * o donde termine el texto si es más largo, en vez de un 52 hardcodeado).
+         * Gateado por show_client_description: el perfil decide si este bloque se imprime.
          */
         if (
-            !is_null($this->sale->client)
+            $this->show_client_description
+            && !is_null($this->sale->client)
             && !is_null($this->sale->client->description)
         ) {
             PdfHelper::client_description($this, $this->sale->client, $this->y);
