@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\ExtraFiltersHelper;
 use App\Http\Controllers\Helpers\GlobalSearchMatchesHelper;
 use App\Http\Controllers\Helpers\GlobalSearchQueryHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Database\QueryException;
@@ -423,7 +424,12 @@ class SearchController extends Controller
         // llamaba a ->withAll() sobre ellos. Hasta ahora este endpoint se usaba a mano y nadie
         // buscaba en esos modelos, pero el listado por defecto (prompt 03 de este grupo) dispara
         // esta misma llamada solo con entrar a cualquier módulo, así que hay que blindarlo acá.
-        if (method_exists($model_instance, 'scopeWithAll')) {
+        //
+        // Con contexto Vender NO se aplica acá: el paginado real de más abajo (ver
+        // $usar_contexto_vender) hace su propia consulta liviana primero y recién carga las
+        // relaciones completas (withAllSinAcopio(), sin sales_with_deliveries_in_acopio, que
+        // ningún consumidor de Vender lee) para los artículos de la página que se va a mostrar.
+        if (method_exists($model_instance, 'scopeWithAll') && !$usar_contexto_vender) {
             $models = $models->withAll();
         }
 
@@ -517,17 +523,57 @@ class SearchController extends Controller
         if ($usar_contexto_vender) {
 
             // La expansión de variantes cambia la cantidad de filas: no se puede paginar con
-            // paginate() de Eloquent (paginaría ANTES de expandir). Se trae todo con get() y se
-            // pagina a mano, igual que hace hoy search_nombre.
-            $articles = $models->get();
+            // paginate() de Eloquent (paginaría ANTES de expandir). Paginado real en 2 fases, en vez
+            // de traer TODOS los artículos que matchean con las relaciones completas antes de
+            // paginar en PHP (mismo arreglo que `VenderController::search_nombre`, que comparte
+            // estos mismos métodos del helper).
+            //
+            // Fase 1: consulta LIVIANA (mismo WHERE de arriba, sin ninguna relación pesada) solo
+            // para decidir qué pares (artículo, variante) son el resultado y en qué orden.
+            $light_query = (clone $models)->select($table . '.id', 'name', 'provider_code', 'bar_code');
 
-            $results = VenderSearchHelper::expand_variants($articles, $query_value);
+            if (UserHelper::hasExtencion('article_variants')) {
+                $light_query->with(['article_variants' => function ($variant_query) {
+                    $variant_query->select('id', 'article_id', 'bar_code', 'oculta', 'variant_description');
+                }]);
+            }
+
+            $light_articles = $light_query->get();
+
+            $descriptors = VenderSearchHelper::match_descriptors($light_articles, $query_value);
 
             $current_page = LengthAwarePaginator::resolveCurrentPage();
 
+            $page_descriptors = $descriptors->forPage($current_page, $per_page)->values();
+
+            // Fase 2: recién acá se cargan las relaciones completas (withAllSinAcopio()), y SOLO
+            // para los artículos de la página pedida.
+            $full_articles = $model_name::whereIn('id', $page_descriptors->pluck('article_id')->unique()->values())
+                                ->withAllSinAcopio()
+                                ->get()
+                                ->keyBy('id');
+
+            // El orden final es el de los descriptores (Fase 1), no el de whereIn (Fase 2, sin
+            // garantía de orden): se arma buscando cada artículo completo por id.
+            $results = $page_descriptors->map(function ($descriptor) use ($full_articles) {
+                            $article = $full_articles->get($descriptor->article_id);
+
+                            if (is_null($article)) {
+                                return null;
+                            }
+
+                            $variant = is_null($descriptor->variant_id)
+                                        ? null
+                                        : optional($article->article_variants)->firstWhere('id', $descriptor->variant_id);
+
+                            return VenderSearchHelper::build_row($article, $variant);
+                        })
+                        ->filter()
+                        ->values();
+
             $models = new LengthAwarePaginator(
-                $results->forPage($current_page, $per_page)->values(),
-                $results->count(),
+                $results,
+                $descriptors->count(),
                 $per_page,
                 $current_page
             );

@@ -326,9 +326,7 @@ class VenderController extends Controller
                                     });
                                 }
                             }
-                        })
-                    ->withAllSinAcopio();
-                    // ->with(['article_variants', 'images', 'price_types', 'addresses', 'price_type_monedas', 'article_price_ranges', 'provider']);
+                        });
 
         if ($category_id) {
             Log::info('category_id');
@@ -346,18 +344,58 @@ class VenderController extends Controller
             }
         }
 
-        $articles = $articles->get();
+        // Paginado real (2 fases), en vez de traer TODOS los articulos que matchean con las 27
+        // relaciones de withAllSinAcopio() antes de paginar en PHP.
+        //
+        // Fase 1: consulta LIVIANA (mismo WHERE de arriba, sin ninguna relacion pesada) solo para
+        // decidir que pares (articulo, variante) son el resultado y en que orden -- lo unico que
+        // hace falta para saber el total real y cual pagina le toca a cada uno.
+        $articles_query = $articles->select('id', 'name', 'provider_code', 'bar_code');
 
-        Log::info(count($articles). ' articulos');
+        if (UserHelper::hasExtencion('article_variants')) {
+            $articles_query->with(['article_variants' => function ($variant_query) {
+                $variant_query->select('id', 'article_id', 'bar_code', 'oculta', 'variant_description');
+            }]);
+        }
 
-        // Expansion de variantes en filas propias, delegada en el helper (mismas claves y mismo
-        // orden de casos que antes de este prompt).
-        $results = VenderSearchHelper::expand_variants($articles, $request->query_value);
+        $light_articles = $articles_query->get();
 
-        // Paginar manualmente
+        Log::info(count($light_articles). ' articulos');
+
+        $descriptors = VenderSearchHelper::match_descriptors($light_articles, $request->query_value);
+
+        $page_descriptors = $descriptors->forPage($current_page, $per_page)->values();
+
+        // Fase 2: recien aca se cargan las 27 relaciones de withAllSinAcopio(), y SOLO para los
+        // articulos de la pagina pedida (como mucho $per_page, nunca para los que matchean pero no
+        // se van a mostrar).
+        $full_articles = Article::whereIn('id', $page_descriptors->pluck('article_id')->unique()->values())
+                            ->withAllSinAcopio()
+                            ->get()
+                            ->keyBy('id');
+
+        // El orden final es el de los descriptores (Fase 1), no el de whereIn (Fase 2, sin garantia
+        // de orden): se arma buscando cada articulo completo por id.
+        $results = $page_descriptors->map(function ($descriptor) use ($full_articles) {
+                        $article = $full_articles->get($descriptor->article_id);
+
+                        if (is_null($article)) {
+                            return null;
+                        }
+
+                        $variant = is_null($descriptor->variant_id)
+                                    ? null
+                                    : optional($article->article_variants)->firstWhere('id', $descriptor->variant_id);
+
+                        return VenderSearchHelper::build_row($article, $variant);
+                    })
+                    ->filter()
+                    ->values();
+
+        // Paginar manualmente, con el total real (Fase 1) y los resultados ya armados (Fase 2).
         $paginated = new LengthAwarePaginator(
-            $results->forPage($current_page, $per_page),
-            $results->count(),
+            $results,
+            $descriptors->count(),
             $per_page,
             $current_page
         );
