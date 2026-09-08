@@ -97,6 +97,16 @@ class SearchController extends Controller
         $models = $models->withAll()
                         ->orderBy('created_at', 'DESC');
 
+        // Desempate por clave primaria, mismo motivo que en globalSearch: `created_at` se repite
+        // en todo catálogo importado en lote, y con LIMIT/OFFSET sobre una clave con empates MySQL
+        // puede devolver la misma fila en dos páginas. Por acá pagina la papelera de cada módulo.
+        $tabla_del_modelo = (new $model_name())->getTable();
+        $clave_primaria = (new $model_name())->getKeyName();
+
+        if (Schema::hasColumn($tabla_del_modelo, $clave_primaria)) {
+            $models = $models->orderBy($clave_primaria, 'DESC');
+        }
+
         if ($model_name_param === 'sale') {
             SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
         }
@@ -109,7 +119,19 @@ class SearchController extends Controller
             if ($per_page > 200) {
                 $per_page = 200;
             }
-            $models = $models->paginate($per_page);
+
+            // Página del QUERY STRING, explícita. Misma razón que en globalSearch: si un `page` se
+            // cuela en el cuerpo del POST, $request->input() lo prefiere por sobre el de la URL y
+            // la paginación se rompe entera sin ningún error. Acá todavía no pasó -ningún
+            // consumidor manda `page` en el cuerpo hoy-, pero el endpoint queda blindado igual:
+            // el mismo error ya se cometió una vez en el endpoint de al lado.
+            $pagina_pedida = (int) $request->query('page', 1);
+
+            if ($pagina_pedida < 1) {
+                $pagina_pedida = 1;
+            }
+
+            $models = $models->paginate($per_page, ['*'], 'page', $pagina_pedida);
         } else {
             $models = $models->get();
         }
@@ -290,7 +312,25 @@ class SearchController extends Controller
             $models->where('status', 'active');
         }
 
-        $models = $models->paginate(25);
+        // 🔴 Este paginate no tenía NINGÚN order by. Sin orden explícito, MySQL puede devolver las
+        // filas en cualquier orden -y uno distinto en cada consulta-, así que dos páginas del mismo
+        // buscador podían traer la misma fila o saltearla. Se ordena por clave primaria, que es lo
+        // único único que todo modelo tiene, y la página sale del query string como en el resto del
+        // archivo (ver la nota larga en globalSearch).
+        $tabla_modal = (new $model_name())->getTable();
+        $clave_modal = (new $model_name())->getKeyName();
+
+        if (Schema::hasColumn($tabla_modal, $clave_modal)) {
+            $models = $models->orderBy($clave_modal, 'DESC');
+        }
+
+        $pagina_modal = (int) $request->query('page', 1);
+
+        if ($pagina_modal < 1) {
+            $pagina_modal = 1;
+        }
+
+        $models = $models->paginate(25, ['*'], 'page', $pagina_modal);
 
         return response()->json(['models' => $models], 200);
     }
@@ -520,6 +560,40 @@ class SearchController extends Controller
 
         $models = $models->orderBy($order_by, $order_direction);
 
+        // Desempate final por clave primaria, SIEMPRE. Sin esto la paginación no es determinística:
+        // con LIMIT/OFFSET sobre una clave de orden que tiene valores repetidos, MySQL no garantiza
+        // ningún orden entre las filas empatadas y puede devolver la misma fila en dos páginas (o
+        // saltearla en las dos). El caso real no es raro: `created_at` -el fallback de acá arriba-
+        // se repite en cientos de artículos de un catálogo importado en lote, y ordenar por una
+        // columna como marca o categoría empata por diseño.
+        //
+        // Va DESPUÉS del orden pedido, así que no cambia el criterio que eligió el usuario: solo
+        // fija un orden estable entre las filas que ese criterio deja empatadas.
+        $primary_key = $model_instance->getKeyName();
+
+        if ($order_by !== $primary_key && Schema::hasColumn($table, $primary_key)) {
+            $models = $models->orderBy($primary_key, $order_direction);
+        }
+
+        // 🔴 La página se resuelve del QUERY STRING y se le pasa explícita a paginate(), en vez de
+        // dejar que Laravel la resuelva sola con resolveCurrentPage().
+        //
+        // El default de Laravel lee `page` con $request->input(), que une body + query string con el
+        // BODY como operando izquierdo -o sea, el body gana-. Este endpoint recibe POST con un
+        // cuerpo JSON armado por el front, así que cualquier `page` que se cuele ahí adentro anula
+        // el `?page=N` de la URL sin ningún error: el request se ve perfecto en la pestaña Network y
+        // el backend devuelve otra página. Pasó exactamente eso el 8/9/2026 y dejó la paginación de
+        // todos los listados clavada en la página 1 (medido: con ?page=3 y {"page":1} en el body,
+        // resolveCurrentPage() devuelve 1).
+        //
+        // La página es parte de la URL, no del criterio de búsqueda que viaja en el cuerpo. Leerla
+        // solo de la URL deja este endpoint inmune a esa clase de error, para cualquier consumidor.
+        $page_actual = (int) $request->query('page', 1);
+
+        if ($page_actual < 1) {
+            $page_actual = 1;
+        }
+
         if ($usar_contexto_vender) {
 
             // La expansión de variantes cambia la cantidad de filas: no se puede paginar con
@@ -542,7 +616,9 @@ class SearchController extends Controller
 
             $descriptors = VenderSearchHelper::match_descriptors($light_articles, $query_value);
 
-            $current_page = LengthAwarePaginator::resolveCurrentPage();
+            // Misma página que usa el camino normal de abajo: sale del query string, no de
+            // resolveCurrentPage() (ver la nota larga donde se calcula $page_actual).
+            $current_page = $page_actual;
 
             $page_descriptors = $descriptors->forPage($current_page, $per_page)->values();
 
@@ -579,7 +655,10 @@ class SearchController extends Controller
             );
         } else {
 
-            $models = $models->paginate($per_page);
+            // La página va EXPLÍCITA (4to argumento) y no la resuelve Laravel solo: ver la nota
+            // donde se calcula $page_actual. El 3er argumento es el nombre del parámetro, que se
+            // mantiene en 'page' para que los links del paginador salgan iguales que siempre.
+            $models = $models->paginate($per_page, ['*'], 'page', $page_actual);
         }
 
         // Historial de filtrados (Grupo 273, Prompt 02): `search()` ya lo registraba para article,
