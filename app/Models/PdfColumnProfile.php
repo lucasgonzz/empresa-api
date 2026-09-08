@@ -100,6 +100,12 @@ class PdfColumnProfile extends Model
          *   fecha_emision) no se pueden ocultar; solo se pueden sumar/ordenar web/telefono/email.
          */
         'header_layout' => 'array',
+        /**
+         * Flag para mostrar u ocultar las observaciones del cliente (clients.description)
+         * en el PDF de venta. Default true: mantiene el comportamiento legacy (se imprimen
+         * siempre que el cliente tenga observaciones cargadas).
+         */
+        'show_client_description' => 'boolean',
     ];
 
     /**
