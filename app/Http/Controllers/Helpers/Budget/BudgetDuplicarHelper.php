@@ -56,6 +56,13 @@ class BudgetDuplicarHelper {
             'address_id'                => $source->address_id,
             'surchages_in_services'     => $source->surchages_in_services,
             'discounts_in_services'     => $source->discounts_in_services,
+            /*
+                Se copia con los demas escalares y no es opcional: los articulos del duplicado se
+                adjuntan con el MISMO precio del origen (ya recargado). Sin esta linea el duplicado
+                queda con el flag apagado, BudgetHelper::getTotal() vuelve a sumar el recargo y
+                BudgetController::duplicate() muere con el mismo 500 del alta.
+            */
+            'aplicar_recargos_directo_a_items' => $source->aplicar_recargos_directo_a_items,
             'moneda_id'                 => $source->moneda_id,
             'valor_dolar'               => $source->valor_dolar,
             'omitir_en_cuenta_corriente' => $source->omitir_en_cuenta_corriente,
