@@ -318,7 +318,13 @@ class AfipNotaCreditoHelper
         $fecha_emision = Carbon::today();
         $today = $fecha_emision->format('Ymd');
         $moneda_id = 'PES';
-        $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale);
+        /*
+         * El segundo parametro es el $cbte_tipo de la NOTA DE CREDITO (3/8/13/203/208/213), el que
+         * interno() recibe por parametro y manda como CbteTipo cinco lineas mas abajo, NO el de la
+         * factura original ($this->afip_ticket->cbte_tipo). Es la clase de ESTE comprobante la que
+         * ARCA valida contra la condicion IVA del receptor (error 10243, excluyente).
+         */
+        $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->sale, $cbte_tipo);
         $invoice = array(
             'FeCAEReq' => array(
                 'FeCabReq' => array(

@@ -267,7 +267,16 @@ class AfipWsfeHelper extends Controller
         $this->afip_ticket->save();
 
         $moneda_id = 'PES';
-        $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->afip_ticket->sale);
+        /*
+         * El segundo parametro es lo que evita el error 10243 de ARCA ("Condicion IVA receptor no
+         * valida para la clase de comprobante informado", excluyente: Resultado=R y no se emite).
+         * Se pasa $this->comprobante_tipo, que es EXACTAMENTE el valor que viaja como CbteTipo unas
+         * lineas mas abajo, y que ya quedo resuelto en set_numero_comprobante() (linea 251, antes de
+         * armar el $invoice). No sirve $this->afip_ticket->cbte_tipo -es el del comprobante ANTERIOR
+         * hasta que set_numero_comprobante() lo pisa- ni el afip_tipo_comprobante_id, que es el id de
+         * la tabla, no el codigo de ARCA.
+         */
+        $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor($this->afip_ticket->sale, $this->comprobante_tipo);
 
         $afip_fecha_emision = !is_null($this->afip_ticket->afip_fecha_emision) ? Carbon::parse($this->afip_ticket->afip_fecha_emision)->format('Ymd') : date('Ymd');
 
