@@ -243,15 +243,14 @@ class BudgetController extends Controller
             e `iva_aplicado` dos lineas mas abajo, y a diferencia de `SaleController::update()`, que
             lo asigna pelado.
 
-            El motivo es concreto: hoy `vender_presupuestos.js::actualizar()` NO manda este campo en
-            el PUT (si lo manda el alta y la actualizacion de una VENTA, pero no las de un
-            presupuesto). Con una asignacion pelada, editar un presupuesto guardado con la opcion
-            activa lo dejaria con el flag en null y los precios del pivot todavia recargados: el
-            update no valida el total, asi que no falla — pero al confirmarlo la venta nace inflada
-            un 10%.
+            El motivo es la SPA VIEJA, no la actual: `vender_presupuestos.js::actualizar()` SI manda
+            este campo desde esta misma tanda, pero la api y la spa no llegan juntas a produccion y
+            entre un despliegue y el otro hay una ventana con la spa anterior, que no lo manda.
 
-            Es ademas lo que pide la regla de contratos compatibles hacia atras: la api y la spa no
-            llegan juntas a produccion, y con la spa vieja este campo simplemente no viaja.
+            Con una asignacion pelada --como la de `SaleController::update()`-- ese PUT dejaria el
+            flag en null con los precios del pivot todavia recargados. Y no falla ahi, que es lo
+            peligroso: `update()` no valida el total como `store()`, asi que el presupuesto se
+            guarda mal y recien al confirmarlo la venta nace inflada el porcentaje del recargo.
         */
         $model->aplicar_recargos_directo_a_items = !is_null($request->aplicar_recargos_directo_a_items)
                                                     ? $request->aplicar_recargos_directo_a_items
