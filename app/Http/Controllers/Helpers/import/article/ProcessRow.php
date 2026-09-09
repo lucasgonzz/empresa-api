@@ -3941,6 +3941,13 @@ class ProcessRow {
      * `$tipos_que_no_cuentan` de ActualizarBBDD::persistir_conflictos()): es
      * deliberado, porque la fila efectivamente no se pudo aplicar como el usuario pidió.
      *
+     * ⚠️ Con la política "saltear esas filas y avisarme" y el desempate sin resolver, una
+     * misma fila deja DOS conflictos: éste y el `ambiguo`. No es un descuido — dicen cosas
+     * distintas ("la fila se salteó" y "la opción que prendiste no alcanzó") — pero suma
+     * 2 a `conflicts_count` por una sola fila. Si algún día molesta, la decisión es de
+     * Lucas: sacarlo de la cuenta lo volvería invisible también en el camino donde la fila
+     * SÍ se aplicó (a todos los candidatos), que es donde más importa que se vea.
+     *
      * @param int         $fila          número de fila (relativo al chunk) donde se detectó.
      * @param string      $provider_code código por el que matchearon los candidatos.
      * @param array       $article_ids   ids de los artículos que quedaron empatados.
