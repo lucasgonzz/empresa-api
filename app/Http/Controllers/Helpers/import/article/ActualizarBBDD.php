@@ -2080,20 +2080,6 @@ class ActualizarBBDD {
     }
 
     /**
-     * Artículos recién creados en este chunk que tienen ese `provider_code`, como array
-     * indexado (no Collection: se consume con count() e índices).
-     *
-     * Se apoya en un índice que se arma UNA sola vez por chunk. No es una optimización
-     * de adorno: get_article_model_from_cache() se llama una vez por artículo del cache
-     * en SIETE recorridos distintos (listas de precio, descuentos %, descuentos monto,
-     * descuentos tagueados, recargos %, recargos monto, ...), y la versión anterior hacía
-     * un `->first()` con closure sobre la colección entera en cada llamada. Con los 3.260
-     * artículos de la importación de DobleP eso son millones de comparaciones por pasada.
-     *
-     * @param  string $provider_code ya trimeado por el llamador
-     * @return array  lista de \App\Models\Article (vacía si no hay ninguno)
-     */
-    /**
      * Deja EN EL HISTORIAL DE IMPORTACIÓN que dos o más artículos recién creados comparten
      * `provider_code` y que el nombre no alcanzó para saber cuál corresponde a esta fila
      * del cache (misión `desempate-por-nombre-codigo-repetido`, 9/9/2026).
@@ -2158,6 +2144,20 @@ class ActualizarBBDD {
         );
     }
 
+    /**
+     * Artículos recién creados en este chunk que tienen ese `provider_code`, como array
+     * indexado (no Collection: se consume con count() e índices).
+     *
+     * Se apoya en un índice que se arma UNA sola vez por chunk. No es una optimización
+     * de adorno: get_article_model_from_cache() se llama una vez por artículo del cache
+     * en SIETE recorridos distintos (listas de precio, descuentos %, descuentos monto,
+     * descuentos tagueados, recargos %, recargos monto, ...), y la versión anterior hacía
+     * un `->first()` con closure sobre la colección entera en cada llamada. Con los 3.260
+     * artículos de la importación de DobleP eso son millones de comparaciones por pasada.
+     *
+     * @param  string $provider_code ya trimeado por el llamador
+     * @return array  lista de \App\Models\Article (vacía si no hay ninguno)
+     */
     protected function creados_con_provider_code($provider_code)
     {
         if (is_null($this->creados_index_por_provider_code)) {
