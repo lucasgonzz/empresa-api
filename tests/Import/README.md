@@ -50,6 +50,8 @@ Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout
 | `19_pc_repetido_en_archivo_y_base.xlsx` | 2 | Dos filas con `PC-DUP`, que en el escenario sembrado pertenece a **dos** artículos (A3 y A4). Es la celda "repetido en el archivo Y repetido en la base" — la razón de ser de la opción *"Actualizar todos los artículos que tengan ese código"*—, y no tenía ningún test: la encontró el chequeo independiente del 2/9/2026 cuando el fix de ese día introdujo una regresión ahí (el merge le aplicaba la fila nueva a **uno solo** de los dos). |
 | `20_mismo_nombre_solo_una_con_codigo.xlsx` | 2 | Dos filas con el **mismo nombre**, pero sólo la segunda trae `provider_code`. Es la otra celda que el fix del 2/9/2026 cambió (de 1 artículo a 2, alineando `permitir = 1` con lo que `permitir = 0` ya hacía): sin este fixture el cambio quedaba sólo declarado en un informe. |
 | `22_desempate_por_nombre.xlsx` | 4 | **Cabecera propia**: la común de 8 columnas más `descuentos` y `recargos`, que son las que hacen visible el defecto de `get_article_model_from_cache()`. Reproduce el caso de DobleP Herrajes con la lista de Bronzen: `PC-PACK` en dos filas con **nombres distintos** (el suelto y su pack x15), más `PC-IGUAL` (dos artículos de base con el mismo código **y** el mismo nombre) y `PC-REDACT` (dos artículos de base cuyos nombres no coinciden con la fila). Ver `DesempatePorNombreTest`. |
+| `23_desempate_otro_proveedor.xlsx` | 2 | Cabecera común. `PC-XPROV` (el nombre de la fila coincide con el artículo de **otro** proveedor y no con el del proveedor que se está importando) y `PC-XPROV2` (coincide con el del proveedor de la importación). Existe porque con `actualizar_articulos_de_otro_proveedor` prendido el desempate podía quedarse con el artículo ajeno y dejar sin actualizar el correcto — antes se actualizaban los dos, así que era una **regresión silenciosa**. Ver `DesempatePorNombreTest`. |
+| `24_crear_mismo_codigo_y_mismo_nombre.xlsx` | 2 | **Cabecera de 10 columnas**, igual que el 22. Dos filas con el mismo `provider_code` **nuevo** y el **mismo nombre**, con descuentos y recargos distintos. Es el caso que el fixture 22 no puede reproducir: ahí `PC-IGUAL` y `PC-REDACT` aparecen una sola vez cada uno, así que su ambigüedad es contra la **base** y sólo ejercita el camino de reimportación. Acá las dos filas chocan al **crear**. Ver `DesempatePorNombreTest`. |
 | `16_viejo.xls` | 2 | Un `.xls` **BIFF de verdad** (writer `Xls` de PhpSpreadsheet, no un `.xlsx` renombrado): no es un zip, así que `ZipArchive::open()` falla y se ejercita el mensaje limpio de `ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE`. |
 
 ⚠️ **`06_incidente_servian.xlsx` es el único fixture que se importa con varios lotes.** El `config(['app.ARTICLE_EXCEL_CHUNK_SIZE' => 10])` del `setUp()` de `IncidenteServianTest` es lo que hace que el escenario reproduzca el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes). Si alguien cambia o quita ese `config()`, el test deja de probar lo que dice probar aunque siga pasando en verde.
@@ -97,10 +99,14 @@ Tres filas con el mismo `provider_code` **nuevo** crean tres artículos, pero
 `->first()` por `provider_code`, así que el primero recibía las tuplas de los tres — medido: **6
 filas** de pivot en vez de 2. Se acota con una deduplicación por `(article_id, price_type_id)` en
 `asignar_price_types()`, y lo cubre `test_provider_code_repetido_no_duplica_filas_de_pivot`.
-⚠️ Lo que **no** se arregló: los artículos 2 y 3 no reciben filas de `asignar_price_types()`. En una
-cuenta normal los rescata `setFinalPrice`; en una con `ventas_en_dolares` quedan sin listas. Es el
-defecto preexistente de `get_article_model_from_cache()`, que también afecta a descuentos y
-recargos.
+✅ **Ese "lo que no se arregló" quedó viejo el 9/9/2026.** Decía que los artículos 2 y 3 no reciben
+filas de `asignar_price_types()` y que en una cuenta con `ventas_en_dolares` quedaban sin listas.
+Desde la misión `desempate-por-nombre-codigo-repetido`, `get_article_model_from_cache()` desempata
+por `(provider_code + nombre normalizado)`: **cuando las filas tienen nombres distintos —el caso
+normal— cada artículo recibe SUS listas, SUS descuentos y SUS recargos**. Lo que sigue en pie es el
+caso del fixture `18_pc_repetido_mismo_nombre.xlsx`: con el mismo código **y** el mismo nombre el
+par no es único, ahí degrada a "gana el primero" igual que antes — la diferencia es que ahora eso
+deja un `import_conflict` en el historial en vez de pasar callado.
 
 🔴 **`article_price_type` NO tiene índice único sobre `(article_id, price_type_id)`** — la migración
 `2024_09_05_101805_create_article_price_type_table.php` no lo crea y ninguna posterior lo agrega. O
@@ -191,10 +197,23 @@ por fila: `fake_id` **no es columna de `articles`** (se excluye del INSERT) y
 `set_articulos_creados_models()` relee los modelos de la base por `user_id + chunk_number`, así que
 llegan sin referencia a la fila que los creó. Reconstruir el mapa obligaría a apoyarse en que el
 bloque de auto_increment del INSERT masivo sea contiguo — con `innodb_autoinc_lock_mode = 2` (el
-default de MySQL 8) y varios chunks insertando a la vez eso **no** está garantizado, y una
-asignación equivocada no falla: le pone los recargos de un artículo a otro, en silencio. El par
-(código + nombre) es además **el mismo criterio** que usa el camino de reimportación, que es lo que
-evita que "crear" y "actualizar" resuelvan distinto sobre el mismo archivo.
+default de MySQL 8) eso **no** está garantizado en cuanto haya cualquier otro insertor en la tabla,
+y una asignación equivocada no falla: le pone los recargos de un artículo a otro, en silencio. El
+par (código + nombre) es además **el mismo criterio** que usa el camino de reimportación, que es lo
+que evita que "crear" y "actualizar" resuelvan distinto sobre el mismo archivo.
+
+🔴 **Ojo con la versión anterior de ese párrafo, que decía "y varios chunks insertando a la vez".
+Era falso** y lo corrigió el chequeo independiente del 9/9/2026: los chunks van **siempre** en
+`Bus::chain` secuencial (`InitExcelImport` ~:203 lo dice textual), `mandar_batch()` existe pero no
+lo llama nadie, y `tiene_importacion_en_curso()` bloquea una segunda importación del mismo usuario.
+
+⚠️ **Y lo que el par (código + nombre) no puede hacer: no es único.** Dos filas con el mismo código
+y el mismo nombre son indistinguibles y ahí degrada a "gana el primero" — el defecto original,
+intacto, justo donde `fake_id` habría sido exacto. Es el precio de no tocar el esquema. Lo cubre
+`24_crear_mismo_codigo_y_mismo_nombre.xlsx`, y lo único que cambió respecto de antes es que ese caso
+**ya no es invisible**: `ActualizarBBDD::registrar_desempate_de_creacion_sin_resolver()` deja el
+`import_conflict` en el historial, no sólo un `Log::warning` en el `laravel.log` que el usuario no
+ve jamás.
 
 **Defecto 2, al REIMPORTAR.** Los artículos ya existen y van por
 `ArticleIndexCache::find_with_index()`. Ahí sí manda la opción nueva **`desempatar_por_nombre`**
@@ -203,6 +222,23 @@ evita que "crear" y "actualizar" resuelvan distinto sobre el mismo archivo.
 código**, no un escalón nuevo ni una caída al escalón `name`: ese escalón busca en `$index['names']`,
 que es **global al usuario**, y traería artículos de otros proveedores que se llamen igual.
 
+🔴 **El desempate corre ANTES de la bifurcación por política de colisión, no adentro de una de sus
+ramas.** Es desambiguación —"de estos dos que matchearon por `FA-NN`, ¿cuál es el de esta fila?"—, y
+esa pregunta es anterior a la política, que contesta "cuando NO se puede saber cuál es, ¿qué hago?".
+La primera versión de esta misión lo metió adentro del `if ($permitir_provider_code_repetido)` y el
+efecto fue que la opción **no hacía nada** salvo que el usuario además hubiera elegido "actualizar
+todos los que tengan ese código": con "saltear esas filas y avisarme" caía al `else`, devolvía
+`AmbiguousMatch` y el desempate no corría nunca. Lo fijan
+`test_el_desempate_corre_aunque_la_politica_sea_saltear_y_avisar` y su negativo,
+`test_sin_la_opcion_la_politica_de_saltear_sigue_salteando`.
+
+🔴 **Y prefiere los candidatos del proveedor de la importación.** Con
+`actualizar_articulos_de_otro_proveedor` prendido, los artículos de otros proveedores que usan el
+mismo código entran al conjunto de candidatos: sin esa preferencia, el desempate podía quedarse con
+el ajeno y dejar sin actualizar el del proveedor correcto. Antes se actualizaban los dos, o sea que
+era una **regresión silenciosa**. Los ajenos se miran sólo si no hay ninguno del proveedor actual.
+Lo cubre `23_desempate_otro_proveedor.xlsx` con los dos lados.
+
 🔴 **Si el nombre no desempata, NO se crea nada en silencio.** Se cae al comportamiento de siempre
 (la Collection completa) y queda un `import_conflict` de tipo
 **`desempate_por_nombre_sin_resolver`**. Las dos ramas por las que puede no resolver están cubiertas
@@ -210,12 +246,45 @@ por separado, porque son código distinto: `PC-IGUAL` (mismo código y mismo nom
 coinciden*) y `PC-REDACT` (el proveedor cambió la redacción → *ninguno coincide*). Y
 `test_cuando_el_desempate_resuelve_no_deja_conflicto` es el complemento: sin él, una versión que
 registrara el conflicto siempre pasaría los otros dos y el historial le mostraría al usuario un
-problema inexistente.
+problema inexistente — por eso ese test asserta **los costos**, no sólo la ausencia del conflicto.
 
-⚠️ Las importaciones de esta clase van con **`provider_id => null`** a propósito: con un proveedor
-elegido, `ProcessRow::set_discounts_de_la_fila()` rutea los descuentos al camino "tagueado"
-(`ArticleProviderDiscountHelper::sync_provider_discounts()`) y no al legado de `article_discounts`,
-que es el que pasa por `get_article_model_from_cache()`.
+⚠️ **La columna de nombre sin mapear NO es un conflicto por fila.** Si el import no mapeó `nombre`,
+el desempate no puede aplicar en ninguna fila: es una configuración, la misma para todo el archivo.
+Se avisa **una sola vez por chunk** en vez de fila por fila — una actualización de precios que no
+mapea el nombre (el caso común) sobre una base con códigos duplicados son cientos de conflictos
+idénticos. Lo mide `test_sin_columna_de_nombre_mapeada_el_aviso_va_una_sola_vez`.
+
+⚠️ Las importaciones de esta clase van con **`provider_id => null`** a propósito (menos las dos de
+proveedor cruzado): con un proveedor elegido, `ProcessRow::set_discounts_de_la_fila()` rutea los
+descuentos al camino "tagueado" (`ArticleProviderDiscountHelper::sync_provider_discounts()`) y no al
+legado de `article_discounts`, que es el que pasa por `get_article_model_from_cache()`.
+
+⚠️ **Dos endpoints, no uno.** El grueso de la clase entra por `/api/article/excel/import`
+(`ArticleController::import`), pero el modal del paso 3 postea a `/api/ai-excel-import/import`
+(`AiExcelImportController::import`), que arma su propio array y llama derecho a `InitExcelImport`.
+Son dos lecturas del request distintas: sin `test_el_endpoint_del_modal_tambien_desempata`, alguien
+saca la clave de una y los tests de la otra siguen verdes mientras la opción deja de funcionar en el
+único camino que el usuario usa.
+
+### El aviso del paso 3 habla del ARCHIVO, no del resultado de la importación
+
+`AvisoDesempatePorNombreTest.php` cubre `AiExcelAnalyzer::resumir_desempate_por_nombre()`, que
+alimenta la clave **`desempate_por_nombre`** del análisis. El analizador mira el **archivo**; el
+desempate al reimportar compara cada fila contra los artículos de la **base**. Son dos universos, y
+por eso ninguna clave del resumen se llama "sirve" a secas: es **`sirve_en_el_archivo`**, y viaja
+junto a **`alcance`** (hoy siempre `'solo_el_archivo'`).
+
+Los desacuerdos posibles, los dos reales:
+
+- **Falso positivo:** un código repetido en el archivo con nombres distintos entre sí, cuyos
+  artículos en la base se llaman de otra forma. El archivo dice que se pueden separar y el
+  importador no separa nada.
+- **Falso negativo:** un código que aparece **una** sola vez en el archivo pero matchea **dos**
+  artículos de la base. `aplica` da `false` y sin embargo el desempate es justamente lo que
+  resolvería esa fila. Es el caso de `PC-IGUAL` y `PC-REDACT` en el fixture 22, y es por lo que dos
+  tests verdes de esta misión parecían contradecirse sobre el mismo archivo. Lo deja escrito
+  `test_el_aviso_no_ve_la_ambiguedad_que_esta_en_la_base`: **los dos son ciertos porque hablan de
+  universos distintos.**
 
 ## Hoja elegida y fila de encabezado (22/8/2026)
 
@@ -309,7 +378,8 @@ dos del **22/8/2026** en el slot `s8` y las dos con
 | 22/8/2026, con la misión y los arreglos de su chequeo independiente en el árbol | `179 tests, 1685 assertions, 3 failures` | referencia histórica: quedó atrás con el arreglo del setup de RollbackTest del 24/8 (ver 🟢 abajo) |
 | 24/8/2026, s1, tanda-correctivos-2408 | `209 tests, 2 failures` | referencia histórica: quedó atrás con la misión de abajo |
 | 24/8/2026, s8, importación sólo con IA | `247 tests, 2420 assertions, 1 failure` | referencia histórica |
-| **Hoy** (2/9/2026, s8, misión `fix-ultima-gana-con-actualizar-todos`) | `260 tests, 2535 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`.** Los 13 tests nuevos son `RepetidosConPermitirRepetidoTest` |
+| 2/9/2026, s8, misión `fix-ultima-gana-con-actualizar-todos` | `260 tests, 2535 assertions, 1 failure` | referencia histórica: los 13 tests nuevos son `RepetidosConPermitirRepetidoTest` |
+| **Hoy** (9/9/2026, s3, misión `desempate-por-nombre-codigo-repetido` + sus correctivos) | `282 tests, 2758 assertions, 1 failure` | **éste es el baseline: UN solo rojo, `test_reimportar_no_genera_movimientos_nuevos`.** Los 22 tests nuevos son `DesempatePorNombreTest` (16) y `AvisoDesempatePorNombreTest` (6) |
 
 ⚠️ El total de tests sigue creciendo mientras aterrizan arreglos, así que si no coincide al test no
 entres en pánico: **lo que es baseline es ese único rojo, con ese nombre exacto.** Un segundo rojo,
