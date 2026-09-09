@@ -87,8 +87,11 @@ class AvisoDesempatePorNombreTest extends TestCase
      * archivo: su ambiguedad esta contra la BASE, no adentro del archivo, y el analizador
      * -- que solo mira el archivo -- no la puede ver.
      *
-     * O sea que para este archivo el desempate sirve: el unico codigo repetido tiene
-     * nombres distintos.
+     * O sea que EN ESTE ARCHIVO el unico codigo repetido tiene nombres distintos. Eso es
+     * todo lo que se puede afirmar, y por eso la clave se llama `sirve_en_el_archivo`:
+     * `DesempatePorNombreTest` demuestra sobre el MISMO fixture que PC-IGUAL y PC-REDACT
+     * no desempatan contra la base. Los dos tests son ciertos porque hablan de universos
+     * distintos -- ver test_el_aviso_no_ve_la_ambiguedad_que_esta_en_la_base.
      *
      * @return void
      */
@@ -97,11 +100,21 @@ class AvisoDesempatePorNombreTest extends TestCase
         $aviso = $this->aviso('22_desempate_por_nombre.xlsx', $this->mapeo());
 
         $this->assertTrue($aviso['aplica'], 'Hay un provider_code repetido en el archivo.');
-        $this->assertTrue($aviso['sirve'],  'Ese codigo tiene nombres distintos: el desempate sirve.');
+
+        $this->assertTrue(
+            $aviso['sirve_en_el_archivo'],
+            'El unico codigo repetido DEL ARCHIVO tiene nombres distintos entre si.'
+        );
+
+        $this->assertSame(
+            'solo_el_archivo',
+            $aviso['alcance'],
+            'El resumen tiene que decir de donde salio: se miro el archivo, no la base.'
+        );
 
         $this->assertSame(1, $aviso['codigos_repetidos']);
-        $this->assertSame(1, $aviso['codigos_que_desempata']);
-        $this->assertSame(0, $aviso['codigos_que_no_desempata']);
+        $this->assertSame(1, $aviso['codigos_con_nombres_distintos']);
+        $this->assertSame(0, $aviso['codigos_con_nombres_repetidos']);
         $this->assertSame(2, $aviso['filas_afectadas']);
 
         $this->assertCount(1, $aviso['ejemplos']);
@@ -109,7 +122,7 @@ class AvisoDesempatePorNombreTest extends TestCase
         $this->assertSame('PC-PACK', $aviso['ejemplos'][0]['codigo']);
         $this->assertSame(2,         $aviso['ejemplos'][0]['veces']);
         $this->assertSame(2,         $aviso['ejemplos'][0]['nombres_distintos']);
-        $this->assertTrue($aviso['ejemplos'][0]['desempata']);
+        $this->assertTrue($aviso['ejemplos'][0]['todos_los_nombres_distintos']);
     }
 
     /**
@@ -126,17 +139,72 @@ class AvisoDesempatePorNombreTest extends TestCase
         $this->assertTrue($aviso['aplica'], 'PC-MN-1 aparece tres veces: el caso aplica.');
 
         $this->assertFalse(
-            $aviso['sirve'],
+            $aviso['sirve_en_el_archivo'],
             'Las tres filas se llaman igual: el nombre no distingue nada y el desempate no sirve.'
         );
 
         $this->assertSame(1, $aviso['codigos_repetidos']);
-        $this->assertSame(0, $aviso['codigos_que_desempata']);
-        $this->assertSame(1, $aviso['codigos_que_no_desempata']);
+        $this->assertSame(0, $aviso['codigos_con_nombres_distintos']);
+        $this->assertSame(1, $aviso['codigos_con_nombres_repetidos']);
         $this->assertSame(3, $aviso['filas_afectadas']);
 
-        $this->assertFalse($aviso['ejemplos'][0]['desempata']);
+        $this->assertFalse($aviso['ejemplos'][0]['todos_los_nombres_distintos']);
         $this->assertSame(1, $aviso['ejemplos'][0]['nombres_distintos'], 'Tres filas, un solo nombre distinto.');
+    }
+
+    /**
+     * 🔴 LO QUE ESTE RESUMEN NO PUEDE VER, y por eso ninguna de sus claves se llama
+     * "sirve" a secas (lo senialo el chequeo independiente del 9/9/2026).
+     *
+     * El analizador mira el ARCHIVO; el desempate al reimportar compara cada fila contra
+     * los ARTICULOS DE LA BASE. En el fixture 22, PC-IGUAL y PC-REDACT aparecen UNA sola
+     * vez cada uno: para el analizador no son codigos repetidos y no cuentan para nada.
+     * Pero en `DesempatePorNombreTest` esos mismos dos codigos matchean DOS articulos de
+     * la base cada uno y el desempate NO los resuelve.
+     *
+     * O sea que el archivo dice "el unico codigo repetido tiene nombres distintos" (cierto)
+     * y la importacion deja dos codigos sin resolver (tambien cierto). Los dos son ciertos
+     * porque hablan de universos distintos, y este test lo deja escrito: sin el, los dos
+     * tests verdes se contradicen a la vista y el proximo que los lea va a "arreglar" el
+     * que no esta roto.
+     *
+     * Lo que el dato tiene que garantizar es que la SPA pueda redactar un texto honesto:
+     * `alcance` dice que se miro solo el archivo, y `sirve_en_el_archivo` no promete el
+     * resultado de la importacion.
+     *
+     * @return void
+     */
+    public function test_el_aviso_no_ve_la_ambiguedad_que_esta_en_la_base()
+    {
+        $aviso = $this->aviso('22_desempate_por_nombre.xlsx', $this->mapeo());
+
+        $this->assertSame(
+            1,
+            $aviso['codigos_repetidos'],
+            'Solo PC-PACK se repite DENTRO del archivo; PC-IGUAL y PC-REDACT aparecen una vez cada uno.'
+        );
+
+        $codigos_de_los_ejemplos = array_map(function ($ejemplo) {
+            return $ejemplo['codigo'];
+        }, $aviso['ejemplos']);
+
+        $this->assertNotContains(
+            'PC-IGUAL',
+            $codigos_de_los_ejemplos,
+            'El analizador no puede ver una ambiguedad que vive en la base: PC-IGUAL no aparece aca.'
+        );
+
+        $this->assertNotContains(
+            'PC-REDACT',
+            $codigos_de_los_ejemplos,
+            'Idem PC-REDACT. Que el archivo no lo denuncie no significa que el desempate lo resuelva.'
+        );
+
+        $this->assertSame(
+            'solo_el_archivo',
+            $aviso['alcance'],
+            'La clave que le avisa a la SPA que este resumen no habla por la base.'
+        );
     }
 
     /**
@@ -144,9 +212,9 @@ class AvisoDesempatePorNombreTest extends TestCase
      * una trae provider_code. Ningun codigo se repite, asi que el caso NO aplica y la
      * opcion no tiene por que aparecer.
      *
-     * Es el borde que separa "aplica" de "sirve": `nombres_duplicados` para este archivo
-     * dice que hay un nombre repetido, y sin este chequeo alguien podria concluir que el
-     * desempate tiene algo que hacer aca.
+     * Es el borde que separa "aplica" de "sirve_en_el_archivo": `nombres_duplicados` para
+     * este archivo dice que hay un nombre repetido, y sin este chequeo alguien podria
+     * concluir que el desempate tiene algo que hacer aca.
      *
      * @return void
      */
@@ -155,7 +223,7 @@ class AvisoDesempatePorNombreTest extends TestCase
         $aviso = $this->aviso('20_mismo_nombre_solo_una_con_codigo.xlsx', $this->mapeo());
 
         $this->assertFalse($aviso['aplica'], 'Ningun provider_code se repite en este archivo.');
-        $this->assertFalse($aviso['sirve'],  'Si no aplica, no puede servir.');
+        $this->assertFalse($aviso['sirve_en_el_archivo'],  'Si no aplica, no puede servir.');
 
         $this->assertSame(0, $aviso['codigos_repetidos']);
         $this->assertSame(0, $aviso['filas_afectadas']);
@@ -177,11 +245,11 @@ class AvisoDesempatePorNombreTest extends TestCase
         $aviso = $this->aviso('07_repetidos_en_el_archivo.xlsx', $this->mapeo());
 
         $this->assertTrue($aviso['aplica']);
-        $this->assertTrue($aviso['sirve']);
+        $this->assertTrue($aviso['sirve_en_el_archivo']);
 
         $this->assertSame(2, $aviso['codigos_repetidos'],     'PC-R-X y PC-R-Z.');
-        $this->assertSame(2, $aviso['codigos_que_desempata']);
-        $this->assertSame(0, $aviso['codigos_que_no_desempata']);
+        $this->assertSame(2, $aviso['codigos_con_nombres_distintos']);
+        $this->assertSame(0, $aviso['codigos_con_nombres_repetidos']);
         $this->assertSame(5, $aviso['filas_afectadas'],       '2 filas de PC-R-X + 3 de PC-R-Z.');
     }
 
@@ -215,7 +283,7 @@ class AvisoDesempatePorNombreTest extends TestCase
         $this->assertTrue($aviso['aplica']);
 
         $this->assertFalse(
-            $aviso['sirve'],
+            $aviso['sirve_en_el_archivo'],
             'Los dos nombres colapsan al mismo valor con normalize_name_for_match(): no desempatan.'
         );
 
