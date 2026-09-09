@@ -56,8 +56,14 @@ class CondicionIvaReceptorHelper {
 
     /**
      * Tabla oficial de ARCA (RG 5616) de condiciones frente al IVA del receptor, con las clases de
-     * comprobante en las que cada una es VALIDA. Es la misma tabla que devuelve
-     * FEParamGetCondicionIvaReceptor, y coincide con el manual del desarrollador ARCA COMPG v4.0.
+     * comprobante en las que cada una es VALIDA. Es la tabla que ARCA publica en el manual del
+     * desarrollador ARCA COMPG v4.0, y la que devuelve el metodo FEParamGetCondicionIvaReceptor.
+     *
+     * ⚠️ Transcripta de la documentacion, NO leida del servicio: al 9/9/2026 no se pudo contrastar
+     * contra FEParamGetCondicionIvaReceptor en vivo porque no hay certificado ni TA de AFIP en el
+     * pool. Coincide en tres fuentes independientes (el manual oficial, la documentacion de
+     * PyAfipWs, y esta misma tabla tal como estaba escrita aca desde marzo de 2025). Si algun dia
+     * se puede llamar al metodo, contrastar y corregir aca.
      *
      * Hasta el 9/9/2026 esta tabla vivia como codigo MUERTO debajo del `return` de
      * get_iva_receptor(): estaba escrita pero no la leia nadie, y el valor se derivaba unicamente
@@ -285,9 +291,12 @@ class CondicionIvaReceptorHelper {
     }
 
     /**
-     * Condicion IVA del receptor segun la ficha del cliente. Es exactamente lo que este helper
-     * devolvia SIEMPRE hasta el 9/9/2026, y sigue siendo el punto de partida: la clase del
-     * comprobante solo lo corrige cuando ese valor no es compatible con ella.
+     * Condicion IVA del receptor segun la ficha del cliente. Es el mapeo que este helper aplicaba
+     * SIEMPRE hasta el 9/9/2026, y sigue siendo el punto de partida: la clase del comprobante solo
+     * lo corrige cuando ese valor no es compatible con ella.
+     *
+     * La unica diferencia con aquel codigo es el guard `!is_null($sale)`: antes, con una venta en
+     * null, esto tiraba "Trying to get property of non-object" en vez de devolver 5.
      *
      * Los cuatro nombres posibles son los del IvaConditionSeeder; no hay otros.
      *
