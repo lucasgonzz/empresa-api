@@ -761,6 +761,143 @@ class ArticleIndexCache
     }
 
     /**
+     * Desempate por nombre sobre los candidatos que ya matchearon por `provider_code`.
+     *
+     * Devuelve el ÚNICO artículo cuyo nombre coincide con el de la fila, o null si el
+     * nombre no alcanza para quedarse con uno solo. Cuando devuelve null y el desempate
+     * de verdad no resolvió (había ambigüedad y no se pudo romper), deja el detalle en
+     * self::$ultimo_desempate_sin_resolver para que ProcessRow registre el
+     * `import_conflict` — ver ultimo_desempate_sin_resolver().
+     *
+     * 🔴 Se lo llama ANTES de la bifurcación por política de colisión. Que devuelva null
+     * tiene que dejar la ejecución exactamente como estaba: no toca $article_ids ni
+     * ninguna otra variable de find_with_index().
+     *
+     * @param  array  $article_ids_same_provider ids que matchearon dentro del proveedor de la importación
+     * @param  array  $article_ids               los anteriores más los de otros proveedores, si están habilitados
+     * @param  array  $data                      fila del Excel ya normalizada
+     * @param  string $provider_code             código por el que matchearon
+     * @param  array  $relations                 relaciones eager para la consulta Eloquent
+     * @param  int    $user_id
+     * @return \App\Models\Article|null
+     */
+    protected static function desempatar_candidatos_por_nombre(
+        array $article_ids_same_provider,
+        array $article_ids,
+        array $data,
+        $provider_code,
+        array $relations,
+        int $user_id
+    ) {
+        $es_id_real = function ($id) {
+            return strncmp((string) $id, 'fake_', strlen('fake_')) !== 0;
+        };
+
+        /*
+         * 🔴 SÓLO artículos REALES de la base. Un id `fake_*` es un artículo que ESTA MISMA
+         * importación encoló hace unas filas y todavía no tiene INSERT. Si el desempate se
+         * quedara con uno, dos filas del propio archivo se estarían fusionando — y esa
+         * decisión ya la toma `filas_repetidas_del_archivo`, que es otra pregunta. Además es
+         * lo que deja intacto el camino "todos los ids son fakes -> devolver null para crear
+         * un artículo nuevo" de la rama de permitir_provider_code_repetido, unas líneas
+         * más abajo.
+         */
+        $ids_reales = array_values(array_filter($article_ids, $es_id_real));
+
+        /* Con menos de dos candidatos reales no hay ninguna ambigüedad que romper. */
+        if (count($ids_reales) < 2) {
+            return null;
+        }
+
+        $candidatos = self::collection_from_index_article_ids($ids_reales, $relations, $user_id);
+
+        if ($candidatos->count() < 2) {
+            return null;
+        }
+
+        /*
+         * 🔴 PREFERENCIA POR EL PROVEEDOR DE LA IMPORTACIÓN. Cuando
+         * $actualizar_articulos_de_otro_proveedor está prendido, más arriba se mergearon a
+         * $article_ids los artículos de OTROS proveedores que usan ese mismo código. Sin
+         * esta preferencia el desempate se puede quedar con el artículo de otro proveedor y
+         * escribirle precio, costo e identificadores, dejando SIN ACTUALIZAR el del
+         * proveedor que se está importando. Antes de esta misión se actualizaban los dos, o
+         * sea que el correcto al menos quedaba bien: elegir el ajeno sería una regresión
+         * silenciosa, y la peor clase de regresión — la que deja los números mal sin fallar.
+         *
+         * Los de otros proveedores se miran SÓLO si no hay ninguno del actual. Y si el
+         * proveedor actual tiene candidatos pero ninguno coincide en nombre, esto NO cae a
+         * los ajenos: devuelve null y se aplica la política de siempre.
+         */
+        $ids_del_proveedor_actual = [];
+
+        foreach ($article_ids_same_provider as $id) {
+            if ($es_id_real($id)) {
+                $ids_del_proveedor_actual[(string) $id] = true;
+            }
+        }
+
+        $del_proveedor_actual = $candidatos->filter(function ($articulo) use ($ids_del_proveedor_actual) {
+            return isset($ids_del_proveedor_actual[(string) $articulo->id]);
+        })->values();
+
+        $universo = $del_proveedor_actual->count() > 0 ? $del_proveedor_actual : $candidatos;
+
+        $nombre_de_la_fila = isset($data['name']) ? trim((string) $data['name']) : '';
+
+        if ($nombre_de_la_fila === '') {
+
+            /*
+             * La fila no trae nombre: no hay con qué desempatar. Queda reportado, pero
+             * ProcessRow decide si eso es un conflicto POR FILA o una sola marca por chunk:
+             * cuando la columna de nombre ni siquiera está mapeada en el import, esto pasa
+             * en TODAS las filas y no es un problema de datos, es una configuración.
+             */
+            self::$ultimo_desempate_sin_resolver = [
+                'provider_code' => $provider_code,
+                'nombre_excel'  => null,
+                'article_ids'   => $candidatos->pluck('id')->values()->all(),
+                'motivo'        => 'fila_sin_nombre',
+            ];
+
+            Self::log('Desempate por nombre pedido pero la fila no trae nombre: ' . $provider_code);
+
+            return null;
+        }
+
+        $desempate = self::filtrar_candidatos_por_nombre($universo, $nombre_de_la_fila);
+
+        if (!is_null($desempate['articulo'])) {
+
+            Self::log('Desempate por nombre OK: ' . $provider_code . ' -> articulo ' . $desempate['articulo']->id);
+
+            return $desempate['articulo'];
+        }
+
+        self::$ultimo_desempate_sin_resolver = [
+            'provider_code' => $provider_code,
+            'nombre_excel'  => $nombre_de_la_fila,
+            'article_ids'   => $candidatos->pluck('id')->values()->all(),
+            /*
+             * 'ninguno_coincide' = el proveedor cambió la redacción entre listas.
+             * 'varios_coinciden' = dos artículos con el mismo código Y el mismo nombre; ahí
+             * el nombre no distingue nada y no hay desempate posible.
+             */
+            'motivo'        => $desempate['coincidencias'] === 0
+                                ? 'ninguno_coincide'
+                                : 'varios_coinciden',
+        ];
+
+        Self::log(
+            'Desempate por nombre NO resolvio: ' . $provider_code
+            . ' ("' . $nombre_de_la_fila . '" coincide con ' . $desempate['coincidencias']
+            . ' de ' . $universo->count() . ' candidatos)'
+        );
+
+        return null;
+    }
+
+    /**
      * Deja registrado el escalon y devuelve el resultado, para que find_with_index()
      * no tenga ningun return que se olvide de setearlo.
      *
@@ -1114,6 +1251,47 @@ class ArticleIndexCache
 
             if (!empty($article_ids)) {
 
+                /*
+                 * DESEMPATE POR NOMBRE (misión `desempate-por-nombre-codigo-repetido`,
+                 * 9/9/2026). El proveedor usa el MISMO código para dos productos distintos
+                 * —el suelto y su pack x15, caso real de DobleP Herrajes con la lista de
+                 * Bronzen— y los nombres SÍ son únicos dentro del par.
+                 *
+                 * 🔴 VA ACÁ, ANTES DE LA BIFURCACIÓN POR POLÍTICA DE COLISIÓN, y no adentro
+                 * de una de sus dos ramas. El desempate contesta "de estos dos artículos que
+                 * matchearon por FA-NN, ¿cuál es el de ESTA fila?", que es una pregunta
+                 * ANTERIOR a la que contesta la política ("cuando no se puede saber cuál es,
+                 * ¿qué hago?"). La primera versión de esta misión lo metió adentro del
+                 * `if ($permitir_provider_code_repetido)` y el efecto fue que la opción no
+                 * hacía nada salvo que el usuario ADEMÁS hubiera elegido "actualizar todos
+                 * los que tengan ese código": con "saltear esas filas y avisarme" la
+                 * ejecución caía al `else`, devolvía un AmbiguousMatch y el desempate no
+                 * corría nunca — el usuario prendía la casilla, la importación terminaba sin
+                 * ningún error y no pasaba nada.
+                 *
+                 * Si el nombre resuelve a UN solo candidato, se devuelve ese match y la
+                 * política de colisión pasa a ser irrelevante: ya no hay colisión que
+                 * resolver. Si no resuelve (0 o 2+ coincidencias), esto devuelve null, deja
+                 * anotado el motivo para que ProcessRow registre el `import_conflict`, y la
+                 * ejecución sigue por la lógica de siempre con la política que corresponda,
+                 * bit por bit como antes.
+                 */
+                if ($desempatar_por_nombre) {
+
+                    $desempatado = self::desempatar_candidatos_por_nombre(
+                        $article_ids_same_provider,
+                        $article_ids,
+                        $data,
+                        $provider_code,
+                        $relations,
+                        $user_id
+                    );
+
+                    if ($desempatado instanceof Article) {
+                        return self::con_escalon('provider_code', $desempatado);
+                    }
+                }
+
                 // Si se permiten codigos repetidos, se retorna un array
                 if ($permitir_provider_code_repetido) {
 
@@ -1166,78 +1344,10 @@ class ArticleIndexCache
                     }
 
                     /*
-                     * DESEMPATE POR NOMBRE (misión `desempate-por-nombre-codigo-repetido`,
-                     * 9/9/2026). Llegamos acá con DOS O MÁS artículos reales que comparten
-                     * provider_code. Hoy los devolvemos todos y cada fila del Excel termina
-                     * escribiendo en los dos: para el caso de DobleP (el suelto y su pack x15
-                     * comparten `FA-NN`) eso significa que los dos artículos quedan con los
-                     * datos de la última fila, o sea que ninguno de los dos queda bien.
-                     *
-                     * 🔴 Es un FILTRO sobre los candidatos que YA matchearon por código, NO un
-                     * escalón nuevo ni una caída al escalón `name`. Ver el porqué completo en
-                     * filtrar_candidatos_por_nombre(): el escalón `name` busca en
-                     * $index['names'], que es global al usuario, y traería artículos de otros
-                     * proveedores que se llamen igual.
-                     *
-                     * 🔴 Si el nombre NO desempata (ninguno coincide, o coinciden varios), se
-                     * cae al comportamiento de HOY —la Collection completa— y se deja anotado
-                     * el motivo para que ProcessRow registre un `import_conflict`. NUNCA se
-                     * devuelve null "porque no encontré a ninguno": eso haría que la fila
-                     * cree un artículo nuevo en cada corrida y duplique el catálogo de a poco,
-                     * sin que nadie se entere.
+                     * Nota: el desempate por nombre NO va acá adentro. Corre unas líneas más
+                     * arriba, antes de la bifurcación por política, porque es desambiguación
+                     * y no política de colisión — ver el comentario largo de allá.
                      */
-                    if ($desempatar_por_nombre) {
-
-                        $nombre_de_la_fila = isset($data['name']) ? trim((string) $data['name']) : '';
-
-                        if ($nombre_de_la_fila === '') {
-
-                            /* La fila no trae nombre: no hay con qué desempatar. Queda reportado. */
-                            self::$ultimo_desempate_sin_resolver = [
-                                'provider_code' => $provider_code,
-                                'nombre_excel'  => null,
-                                'article_ids'   => $resuelto_provider_code_repetido->pluck('id')->values()->all(),
-                                'motivo'        => 'fila_sin_nombre',
-                            ];
-
-                            Self::log('Desempate por nombre pedido pero la fila no trae nombre: ' . $provider_code);
-
-                        } else {
-
-                            $desempate = self::filtrar_candidatos_por_nombre(
-                                $resuelto_provider_code_repetido,
-                                $nombre_de_la_fila
-                            );
-
-                            if (!is_null($desempate['articulo'])) {
-
-                                Self::log('Desempate por nombre OK: ' . $provider_code . ' -> articulo ' . $desempate['articulo']->id);
-
-                                return self::con_escalon('provider_code', $desempate['articulo']);
-                            }
-
-                            self::$ultimo_desempate_sin_resolver = [
-                                'provider_code' => $provider_code,
-                                'nombre_excel'  => $nombre_de_la_fila,
-                                'article_ids'   => $resuelto_provider_code_repetido->pluck('id')->values()->all(),
-                                /*
-                                 * 'ninguno_coincide' = el proveedor cambió la redacción entre listas.
-                                 * 'varios_coinciden' = dos artículos con el mismo código Y el mismo
-                                 * nombre; ahí el nombre no distingue nada y no hay desempate posible.
-                                 */
-                                'motivo'        => $desempate['coincidencias'] === 0
-                                                    ? 'ninguno_coincide'
-                                                    : 'varios_coinciden',
-                            ];
-
-                            Self::log(
-                                'Desempate por nombre NO resolvio: ' . $provider_code
-                                . ' ("' . $nombre_de_la_fila . '" coincide con ' . $desempate['coincidencias']
-                                . ' de ' . $resuelto_provider_code_repetido->count() . ' candidatos)'
-                            );
-                        }
-                    }
-
                     return self::con_escalon('provider_code', $resuelto_provider_code_repetido);
 
                 } else {

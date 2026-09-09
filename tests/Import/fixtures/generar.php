@@ -660,4 +660,44 @@ escribir('22_desempate_por_nombre.xlsx', [
     [null, null, 'PC-REDACT', 'Redaccion cambiada del proveedor',   700.0,   800.0,   7.0, '21', null, null],
 ], $cabecera_con_descuentos_y_recargos);
 
+/* --------------------------------------------------------------------------
+ * 23 - Desempate por nombre con el mismo codigo en DOS proveedores (chequeo
+ * independiente de la mision desempate-por-nombre-codigo-repetido, 9/9/2026).
+ *
+ * Cuando `actualizar_articulos_de_otro_proveedor` esta prendido, los articulos de
+ * OTROS proveedores que usan el mismo codigo entran al conjunto de candidatos. Sin
+ * preferencia por el proveedor de la importacion, el desempate se puede quedar con el
+ * ajeno y dejar SIN ACTUALIZAR el del proveedor correcto -- una regresion silenciosa,
+ * porque antes de esta mision se actualizaban los dos.
+ *
+ *   F2  PC-XPROV : el nombre de la fila coincide con el articulo del proveedor B y NO
+ *                  con el del proveedor A (el de la importacion). Tiene que caer al
+ *                  comportamiento de siempre, no quedarse con el de B.
+ *   F3  PC-XPROV2: el nombre coincide con el articulo del proveedor A. Ahi si desempata,
+ *                  y el de B queda sin tocar.
+ * -------------------------------------------------------------------------- */
+escribir('23_desempate_otro_proveedor.xlsx', [
+    [null, null, 'PC-XPROV',  'Nombre del articulo de B',  999.0, 1200.0, 3.0, '21'],
+    [null, null, 'PC-XPROV2', 'Nombre del articulo de A2', 555.0,  700.0, 4.0, '21'],
+], $cabecera);
+
+/* --------------------------------------------------------------------------
+ * 24 - Al CREAR, dos filas con el mismo codigo NUEVO y el MISMO nombre (chequeo
+ * independiente de la mision desempate-por-nombre-codigo-repetido, 9/9/2026).
+ *
+ * Es el caso que el fixture 22 no puede reproducir: ahi PC-IGUAL y PC-REDACT aparecen
+ * una sola vez cada uno, asi que su ambiguedad es contra la BASE y solo ejercita el
+ * camino de reimportacion. Aca las dos filas son nuevas y chocan entre si al CREAR:
+ * get_article_model_from_cache() no tiene con que desempatarlas, se queda con la
+ * primera -- el primer articulo se lleva los recargos y descuentos de las dos filas y
+ * el segundo queda en cero -- y eso tiene que quedar registrado en el historial.
+ *
+ * Misma cabecera de 10 columnas que el 22: sin `descuentos` y `recargos` el defecto no
+ * se ve.
+ * -------------------------------------------------------------------------- */
+escribir('24_crear_mismo_codigo_y_mismo_nombre.xlsx', [
+    [null, null, 'PC-CREA-IGUAL', 'Producto con nombre repetido', 100.0, 150.0, 1.0, '21', '10', '5'],
+    [null, null, 'PC-CREA-IGUAL', 'Producto con nombre repetido', 200.0, 250.0, 2.0, '21', '20', '8'],
+], $cabecera_con_descuentos_y_recargos);
+
 echo "\nListo.\n";

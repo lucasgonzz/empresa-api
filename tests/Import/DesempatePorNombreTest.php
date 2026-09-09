@@ -157,12 +157,13 @@ class DesempatePorNombreTest extends ImportTestCase
      * Crea un articulo del tenant con codigo y nombre dados, sin bar_code ni sku, para
      * fabricar el escenario de REIMPORTACION (los articulos ya existen en la base).
      *
-     * @param  string $provider_code
-     * @param  string $name
-     * @param  float  $cost
+     * @param  string   $provider_code
+     * @param  string   $name
+     * @param  float    $cost
+     * @param  int|null $provider_id  null = sin proveedor (el caso de la mayoria de los tests)
      * @return \App\Models\Article
      */
-    protected function crear_articulo($provider_code, $name, $cost)
+    protected function crear_articulo($provider_code, $name, $cost, $provider_id = null)
     {
         $article = new Article();
 
@@ -171,7 +172,7 @@ class DesempatePorNombreTest extends ImportTestCase
         $article->provider_code = $provider_code;
         $article->bar_code      = null;
         $article->sku           = null;
-        $article->provider_id   = null;
+        $article->provider_id   = $provider_id;
         $article->cost          = $cost;
         $article->stock         = 0;
         $article->iva_id        = 2;
@@ -291,6 +292,72 @@ class DesempatePorNombreTest extends ImportTestCase
     }
 
     /**
+     * 🔴 EL TEST QUE FIJA QUE LA OPCION NO CUELGA DE LA POLITICA DE COLISION.
+     *
+     * La primera version de esta mision metio el desempate ADENTRO del bloque de
+     * `permitir_provider_code_repetido`, o sea que la opcion no hacia nada salvo que el
+     * usuario ademas hubiera elegido "actualizar todos los que tengan ese codigo". Con
+     * "Saltear esas filas y avisarme" -- que es esta configuracion -- la ejecucion caia al
+     * else, devolvia AmbiguousMatch y el desempate no corria NUNCA: el usuario prendia la
+     * casilla, la importacion terminaba sin error y no pasaba nada.
+     *
+     * El desempate es DESAMBIGUACION y la politica de colision es que hacer CUANDO NO SE
+     * PUEDE desambiguar. Si el nombre resuelve, ya no hay colision y la politica es
+     * irrelevante.
+     *
+     * @return void
+     */
+    public function test_el_desempate_corre_aunque_la_politica_sea_saltear_y_avisar()
+    {
+        $suelto = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_SUELTO, 1.0);
+        $pack   = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_PACK,   2.0);
+
+        $import = $this->importar(self::ARCHIVO, $this->config([
+            'permitir_provider_code_repetido' => false,
+            'desempatar_por_nombre'           => true,
+        ]));
+
+        $this->assertDecimal(3189.05, Article::find($suelto->id)->cost, 'El suelto toma el costo de SU fila.');
+        $this->assertDecimal(2140.00, Article::find($pack->id)->cost,   'El pack toma el costo de SU fila.');
+
+        $this->assertSame(
+            0,
+            $this->conflictos($import, 'ambiguo'),
+            'Si el nombre desempato, las filas de ' . self::CODIGO_PACK . ' ya no son ambiguas.'
+        );
+    }
+
+    /**
+     * La otra mitad del test de arriba: con la MISMA politica de colision pero SIN la
+     * opcion, el comportamiento sigue siendo el de hoy -- las dos filas se saltean como
+     * ambiguas y ninguno de los dos articulos se toca.
+     *
+     * Sin este test, el de arriba podria pasar por un cambio que arregle la ambiguedad
+     * para todo el mundo, que no es lo pedido: la opcion tiene que ser una eleccion.
+     *
+     * @return void
+     */
+    public function test_sin_la_opcion_la_politica_de_saltear_sigue_salteando()
+    {
+        $suelto = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_SUELTO, 1.0);
+        $pack   = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_PACK,   2.0);
+
+        $import = $this->importar(self::ARCHIVO, $this->config([
+            'permitir_provider_code_repetido' => false,
+            'desempatar_por_nombre'           => false,
+        ]));
+
+        $this->assertDecimal(1.0, Article::find($suelto->id)->cost, 'Sin la opcion, la fila ambigua no toca nada.');
+        $this->assertDecimal(2.0, Article::find($pack->id)->cost,   'Sin la opcion, la fila ambigua no toca nada.');
+
+        $this->assertSame(
+            2,
+            $this->conflictos($import, 'ambiguo'),
+            'Las dos filas de ' . self::CODIGO_PACK . ' se reportan como ambiguas, como siempre.'
+        );
+    }
+
+    /**
      * NO REGRESION: con la opcion APAGADA (el default), el comportamiento tiene que ser
      * identico al de hoy -- las dos filas escriben en los dos articulos y gana la ultima.
      *
@@ -340,6 +407,84 @@ class DesempatePorNombreTest extends ImportTestCase
             $this->conflictos_de_desempate(),
             'Sin la opcion no se registra ningun conflicto de desempate: la funcionalidad esta apagada entera.'
         );
+    }
+
+    /* ==================================================================
+     * El mismo codigo en DOS proveedores
+     * ================================================================== */
+
+    /**
+     * 🔴 EL DESEMPATE NO SE PUEDE QUEDAR CON EL ARTICULO DE OTRO PROVEEDOR.
+     *
+     * Con `actualizar_articulos_de_otro_proveedor` prendido, los articulos de otros
+     * proveedores que usan el mismo codigo entran al conjunto de candidatos. Si el
+     * desempate elige uno de esos, le escribe precio, costo e identificadores y deja SIN
+     * ACTUALIZAR el del proveedor que se esta importando. Antes de esta mision se
+     * actualizaban los dos, asi que el correcto al menos quedaba bien: elegir el ajeno es
+     * una regresion silenciosa -- deja los numeros mal y no falla nada.
+     *
+     * La fila PC-XPROV se llama igual que el articulo del proveedor B y distinto que el
+     * del A. Con la preferencia puesta, el universo del desempate son los del proveedor A,
+     * ahi no coincide ninguno, y se cae al comportamiento de siempre: se actualizan los
+     * dos. Lo que NO puede pasar es que el de A quede en su costo viejo.
+     *
+     * @return void
+     */
+    public function test_el_desempate_no_se_queda_con_el_articulo_de_otro_proveedor()
+    {
+        $de_a = $this->crear_articulo('PC-XPROV', 'Nombre viejo del articulo de A', 1.0, $this->providers['A']->id);
+        $de_b = $this->crear_articulo('PC-XPROV', 'Nombre del articulo de B',       2.0, $this->providers['B']->id);
+
+        $this->importar('23_desempate_otro_proveedor.xlsx', $this->config_otro_proveedor());
+
+        $this->assertDecimal(
+            999.00,
+            Article::find($de_a->id)->cost,
+            'El articulo del proveedor de la importacion tiene que actualizarse SIEMPRE.'
+        );
+
+        $this->assertDecimal(
+            999.00,
+            Article::find($de_b->id)->cost,
+            'Sin desempate posible dentro del proveedor A, se cae al comportamiento de siempre: los dos.'
+        );
+    }
+
+    /**
+     * La otra mitad: cuando el nombre SI coincide con el articulo del proveedor de la
+     * importacion, el desempate resuelve ahi y el de otro proveedor queda sin tocar.
+     *
+     * Sin este test, "preferir el proveedor actual" podria implementarse como "no
+     * desempatar nunca si hay articulos de otros proveedores", que apagaria la opcion
+     * justo en las cuentas que actualizan cruzado.
+     *
+     * @return void
+     */
+    public function test_el_desempate_resuelve_dentro_del_proveedor_de_la_importacion()
+    {
+        $de_a = $this->crear_articulo('PC-XPROV2', 'Nombre del articulo de A2', 3.0, $this->providers['A']->id);
+        $de_b = $this->crear_articulo('PC-XPROV2', 'Nombre del articulo de B2', 4.0, $this->providers['B']->id);
+
+        $this->importar('23_desempate_otro_proveedor.xlsx', $this->config_otro_proveedor());
+
+        $this->assertDecimal(555.00, Article::find($de_a->id)->cost, 'El de A es el que desempata la fila.');
+        $this->assertDecimal(4.00,   Article::find($de_b->id)->cost, 'El de B no se toca.');
+    }
+
+    /**
+     * Configuracion de los dos tests de arriba: importacion del proveedor A, con
+     * actualizacion cruzada habilitada y el desempate prendido.
+     *
+     * @return array
+     */
+    protected function config_otro_proveedor()
+    {
+        return array_merge(self::columnas(), [
+            'provider_id'                            => $this->providers['A']->id,
+            'permitir_provider_code_repetido'        => true,
+            'actualizar_articulos_de_otro_proveedor' => true,
+            'desempatar_por_nombre'                  => true,
+        ]);
     }
 
     /* ==================================================================
