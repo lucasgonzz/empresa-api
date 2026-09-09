@@ -3930,6 +3930,13 @@ class ProcessRow {
      * por chunk, con motivo 'columna_nombre_sin_mapear', para que el usuario se entere de
      * que la opción que prendió no se pudo aplicar sin que el aviso lo tape todo.
      *
+     * ⚠️ Es una vez POR CHUNK, no por importación: cada chunk arma su propio ProcessRow y
+     * no hay estado compartido entre ellos. Con el chunk de 300 filas (config
+     * `ARTICLE_EXCEL_CHUNK_SIZE`), un archivo de 5.000 filas deja hasta 17 avisos en vez
+     * de 5.000. Alcanza para que no tape el historial; bajarlo a uno solo obligaría a
+     * consultar `import_conflicts` en cada chunk y hoy la fila persistida no guarda el
+     * motivo, así que no habría con qué distinguirla del 'fila_sin_nombre' por fila.
+     *
      * Cuenta como conflicto para `conflicts_count` (no está en la lista de
      * `$tipos_que_no_cuentan` de ActualizarBBDD::persistir_conflictos()): es
      * deliberado, porque la fila efectivamente no se pudo aplicar como el usuario pidió.
