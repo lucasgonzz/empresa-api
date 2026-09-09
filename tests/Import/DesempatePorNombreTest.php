@@ -3,6 +3,7 @@
 namespace Tests\Import;
 
 use App\Models\Article;
+use App\Models\ImportHistory;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -637,10 +638,19 @@ class DesempatePorNombreTest extends ImportTestCase
      */
     public function test_cuando_el_desempate_resuelve_no_deja_conflicto()
     {
-        $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_SUELTO, 1.0);
-        $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_PACK,   2.0);
+        $suelto = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_SUELTO, 1.0);
+        $pack   = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_PACK,   2.0);
 
         $this->importar(self::ARCHIVO, $this->config(['desempatar_por_nombre' => true]));
+
+        /*
+         * 🔴 LA MITAD QUE FALTABA. Sin estas dos aserciones, el test pasaba con solo mirar
+         * que no hubiera conflicto: un desempate que dejara de funcionar Y dejara de
+         * registrar el conflicto lo mantenia verde. Que el desempate haya resuelto DE
+         * VERDAD es lo que se mide con los costos, no con la ausencia de una fila.
+         */
+        $this->assertDecimal(3189.05, Article::find($suelto->id)->cost, 'El suelto toma el costo de SU fila.');
+        $this->assertDecimal(2140.00, Article::find($pack->id)->cost,   'El pack toma el costo de SU fila.');
 
         $conflictos = $this->conflictos_de_desempate_por_codigo();
 
@@ -649,6 +659,135 @@ class DesempatePorNombreTest extends ImportTestCase
             $conflictos,
             'El desempate de ' . self::CODIGO_PACK . ' resolvio: no tiene que dejar conflicto.'
         );
+    }
+
+    /* ==================================================================
+     * El endpoint que usa el modal de verdad
+     * ================================================================== */
+
+    /**
+     * 🔴 EL CAMINO QUE USA LA SPA ES OTRO ENDPOINT.
+     *
+     * Todo el resto de esta clase entra por `/api/article/excel/import`
+     * (ArticleController::import), pero el modal del paso 3 -- el que tiene la casilla --
+     * postea a `/api/ai-excel-import/import` (AiExcelImportController::import), que arma
+     * su propio array y llama derecho a InitExcelImport SIN pasar por ArticleController.
+     * Son dos lecturas del request distintas: si alguien saca la clave de una, los tests
+     * de la otra siguen verdes y la opcion deja de funcionar EN SILENCIO justo en el
+     * unico camino que el usuario usa.
+     *
+     * @return void
+     */
+    public function test_el_endpoint_del_modal_tambien_desempata()
+    {
+        $suelto = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_SUELTO, 1.0);
+        $pack   = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_PACK,   2.0);
+
+        $this->importar_por_el_modal(['desempatar_por_nombre' => true]);
+
+        $this->assertDecimal(3189.05, Article::find($suelto->id)->cost, 'El suelto toma el costo de SU fila.');
+        $this->assertDecimal(2140.00, Article::find($pack->id)->cost,   'El pack toma el costo de SU fila.');
+    }
+
+    /**
+     * Por el mismo endpoint, sin mandar la clave: el comportamiento de siempre. Es el
+     * chequeo de compatibilidad hacia atras del carril de la IA -- un modal sin desplegar
+     * no manda `desempatar_por_nombre` y tiene que importar exactamente igual que hoy.
+     *
+     * @return void
+     */
+    public function test_el_endpoint_del_modal_sin_la_clave_no_cambia_nada()
+    {
+        $suelto = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_SUELTO, 1.0);
+        $pack   = $this->crear_articulo(self::CODIGO_PACK, self::NOMBRE_PACK,   2.0);
+
+        $this->importar_por_el_modal();
+
+        $this->assertDecimal(2140.00, Article::find($suelto->id)->cost, 'Sin la clave gana la ultima fila, como siempre.');
+        $this->assertDecimal(2140.00, Article::find($pack->id)->cost,   'Sin la clave gana la ultima fila, como siempre.');
+    }
+
+    /**
+     * Dispara el fixture 22 contra `/api/ai-excel-import/import`, el endpoint del modal.
+     *
+     * A diferencia de ImportTestCase::importar(), este endpoint no recibe el archivo
+     * subido: espera un `excel_path` relativo a storage/app (lo deja ahi /analyze) y un
+     * mapeo `columns` con indices 0-based, no las claves `prop_*` del import clasico.
+     *
+     * @param  array $extra  Overrides del cuerpo del request
+     * @return \App\Models\ImportHistory
+     */
+    protected function importar_por_el_modal(array $extra = [])
+    {
+        $origen = __DIR__ . '/fixtures/' . self::ARCHIVO;
+
+        $this->assertFileExists($origen, 'Falta el fixture ' . self::ARCHIVO);
+
+        $carpeta = storage_path('app/imported_files');
+
+        if (!is_dir($carpeta)) {
+            mkdir($carpeta, 0777, true);
+        }
+
+        /*
+         * Nombre unico: el CSV que arma InitExcelImport se deriva del nombre del Excel mas
+         * time() en segundos, asi que dos importaciones del mismo segundo con el mismo
+         * nombre de entrada se pisan el CSV entre si.
+         */
+        $nombre = uniqid('desempate_modal_') . '.xlsx';
+
+        copy($origen, $carpeta . '/' . $nombre);
+
+        $data = array_merge(
+            [
+                'excel_path'                  => 'imported_files/' . $nombre,
+                'model'                       => 'article',
+                'columns'                     => $this->columnas_para_el_modal(),
+                'start_row'                   => 2,
+                /* InitExcelImport::ajustar_finish_row_segun_excel_real() lo baja al real. */
+                'finish_row'                  => 99999,
+                'provider_id'                 => null,
+                'create_and_edit'             => true,
+                'registrar_art_cre'           => true,
+                'registrar_art_act'           => true,
+                'actualizar_por_provider_code'                       => true,
+                'actualizar_proveedor'                               => true,
+                'permitir_provider_code_repetido'                    => true,
+                'permitir_provider_code_repetido_en_multi_providers' => true,
+                'actualizar_articulos_de_otro_proveedor'             => false,
+                'filas_repetidas_del_archivo'                        => 'productos_distintos',
+            ],
+            $extra
+        );
+
+        $this->postJson('/api/ai-excel-import/import', $data)->assertStatus(200);
+
+        $import = ImportHistory::where('user_id', $this->tenant->id)
+                                ->orderBy('id', 'DESC')
+                                ->first();
+
+        $this->assertNotNull($import, 'La importacion por el endpoint del modal no dejo ImportHistory.');
+
+        $this->assertInvariantesDeConteo($import);
+
+        return $import;
+    }
+
+    /**
+     * El mismo mapeo del fixture 22 pero en el formato del modal: propiedad => indice
+     * 0-based, sin el prefijo `prop_` y sin el +1 del import clasico.
+     *
+     * @return array
+     */
+    protected function columnas_para_el_modal()
+    {
+        $columns = [];
+
+        foreach ($this->columnas_del_fixture() as $clave => $posicion) {
+            $columns[substr($clave, strlen('prop_'))] = ((int) $posicion) - 1;
+        }
+
+        return $columns;
     }
 
     /* ==================================================================
