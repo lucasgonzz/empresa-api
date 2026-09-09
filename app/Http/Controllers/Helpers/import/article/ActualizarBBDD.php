@@ -1938,7 +1938,8 @@ class ActualizarBBDD {
              * barrido antes de crear; los recargos no tienen ese barrido y se acumulan.
              *
              * 🔴 POR QUÉ SE DESEMPATA POR NOMBRE Y NO POR `fake_id`, que es único por fila y
-             * ya existe (ProcessRow ~:1403). Porque acá ya no hay `fake_id` que valga:
+             * ya existe (ProcessRow lo genera con `uniqid()` al encolar el artículo para
+             * crear). Porque acá ya no hay `fake_id` que valga:
              *
              *   1. `fake_id` NO es columna de `articles` — se excluye explícitamente del
              *      INSERT (ver guardar_articulos(), la lista del `except()`). Los modelos de
@@ -1947,20 +1948,40 @@ class ActualizarBBDD {
              *      así que llegan sin ninguna referencia a la fila que los creó.
              *   2. Reconstruir el mapa `fake_id -> id` obligaría a apoyarse en que el bloque
              *      de auto_increment que consumió el `Article::insert()` masivo sea contiguo
-             *      y venga en el mismo orden que las tuplas. Con `innodb_autoinc_lock_mode = 2`
-             *      (el default de MySQL 8) eso NO está garantizado, y acá hay varios chunks
-             *      insertando en `articles` a la vez: es la operación normal, no un borde.
-             *      Y una asignación equivocada no falla — le pone los recargos de un artículo
-             *      a otro, en silencio. Es peor que el defecto que vinimos a arreglar.
+             *      y venga en el mismo orden que las tuplas. Con
+             *      `innodb_autoinc_lock_mode = 2` (el default de MySQL 8) eso NO está
+             *      garantizado en cuanto haya CUALQUIER otro insertor en `articles`, y una
+             *      asignación equivocada no falla: le pone los recargos de un artículo a
+             *      otro, en silencio. Es peor que el defecto que vinimos a arreglar.
+             *
+             *      ⚠️ Ojo con la versión anterior de este comentario, que decía "y acá hay
+             *      varios chunks insertando en `articles` a la vez: es la operación normal".
+             *      Eso es FALSO y lo corrige el chequeo independiente del 9/9/2026: los
+             *      chunks van SIEMPRE en `Bus::chain` secuencial (InitExcelImport ~:203, en
+             *      palabras del propio código: "Siempre procesamiento secuencial (Bus::chain),
+             *      independientemente del entorno"), `mandar_batch()` existe pero no lo llama
+             *      nadie, y `tiene_importacion_en_curso()` bloquea una segunda importación
+             *      del mismo usuario. La conclusión igual se sostiene, pero por la parte que
+             *      sí es cierta: la contigüidad del bloque de auto_increment no depende sólo
+             *      de esta importación.
              *   3. La única forma robusta sería agregarle una columna a `articles` para
              *      arrastrar un id temporal de importación: cambio de esquema en ~40 clientes
              *      para un dato que vive treinta segundos.
              *
              * Se desempata entonces por el par (provider_code + nombre normalizado), que es
              * EXACTAMENTE el mismo criterio que usa el camino de reimportación
-             * (ArticleIndexCache::find_with_index(), bloque de permitir_provider_code_repetido).
-             * Que los dos caminos usen la misma regla es lo que evita que "crear" y
-             * "actualizar" terminen resolviendo distinto sobre el mismo archivo.
+             * (ArticleIndexCache::find_with_index()). Que los dos caminos usen la misma regla
+             * es lo que evita que "crear" y "actualizar" terminen resolviendo distinto sobre
+             * el mismo archivo.
+             *
+             * 🔴 Y ACÁ ESTÁ LO QUE ESTA CLAVE NO PUEDE HACER, que `fake_id` sí haría:
+             * (provider_code + nombre) NO ES ÚNICA. Dos filas con el mismo código y el mismo
+             * nombre son indistinguibles para este criterio, y ahí esto degrada a "gana el
+             * primero" — el defecto original, intacto, justo en el caso donde `fake_id`
+             * habría sido exacto. No es una omisión: es el precio de no tocar el esquema. Lo
+             * que sí cambia respecto de antes es que ese caso ya no es invisible — se
+             * registra un `import_conflict` en el historial (ver
+             * registrar_desempate_de_creacion_sin_resolver()).
              */
             if (count($candidatos) > 1) {
 
