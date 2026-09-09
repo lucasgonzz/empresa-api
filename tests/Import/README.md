@@ -49,6 +49,7 @@ Son dos generadores y no uno a propósito: `generar.php` escribe con **OpenSpout
 | `18_pc_repetido_mismo_nombre.xlsx` | 3 | Tres filas con el mismo `provider_code` **y el mismo nombre** (costos 100/200/300). Existe porque `07_repetidos_en_el_archivo.xlsx` **no alcanza**: sus filas repetidas tienen nombres distintos, y con nombres distintos la corrección tentadora del defecto del 2/9/2026 queda verde por suerte del fixture. Ver `RepetidosConPermitirRepetidoTest`. |
 | `19_pc_repetido_en_archivo_y_base.xlsx` | 2 | Dos filas con `PC-DUP`, que en el escenario sembrado pertenece a **dos** artículos (A3 y A4). Es la celda "repetido en el archivo Y repetido en la base" — la razón de ser de la opción *"Actualizar todos los artículos que tengan ese código"*—, y no tenía ningún test: la encontró el chequeo independiente del 2/9/2026 cuando el fix de ese día introdujo una regresión ahí (el merge le aplicaba la fila nueva a **uno solo** de los dos). |
 | `20_mismo_nombre_solo_una_con_codigo.xlsx` | 2 | Dos filas con el **mismo nombre**, pero sólo la segunda trae `provider_code`. Es la otra celda que el fix del 2/9/2026 cambió (de 1 artículo a 2, alineando `permitir = 1` con lo que `permitir = 0` ya hacía): sin este fixture el cambio quedaba sólo declarado en un informe. |
+| `22_desempate_por_nombre.xlsx` | 4 | **Cabecera propia**: la común de 8 columnas más `descuentos` y `recargos`, que son las que hacen visible el defecto de `get_article_model_from_cache()`. Reproduce el caso de DobleP Herrajes con la lista de Bronzen: `PC-PACK` en dos filas con **nombres distintos** (el suelto y su pack x15), más `PC-IGUAL` (dos artículos de base con el mismo código **y** el mismo nombre) y `PC-REDACT` (dos artículos de base cuyos nombres no coinciden con la fila). Ver `DesempatePorNombreTest`. |
 | `16_viejo.xls` | 2 | Un `.xls` **BIFF de verdad** (writer `Xls` de PhpSpreadsheet, no un `.xlsx` renombrado): no es un zip, así que `ZipArchive::open()` falla y se ejercita el mensaje limpio de `ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE`. |
 
 ⚠️ **`06_incidente_servian.xlsx` es el único fixture que se importa con varios lotes.** El `config(['app.ARTICLE_EXCEL_CHUNK_SIZE' => 10])` del `setUp()` de `IncidenteServianTest` es lo que hace que el escenario reproduzca el bug original (la deduplicación funciona *dentro* de un lote pero no *entre* lotes). Si alguien cambia o quita ese `config()`, el test deja de probar lo que dice probar aunque siga pasando en verde.
@@ -165,6 +166,56 @@ bien, pero el artículo queda con los datos de la **primera** fila, no de la úl
 (pasa igual con `permitir = 0`) y arreglarlo toca el índice que gobierna todo el matching contra la
 base. Lo fija `test_sin_proveedor_fusiona_pero_gana_la_primera_fila` con el valor real (700): el día
 que se corrija, ese test se pone rojo y hay que pasarlo a 900.
+
+## Desempate por nombre con provider_code repetido (9/9/2026)
+
+`DesempatePorNombreTest.php` cubre los **dos** defectos del caso de DobleP Herrajes, que son
+distintos y se arreglan por separado. El proveedor (Bronzen) usa el MISMO código para dos
+productos —el suelto y su pack x15, con precios distintos— y eso viene así en el Excel que él
+manda: no es corregible desde el archivo. Los nombres SÍ son únicos dentro del par.
+
+**Defecto 1, al CREAR.** `ActualizarBBDD::get_article_model_from_cache()` volvía a buscar los
+artículos recién insertados con un `->first()` por `provider_code`, así que las dos filas del Excel
+resolvían al MISMO modelo. Medido en la base de producción de DobleP: **6 artículos con 2 recargos
+y 6 con ninguno**. Los descuentos no se duplicaban sólo porque `sync_provider_discounts()` hace un
+barrido antes de crear; los recargos no tienen ese barrido y se acumulan. Estaba documentado como
+deuda desde el 24/8 (`informes/20260824-listas-de-precio-por-defecto-al-importar.md`, hallazgo
+fuera de alcance #1) y esta misión lo salda.
+
+🔴 **Este arreglo NO cuelga de la opción nueva**, y `test_al_crear_el_arreglo_no_depende_de_la_opcion`
+es la red contra esa variante: al crear no hay ninguna configuración en la que meterle los recargos
+de dos filas a un solo artículo sea lo correcto.
+
+⚠️ **Por qué se desempata por `provider_code + nombre` y no por `fake_id`**, que existe y es único
+por fila: `fake_id` **no es columna de `articles`** (se excluye del INSERT) y
+`set_articulos_creados_models()` relee los modelos de la base por `user_id + chunk_number`, así que
+llegan sin referencia a la fila que los creó. Reconstruir el mapa obligaría a apoyarse en que el
+bloque de auto_increment del INSERT masivo sea contiguo — con `innodb_autoinc_lock_mode = 2` (el
+default de MySQL 8) y varios chunks insertando a la vez eso **no** está garantizado, y una
+asignación equivocada no falla: le pone los recargos de un artículo a otro, en silencio. El par
+(código + nombre) es además **el mismo criterio** que usa el camino de reimportación, que es lo que
+evita que "crear" y "actualizar" resuelvan distinto sobre el mismo archivo.
+
+**Defecto 2, al REIMPORTAR.** Los artículos ya existen y van por
+`ArticleIndexCache::find_with_index()`. Ahí sí manda la opción nueva **`desempatar_por_nombre`**
+(booleano, default `false`), que viaja de punta a punta por el mismo carril que
+`interpretacion_punto`. El desempate es un **filtro sobre los candidatos que ya matchearon por
+código**, no un escalón nuevo ni una caída al escalón `name`: ese escalón busca en `$index['names']`,
+que es **global al usuario**, y traería artículos de otros proveedores que se llamen igual.
+
+🔴 **Si el nombre no desempata, NO se crea nada en silencio.** Se cae al comportamiento de siempre
+(la Collection completa) y queda un `import_conflict` de tipo
+**`desempate_por_nombre_sin_resolver`**. Las dos ramas por las que puede no resolver están cubiertas
+por separado, porque son código distinto: `PC-IGUAL` (mismo código y mismo nombre → *varios
+coinciden*) y `PC-REDACT` (el proveedor cambió la redacción → *ninguno coincide*). Y
+`test_cuando_el_desempate_resuelve_no_deja_conflicto` es el complemento: sin él, una versión que
+registrara el conflicto siempre pasaría los otros dos y el historial le mostraría al usuario un
+problema inexistente.
+
+⚠️ Las importaciones de esta clase van con **`provider_id => null`** a propósito: con un proveedor
+elegido, `ProcessRow::set_discounts_de_la_fila()` rutea los descuentos al camino "tagueado"
+(`ArticleProviderDiscountHelper::sync_provider_discounts()`) y no al legado de `article_discounts`,
+que es el que pasa por `get_article_model_from_cache()`.
 
 ## Hoja elegida y fila de encabezado (22/8/2026)
 

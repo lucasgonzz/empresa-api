@@ -612,4 +612,52 @@ escribir('21_pc_repetido_con_variantes.xlsx', [
     [null, null, 'PC-VAR', 'Remera rep azul', 200.0, 250.0, 20.0, '21', 'Azul'],
 ], $cabecera_con_color);
 
+/* --------------------------------------------------------------------------
+ * 22 - Desempate por nombre con provider_code repetido (mision
+ * desempate-por-nombre-codigo-repetido, 9/9/2026).
+ *
+ * Reproduce el caso real de DobleP Herrajes con la lista de Bronzen: el proveedor
+ * usa el MISMO codigo para el producto suelto y para su pack x15, con precios
+ * distintos. Los nombres SI son unicos dentro del par, y eso es lo que habilita
+ * el desempate.
+ *
+ * Lleva cabecera propia: la comun tiene 8 columnas y esta agrega 'descuentos' y
+ * 'recargos' al final. Sin esas dos columnas no se puede ver el defecto 1, que es
+ * justamente que los recargos de las dos filas se le acumulan al primer articulo
+ * y el segundo queda sin ninguno (medido en produccion: 6 articulos con 2 recargos
+ * y 6 con 0). Los descuentos van por el camino legado (article_discounts) solo
+ * cuando la importacion NO elige proveedor -- ver ProcessRow::set_discounts_de_la_fila().
+ *
+ *   F2, F3  PC-PACK, nombres DISTINTOS, costos/descuentos/recargos distintos.
+ *           Es el par del caso real y el que tiene que separarse.
+ *   F4      PC-IGUAL: contra dos articulos de la base que comparten codigo Y
+ *           nombre. El nombre no distingue nada -> no desempata, se cae al
+ *           comportamiento de siempre y queda el import_conflict.
+ *   F5      PC-REDACT: contra dos articulos de la base cuyos nombres NO son este
+ *           (el proveedor cambio la redaccion entre listas) -> tampoco desempata,
+ *           mismo tratamiento.
+ *
+ * Los descuentos y recargos van como TEXTO ('10', '5'): ProcessRow los explota
+ * por '_' con explode(), asi que la celda tiene que llegar como string.
+ * -------------------------------------------------------------------------- */
+$cabecera_con_descuentos_y_recargos = [
+    'codigo_de_barras',
+    'sku',
+    'codigo_de_proveedor',
+    'nombre',
+    'costo',
+    'precio',
+    'stock_actual',
+    'iva',
+    'descuentos',
+    'recargos',
+];
+
+escribir('22_desempate_por_nombre.xlsx', [
+    [null, null, 'PC-PACK',   'Silicona neutra negra',              3189.05, 4000.0, 10.0, '21', '10', '5'],
+    [null, null, 'PC-PACK',   'Silicona neutra negra x 15 bultos',  2140.0,  2800.0, 20.0, '21', '20', '8'],
+    [null, null, 'PC-IGUAL',  'Nombre igual repetido',              500.0,   600.0,   5.0, '21', null, null],
+    [null, null, 'PC-REDACT', 'Redaccion cambiada del proveedor',   700.0,   800.0,   7.0, '21', null, null],
+], $cabecera_con_descuentos_y_recargos);
+
 echo "\nListo.\n";
