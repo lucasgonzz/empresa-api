@@ -590,6 +590,50 @@ class DesempatePorNombreTest extends ImportTestCase
     }
 
     /* ==================================================================
+     * La columna de nombre no mapeada
+     * ================================================================== */
+
+    /**
+     * 🔴 SIN COLUMNA DE NOMBRE MAPEADA, EL AVISO VA UNA SOLA VEZ, NO POR FILA.
+     *
+     * Si el import no mapeo la columna de nombre, el desempate no puede aplicar en
+     * NINGUNA fila: no es un problema de datos, es una configuracion, y la misma para
+     * todo el archivo. Registrarlo fila por fila llena el historial de conflictos
+     * identicos que no le sirven a nadie -- una actualizacion de precios que no mapea el
+     * nombre (el caso comun) sobre una base con codigos duplicados son cientos.
+     *
+     * Las seis siembras hacen que las CUATRO filas del fixture matcheen dos articulos
+     * cada una: antes de este arreglo eran cuatro conflictos, uno por fila.
+     *
+     * @return void
+     */
+    public function test_sin_columna_de_nombre_mapeada_el_aviso_va_una_sola_vez()
+    {
+        $this->crear_articulo(self::CODIGO_PACK,      self::NOMBRE_SUELTO,     1.0);
+        $this->crear_articulo(self::CODIGO_PACK,      self::NOMBRE_PACK,       2.0);
+        $this->crear_articulo(self::CODIGO_IGUAL,     'Nombre igual repetido', 3.0);
+        $this->crear_articulo(self::CODIGO_IGUAL,     'Nombre igual repetido', 4.0);
+        $this->crear_articulo(self::CODIGO_REDACTADO, 'Nombre viejo A',        5.0);
+        $this->crear_articulo(self::CODIGO_REDACTADO, 'Nombre viejo B',        6.0);
+
+        /*
+         * -1 es como el modal manda una columna sin mapear (GeneralHelper::getImportColumns()
+         * la descarta). No alcanza con sacar la clave: ImportTestCase::importar() vuelve a
+         * mergear self::columnas() por debajo del override.
+         */
+        $this->importar(self::ARCHIVO, $this->config([
+            'desempatar_por_nombre' => true,
+            'prop_nombre'           => -1,
+        ]));
+
+        $this->assertSame(
+            1,
+            $this->conflictos_de_desempate(),
+            'Sin columna de nombre el desempate no aplica en ninguna fila: se avisa una vez, no cuatro.'
+        );
+    }
+
+    /* ==================================================================
      * Helpers de conflictos
      * ================================================================== */
 

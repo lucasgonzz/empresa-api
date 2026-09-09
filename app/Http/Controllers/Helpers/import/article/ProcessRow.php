@@ -63,6 +63,14 @@ class ProcessRow {
      */
     protected $desempatar_por_nombre = false;
 
+    /**
+     * Ya se registró, en este chunk, el aviso de "pediste desempatar por nombre pero la
+     * columna de nombre no está mapeada". Ver registrar_desempate_sin_resolver().
+     *
+     * @var bool
+     */
+    protected $aviso_desempate_sin_columna_de_nombre = false;
+
     protected $articles_match = 0;
     protected $articulos_repetidos = 0;
 
@@ -3900,18 +3908,27 @@ class ProcessRow {
      * `provider_code`, y que para ESTA fila el nombre no alcanzó (misión
      * `desempate-por-nombre-codigo-repetido`, 9/9/2026).
      *
-     * Pasa en dos situaciones reales:
+     * Pasa en tres situaciones reales:
      *   - 'ninguno_coincide': el proveedor cambió la redacción entre listas
      *     ("SILICONA NEUTRA 280 ML NEGRO" -> "SILICONA NEUTRA NEGRA 280ML").
      *   - 'varios_coinciden': dos artículos con el mismo código Y el mismo nombre; ahí
      *     el nombre no distingue nada.
-     *   - 'fila_sin_nombre': la fila no trae columna de nombre mapeada, o vino vacía.
+     *   - 'fila_sin_nombre': la celda de nombre de esa fila vino vacía.
      *
      * 🔴 La fila NO se saltea y NO se crea nada nuevo: se cae al comportamiento de
      * siempre (se actualizan todos los candidatos) y queda esta marca en el historial.
      * Es la única forma de que un desempate que no funciona sea visible: sin esto, el
      * usuario prende la opción, la mitad de sus códigos siguen pisándose entre sí y la
      * pantalla no le dice nada.
+     *
+     * 🔴 EXCEPCIÓN: LA COLUMNA DE NOMBRE NO MAPEADA NO ES UN CONFLICTO POR FILA. Si el
+     * import no mapeó la columna de nombre, el desempate no puede aplicar en NINGUNA fila
+     * — no es un problema de datos, es una configuración, y la misma para todo el
+     * archivo. Registrarlo fila por fila llenaría el historial con cientos de conflictos
+     * idénticos: una actualización de precios que no mapea el nombre (el caso común)
+     * sobre una base con códigos duplicados es exactamente eso. Se registra UNA sola vez
+     * por chunk, con motivo 'columna_nombre_sin_mapear', para que el usuario se entere de
+     * que la opción que prendió no se pudo aplicar sin que el aviso lo tape todo.
      *
      * Cuenta como conflicto para `conflicts_count` (no está en la lista de
      * `$tipos_que_no_cuentan` de ActualizarBBDD::persistir_conflictos()): es
@@ -3926,6 +3943,17 @@ class ProcessRow {
      */
     function registrar_desempate_sin_resolver($fila, $provider_code, array $article_ids, $nombre_excel = null, $motivo = ''): void
     {
+        if ($motivo === 'fila_sin_nombre' && !$this->columna_de_nombre_mapeada()) {
+
+            if ($this->aviso_desempate_sin_columna_de_nombre) {
+                return;
+            }
+
+            $this->aviso_desempate_sin_columna_de_nombre = true;
+
+            $motivo = 'columna_nombre_sin_mapear';
+        }
+
         $this->conflictos[] = [
             'fila'          => $fila,
             'fila_ganadora' => null,
@@ -3940,6 +3968,20 @@ class ProcessRow {
             'Fila ' . $fila . ': provider_code = "' . $provider_code . '" matcheo con '
             . count($article_ids) . ' articulos y el desempate por nombre no resolvio (' . $motivo . ')'
         );
+    }
+
+    /**
+     * ¿El import mapeó la columna de nombre? (misión `desempate-por-nombre-codigo-repetido`,
+     * 9/9/2026).
+     *
+     * Sin ella el desempate por nombre no puede aplicar en ninguna fila, y eso se reporta
+     * una sola vez y no fila por fila — ver registrar_desempate_sin_resolver().
+     *
+     * @return bool
+     */
+    protected function columna_de_nombre_mapeada()
+    {
+        return !ImportHelper::isIgnoredColumn('nombre', $this->columns);
     }
 
     /**

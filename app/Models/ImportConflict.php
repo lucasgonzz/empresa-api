@@ -27,6 +27,13 @@ use Illuminate\Database\Eloquent\Model;
  * el comportamiento de siempre (actualizar todos los candidatos) y queda esta marca.
  * `campo` = 'provider_code', `valor` = el código, `article_ids` = los que empataron.
  *
+ * ⚠️ Ese tipo es por fila, con UNA excepción: si el import no mapeó la columna de
+ * nombre, el desempate no puede aplicar en ninguna fila y eso no es un problema de
+ * datos sino una configuración — se registra UNA sola vez por chunk
+ * (`ProcessRow::registrar_desempate_sin_resolver()`). Sin esa excepción, una
+ * actualización de precios que no mapea el nombre sobre una base con códigos
+ * duplicados deja cientos de conflictos idénticos que no le sirven a nadie.
+ *
  * DOS de esos tipos NO representan una fila que no se pudo procesar y por eso no
  * suman a `conflicts_count`: 'fila_sobrescrita' (la repetición se resolvió bien) y
  * 'columna_de_precio_ignorada' (misión 44: la fila se aplicó entera menos la columna
