@@ -27,14 +27,6 @@ jobs:
           VERSION=$(echo "$MSG" | grep -oP '(?<=\[release:)[^\]]+')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Merge develop a master
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git checkout master
-          git merge develop --no-ff -m "chore: release v${{ steps.version.outputs.VERSION }}"
-          git push origin master
-
       # ------------------------------------------------------------------------------------
       # Paquete de la API (misión actualizar-sin-el-vps, 9/9/2026).
       #
@@ -42,13 +34,18 @@ jobs:
       # install en /home/builds y un zip de 759 MB que arrastraba .git entero y dejaba vendor/
       # afuera. Desde acá el paquete se arma UNA vez por versión, en este runner, con vendor/
       # ADENTRO, y el admin lo baja del release (ReleaseArtifactService::find_asset) en vez
-      # de compilar nada en el VPS. Si find_asset no encuentra el zip, el admin cae a la vía
-      # vieja, así que un release anterior a este workflow se sigue pudiendo desplegar.
+      # de compilar nada en el VPS.
       #
-      # Si cualquiera de los tres pasos de abajo falla, NO se crea el tag ni el release. Es a
-      # propósito: no puede existir un vX.Y.Z sin su paquete, porque el admin lo buscaría por
-      # tag. master ya quedó mergeado en el paso anterior; al volver a correr el workflow
-      # sobre el mismo commit el merge da "Already up to date" y sigue derecho al paquete.
+      # 🔴 EL PAQUETE VA ANTES DEL MERGE A MASTER, y el orden importa. Cuando el asset falta,
+      # el admin NO cae a compilar en el VPS: falla el upgrade con un mensaje que dice qué
+      # archivo buscó (decisión de Lucas, 9/9/2026 — "no quiero que se vuelva a usar más el
+      # VPS para actualizar clientes"). O sea que una versión publicada sin su zip es una
+      # versión que no se puede desplegar. Por eso, si cualquiera de los tres pasos de abajo
+      # falla, el job corta ANTES de tocar master: no queda ni merge, ni tag, ni release. Se
+      # arregla en develop y se vuelve a pushear el [release:X.Y.Z].
+      #
+      # Se empaqueta el árbol de develop, que es exactamente el que master va a recibir en el
+      # merge --no-ff de abajo (master es ancestro de develop en este punto).
       # ------------------------------------------------------------------------------------
 
       - name: Preparar PHP 7.4
@@ -71,8 +68,8 @@ jobs:
         # `--no-scripts` porque este es el modo "sin scripts" ($skip_scripts = true), el mismo
         # que el admin usa en el VPS de builds. El post-autoload-dump (artisan package:discover)
         # necesita un .env que acá no existe; lo corre el `composer install` CON scripts que el
-        # admin hace en el hosting después de descomprimir (línea 451), como hoy. `--prefer-dist`
-        # no hace falta: composer.json ya fija config.preferred-install = dist.
+        # admin hace en el hosting después de descomprimir, como hoy. `--prefer-dist` no hace
+        # falta: composer.json ya fija config.preferred-install = dist.
         env:
           COMPOSER_ALLOW_SUPERUSER: 1
           COMPOSER_MEMORY_LIMIT: -1
@@ -91,8 +88,21 @@ jobs:
                'database/seeders/truvari/*' 'database/seeders/subcategories/*' \
                'database/seeders/sales/*'
           unzip -tq "$ZIP"
+          # Lo que el admin verifica al bajarlo: artisan en la raíz y el autoload de composer.
+          unzip -l "$ZIP" | grep -qE ' artisan$'                || { echo 'FALTA artisan en la raiz del zip'; exit 1; }
+          unzip -l "$ZIP" | grep -qE ' vendor/autoload\.php$'    || { echo 'FALTA vendor/autoload.php en el zip'; exit 1; }
           unzip -l "$ZIP" | tail -1
           ls -la "$ZIP"
+
+      - name: Merge develop a master
+        # vendor/ está en el .gitignore y el zip queda como archivo sin trackear: ninguno de los
+        # dos existe en master, así que el checkout no tiene con qué chocar.
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout master
+          git merge develop --no-ff -m "chore: release v${{ steps.version.outputs.VERSION }}"
+          git push origin master
 
       - name: Crear tag y release
         uses: softprops/action-gh-release@v2
