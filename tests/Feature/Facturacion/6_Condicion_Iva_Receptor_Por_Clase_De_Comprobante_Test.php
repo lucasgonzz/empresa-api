@@ -38,6 +38,9 @@ use Tests\EmpresaTestCase;
  * un doble: asi el test tambien se entera si el `IvaConditionSeeder` cambia los nombres, que es de
  * donde salen las cuatro fichas posibles.
  *
+ * El codigo de comprobante se ejercita SIEMPRE en sus dos formas -int y string-, porque en
+ * produccion conviven las dos y por caminos distintos: ver `formas_del_codigo()`.
+ *
  * @group facturacion
  * @group afip
  */
@@ -153,6 +156,31 @@ class Condicion_Iva_Receptor_Por_Clase_De_Comprobante_Test extends EmpresaTestCa
     }
 
     /**
+     * El MISMO codigo de comprobante en las dos formas en que llega al helper en produccion. No es
+     * una hipotesis defensiva: las dos existen hoy y por caminos distintos.
+     *
+     * - `AfipWsfeHelper::getTipoCbte()` devuelve `afip_tipo_comprobante->codigo`, y esa columna es
+     *   un `string` (migracion 2024_10_01_135444): manda '1', '6', '51'... como STRING. Es el
+     *   camino de toda factura, o sea el mas usado.
+     * - `AfipNotaCreditoHelper::getTipoCbte()` los tiene hardcodeados (`return 3;`, `return 8;`,
+     *   `return 13;`...): manda INT.
+     *
+     * Las dos formas tienen que decidir exactamente lo mismo, asi que la tabla de decision y el
+     * invariante corren con las dos. Si manana alguien mete un `===` o un `switch` estricto contra
+     * un int en el camino de la decision, el string se cae y esto lo denuncia.
+     *
+     * @param int $cbte_tipo
+     * @return array<string,int|string> [forma => codigo]
+     */
+    protected static function formas_del_codigo($cbte_tipo)
+    {
+        return [
+            'int'    => (int) $cbte_tipo,
+            'string' => (string) $cbte_tipo,
+        ];
+    }
+
+    /**
      * Las cuatro combinaciones reales que ARCA rechazaba con el 10243, sacadas de produccion el
      * 9/9/2026. Formato: [descripcion, ficha, cbte_tipo, valor esperado, valor que se mandaba antes].
      *
@@ -220,9 +248,14 @@ class Condicion_Iva_Receptor_Por_Clase_De_Comprobante_Test extends EmpresaTestCa
 
             foreach (self::CODIGOS_QUE_EMITE_EL_SISTEMA as $cbte_tipo => $clase) {
 
-                $nombre = 'ficha "'.$ficha.'" + comprobante '.$cbte_tipo.' (clase '.$clase.')';
+                // Cada combinacion se prueba con el codigo como int y como string: en produccion
+                // llegan las dos (ver formas_del_codigo).
+                foreach (self::formas_del_codigo($cbte_tipo) as $forma => $codigo) {
 
-                $casos[$nombre] = [$ficha, $cbte_tipo, $por_clase[$clase]];
+                    $nombre = 'ficha "'.$ficha.'" + comprobante '.$cbte_tipo.' (clase '.$clase.') como '.$forma;
+
+                    $casos[$nombre] = [$ficha, $codigo, $por_clase[$clase], $forma];
+                }
             }
         }
 
@@ -234,16 +267,17 @@ class Condicion_Iva_Receptor_Por_Clase_De_Comprobante_Test extends EmpresaTestCa
      * @dataProvider tabla_de_decision
      *
      * @param string $ficha
-     * @param int $cbte_tipo
+     * @param int|string $cbte_tipo
      * @param int $esperado
+     * @param string $forma 'int' o 'string', para el mensaje de la asercion.
      */
-    public function la_tabla_de_decision_completa_se_respeta($ficha, $cbte_tipo, $esperado)
+    public function la_tabla_de_decision_completa_se_respeta($ficha, $cbte_tipo, $esperado, $forma)
     {
         $this->assertSame(
             $esperado,
             CondicionIvaReceptorHelper::get_iva_receptor($this->venta_con_ficha($ficha), $cbte_tipo),
             'La tabla de decision del 9/9/2026 dice que con esta ficha y este comprobante hay que '.
-            'mandar '.$esperado.'.'
+            'mandar '.$esperado.' (codigo pasado como '.$forma.').'
         );
     }
 
@@ -265,28 +299,37 @@ class Condicion_Iva_Receptor_Por_Clase_De_Comprobante_Test extends EmpresaTestCa
 
             foreach ($this->todas_las_fichas_posibles() as $ficha) {
 
-                $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor(
-                    $this->venta_con_ficha($ficha),
-                    $cbte_tipo
-                );
+                // Las dos formas del codigo que existen en produccion (ver formas_del_codigo): el
+                // invariante tiene que valer para las dos, no solo para el int.
+                foreach (self::formas_del_codigo($cbte_tipo) as $forma => $codigo) {
 
-                $this->assertContains(
-                    $iva_receptor,
-                    $validos_por_clase[$clase],
-                    'INVARIANTE: el comprobante '.$cbte_tipo.' es de clase '.$clase.', y ARCA solo le '.
-                    'acepta las condiciones ['.implode(', ', $validos_por_clase[$clase]).']. Con la ficha "'.
-                    $ficha.'" se estaria mandando '.$iva_receptor.', y ARCA lo rechazaria con el error '.
-                    '10243 (excluyente: el comprobante no se emite).'
-                );
+                    $iva_receptor = CondicionIvaReceptorHelper::get_iva_receptor(
+                        $this->venta_con_ficha($ficha),
+                        $codigo
+                    );
 
-                $combinaciones++;
+                    $this->assertContains(
+                        $iva_receptor,
+                        $validos_por_clase[$clase],
+                        'INVARIANTE: el comprobante '.$cbte_tipo.' (pasado como '.$forma.') es de clase '.
+                        $clase.', y ARCA solo le acepta las condiciones ['.
+                        implode(', ', $validos_por_clase[$clase]).']. Con la ficha "'.$ficha.
+                        '" se estaria mandando '.$iva_receptor.', y ARCA lo rechazaria con el error '.
+                        '10243 (excluyente: el comprobante no se emite).'
+                    );
+
+                    $combinaciones++;
+                }
             }
         }
 
         $this->assertSame(
-            count(self::CODIGOS_QUE_EMITE_EL_SISTEMA) * count($this->todas_las_fichas_posibles()),
+            count(self::CODIGOS_QUE_EMITE_EL_SISTEMA)
+                * count($this->todas_las_fichas_posibles())
+                * count(self::formas_del_codigo(1)),
             $combinaciones,
-            'El invariante tiene que haber recorrido todos los codigos por todas las fichas.'
+            'El invariante tiene que haber recorrido todos los codigos por todas las fichas, en las '.
+            'dos formas en que el codigo llega al helper.'
         );
     }
 
@@ -416,6 +459,54 @@ class Condicion_Iva_Receptor_Por_Clase_De_Comprobante_Test extends EmpresaTestCa
     }
 
     /**
+     * La venta misma llegando en `null` -no una venta sin cliente, que es el caso de arriba, sino
+     * `$sale` nulo- no puede tirar una excepcion. Ningun llamador de produccion lo hace hoy
+     * (`AfipWsfeHelper` pasa `$this->afip_ticket->sale` y `AfipNotaCreditoHelper` pasa su `$sale`),
+     * pero `condicion_segun_la_ficha()` tiene el guard `!is_null($sale)` y sin este caso esa rama no
+     * la pisa ningun test: quedaria escrita y sin medir. Se comporta igual que la ficha vacia, que
+     * es el unico resultado sensato -no hay ficha de la que derivar nada-.
+     *
+     * @test
+     */
+    public function una_venta_en_null_cae_al_default_de_la_clase_y_no_rompe()
+    {
+        $casos = [
+            [1, 1, 'Factura A (clase A): sin ficha va 1, que es lo que la clase A admite.'],
+            [51, 1, 'Factura M (clase M): mismo criterio que la A.'],
+            [6, 5, 'Factura B (clase B): sin ficha va 5, consumidor final.'],
+            [11, 5, 'Factura C (clase C): sin ficha va 5, consumidor final.'],
+            [3, 1, 'Nota de credito A (codigo 3): se resuelve por su propia clase igual que la factura.'],
+        ];
+
+        foreach ($casos as $caso) {
+
+            list($cbte_tipo, $esperado, $porque) = $caso;
+
+            foreach (self::formas_del_codigo($cbte_tipo) as $forma => $codigo) {
+
+                $this->assertSame(
+                    $esperado,
+                    CondicionIvaReceptorHelper::get_iva_receptor(null, $codigo),
+                    'Con la venta en null (codigo pasado como '.$forma.'): '.$porque
+                );
+            }
+        }
+
+        $this->assertSame(
+            5,
+            CondicionIvaReceptorHelper::get_iva_receptor(null),
+            'Venta en null y sin tipo de comprobante: el fallback historico, que para una ficha '.
+            'vacia siempre fue 5 (consumidor final).'
+        );
+
+        $this->assertSame(
+            5,
+            CondicionIvaReceptorHelper::get_iva_receptor(null, 19),
+            'Venta en null y clase E (exportacion): fallback historico, mismo 5.'
+        );
+    }
+
+    /**
      * Una nota de credito se valida por SU propia clase, no por la de la factura que anula. La NC
      * de una Factura A es el codigo 3 (clase A) y la de una Factura B es el 8 (clase B), tal como
      * los devuelve `AfipNotaCreditoHelper::getTipoCbte()`.
@@ -454,18 +545,28 @@ class Condicion_Iva_Receptor_Por_Clase_De_Comprobante_Test extends EmpresaTestCa
      * alguien agrega una quinta, este test lo denuncia: la tabla de decision de arriba habria
      * quedado incompleta.
      *
+     * Compara CONJUNTOS, no el orden: reordenar el seeder no cambia nada semantico y no tiene por
+     * que romper este test. Se ordenan los dos lados alfabeticamente en vez de usar un
+     * `assertEqualsCanonicalizing` para que una condicion repetida tambien se vea.
+     *
      * @test
      */
     public function la_base_tiene_exactamente_las_cuatro_condiciones_iva_del_seeder()
     {
-        $nombres = IvaCondition::orderBy('id')->pluck('name')->all();
+        $nombres = IvaCondition::pluck('name')->all();
+
+        $esperadas = self::FICHAS_DEL_SEEDER;
+
+        sort($nombres);
+        sort($esperadas);
 
         $this->assertSame(
-            self::FICHAS_DEL_SEEDER,
+            $esperadas,
             $nombres,
-            'Las condiciones IVA de la base cambiaron respecto del IvaConditionSeeder. La tabla de '.
-            'decision de CondicionIvaReceptorHelper::get_iva_receptor() esta escrita sobre esas '.
-            'cuatro: si hay una quinta, hay que decidir a que valor mapea en cada clase.'
+            'Las condiciones IVA de la base cambiaron respecto del IvaConditionSeeder (se comparan '.
+            'como conjunto: el orden no importa). La tabla de decision de '.
+            'CondicionIvaReceptorHelper::get_iva_receptor() esta escrita sobre esas cuatro: si hay '.
+            'una quinta, hay una fila sin decidir -a que valor mapea en cada clase-.'
         );
     }
 }
