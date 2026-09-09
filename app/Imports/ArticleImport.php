@@ -77,7 +77,14 @@ class ArticleImport implements ToCollection
          * Misión `costo-bruto-por-condicion-fiscal` (20/8/2026): si los costos de la planilla vienen
          * con IVA adentro. Va último y con default por la misma razón que en ProcessArticleChunk.
          */
-        $precios_incluyen_iva = false
+        $precios_incluyen_iva = false,
+
+        /*
+         * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026): con provider_code
+         * repetido, quedarse con el artículo que además coincide en nombre. Va último y
+         * con default por la misma razón que los dos de arriba (cambio aditivo).
+         */
+        $desempatar_por_nombre = false
     ) {
 
         $this->log_activado = false;
@@ -103,6 +110,7 @@ class ArticleImport implements ToCollection
         $this->interpretacion_punto                                 = $interpretacion_punto;
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
         $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
+        $this->desempatar_por_nombre                                = $desempatar_por_nombre;
 
 
         $this->columns = $columns;
@@ -163,6 +171,7 @@ class ArticleImport implements ToCollection
             'interpretacion_punto'                                  => $this->interpretacion_punto,
             'filas_repetidas_del_archivo'                           => $this->filas_repetidas_del_archivo,
             'precios_incluyen_iva'                                  => $this->precios_incluyen_iva,
+            'desempatar_por_nombre'                                 => $this->desempatar_por_nombre,
         ]);
 
         $this->nombres_proveedores = [];

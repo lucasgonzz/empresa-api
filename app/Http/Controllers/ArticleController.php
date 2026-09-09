@@ -759,6 +759,17 @@ class ArticleController extends Controller
              */
             'interpretacion_punto'                                  => ImportHelper::normalizarInterpretacionPunto($request->interpretacion_punto),
 
+            /*
+             * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026): cuando un
+             * provider_code matchea más de un artículo, quedarse con el que además
+             * coincide en nombre. Default false = comportamiento de siempre, así que una
+             * SPA que todavía no lo manda importa exactamente igual que hasta hoy.
+             *
+             * filter_var y no cast crudo: `(bool) 'false'` en PHP da TRUE. Mismo criterio
+             * que `precios_incluyen_iva`, unas líneas más arriba.
+             */
+            'desempatar_por_nombre'                                 => filter_var($request->desempatar_por_nombre, FILTER_VALIDATE_BOOLEAN),
+
         ]);
         
         if ($result['hubo_un_error']) {

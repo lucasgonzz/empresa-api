@@ -120,6 +120,13 @@ class ActualizarBBDD {
         $this->articulos_actualizados_models = [];
 
         /*
+         * Índice provider_code => [Article, ...] de los artículos creados en este chunk.
+         * Se arma perezosamente en creados_con_provider_code() y se invalida cada vez que
+         * set_articulos_creados_models() rehace la colección.
+         */
+        $this->creados_index_por_provider_code = null;
+
+        /*
          * Acumula los IDs de artículos creados cuyo bar_code o provider_code ya existía en la BD.
          * Se llena en guardar_articulos() después del INSERT y se expone vía getter.
          */
@@ -1904,11 +1911,81 @@ class ActualizarBBDD {
         // 1) Si viene provider_code, NO caigas a name (evita asignar descuentos al artículo incorrecto)
         if ($provider_code !== '') {
 
-            $article = $this->articulos_creados_models->first(function ($a) use ($provider_code) {
-                return trim((string)$a->provider_code) === $provider_code;
-            });
+            $candidatos = $this->creados_con_provider_code($provider_code);
 
-            if ($article) return $article;
+            if (count($candidatos) === 1) {
+                return $candidatos[0];
+            }
+
+            /*
+             * DOS O MÁS artículos recién creados con el MISMO provider_code (misión
+             * `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+             *
+             * El caso real: DobleP Herrajes importa la lista de Bronzen, donde el producto
+             * suelto y su pack x15 comparten el código del proveedor (`FA-NN`, `FA-NB`, ...).
+             * Hasta este arreglo, acá había un `->first()` por provider_code y las dos filas
+             * del Excel resolvían al MISMO modelo: el primer artículo se llevaba los recargos
+             * de las dos filas y el segundo quedaba sin descuento ni recargo. Medido en la
+             * base de producción de DobleP: 6 artículos con 2 recargos y 6 con ninguno. Los
+             * descuentos no se duplicaban sólo porque `sync_provider_discounts()` hace un
+             * barrido antes de crear; los recargos no tienen ese barrido y se acumulan.
+             *
+             * 🔴 POR QUÉ SE DESEMPATA POR NOMBRE Y NO POR `fake_id`, que es único por fila y
+             * ya existe (ProcessRow ~:1403). Porque acá ya no hay `fake_id` que valga:
+             *
+             *   1. `fake_id` NO es columna de `articles` — se excluye explícitamente del
+             *      INSERT (ver guardar_articulos(), la lista del `except()`). Los modelos de
+             *      $articulos_creados_models NO salen del cache: los relee de la base
+             *      set_articulos_creados_models() con un `where(user_id) + where(chunk_number)`,
+             *      así que llegan sin ninguna referencia a la fila que los creó.
+             *   2. Reconstruir el mapa `fake_id -> id` obligaría a apoyarse en que el bloque
+             *      de auto_increment que consumió el `Article::insert()` masivo sea contiguo
+             *      y venga en el mismo orden que las tuplas. Con `innodb_autoinc_lock_mode = 2`
+             *      (el default de MySQL 8) eso NO está garantizado, y acá hay varios chunks
+             *      insertando en `articles` a la vez: es la operación normal, no un borde.
+             *      Y una asignación equivocada no falla — le pone los recargos de un artículo
+             *      a otro, en silencio. Es peor que el defecto que vinimos a arreglar.
+             *   3. La única forma robusta sería agregarle una columna a `articles` para
+             *      arrastrar un id temporal de importación: cambio de esquema en ~40 clientes
+             *      para un dato que vive treinta segundos.
+             *
+             * Se desempata entonces por el par (provider_code + nombre normalizado), que es
+             * EXACTAMENTE el mismo criterio que usa el camino de reimportación
+             * (ArticleIndexCache::find_with_index(), bloque de permitir_provider_code_repetido).
+             * Que los dos caminos usen la misma regla es lo que evita que "crear" y
+             * "actualizar" terminen resolviendo distinto sobre el mismo archivo.
+             */
+            if (count($candidatos) > 1 && $name !== '') {
+
+                $por_nombre = [];
+                $key_name   = ArticleIndexCache::normalize_name_for_match($name);
+
+                foreach ($candidatos as $candidato) {
+                    if (ArticleIndexCache::normalize_name_for_match($candidato->name) === $key_name) {
+                        $por_nombre[] = $candidato;
+                    }
+                }
+
+                if (count($por_nombre) === 1) {
+                    return $por_nombre[0];
+                }
+
+                /*
+                 * El nombre tampoco desempata (mismo código Y mismo nombre en las dos filas,
+                 * o ninguno coincide). Se deja el comportamiento de siempre —el primero— y se
+                 * avisa: si no, este caso quedaría indistinguible del que sí resolvió bien.
+                 */
+                Log::warning('get_article_model_from_cache: provider_code repetido entre articulos creados y el nombre no desempata. Se usa el primero, como hasta ahora.', [
+                    'provider_code'        => $provider_code,
+                    'name'                 => $name,
+                    'candidatos_ids'       => array_map(function ($a) { return $a->id; }, $candidatos),
+                    'coincidencias_nombre' => count($por_nombre),
+                ]);
+            }
+
+            if (count($candidatos) > 0) {
+                return $candidatos[0];
+            }
 
             Log::warning('get_article_model_from_cache: No se encontró artículo creado por provider_code. Se omite asignación para evitar errores.', [
                 'provider_code' => $provider_code,
@@ -1959,6 +2036,49 @@ class ActualizarBBDD {
         return null;
     }
 
+    /**
+     * Artículos recién creados en este chunk que tienen ese `provider_code`, como array
+     * indexado (no Collection: se consume con count() e índices).
+     *
+     * Se apoya en un índice que se arma UNA sola vez por chunk. No es una optimización
+     * de adorno: get_article_model_from_cache() se llama una vez por artículo del cache
+     * en SIETE recorridos distintos (listas de precio, descuentos %, descuentos monto,
+     * descuentos tagueados, recargos %, recargos monto, ...), y la versión anterior hacía
+     * un `->first()` con closure sobre la colección entera en cada llamada. Con los 3.260
+     * artículos de la importación de DobleP eso son millones de comparaciones por pasada.
+     *
+     * @param  string $provider_code ya trimeado por el llamador
+     * @return array  lista de \App\Models\Article (vacía si no hay ninguno)
+     */
+    protected function creados_con_provider_code($provider_code)
+    {
+        if (is_null($this->creados_index_por_provider_code)) {
+
+            $index = [];
+
+            foreach ($this->articulos_creados_models as $articulo) {
+
+                $codigo = trim((string) $articulo->provider_code);
+
+                if ($codigo === '') {
+                    continue;
+                }
+
+                if (!isset($index[$codigo])) {
+                    $index[$codigo] = [];
+                }
+
+                $index[$codigo][] = $articulo;
+            }
+
+            $this->creados_index_por_provider_code = $index;
+        }
+
+        return isset($this->creados_index_por_provider_code[$provider_code])
+                ? $this->creados_index_por_provider_code[$provider_code]
+                : [];
+    }
+
     function get_articles_models_from_cache($articulos_cache) {
         $byProviderCode = [];
         $byBarCode = [];
@@ -1995,6 +2115,9 @@ class ActualizarBBDD {
                             ->get();
 
         $this->articulos_creados_models = $articles;
+
+        /* El índice por provider_code se arma sobre esta colección: si cambia, se invalida. */
+        $this->creados_index_por_provider_code = null;
 
         $fin = microtime(true);
         $dur = $fin - $inicio;

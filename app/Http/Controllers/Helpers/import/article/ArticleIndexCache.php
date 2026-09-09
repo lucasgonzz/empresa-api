@@ -37,6 +37,17 @@ class ArticleIndexCache
     protected static $ultimo_identificadores_pendientes = [];
 
     /**
+     * Resultado del desempate por nombre de la ultima llamada a find_with_index(),
+     * SOLO cuando el usuario lo pidio ($desempatar_por_nombre = true) y NO alcanzo
+     * para quedarse con un unico articulo. Ver ultimo_desempate_sin_resolver().
+     *
+     * Vacio ([]) cuando el desempate no se pidio, no hizo falta, o resolvio bien.
+     *
+     * @var array
+     */
+    protected static $ultimo_desempate_sin_resolver = [];
+
+    /**
      * Registro en RAM de modelos Article "fake" pendientes de persistir (por user_id y fake_id).
      * Permite que find_with_index devuelva el mismo artículo aún sin fila en BD (whereIn(id) vacío).
      *
@@ -689,6 +700,67 @@ class ArticleIndexCache
     }
 
     /**
+     * Datos del desempate por nombre que el usuario pidio y que NO alcanzo para
+     * quedarse con un unico articulo (mision `desempate-por-nombre-codigo-repetido`,
+     * 9/9/2026).
+     *
+     * Devuelve [] cuando el desempate no se pidio, no hizo falta (habia un solo
+     * candidato) o resolvio bien. Cuando NO resolvio, devuelve:
+     *
+     *   [
+     *     'provider_code' => 'FA-NN',        // codigo por el que matchearon los candidatos
+     *     'nombre_excel'  => 'SILICONA ...', // nombre tal cual venia en la fila
+     *     'article_ids'   => [12, 34],       // los candidatos que quedaron en pie
+     *     'motivo'        => 'ninguno_coincide' | 'varios_coinciden' | 'fila_sin_nombre',
+     *   ]
+     *
+     * 🔴 Existe porque find_with_index() es ESTATICO y no conoce a ProcessRow, que es
+     * el unico que sabe en que fila esta y el unico que puede dejar un `import_conflict`.
+     * Mismo mecanismo (y misma regla de uso) que ultimo_escalon() y
+     * ultimos_identificadores_pendientes(): solo tiene sentido leerlo INMEDIATAMENTE
+     * despues de find_with_index().
+     *
+     * @return array
+     */
+    public static function ultimo_desempate_sin_resolver()
+    {
+        return self::$ultimo_desempate_sin_resolver;
+    }
+
+    /**
+     * Filtra, por nombre normalizado, los candidatos que YA matchearon por provider_code.
+     *
+     * 🔴 Esto es un FILTRO sobre el resultado del escalon provider_code, NO un escalon
+     * nuevo ni una caida al escalon `name`. La diferencia no es cosmetica y no se
+     * "simplifica" reusando el escalon 5: ese escalon busca en $index['names'], que es
+     * GLOBAL AL USUARIO, asi que un articulo de OTRO proveedor que se llame igual
+     * matchearia. Lo que se quiere es "de estos dos que matchearon por FA-NN, quedate con
+     * el que ademas coincide en nombre" — el universo de busqueda son los candidatos, y
+     * nada mas que los candidatos.
+     *
+     * Se compara con normalize_name_for_match(), el MISMO normalizador con el que se
+     * construye $index['names']: si acá se usara otro criterio (por ejemplo trim + ===),
+     * el desempate diria que si en casos donde el matching real dice que no, y al reves.
+     *
+     * @param  \Illuminate\Support\Collection $candidatos artículos que matchearon por provider_code
+     * @param  string                         $name       nombre de la fila del Excel
+     * @return array ['articulo' => Article|null, 'coincidencias' => int]
+     */
+    protected static function filtrar_candidatos_por_nombre($candidatos, $name)
+    {
+        $key_name = self::normalize_name_for_match($name);
+
+        $coinciden = $candidatos->filter(function ($articulo) use ($key_name) {
+            return self::normalize_name_for_match($articulo->name) === $key_name;
+        })->values();
+
+        return [
+            'articulo'      => $coinciden->count() === 1 ? $coinciden->first() : null,
+            'coincidencias' => $coinciden->count(),
+        ];
+    }
+
+    /**
      * Deja registrado el escalon y devuelve el resultado, para que find_with_index()
      * no tenga ningun return que se olvide de setearlo.
      *
@@ -772,7 +844,19 @@ class ArticleIndexCache
          * matched_article_created_by_this_import(). Default null preserva el
          * comportamiento de siempre para cualquier llamador que no lo pase.
          */
-        ?int $import_history_id_actual = null
+        ?int $import_history_id_actual = null,
+
+        /*
+         * Mision `desempate-por-nombre-codigo-repetido` (9/9/2026). El proveedor usa el
+         * MISMO codigo para dos productos distintos (el suelto y su pack x15, caso real
+         * de DobleP Herrajes con la lista de Bronzen), y los nombres SI son unicos dentro
+         * del par. Con este flag, cuando el escalon provider_code deja mas de un candidato
+         * se filtra por nombre para quedarse con el que corresponde a ESTA fila.
+         *
+         * Va ULTIMO y con default false a proposito: una SPA vieja que no lo manda, y
+         * cualquier otro llamador, obtienen el comportamiento de siempre bit por bit.
+         */
+        bool $desempatar_por_nombre = false
     ) {
         if (!is_array($index) || empty($index)) {
             $index = self::get_index($user_id, $provider_id);
@@ -781,6 +865,9 @@ class ArticleIndexCache
         // Se resetea en cada llamada: si no se pisa mas abajo, ultimos_identificadores_pendientes()
         // tiene que devolver [] y no arrastrar el valor de la fila anterior.
         self::$ultimo_identificadores_pendientes = [];
+
+        // Idem: sin este reset, la fila N reportaria el desempate fallido de la fila N-1.
+        self::$ultimo_desempate_sin_resolver = [];
 
         Self::log('find_with_index');
 
@@ -1076,6 +1163,79 @@ class ArticleIndexCache
                         // vacía: son_varios_articulos() la trataría como "no son varios" y caería en
                         // la misma anulación-a-duplicado que el caso de arriba.
                         return self::con_escalon('provider_code', null);
+                    }
+
+                    /*
+                     * DESEMPATE POR NOMBRE (misión `desempate-por-nombre-codigo-repetido`,
+                     * 9/9/2026). Llegamos acá con DOS O MÁS artículos reales que comparten
+                     * provider_code. Hoy los devolvemos todos y cada fila del Excel termina
+                     * escribiendo en los dos: para el caso de DobleP (el suelto y su pack x15
+                     * comparten `FA-NN`) eso significa que los dos artículos quedan con los
+                     * datos de la última fila, o sea que ninguno de los dos queda bien.
+                     *
+                     * 🔴 Es un FILTRO sobre los candidatos que YA matchearon por código, NO un
+                     * escalón nuevo ni una caída al escalón `name`. Ver el porqué completo en
+                     * filtrar_candidatos_por_nombre(): el escalón `name` busca en
+                     * $index['names'], que es global al usuario, y traería artículos de otros
+                     * proveedores que se llamen igual.
+                     *
+                     * 🔴 Si el nombre NO desempata (ninguno coincide, o coinciden varios), se
+                     * cae al comportamiento de HOY —la Collection completa— y se deja anotado
+                     * el motivo para que ProcessRow registre un `import_conflict`. NUNCA se
+                     * devuelve null "porque no encontré a ninguno": eso haría que la fila
+                     * cree un artículo nuevo en cada corrida y duplique el catálogo de a poco,
+                     * sin que nadie se entere.
+                     */
+                    if ($desempatar_por_nombre) {
+
+                        $nombre_de_la_fila = isset($data['name']) ? trim((string) $data['name']) : '';
+
+                        if ($nombre_de_la_fila === '') {
+
+                            /* La fila no trae nombre: no hay con qué desempatar. Queda reportado. */
+                            self::$ultimo_desempate_sin_resolver = [
+                                'provider_code' => $provider_code,
+                                'nombre_excel'  => null,
+                                'article_ids'   => $resuelto_provider_code_repetido->pluck('id')->values()->all(),
+                                'motivo'        => 'fila_sin_nombre',
+                            ];
+
+                            Self::log('Desempate por nombre pedido pero la fila no trae nombre: ' . $provider_code);
+
+                        } else {
+
+                            $desempate = self::filtrar_candidatos_por_nombre(
+                                $resuelto_provider_code_repetido,
+                                $nombre_de_la_fila
+                            );
+
+                            if (!is_null($desempate['articulo'])) {
+
+                                Self::log('Desempate por nombre OK: ' . $provider_code . ' -> articulo ' . $desempate['articulo']->id);
+
+                                return self::con_escalon('provider_code', $desempate['articulo']);
+                            }
+
+                            self::$ultimo_desempate_sin_resolver = [
+                                'provider_code' => $provider_code,
+                                'nombre_excel'  => $nombre_de_la_fila,
+                                'article_ids'   => $resuelto_provider_code_repetido->pluck('id')->values()->all(),
+                                /*
+                                 * 'ninguno_coincide' = el proveedor cambió la redacción entre listas.
+                                 * 'varios_coinciden' = dos artículos con el mismo código Y el mismo
+                                 * nombre; ahí el nombre no distingue nada y no hay desempate posible.
+                                 */
+                                'motivo'        => $desempate['coincidencias'] === 0
+                                                    ? 'ninguno_coincide'
+                                                    : 'varios_coinciden',
+                            ];
+
+                            Self::log(
+                                'Desempate por nombre NO resolvio: ' . $provider_code
+                                . ' ("' . $nombre_de_la_fila . '" coincide con ' . $desempate['coincidencias']
+                                . ' de ' . $resuelto_provider_code_repetido->count() . ' candidatos)'
+                            );
+                        }
                     }
 
                     return self::con_escalon('provider_code', $resuelto_provider_code_repetido);
@@ -1832,6 +1992,10 @@ class ArticleIndexCache
         self::$runtime_dirty_by_key  = [];
         self::$runtime_fake_articles = [];
         self::$ultimo_escalon        = null;
+
+        /* Idem: es estado estatico del proceso y sobrevive de un test al siguiente. */
+        self::$ultimo_identificadores_pendientes = [];
+        self::$ultimo_desempate_sin_resolver     = [];
     }
 
     static function limpiar_cache($user_id) {

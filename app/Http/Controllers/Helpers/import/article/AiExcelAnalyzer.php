@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
@@ -49,6 +50,17 @@ class AiExcelAnalyzer
      * @var int
      */
     protected const MAX_TOKENS = 4000;
+
+    /**
+     * Cuántos códigos de proveedor repetidos se listan como ejemplo en
+     * `desempate_por_nombre` (misión 9/9/2026). Mismo criterio que
+     * ExcelDuplicateStats::MAX_EXAMPLES: son para que el usuario reconozca el caso en su
+     * archivo, no para enumerárselo entero — la lista de Bronzen tiene 6, pero un
+     * archivo mal armado puede tener miles y esto viaja en cada respuesta del análisis.
+     *
+     * @var int
+     */
+    protected const MAX_EJEMPLOS_DESEMPATE = 10;
 
     /*
      * ---------------------------------------------------------------------------------
@@ -349,6 +361,17 @@ class AiExcelAnalyzer
         $parsed['placeholders']          = $identification_chain_analysis['placeholders'];
         $parsed['cadena_identificacion'] = $identification_chain_analysis['cadena_identificacion'];
         $parsed['nombres_duplicados']    = $identification_chain_analysis['nombres_duplicados'];
+
+        /*
+         * 🔴 CONTRATO CON LA SPA (misión `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+         * La clave se llama `desempate_por_nombre` y el modal la lee para decidir si le
+         * ofrece al usuario la cuarta decisión del paso 3 y con qué texto ("los 6 códigos
+         * repetidos tienen nombres distintos: se pueden separar por nombre"). Es el espejo
+         * de la opción que después viaja en el payload del import como
+         * `desempatar_por_nombre`. Renombrarla no rompe nada visiblemente: el aviso deja de
+         * aparecer, EN SILENCIO. Ver resumir_desempate_por_nombre() para la forma exacta.
+         */
+        $parsed['desempate_por_nombre']  = $identification_chain_analysis['desempate_por_nombre'];
 
         /*
          * Paso 8.2 (grupo 239, prompt 02): detección de números con punto ambiguos en las
@@ -855,7 +878,8 @@ class AiExcelAnalyzer
      * @param  array    $column_mapping   Mapeo de columnas enriquecido (con excel_column_index)
      * @param  int      $indice_hoja      Hoja 0-based elegida por el usuario
      * @param  int|null $fila_encabezado  Fila 1-based del encabezado; null o 1 = rama de siempre
-     * @return array  ['placeholders' => [...], 'cadena_identificacion' => [...], 'nombres_duplicados' => [...]]
+     * @return array  ['placeholders' => [...], 'cadena_identificacion' => [...], 'nombres_duplicados' => [...],
+     *                 'desempate_por_nombre' => [...]]
      */
     protected function analyze_identification_chain(string $excel_path, array $column_mapping, $indice_hoja = 0, $fila_encabezado = null): array
     {
@@ -880,6 +904,7 @@ class AiExcelAnalyzer
                 'cantidad_distintos' => 0,
                 'filas_afectadas'    => 0,
             ],
+            'desempate_por_nombre' => self::desempate_por_nombre_vacio(),
         ];
 
         /*
@@ -948,6 +973,17 @@ class AiExcelAnalyzer
 
         /* Acumulador de nombres normalizados -> cantidad de filas, para detectar nombres repetidos. */
         $nombres_data = [];
+
+        /*
+         * Acumulador para el aviso de "desempate por nombre" (misión 9/9/2026):
+         * provider_code normalizado -> ['filas' => N, 'nombres' => [nombre_normalizado => veces]].
+         *
+         * Con esto se puede responder, ANTES de importar, la pregunta que el usuario tiene
+         * que contestar en el paso 3: "de los códigos que se repiten en este archivo,
+         * ¿tienen nombres distintos entre sí?". Si los tienen, la opción va a servir; si no,
+         * no hay desempate posible y la pantalla no se lo tiene que ofrecer como solución.
+         */
+        $codigos_repetidos_data = [];
 
         /* Cantidad de filas de datos efectivamente recorridas (excluye cabecera). Se hoistea acá
          * porque el try/catch de abajo la necesita en el return final, fuera del scope del foreach. */
@@ -1071,6 +1107,35 @@ class AiExcelAnalyzer
                     }
                     $nombres_data[$name_key]++;
                 }
+
+                /*
+                 * Desempate por nombre (misión 9/9/2026): por cada provider_code del archivo,
+                 * qué nombres distintos le corresponden.
+                 *
+                 * 🔴 El nombre se normaliza con ArticleIndexCache::normalize_name_for_match(),
+                 * el MISMO normalizador con el que el importador va a desempatar de verdad —
+                 * no con el mb_strtolower() de `nombres_duplicados`, que es un aviso general y
+                 * usa otro criterio. Si acá se usara otro, la pantalla diría "se pueden separar
+                 * por nombre" para un archivo en el que el desempate después no funciona: le
+                 * estaríamos mintiendo al usuario justo en la decisión que le estamos pidiendo.
+                 */
+                if (!is_null($provider_code_val) && !is_null($name_val)) {
+
+                    $codigo_key = (string) $provider_code_val;
+                    $nombre_key = ArticleIndexCache::normalize_name_for_match($name_val);
+
+                    if (!isset($codigos_repetidos_data[$codigo_key])) {
+                        $codigos_repetidos_data[$codigo_key] = ['filas' => 0, 'nombres' => []];
+                    }
+
+                    $codigos_repetidos_data[$codigo_key]['filas']++;
+
+                    if (!isset($codigos_repetidos_data[$codigo_key]['nombres'][$nombre_key])) {
+                        $codigos_repetidos_data[$codigo_key]['nombres'][$nombre_key] = 0;
+                    }
+
+                    $codigos_repetidos_data[$codigo_key]['nombres'][$nombre_key]++;
+                }
             }
 
             $lectura->cerrar();
@@ -1137,7 +1202,104 @@ class AiExcelAnalyzer
                 'cantidad_distintos' => $nombres_distintos_repetidos,
                 'filas_afectadas'    => $nombres_filas_afectadas,
             ],
+            'desempate_por_nombre' => self::resumir_desempate_por_nombre($codigos_repetidos_data),
         ];
+    }
+
+    /**
+     * Forma vacía de `desempate_por_nombre`. Existe para que la clave tenga SIEMPRE la
+     * misma estructura, tanto en el resultado real como en las salidas degradadas
+     * (sin columnas identificadoras, error de lectura): la SPA no tiene que preguntarse
+     * si existe antes de leerla.
+     *
+     * @return array
+     */
+    protected static function desempate_por_nombre_vacio()
+    {
+        return [
+            'aplica'                 => false,
+            'sirve'                  => false,
+            'codigos_repetidos'      => 0,
+            'codigos_que_desempata'  => 0,
+            'codigos_que_no_desempata' => 0,
+            'filas_afectadas'        => 0,
+            'ejemplos'               => [],
+        ];
+    }
+
+    /**
+     * Resume, para el paso 3 del modal, si el desempate por nombre le va a servir a ESTE
+     * archivo (misión `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+     *
+     * La pregunta que responde es la que el usuario no puede contestar solo: "los códigos
+     * de proveedor que se repiten en tu archivo, ¿tienen nombres distintos entre sí?".
+     * Si los tienen, prender la opción separa cada fila en su artículo (el caso de
+     * DobleP: el suelto y su pack x15 comparten `FA-NN` pero se llaman distinto). Si no
+     * los tienen, no hay nada que desempatar y la pantalla no lo tiene que ofrecer como
+     * si fuera la solución.
+     *
+     * Claves del resultado:
+     *   'aplica'                   -> hay al menos un provider_code repetido dentro del archivo
+     *   'sirve'                    -> aplica Y todos esos códigos tienen todos sus nombres distintos
+     *   'codigos_repetidos'        -> cuántos provider_codes distintos aparecen más de una vez
+     *   'codigos_que_desempata'    -> de esos, cuántos tienen TODOS los nombres distintos entre sí
+     *   'codigos_que_no_desempata' -> de esos, cuántos repiten algún nombre (ahí no hay desempate)
+     *   'filas_afectadas'          -> filas involucradas en códigos repetidos
+     *   'ejemplos'                 -> hasta MAX_EJEMPLOS_DESEMPATE, para mostrarlos en la tabla
+     *
+     * @param  array $codigos_repetidos_data provider_code => ['filas' => N, 'nombres' => [key => veces]]
+     * @return array
+     */
+    protected static function resumir_desempate_por_nombre(array $codigos_repetidos_data)
+    {
+        $resumen = self::desempate_por_nombre_vacio();
+
+        foreach ($codigos_repetidos_data as $codigo => $data) {
+
+            /* Un código que aparece una sola vez no tiene con quién empatar. */
+            if ($data['filas'] <= 1) {
+                continue;
+            }
+
+            $resumen['codigos_repetidos']++;
+            $resumen['filas_afectadas'] += $data['filas'];
+
+            /*
+             * Desempata cuando hay tantos nombres distintos como filas: cada fila de ese
+             * código tiene su propio nombre. Con un nombre repetido adentro del grupo, esas
+             * dos filas siguen siendo indistinguibles y el importador va a caer al
+             * comportamiento de siempre (y va a registrar el conflicto).
+             */
+            $desempata = count($data['nombres']) === (int) $data['filas'];
+
+            if ($desempata) {
+                $resumen['codigos_que_desempata']++;
+            } else {
+                $resumen['codigos_que_no_desempata']++;
+            }
+
+            if (count($resumen['ejemplos']) < self::MAX_EJEMPLOS_DESEMPATE) {
+                $resumen['ejemplos'][] = [
+                    'codigo'            => (string) $codigo,
+                    'veces'             => (int) $data['filas'],
+                    'nombres_distintos' => count($data['nombres']),
+                    'desempata'         => $desempata,
+                ];
+            }
+        }
+
+        $resumen['aplica'] = $resumen['codigos_repetidos'] > 0;
+
+        /*
+         * 'sirve' es deliberadamente estricto: sólo true si NINGÚN código repetido queda sin
+         * desempatar. Un archivo donde 5 de 6 códigos se separan bien y uno no, no es "sirve":
+         * si la pantalla dijera que sí, ese sexto código se seguiría pisando y el usuario
+         * creería que ya está resuelto. Los contadores están para que la SPA pueda redactar
+         * el caso intermedio ("5 de 6 se pueden separar") con precisión.
+         */
+        $resumen['sirve'] = $resumen['aplica'] && $resumen['codigos_que_no_desempata'] === 0;
+
+        return $resumen;
     }
 
     /**

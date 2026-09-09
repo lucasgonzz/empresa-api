@@ -18,7 +18,14 @@ use Illuminate\Database\Eloquent\Model;
  * Tipos vigentes:
  *   ambiguo, placeholder_descartado, sin_identificador, numero_invalido,
  *   numero_fuera_de_rango, identificador_sin_asignar, fila_sobrescrita,
- *   columna_de_precio_ignorada.
+ *   columna_de_precio_ignorada, desempate_por_nombre_sin_resolver.
+ *
+ * `desempate_por_nombre_sin_resolver` (misión 9/9/2026): el usuario pidió desempatar
+ * por nombre los artículos que comparten `provider_code` y para esa fila el nombre no
+ * alcanzó — o no coincide con ninguno (el proveedor cambió la redacción entre listas),
+ * o coincide con varios (mismo código y mismo nombre). La fila NO se saltea: se aplica
+ * el comportamiento de siempre (actualizar todos los candidatos) y queda esta marca.
+ * `campo` = 'provider_code', `valor` = el código, `article_ids` = los que empataron.
  *
  * DOS de esos tipos NO representan una fila que no se pudo procesar y por eso no
  * suman a `conflicts_count`: 'fila_sobrescrita' (la repetición se resolvió bien) y

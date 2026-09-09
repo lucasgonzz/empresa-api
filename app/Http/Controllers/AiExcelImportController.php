@@ -455,6 +455,8 @@ class AiExcelImportController extends Controller
      *   - actualizar_articulos_de_otro_proveedor (bool)
      *   - actualizar_por_provider_code (bool)
      *   - actualizar_proveedor (bool)
+     *   - desempatar_por_nombre (bool): con provider_code repetido, quedarse con el
+     *     artículo que además coincide en nombre (misión 9/9/2026). Default false.
      *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
@@ -595,6 +597,17 @@ class AiExcelImportController extends Controller
              * ArticleController@import: se resuelve acá, no se confía en el valor crudo.
              */
             'interpretacion_punto'                               => ImportHelper::normalizarInterpretacionPunto($request->input('interpretacion_punto')),
+
+            /*
+             * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026): cuando un
+             * provider_code matchea más de un artículo, quedarse con el que además
+             * coincide en nombre. Es la cuarta decisión del paso 3 del modal, y viaja
+             * por el mismo carril que `interpretacion_punto`.
+             *
+             * Default false: un modal viejo que no la manda importa exactamente igual que
+             * hasta hoy. filter_var y no cast crudo, porque `(bool) 'false'` da TRUE.
+             */
+            'desempatar_por_nombre'                              => filter_var($request->input('desempatar_por_nombre', false), FILTER_VALIDATE_BOOLEAN),
         ]);
 
         if ($result['hubo_un_error']) {
