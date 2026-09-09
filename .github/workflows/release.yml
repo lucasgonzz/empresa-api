@@ -35,6 +35,65 @@ jobs:
           git merge develop --no-ff -m "chore: release v${{ steps.version.outputs.VERSION }}"
           git push origin master
 
+      # ------------------------------------------------------------------------------------
+      # Paquete de la API (misión actualizar-sin-el-vps, 9/9/2026).
+      #
+      # Hasta acá cada ClientVersionUpgrade armaba la API en el VPS de producción: composer
+      # install en /home/builds y un zip de 759 MB que arrastraba .git entero y dejaba vendor/
+      # afuera. Desde acá el paquete se arma UNA vez por versión, en este runner, con vendor/
+      # ADENTRO, y el admin lo baja del release (ReleaseArtifactService::find_asset) en vez
+      # de compilar nada en el VPS. Si find_asset no encuentra el zip, el admin cae a la vía
+      # vieja, así que un release anterior a este workflow se sigue pudiendo desplegar.
+      #
+      # Si cualquiera de los tres pasos de abajo falla, NO se crea el tag ni el release. Es a
+      # propósito: no puede existir un vX.Y.Z sin su paquete, porque el admin lo buscaría por
+      # tag. master ya quedó mergeado en el paso anterior; al volver a correr el workflow
+      # sobre el mismo commit el merge da "Already up to date" y sigue derecho al paquete.
+      # ------------------------------------------------------------------------------------
+
+      - name: Preparar PHP 7.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          # composer.json no declara ext-* propias: la lista sale de los `require` (no dev) de
+          # los paquetes del composer.lock, que composer valida al instalar (ctype, json,
+          # libxml, openssl, pcre, filter y tokenizer también están, pero vienen compiladas
+          # adentro del PHP que instala setup-php). pdo_mysql, bcmath, intl y soap no las pide
+          # ningún paquete: son las que la aplicación usa en runtime (MySQL, Laravel, AFIP por
+          # SoapClient) y van explícitas para que el runner se parezca al hosting.
+          extensions: mbstring, curl, dom, fileinfo, gd, iconv, simplexml, xml, xmlreader, xmlwriter, zip, zlib, pdo_mysql, bcmath, intl, soap
+          tools: composer:v2
+          coverage: none
+
+      - name: composer install (mismas banderas que el admin)
+        # Banderas copiadas de admin-api, DeploymentService::build_composer_install_command()
+        # (líneas 2168-2172): `--no-dev --optimize-autoloader --no-interaction --no-ansi`, más
+        # `--no-scripts` porque este es el modo "sin scripts" ($skip_scripts = true), el mismo
+        # que el admin usa en el VPS de builds. El post-autoload-dump (artisan package:discover)
+        # necesita un .env que acá no existe; lo corre el `composer install` CON scripts que el
+        # admin hace en el hosting después de descomprimir (línea 451), como hoy. `--prefer-dist`
+        # no hace falta: composer.json ya fija config.preferred-install = dist.
+        env:
+          COMPOSER_ALLOW_SUPERUSER: 1
+          COMPOSER_MEMORY_LIMIT: -1
+        run: composer install --no-dev --optimize-autoloader --no-interaction --no-ansi --no-scripts
+
+      - name: Empaquetar la API con vendor adentro
+        # Mismas exclusiones que el pipeline actual del admin (step_upload_api), MENOS vendor/,
+        # que es el punto de todo esto. Se suman .git/* (el zip viejo lo arrastraba y por eso
+        # pesaba 759 MB), .env.* y node_modules/*. storage/ y public/ quedan afuera porque en
+        # el hosting son del cliente (archivos subidos, .htaccess, certificados).
+        run: |
+          ZIP="empresa-api-v${{ steps.version.outputs.VERSION }}.zip"
+          zip -qr "$ZIP" . \
+            -x '.git/*' '.env' '.env.*' 'storage/*' 'public/*' 'tests/*' '*.zip' \
+               'node_modules/*' 'database/super-budgets/*' 'database/seeders/articles/*' \
+               'database/seeders/truvari/*' 'database/seeders/subcategories/*' \
+               'database/seeders/sales/*'
+          unzip -tq "$ZIP"
+          unzip -l "$ZIP" | tail -1
+          ls -la "$ZIP"
+
       - name: Crear tag y release
         uses: softprops/action-gh-release@v2
         with:
@@ -42,5 +101,6 @@ jobs:
           name: v${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
           target_commitish: master
+          files: empresa-api-v${{ steps.version.outputs.VERSION }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
