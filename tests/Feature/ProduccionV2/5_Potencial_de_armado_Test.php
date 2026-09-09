@@ -440,4 +440,124 @@ class Potencial_de_armado_Test extends ProduccionV2TestCase
         $this->assertNull($fila['insumo_limitante']);
         $this->assertNull($fila['recipe_route_id']);
     }
+
+    /**
+     * 🔴 UN INSUMO SIN NINGUN DEPOSITO SE MIDE CONTRA EL STOCK GLOBAL, AUNQUE LA RUTA NOMBRE UNO.
+     *
+     * Es el caso del subproducto recien fabricado, que es justo el que motivo esta pantalla. Un
+     * producto que sale de un lote entra al stock global y NO abre deposito: `CheckToAddress` se
+     * lo prohibe a proposito desde la auditoria de stock del 5/9/2026, porque abrirle el primer
+     * deposito a un articulo que ya lleva stock global hace que `setArticleStockFromAddresses()`
+     * le pise el global con la suma del pivot y ahi se pierden unidades en silencio.
+     *
+     * Entonces el insumo nunca tiene fila en el deposito de la ruta, y devolver 0 hacia que la
+     * pantalla dijera "se pueden armar 0" mientras el lote del nivel siguiente lo consumia sin
+     * ningun problema. Medido el 8/9/2026 sobre la fabrica de sillas: con 2 estructuras, 2
+     * asientos y 2 respaldos de madera en stock, la Silla decia 0.
+     *
+     * Lo que hay que espejar es el consumo real, que en este caso cae al stock global:
+     * `CheckFromAddress` solo toca el pivot si el articulo ya tiene al menos un deposito.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function un_insumo_sin_depositos_se_mide_contra_el_stock_global_aunque_la_ruta_nombre_uno()
+    {
+        $corte = $this->crear_estado('Corte sin deposito test', 1);
+
+        $deposito = Address::create([
+            'street'    => 'Principal sin deposito test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $silla = $this->crear_articulo('Silla sin deposito test', 0);
+
+        /* Sin `addresses()->attach()`: es un subproducto recien fabricado, todo en stock global. */
+        $estructura = $this->crear_articulo('Estructura sin deposito test', 6);
+
+        $receta = $this->crear_receta($silla);
+
+        $this->crear_ruta($receta, [
+            ['article' => $estructura, 'amount' => 2, 'order_production_status_id' => $corte->id],
+        ], [
+            'from_address_id' => $deposito->id,
+        ]);
+
+        $respuesta = $this->get('api/potencial-de-armado');
+
+        $respuesta->assertStatus(200);
+
+        $fila = $this->fila_de($respuesta->json('models'), 'Silla sin deposito test');
+
+        $this->assertNotNull($fila);
+
+        /* floor(6/2) = 3. Antes daba 0 porque el insumo no tiene fila en ese deposito. */
+        $this->assertEquals(3, $fila['potencial']);
+        $this->assertEquals(6, $fila['insumo_limitante']['stock']);
+
+        /*
+         * Y el renglon dice con que se midio de verdad: el stock global, no el deposito de la
+         * ruta. Sin esto la pantalla mostraria "Stock del deposito Principal" abajo de un numero
+         * que no salio de ese deposito.
+         */
+        $this->assertNull($fila['insumos'][0]['address_id']);
+        $this->assertNull($fila['insumo_limitante']['address_id']);
+
+        /* El de nivel producto sigue siendo el de la ruta: ese no cambia. */
+        $this->assertEquals($deposito->id, $fila['address_id']);
+    }
+
+    /**
+     * El otro lado de la misma moneda: si el articulo SI reparte por depositos y en el de la ruta
+     * no tiene fila, la respuesta correcta sigue siendo 0.
+     *
+     * Sin este test, el arreglo de arriba se podria "simplificar" a "si no hay fila, usa el
+     * global" y volveria a inflar el numero justo en el caso que el test del deposito de la ruta
+     * cuida: 500 en total repartidos en otro deposito no son 500 disponibles aca.
+     *
+     * @group produccion_v2
+     * @test
+     */
+    public function un_insumo_que_reparte_por_depositos_y_no_tiene_fila_en_el_de_la_ruta_da_cero()
+    {
+        $corte = $this->crear_estado('Corte reparte test', 1);
+
+        $central = Address::create([
+            'street'    => 'Central reparte test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $norte = Address::create([
+            'street'    => 'Norte reparte test',
+            'user_id'   => $this->comercio()->id,
+        ]);
+
+        $silla = $this->crear_articulo('Silla reparte test', 0);
+
+        /* 500 en total, todos en Norte. La ruta saca de Central, donde no tiene ni fila. */
+        $tabla = $this->crear_articulo('Tabla reparte test', 500);
+        $tabla->addresses()->attach($norte->id, ['amount' => 500]);
+
+        $receta = $this->crear_receta($silla);
+
+        $this->crear_ruta($receta, [
+            ['article' => $tabla, 'amount' => 2, 'order_production_status_id' => $corte->id],
+        ], [
+            'from_address_id' => $central->id,
+        ]);
+
+        $respuesta = $this->get('api/potencial-de-armado');
+
+        $respuesta->assertStatus(200);
+
+        $fila = $this->fila_de($respuesta->json('models'), 'Silla reparte test');
+
+        $this->assertNotNull($fila);
+
+        $this->assertEquals(0, $fila['potencial']);
+        $this->assertEquals(0, $fila['insumo_limitante']['stock']);
+
+        /* Y el renglon dice que midio contra Central, que es donde el consumo tampoco encontraria. */
+        $this->assertEquals($central->id, $fila['insumos'][0]['address_id']);
+    }
 }

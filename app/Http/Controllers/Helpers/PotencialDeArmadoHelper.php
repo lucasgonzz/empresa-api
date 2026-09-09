@@ -159,7 +159,9 @@ class PotencialDeArmadoHelper
 
             $article = $insumo['article'];
 
-            $stock = self::stock_del_insumo($article, $insumo['address_id']);
+            $medicion = self::stock_del_insumo($article, $insumo['address_id']);
+
+            $stock = $medicion['stock'];
 
             $posible = $stock <= 0 ? 0 : (int) floor($stock / $cantidad);
 
@@ -168,8 +170,10 @@ class PotencialDeArmadoHelper
                 'article_name'          => $article->name,
                 'cantidad_por_unidad'   => $cantidad,
                 // El depósito con el que se midió ESTE insumo: puede ser el de la ruta, el del
-                // renglón, o null si se midió contra el stock global.
-                'address_id'            => $insumo['address_id'],
+                // renglón, o null si se midió contra el stock global. Lo devuelve la medición y no
+                // el pedido, porque un artículo sin depósitos se mide contra el stock global
+                // aunque la ruta nombre un depósito.
+                'address_id'            => $medicion['address_id'],
                 'stock'                 => $stock,
                 'posible'               => $posible,
             ];
@@ -346,25 +350,48 @@ class PotencialDeArmadoHelper
     }
 
     /**
-     * El stock disponible de un insumo, en el depósito que le resolvió address_del_insumo().
+     * El stock disponible de un insumo y el depósito con el que se lo midió.
      *
      * @param  \App\Models\Article  $article
-     * @param  int|null             $address_id  null = stock global.
-     * @return float
+     * @param  int|null             $address_id  El que resolvió address_del_insumo(); null = global.
+     * @return array  ['stock' => float, 'address_id' => int|null]
      */
     private static function stock_del_insumo($article, $address_id)
     {
         if (is_null($address_id)) {
-            return (float) $article->stock;
+            return ['stock' => (float) $article->stock, 'address_id' => null];
+        }
+
+        /*
+         * 🔴 UN ARTICULO SIN NINGUN DEPOSITO SE MIDE CONTRA EL STOCK GLOBAL, AUNQUE LA RUTA
+         * NOMBRE UNO.
+         *
+         * Es lo que hace el consumo real y por eso es lo que hay que espejar: CheckFromAddress
+         * solo toca el pivot del deposito si el articulo ya tiene al menos uno
+         * (`count($article->addresses) >= 1`), y si no tiene ninguno el descuento lo hace
+         * CheckGlobalStock contra `articles.stock`.
+         *
+         * Devolver 0 acá rompía justo el caso que motivó esta pantalla: un subproducto recién
+         * fabricado entra al stock global y NO abre deposito --CheckToAddress se lo prohibe a
+         * proposito desde la auditoria de stock del 5/9/2026, para no pisar el stock global con
+         * la suma de depositos--, asi que el potencial del nivel siguiente mostraba "se pueden
+         * armar 0" mientras el lote lo consumia sin problema. Medido el 8/9/2026 sobre la fabrica
+         * de sillas: 2 estructuras, 2 asientos y 2 respaldos en stock, y la Silla decia 0.
+         *
+         * Si el articulo SI reparte por depositos y en este no tiene fila, 0 es la respuesta
+         * correcta: ahi el consumo tampoco va a encontrar nada.
+         */
+        if (count($article->addresses) === 0) {
+            return ['stock' => (float) $article->stock, 'address_id' => null];
         }
 
         foreach ($article->addresses as $address) {
             if ((int) $address->id === (int) $address_id) {
-                return (float) $address->pivot->amount;
+                return ['stock' => (float) $address->pivot->amount, 'address_id' => (int) $address_id];
             }
         }
 
-        // El insumo no tiene fila en ese depósito: ahí no hay nada.
-        return 0;
+        // El articulo reparte por depositos y en este no tiene fila: ahi no hay nada.
+        return ['stock' => 0, 'address_id' => (int) $address_id];
     }
 }

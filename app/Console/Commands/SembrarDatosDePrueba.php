@@ -387,6 +387,14 @@ class SembrarDatosDePrueba extends Command
         try {
             $this->semilla = new SemillaHelper();
 
+            /*
+             * Cronómetro por fase (9/9/2026): la corrida entera es la etapa más larga del demo
+             * setup (~110 s medidos en el VPS con 12 meses) y sin esto no hay forma de saber qué
+             * fase pesa. Se loguea al final en una sola línea y se imprime en consola.
+             */
+            $t_fase = microtime(true);
+            $tiempos = [];
+
             $meses_atras = !is_null($this->option('meses'))
                 ? (int) $this->option('meses')
                 : (int) config('semilla.meses_atras');
@@ -455,17 +463,28 @@ class SembrarDatosDePrueba extends Command
                 );
             }
 
+            $tiempos['planificacion'] = $this->cronometrar($t_fase);
+
             $this->info('Ejecutando '.count($operaciones).' operaciones en orden cronológico, día por día...');
             $this->ejecutar_operaciones($operaciones, Carbon::now()->startOfDay());
+
+            $tiempos['operaciones'] = $this->cronometrar($t_fase);
+            $tiempos['operaciones_cantidad'] = count($operaciones);
 
             $this->info('Sembrando el bloque especial de hoy...');
             $control_hoy = $this->sembrar_hoy();
 
+            $tiempos['hoy'] = $this->cronometrar($t_fase);
+
             $this->info('Aplicando ciclo de estados a los cheques recibidos...');
             $ciclo_cheques = $this->sembrar_cheques_con_ciclo();
 
+            $tiempos['cheques'] = $this->cronometrar($t_fase);
+
             $this->info('Sembrando presupuestos en los tres estados...');
             $presupuestos = $this->sembrar_presupuestos();
+
+            $tiempos['presupuestos'] = $this->cronometrar($t_fase);
 
             // 🔴 ÚLTIMO PASO, y el orden no es negociable: ActividadTiendaHelper necesita las ventas ya
             // sembradas (calcula el saldo a cancelar y los artículos que cada cliente NO compró) y
@@ -473,6 +492,8 @@ class SembrarDatosDePrueba extends Command
             // dejaría de reproducirse igual entre corridas.
             $this->info('Sembrando la actividad de la tienda y cancelando el saldo de sus clientes...');
             $actividad_tienda = (new ActividadTiendaHelper())->sembrar($this->user_id);
+
+            $tiempos['actividad_tienda'] = $this->cronometrar($t_fase);
 
             $this->escribir_planilla_de_control(
                 $control_meses,
@@ -514,13 +535,22 @@ class SembrarDatosDePrueba extends Command
              * duplicación. La llamada de allá sigue siendo la única que cubre la instalación de
              * un CLIENTE REAL, donde este comando sale por la guarda de entorno sin llegar acá.
              */
+            $tiempos['planilla'] = $this->cronometrar($t_fase);
+
             $this->info('Calculando la performance histórica del comercio...');
             $this->call('set_company_performances', [
                 'user_id'     => $this->user_id,
                 '--historico' => true,
             ]);
 
-            $this->info('Listo.');
+            $tiempos['performance'] = $this->cronometrar($t_fase);
+            $tiempos['total'] = round(array_sum(array_filter($tiempos, function ($clave) {
+                return $clave !== 'operaciones_cantidad';
+            }, ARRAY_FILTER_USE_KEY)), 1);
+            $tiempos['meses'] = $meses_atras;
+
+            $this->info('Listo. Tiempos por fase (segundos): '.json_encode($tiempos));
+            Log::info('semilla:datos: tiempos por fase', $tiempos);
 
             return 0;
         } finally {
@@ -534,6 +564,21 @@ class SembrarDatosDePrueba extends Command
              */
             mt_srand();
         }
+    }
+
+    /**
+     * Segundos desde `$desde`, a un decimal, y deja `$desde` en ahora para la fase siguiente.
+     *
+     * @param float $desde microtime(true) del arranque de la fase. Se pisa con el momento actual.
+     * @return float
+     */
+    protected function cronometrar(&$desde)
+    {
+        $ahora = microtime(true);
+        $segundos = round($ahora - $desde, 1);
+        $desde = $ahora;
+
+        return $segundos;
     }
 
     /**

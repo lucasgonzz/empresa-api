@@ -130,12 +130,25 @@ class DemoSetupHelper
         set_time_limit(0);
         ignore_user_abort(true);
 
+        /**
+         * Cronómetro por etapa (misión demo-seguimiento-y-setup-rapido, 9/9/2026). Hasta esa
+         * fecha la única forma de saber dónde se iba el tiempo de un setup en producción era
+         * arqueología de timestamps (users.created_at, articles.created_at, el POST en el access
+         * log de nginx). Lo que se mide acá se loguea al final y viaja en `datos` del evento
+         * `demo.setup.completado`, así el admin sabe cuánto tardó cada instancia sin SSH.
+         */
+        $t_inicio = microtime(true);
+        $t_etapa = $t_inicio;
+        $etapas = [];
+
         // La conexión de Mercado Pago del dueño se fotografía ANTES del migrate:fresh, que la
         // borra junto con todo lo demás. Se restaura al final (ver `restaurar_mercado_pago()`).
         $foto_mercado_pago = self::foto_de_mercado_pago(config('app.USER_ID'));
 
         // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
         Artisan::call('migrate:fresh', ['--force' => true]);
+
+        $etapas['migrate_fresh'] = self::cronometrar($t_etapa);
 
         // Crear el usuario "dueño" del sistema con datos mayormente de demo
         $user = self::create_demo_user($data);
@@ -225,6 +238,8 @@ class DemoSetupHelper
             $seeders[] = 'RecipeSeeder';
         }
 
+        $etapas['usuario_y_extensiones'] = self::cronometrar($t_etapa);
+
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
@@ -233,6 +248,8 @@ class DemoSetupHelper
 
         self::set_default_sale_factura_print_option($user);
 
+        $etapas['seeders_base'] = self::cronometrar($t_etapa);
+
         // Reportes pre-calculados que usa el dashboard de ventas
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteSeeder', '--force' => true]);
         // Artisan::call('db:seed', ['--class' => 'Database\\Seeders\\sales\\SaleReporteArticuloSeeder', '--force' => true]);
@@ -240,10 +257,15 @@ class DemoSetupHelper
          * D1 (mision seeders-demo-datos-completos, 17/8/2026): la demo deja de sembrar con
          * ReportesMesSeeder y pasa a llamar al MISMO comando que usa local, semilla:datos.
          * Antes la demo de producción y una corrida local quedaban con datos distintos; ahora
-         * las dos dejan exactamente la misma aritmética (~523 ventas, la cadencia por mes,
-         * aperturas diarias, planilla de control), y lo que Lucas ve en una demo es lo mismo
-         * que se verifica en local. Sin '--reset': la base recién vino del migrate:fresh de
-         * arriba, así que no hay nada previo que limpiar.
+         * las dos dejan exactamente la misma aritmética (la cadencia por mes, aperturas
+         * diarias, planilla de control), y lo que Lucas ve en una demo es lo mismo que se
+         * verifica en local. Sin '--reset': la base recién vino del migrate:fresh de arriba,
+         * así que no hay nada previo que limpiar.
+         *
+         * Cuántos meses siembra lo decide `config('semilla.meses_atras')`: 3 desde el 9/9/2026
+         * (eran 12, ~523 ventas). El porqué, con la medición, está en config/semilla.php. No se
+         * pasa `--meses` acá a propósito: la demo y una corrida local tienen que seguir sembrando
+         * lo mismo, y eso se sostiene teniendo UN solo lugar que lo decida.
          *
          * No se envuelve en try/catch ni se propaga ninguna falla, A PROPÓSITO: en una
          * instancia de CLIENTE REAL -- que corre este mismo helper al instalarse -- ni
@@ -257,6 +279,22 @@ class DemoSetupHelper
          * y de eso depende quién calcula la performance histórica más abajo.
          */
         $semilla_sembro = Artisan::call('semilla:datos') === 0;
+
+        $etapas['semilla_datos'] = self::cronometrar($t_etapa);
+
+        /**
+         * El desglose por fase de `semilla:datos` sale de su propia consola, no del log: en las
+         * instancias el canal `stack` escribe desde WARNING (config/logging.php), asi que un
+         * `Log::info` del comando no queda en ningun lado. La ultima linea de su salida es
+         * `Listo. Tiempos por fase (segundos): {json}` y se copia tal cual al evento.
+         */
+        if ($semilla_sembro && preg_match('/Tiempos por fase \(segundos\): (\{.*\})/', (string) Artisan::output(), $coincidencia)) {
+            $detalle = json_decode($coincidencia[1], true);
+
+            if (is_array($detalle)) {
+                $etapas['semilla_detalle'] = $detalle;
+            }
+        }
 
         /**
          * 🔴 VA ACÁ, DESPUÉS DE `semilla:datos`, Y NO ANTES (misión 63, siembra-local-igual-a-demo).
@@ -343,6 +381,8 @@ class DemoSetupHelper
             self::sembrar_trazabilidad_para_el_clip($user);
         }
 
+        $etapas['cliente_performance_y_trazabilidad'] = self::cronometrar($t_etapa);
+
         // Tienda online por defecto para que la demo tenga URL pública.
         //
         // Se le pasa `$semilla_sembro` porque es el MISMO dato que distingue "esta instancia
@@ -352,6 +392,8 @@ class DemoSetupHelper
 
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
         self::restaurar_mercado_pago($user, $foto_mercado_pago);
+
+        $etapas['tienda'] = self::cronometrar($t_etapa);
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
@@ -431,8 +473,11 @@ class DemoSetupHelper
          *    El token no queda expuesto: la clave se digiere en el uuid v5 y no se persiste ni se
          *    loguea en ningun lado.
          *
-         * 5. `datos` lleva el user_id del user demo y NADA mas, igual que el resto de los
-         *    eventos de negocio. El admin no necesita el resto y lo que no viaja no se filtra.
+         * 5. `datos` lleva el user_id del user demo y, desde el 9/9/2026, cuanto tardo el armado
+         *    (`duracion_seg` y `etapas`, en segundos). Son claves OPCIONALES para el admin: el
+         *    controlador del canal persiste el json sin leerlo, asi que un admin viejo las guarda
+         *    y las ignora. Nada mas viaja: el admin no necesita el resto y lo que no viaja no se
+         *    filtra.
          *
          * Sobre el tiempo: el emisor agenda el push en app()->terminating(), o sea despues de que
          * este request ya respondio. Bajo mod_php, `Response::send()` no suelta la conexion antes
@@ -448,16 +493,44 @@ class DemoSetupHelper
          * emisor --, pero no confundirlo con el cherry-pick de mas arriba, que si cubre los dos
          * puntos de entrada.
          */
+        $etapas['cierre'] = self::cronometrar($t_etapa);
+        $duracion_seg = round(microtime(true) - $t_inicio, 1);
+
+        /**
+         * Una sola linea por setup, con el desglose. Es lo que hay que mirar ANTES de tocar la
+         * siembra "porque tarda": el 9/9/2026 la sospecha era la actividad de tienda y median
+         * 2 segundos; el tiempo estaba en migrate:fresh (40-50 s con 745 migraciones) y en
+         * semilla:datos (~110 s), y lo que el lead percibia como 8-15 minutos era la cola del
+         * admin mas un worker cortado a los 5 minutos.
+         */
+        Log::info('DemoSetupHelper: setup terminado en ' . $duracion_seg . ' s', ['etapas' => $etapas]);
+
         if (!is_null($canal)) {
             DemoEventoEmitter::emitir(
                 'demo.setup.completado',
                 null,
-                ['user_id' => $user->id],
+                ['user_id' => $user->id, 'duracion_seg' => $duracion_seg, 'etapas' => $etapas],
                 (string) $canal->eventos_token
             );
         }
 
         return $user;
+    }
+
+    /**
+     * Segundos transcurridos desde `$desde`, redondeados a un decimal, y deja `$desde` en ahora
+     * para la etapa siguiente. Es lo unico que necesita el cronometro por etapa de run().
+     *
+     * @param float $desde microtime(true) del arranque de la etapa. Se pisa con el momento actual.
+     * @return float
+     */
+    private static function cronometrar(&$desde)
+    {
+        $ahora = microtime(true);
+        $segundos = round($ahora - $desde, 1);
+        $desde = $ahora;
+
+        return $segundos;
     }
 
     /**

@@ -61,6 +61,13 @@ class ProductionBatchMovementHelper
                 }
             }
 
+            // La ruta se resuelve ANTES de crear el movimiento porque los dos depositos --el de
+            // donde salen los insumos y el que recibe lo producido-- se guardan resueltos en el
+            // propio movimiento. El borrado revierte el stock leyendo estas mismas columnas: si en
+            // vez de guardarlas se recalculara al borrar, un cambio posterior en la ruta haria que
+            // la reversion tocara un deposito distinto del que se toco al dar de alta.
+            $recipe_route = self::get_recipe_route($batch);
+
             $movement = ProductionBatchMovement::create([
                 'production_batch_id'                 => $batch->id,
                 'production_batch_movement_type_id'   => $request->production_batch_movement_type_id,
@@ -68,14 +75,19 @@ class ProductionBatchMovementHelper
                 'to_order_production_status_id'       => $request->to_order_production_status_id,
                 'amount'                              => $request->amount,
                 'provider_id'                         => $request->provider_id,
-                'address_id'                          => $request->address_id,
-                'to_address_id'                       => $request->to_address_id,
+                'address_id'                          => self::first_usable_address_id([
+                    $request->address_id,
+                    $recipe_route->from_address_id,
+                ]),
+                'to_address_id'                       => self::first_usable_address_id([
+                    $request->to_address_id,
+                    $recipe_route->to_address_id,
+                ]),
                 'meta'                                => $request->meta ? json_encode($request->meta) : null,
                 'employee_id'                         => $request->employee_id,
             ]);
 
             // inputs planificados
-            $recipe_route = self::get_recipe_route($batch);
 
             $planned_inputs = self::calculate_planned_inputs(
                 $recipe_route,
@@ -179,6 +191,34 @@ class ProductionBatchMovementHelper
     }
 
     /**
+     * Devuelve el primer id de deposito usable de la lista, o null si ninguno lo es.
+     *
+     * 🔴 Los selects de deposito de la SPA mandan 0 cuando el usuario no elige nada, asi que en
+     * este modulo 0 significa "sin deposito" exactamente igual que null. Sin este filtro el 0 se
+     * tomaba como un deposito valido y el consumo se descontaba contra un deposito que no existe:
+     * el movimiento quedaba registrado, el StockMovement tambien, y no bajaba ningun saldo. Sin
+     * error, sin log y sin nada que lo denuncie salvo mirar el stock.
+     *
+     * Medido el 8/9/2026 sobre la fabrica de sillas: un movimiento sin deposito no descontó los
+     * 21,2 m de caño, y el siguiente --mismo lote, con deposito elegido a mano-- descontó bien.
+     *
+     * @param array $candidatos Ids de deposito en orden de prioridad.
+     * @return int|null
+     */
+    private static function first_usable_address_id(array $candidatos)
+    {
+        foreach ($candidatos as $candidato) {
+
+            if (!is_null($candidato) && (int)$candidato !== 0) {
+
+                return (int)$candidato;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Calcula planned_inputs para un estado destino:
      * trae insumos de recipe_route_articles cuyo order_production_status_id == to_status_id
      */
@@ -192,18 +232,14 @@ class ProductionBatchMovementHelper
             if (!is_null($pivot_status_id) && (int)$pivot_status_id === (int)$to_status_id) {
                 $planned = (float)$article->pivot->amount * (float)$movement_amount;
 
-                $address_id = null;
-
-                if (!is_null($movement_address_id)) {
-                    $address_id = $movement_address_id;
-                } else if (
-                    !is_null($recipe_route->from_address_id)
-                    && $recipe_route->from_address_id != 0
-                ) {
-                    $address_id = $recipe_route->from_address_id;
-                } else {
-                    $address_id = $article->pivot->address_id;
-                }
+                // Cascada del deposito del que sale el insumo: el del movimiento, si no el de la
+                // ruta, si no el del renglon del insumo. Los tres pasan por el mismo filtro porque
+                // en cualquiera de ellos un 0 significa "sin deposito", no el deposito numero 0.
+                $address_id = self::first_usable_address_id([
+                    $movement_address_id,
+                    $recipe_route->from_address_id,
+                    $article->pivot->address_id,
+                ]);
 
                 $inputs[] = [
                     'article_id'                 => $article->id,
@@ -236,7 +272,12 @@ class ProductionBatchMovementHelper
             if (isset($overrides_by_article[$aid])) {
                 $pi['actual_amount'] = (float)$overrides_by_article[$aid]['actual_amount'];
                 if (isset($overrides_by_article[$aid]['address_id'])) {
-                    $pi['address_id'] = $overrides_by_article[$aid]['address_id'];
+                    // El override tambien pasa por el filtro: si el front manda 0 el renglon se
+                    // queda con el deposito que resolvio la cascada, en vez de perderlo.
+                    $pi['address_id'] = self::first_usable_address_id([
+                        $overrides_by_article[$aid]['address_id'],
+                        $pi['address_id'],
+                    ]);
                 }
             }
         }
@@ -475,7 +516,10 @@ class ProductionBatchMovementHelper
         // hasta el movimiento del lote que la produjo y no solo hasta el lote.
         $data['observations'] = 'Batch #'.$batch->id.' mov #'.$movement->id;
 
-        // Si querés, acá se puede usar to_address_id (depósito destino del producto terminado)
+        // Deposito al que entra el producto terminado. Viene ya resuelto de create_movement (el del
+        // movimiento, si no el "Deposito para las unidades producidas" de la ruta), asi que el alta
+        // y la reversion del borrado tocan siempre el mismo. Que el producto ABRA ese deposito lo
+        // decide despues CheckToAddress, que se lo prohibe a un articulo que ya lleva stock global.
         if (!is_null($movement->to_address_id)) {
             $data['to_address_id'] = $movement->to_address_id;
         }
