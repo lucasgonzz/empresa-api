@@ -6,14 +6,21 @@ use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use Tests\TestCase;
 
 /**
- * El aviso del paso 3: ¿al desempate por nombre le va a servir ESTE archivo?
- * (mision `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+ * El aviso del paso 3: ¿que se puede afirmar MIRANDO ESTE ARCHIVO sobre el desempate por
+ * nombre? (mision `desempate-por-nombre-codigo-repetido`, 9/9/2026).
  *
  * La opcion `desempatar_por_nombre` le pide al usuario una decision que el solo no puede
  * tomar: "los codigos de proveedor que se repiten en tu archivo, ¿tienen nombres distintos
  * entre si?". Para contestarla habria que abrir el Excel y cruzar codigo por codigo. El
  * analizador ya recorre el archivo entero, asi que lo calcula y lo devuelve en la clave
  * `desempate_por_nombre`, que la SPA lee para decidir si ofrece la opcion y con que texto.
+ *
+ * 🔴 LO QUE ESTE RESUMEN NO PUEDE AFIRMAR. El analizador mira el ARCHIVO; el desempate al
+ * reimportar compara cada fila contra los ARTICULOS DE LA BASE. Son dos universos
+ * distintos, y por eso ninguna clave se llama "sirve" a secas: es `sirve_en_el_archivo`, y
+ * viaja con `alcance` ('solo_el_archivo'). Lo deja escrito
+ * test_el_aviso_no_ve_la_ambiguedad_que_esta_en_la_base, que es lo que explica por que dos
+ * tests verdes de esta mision parecian contradecirse sobre el mismo fixture.
  *
  * 🔴 EL NORMALIZADOR TIENE QUE SER EL MISMO que usa el desempate real
  * (ArticleIndexCache::normalize_name_for_match), no el mb_strtolower() de
