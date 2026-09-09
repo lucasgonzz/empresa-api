@@ -28,6 +28,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 /**
  * Helper que concentra la lógica de "configurar un sistema para una demo":
@@ -278,7 +279,15 @@ class DemoSetupHelper
          * único dato que distingue "acá se sembró" (0) de "acá no, porque es un cliente real" (1),
          * y de eso depende quién calcula la performance histórica más abajo.
          */
-        $semilla_sembro = Artisan::call('semilla:datos') === 0;
+        /**
+         * Con un buffer PROPIO, y no `Artisan::output()` despues: la semilla llama por adentro a
+         * `Artisan::call('tracking:agregar-buyers')` once veces (ActividadTiendaHelper), y cada
+         * llamada por la fachada reemplaza el "ultimo output" del kernel de consola, asi que
+         * `Artisan::output()` devolvia la salida del ultimo rollup y no la de la semilla. Medido
+         * el 9/9/2026: el evento salio sin `semilla_detalle` aunque la linea se imprimia.
+         */
+        $salida_semilla = new BufferedOutput();
+        $semilla_sembro = Artisan::call('semilla:datos', [], $salida_semilla) === 0;
 
         $etapas['semilla_datos'] = self::cronometrar($t_etapa);
 
@@ -288,7 +297,7 @@ class DemoSetupHelper
          * `Log::info` del comando no queda en ningun lado. La ultima linea de su salida es
          * `Listo. Tiempos por fase (segundos): {json}` y se copia tal cual al evento.
          */
-        if ($semilla_sembro && preg_match('/Tiempos por fase \(segundos\): (\{.*\})/', (string) Artisan::output(), $coincidencia)) {
+        if ($semilla_sembro && preg_match('/Tiempos por fase \(segundos\): (\{.*\})/', (string) $salida_semilla->fetch(), $coincidencia)) {
             $detalle = json_decode($coincidencia[1], true);
 
             if (is_array($detalle)) {
