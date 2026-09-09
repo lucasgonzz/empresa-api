@@ -252,4 +252,16 @@ return [
     /* Clave de API de Anthropic (Claude) para la importación de Excel asistida por IA. */
     'ANTHROPIC_API_KEY'                         => env('ANTHROPIC_API_KEY'),
 
+    /*
+        Minutos durante los que se reutiliza el snapshot del tablero del día
+        (CompanyPerformanceController::check_tiempo_ultima_creada). Pasados, la próxima entrada
+        al tablero lo borra y lo recalcula entero (PerformanceHelper::create_company_performance),
+        que en un cliente grande son >10 s de request. El default era 1 minuto, o sea: casi cada
+        entrada recalculaba; 10 es lo que ya tenían a mano en su .env los clientes más grandes
+        del VPS (misión actualizar-sin-el-vps, 9/9/2026). Float y no int porque las demos usan
+        0.5. Vive acá y no en un env() suelto porque env() en código deja de leerse con
+        config:cache.
+    */
+    'duracion_reportes'                         => (float) env('DURACION_REPORTES', 10),
+
 ];
