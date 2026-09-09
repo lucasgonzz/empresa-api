@@ -260,6 +260,68 @@ class DesempatePorNombreTest extends ImportTestCase
         $this->assertSame([8.0], $this->recargos($pack->id),   'Sin la opcion, el pack igual queda con SU recargo.');
     }
 
+    /**
+     * 🔴 AL CREAR, CUANDO EL NOMBRE NO DESEMPATA, TIENE QUE QUEDAR ALGO EN EL HISTORIAL.
+     *
+     * El fixture 24 trae DOS filas nuevas con el mismo `provider_code` Y el mismo nombre,
+     * con descuentos y recargos distintos. Con `productos_distintos` se crean los dos
+     * articulos, pero `get_article_model_from_cache()` no tiene con que distinguirlos: el
+     * primero se lleva los recargos y descuentos de las dos filas y el segundo queda en
+     * cero -- el defecto original, exactamente.
+     *
+     * El requisito acordado es "se cae al comportamiento actual Y SE REGISTRA UN CONFLICTO
+     * EN EL HISTORIAL". El camino de reimportacion lo cumplia; el de creacion dejaba solo
+     * un Log::warning en el laravel.log, que el usuario no ve jamas.
+     *
+     * ⚠️ El fixture 22 NO puede reproducir esto: ahi PC-IGUAL y PC-REDACT aparecen una
+     * sola vez cada uno, asi que su ambiguedad es contra la BASE y solo ejercita el camino
+     * de reimportacion.
+     *
+     * @return void
+     */
+    public function test_al_crear_sin_desempate_posible_queda_el_conflicto_en_el_historial()
+    {
+        $import = $this->importar('24_crear_mismo_codigo_y_mismo_nombre.xlsx', $this->config());
+
+        $creados = $this->articulos_con_codigo('PC-CREA-IGUAL');
+
+        $this->assertCount(2, $creados, 'Con productos_distintos, las dos filas crean dos articulos.');
+
+        /*
+         * El comportamiento de siempre: sin desempate posible gana el primero. Se fija a
+         * proposito, para que el conflicto registrado sea la unica novedad de este arreglo.
+         */
+        $this->assertSame([5.0, 8.0], $this->recargos($creados[0]->id), 'Sin desempate, el primero se lleva los dos recargos.');
+        $this->assertSame([],         $this->recargos($creados[1]->id), 'Y el segundo queda sin ninguno.');
+
+        $conflictos = $this->conflictos_de_desempate_por_codigo();
+
+        $this->assertArrayHasKey(
+            'PC-CREA-IGUAL',
+            $conflictos,
+            'Al crear, un desempate que no resuelve tambien tiene que quedar en el historial.'
+        );
+
+        /*
+         * UNO POR FILA DEL EXCEL, no uno por pasada. Las dos filas quedaron sin poder
+         * asignarse (la primera se llevo todo y la segunda nada), asi que las dos se
+         * reportan -- igual que en el camino de reimportacion. Que sean exactamente dos y
+         * no catorce es lo que prueba la deduplicacion: get_article_model_from_cache() se
+         * llama hasta siete veces por articulo del cache.
+         */
+        $this->assertSame(
+            2,
+            $conflictos['PC-CREA-IGUAL'],
+            'Un conflicto por fila del Excel, no uno por cada pasada de descuentos/recargos/listas.'
+        );
+
+        $this->assertSame(
+            2,
+            (int) $import->conflicts_count,
+            'El conflicto cuenta para el historial, que es lo que el usuario ve en pantalla.'
+        );
+    }
+
     /* ==================================================================
      * Defecto 2 -- AL REIMPORTAR
      * ================================================================== */

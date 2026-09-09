@@ -127,6 +127,13 @@ class ActualizarBBDD {
         $this->creados_index_por_provider_code = null;
 
         /*
+         * Claves "<provider_code>|<fila de origen>" de los desempates de CREACIÓN que ya se
+         * reportaron en este chunk. get_article_model_from_cache() se llama hasta siete
+         * veces por artículo del cache: sin esto, el mismo conflicto entraría siete veces.
+         */
+        $this->desempates_de_creacion_registrados = [];
+
+        /*
          * Acumula los IDs de artículos creados cuyo bar_code o provider_code ya existía en la BD.
          * Se llena en guardar_articulos() después del INSERT y se expone vía getter.
          */
@@ -1955,26 +1962,41 @@ class ActualizarBBDD {
              * Que los dos caminos usen la misma regla es lo que evita que "crear" y
              * "actualizar" terminen resolviendo distinto sobre el mismo archivo.
              */
-            if (count($candidatos) > 1 && $name !== '') {
+            if (count($candidatos) > 1) {
 
                 $por_nombre = [];
-                $key_name   = ArticleIndexCache::normalize_name_for_match($name);
 
-                foreach ($candidatos as $candidato) {
-                    if (ArticleIndexCache::normalize_name_for_match($candidato->name) === $key_name) {
-                        $por_nombre[] = $candidato;
+                if ($name !== '') {
+
+                    $key_name = ArticleIndexCache::normalize_name_for_match($name);
+
+                    foreach ($candidatos as $candidato) {
+                        if (ArticleIndexCache::normalize_name_for_match($candidato->name) === $key_name) {
+                            $por_nombre[] = $candidato;
+                        }
                     }
-                }
 
-                if (count($por_nombre) === 1) {
-                    return $por_nombre[0];
+                    if (count($por_nombre) === 1) {
+                        return $por_nombre[0];
+                    }
                 }
 
                 /*
                  * El nombre tampoco desempata (mismo código Y mismo nombre en las dos filas,
                  * o ninguno coincide). Se deja el comportamiento de siempre —el primero— y se
-                 * avisa: si no, este caso quedaría indistinguible del que sí resolvió bien.
+                 * REGISTRA EL CONFLICTO EN EL HISTORIAL, no sólo en el laravel.log: el
+                 * usuario no lee el log, y sin esta marca se crean dos artículos, el primero
+                 * se lleva los recargos, los descuentos y las listas de las dos filas, el
+                 * segundo queda en cero, y en la pantalla no aparece nada.
                  */
+                $this->registrar_desempate_de_creacion_sin_resolver(
+                    $articulo_cache,
+                    $provider_code,
+                    $name,
+                    $candidatos,
+                    count($por_nombre)
+                );
+
                 Log::warning('get_article_model_from_cache: provider_code repetido entre articulos creados y el nombre no desempata. Se usa el primero, como hasta ahora.', [
                     'provider_code'        => $provider_code,
                     'name'                 => $name,
@@ -2050,6 +2072,71 @@ class ActualizarBBDD {
      * @param  string $provider_code ya trimeado por el llamador
      * @return array  lista de \App\Models\Article (vacía si no hay ninguno)
      */
+    /**
+     * Deja EN EL HISTORIAL DE IMPORTACIÓN que dos o más artículos recién creados comparten
+     * `provider_code` y que el nombre no alcanzó para saber cuál corresponde a esta fila
+     * del cache (misión `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+     *
+     * 🔴 Por qué no alcanza el `Log::warning` que había acá y nada más: el `laravel.log`
+     * no lo ve el usuario jamás. El requisito acordado con Lucas es "se cae al
+     * comportamiento actual **y se registra un conflicto en el historial de importación**",
+     * y el camino de REIMPORTACIÓN ya lo cumple (ProcessRow::registrar_desempate_sin_resolver()).
+     * El de CREACIÓN quedaba mudo: dos filas del Excel con el mismo `provider_code` nuevo y
+     * el mismo nombre crean dos artículos, el primero se lleva los recargos, los descuentos
+     * y las listas de las dos filas, el segundo queda en cero, y no hay una sola marca en
+     * pantalla — que es exactamente el defecto que esta misión vino a arreglar.
+     *
+     * Se registra UNA sola vez por (código + fila de origen): get_article_model_from_cache()
+     * se llama hasta siete veces por artículo del cache (listas de precio, tres pasadas de
+     * descuentos, dos de recargos, ubicaciones) y sin esto el mismo conflicto entraría siete
+     * veces. Y sólo se llega acá cuando la fila trae algo que asignar: si no tiene ni
+     * descuentos, ni recargos, ni listas, no hay nada que se le pueda haber puesto al
+     * artículo equivocado y no hay conflicto que reportar.
+     *
+     * @param  array  $articulo_cache            entrada del cache de creación (trae `__fila_origen`)
+     * @param  string $provider_code             código compartido, ya trimeado
+     * @param  string $name                      nombre de la fila, ya trimeado ('' si no vino)
+     * @param  array  $candidatos                artículos creados que comparten ese código
+     * @param  int    $coincidencias_de_nombre   cuántos de esos candidatos coinciden en nombre
+     * @return void
+     */
+    protected function registrar_desempate_de_creacion_sin_resolver($articulo_cache, $provider_code, $name, array $candidatos, $coincidencias_de_nombre)
+    {
+        if (is_null($this->process_row)) {
+            return;
+        }
+
+        /*
+         * ProcessRow deja el número de fila que generó esta entrada del cache en
+         * `__fila_origen` (se excluye del INSERT en guardar_articulos()). Sin él no hay
+         * forma de decirle al usuario en qué fila del Excel mirar.
+         */
+        $fila = isset($articulo_cache['__fila_origen']) ? (int) $articulo_cache['__fila_origen'] : 0;
+
+        $clave = $provider_code . '|' . $fila;
+
+        if (isset($this->desempates_de_creacion_registrados[$clave])) {
+            return;
+        }
+
+        $this->desempates_de_creacion_registrados[$clave] = true;
+
+        if ($name === '') {
+            /* ProcessRow decide si esto es un conflicto por fila o un solo aviso por chunk. */
+            $motivo = 'fila_sin_nombre';
+        } else {
+            $motivo = $coincidencias_de_nombre === 0 ? 'ninguno_coincide' : 'varios_coinciden';
+        }
+
+        $this->process_row->registrar_desempate_sin_resolver(
+            $fila,
+            $provider_code,
+            array_map(function ($articulo) { return $articulo->id; }, $candidatos),
+            $name !== '' ? $name : null,
+            $motivo
+        );
+    }
+
     protected function creados_con_provider_code($provider_code)
     {
         if (is_null($this->creados_index_por_provider_code)) {
