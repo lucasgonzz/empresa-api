@@ -505,8 +505,12 @@ class CompanyPerformanceHelper {
                                                             ->where('month', $this->fecha_inicio->month)
                                                             ->first();
 
-        // if (is_null($company_performance_mes_corriente) 
-        //     || $company_performance_mes_corriente->created_at->lt(Carbon::now()->subMinutes(env('DURACION_REPORTES', 1)))) {
+        // Si algún día se vuelve a condicionar por antigüedad del snapshot, el umbral es
+        // config('app.duracion_reportes') (DURACION_REPORTES, default 10 minutos), el mismo que
+        // usa CompanyPerformanceController::check_tiempo_ultima_creada(); env() suelto no anda
+        // con config:cache.
+        // if (is_null($company_performance_mes_corriente)
+        //     || $company_performance_mes_corriente->created_at->lt(Carbon::now()->subMinutes(config('app.duracion_reportes')))) {
 
         if (!is_null($company_performance_mes_corriente)) {
             $company_performance_mes_corriente->delete();

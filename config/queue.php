@@ -17,6 +17,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Worker de cola desde el scheduler
+    |--------------------------------------------------------------------------
+    |
+    | App\Console\Kernel programa `queue:work --stop-when-empty` cada minuto. En el
+    | shared hosting es lo ÚNICO que procesa la cola (hay un solo cron por instancia,
+    | el de schedule:run). En el VPS es redundante: supervisor ya tiene un worker de
+    | larga vida por instancia, y cada arranque de ese artisan son 0,3-0,5 s de CPU
+    | por instancia y por minuto. Con QUEUE_SCHEDULER_WORKER=false el scheduler no
+    | lo programa. Default true: ninguna instancia que no declare la variable cambia
+    | de comportamiento. filter_var y no (bool): "false" y "0" tienen que apagarlo.
+    |
+    */
+
+    'scheduler_worker' => filter_var(env('QUEUE_SCHEDULER_WORKER', true), FILTER_VALIDATE_BOOLEAN),
+
+    /*
+    |--------------------------------------------------------------------------
     | Queue Connections
     |--------------------------------------------------------------------------
     |
