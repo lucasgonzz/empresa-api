@@ -364,10 +364,24 @@ class BudgetPdf extends fpdf {
 		    	$this->x = 5;
 				$this->Cell(200, 7, '- '.$discount->pivot->percentage.'% '.$discount->name, 0, 1, 'R');
 		    }
-		    foreach ($this->budget->surchages as $surchage) {
+		    /*
+		    	Con `aplicar_recargos_directo_a_items` el recargo YA ESTA adentro del precio de cada
+		    	renglon, asi que listarlo tambien en el pie hace leer que se suma dos veces: el
+		    	cliente ve "+10% Recargo" abajo de un total que no lo vuelve a sumar. Por eso no se
+		    	imprime (pedido de Lucas).
 
-		    	$this->x = 5;
-				$this->Cell(200, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'R');
+		    	Los descuentos de arriba SI se siguen listando, y el renglon "Sub Total sin
+		    	descuentos" tampoco se toca: nada de eso viaja adentro del precio.
+
+		    	Mismo criterio que `NewSalePdf::count_surchage_rows()` para el PDF de la venta.
+		    */
+		    if (!$this->budget->aplicar_recargos_directo_a_items) {
+
+			    foreach ($this->budget->surchages as $surchage) {
+
+			    	$this->x = 5;
+					$this->Cell(200, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'R');
+			    }
 		    }
 
 		}

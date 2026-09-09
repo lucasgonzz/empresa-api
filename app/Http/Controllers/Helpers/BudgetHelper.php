@@ -55,6 +55,10 @@ class BudgetHelper {
 	            'moneda_id' 			=> $budget->moneda_id,
 	            'discounts_in_services'	=> $budget->discounts_in_services,
 	            'surchages_in_services'	=> $budget->surchages_in_services,
+	            // La venta que nace del presupuesto se lleva la opcion: sus articulos ya vienen con
+	            // el recargo adentro del precio, asi que SaleHelper::getTotalSale() tampoco lo tiene
+	            // que volver a sumar (pedido explicito de Lucas).
+	            'aplicar_recargos_directo_a_items' => $budget->aplicar_recargos_directo_a_items,
             	'price_type_id'         => Self::get_price_type_id($budget),
             	'sale_status_id'        => $budget->sale_status_id,
             	// Misma semántica que en SaleController: si no viene definido en el presupuesto, descontar stock por defecto.
@@ -258,14 +262,35 @@ class BudgetHelper {
 		$budget->load('promocion_vinotecas');
 		$budget->load('services');
 
+		/*
+			🔴 LA GUARDA QUE NO SE PUEDE SIMPLIFICAR: con `aplicar_recargos_directo_a_items`
+			activo, el precio que viaja en el pivot YA TIENE EL RECARGO ADENTRO.
+
+			Es la opcion "aplicar los recargos de esta venta directamente a los precios de los
+			articulos" de VENDER: la SPA recarga cada `price` renglon por renglon y manda un
+			`total` que NO vuelve a sumar el recargo. Si aca los `foreach ($budget->surchages ...)`
+			corren igual, el recargo se aplica DOS VECES, la diferencia contra `$budget->total`
+			se pasa del margen de 3 de `BudgetController::store()` y el guardado muere con
+			"El total del presupuesto no corresponde con los productos ingresados" (500).
+
+			Los DESCUENTOS si se siguen aplicando: la opcion es solo de recargos, el precio del
+			pivot no los trae adentro.
+
+			Misma guarda, mismo motivo y mismo estilo que `SaleHelper::getTotalSale()`, que es
+			donde este comportamiento ya estaba resuelto del lado de las ventas.
+		*/
+		$aplicar_surchages = !$budget->aplicar_recargos_directo_a_items;
+
 		foreach ($budget->articles as $article) {
 			$total_article = Self::totalArticle($article);
 
 			foreach ($budget->discounts as $discount) {
 				$total_article -= $discount->pivot->percentage * $total_article / 100;
 			}
-			foreach ($budget->surchages as $surchage) {
-				$total_article += $surchage->pivot->percentage * $total_article / 100;
+			if ($aplicar_surchages) {
+				foreach ($budget->surchages as $surchage) {
+					$total_article += $surchage->pivot->percentage * $total_article / 100;
+				}
 			}
 
 			$total += $total_article;
@@ -277,13 +302,15 @@ class BudgetHelper {
 			foreach ($budget->discounts as $discount) {
 				$total_article -= $discount->pivot->percentage * $total_article / 100;
 			}
-			foreach ($budget->surchages as $surchage) {
-				$total_article += $surchage->pivot->percentage * $total_article / 100;
+			if ($aplicar_surchages) {
+				foreach ($budget->surchages as $surchage) {
+					$total_article += $surchage->pivot->percentage * $total_article / 100;
+				}
 			}
 
 			$total += $total_article;
 		}
-		
+
 		foreach ($budget->services as $service) {
 			$total_service = Self::totalArticle($service);
 
@@ -293,7 +320,7 @@ class BudgetHelper {
 				}
 			}
 
-			if ($budget->surchages_in_services) {
+			if ($budget->surchages_in_services && $aplicar_surchages) {
 				foreach ($budget->surchages as $surchage) {
 					$total_service += $surchage->pivot->percentage * $total_service / 100;
 				}

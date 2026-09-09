@@ -74,6 +74,7 @@ class BudgetController extends Controller
                 'address_id'                => $request->address_id,
                 'surchages_in_services'     => $request->surchages_in_services,
                 'discounts_in_services'     => $request->discounts_in_services,
+                'aplicar_recargos_directo_a_items' => $request->aplicar_recargos_directo_a_items,
                 'moneda_id'                 => $request->moneda_id,
                 'valor_dolar'               => $request->valor_dolar,
                 // 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
@@ -237,6 +238,24 @@ class BudgetController extends Controller
 
         $model->surchages_in_services     = $request->surchages_in_services;
         $model->discounts_in_services     = $request->discounts_in_services;
+        /*
+            Se PRESERVA el valor guardado si el request no trae el campo, igual que `discount_stock`
+            e `iva_aplicado` dos lineas mas abajo, y a diferencia de `SaleController::update()`, que
+            lo asigna pelado.
+
+            El motivo es concreto: hoy `vender_presupuestos.js::actualizar()` NO manda este campo en
+            el PUT (si lo manda el alta y la actualizacion de una VENTA, pero no las de un
+            presupuesto). Con una asignacion pelada, editar un presupuesto guardado con la opcion
+            activa lo dejaria con el flag en null y los precios del pivot todavia recargados: el
+            update no valida el total, asi que no falla — pero al confirmarlo la venta nace inflada
+            un 10%.
+
+            Es ademas lo que pide la regla de contratos compatibles hacia atras: la api y la spa no
+            llegan juntas a produccion, y con la spa vieja este campo simplemente no viaja.
+        */
+        $model->aplicar_recargos_directo_a_items = !is_null($request->aplicar_recargos_directo_a_items)
+                                                    ? $request->aplicar_recargos_directo_a_items
+                                                    : $model->aplicar_recargos_directo_a_items;
         $model->moneda_id                 = $request->moneda_id;
         $model->sale_status_id            = $request->sale_status_id;
         $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
