@@ -271,6 +271,21 @@ class ArticleHelper {
         // duplicacion.
         $iva_ya_aplicado = false;
 
+        /**
+         * Precio manual (mision `precio-manual-no-suma-iva`, 10/9/2026): cuando el precio final
+         * sale de $article->price cargado a mano (mas abajo, la rama que arma el "else"), no se le
+         * suman impuestos sobre ventas ni IVA -- el precio manual es el que se cobra, tal cual lo
+         * cargo la persona, sin importar la condicion fiscal de la cuenta ni si esta activo
+         * "usar_condicion_fiscal_en_costeo". Antes de esta mision, el bloque comun de sale_taxes e
+         * IVA (mas abajo) corria igual para esta rama: una cuenta Responsable Inscripto con
+         * usar_condicion_fiscal_en_costeo activo (iva_va_al_costo() da false, el IVA se suma al
+         * vender) terminaba cobrando precio_manual + IVA, y con un SaleTax activo tambien
+         * precio_manual + impuesto sobre ventas. El mismo invariante ya estaba resuelto para las
+         * listas de precio (ArticlePricesHelper::aplicar_precios_segun_listas_de_precios(), rama
+         * setear_precio_final) pero nunca se replico para el precio unico del articulo.
+         */
+        $es_precio_manual = false;
+
         $des = [];
 
         // Desglose de la lista de precio pedida (prompt 357/01). Se acumula aparte y se pega al
@@ -559,12 +574,20 @@ class ArticleHelper {
                 'CALCULO DEL PRECIO FINAL'
             );
             $final_price = $article->price;
+            $es_precio_manual = true;
             $des[] = DesglosePrecioHelper::linea(
                 DesglosePrecioHelper::PRECIO_MANUAL,
                 'Precio fijado a mano',
                 null,
                 Numbers::price($final_price, true),
                 'Usando el precio manual de '.Numbers::price($final_price, true)
+            );
+            $des[] = DesglosePrecioHelper::linea(
+                DesglosePrecioHelper::NOTA,
+                'Acá no se suman impuestos ni IVA',
+                'el precio es manual: se vende exactamente por ese valor',
+                null,
+                'No se suman impuestos sobre ventas ni IVA: el precio es manual y se vende exactamente por ese valor'
             );
 
             // El precio manual manda y no se toca, pero la base se calcula igual: es lo que el
@@ -620,16 +643,23 @@ class ArticleHelper {
 
         // Capa 2 (Prompt 261): sale_taxes (IIBB y afines) se aplican con fórmula de división,
         // después del margen/price_type_surchages y ANTES del IVA de venta. Aplica siempre
-        // (Responsable Inscripto o Monotributista), ya que es un impuesto distinto del IVA.
-        $res = ArticlePricesHelper::aplicar_sale_taxes($article, $final_price, $user, $des);
-        $final_price = $res['price'];
-        $des   = $res['des'];
+        // (Responsable Inscripto o Monotributista), ya que es un impuesto distinto del IVA --
+        // EXCEPTO sobre un precio manual (ver $es_precio_manual mas arriba): ese precio ya es el
+        // que se cobra, tal cual.
+        if (!$es_precio_manual) {
+
+            $res = ArticlePricesHelper::aplicar_sale_taxes($article, $final_price, $user, $des);
+            $final_price = $res['price'];
+            $des   = $res['des'];
+        }
 
         // $iva_ya_aplicado lo pone en true la rama price_from_cost_mas_iva de arriba: esa
         // modalidad ya incorpora el IVA en su propio calculo (linea ~309), asi que este bloque
         // no tiene que volver a aplicarlo o el 21% se suma dos veces (bug real, prompt 379/01).
         // No sacar esta condicion "para simplificar": es lo unico que evita la duplicacion.
-        if (!$iva_ya_aplicado && !ArticlePricesHelper::iva_va_al_costo($user)) {
+        // $es_precio_manual corta lo mismo para un precio cargado a mano: se respeta tal cual, sin
+        // importar la condicion fiscal de la cuenta (mision `precio-manual-no-suma-iva`, 10/9/2026).
+        if (!$es_precio_manual && !$iva_ya_aplicado && !ArticlePricesHelper::iva_va_al_costo($user)) {
 
             $res = ArticlePricesHelper::aplicar_iva($article, $final_price, $user, $des);
             $final_price = $res['price'];
