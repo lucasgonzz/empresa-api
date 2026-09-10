@@ -93,6 +93,10 @@ class ArticleController extends Controller
                             });
         }
         $models = $models->orderBy('created_at', 'DESC')
+                            // Sin el vector de embeddings: 29 KB por fila que ningún front lee
+                            // (4.0.24). El select explícito del scope va antes de withAll(), que
+                            // sólo agrega eager loads y no toca las columnas.
+                            ->sinEmbedding()
                             ->withAll()
                             ->paginate($per_page);
 

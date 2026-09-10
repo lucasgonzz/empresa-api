@@ -6,12 +6,38 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Schema;
 
 class Article extends Model
 {
     use SoftDeletes;
 
     protected $guarded = [];
+
+    /**
+     * `embedding` nunca sale en JSON (misión optimizacion-vps-fase1, 4.0.24).
+     *
+     * Es el vector de 1536 floats del agente de WhatsApp: ~29 KB por fila. En ferretotal 427 MB
+     * de los 488 MB de la tabla son embeddings, y viajaban en cada página del listado (500
+     * artículos = ~15 MB de números que ningún front lee: empresa-spa no lo usa, grep del
+     * 10/9/2026, sólo un comentario). $hidden afecta toArray()/toJson()/jsonSerialize(), NO el
+     * acceso al atributo: ArticleEmbeddingService, los observers, DuplicarRecetaHelper y el
+     * comando articles:generate-embeddings leen $article->embedding y lo siguen viendo. Y $hidden
+     * no alcanza solo: el vector igual se lee de la base y se hidrata en memoria; para eso está
+     * scopeSinEmbedding().
+     *
+     * @var array
+     */
+    protected $hidden = ['embedding'];
+
+    /**
+     * Cache por proceso de las columnas de `articles` menos `embedding`, ya prefijadas con la
+     * tabla. Schema::getColumnListing() es un SELECT a information_schema por llamada: un request
+     * de listado lo paga una vez, un worker de cola una vez por vida del proceso.
+     *
+     * @var array|null null = todavía no se consultó.
+     */
+    protected static $columnas_sin_embedding = null;
 
     protected $dates = ['stock_updated_at', 'final_price_updated_at'];
 
@@ -31,6 +57,53 @@ class Article extends Model
     // siga viniendo en el JSON del articulo como antes, sin que Eloquent la trate como atributo a
     // persistir en ningun save() posterior.
     protected $appends = ['precios_por_metodo_pago'];
+
+    /**
+     * Scope: todas las columnas de `articles` menos `embedding`, para no leer ni hidratar 29 KB
+     * por fila en consultas que no vectorizan nada. Va ANTES de withAll() en
+     * ArticleController::index() (el listado y la sincronización offline), que es la respuesta
+     * más pesada del sistema.
+     *
+     * Las columnas van prefijadas (`articles`.`id`, ...) para que el mismo scope sirva en consultas
+     * con join a otra tabla que también tenga `id` (sin prefijo MySQL tira "Column 'id' ambiguous");
+     * Eloquent hidrata por el nombre de columna que devuelve MySQL, sin prefijo, así que el modelo
+     * queda igual. paginate() reemplaza el select por COUNT(*) para contar, y las relaciones de
+     * withAll() matchean por `articles`.`id`, que está en la lista.
+     *
+     * 🔴 Es un select explícito: si otro código encadena ->select() después, lo pisa (y
+     * ->addSelect() le suma columnas); y si después de este scope alguien lee $article->embedding
+     * recibe null, no un error. Para leer el vector se consulta sin el scope.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return void
+     */
+    function scopeSinEmbedding($query) {
+        $query->select(self::columnas_sin_embedding());
+    }
+
+    /**
+     * Columnas de `articles` menos `embedding`, prefijadas con la tabla y cacheadas en la
+     * estática (ver $columnas_sin_embedding).
+     *
+     * @return array
+     */
+    static function columnas_sin_embedding() {
+        if (is_null(static::$columnas_sin_embedding)) {
+            $tabla = (new static)->getTable();
+
+            $columnas = [];
+            foreach (Schema::getColumnListing($tabla) as $columna) {
+                if ($columna === 'embedding') {
+                    continue;
+                }
+                $columnas[] = $tabla . '.' . $columna;
+            }
+
+            static::$columnas_sin_embedding = $columnas;
+        }
+
+        return static::$columnas_sin_embedding;
+    }
 
     function scopeWithAll($query) {
         $query->with('images', 'iva', 'sizes', 'colors', 'condition', 'descriptions', 'category', 'sub_category', 'tags', 'brand', 'article_discounts', 'provider_price_list', 'deposits', 'article_properties.article_property_values', 'article_variants.article_property_values', 'article_variants.addresses', 'addresses', 'price_types', 'article_discounts_blanco', 'article_surchages', 'article_surchages_blanco', 'price_type_monedas', 'meli_category', 'article_ubications', 'article_price_ranges', 'providers', 'sales_with_deliveries_in_acopio', 'provider');
