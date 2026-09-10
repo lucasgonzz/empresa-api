@@ -3,9 +3,12 @@
 namespace Tests\Feature;
 
 use App\Console\Kernel;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\inventoryPerformance\InventoryPerformanceHelper;
 use App\Jobs\ProcessInventoryPerformanceJob;
+use App\Models\Article;
 use App\Models\InventoryPerformance;
+use App\Models\PromocionVinoteca;
 use App\Models\User;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -473,5 +476,91 @@ class InventarioNocturnoTest extends EmpresaTestCase
         config(['app.USER_ID' => $this->owner->id]);
 
         $this->assertNull($this->evento('check_stocks'));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 5. El recorrido del reporte (chunkById + select mínimo)
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * El helper genera el reporte del fixture con los mismos números que salen de recorrer los
+     * artículos completos. Es la guarda del select mínimo de procesar_articulos(): si una columna
+     * que el loop lee quedara afuera de COLUMNAS_DEL_RECORRIDO, Eloquent devolvería null en
+     * silencio y acá los contadores de costos y stock darían cero en vez de tirar un error. El
+     * cálculo esperado se hace a mano, con los modelos completos y el mismo resolvedor de precios,
+     * a propósito: si se copiara el helper, el test no probaría nada.
+     *
+     * @return void
+     */
+    public function test_el_reporte_se_genera_con_los_mismos_numeros_que_los_articulos_completos()
+    {
+        $articulos = Article::with('addresses', 'price_types')
+            ->where('user_id', $this->owner->id)
+            ->where('status', 'active')
+            ->get();
+
+        $this->assertGreaterThan(0, $articulos->count(), 'Precondición: el fixture tiene artículos activos.');
+
+        $con_costos    = 0;
+        $stockeados    = 0;
+        $valor_costos  = 0;
+        $valor_precios = 0;
+
+        foreach ($articulos as $articulo) {
+            if (! is_null($articulo->cost)) {
+                $con_costos++;
+            }
+
+            if (is_null($articulo->stock)) {
+                continue;
+            }
+
+            $stockeados++;
+
+            if ($articulo->stock <= 0) {
+                continue;
+            }
+
+            if (! is_null($articulo->cost)) {
+                $costo = $articulo->cost;
+
+                if (! is_null($articulo->presentacion)) {
+                    $costo *= $articulo->presentacion;
+                }
+
+                if (! is_null($articulo->unidades_individuales) && $articulo->unidades_individuales > 0) {
+                    $costo /= $articulo->unidades_individuales;
+                }
+
+                $valor_costos += $costo * $articulo->stock;
+            }
+
+            $precio = ArticlePricesHelper::resolver_precio_de_venta($articulo, $this->owner, null);
+
+            if (! is_null($precio['final_price'])) {
+                $valor_precios += $precio['final_price'] * $articulo->stock;
+            }
+        }
+
+        // El helper suma también las promociones de vinoteca con stock (promocion_vinotecas()).
+        foreach (PromocionVinoteca::all() as $promo) {
+            if (! is_null($promo->stock)) {
+                $valor_costos  += $promo->cost * $promo->stock;
+                $valor_precios += $promo->final_price * $promo->stock;
+            }
+        }
+
+        $this->assertGreaterThan(0, $con_costos, 'Precondición: el fixture tiene costos cargados (si el select perdiera cost, el reporte daría cero).');
+
+        $reporte = (new InventoryPerformanceHelper($this->owner->id))->create();
+
+        $this->assertNotNull($reporte, 'Con artículos activos el helper tiene que crear el reporte.');
+        $this->assertEquals($articulos->count(), (int) $reporte->cantidad_articulos);
+        $this->assertEquals($con_costos, (int) $reporte->articulos_con_costos);
+        $this->assertEquals($articulos->count() - $con_costos, (int) $reporte->articulos_sin_costos);
+        $this->assertEquals($stockeados, (int) $reporte->stockeados);
+        $this->assertEqualsWithDelta($valor_costos, (float) $reporte->valor_inventario_en_costos, 0.05);
+        $this->assertEqualsWithDelta($valor_precios, (float) $reporte->valor_inventario_en_precios, 0.05);
+        $this->assertGreaterThan(0, (float) $reporte->valor_inventario_en_precios, 'Si el select perdiera final_price, la valuación a precio daría cero.');
     }
 }
