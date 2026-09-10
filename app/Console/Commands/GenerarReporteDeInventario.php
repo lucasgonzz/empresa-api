@@ -91,6 +91,12 @@ class GenerarReporteDeInventario extends Command
      */
     public function handle()
     {
+        // Se reinician acá y no en el constructor: Artisan::call() reutiliza la misma instancia
+        // del comando dentro de un proceso (tests, jobs que lo invocan), y sin esto la segunda
+        // corrida sumaría sobre los totales de la primera.
+        $this->encolados = 0;
+        $this->en_curso  = 0;
+
         $user_id = $this->option('user_id');
 
         if (! empty($user_id)) {
