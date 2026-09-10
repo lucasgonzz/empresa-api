@@ -35,12 +35,17 @@ use Illuminate\Support\Str;
  */
 $frente_actual = (string) base_path();
 
-if ($frente_actual === '') {
-    $frente_actual = (string) env('APP_URL');
-}
-
 /**
  * Hash corto y estable del frente. Hex, para que el nombre de la cookie siga siendo válido.
+ *
+ * Sin fallback a propósito. Acá había un `if ($frente_actual === '') { ... env('APP_URL') }` y se
+ * sacó: `base_path()` sale de `dirname(__DIR__)` (bootstrap/app.php) y `dirname()` no devuelve
+ * nunca cadena vacía, así que la rama era inalcanzable — y si alguien la alcanzara seteando
+ * `APP_BASE_PATH=` vacío, caería en `APP_URL`, que es justo el valor que este archivo acaba de
+ * descartar por medido: los dos frentes de `servian` lo tienen igual y ocho carpetas del
+ * compartido no lo tienen. Con `APP_URL` ausente el sufijo sería `da39a3ee` (el sha1 de la cadena
+ * vacía) para TODOS los frentes de TODOS los clientes: el bug original de vuelta, en silencio.
+ * Un respaldo que solo puede empeorar es peor que no tener respaldo.
  */
 $sufijo_de_frente = substr(sha1($frente_actual), 0, 8);
 

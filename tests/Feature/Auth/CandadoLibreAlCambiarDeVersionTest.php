@@ -72,7 +72,8 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
      * vencido, checkUserLastActivity() lo tomaría solo y el test no probaría nada.
      *
      * 🔴 `activity_minutes` se fuerza a 60 explícitamente. El usuario 500 sembrado en esta base
-     * (empresa_testing_s9) lo tiene en 0, y con 0 minutos de ventana `ya_paso_el_tiempo()` da
+     * (medido en empresa_testing_s9 y de nuevo en empresa_testing_s3) lo tiene en 0, y con 0
+     * minutos de ventana `ya_paso_el_tiempo()` da
      * `true` SIEMPRE -incluso con `last_activity` recién puesto en `Carbon::now()`, porque el
      * valor que vuelve de la base pierde los microsegundos y `now()` en el chequeo siguiente ya
      * es un instante después-. Medido: sin este seteo, `test_el_login_manual_funciona_...`
@@ -188,11 +189,14 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
         $plain_token = $token_response->json('token');
 
         /**
-         * Sigue siendo la MISMA sesión de test (actingAs() y el cookie jar persisten entre
-         * llamadas de un mismo método), no una request real desde otro host. Alcanza para
-         * probar el endpoint: login_from_version_session_token() no lee el guard actual, solo
-         * el token, y por eso "quién esté actingAs" en este punto es irrelevante para el
-         * resultado.
+         * Sigue siendo la MISMA aplicación de test -las llamadas de un mismo método comparten
+         * el contenedor, y con él el guard `web` en memoria que dejó actingAs()-, no una request
+         * real desde otro host. Alcanza para probar el endpoint:
+         * login_from_version_session_token() no lee el guard actual, solo el token, y por eso
+         * "quién esté actingAs" en este punto es irrelevante para el resultado.
+         *
+         * (Lo que NO persiste entre llamadas es un cookie jar: Laravel solo manda las cookies que
+         * se le pasen a mano con withCookie()/withCookies(). Acá decía lo contrario.)
          */
         $login_por_transferencia = $this->postJson('/login-from-version-session-token', [
             'token' => $plain_token,
@@ -210,10 +214,19 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
      * que el SPA dispara después -best-effort, con `.catch()` silencioso y redirigiendo igual
      * aunque falle-.
      *
-     * La sonda es el propio `/version-session-token`: está detrás del middleware `auth` (ver
-     * routes/web.php) y es la única ruta autenticada de web.php, así que sirve exactamente para
-     * lo que hay que probar. Si la sesión del origen siguiera abierta, una segunda llamada
-     * devolvería otro token con 200; con la sesión cerrada tiene que dar 401.
+     * Se mide con DOS sondas distintas, y hacen falta las dos:
+     *
+     * 1. **El propio `/version-session-token`**, que está detrás del middleware `auth` (ver
+     *    routes/web.php) y es la única ruta autenticada de web.php. Si la sesión del origen
+     *    siguiera abierta, una segunda llamada devolvería otro token con 200; con la sesión
+     *    cerrada tiene que dar 401. Esto prueba que corrió `Auth::logout()`.
+     * 2. **Las claves propias adentro de la sesión.** 🔴 Esta segunda sonda no es adorno: la
+     *    primera se satisface con `Auth::logout()` a secas, que solo borra las claves del guard.
+     *    Sin ella se podrían sacar los cinco `forget()`, el `invalidate()` y el
+     *    `regenerateToken()` del controlador y los tests seguirían en verde -o sea, la parte del
+     *    cierre que de verdad vacía la sesión del frente origen, que es LO QUE PIDIÓ LUCAS,
+     *    quedaría sin cubrir-. Por eso la sesión se siembra a mano con withSession() antes de
+     *    llamar: si el vaciado no corre, esas claves siguen ahí.
      *
      * @return void
      */
@@ -222,6 +235,12 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
         $this->el_candado_esta_tomado_por_la_version_origen();
 
         $respuesta = $this->actingAs($this->user, 'web')
+            ->withSession([
+                'auth_user' => $this->user->id,
+                'owner' => $this->user->id,
+                'session_id' => self::CANDADO_DE_LA_VERSION_ORIGEN,
+                'skip_offline_articles_sync' => true,
+            ])
             ->postJson('/version-session-token');
 
         $respuesta->assertStatus(200);
@@ -229,6 +248,13 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
 
         $this->assertGuest('web');
 
+        /** Sonda 2: la sesión quedó vacía, no solo deslogueada. */
+        $respuesta->assertSessionMissing('auth_user');
+        $respuesta->assertSessionMissing('owner');
+        $respuesta->assertSessionMissing('session_id');
+        $respuesta->assertSessionMissing('skip_offline_articles_sync');
+
+        /** Sonda 1: y la ruta autenticada ya no la deja pasar. */
         $segunda_llamada = $this->postJson('/version-session-token');
 
         $segunda_llamada->assertStatus(401);
