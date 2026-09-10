@@ -300,14 +300,28 @@ class InventoryPerformanceHelper {
 	}
 
 
-	function procesar_articulos() {
+	/**
+	 * Columnas de `articles` que lee el recorrido de procesar_articulos(), y nada más (misión
+	 * optimizacion-vps-fase1, 4.0.24). Antes se pedían las 95 columnas menos `embedding`
+	 * (descripciones, notas, códigos, urls de Tienda Nube...) para un loop que usa siete.
+	 *
+	 * 🔴 Si agregás un `$article->x` al loop o a costo_unitario_normalizado(), sumá `x` acá. Con
+	 * un select explícito, un atributo que no se pidió NO tira: Eloquent devuelve null en silencio
+	 * (no distingue "columna no seleccionada" de "columna NULL"), y el reporte saldría con números
+	 * falsos sin que nada lo denuncie. Lo que lee cada una:
+	 *   - id: chunkById pagina por acá, y las relaciones addresses/price_types matchean el pivote por acá.
+	 *   - cost, presentacion, unidades_individuales: costo_unitario_normalizado().
+	 *   - stock, stock_min: los contadores de stockeados / sin stock / negativo / bajo mínimo y el faltante.
+	 *   - final_price: ArticlePricesHelper::resolver_precio_de_venta() (rama sin listas y fallback);
+	 *     la rama con listas lee la relación price_types, que va en el with() de abajo.
+	 *   - user_id y name: el loop no los lee hoy. Van porque el artículo se le pasa a un resolvedor
+	 *     externo, y un Article sin dueño ni nombre es una trampa para el próximo que lo loguee.
+	 *
+	 * @var array
+	 */
+	const COLUMNAS_DEL_RECORRIDO = ['id', 'user_id', 'cost', 'stock', 'stock_min', 'presentacion', 'unidades_individuales', 'final_price', 'name'];
 
-		$columns = collect(\Illuminate\Support\Facades\Schema::getColumnListing((new Article)->getTable()))
-					->reject(function ($column) {
-						return in_array($column, ['embedding'], true);
-					})
-					->values()
-					->all();
+	function procesar_articulos() {
 
 		/**
 		 * price_types va en el eager load porque el resolvedor de precios lo lee por cada
@@ -316,13 +330,20 @@ class InventoryPerformanceHelper {
 		 * hay cuentas de 400k articulos. Medido el 11/8/2026: con listas activas y sin este
 		 * with(), 16 consultas al pivote para 16 articulos con stock. No explota, degrada en
 		 * silencio, que es peor.
+		 *
+		 * chunkById() y no chunk() + orderBy('created_at') (misión optimizacion-vps-fase1,
+		 * 4.0.24): chunk() pagina por OFFSET y, con un orden que no es el de la PK, MySQL vuelve
+		 * a ordenar el catálogo entero en cada lote para descartar lo ya recorrido — cuadrático.
+		 * Medido en servian (537k artículos, informe 20260910-plan-optimizacion-vps.md): 18 min
+		 * 09 s con el disco fuera del medio, todo en filesort. chunkById pagina por `id > último`
+		 * sobre la PK, lineal. El orden no le importa a este reporte: son contadores y sumas, y
+		 * dan lo mismo en cualquier orden.
 		 */
-		Article::select($columns)
+		Article::select(self::COLUMNAS_DEL_RECORRIDO)
 			->with('addresses', 'price_types')
 			->where('user_id', $this->user_id)
 			->where('status', 'active')
-			->orderBy('created_at', 'ASC')
-			->chunk(2000, function ($articles) {
+			->chunkById(2000, function ($articles) {
 
 				foreach ($articles as $article) {
 
