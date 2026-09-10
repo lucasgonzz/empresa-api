@@ -14,15 +14,29 @@ use Illuminate\Support\Str;
  * almacén del otro. Cada respuesta del frente viejo pisaba la cookie del nuevo con un id que el
  * nuevo no conoce, y al redirigir de un frente al otro el usuario quedaba con 401 en todo.
  *
- * Se toma de APP_URL, que siempre difiere entre frentes, y se cae en base_path() si viniera
- * vacío -las carpetas también difieren-. A propósito NADA que dependa del request
- * ($_SERVER['HTTP_HOST'], request(), etc.): con `config:cache` eso se congelaría con el valor del
- * momento del cacheo, que es justo el modo de falla que se quiere evitar.
+ * 🔴 Se toma de la CARPETA de instalación, no de APP_URL, y esto se midió en producción el
+ * 10/9/2026 antes de elegirlo: los dos frentes de `servian` tienen el MISMO APP_URL
+ * (https://api-servian.comerciocity.com en /home/api-servian y en /home/api-servian2), así que
+ * derivar de ahí le habría dado a ese cliente el mismo nombre en los dos frentes -o sea, un
+ * no-op silencioso: ningún error, el problema intacto-. Y otras ocho carpetas del hosting
+ * compartido directamente no tienen APP_URL en su .env. La carpeta, en cambio, es distinta
+ * siempre y por construcción: cada frente es su propia instalación, tanto en el VPS
+ * (/home/api-galvan vs /home/api-galvan2) como en el compartido (.../galvan/api vs
+ * .../galvan2/api). Dos frentes no pueden compartirla.
+ *
+ * De paso evita dos fragilidades de APP_URL: que cambia con solo agregarle o sacarle la barra
+ * final -y cualquier cambio del nombre desloguea a ese frente-, y que depende de QUÉ archivo
+ * .env se haya cargado (con APP_ENV=testing y un .env.testing al lado, el valor es otro).
+ *
+ * A propósito NADA que dependa del request ($_SERVER['HTTP_HOST'], request(), etc.): con
+ * `config:cache` eso se congelaría con el valor del momento del cacheo, que es justo el modo de
+ * falla que se quiere evitar. `base_path()` no tiene ese problema: cacheado o no, es la misma
+ * carpeta.
  */
-$frente_actual = (string) env('APP_URL');
+$frente_actual = (string) base_path();
 
 if ($frente_actual === '') {
-    $frente_actual = (string) base_path();
+    $frente_actual = (string) env('APP_URL');
 }
 
 /**
