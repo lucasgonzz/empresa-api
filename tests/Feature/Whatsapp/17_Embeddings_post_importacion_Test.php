@@ -64,7 +64,11 @@ class Embeddings_post_importacion_Test extends TestCase
 
         // 🔴 Nunca las claves reales del .env.testing: ningún test de esta suite sale a la red.
         config(['services.anthropic.api_key' => null]);
-        config(['services.openai.api_key' => null]);
+        // De prueba y no null: desde la 4.0.24 el comando no despacha nada sin clave (guarda de
+        // GenerateArticleEmbeddings, misión optimizacion-vps-fase1), y lo que se prueba acá es
+        // que el disparo post-importación SÍ despacha. Sigue sin salir a la red: los jobs los
+        // captura Queue::fake().
+        config(['services.openai.api_key' => 'clave-de-prueba']);
         config(['broadcasting.default' => 'null']);
 
         ArticleObserver::resetear_cache_gate();
