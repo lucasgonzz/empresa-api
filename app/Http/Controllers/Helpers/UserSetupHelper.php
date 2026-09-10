@@ -319,14 +319,18 @@ class UserSetupHelper
             'escaneo_factura_compra',
 
             /*
-                El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js),
-                no 'whatsapp_ia'. Sin 'whatsapp' el modulo no aparece nunca en el menu, aunque se
-                asigne 'whatsapp_ia' a mano. Van las dos juntas: 'whatsapp_ia' sola no tiene ningun
-                efecto visible porque el modulo que la usa ni se muestra. Mismo fix que ya tiene
-                DemoSetupHelper.
+                El item de menu de WhatsApp lo gatea 'whatsapp' (empresa-spa/src/router/routes.js):
+                sigue yendo de base para que el modulo de chat aparezca en el menu de todo cliente
+                real. 'whatsapp_ia' es otra cosa -- gatilla el embedding vectorial del catalogo
+                para que el agente de WhatsApp con IA responda consultas semanticas
+                (ArticleObserver, DescriptionObserver, articles:generate-embeddings) -- y DEJA de
+                sembrarse aca: se activa aparte, por cliente, cuando contrata esa busqueda
+                semantica (ver ExtencionEmpresaWhatsappIaSeeder, ya pensado para correrse
+                standalone). Medido en produccion el 10/9/2026: de 117 duenos con la extension en
+                esta lista base, solo 5 la tenian realmente en uso -- se corta la sembrada de
+                origen.
             */
             'whatsapp',
-            'whatsapp_ia',
         ];
     }
 
