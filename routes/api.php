@@ -172,6 +172,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
 
+    // Botón Actualizar del reporte de inventario (4.0.24): encola la generación a pedido, con el
+    // mismo candado que el GET y que el comando nocturno inventario:generar. Aditivo: una SPA
+    // vieja no lo llama, y una SPA nueva contra una API vieja recibe 404 y lo loguea sin romper.
+    Route::post('inventory-performance/generate', 'InventoryPerformanceController@generate');
+
     // Artículos bajo el stock mínimo del último reporte, paginados y con buscador
     // (reemplaza el envío de todos los artículos dentro del JSON del reporte principal).
     Route::get('inventory-performance/articles-stock-minimo', 'InventoryPerformanceController@articles_stock_minimo');

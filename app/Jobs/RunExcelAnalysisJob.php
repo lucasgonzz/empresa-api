@@ -249,6 +249,19 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'formatos_numericos'    => $analysis['formatos_numericos'] ?? null,
 
                 /*
+                 * 🔴 Misión `desempate-por-nombre-codigo-repetido` (9/9/2026). Es el aviso
+                 * que el modal necesita para ofrecer (o no) la opción `desempatar_por_nombre`
+                 * en el paso 3: dice si los provider_codes repetidos del archivo tienen
+                 * nombres distintos entre sí, o sea si el desempate le va a servir a ESTE
+                 * archivo. Lo calcula AiExcelAnalyzer::resumir_desempate_por_nombre(); este
+                 * job sólo lo deja pasar. Sin esta línea el analyzer lo calcula y nadie lo ve.
+                 *
+                 * El default null cubre model=client/provider (esos analyzers no lo devuelven)
+                 * y las corridas que quedaron guardadas antes de esta misión.
+                 */
+                'desempate_por_nombre'  => $analysis['desempate_por_nombre'] ?? null,
+
+                /*
                  * 🔴 Estos cinco nombres de clave están congelados y la SPA ya está codeada
                  * contra ellos: si alguno se renombra acá, el modal no rompe — se queda mudo,
                  * que es peor. El selector de hoja no aparece, la alerta de columnas sin nombre

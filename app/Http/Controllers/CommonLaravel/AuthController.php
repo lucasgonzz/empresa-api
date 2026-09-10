@@ -210,6 +210,42 @@ class AuthController extends Controller
 
         $plain_token = VersionSessionTransferHelper::create_for_user($auth_user->id);
 
+        /**
+         * Y acá mismo se CIERRA la sesión del frente origen, en esta misma request. Va después
+         * de emitir el token porque el token se emite para el usuario autenticado: primero se
+         * genera, después se cierra.
+         *
+         * Por qué acá y no en el `/logout` que el SPA dispara a continuación: ese `/logout` es
+         * otro pedido de red, lo hace best-effort y con `.catch()` silencioso, y redirige igual
+         * aunque falle. O sea que hasta ahora la sesión del origen podía quedar ABIERTA sin que
+         * nada lo denunciara. Y eso importa justo cuando más duele: si el login automático en el
+         * frente destino falla, el usuario vuelve al origen a entrar a mano y se encuentra con
+         * una sesión colgada -y su propio candado tomado- en vez de la pantalla de login. Con el
+         * cierre acá, el usuario siempre puede entrar a mano en el origen, sin depender de que
+         * un segundo pedido llegue a destino.
+         *
+         * Se sigue exactamente el mismo procedimiento que `logout()` en este archivo -las mismas
+         * claves de sesión, el mismo orden- para que no queden dos formas distintas de cerrar
+         * sesión que después se desincronicen. Lo único que no se repite es
+         * `removeUserLastActivity()`, que ya corrió más arriba.
+         *
+         * 🔴 La forma de la respuesta NO cambia: sigue siendo `{token: <string|null>}` con 200.
+         * Es un contrato con empresa-spa y un SPA viejo tiene que seguir leyendo `res.data.token`
+         * igual; lo único que se agrega es un efecto de lado.
+         */
+        $this->set_logout_at($auth_user->id);
+
+        session()->forget($this->master_login_bypass_activity_key);
+        session()->forget('skip_offline_articles_sync');
+        session()->forget('session_id');
+        session()->forget('auth_user');
+        session()->forget('owner');
+
+        Auth::logout();
+
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
         return response()->json(['token' => $plain_token], 200);
     }
 

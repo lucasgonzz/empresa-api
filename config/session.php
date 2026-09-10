@@ -2,6 +2,53 @@
 
 use Illuminate\Support\Str;
 
+/**
+ * Identidad del frente que está corriendo este código.
+ *
+ * Un cliente tiene DOS frentes (api-galvan y api-galvan2, por ejemplo): uno sirve la versión
+ * activa y el otro queda preparado con la próxima, y el upgrade rota cuál de los dos atiende.
+ * Los dos cuelgan del mismo dominio raíz, así que hasta ahora emitían LA MISMA cookie de sesión
+ * -mismo nombre, mismo path, mismo domain-: para el navegador era una sola cookie. Pero con
+ * SESSION_DRIVER=file cada frente guarda sus sesiones en su propio disco
+ * (/home/api-galvan/... vs /home/api-galvan2/...), así que el id que escribe uno NO EXISTE en el
+ * almacén del otro. Cada respuesta del frente viejo pisaba la cookie del nuevo con un id que el
+ * nuevo no conoce, y al redirigir de un frente al otro el usuario quedaba con 401 en todo.
+ *
+ * 🔴 Se toma de la CARPETA de instalación, no de APP_URL, y esto se midió en producción el
+ * 10/9/2026 antes de elegirlo: los dos frentes de `servian` tienen el MISMO APP_URL
+ * (https://api-servian.comerciocity.com en /home/api-servian y en /home/api-servian2), así que
+ * derivar de ahí le habría dado a ese cliente el mismo nombre en los dos frentes -o sea, un
+ * no-op silencioso: ningún error, el problema intacto-. Y otras ocho carpetas del hosting
+ * compartido directamente no tienen APP_URL en su .env. La carpeta, en cambio, es distinta
+ * siempre y por construcción: cada frente es su propia instalación, tanto en el VPS
+ * (/home/api-galvan vs /home/api-galvan2) como en el compartido (.../galvan/api vs
+ * .../galvan2/api). Dos frentes no pueden compartirla.
+ *
+ * De paso evita dos fragilidades de APP_URL: que cambia con solo agregarle o sacarle la barra
+ * final -y cualquier cambio del nombre desloguea a ese frente-, y que depende de QUÉ archivo
+ * .env se haya cargado (con APP_ENV=testing y un .env.testing al lado, el valor es otro).
+ *
+ * A propósito NADA que dependa del request ($_SERVER['HTTP_HOST'], request(), etc.): con
+ * `config:cache` eso se congelaría con el valor del momento del cacheo, que es justo el modo de
+ * falla que se quiere evitar. `base_path()` no tiene ese problema: cacheado o no, es la misma
+ * carpeta.
+ */
+$frente_actual = (string) base_path();
+
+/**
+ * Hash corto y estable del frente. Hex, para que el nombre de la cookie siga siendo válido.
+ *
+ * Sin fallback a propósito. Acá había un `if ($frente_actual === '') { ... env('APP_URL') }` y se
+ * sacó: `base_path()` sale de `dirname(__DIR__)` (bootstrap/app.php) y `dirname()` no devuelve
+ * nunca cadena vacía, así que la rama era inalcanzable — y si alguien la alcanzara seteando
+ * `APP_BASE_PATH=` vacío, caería en `APP_URL`, que es justo el valor que este archivo acaba de
+ * descartar por medido: los dos frentes de `servian` lo tienen igual y ocho carpetas del
+ * compartido no lo tienen. Con `APP_URL` ausente el sufijo sería `da39a3ee` (el sha1 de la cadena
+ * vacía) para TODOS los frentes de TODOS los clientes: el bug original de vuelta, en silencio.
+ * Un respaldo que solo puede empeorar es peor que no tener respaldo.
+ */
+$sufijo_de_frente = substr(sha1($frente_actual), 0, 8);
+
 return [
 
     /*
@@ -126,10 +173,15 @@ return [
     |
     */
 
+    /**
+     * El sufijo va sobre el nombre YA RESUELTO, no sobre el default: las instalaciones traen
+     * SESSION_COOKIE cargado en su .env (comerciocity_session), así que sufijar solo el default
+     * no cambiaría nada donde importa. Ver $sufijo_de_frente arriba para el porqué.
+     */
     'cookie' => env(
         'SESSION_COOKIE',
         Str::slug(env('APP_NAME', 'laravel'), '_').'_session'
-    ),
+    ).'_'.$sufijo_de_frente,
 
     /*
     |--------------------------------------------------------------------------

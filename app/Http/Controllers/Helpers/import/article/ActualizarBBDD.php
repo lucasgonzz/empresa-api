@@ -120,6 +120,20 @@ class ActualizarBBDD {
         $this->articulos_actualizados_models = [];
 
         /*
+         * Índice provider_code => [Article, ...] de los artículos creados en este chunk.
+         * Se arma perezosamente en creados_con_provider_code() y se invalida cada vez que
+         * set_articulos_creados_models() rehace la colección.
+         */
+        $this->creados_index_por_provider_code = null;
+
+        /*
+         * Claves "<provider_code>|<fila de origen>" de los desempates de CREACIÓN que ya se
+         * reportaron en este chunk. get_article_model_from_cache() se llama hasta siete
+         * veces por artículo del cache: sin esto, el mismo conflicto entraría siete veces.
+         */
+        $this->desempates_de_creacion_registrados = [];
+
+        /*
          * Acumula los IDs de artículos creados cuyo bar_code o provider_code ya existía en la BD.
          * Se llena en guardar_articulos() después del INSERT y se expone vía getter.
          */
@@ -1904,11 +1918,117 @@ class ActualizarBBDD {
         // 1) Si viene provider_code, NO caigas a name (evita asignar descuentos al artículo incorrecto)
         if ($provider_code !== '') {
 
-            $article = $this->articulos_creados_models->first(function ($a) use ($provider_code) {
-                return trim((string)$a->provider_code) === $provider_code;
-            });
+            $candidatos = $this->creados_con_provider_code($provider_code);
 
-            if ($article) return $article;
+            if (count($candidatos) === 1) {
+                return $candidatos[0];
+            }
+
+            /*
+             * DOS O MÁS artículos recién creados con el MISMO provider_code (misión
+             * `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+             *
+             * El caso real: DobleP Herrajes importa la lista de Bronzen, donde el producto
+             * suelto y su pack x15 comparten el código del proveedor (`FA-NN`, `FA-NB`, ...).
+             * Hasta este arreglo, acá había un `->first()` por provider_code y las dos filas
+             * del Excel resolvían al MISMO modelo: el primer artículo se llevaba los recargos
+             * de las dos filas y el segundo quedaba sin descuento ni recargo. Medido en la
+             * base de producción de DobleP: 6 artículos con 2 recargos y 6 con ninguno. Los
+             * descuentos no se duplicaban sólo porque `sync_provider_discounts()` hace un
+             * barrido antes de crear; los recargos no tienen ese barrido y se acumulan.
+             *
+             * 🔴 POR QUÉ SE DESEMPATA POR NOMBRE Y NO POR `fake_id`, que es único por fila y
+             * ya existe (ProcessRow lo genera con `uniqid()` al encolar el artículo para
+             * crear). Porque acá ya no hay `fake_id` que valga:
+             *
+             *   1. `fake_id` NO es columna de `articles` — se excluye explícitamente del
+             *      INSERT (ver guardar_articulos(), la lista del `except()`). Los modelos de
+             *      $articulos_creados_models NO salen del cache: los relee de la base
+             *      set_articulos_creados_models() con un `where(user_id) + where(chunk_number)`,
+             *      así que llegan sin ninguna referencia a la fila que los creó.
+             *   2. Reconstruir el mapa `fake_id -> id` obligaría a apoyarse en que el bloque
+             *      de auto_increment que consumió el `Article::insert()` masivo sea contiguo
+             *      y venga en el mismo orden que las tuplas. Con
+             *      `innodb_autoinc_lock_mode = 2` (el default de MySQL 8) eso NO está
+             *      garantizado en cuanto haya CUALQUIER otro insertor en `articles`, y una
+             *      asignación equivocada no falla: le pone los recargos de un artículo a
+             *      otro, en silencio. Es peor que el defecto que vinimos a arreglar.
+             *
+             *      ⚠️ Ojo con la versión anterior de este comentario, que decía "y acá hay
+             *      varios chunks insertando en `articles` a la vez: es la operación normal".
+             *      Eso es FALSO y lo corrige el chequeo independiente del 9/9/2026: los
+             *      chunks van SIEMPRE en `Bus::chain` secuencial (InitExcelImport ~:203, en
+             *      palabras del propio código: "Siempre procesamiento secuencial (Bus::chain),
+             *      independientemente del entorno"), `mandar_batch()` existe pero no lo llama
+             *      nadie, y `tiene_importacion_en_curso()` bloquea una segunda importación
+             *      del mismo usuario. La conclusión igual se sostiene, pero por la parte que
+             *      sí es cierta: la contigüidad del bloque de auto_increment no depende sólo
+             *      de esta importación.
+             *   3. La única forma robusta sería agregarle una columna a `articles` para
+             *      arrastrar un id temporal de importación: cambio de esquema en ~40 clientes
+             *      para un dato que vive treinta segundos.
+             *
+             * Se desempata entonces por el par (provider_code + nombre normalizado), que es
+             * EXACTAMENTE el mismo criterio que usa el camino de reimportación
+             * (ArticleIndexCache::find_with_index()). Que los dos caminos usen la misma regla
+             * es lo que evita que "crear" y "actualizar" terminen resolviendo distinto sobre
+             * el mismo archivo.
+             *
+             * 🔴 Y ACÁ ESTÁ LO QUE ESTA CLAVE NO PUEDE HACER, que `fake_id` sí haría:
+             * (provider_code + nombre) NO ES ÚNICA. Dos filas con el mismo código y el mismo
+             * nombre son indistinguibles para este criterio, y ahí esto degrada a "gana el
+             * primero" — el defecto original, intacto, justo en el caso donde `fake_id`
+             * habría sido exacto. No es una omisión: es el precio de no tocar el esquema. Lo
+             * que sí cambia respecto de antes es que ese caso ya no es invisible — se
+             * registra un `import_conflict` en el historial (ver
+             * registrar_desempate_de_creacion_sin_resolver()).
+             */
+            if (count($candidatos) > 1) {
+
+                $por_nombre = [];
+
+                if ($name !== '') {
+
+                    $key_name = ArticleIndexCache::normalize_name_for_match($name);
+
+                    foreach ($candidatos as $candidato) {
+                        if (ArticleIndexCache::normalize_name_for_match($candidato->name) === $key_name) {
+                            $por_nombre[] = $candidato;
+                        }
+                    }
+
+                    if (count($por_nombre) === 1) {
+                        return $por_nombre[0];
+                    }
+                }
+
+                /*
+                 * El nombre tampoco desempata (mismo código Y mismo nombre en las dos filas,
+                 * o ninguno coincide). Se deja el comportamiento de siempre —el primero— y se
+                 * REGISTRA EL CONFLICTO EN EL HISTORIAL, no sólo en el laravel.log: el
+                 * usuario no lee el log, y sin esta marca se crean dos artículos, el primero
+                 * se lleva los recargos, los descuentos y las listas de las dos filas, el
+                 * segundo queda en cero, y en la pantalla no aparece nada.
+                 */
+                $this->registrar_desempate_de_creacion_sin_resolver(
+                    $articulo_cache,
+                    $provider_code,
+                    $name,
+                    $candidatos,
+                    count($por_nombre)
+                );
+
+                Log::warning('get_article_model_from_cache: provider_code repetido entre articulos creados y el nombre no desempata. Se usa el primero, como hasta ahora.', [
+                    'provider_code'        => $provider_code,
+                    'name'                 => $name,
+                    'candidatos_ids'       => array_map(function ($a) { return $a->id; }, $candidatos),
+                    'coincidencias_nombre' => count($por_nombre),
+                ]);
+            }
+
+            if (count($candidatos) > 0) {
+                return $candidatos[0];
+            }
 
             Log::warning('get_article_model_from_cache: No se encontró artículo creado por provider_code. Se omite asignación para evitar errores.', [
                 'provider_code' => $provider_code,
@@ -1959,6 +2079,114 @@ class ActualizarBBDD {
         return null;
     }
 
+    /**
+     * Deja EN EL HISTORIAL DE IMPORTACIÓN que dos o más artículos recién creados comparten
+     * `provider_code` y que el nombre no alcanzó para saber cuál corresponde a esta fila
+     * del cache (misión `desempate-por-nombre-codigo-repetido`, 9/9/2026).
+     *
+     * 🔴 Por qué no alcanza el `Log::warning` que había acá y nada más: el `laravel.log`
+     * no lo ve el usuario jamás. El requisito acordado con Lucas es "se cae al
+     * comportamiento actual **y se registra un conflicto en el historial de importación**",
+     * y el camino de REIMPORTACIÓN ya lo cumple (ProcessRow::registrar_desempate_sin_resolver()).
+     * El de CREACIÓN quedaba mudo: dos filas del Excel con el mismo `provider_code` nuevo y
+     * el mismo nombre crean dos artículos, el primero se lleva los recargos, los descuentos
+     * y las listas de las dos filas, el segundo queda en cero, y no hay una sola marca en
+     * pantalla — que es exactamente el defecto que esta misión vino a arreglar.
+     *
+     * Se registra UNA sola vez por (código + fila de origen): get_article_model_from_cache()
+     * se llama hasta siete veces por artículo del cache (listas de precio, tres pasadas de
+     * descuentos, dos de recargos, ubicaciones) y sin esto el mismo conflicto entraría siete
+     * veces. Y sólo se llega acá cuando la fila trae algo que asignar: si no tiene ni
+     * descuentos, ni recargos, ni listas, no hay nada que se le pueda haber puesto al
+     * artículo equivocado y no hay conflicto que reportar.
+     *
+     * @param  array  $articulo_cache            entrada del cache de creación (trae `__fila_origen`)
+     * @param  string $provider_code             código compartido, ya trimeado
+     * @param  string $name                      nombre de la fila, ya trimeado ('' si no vino)
+     * @param  array  $candidatos                artículos creados que comparten ese código
+     * @param  int    $coincidencias_de_nombre   cuántos de esos candidatos coinciden en nombre
+     * @return void
+     */
+    protected function registrar_desempate_de_creacion_sin_resolver($articulo_cache, $provider_code, $name, array $candidatos, $coincidencias_de_nombre)
+    {
+        if (is_null($this->process_row)) {
+            return;
+        }
+
+        /*
+         * ProcessRow deja el número de fila que generó esta entrada del cache en
+         * `__fila_origen` (se excluye del INSERT en guardar_articulos()). Sin él no hay
+         * forma de decirle al usuario en qué fila del Excel mirar.
+         */
+        $fila = isset($articulo_cache['__fila_origen']) ? (int) $articulo_cache['__fila_origen'] : 0;
+
+        $clave = $provider_code . '|' . $fila;
+
+        if (isset($this->desempates_de_creacion_registrados[$clave])) {
+            return;
+        }
+
+        $this->desempates_de_creacion_registrados[$clave] = true;
+
+        if ($name === '') {
+            /* ProcessRow decide si esto es un conflicto por fila o un solo aviso por chunk. */
+            $motivo = 'fila_sin_nombre';
+        } else {
+            $motivo = $coincidencias_de_nombre === 0 ? 'ninguno_coincide' : 'varios_coinciden';
+        }
+
+        $this->process_row->registrar_desempate_sin_resolver(
+            $fila,
+            $provider_code,
+            array_map(function ($articulo) { return $articulo->id; }, $candidatos),
+            $name !== '' ? $name : null,
+            $motivo
+        );
+    }
+
+    /**
+     * Artículos recién creados en este chunk que tienen ese `provider_code`, como array
+     * indexado (no Collection: se consume con count() e índices).
+     *
+     * Se apoya en un índice que se arma UNA sola vez por chunk. No es una optimización
+     * de adorno: get_article_model_from_cache() se llama una vez por artículo del cache
+     * en SIETE recorridos distintos (listas de precio, descuentos %, descuentos monto,
+     * descuentos tagueados, recargos %, recargos monto, ...), y la versión anterior hacía
+     * un `->first()` con closure sobre la colección entera en cada llamada. Con los 3.260
+     * artículos de la importación de DobleP eso son millones de comparaciones por pasada.
+     *
+     * @param  string $provider_code ya trimeado por el llamador
+     * @return array  lista de \App\Models\Article (vacía si no hay ninguno)
+     */
+    protected function creados_con_provider_code($provider_code)
+    {
+        if (is_null($this->creados_index_por_provider_code)) {
+
+            $index = [];
+
+            foreach ($this->articulos_creados_models as $articulo) {
+
+                $codigo = trim((string) $articulo->provider_code);
+
+                if ($codigo === '') {
+                    continue;
+                }
+
+                if (!isset($index[$codigo])) {
+                    $index[$codigo] = [];
+                }
+
+                $index[$codigo][] = $articulo;
+            }
+
+            $this->creados_index_por_provider_code = $index;
+        }
+
+        return isset($this->creados_index_por_provider_code[$provider_code])
+                ? $this->creados_index_por_provider_code[$provider_code]
+                : [];
+    }
+
     function get_articles_models_from_cache($articulos_cache) {
         $byProviderCode = [];
         $byBarCode = [];
@@ -1995,6 +2223,9 @@ class ActualizarBBDD {
                             ->get();
 
         $this->articulos_creados_models = $articles;
+
+        /* El índice por provider_code se arma sobre esta colección: si cambia, se invalida. */
+        $this->creados_index_por_provider_code = null;
 
         $fin = microtime(true);
         $dur = $fin - $inicio;

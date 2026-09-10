@@ -93,6 +93,10 @@ class ArticleController extends Controller
                             });
         }
         $models = $models->orderBy('created_at', 'DESC')
+                            // Sin el vector de embeddings: 29 KB por fila que ningún front lee
+                            // (4.0.24). El select explícito del scope va antes de withAll(), que
+                            // sólo agrega eager loads y no toca las columnas.
+                            ->sinEmbedding()
                             ->withAll()
                             ->paginate($per_page);
 
@@ -758,6 +762,17 @@ class ArticleController extends Controller
              * no confiamos en que el frontend siempre mande un valor válido.
              */
             'interpretacion_punto'                                  => ImportHelper::normalizarInterpretacionPunto($request->interpretacion_punto),
+
+            /*
+             * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026): cuando un
+             * provider_code matchea más de un artículo, quedarse con el que además
+             * coincide en nombre. Default false = comportamiento de siempre, así que una
+             * SPA que todavía no lo manda importa exactamente igual que hasta hoy.
+             *
+             * filter_var y no cast crudo: `(bool) 'false'` en PHP da TRUE. Mismo criterio
+             * que `precios_incluyen_iva`, unas líneas más arriba.
+             */
+            'desempatar_por_nombre'                                 => filter_var($request->desempatar_por_nombre, FILTER_VALIDATE_BOOLEAN),
 
         ]);
         

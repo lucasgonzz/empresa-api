@@ -154,15 +154,21 @@ class UserController extends Controller
         $model->show_afip_errors_al_iniciar     = $request->show_afip_errors_al_iniciar;
         $model->usar_articles_cache             = $request->usar_articles_cache;
 
-        // Minutos de duración del reporte de inventario. Se blinda para que nunca quede en 0 o
-        // vacío (0 significaría regenerar el reporte en cada request, algo inviable en cuentas
-        // con muchos artículos): si el valor recibido es nulo, no numérico o menor a 1, se guarda
-        // el default de 30 minutos.
-        $duracion_reporte_inventario = $request->duracion_reporte_inventario;
-        if ($duracion_reporte_inventario === null || !is_numeric($duracion_reporte_inventario) || (int) $duracion_reporte_inventario < 1) {
-            $duracion_reporte_inventario = 30;
+        /**
+         * Minutos de duración del reporte de inventario. Desde la 4.0.24 la columna NO se lee:
+         * el reporte se calcula una vez por noche (`inventario:generar`) y a pedido con el botón
+         * "Actualizar", y la SPA sacó el campo del formulario de configuración. Se conserva solo
+         * por compatibilidad: una SPA anterior a la 4.0.24 todavía la manda y se le respeta el
+         * valor (numérico y mayor a 0, como antes). Cuando la clave no viene, NO se escribe nada:
+         * antes acá se guardaba un default de 30, y con el campo fuera del formulario eso dejaba
+         * en el historial del perfil un cambio espurio "X → 30" en cada guardado.
+         */
+        if ($request->has('duracion_reporte_inventario')) {
+            $duracion_reporte_inventario = $request->duracion_reporte_inventario;
+            if (is_numeric($duracion_reporte_inventario) && (int) $duracion_reporte_inventario >= 1) {
+                $model->duracion_reporte_inventario = (int) $duracion_reporte_inventario;
+            }
         }
-        $model->duracion_reporte_inventario     = $duracion_reporte_inventario;
         /**
          * Flag para habilitar/deshabilitar trabajo offline en frontend.
          */

@@ -3,13 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Exports\ArticleStockMinimoExport;
-use App\Jobs\ProcessInventoryPerformanceJob;
+use App\Http\Controllers\Helpers\inventoryPerformance\InventoryPerformanceHelper;
 use App\Models\Article;
 use App\Models\InventoryPerformance;
-use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -18,8 +16,14 @@ class InventoryPerformanceController extends Controller
     /**
      * Endpoint no bloqueante con semántica stale-while-revalidate: nunca genera el reporte
      * dentro del request. Responde al instante con el último reporte disponible (sólo sus
-     * contadores, sin la relación pesada de artículos) y, si está vencido, encola la
-     * regeneración en segundo plano.
+     * contadores, sin la relación pesada de artículos).
+     *
+     * Desde la 4.0.24 (misión optimizacion-vps-fase1) ya NO regenera por edad en cada entrada:
+     * el reporte lo genera de noche `inventario:generar` (Kernel, 04:00) y a pedido `generate()`
+     * (el botón Actualizar). Acá sólo se encola si no hay ningún reporte o si el último tiene más
+     * de 7 días — la red de seguridad de InventoryPerformanceHelper::debe_regenerar(), que explica
+     * el porqué del plazo. La forma de la respuesta no cambia (`models`, `generating`); el
+     * "actualizado hace N horas" lo calcula la SPA con el created_at, que ya viaja.
      */
     function index() {
 
@@ -35,52 +39,49 @@ class InventoryPerformanceController extends Controller
 
         return response()->json([
             'models'     => [$inventory_performance],
-            'generating' => Cache::has('inventory_performance_generating_'.$user_id),
+            'generating' => InventoryPerformanceHelper::esta_generando($user_id),
         ], 200);
     }
 
     /**
-     * Determina si el reporte debe regenerarse: cuando no existe todavía o cuando su
-     * created_at es anterior a la vigencia configurada por el owner.
+     * POST inventory-performance/generate (4.0.24): el botón Actualizar del modal de inventario y
+     * de la lista de stock mínimo. Encola la generación con el mismo candado atómico que index() y
+     * que el comando nocturno; si ya había una en curso no encola otra y responde lo mismo, así que
+     * apretar el botón dos veces (o desde dos pestañas) es inocuo. El aviso de "terminó" le llega a
+     * la SPA por el mismo broadcast de siempre (InventoryPerformanceGenerated, desde el job).
+     *
+     * @return \Illuminate\Http\JsonResponse { generating: true }
+     */
+    function generate() {
+
+        $this->dispatch_generacion($this->userId());
+
+        return response()->json(['generating' => true], 200);
+    }
+
+    /**
+     * Delegado en el helper para que index(), generate() y el comando nocturno compartan un solo
+     * criterio. Ya no lee `duracion_reporte_inventario`: el porqué de los 7 días fijos está en
+     * InventoryPerformanceHelper::debe_regenerar().
      *
      * @param  InventoryPerformance|null $inventory_performance
      * @return bool
      */
     function debe_regenerar($inventory_performance) {
 
-        if (is_null($inventory_performance)) {
-
-            return true;
-        }
-
-        // Minutos de vigencia del reporte, configurados por owner (columna duracion_reporte_inventario).
-        // Si viniera null o menor a 1, se usa 30 como valor por defecto seguro.
-        $user = User::find($this->userId());
-
-        $duracion = (!is_null($user) && !is_null($user->duracion_reporte_inventario) && $user->duracion_reporte_inventario >= 1)
-                        ? $user->duracion_reporte_inventario
-                        : 30;
-
-        return $inventory_performance->created_at->lt(Carbon::now()->subMinutes($duracion));
+        return InventoryPerformanceHelper::debe_regenerar($inventory_performance);
     }
 
     /**
-     * Encola la regeneración del reporte sólo si no hay ya una generación en curso.
-     * Cache::add() es atómico en cualquier driver y devuelve false si la clave ya existía,
-     * evitando que varios admins entrando a la vez disparen varios jobs en paralelo.
+     * Encola la regeneración del reporte sólo si no hay ya una generación en curso: el candado
+     * atómico (Cache::add) vive en el helper, compartido con el comando inventario:generar.
      *
      * @param  int $user_id
      * @return void
      */
     function dispatch_generacion($user_id) {
 
-        $key = 'inventory_performance_generating_'.$user_id;
-
-        // El TTL de 60 minutos es una red de seguridad por si el worker muere sin liberar el candado.
-        if (Cache::add($key, true, Carbon::now()->addMinutes(60))) {
-
-            ProcessInventoryPerformanceJob::dispatch($user_id);
-        }
+        InventoryPerformanceHelper::encolar_generacion($user_id);
     }
 
     function get_created_inventory_performance($with_all = false) {

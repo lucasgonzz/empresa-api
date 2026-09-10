@@ -200,6 +200,53 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(30);
         }
 
+        // Reporte de inventario (stock mínimo, sin stock, valuación) de cada comercio, una vez por
+        // noche (misión optimizacion-vps-fase1, 4.0.24). Hasta la 4.0.23 se regeneraba desde
+        // InventoryPerformanceController::index() en cada entrada al sistema con un reporte de más
+        // de 30 minutos, o sea todo el día: en servian (537k artículos) cada corrida son 18-20 min
+        // de worker. Ahora index() sólo encola si no hay reporte o si tiene más de 7 días, y el
+        // botón Actualizar lo dispara a pedido.
+        //
+        // 04:00: después del backup nocturno del VPS (03:15) y antes de sugerencias:generar (05:00)
+        // y compras:generar (05:30), que recorren el mismo catálogo del mismo comercio. Comparte la
+        // hora con tracking:purgar-buyers, que sólo corre con la extensión tracking_buyers y borra
+        // otra tabla. withoutOverlapping(120) y no el default de 1440: el job tiene timeout de
+        // 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
+        //
+        // Sin gate por extensión (el reporte es de todos los comercios) y sin ->when(): corre una
+        // vez por día, no por minuto, y adentro el candado atómico de Cache::add evita que se pise
+        // con una generación pedida a mano. El comando resuelve el dueño por app.USER_ID igual que
+        // el resto del schedule; sin USER_ID (dev/testing) recorre los dueños con actividad.
+        $schedule->command('inventario:generar')
+            ->dailyAt('04:00')
+            ->withoutOverlapping(120);
+
+        // Cierre mensual del rendimiento del comercio (company_performances / article_performances,
+        // misión optimizacion-vps-fase1, 4.0.24): el día 1 borra lo que se fue calculando durante
+        // el mes anterior y lo recrea completo, así que es idempotente y una segunda corrida el
+        // mismo día da el mismo resultado. En el shared convive con el cron manual que algunas
+        // instancias ya tenían (dos corridas el día 1); en el VPS nunca corrió — supervisor sólo
+        // tiene queue y schedule — y con esto empieza a correr.
+        //
+        // 06:30: después de la ventana 03:30-06:00 de los otros comandos nocturnos del mismo
+        // comercio. withoutOverlapping(120): recorre un mes entero de ventas.
+        //
+        // 🔴 El ->when() con app.USER_ID no es cosmética: sin USER_ID el comando cae a su lista
+        // hardcodeada de ids [121, 228, 2] (Colman, HiperMax, Fenix), que en cualquier otra base
+        // son otros comercios o no existen. En una instancia de cliente USER_ID siempre está.
+        $schedule->command('set_company_performances')
+            ->monthlyOn(1, '06:30')
+            ->withoutOverlapping(120)
+            ->when(function () {
+                return ! empty(config('app.USER_ID'));
+            });
+
+        // check_stocks NO se agenda, a propósito (decisión de la misión optimizacion-vps-fase1).
+        // No es una función del cliente: recorre TODO el catálogo con ->get() (en servian son 537k
+        // modelos Eloquent en memoria, un OOM seguro), hace una consulta a stock_movements por
+        // artículo (N+1) y le manda un mail a Lucas con los que no coinciden con su último
+        // movimiento. Queda como corrida manual hasta que se reescriba como una consulta agregada.
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 

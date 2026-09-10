@@ -79,7 +79,11 @@ class Embeddings_por_lote_Test extends TestCase
 
         // 🔴 Nunca las claves reales del .env.testing: ningún test de esta suite sale a la red.
         config(['services.anthropic.api_key' => null]);
-        config(['services.openai.api_key' => null]);
+        // De prueba y no null: desde la 4.0.24 el comando no despacha nada sin clave (guarda de
+        // GenerateArticleEmbeddings, misión optimizacion-vps-fase1), y lo que se prueba acá es
+        // justamente lo que pasa cuando SÍ despacha. Sigue sin salir a la red: los jobs los captura
+        // Queue::fake() y, donde el job corre de verdad, fingir_openai() intercepta el HTTP.
+        config(['services.openai.api_key' => 'clave-de-prueba']);
         // El broadcast real se corta por config; el evento se captura con Event::fake([...]).
         config(['broadcasting.default' => 'null']);
 

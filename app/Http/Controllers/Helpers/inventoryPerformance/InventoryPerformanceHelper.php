@@ -4,16 +4,119 @@ namespace App\Http\Controllers\Helpers\inventoryPerformance;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Jobs\ProcessInventoryPerformanceJob;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
 use App\Models\InventoryPerformance;
 use App\Models\PromocionVinoteca;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class InventoryPerformanceHelper {
+
+	/**
+	 * Prefijo de la llave de cache que marca "hay una generación en curso" para un comercio.
+	 *
+	 * 🔴 ProcessInventoryPerformanceJob la libera en su finally() y en failed() con el string
+	 * escrito literal ('inventory_performance_generating_'): si se cambia acá hay que cambiarlo
+	 * allá también, o el candado no se suelta nunca hasta que venza el TTL.
+	 *
+	 * @var string
+	 */
+	const LLAVE_GENERANDO = 'inventory_performance_generating_';
+
+	/**
+	 * Minutos que vive el candado si el worker muere sin liberarlo (el timeout del job es 60 min).
+	 *
+	 * @var int
+	 */
+	const MINUTOS_DEL_CANDADO = 60;
+
+	/**
+	 * Días de vigencia de un reporte para index(): pasado ese plazo, entrar al sistema vuelve a
+	 * encolar uno. Ver debe_regenerar() para por qué 7 días y no los minutos de
+	 * duracion_reporte_inventario.
+	 *
+	 * @var int
+	 */
+	const DIAS_DE_VIGENCIA = 7;
+
+	/**
+	 * Llave del candado de generación de un comercio.
+	 *
+	 * @param  int  $user_id
+	 * @return string
+	 */
+	static function llave_generando($user_id) {
+
+		return self::LLAVE_GENERANDO . $user_id;
+	}
+
+	/**
+	 * ¿Hay una generación en curso para el comercio?
+	 *
+	 * @param  int  $user_id
+	 * @return bool
+	 */
+	static function esta_generando($user_id) {
+
+		return Cache::has(self::llave_generando($user_id));
+	}
+
+	/**
+	 * Encola la generación del reporte del comercio, salvo que ya haya una en curso.
+	 *
+	 * Cache::add() es atómico en cualquier driver y devuelve false si la llave ya existía: varios
+	 * admins entrando a la vez, el scheduler pisándose con el botón Actualizar, o dos schedule:run
+	 * solapados no disparan más de un job. Lo usan index() y generate() del controller y el comando
+	 * inventario:generar, para que las tres puertas compartan el mismo candado (misión
+	 * optimizacion-vps-fase1, 4.0.24).
+	 *
+	 * @param  int  $user_id
+	 * @return bool true si se encoló; false si ya había una generación en curso y no se encoló otra.
+	 */
+	static function encolar_generacion($user_id) {
+
+		// El TTL es una red de seguridad por si el worker muere sin liberar el candado.
+		if (! Cache::add(self::llave_generando($user_id), true, Carbon::now()->addMinutes(self::MINUTOS_DEL_CANDADO))) {
+
+			return false;
+		}
+
+		ProcessInventoryPerformanceJob::dispatch($user_id);
+
+		return true;
+	}
+
+	/**
+	 * ¿index() tiene que encolar una generación al entrar? Sólo si no hay ningún reporte del
+	 * comercio o si el último tiene más de DIAS_DE_VIGENCIA días.
+	 *
+	 * Hasta la 4.0.23 el criterio era `duracion_reporte_inventario` minutos (30 por defecto): con la
+	 * SPA pidiendo el reporte al arrancar, eso era regenerarlo en cada entrada, todo el día, y en
+	 * servian (537k artículos) cada corrida son 18-20 minutos de worker. Desde la 4.0.24 el reporte
+	 * lo genera de noche inventario:generar (Kernel, 04:00) y a pedido el botón Actualizar, así que
+	 * acá queda sólo la red de seguridad: instancias sin cron de schedule:run (hay ~10 frentes
+	 * activos del shared en ese estado) o cuentas dormidas que el comando nocturno saltea por falta
+	 * de actividad. Siete días fijos y no un valor por comercio: la columna
+	 * duracion_reporte_inventario deja de leerse (queda en la base; la SPA ya no la muestra), porque
+	 * ningún comercio necesita elegir cuánto tarda en enterarse de que su red de seguridad se activó.
+	 *
+	 * @param  \App\Models\InventoryPerformance|null  $inventory_performance  El último reporte del comercio.
+	 * @return bool
+	 */
+	static function debe_regenerar($inventory_performance) {
+
+		if (is_null($inventory_performance) || is_null($inventory_performance->created_at)) {
+
+			return true;
+		}
+
+		return $inventory_performance->created_at->lt(Carbon::now()->subDays(self::DIAS_DE_VIGENCIA));
+	}
 
 	// Id del usuario owner para el que se genera el reporte.
 	// Se recibe explícito porque el helper puede correr dentro de un job (sin sesión HTTP ni Auth).
@@ -197,14 +300,28 @@ class InventoryPerformanceHelper {
 	}
 
 
-	function procesar_articulos() {
+	/**
+	 * Columnas de `articles` que lee el recorrido de procesar_articulos(), y nada más (misión
+	 * optimizacion-vps-fase1, 4.0.24). Antes se pedían las 95 columnas menos `embedding`
+	 * (descripciones, notas, códigos, urls de Tienda Nube...) para un loop que usa siete.
+	 *
+	 * 🔴 Si agregás un `$article->x` al loop o a costo_unitario_normalizado(), sumá `x` acá. Con
+	 * un select explícito, un atributo que no se pidió NO tira: Eloquent devuelve null en silencio
+	 * (no distingue "columna no seleccionada" de "columna NULL"), y el reporte saldría con números
+	 * falsos sin que nada lo denuncie. Lo que lee cada una:
+	 *   - id: chunkById pagina por acá, y las relaciones addresses/price_types matchean el pivote por acá.
+	 *   - cost, presentacion, unidades_individuales: costo_unitario_normalizado().
+	 *   - stock, stock_min: los contadores de stockeados / sin stock / negativo / bajo mínimo y el faltante.
+	 *   - final_price: ArticlePricesHelper::resolver_precio_de_venta() (rama sin listas y fallback);
+	 *     la rama con listas lee la relación price_types, que va en el with() de abajo.
+	 *   - user_id y name: el loop no los lee hoy. Van porque el artículo se le pasa a un resolvedor
+	 *     externo, y un Article sin dueño ni nombre es una trampa para el próximo que lo loguee.
+	 *
+	 * @var array
+	 */
+	const COLUMNAS_DEL_RECORRIDO = ['id', 'user_id', 'cost', 'stock', 'stock_min', 'presentacion', 'unidades_individuales', 'final_price', 'name'];
 
-		$columns = collect(\Illuminate\Support\Facades\Schema::getColumnListing((new Article)->getTable()))
-					->reject(function ($column) {
-						return in_array($column, ['embedding'], true);
-					})
-					->values()
-					->all();
+	function procesar_articulos() {
 
 		/**
 		 * price_types va en el eager load porque el resolvedor de precios lo lee por cada
@@ -213,13 +330,20 @@ class InventoryPerformanceHelper {
 		 * hay cuentas de 400k articulos. Medido el 11/8/2026: con listas activas y sin este
 		 * with(), 16 consultas al pivote para 16 articulos con stock. No explota, degrada en
 		 * silencio, que es peor.
+		 *
+		 * chunkById() y no chunk() + orderBy('created_at') (misión optimizacion-vps-fase1,
+		 * 4.0.24): chunk() pagina por OFFSET y, con un orden que no es el de la PK, MySQL vuelve
+		 * a ordenar el catálogo entero en cada lote para descartar lo ya recorrido — cuadrático.
+		 * Medido en servian (537k artículos, informe 20260910-plan-optimizacion-vps.md): 18 min
+		 * 09 s con el disco fuera del medio, todo en filesort. chunkById pagina por `id > último`
+		 * sobre la PK, lineal. El orden no le importa a este reporte: son contadores y sumas, y
+		 * dan lo mismo en cualquier orden.
 		 */
-		Article::select($columns)
+		Article::select(self::COLUMNAS_DEL_RECORRIDO)
 			->with('addresses', 'price_types')
 			->where('user_id', $this->user_id)
 			->where('status', 'active')
-			->orderBy('created_at', 'ASC')
-			->chunk(2000, function ($articles) {
+			->chunkById(2000, function ($articles) {
 
 				foreach ($articles as $article) {
 

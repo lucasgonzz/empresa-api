@@ -78,6 +78,24 @@ class GenerateArticleEmbeddings extends Command
         }
 
         /*
+         * Sin clave de OpenAI no hay nada que despachar (misión optimizacion-vps-fase1, 4.0.24).
+         *
+         * Va DESPUÉS del gate de la extensión (que sigue silencioso: las instancias sin whatsapp_ia
+         * no tienen por qué ver un aviso cada 30 minutos) y ANTES de tocar la base. El caso real:
+         * el .env del segundo frente de ferretotal se instaló sin OPENAI_API_KEY y este comando
+         * siguió encolando cada media hora — 35.324 jobs fallidos (401 de OpenAI, tres intentos
+         * cada uno) sin que nadie lo viera. Un job que nace sin clave no puede terminar bien, así
+         * que mejor un warn por ciclo en el log del scheduler. Cubre también el disparo
+         * post-importación: FinalizeArticleImport llama a este mismo comando con
+         * --ignorar-importacion-en-curso. El sync de claves entre frentes del deploy (admin-api,
+         * misma misión) ataca la causa; esto es la red para cualquier otra forma de quedarse sin ella.
+         */
+        if (trim((string) config('services.openai.api_key')) === '') {
+            $this->warn('articles:generate-embeddings: no hay OPENAI_API_KEY configurada. No se despacha ningún job hasta que se cargue.');
+            return 0;
+        }
+
+        /*
          * Saltearse si hay una importación en proceso para este usuario.
          * Evita generar embeddings de artículos que pueden estar cambiando en este momento.
          *
