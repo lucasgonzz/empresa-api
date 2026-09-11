@@ -208,7 +208,26 @@ class AuthController extends Controller
          */
         $this->removeUserLastActivity($auth_user);
 
-        $plain_token = VersionSessionTransferHelper::create_for_user($auth_user->id);
+        /**
+         * Estado de login maestro de ESTA sesión (origen), leído antes de vaciarla más abajo.
+         * Se persiste junto al token para que login_from_version_session_token() lo reproduzca
+         * en la API destino.
+         *
+         * Sin esto, un login maestro que atraviesa la redirección de versión llegaba al otro
+         * lado como una sesión cualquiera del usuario real: tomaba su candado de sesión única
+         * (en vez de eximirse, como hace login() para un login maestro directo) y disparaba la
+         * descarga de artículos offline -exactamente lo que el login maestro básico existe para
+         * evitar-, porque la sesión nueva arrancaba de cero sin ningún rastro de que el login
+         * que la originó era maestro.
+         */
+        $master_login_bypass = $this->is_master_login_activity_bypass_enabled();
+        $skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
+
+        $plain_token = VersionSessionTransferHelper::create_for_user(
+            $auth_user->id,
+            $master_login_bypass,
+            $skip_offline_articles_sync
+        );
 
         /**
          * Y acá mismo se CIERRA la sesión del frente origen, en esta misma request. Va después
@@ -265,30 +284,58 @@ class AuthController extends Controller
         /** Token enviado por el SPA destino desde el query string. */
         $plain_token = trim((string) $request->input('token', ''));
 
-        /** Id de usuario asociado al token, o null si expiró o ya se usó. */
-        $user_id = VersionSessionTransferHelper::consume($plain_token);
+        /** Datos del token, o null si expiró o ya se usó. */
+        $transfer = VersionSessionTransferHelper::consume($plain_token);
 
-        if ($user_id) {
+        if ($transfer) {
             /** Modelo a autenticar en esta API. */
-            $candidate = User::find($user_id);
+            $candidate = User::find($transfer['user_id']);
 
             if ($candidate) {
-                session()->forget($this->master_login_bypass_activity_key);
-                session()->forget('skip_offline_articles_sync');
-
                 Auth::login($candidate, false);
 
-                if ($this->checkUserLastActivity()) {
+                if ($transfer['master_login_bypass']) {
+                    /**
+                     * Reproduce acá la misma rama maestra de login(): la sesión destino queda
+                     * eximida del candado de sesión única (debe_omitir_candado_de_actividad())
+                     * sin pasar por checkUserLastActivity(), igual que un login maestro directo.
+                     * Sin esto, cada redirección de un login maestro tomaría el candado del
+                     * cliente real en la versión destino.
+                     */
+                    session()->put($this->master_login_bypass_activity_key, true);
+                    session()->put('skip_offline_articles_sync', $transfer['skip_offline_articles_sync']);
+
                     $user = $this->procesar_login();
                     $login = true;
                     Log::info(
-                        'Login por transferencia de version para user_id: '.$user_id
+                        'Login maestro por transferencia de version para user_id: '.$transfer['user_id']
                         .' desde referer: '.$request->header('referer')
                     );
                 } else {
-                    $user_last_activity_wait_minutes = $this->getUserLastActivityWaitMinutes(Auth::user());
-                    Auth::logout();
-                    $user_last_activity = true;
+                    session()->forget($this->master_login_bypass_activity_key);
+                    session()->put('skip_offline_articles_sync', $transfer['skip_offline_articles_sync']);
+
+                    if ($this->checkUserLastActivity()) {
+                        $user = $this->procesar_login();
+                        $login = true;
+                        Log::info(
+                            'Login por transferencia de version para user_id: '.$transfer['user_id']
+                            .' desde referer: '.$request->header('referer')
+                        );
+                    } else {
+                        $user_last_activity_wait_minutes = $this->getUserLastActivityWaitMinutes(Auth::user());
+                        Auth::logout();
+                        $user_last_activity = true;
+                    }
+                }
+
+                /**
+                 * El SPA destino usa este `user` DIRECTO -App.vue lo pasa a setUser() sin pasar
+                 * por un auth/me aparte-, así que el flag tiene que viajar acá mismo, igual que
+                 * ya hace login() para un login directo.
+                 */
+                if ($user) {
+                    $user->skip_offline_articles_sync = $transfer['skip_offline_articles_sync'];
                 }
             }
         }
