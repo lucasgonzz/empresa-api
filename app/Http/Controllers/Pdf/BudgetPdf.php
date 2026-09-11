@@ -190,42 +190,124 @@ class BudgetPdf extends fpdf {
 	function items() {
 		$this->SetFont('Arial', '', 10);
 		$this->x = 5;
-		
+
 		// Articulos
 		foreach ($this->budget->articles as $article) {
-			if ($this->y < 210) {
+			if ($this->fits($article)) {
 				$this->printArticle($article);
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 65;
 				$this->printArticle($article);
 			}
 		}
 
 		// Promociones vinotecas
 		foreach ($this->budget->promocion_vinotecas as $promo) {
-			if ($this->y < 210) {
+			if ($this->fits($promo)) {
 				$this->printArticle($promo);
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 65;
 				$this->printArticle($promo);
 			}
 		}
 
 		// Servicios
 		foreach ($this->budget->services as $service) {
-			if ($this->y < 210) {
+			if ($this->fits($service)) {
 				$this->printArticle($service);
 			} else {
 				$this->AddPage();
 				$this->x = 5;
-				$this->y = 65;
 				$this->printArticle($service);
 			}
 		}
+	}
+
+	/**
+	 * NO pisar $this->y con un numero fijo despues de AddPage(): Header() ya deja
+	 * el cursor bien parado abajo de la fila de titulos de la tabla, igual que en
+	 * la primera pagina (que nunca tuvo este problema porque nunca se le pisaba el
+	 * y). El hardcodeado que habia aca (65) asumia una altura de header que se
+	 * desactualiza cada vez que el header crece (ej. el renglon de Vendedor, o el
+	 * logo por sucursal): la tabla pasa a arrancar mas abajo, el numero fijo queda
+	 * corto, y la primera fila de cada pagina nueva termina superpuesta con los
+	 * titulos de columna. Reproducido con el presupuesto N. 564 de 2r (11/9/2026,
+	 * cliente en una version vieja donde el numero equivalente era 55 en vez de
+	 * 65 -- la misma clase de bug, tuneada a mano dos veces y rota las dos).
+	 *
+	 * Si el renglon de este item entra en lo que queda de la hoja actual, dejando
+	 * lugar para el pie (observaciones, descuentos/recargos y el total). Antes el
+	 * corte de pagina era un numero fijo (210) pensado para el peor caso, y dejaba
+	 * sin usar buena parte de la hoja en el caso comun (presupuesto sin
+	 * observaciones ni descuentos). Reemplazado por un calculo dinamico para que
+	 * entren la mayor cantidad de articulos posible sin dejar de reservarle lugar
+	 * al pie (pedido de Lucas, 11/9/2026).
+	 */
+	function fits($item) {
+		return ($this->y + $this->articleRowHeight($item) + $this->footerHeight()) <= 296;
+	}
+
+	/**
+	 * Alto real del renglon del item, contemplando el nombre envuelto a varias
+	 * lineas (antes el corte de pagina solo miraba la posicion actual de $this->y,
+	 * sin contemplar que el MultiCell del nombre puede ocupar 2 o 3 lineas).
+	 */
+	function articleRowHeight($item) {
+		$ancho = $this->getFields()['Producto'];
+		// Misma proporcion caracteres/ancho que getHeight() (41 caracteres en 80mm).
+		$caracteres_por_linea = (int) round($ancho / 1.95);
+		$lineas = 1;
+		$letras = strlen(GeneralHelper::article_name($item));
+		while ($letras > $caracteres_por_linea) {
+			$lineas++;
+			$letras -= $caracteres_por_linea;
+		}
+		return $this->line_height * $lineas;
+	}
+
+	/**
+	 * Estimacion del alto que va a ocupar Footer() (observaciones + descuentos y
+	 * recargos + total), para reservarle lugar antes de decidir si un item mas
+	 * entra en la hoja actual. Los altos de observaciones estan estimados por
+	 * cantidad de caracteres (no con GetStringWidth), por eso el margen de
+	 * seguridad fijo del principio.
+	 */
+	function footerHeight() {
+		$height = 6;
+
+		if ($this->with_prices) {
+			$height += 10;
+		}
+
+		if ($this->budget->observations != '') {
+			$caracteres_por_linea = 100;
+			$lineas = 1;
+			$letras = strlen($this->budget->observations);
+			while ($letras > $caracteres_por_linea) {
+				$lineas++;
+				$letras -= $caracteres_por_linea;
+			}
+			$height += 5 + $this->line_height + ($lineas * $this->line_height);
+		}
+
+		if ($this->with_prices) {
+			foreach ($this->budget->articles as $article) {
+				if (!is_null($article->pivot->bonus) && $article->pivot->bonus > 0) {
+					$height += 12;
+					break;
+				}
+			}
+
+			$height += count($this->budget->discounts) * 7;
+
+			if (!$this->budget->aplicar_recargos_directo_a_items) {
+				$height += count($this->budget->surchages) * 7;
+			}
+		}
+
+		return $height;
 	}
 
 	function printProductDelivered($product) {

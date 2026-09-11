@@ -680,14 +680,28 @@ class PdfHelper {
 	*/
 	static function right_info($instance, $data, $y_final_model_info, $start_y){
 
-		$instance->y = $start_y;
+		$height = 5;
+
+		/**
+		 * El renglon (ej. Vendedor) va centrado en la altura del recuadro del
+		 * cliente, que es la caja que tiene al lado, y con un margen a la
+		 * derecha para no quedar pegado ni a la linea divisoria de x=105 ni a
+		 * la linea superior de la caja (antes arrancaba en $start_y sin ningun
+		 * margen y el texto quedaba montado sobre esa linea; pedido de Lucas
+		 * 11/9/2026).
+		 */
+		$alto_caja = $y_final_model_info - $start_y;
+		$alto_contenido = count($data['right_info']) * $height;
+		$margen_superior = ($alto_caja - $alto_contenido) / 2;
+		if ($margen_superior < 0) {
+			$margen_superior = 0;
+		}
+
+		$instance->y = $start_y + $margen_superior;
 		$instance->SetFont('Arial', 'B', 10);
 
-		$height = 5;
-		$num_filas = 3;
-
 		foreach ($data['right_info'] as $info) {
-			$instance->x = 105;
+			$instance->x = 110;
 			$instance->Cell(20, $height, $info['text'].':', $instance->b, 0, 'L');
 			$instance->SetFont('Arial', '', 10);
 			$instance->Cell(30, $height, $info['value'], $instance->b, 1, 'L');
