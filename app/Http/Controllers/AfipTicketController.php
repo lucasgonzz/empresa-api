@@ -158,6 +158,25 @@ class AfipTicketController extends Controller
             return response()->json(null, 404);
         }
 
+        /**
+         * 🔴 Bloqueado (decisión de Lucas, bug real en producción con masquito, 11/9/2026): un
+         * comprobante con CAE ya fue autorizado por ARCA, y un CAE no se puede "deshacer" borrando
+         * la fila local. Al quedar `deleted_at` seteado (el modelo usa SoftDeletes), el ticket se
+         * vuelve invisible para el Libro IVA y los dos exportadores de TXT de AFIP -que respetan
+         * ese scope, correctamente-, y ARCA queda con un comprobante autorizado que el sistema
+         * nunca vuelve a declarar. La única forma correcta de reversarlo es una Nota de Crédito;
+         * este método no la genera, solo rechaza el borrado.
+         *
+         * Mismo criterio de "CAE no vacío" que ya usa ConsolidarFacturacionHelper (líneas ~74-78 y
+         * ~366-369): `!empty()`, no `!is_null()` a secas, porque en la práctica el CAE puede llegar
+         * como string vacío además de NULL.
+         */
+        if (!empty($model->cae)) {
+            return response()->json([
+                'message' => 'No se puede eliminar un comprobante que ya tiene CAE autorizado por ARCA. Para anularlo hay que emitir una Nota de Crédito.',
+            ], 422);
+        }
+
         /** ID de venta asociada: factura usa `sale_id`; NC AFIP usa `sale_nota_credito_id`. */
         $sale_id = !is_null($model->sale_id)
             ? $model->sale_id
