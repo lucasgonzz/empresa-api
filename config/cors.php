@@ -16,8 +16,9 @@ return [
     */
 
     'paths' => [
-        'api/*', 
+        'api/*',
         'login',
+        'login-forzado',
         'logout',
         'version-session-token',
         'login-from-version-session-token',
