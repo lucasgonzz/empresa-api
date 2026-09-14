@@ -417,8 +417,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     // Agenda
-    
+
     // Pending
+    // 🔴 Va ANTES de Route::resource('pending'), como 'provider-order-scan/pendientes' antes de
+    // '{uuid}': es un segmento fijo y si algún día se lo escribe como 'pending/agenda/...' lo
+    // captura 'pending/{pending}' y responde 404 sin decir nada. Con el guion no choca, pero el
+    // orden deja la intención a la vista (misión agenda-tareas-calendario, 14/9/2026).
+    Route::get('pending-agenda/{desde}/{hasta}', 'PendingController@agenda');
     Route::resource('pending', 'PendingController');
     Route::get('pending/from-date/{from_date}/{until_date}', 'PendingController@index');
     Route::get('pending-recurrentes', 'PendingController@recurrentes');

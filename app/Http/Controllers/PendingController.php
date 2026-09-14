@@ -3,8 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\agenda\AgendaHelper;
 use App\Models\Pending;
 use App\Models\PendingCompleted;
+use App\Models\UnidadFrecuencia;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -89,47 +91,277 @@ class PendingController extends Controller
         return response()->json(['models' => $pendings], 200);
     }
 
+    /**
+     * Máximo de días (inclusive) que acepta un rango de la agenda. La lista pide 60 y el
+     * calendario un mes con sus bordes (42): 120 deja margen y corta un pedido que expandiría
+     * miles de ocurrencias por error.
+     */
+    const MAX_DIAS_RANGO_AGENDA = 120;
+
+    /**
+     * Misión agenda-tareas-calendario (14/9/2026): `GET pending-agenda/{desde}/{hasta}`. Devuelve
+     * las ocurrencias del rango (puntuales y recurrentes expandidas) más las vencidas de la
+     * cuenta, que van aparte y sin rango. Ver AgendaHelper.
+     *
+     * `index()` y `recurrentes()` de arriba quedan como estaban: la SPA vieja los usa.
+     *
+     * @param  string  $desde  Y-m-d, inclusive.
+     * @param  string  $hasta  Y-m-d, inclusive.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function agenda($desde, $hasta) {
+
+        $desde_c = $this->parsear_fecha($desde);
+        $hasta_c = $this->parsear_fecha($hasta);
+
+        if (is_null($desde_c) || is_null($hasta_c)) {
+
+            return response()->json(['message' => 'Las fechas tienen que venir como AAAA-MM-DD.'], 422);
+        }
+
+        if ($hasta_c->lt($desde_c)) {
+
+            return response()->json(['message' => 'La fecha hasta no puede ser anterior a la fecha desde.'], 422);
+        }
+
+        if ($desde_c->diffInDays($hasta_c) > self::MAX_DIAS_RANGO_AGENDA) {
+
+            return response()->json(['message' => 'El rango de la agenda no puede superar los '.self::MAX_DIAS_RANGO_AGENDA.' días.'], 422);
+        }
+
+        // Carbon::today() sale en la zona de la app (America/Argentina/Buenos_Aires), que es la
+        // que define qué es "hoy" para el comercio.
+        $hoy = Carbon::today();
+
+        return response()->json([
+            'hoy'           => $hoy->format('Y-m-d'),
+            'vencidas'      => AgendaHelper::vencidas($this->userId(), $hoy),
+            'ocurrencias'   => AgendaHelper::ocurrencias_entre($this->userId(), $desde_c, $hasta_c),
+        ], 200);
+    }
+
     public function store(Request $request) {
 
-        $model = Pending::create([
-            'detalle'                => $request->detalle,
-            'fecha_realizacion'      => $request->fecha_realizacion,
-            'es_recurrente'          => $request->es_recurrente,
-            'unidad_frecuencia_id'   => $request->unidad_frecuencia_id,
-            'cantidad_frecuencia'    => $request->cantidad_frecuencia,
-            'expense_concept_id'     => $request->expense_concept_id,
-            'expense_amount'         => $request->expense_amount,
-            'completado'             => 0,
-            'notas'                  => $request->notas,
-            'user_id'                => $this->userId(),
-        ]);
+        $datos = $this->validar_tarea($request);
+
+        if (is_string($datos)) {
+
+            return response()->json(['message' => $datos], 422);
+        }
+
+        $datos['completado'] = 0;
+        $datos['user_id'] = $this->userId();
+
+        $model = Pending::create($datos);
+
         $this->sendAddModelNotification('Pending', $model->id);
         return response()->json(['model' => $this->fullModel('Pending', $model->id)], 201);
-    }  
+    }
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('Pending', $id)], 200);
+
+        $model = $this->tarea_de_la_cuenta($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'La tarea no existe.'], 404);
+        }
+
+        return response()->json(['model' => $this->fullModel('Pending', $model->id)], 200);
     }
 
     public function update(Request $request, $id) {
-        $model = Pending::find($id);
-        $model->detalle                = $request->detalle;
-        $model->fecha_realizacion      = $request->fecha_realizacion;
-        $model->es_recurrente          = $request->es_recurrente;
-        $model->unidad_frecuencia_id   = $request->unidad_frecuencia_id;
-        $model->cantidad_frecuencia    = $request->cantidad_frecuencia;
-        $model->expense_concept_id     = $request->expense_concept_id;
-        $model->notas                  = $request->notas;
+
+        $model = $this->tarea_de_la_cuenta($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'La tarea no existe.'], 404);
+        }
+
+        $datos = $this->validar_tarea($request);
+
+        if (is_string($datos)) {
+
+            return response()->json(['message' => $datos], 422);
+        }
+
+        /*
+         * Hasta el 14/9/2026 update() no escribía `expense_amount`: el monto se perdía al editar
+         * la tarea. Ahora se guarda el mismo conjunto de columnas que en store(), incluida
+         * `fecha_fin_recurrencia`. `completado` no se toca acá: lo maneja PendingCompletedController.
+         */
+        foreach ($datos as $columna => $valor) {
+
+            $model->{$columna} = $valor;
+        }
+
         $model->save();
+
         $this->sendAddModelNotification('Pending', $model->id);
         return response()->json(['model' => $this->fullModel('Pending', $model->id)], 200);
     }
 
     public function destroy($id) {
-        $model = Pending::find($id);
+
+        $model = $this->tarea_de_la_cuenta($id);
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'La tarea no existe.'], 404);
+        }
+
         ImageController::deleteModelImages($model);
         $model->delete();
         $this->sendDeleteModelNotification('Pending', $model->id);
         return response(null);
+    }
+
+    /**
+     * Busca la tarea SCOPEADA por la cuenta. Hasta el 14/9/2026 update()/destroy() hacían
+     * `find($id)` pelado y cualquier usuario autenticado podía editar o borrar pendientes de
+     * otra cuenta con solo adivinar el id. Devuelve null (→ 404) si no es de la cuenta, sin
+     * distinguir "no existe" de "no es tuya": para el que llama es lo mismo.
+     *
+     * @param  int  $id
+     * @return \App\Models\Pending|null
+     */
+    protected function tarea_de_la_cuenta($id) {
+
+        return Pending::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
+    }
+
+    /**
+     * Validación mínima del body de store()/update() (contrato §2 del plan). Devuelve el array
+     * de columnas listo para guardar, o un string con el mensaje del 422.
+     *
+     * Es a mano y no con el validador de Laravel a propósito: la SPA espera `{ message }` con un
+     * texto en criollo, no el `{ errors: {...} }` del ValidationException, y los mensajes cortos
+     * se leen mejor en el toast.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return array|string
+     */
+    protected function validar_tarea(Request $request) {
+
+        $detalle = is_string($request->detalle) ? trim($request->detalle) : '';
+
+        if ($detalle === '') {
+
+            return 'Escribí qué hay que hacer.';
+        }
+
+        $fecha_realizacion = $this->parsear_fecha($request->fecha_realizacion);
+
+        if (is_null($fecha_realizacion)) {
+
+            return 'Indicá la fecha en que hay que hacerla.';
+        }
+
+        $es_recurrente = $request->boolean('es_recurrente');
+
+        $unidad_frecuencia_id = null;
+        $cantidad_frecuencia = null;
+        $fecha_fin_recurrencia = null;
+
+        if ($es_recurrente) {
+
+            $unidad_frecuencia_id = (int) $request->unidad_frecuencia_id;
+
+            if ($unidad_frecuencia_id <= 0 || !UnidadFrecuencia::where('id', $unidad_frecuencia_id)->exists()) {
+
+                return 'Elegí cada cuánto se repite la tarea (día, semana, mes o año).';
+            }
+
+            if (!is_numeric($request->cantidad_frecuencia) || (int) $request->cantidad_frecuencia < 1 || (float) $request->cantidad_frecuencia != (int) $request->cantidad_frecuencia) {
+
+                return 'La cantidad de la frecuencia tiene que ser un número entero mayor o igual a 1.';
+            }
+
+            $cantidad_frecuencia = (int) $request->cantidad_frecuencia;
+
+            if (!is_null($request->fecha_fin_recurrencia) && $request->fecha_fin_recurrencia !== '') {
+
+                $fin = $this->parsear_fecha($request->fecha_fin_recurrencia);
+
+                if (is_null($fin)) {
+
+                    return 'La fecha de fin de la recurrencia tiene que venir como AAAA-MM-DD.';
+                }
+
+                if ($fin->lt($fecha_realizacion)) {
+
+                    return 'La fecha de fin de la recurrencia no puede ser anterior a la primera fecha.';
+                }
+
+                $fecha_fin_recurrencia = $fin->format('Y-m-d');
+            }
+        }
+
+        // Un select sin elegir llega como 0, '' o null: los tres son "sin gasto".
+        $expense_concept_id = (int) $request->expense_concept_id > 0 ? (int) $request->expense_concept_id : null;
+        $expense_amount = null;
+
+        if (!is_null($expense_concept_id)) {
+
+            // Puede ser 0: "monto a definir al pagar". Vacío cuenta como 0 (la SPA vieja no
+            // siempre lo manda).
+            $monto = is_null($request->expense_amount) || $request->expense_amount === '' ? 0 : $request->expense_amount;
+
+            if (!is_numeric($monto) || (float) $monto < 0) {
+
+                return 'El monto estimado del gasto tiene que ser un número mayor o igual a 0.';
+            }
+
+            $expense_amount = (float) $monto;
+        }
+
+        return [
+            'detalle'                => $detalle,
+            'fecha_realizacion'      => $fecha_realizacion->format('Y-m-d 00:00:00'),
+            'es_recurrente'          => $es_recurrente ? 1 : 0,
+            'unidad_frecuencia_id'   => $unidad_frecuencia_id,
+            'cantidad_frecuencia'    => $cantidad_frecuencia,
+            'fecha_fin_recurrencia'  => $fecha_fin_recurrencia,
+            'expense_concept_id'     => $expense_concept_id,
+            'expense_amount'         => $expense_amount,
+            'notas'                  => is_string($request->notas) && trim($request->notas) !== '' ? $request->notas : null,
+        ];
+    }
+
+    /**
+     * Parsea una fecha del request como día (sin hora ni zona). Acepta `Y-m-d` y también un
+     * `Y-m-d H:i:s`/ISO, del que toma solo la fecha SIN convertir zona horaria: si la SPA manda
+     * "2026-09-20" quiere decir el 20, y un ISO con "Z" convertido a la zona de la app podría
+     * caer en el 19. Devuelve null si no es una fecha real (el 30/2 no lo es).
+     *
+     * @param  mixed  $valor
+     * @return \Carbon\Carbon|null
+     */
+    protected function parsear_fecha($valor) {
+
+        if (!is_string($valor) || !preg_match('/^(\d{4}-\d{2}-\d{2})/', $valor, $partes)) {
+
+            return null;
+        }
+
+        try {
+
+            $fecha = Carbon::createFromFormat('Y-m-d', $partes[1]);
+
+        } catch (\Exception $e) {
+
+            return null;
+        }
+
+        // createFromFormat no falla con el 30/2: lo desborda al 2/3. El ida y vuelta lo detecta.
+        if ($fecha === false || $fecha->format('Y-m-d') !== $partes[1]) {
+
+            return null;
+        }
+
+        return $fecha->startOfDay();
     }
 }
