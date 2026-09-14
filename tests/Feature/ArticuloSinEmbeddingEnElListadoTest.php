@@ -46,13 +46,15 @@ class ArticuloSinEmbeddingEnElListadoTest extends EmpresaTestCase
      * ejecutaron durante el request.
      *
      * @param  array  $log  Salida de DB::getQueryLog().
+     * @param  int    $limit  Tamaño de página esperado (500 en index()/index_deleted(), 50 en
+     *                        globalSearch() salvo que el request pida otro).
      * @return string|null
      */
-    protected function consulta_del_listado(array $log)
+    protected function consulta_del_listado(array $log, $limit = 500)
     {
         foreach ($log as $consulta) {
             if (strpos($consulta['query'], 'from `articles`') !== false
-                && strpos($consulta['query'], 'limit 500') !== false) {
+                && strpos($consulta['query'], 'limit '.$limit) !== false) {
                 return $consulta['query'];
             }
         }
@@ -155,5 +157,99 @@ class ArticuloSinEmbeddingEnElListadoTest extends EmpresaTestCase
 
         // 0 si otro test del mismo proceso ya calentó la estática; nunca más de 1.
         $this->assertLessThanOrEqual(1, $consultas_al_esquema, 'Dos llamadas seguidas no pueden consultar el esquema dos veces.');
+    }
+
+    /**
+     * Misión busqueda-lenta-y-pausa-embeddings (14/9/2026) — GET article/index/eliminados (la
+     * sincronización offline de artículos borrados) sigue el mismo criterio que index(): la clave
+     * `embedding` no sale en el JSON y el SELECT no la pide. A diferencia de index(), esta
+     * consulta no usa withAll(), así que acá no hay relaciones que chequear.
+     *
+     * @return void
+     */
+    public function test_el_listado_de_eliminados_no_trae_la_clave_embedding_y_el_select_no_la_pide()
+    {
+        $articulo = $this->articulo_con_embedding();
+
+        // SoftDeletes puro (sin obsevers de por medio: ArticleObserver no define deleted()).
+        $articulo->delete();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $response = $this->getJson('api/article/index/eliminados');
+
+        $log = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $response->assertStatus(200);
+
+        $fila = collect($response->json('models.data'))->firstWhere('id', $articulo->id);
+
+        $this->assertNotNull($fila, 'El artículo centinela recién borrado tiene que estar en la primera página del listado de eliminados.');
+        $this->assertArrayNotHasKey('embedding', $fila, 'El vector no tiene que viajar en el JSON.');
+        $this->assertArrayHasKey('deleted_at', $fila);
+        $this->assertNotNull($fila['deleted_at']);
+
+        $listado = $this->consulta_del_listado($log);
+
+        $this->assertNotNull($listado, 'No se encontró la consulta del listado de eliminados en el log: ' . json_encode(array_column($log, 'query')));
+        $this->assertStringNotContainsString('`embedding`', $listado, 'El SELECT del listado de eliminados no tiene que nombrar la columna embedding.');
+        $this->assertStringNotContainsString('select *', $listado, 'Tiene que ser un select explícito, no un *.');
+    }
+
+    /**
+     * Misión busqueda-lenta-y-pausa-embeddings (14/9/2026) — POST global-search/article sigue el
+     * mismo criterio, gateado por method_exists('scopeSinEmbedding') igual que ya hace
+     * scopeWithAll: la clave `embedding` no sale en el JSON y el SELECT no la pide.
+     *
+     * @return void
+     */
+    public function test_la_busqueda_global_de_articulos_no_trae_la_clave_embedding_y_el_select_no_la_pide()
+    {
+        $articulo = $this->articulo_con_embedding();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $response = $this->postJson('api/global-search/article', [
+            'query_value' => $articulo->name,
+            'props'       => ['name'],
+        ]);
+
+        $log = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $response->assertStatus(200);
+
+        $fila = collect($response->json('models.data'))->firstWhere('id', $articulo->id);
+
+        $this->assertNotNull($fila, 'El artículo centinela tiene que aparecer al buscarlo por su propio nombre.');
+        $this->assertArrayNotHasKey('embedding', $fila, 'El vector no tiene que viajar en el JSON.');
+        $this->assertArrayHasKey('name', $fila);
+
+        // per_page default de globalSearch es 50 (no 500 como index()/index_deleted()).
+        $listado = $this->consulta_del_listado($log, 50);
+
+        $this->assertNotNull($listado, 'No se encontró la consulta del listado en el log: ' . json_encode(array_column($log, 'query')));
+        $this->assertStringNotContainsString('`embedding`', $listado, 'El SELECT de la búsqueda global no tiene que nombrar la columna embedding.');
+        $this->assertStringNotContainsString('select *', $listado, 'Tiene que ser un select explícito, no un *.');
+    }
+
+    /**
+     * Misión busqueda-lenta-y-pausa-embeddings (14/9/2026) — el gate por method_exists es
+     * OBLIGATORIO: globalSearch() es genérico para ~150 modelos y la mayoría (ej. Provider) no
+     * define scopeSinEmbedding. Sin el gate, ->sinEmbedding() directo rompería con
+     * BadMethodCallException apenas alguien buscara sobre cualquiera de esos modelos.
+     *
+     * @return void
+     */
+    public function test_la_busqueda_global_de_un_modelo_sin_el_scope_no_rompe()
+    {
+        $response = $this->postJson('api/global-search/provider', [
+            'query_value' => '',
+        ]);
+
+        $response->assertStatus(200);
     }
 }
