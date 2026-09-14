@@ -83,8 +83,13 @@ class GenerateArticleEmbeddings extends Command
          * ArticleObserver::debe_generar_embedding() (el disparo inmediato) y el Kernel (que ni
          * siquiera agenda el comando si está prendida). Default false: no cambia nada para nadie
          * hasta que alguien la prenda a mano en el .env.
+         *
+         * Se lee con config('services.openai.embeddings_generacion_pausada'), NUNCA con env()
+         * directo acá: con config:cache activo (lo normal en producción) env() fuera de config/
+         * devuelve el default y prender la variable en el .env de un cliente real no haría nada
+         * — mismo bug que ya pasó con DURACION_REPORTES, ver config/services.php.
          */
-        if (filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN)) {
+        if (config('services.openai.embeddings_generacion_pausada')) {
             $this->warn('articles:generate-embeddings: generación pausada por EMBEDDINGS_GENERACION_PAUSADA. Se omite.');
             return 0;
         }

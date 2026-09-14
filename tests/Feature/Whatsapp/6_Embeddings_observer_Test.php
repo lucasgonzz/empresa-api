@@ -84,25 +84,17 @@ class Embeddings_observer_Test extends TestCase
     }
 
     /**
-     * Prende o apaga EMBEDDINGS_GENERACION_PAUSADA en las tres fuentes que lee env() ($_SERVER,
-     * $_ENV y putenv): es una variable leída con env() directo, no con config(), así que
-     * config(['...' => ...]) no sirve para probarla (mismo mecanismo que ya usan
-     * Duracion_Del_Snapshot_Del_Tablero_Test y Conexiones_persistentes_de_base_Test para otras
-     * variables leídas así). false la deja AUSENTE, no en 'false' string.
+     * Prende o apaga la pausa donde el código realmente la lee: config('services.openai.
+     * embeddings_generacion_pausada'), no la variable de entorno. Con config:cache activo en
+     * producción env() fuera de config/ devuelve el default (chequeo independiente, 14/9/2026:
+     * mismo bug que ya rompió DURACION_REPORTES en Fenix) — ver config/services.php.
      *
      * @param  bool  $encendida
      * @return void
      */
     protected function activar_pausa_global($encendida)
     {
-        if ($encendida) {
-            $_SERVER[self::VARIABLE_PAUSA] = 'true';
-            $_ENV[self::VARIABLE_PAUSA] = 'true';
-            putenv(self::VARIABLE_PAUSA . '=true');
-        } else {
-            unset($_SERVER[self::VARIABLE_PAUSA], $_ENV[self::VARIABLE_PAUSA]);
-            putenv(self::VARIABLE_PAUSA);
-        }
+        config(['services.openai.embeddings_generacion_pausada' => $encendida]);
     }
 
     /**

@@ -229,7 +229,10 @@ class ArticleObserver
         // de entrada si alguien reactiva whatsapp_ia para un cliente antes de que el arreglo de
         // sinEmbedding() (puntos 1-3 de esta misma misión) esté probado en producción. Default
         // false: no cambia nada para nadie hasta que alguien la prenda a mano en el .env.
-        if (filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN)) {
+        //
+        // config(), no env() directo: con config:cache activo (lo normal en producción) env()
+        // fuera de config/ devuelve el default y esto no pausaría nada. Ver config/services.php.
+        if (config('services.openai.embeddings_generacion_pausada')) {
             return false;
         }
 

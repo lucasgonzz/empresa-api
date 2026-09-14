@@ -34,11 +34,12 @@ use Tests\TestCase;
  * app.USER_ID apuntando al comercio, y ArticleObserver::resetear_cache_gate() porque el memo del
  * gate es estático y compartido con el observer.
  *
- * 🔴 La variable se lee con env() directo (no config()): se activa/desactiva escribiendo
- * $_SERVER, $_ENV y putenv a la vez (las tres fuentes que env() consulta), mismo mecanismo que ya
- * usan Duracion_Del_Snapshot_Del_Tablero_Test y Conexiones_persistentes_de_base_Test para otras
- * variables leídas así. config(['app.duracion_reportes' => ...]) no sirve acá porque esta
- * variable no pasa por ningún archivo de config.
+ * La variable se lee con config('services.openai.embeddings_generacion_pausada'), NUNCA con
+ * env() directo en el código de aplicación (chequeo independiente, 14/9/2026: con config:cache
+ * activo en producción env() fuera de config/ devuelve el default, mismo bug que ya rompió
+ * DURACION_REPORTES en Fenix -- ver config/services.php). Por eso el helper de abajo prende y
+ * apaga con config(), no con $_SERVER/$_ENV/putenv: eso probaría que env() cambió, no que el
+ * código lee lo que config:cache serviría en producción.
  */
 class EmbeddingsPausaGlobalTest extends TestCase
 {
@@ -90,23 +91,15 @@ class EmbeddingsPausaGlobalTest extends TestCase
     }
 
     /**
-     * Prende o apaga EMBEDDINGS_GENERACION_PAUSADA en las tres fuentes que lee env(). false la
-     * deja AUSENTE (no en 'false' string), para que el default de filter_var(env(...), false)
-     * también quede cubierto.
+     * Prende o apaga la pausa donde el código realmente la lee: la clave de config, no la
+     * variable de entorno (ver el docblock de la clase).
      *
      * @param  bool  $encendida
      * @return void
      */
     protected function activar_pausa_global($encendida)
     {
-        if ($encendida) {
-            $_SERVER[self::VARIABLE_PAUSA] = 'true';
-            $_ENV[self::VARIABLE_PAUSA] = 'true';
-            putenv(self::VARIABLE_PAUSA . '=true');
-        } else {
-            unset($_SERVER[self::VARIABLE_PAUSA], $_ENV[self::VARIABLE_PAUSA]);
-            putenv(self::VARIABLE_PAUSA);
-        }
+        config(['services.openai.embeddings_generacion_pausada' => $encendida]);
     }
 
     /**
