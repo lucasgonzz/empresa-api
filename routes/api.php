@@ -701,6 +701,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('integraciones/zipnova/origenes', 'ZipnovaIntegracionController@origenes');
     Route::post('integraciones/zipnova/cotizar-prueba', 'ZipnovaIntegracionController@cotizar_prueba');
 
+    // Envío del pedido de la tienda (misión zipnova-envios): generar en Zipnova, ver, sincronizar,
+    // cancelar y etiqueta. `generar` responde el PEDIDO completo (con `envio` por withAll); el
+    // resto, el envío. Todo scopeado por el comercio autenticado (404 si es de otro).
+    Route::post('envio/generar/{order_id}', 'EnvioController@generar');
+    Route::get('envio/{id}', 'EnvioController@show');
+    Route::post('envio/{id}/sincronizar', 'EnvioController@sincronizar');
+    Route::post('envio/{id}/cancelar', 'EnvioController@cancelar');
+    Route::get('envio/{id}/etiqueta', 'EnvioController@etiqueta');
+
 
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
@@ -1018,6 +1027,14 @@ Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@cal
 // manda el bearer token del SPA en esta redirección); el comercio se identifica mediante el
 // `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
+
+// Webhook público de Zipnova (misión zipnova-envios, 14/9/2026): Zipnova hace POST acá con
+// cada cambio de estado de un envío. Sin auth a propósito (Zipnova no tiene sesión); no se
+// confía en el payload: el controller re-consulta el envío con las credenciales del comercio y
+// responde SIEMPRE 200, porque un 4xx hace que Zipnova reintente cada hora durante 12 horas.
+// Throttle propio, como los otros webhooks públicos.
+Route::post('zipnova/webhook', 'ZipnovaWebhookController@receive')
+        ->middleware('throttle:120,1');
 
 
 // Grupo 211: export de articulos para flujos automatizados externos (n8n). Sin auth a proposito
