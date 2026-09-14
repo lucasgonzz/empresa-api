@@ -178,4 +178,30 @@ class ExpulsarOtroDispositivoTest extends TestCase
             'Un /login sin forzar jamás tiene que tocar el candado de otro dispositivo.'
         );
     }
+
+    /**
+     * 🔴 login_forzado() a propósito NO pasa por loginLucas(): el comando maestro ("login" /
+     * "login full" como doc_number) tiene su propia exención del candado
+     * (debe_omitir_candado_de_actividad()) y no necesita "forzar" nada. Si este endpoint lo
+     * reconociera, sería una segunda puerta al login maestro sin el resto de sus reglas.
+     *
+     * @return void
+     */
+    public function test_login_forzado_no_reconoce_el_comando_de_login_maestro()
+    {
+        Notification::fake();
+
+        $respuesta = $this->postJson('/login-forzado', [
+            'doc_number' => 'login',
+            'password' => '1234',
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertFalse(
+            $respuesta->json('login'),
+            'doc_number "login" no es un doc_number real: Auth::attempt() tiene que rechazarlo, no interpretarlo como comando maestro.'
+        );
+
+        Notification::assertNothingSent();
+    }
 }
