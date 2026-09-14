@@ -14,6 +14,7 @@ use App\Models\BudgetStatus;
 use App\Models\Article;
 use App\Models\Caja;
 use App\Models\Client;
+use App\Models\DepositMovementStatus;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\CurrentAcountPaymentMethodDiscount;
 use App\Models\Discount;
@@ -22,6 +23,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\Iva;
 use App\Models\IvaCondition;
 use App\Models\Moneda;
+use App\Models\OrderStatus;
 use App\Models\Provider;
 use App\Models\ProviderDiscount;
 use App\Models\SaleChannel;
@@ -33,16 +35,19 @@ use Database\Seeders\CAPaymentMethodTypeSeeder;
 use Database\Seeders\ConceptoStockMovementSeeder;
 use Database\Seeders\CurrentAcountPaymentMethodSeeder;
 use Database\Seeders\DepositSeeder;
+use Database\Seeders\DepositMovementStatusSeeder;
 use Database\Seeders\ExtencionSeeder;
 use Database\Seeders\IvaConditionSeeder;
 use Database\Seeders\IvaSeeder;
 use Database\Seeders\MonedaSeeder;
+use Database\Seeders\OrderStatusSeeder;
 use Database\Seeders\PriceTypeSeeder;
 use Database\Seeders\ProviderOrderStatusSeeder;
 use Database\Seeders\ProviderSeeder;
 use Database\Seeders\SaleChannelSeeder;
 use Database\Seeders\UserSeeder;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Seeder determinista de testing (Grupo 184, Prompt 613).
@@ -341,6 +346,21 @@ class TestingFerreteriaSeeder extends Seeder
             $this->call(MonedaSeeder::class);
         }
 
+        // Sin los estados de movimiento de deposito ("En proceso" / "Recibido"), el modulo de
+        // movimientos entre depositos queda ENTERO inoperante sobre el fixture, y de la forma mas
+        // silenciosa posible: el modal del listado agrupa las filas por estado (order_list_by),
+        // asi que con el catalogo vacio no dibuja NI UNA fila ni el cartel de vacio aunque los
+        // movimientos existan en la base; el select de Estado del form queda sin opciones; y
+        // DepositMovementHelper::check_status() compara contra el NOMBRE del estado, con lo cual
+        // ningun movimiento puede recibirse ni trasladar stock. Medido el 3/9/2026 en s9 durante
+        // la exploracion de depositos: 3 movimientos en el store del SPA y cero filas en pantalla.
+        //
+        // En una cuenta real DatabaseSeeder lo siembra en la instalacion: hueco del fixture, no
+        // del producto. Detras del chequeo de existencia porque el seeder usa create().
+        if (!DepositMovementStatus::exists()) {
+            $this->call(DepositMovementStatusSeeder::class);
+        }
+
         // Guardado por el mismo motivo: `seed_ventas_y_tesoreria()` corre antes que este
         // metodo y ya pudo haberlo sembrado. `UserSeeder` usa create() con id explicito.
         if (is_null(User::find(config('app.USER_ID')))) {
@@ -352,6 +372,17 @@ class TestingFerreteriaSeeder extends Seeder
         // describe esa dinamica nueva (RRII vs. MT via ArticlePricesHelper::iva_va_al_costo()),
         // no el comportamiento legacy que sigue leyendo aplicar_iva_al_costo directamente.
         User::where('email', self::USER_EMAIL)->update(['usar_condicion_fiscal_en_costeo' => 1]);
+
+        /*
+         * Vigencia del reporte de inventario en 1 minuto (produccion usa 30). Sin esto la
+         * exploracion de la pestaña "Stock minimo" de Alertas no es determinista: el reporte se
+         * regenera solo cuando vencio, asi que un spec que configura un stock minimo y espera
+         * verlo en los chips puede quedarse mirando un reporte de hace 20 minutos que ya no se
+         * va a regenerar durante toda la corrida. Con 1 minuto, re-entrar a la pestaña despues
+         * del cambio siempre encola la regeneracion (la procesa el worker de cola del slot).
+         * Exploracion de Alertas, 3/9/2026.
+         */
+        User::where('email', self::USER_EMAIL)->update(['duracion_reporte_inventario' => 1]);
 
         $this->call(PriceTypeSeeder::class);
         $this->call(DepositSeeder::class);
@@ -410,6 +441,7 @@ class TestingFerreteriaSeeder extends Seeder
 
         $this->seed_extenciones();
         $this->seed_estados_de_presupuesto();
+        $this->seed_estados_de_pedido_online();
         $this->seed_tipos_de_comprobante();
         $this->limpiar_comprobantes_sin_cae();
 
@@ -686,6 +718,31 @@ class TestingFerreteriaSeeder extends Seeder
     {
         if (!BudgetStatus::exists()) {
             $this->call(BudgetStatusSeeder::class);
+        }
+    }
+
+    /**
+     * Siembra los estados de los pedidos de la tienda online, otra tabla global de solo lectura.
+     *
+     * 🔴 Sin ella, la pestaña "Pedidos Online" de Alertas no puede alertar nada:
+     * `OrderController::indexUnconfirmed()` filtra por `order_status_id = 1` (id HARDCODEADO de
+     * "Sin confirmar") y el front vuelve a filtrar por `order.order_status.name == 'Sin
+     * confirmar'`. Con la tabla vacía ningún pedido matchea el id, y un pedido que se cuele con
+     * status 1 huérfano rompe el computed del front con "name of null". Encontrado en la
+     * exploración de Alertas (3/9/2026).
+     *
+     * 🔴 El ALTER de AUTO_INCREMENT no es decorativo: en esta base el autoincrement de la tabla
+     * quedó corrido por corridas anteriores, y `OrderStatusSeeder` (que usa `create()`, sin ids
+     * explícitos) sembraba "Sin confirmar" con id 752 — un catálogo donde el id ES el contrato
+     * (el controller lo hardcodea) tiene que nacer con id 1, como en producción.
+     *
+     * @return void
+     */
+    protected function seed_estados_de_pedido_online()
+    {
+        if (!OrderStatus::exists()) {
+            DB::statement('ALTER TABLE order_statuses AUTO_INCREMENT = 1');
+            $this->call(OrderStatusSeeder::class);
         }
     }
 
