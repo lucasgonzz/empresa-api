@@ -24,6 +24,7 @@ class SellerController extends Controller
             'name'                          => $request->name,
             'commission_after_pay_sale'     => $request->commission_after_pay_sale,
             'percentage_commission'                     => $request->percentage_commission,
+            'commission_with_iva'           => $request->commission_with_iva,
             'seller_id'                     => $request->seller_id,
             'user_id'                       => $this->userId(),
         ]);
@@ -43,6 +44,7 @@ class SellerController extends Controller
         $model->name                                = $request->name;
         $model->commission_after_pay_sale           = $request->commission_after_pay_sale;
         $model->percentage_commission           = $request->percentage_commission;
+        $model->commission_with_iva                 = $request->commission_with_iva;
         $model->seller_id                           = $request->seller_id;
         $model->save();
 

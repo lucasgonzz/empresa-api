@@ -13,8 +13,11 @@ use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
 use App\Models\OrderStatus;
 use App\Models\Sale;
+use App\Services\Zipnova\EnvioNoGenerableException;
+use App\Services\Zipnova\ZipnovaEnvioService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
@@ -329,8 +332,96 @@ class OrderController extends Controller
             throw $e;
         }
 
+        /**
+         * El envío por correo (Zipnova) se gestiona DESPUÉS del commit, nunca adentro de la
+         * transacción (misión zipnova-envios, 14/9/2026). Es una llamada a un tercero: si Zipnova
+         * está caído, tarda o rechaza el pedido, la confirmación ya quedó escrita —la venta, el
+         * stock y la cuenta corriente son del comercio y no dependen de un correo—. El error se
+         * ve en el modal de envío del pedido, con el botón de reintento. Ver el método.
+         */
+        $this->gestionar_envio_zipnova($model, $nombre_desde, $nombre_hacia);
+
         $this->sendAddModelNotification('Order', $model->id);
         return response()->json(['model' => $this->fullModel('Order', $model->id)], 200);
+    }
+
+    /**
+     * Genera el envío en Zipnova al confirmar el pedido y lo cancela al cancelarlo.
+     *
+     * Solo actúa sobre un pedido que la tienda dejó con `envio_opcion` (el comprador eligió un
+     * correo de Zipnova). Un pedido con retiro en el local, con una zona de entrega propia, o
+     * que llegó desde una `tienda-api` vieja que todavía no escribe esas columnas, no toca
+     * Zipnova en ningún momento: es la compatibilidad hacia atrás del 14/8/2026.
+     *
+     * 🔴 Nunca lanza. Todo lo que pase acá adentro va al log y a la fila de `envios` (en
+     * `error`, con el motivo), que es donde el operador lo ve. Un `Throwable` que subiera desde
+     * acá convertiría en 500 un pedido que ya está confirmado y con su venta creada, y la SPA
+     * mostraría un error sobre algo que sí pasó.
+     *
+     * Al confirmar: si ya hay un envío vivo (un reintento desde el modal, o un segundo update
+     * con el mismo estado) no se genera otro. Al cancelar: se pide la cancelación a Zipnova solo
+     * si el envío existe allá y no está cerrado; si ya viajó, Zipnova pide el rescate y el
+     * estado real lo trae la sincronización.
+     *
+     * @param  \App\Models\Order  $model  Pedido ya actualizado y commiteado.
+     * @param  string|null  $nombre_desde  Estado del que salió.
+     * @param  string|null  $nombre_hacia  Estado al que fue.
+     * @return void
+     */
+    private function gestionar_envio_zipnova($model, $nombre_desde, $nombre_hacia) {
+
+        if (!is_array($model->envio_opcion) || count($model->envio_opcion) === 0) {
+            return;
+        }
+
+        if (OrderStatusHelper::es_la_confirmacion($nombre_desde, $nombre_hacia)) {
+
+            if (!is_null(ZipnovaEnvioService::envio_vivo($model))) {
+                return;
+            }
+
+            $service = new ZipnovaEnvioService();
+
+            try {
+                $service->crear_desde_pedido($model);
+            } catch (EnvioNoGenerableException $e) {
+
+                /**
+                 * Una precondición que no se cumplió (sin conector, destino incompleto, nada que
+                 * enviar): el servicio no llegó a escribir ninguna fila, así que se deja una en
+                 * `error` con el motivo. Sin esto el listado diría "Sin generar" sin decir por
+                 * qué, y el operador no sabría qué arreglar antes de reintentar desde el modal.
+                 * Si el error de Zipnova fue después (ZipnovaException), la fila ya la dejó el
+                 * servicio.
+                 */
+                Log::warning('OrderController: el pedido '.$model->id.' se confirmó pero no se pudo generar el envío en Zipnova: '.$e->getMessage());
+
+                try {
+                    $service->registrar_fallo($model, $e->getMessage());
+                } catch (\Throwable $e_registro) {
+                    Log::warning('OrderController: tampoco se pudo dejar registrado el fallo del envío del pedido '.$model->id.': '.$e_registro->getMessage());
+                }
+            } catch (\Throwable $e) {
+                Log::warning('OrderController: el pedido '.$model->id.' se confirmó pero no se pudo generar el envío en Zipnova: '.$e->getMessage());
+            }
+
+            return;
+        }
+
+        if (OrderStatusHelper::es_la_cancelacion($nombre_desde, $nombre_hacia)) {
+
+            $envio = ZipnovaEnvioService::envio_vivo($model);
+
+            if (is_null($envio) || !$envio->se_puede_cancelar()) {
+                return;
+            }
+
+            try {
+                (new ZipnovaEnvioService())->cancelar($envio);
+            } catch (\Throwable $e) {
+                Log::warning('OrderController: el pedido '.$model->id.' se canceló pero no se pudo cancelar su envío '.$envio->proveedor_envio_id.' en Zipnova: '.$e->getMessage());
+            }
+        }
     }
 
     /**
