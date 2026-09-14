@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
+use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
@@ -60,14 +61,16 @@ class SaleController extends Controller
 {
 
 
-    public function index($modulo, $from_date = null, $until_date = null) {
-        $models = Sale::where('user_id', $this->userId())
+    public function index(Request $request, $modulo, $from_date = null, $until_date = null) {
+        /*
+         * La query base (usuario + modulo + fecha) se arma SIN `orderBy` ni `withAll`: el modo
+         * paginado de mas abajo necesita correr agregados (COUNT/SUM/GROUP BY) sobre este mismo
+         * builder, y un ORDER BY sobre una columna sin agrupar revienta en MySQL con
+         * ONLY_FULL_GROUP_BY. El orden y el eager load se agregan en cada camino, al final.
+         */
+        $models = Sale::where('user_id', $this->userId());
                         /** Excluye ventas contenedoras de facturación del listado general de ventas. */
                         // ->soloVentasReales()
-                        ->orderBy('created_at', 'DESC')
-                        ->withAll();
-
-        SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
 
         if ($modulo == 'por_entregar') {
 
@@ -114,6 +117,27 @@ class SaleController extends Controller
         //                         })->where('terminada', 0);
             
         // }
+
+        /*
+         * 🔴 El modo paginado es OPT-IN por `per_page` en la query string, y la respuesta cambia de
+         * forma (`models` pasa a ser un paginador y se suma `totales`). No se puede paginar por
+         * defecto: `por_entregar`, `por_estado` y `deposito` de la SPA pegan a este mismo endpoint
+         * con otro `modulo` y leen el LISTADO ENTERO del mismo store (`state.sale.models`); una
+         * pagina les recortaria la pantalla sin ningun error. Solo la pantalla de Ventas manda
+         * `per_page`. Sin el parametro, la respuesta es byte a byte la de siempre.
+         */
+        if (ListadoVentasHelper::pide_paginado($request)) {
+            return response()->json(
+                ListadoVentasHelper::respuesta_paginada($models, $request, $modulo, $this->userId()),
+                200
+            );
+        }
+
+        $models = $models->orderBy('created_at', 'DESC')
+                        ->withAll();
+
+        SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
+
         $models = $models->get();
         return response()->json(['models' => $models], 200);
     }
