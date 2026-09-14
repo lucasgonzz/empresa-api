@@ -117,36 +117,20 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(25);
         }
 
-        // Generación automática de sugerencias de stock (v2), solo con la
-        // extensión sugerencias_inteligentes. El comando decide adentro si
-        // según la periodicidad configurada hoy toca (o sale en una línea).
-        // 05:00: lejos de debt:snapshot (23:59) y antes de que abra el
-        // comercio; withoutOverlapping(60) cubre catálogos grandes.
-        if ($company_owner && UserHelper::hasExtencion('sugerencias_inteligentes', $company_owner)) {
-            $schedule->command('sugerencias:generar')
-                ->dailyAt('05:00')
-                ->withoutOverlapping(60);
-        }
-
-        // Generación automática de sugerencias de compra a proveedores, solo
-        // con la extensión sugerencias_compras. Mismo patrón que
-        // sugerencias:generar de arriba: el comando decide adentro si según
-        // la periodicidad configurada hoy toca (o sale en una línea).
-        // 05:30 y no 05:00: no se pisa con sugerencias:generar (mismo
-        // comercio, misma ventana horaria, dos comandos que recorren todo el
-        // catálogo). withoutOverlapping(60) cubre catálogos grandes.
-        if ($company_owner && UserHelper::hasExtencion('sugerencias_compras', $company_owner)) {
-            $schedule->command('compras:generar')
-                ->dailyAt('05:30')
-                ->withoutOverlapping(60);
-        }
+        // sugerencias:generar (05:00) y compras:generar (05:30) YA NO SE AGENDAN (misión
+        // modulo-ia-mostrador, 14/9/2026): las carpetas Stock y Compras del mostrador del módulo
+        // IA las reemplazan. Los hechos de esas dos carpetas los calcula el API a pedido de la
+        // skill /mostrador (admin-sync/mostrador/hechos) con los mismos motores
+        // (StockSuggestionService, PurchaseSuggestionService + CoberturaService), sin persistir
+        // corridas. Los dos comandos y sus rutas API (stock-suggestion, purchase-suggestion)
+        // siguen existiendo para correr a mano y para los SPA viejos; solo se apaga el cron.
 
         // Corrida automática del motor de ofertas por cliente, solo con la extensión
-        // motor_de_ofertas. Mismo patrón que los dos de arriba: el comando decide adentro si hoy
-        // toca según la periodicidad, y ese doble gate es a propósito (el de acá evita el SELECT;
-        // el de adentro cubre la corrida a mano). 06:00 y no 05:00/05:30: no se pisa con
-        // sugerencias:generar ni con compras:generar, que en la misma ventana recorren catálogo e
-        // historial del mismo comercio. withoutOverlapping(60) cubre padrones de clientes grandes.
+        // motor_de_ofertas. El comando decide adentro si hoy toca según la periodicidad, y ese
+        // doble gate es a propósito (el de acá evita el SELECT; el de adentro cubre la corrida
+        // a mano). 06:00: conserva su lugar en la ventana nocturna aunque sugerencias:generar y
+        // compras:generar ya no corran antes. withoutOverlapping(60) cubre padrones de clientes
+        // grandes. Sigue agendado: alimenta Promociones, que queda en Tienda Online.
         if ($company_owner && UserHelper::hasExtencion('motor_de_ofertas', $company_owner)) {
             $schedule->command('ofertas:generar')
                 ->dailyAt('06:00')
