@@ -72,6 +72,10 @@ class PlatformConnector extends Model
         'expires_at'    => 'datetime',
         'access_token'  => 'encrypted',
         'refresh_token' => 'encrypted',
+        // Preferencias no secretas de la plataforma, por comercio (Zipnova: cuenta, depósito de
+        // origen, bulto por defecto, envío gratis, webhook). Ver la migración
+        // `2026_09_14_100000_add_extra_config_to_platform_connectors_table`.
+        'extra_config'  => 'array',
     ];
 
     /**
