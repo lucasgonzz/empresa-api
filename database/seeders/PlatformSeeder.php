@@ -84,5 +84,22 @@ class PlatformSeeder extends Seeder
                 'extra_config'  => null,
             ]
         );
+
+        // Zipnova (ex Zippin), misión zipnova-envios (14/9/2026): la fila que ancla el conector de
+        // envíos de cada comercio. A diferencia de las tres de arriba NO hay app de ComercioCity:
+        // cada comercio conecta SU cuenta con API Token + API Secret y eso vive cifrado en
+        // `platform_connectors.access_token`. Por eso `client_id`/`client_secret` van en null y no
+        // se lee ninguna variable del .env. La migración `asegurar_plataforma_zipnova` crea la
+        // misma fila en los upgrades, donde corren migraciones y no seeders; acá se mantiene el
+        // nombre al día en las instalaciones que sí siembran.
+        Platform::query()->updateOrCreate(
+            ['slug' => Platform::SLUG_ZIPNOVA],
+            [
+                'name'          => 'Zipnova',
+                'client_id'     => null,
+                'client_secret' => null,
+                'extra_config'  => null,
+            ]
+        );
     }
 }

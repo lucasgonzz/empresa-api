@@ -29,6 +29,14 @@ class Platform extends Model
      */
     public const SLUG_MERCADO_PAGO = 'mercado_pago';
 
+    /**
+     * Slug persistido para Zipnova (ex Zippin), el agregador de correos con el que la tienda
+     * cotiza y despacha envíos (misión zipnova-envios, 14/9/2026). A diferencia de Mercado Pago no
+     * hay app de ComercioCity: cada comercio conecta SU cuenta con API Token + API Secret y el
+     * conector guarda en `access_token` la credencial Basic (`base64(token:secret)`).
+     */
+    public const SLUG_ZIPNOVA = 'zipnova';
+
     protected $guarded = [];
 
     /**

@@ -694,6 +694,28 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('integraciones/zippin/connect', 'ZippinOAuthController@connect');
     Route::post('integraciones/zippin/disconnect', 'ZippinOAuthController@disconnect');
 
+    // Zipnova (ex Zippin), misión zipnova-envios (14/9/2026): el comercio conecta SU cuenta con
+    // API Token + API Secret (no hay OAuth ni callback: las credenciales se prueban contra
+    // Zipnova y se guardan cifradas en platform_connectors). Las cinco responden `{integracion}`
+    // con la misma forma que un item de `integraciones`. El webhook que Zipnova llama está más
+    // abajo, fuera de este grupo. Las rutas `integraciones/zippin/*` de arriba quedan vivas pero
+    // la tarjeta ya no las usa.
+    Route::post('integraciones/zipnova/conectar', 'ZipnovaIntegracionController@conectar');
+    Route::post('integraciones/zipnova/disconnect', 'ZipnovaIntegracionController@disconnect');
+    Route::put('integraciones/zipnova/config', 'ZipnovaIntegracionController@config');
+    Route::post('integraciones/zipnova/origenes', 'ZipnovaIntegracionController@origenes');
+    Route::post('integraciones/zipnova/cotizar-prueba', 'ZipnovaIntegracionController@cotizar_prueba');
+
+    // Envío del pedido de la tienda (misión zipnova-envios): generar en Zipnova, ver, sincronizar,
+    // cancelar y etiqueta. `generar` responde el PEDIDO completo (con `envio` por withAll); el
+    // resto, el envío. Todo scopeado por el comercio autenticado (404 si es de otro).
+    Route::post('envio/generar/{order_id}', 'EnvioController@generar');
+    Route::get('envio/{id}', 'EnvioController@show');
+    Route::post('envio/{id}/sincronizar', 'EnvioController@sincronizar');
+    Route::post('envio/{id}/cancelar', 'EnvioController@cancelar');
+    Route::get('envio/{id}/etiqueta', 'EnvioController@etiqueta');
+
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -1010,6 +1032,15 @@ Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@cal
 // manda el bearer token del SPA en esta redirección); el comercio se identifica mediante el
 // `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
+
+// Webhook público de Zipnova (misión zipnova-envios, 14/9/2026): Zipnova hace POST acá con
+// cada cambio de estado de un envío. Sin auth a propósito (Zipnova no tiene sesión); no se
+// confía en el payload: el controller re-consulta el envío con las credenciales del comercio y
+// responde SIEMPRE 200, porque un 4xx hace que Zipnova reintente cada hora durante 12 horas.
+// Throttle propio, como los otros webhooks públicos.
+Route::post('zipnova/webhook', 'ZipnovaWebhookController@receive')
+        ->middleware('throttle:120,1');
+
 
 // Grupo 211: export de articulos para flujos automatizados externos (n8n). Sin auth a proposito
 // (decision de Lucas): el consumidor solo pega una URL. El comercio se identifica por el

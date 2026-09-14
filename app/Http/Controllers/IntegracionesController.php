@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\OnlineConfiguration;
+use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
 
@@ -17,13 +17,14 @@ use App\Models\PlatformConnector;
  *
  * Grupos (son las solapas de la pantalla):
  * - `sistema`: integraciones del ERP (Mercado Libre, Tienda Nube).
- * - `tienda_online`: integraciones del checkout (Mercado Pago, Zippin).
+ * - `tienda_online`: integraciones del checkout (Mercado Pago, Zipnova).
  *
- * De dónde sale el estado de cada una:
- * - Mercado Libre, Tienda Nube y Mercado Pago: de `platform_connectors`.
- * - Zippin: todavía de `online_configurations.zippin_*`. Esta misión mudó solo Mercado Pago;
- *   Zippin se muda después, por el mismo camino, y cuando eso pase lo único que cambia acá es
- *   de dónde se lee — la forma de la respuesta ya es la definitiva.
+ * De dónde sale el estado: de `platform_connectors`, para las cuatro. Zipnova (ex Zippin) se
+ * mudó ahí en la misión zipnova-envios (14/9/2026): el OAuth viejo de `online_configurations.zippin_*`
+ * nunca cotizó ni despachó nada y queda como está, pero ya no aparece en este catálogo. Para
+ * Zipnova el item suma la clave `config` (solo si está conectado): las preferencias no secretas
+ * del conector que la tarjeta edita (depósito de origen, bulto por defecto, envío gratis) y el
+ * nombre de la cuenta. Nunca el token: es un `Basic base64(token:secret)` y vive cifrado.
  */
 class IntegracionesController extends Controller
 {
@@ -57,11 +58,23 @@ class IntegracionesController extends Controller
                 'name'  => 'Mercado Pago',
                 'grupo' => self::GRUPO_TIENDA_ONLINE,
             ],
-            [
-                'slug'  => 'zippin',
-                'name'  => 'Zippin',
-                'grupo' => self::GRUPO_TIENDA_ONLINE,
-            ],
+            self::entrada_zipnova(),
+        ];
+    }
+
+    /**
+     * Entrada de Zipnova en el catálogo. Está aparte porque `ZipnovaIntegracionController`
+     * responde `{integracion}` con esta misma forma después de conectar, desconectar o guardar
+     * la config, y así el nombre y el grupo salen de un solo lugar.
+     *
+     * @return array<string, string>
+     */
+    public static function entrada_zipnova()
+    {
+        return [
+            'slug'  => Platform::SLUG_ZIPNOVA,
+            'name'  => 'Zipnova',
+            'grupo' => self::GRUPO_TIENDA_ONLINE,
         ];
     }
 
@@ -75,30 +88,69 @@ class IntegracionesController extends Controller
         $user_id = $this->userId();
 
         $conectores = $this->conectores_por_slug($user_id);
-        $configuration = OnlineConfiguration::where('user_id', $user_id)
-            ->orderBy('created_at', 'DESC')
-            ->first();
 
         $integraciones = [];
 
         foreach ($this->catalogo() as $integracion) {
             $slug = $integracion['slug'];
 
-            $estado = ($slug === 'zippin')
-                ? $this->estado_de_zippin($configuration)
-                : $this->estado_del_conector(isset($conectores[$slug]) ? $conectores[$slug] : null);
-
-            $integraciones[] = [
-                'slug'             => $slug,
-                'name'             => $integracion['name'],
-                'grupo'            => $integracion['grupo'],
-                'connected'        => $estado['connected'],
-                'expires_at'       => $estado['expires_at'],
-                'platform_user_id' => $estado['platform_user_id'],
-            ];
+            $integraciones[] = self::item($integracion, isset($conectores[$slug]) ? $conectores[$slug] : null);
         }
 
         return response()->json(['integraciones' => $integraciones], 200);
+    }
+
+    /**
+     * El item de Zipnova del comercio, tal como lo devuelve `index()`. Lo usan los endpoints de
+     * `ZipnovaIntegracionController` para responder con la tarjeta ya actualizada, sin que la
+     * SPA tenga que volver a pedir el listado entero.
+     *
+     * @param int $user_id Comercio (owner).
+     * @return array<string, mixed>
+     */
+    public static function integracion_zipnova($user_id)
+    {
+        $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_ZIPNOVA);
+
+        return self::item(self::entrada_zipnova(), $connector);
+    }
+
+    /**
+     * Un item del listado: la entrada del catálogo más el estado del conector. Para Zipnova
+     * conectado suma `config`; para el resto son exactamente las seis claves que la SPA consume.
+     *
+     * @param array<string, string> $integracion Entrada del catálogo (`slug`, `name`, `grupo`).
+     * @param PlatformConnector|null $connector Conector del comercio hacia esa plataforma.
+     * @return array<string, mixed>
+     */
+    public static function item(array $integracion, $connector)
+    {
+        $estado = self::estado_del_conector($connector);
+
+        // Para Zipnova "conectado" es "usable": el token tiene que poder descifrarse, porque es lo
+        // único con lo que se opera (no hay refresh ni OAuth que lo renueve solo). Un conector
+        // con un token cifrado con otra APP_KEY (base copiada de otra instancia, fila escrita en
+        // plano) figuraría conectado y después TODO fallaría con "no tiene Zipnova conectado":
+        // mejor que la tarjeta pida las credenciales de nuevo. Es lo mismo que decide
+        // `ZipnovaCredentialsHelper::credentials()` al leerlo.
+        if ($integracion['slug'] === Platform::SLUG_ZIPNOVA && $estado['connected']) {
+            $estado['connected'] = self::token_descifrable($connector);
+        }
+
+        $item = [
+            'slug'             => $integracion['slug'],
+            'name'             => $integracion['name'],
+            'grupo'            => $integracion['grupo'],
+            'connected'        => $estado['connected'],
+            'expires_at'       => $estado['expires_at'],
+            'platform_user_id' => $estado['platform_user_id'],
+        ];
+
+        if ($integracion['slug'] === Platform::SLUG_ZIPNOVA && $estado['connected']) {
+            $item['config'] = self::config_publica_de_zipnova($connector);
+        }
+
+        return $item;
     }
 
     /**
@@ -140,10 +192,10 @@ class IntegracionesController extends Controller
      * @param PlatformConnector|null $connector
      * @return array<string, mixed>
      */
-    protected function estado_del_conector($connector)
+    protected static function estado_del_conector($connector)
     {
         if (!$connector) {
-            return $this->estado_vacio();
+            return self::estado_vacio();
         }
 
         return [
@@ -154,26 +206,51 @@ class IntegracionesController extends Controller
     }
 
     /**
-     * Estado de Zippin, que todavía vive en `online_configurations.zippin_*`.
+     * La parte de `extra_config` del conector de Zipnova que la tarjeta necesita, con los
+     * defaults aplicados (`ZipnovaCredentialsHelper::config_desde_conector()`).
      *
-     * @param OnlineConfiguration|null $configuration
+     * Se arma clave por clave, y no devolviendo el `extra_config` entero, para que lo que viaja
+     * al navegador sea una lista cerrada: si mañana el conector guarda algo que no tiene por qué
+     * verse, no se cuela solo. `webhook_registrado` reemplaza al `webhook_id`/`webhook_url`
+     * crudos: a la tarjeta le alcanza con saber si Zipnova va a avisar los cambios de estado o
+     * si dependen del comando de cada 30 minutos.
+     *
+     * @param PlatformConnector $connector Conector de Zipnova conectado.
      * @return array<string, mixed>
      */
-    protected function estado_de_zippin($configuration)
+    protected static function config_publica_de_zipnova(PlatformConnector $connector)
     {
-        if (!$configuration) {
-            return $this->estado_vacio();
-        }
+        $config = ZipnovaCredentialsHelper::config_desde_conector($connector);
 
         return [
-            'connected'        => (bool) $configuration->zippin_connected,
-            'expires_at'       => is_null($configuration->zippin_token_expires_at)
-                ? null
-                : $configuration->zippin_token_expires_at->toJSON(),
-            // El equivalente al `platform_user_id` de un conector: con qué cuenta de Zippin
-            // quedó vinculado el comercio. No es secreto.
-            'platform_user_id' => $configuration->zippin_account_id,
+            'account_name'       => $config['account_name'],
+            'accounts'           => is_array($config['accounts']) ? $config['accounts'] : [],
+            'origin_id'          => $config['origin_id'],
+            'origin_label'       => $config['origin_label'],
+            'origins'            => is_array($config['origins']) ? $config['origins'] : [],
+            'bulto_default'      => $config['bulto_default'],
+            'declarar_valor'     => (bool) $config['declarar_valor'],
+            'envio_gratis_desde' => $config['envio_gratis_desde'],
+            'webhook_registrado' => !empty($config['webhook_id']),
+            'conectado_en'       => $config['conectado_en'],
         ];
+    }
+
+    /**
+     * True si el `access_token` del conector se puede descifrar y no está vacío. El cast
+     * `encrypted` tira `DecryptException` con una APP_KEY distinta o una fila en plano; acá eso
+     * es "no conectado", nunca un 500 en la pantalla de integraciones.
+     *
+     * @param PlatformConnector $connector
+     * @return bool
+     */
+    protected static function token_descifrable(PlatformConnector $connector)
+    {
+        try {
+            return (string) $connector->access_token !== '';
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**
@@ -181,7 +258,7 @@ class IntegracionesController extends Controller
      *
      * @return array<string, mixed>
      */
-    protected function estado_vacio()
+    protected static function estado_vacio()
     {
         return [
             'connected'        => false,

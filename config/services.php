@@ -280,6 +280,32 @@ return [
     ],
 
     /**
+     * Zipnova (ex Zippin), misión zipnova-envios (14/9/2026): el agregador de correos con el que
+     * la tienda cotiza y despacha envíos.
+     *
+     * Acá NO hay credenciales: a diferencia del bloque `zippin` de arriba (OAuth con una app de
+     * ComercioCity que nunca llegó a existir), cada comercio se conecta con SU API Token + API
+     * Secret, que viven cifrados en `platform_connectors.access_token`. Lo único que se configura
+     * a nivel instancia es cómo llegar a la API: el host (por si Zipnova lo cambia o para apuntar
+     * a un stub en desarrollo), el timeout y la verificación SSL. `ZipnovaClient::base_url()` y
+     * `ZipnovaClient::http_client_options()` son los únicos lectores.
+     */
+    'zipnova' => [
+        // Host de la API v2. Los dominios `zippin` vencen el 1/4/2026; el vigente es zipnova.com.ar.
+        'base_url'         => env('ZIPNOVA_BASE_URL', 'https://api.zipnova.com.ar/v2'),
+        // Segundos máximos de espera por respuesta. Zipnova cotiza en ~1-3 s; 20 cubre un pico.
+        'timeout'          => (int) env('ZIPNOVA_TIMEOUT', 20),
+        // Reintento único ante 429 respetando Retry-After (máx. 5 s). En el ERP queda prendido:
+        // opera de a un envío. En la tienda está apagado (endpoint público, IP compartida).
+        'reintento_429'    => filter_var(env('ZIPNOVA_REINTENTO_429', true), FILTER_VALIDATE_BOOLEAN),
+        // Verificación del certificado. Por defecto true (en el header viaja el token del
+        // comercio: desactivarla no es opción en producción). En wamp el PHP no encuentra el
+        // bundle solo: se le pasa por `guzzle_ca_bundle`, o cae al de `zippin` que ya está cargado.
+        'guzzle_verify'    => filter_var(env('ZIPNOVA_GUZZLE_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+        'guzzle_ca_bundle' => env('ZIPNOVA_GUZZLE_CA_BUNDLE', ''),
+    ],
+
+    /**
      * Credenciales de AFIP SDK (app.afipsdk.com), usadas por AfipSdk::__construct() para pedir
      * el token de autorizacion (TA) via WebService. Antes estaban escritas literalmente en
      * AfipSdk.php (grupo 220, prompt 02); el repositorio es publico, asi que ahora se leen del
