@@ -1206,6 +1206,15 @@ Route::middleware('admin.api.key')
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).
         Route::post('demo-token', 'AdminSync\\DemoTokenController@store');
+        // El mostrador del módulo IA (misión modulo-ia-mostrador): lo consume la skill /mostrador
+        // desde Claude Code. El API calcula los hechos (POST hechos) y la skill deposita el texto
+        // de cada informe (PUT reportes/{id}); contexto y memoria son lo que la skill sabe del
+        // dueño entre corridas. Mismo header y mismo límite conocido que el resto del grupo.
+        Route::get('mostrador/duenos', 'AdminSync\\MostradorController@duenos');
+        Route::post('mostrador/hechos', 'AdminSync\\MostradorController@hechos');
+        Route::put('mostrador/reportes/{id}', 'AdminSync\\MostradorController@depositar');
+        Route::get('mostrador/contexto/{user_id}', 'AdminSync\\MostradorController@contexto');
+        Route::put('mostrador/memoria/{user_id}', 'AdminSync\\MostradorController@memoria');
     });
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
