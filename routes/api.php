@@ -1074,6 +1074,15 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
     Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
     Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
     Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+
+    // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
+    // del dueño, un informe abierto y su conversación. Mismo gate que el chat; encima, el
+    // controlador deja pasar SOLO al dueño (o admin_access): los informes traen cobranzas
+    // y deudas. La conversación que crea el POST es una AiConversation común, y la SPA
+    // sigue por las rutas de ai-conversations de arriba.
+    Route::get('mostrador/reportes', 'MostradorController@index');
+    Route::get('mostrador/reportes/{id}', 'MostradorController@show');
+    Route::post('mostrador/reportes/{id}/conversacion', 'MostradorController@conversacion');
 });
 
 // Sugerencias de compra a proveedores (misión sugerencias-compra-proveedores), gateado por auth
