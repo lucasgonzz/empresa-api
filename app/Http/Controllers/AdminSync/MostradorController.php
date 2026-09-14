@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Jobs\CalcularHechosMostradorJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\MostradorMemoria;
@@ -30,6 +31,13 @@ use Illuminate\Support\Facades\Log;
  *
  * Todo se resuelve por el user_id del DUEÑO (owner_id null) con la extensión
  * asistente_ia; nunca por sesión (no hay).
+ *
+ * Compras y stock en un catálogo grande no se calculan adentro del request: por encima
+ * de config('mostrador.umbral_async') artículos candidatos, POST hechos deja la fila en
+ * 'calculando', despacha CalcularHechosMostradorJob y responde 202; la skill hace polling
+ * con GET reportes/{id} hasta que el estado sea 'hechos' / 'listo' (o 'error', con el
+ * motivo). Por debajo del umbral —y siempre para dia y tienda— el cálculo es sincrónico
+ * y la respuesta es 200 con los hechos.
  */
 class MostradorController extends Controller
 {
@@ -94,13 +102,27 @@ class MostradorController extends Controller
      * POST admin-sync/mostrador/hechos
      *
      * Body: {user_id, tipo, fecha?: 'Y-m-d', forzar?: bool}. Calcula los hechos del tipo
-     * para ese dueño y esa fecha (default: ayer para dia/tienda, hoy para compras/stock)
-     * y hace upsert en mostrador_reportes por la unique (user_id, tipo, fecha) SIN
-     * pisar el contenido. Si el informe ya está 'listo' y no viene forzar, devuelve los
-     * hechos guardados sin recalcular.
+     * para ese dueño y esa fecha y hace upsert en mostrador_reportes por la unique
+     * (user_id, tipo, fecha) SIN pisar el contenido. Si el informe ya está 'listo' y no
+     * viene forzar, devuelve los hechos guardados sin recalcular.
      *
-     * 404 si el dueño no existe o no tiene la extensión; 422 si el tipo no es uno de
-     * los cuatro o la fecha no es Y-m-d.
+     * La fecha: para compras y stock es SIEMPRE hoy (la reposición y los traslados se
+     * deciden con el stock de esta mañana); si el body trae otra, se ignora y la
+     * respuesta lo avisa con "fecha_ignorada": true. Para dia y tienda es ayer por
+     * defecto y tiene que ser un día cerrado: hoy o más adelante es 422.
+     *
+     * Respuestas:
+     *   200 {reporte_id, tipo, fecha, estado, hechos, hechos_at, error_mensaje, fecha_ignorada}
+     *       con los hechos calculados (o los guardados si ya estaba listo);
+     *   202 lo mismo con estado 'calculando' y hechos null: el cálculo quedó en la cola
+     *       (CalcularHechosMostradorJob) porque el catálogo supera mostrador.umbral_async;
+     *       se consulta con GET reportes/{reporte_id}. Un POST repetido mientras está
+     *       calculando responde 202 sin despachar otro job, salvo que la fila lleve más
+     *       de mostrador.timeout_job segundos colgada (worker caído): ahí se vuelve a
+     *       despachar;
+     *   404 si el dueño no existe o no tiene la extensión; 422 si el tipo no es uno de
+     *       los cuatro, la fecha no es Y-m-d válida o el día no está cerrado; 500 si el
+     *       cálculo sincrónico reventó.
      *
      * @param Request $request
      * @return JsonResponse
@@ -115,13 +137,13 @@ class MostradorController extends Controller
             ], 422);
         }
 
-        $fecha = null;
+        $fecha_pedida = null;
 
         if (!is_null($request->input('fecha')) && $request->input('fecha') !== '') {
-            $fecha = $this->parsear_fecha($request->input('fecha'));
+            $fecha_pedida = $this->parsear_fecha($request->input('fecha'));
 
-            if (is_null($fecha)) {
-                return response()->json(['message' => 'La fecha tiene que venir en formato Y-m-d.'], 422);
+            if (is_null($fecha_pedida)) {
+                return response()->json(['message' => 'La fecha tiene que venir en formato Y-m-d y ser un día válido.'], 422);
             }
         }
 
@@ -131,29 +153,54 @@ class MostradorController extends Controller
             return response()->json(['message' => 'Dueño no encontrado o sin la extensión ' . self::EXTENSION . '.'], 404);
         }
 
-        if (is_null($fecha)) {
+        $hoy = now()->startOfDay();
+        $fecha_ignorada = false;
+
+        if (RecolectorDeHechos::es_de_hoy($tipo)) {
             $fecha = RecolectorDeHechos::fecha_por_defecto($tipo);
+            $fecha_ignorada = !is_null($fecha_pedida) && !$fecha_pedida->isSameDay($fecha);
+        } else {
+            $fecha = is_null($fecha_pedida) ? RecolectorDeHechos::fecha_por_defecto($tipo) : $fecha_pedida;
+
+            if ($fecha->gte($hoy)) {
+                return response()->json([
+                    'message' => 'El día tiene que estar cerrado: un informe de ' . $tipo . ' habla de ayer o de un día anterior, no de hoy.',
+                ], 422);
+            }
         }
+
+        $extra = ['fecha_ignorada' => $fecha_ignorada];
 
         $forzar = filter_var($request->input('forzar', false), FILTER_VALIDATE_BOOLEAN);
 
-        $reporte = MostradorReporte::where('user_id', $owner->id)
-            ->where('tipo', $tipo)
-            ->where('fecha', $fecha->format('Y-m-d'))
-            ->first();
+        $reporte = $this->buscar_reporte($owner, $tipo, $fecha);
 
         if ($reporte && $reporte->estado === MostradorReporte::ESTADO_LISTO && !$forzar) {
-            return response()->json($this->respuesta_hechos($reporte), 200);
+            return response()->json($this->respuesta_hechos($reporte, $extra), 200);
         }
 
-        // Compras y stock recorren el catálogo con los motores de sugerencias: en un
-        // comercio grande son minutos. Se levanta el techo de PHP (y SOLO el de PHP,
-        // como en DemoSetupHelper: el del proxy no se toca desde acá) para que el
-        // cálculo no muera a mitad en un catálogo de cientos de miles de artículos.
+        // Ya hay un cálculo en la cola para esta fila: se informa, no se duplica.
+        if ($reporte && $reporte->esta_calculando() && !$this->calculo_vencido($reporte)) {
+            return response()->json($this->respuesta_hechos($reporte, $extra), 202);
+        }
+
+        $recolector = (new RecolectorDeHechos())->recolector_para($tipo);
+
+        if ($this->va_a_la_cola($recolector->cantidad_de_candidatos($owner))) {
+            $reporte = $this->marcar_calculando($owner, $tipo, $fecha, $reporte);
+
+            CalcularHechosMostradorJob::dispatch($reporte->id);
+
+            return response()->json($this->respuesta_hechos($reporte, $extra), 202);
+        }
+
+        // Cálculo sincrónico. Se levanta el techo de PHP (y SOLO el de PHP, como en
+        // DemoSetupHelper: el del proxy no se toca desde acá) para el caso que quedó por
+        // debajo del umbral pero igual tarda.
         set_time_limit(0);
 
         try {
-            $hechos = (new RecolectorDeHechos())->recolectar($owner, $tipo, $fecha);
+            $hechos = $recolector->recolectar($owner, $fecha->copy()->startOfDay());
         } catch (\Throwable $e) {
             Log::error('AdminSync\MostradorController: falló el cálculo de hechos', [
                 'user_id' => $owner->id,
@@ -167,20 +214,28 @@ class MostradorController extends Controller
             ], 500);
         }
 
-        if ($reporte) {
-            // Solo los hechos: titulo/resumen/contenido/estado son de la skill y no se tocan.
-            $reporte->hechos = $hechos;
-            $reporte->hechos_at = now();
-            $reporte->save();
-        } else {
-            $reporte = MostradorReporte::create([
-                'user_id'   => $owner->id,
-                'tipo'      => $tipo,
-                'fecha'     => $fecha->format('Y-m-d'),
-                'hechos'    => $hechos,
-                'estado'    => MostradorReporte::ESTADO_HECHOS,
-                'hechos_at' => now(),
-            ]);
+        $reporte = $this->guardar_hechos($owner, $tipo, $fecha, $reporte, $hechos);
+
+        return response()->json($this->respuesta_hechos($reporte, $extra), 200);
+    }
+
+    /**
+     * GET admin-sync/mostrador/reportes/{id}
+     *
+     * El estado y los hechos de un informe, para el polling de la skill después de un
+     * 202: {reporte_id, tipo, fecha, estado, hechos, hechos_at, error_mensaje}. Mientras
+     * el estado es 'calculando' los hechos viajan null; en 'error', error_mensaje dice por
+     * qué. 404 si el informe no existe.
+     *
+     * @param int $id
+     * @return JsonResponse
+     */
+    public function mostrar($id): JsonResponse
+    {
+        $reporte = MostradorReporte::find($id);
+
+        if (is_null($reporte)) {
+            return response()->json(['message' => 'Informe no encontrado.'], 404);
         }
 
         return response()->json($this->respuesta_hechos($reporte), 200);
@@ -446,20 +501,136 @@ class MostradorController extends Controller
     }
 
     /**
-     * Forma de la respuesta de POST hechos.
+     * La fila de un informe por (dueño, tipo, fecha), o null.
+     *
+     * @param User $owner
+     * @param string $tipo
+     * @param Carbon $fecha
+     * @return MostradorReporte|null
+     */
+    protected function buscar_reporte(User $owner, string $tipo, Carbon $fecha)
+    {
+        return MostradorReporte::where('user_id', $owner->id)
+            ->where('tipo', $tipo)
+            ->where('fecha', $fecha->format('Y-m-d'))
+            ->first();
+    }
+
+    /**
+     * true si el cálculo de un tipo con esa cantidad de artículos candidatos tiene que ir
+     * a la cola: por encima de config('mostrador.umbral_async'). Los tipos que no
+     * recorren catálogo (dia, tienda) traen 0 y nunca van.
+     *
+     * @param int $candidatos
+     * @return bool
+     */
+    protected function va_a_la_cola(int $candidatos): bool
+    {
+        return $candidatos > (int) config('mostrador.umbral_async', 2000);
+    }
+
+    /**
+     * true si una fila en 'calculando' lleva más de mostrador.timeout_job segundos sin
+     * novedad: el job que la tenía murió sin cerrarla (worker caído) y hay que volver a
+     * despacharla en vez de responder 202 para siempre.
      *
      * @param MostradorReporte $reporte
+     * @return bool
+     */
+    protected function calculo_vencido(MostradorReporte $reporte): bool
+    {
+        if (is_null($reporte->updated_at)) {
+            return true;
+        }
+
+        return $reporte->updated_at->copy()->addSeconds((int) config('mostrador.timeout_job', 1800))->isPast();
+    }
+
+    /**
+     * Deja la fila lista para que CalcularHechosMostradorJob la tome: la crea si no
+     * existe, y la marca 'calculando' sin tocar titulo/resumen/contenido (que son de la
+     * skill) ni los hechos anteriores (el job los reemplaza cuando termina).
+     *
+     * @param User $owner
+     * @param string $tipo
+     * @param Carbon $fecha
+     * @param MostradorReporte|null $reporte
+     * @return MostradorReporte
+     */
+    protected function marcar_calculando(User $owner, string $tipo, Carbon $fecha, $reporte): MostradorReporte
+    {
+        if (is_null($reporte)) {
+            return MostradorReporte::create([
+                'user_id' => $owner->id,
+                'tipo'    => $tipo,
+                'fecha'   => $fecha->format('Y-m-d'),
+                'estado'  => MostradorReporte::ESTADO_CALCULANDO,
+            ]);
+        }
+
+        $reporte->estado = MostradorReporte::ESTADO_CALCULANDO;
+        $reporte->error_mensaje = null;
+        $reporte->save();
+
+        return $reporte;
+    }
+
+    /**
+     * Upsert de los hechos calculados en el request: solo hechos, hechos_at y el estado
+     * ('listo' se conserva si la fila ya tenía texto depositado; si no, 'hechos'); titulo,
+     * resumen y contenido son de la skill y no se tocan.
+     *
+     * @param User $owner
+     * @param string $tipo
+     * @param Carbon $fecha
+     * @param MostradorReporte|null $reporte
+     * @param array $hechos
+     * @return MostradorReporte
+     */
+    protected function guardar_hechos(User $owner, string $tipo, Carbon $fecha, $reporte, array $hechos): MostradorReporte
+    {
+        if (is_null($reporte)) {
+            return MostradorReporte::create([
+                'user_id'   => $owner->id,
+                'tipo'      => $tipo,
+                'fecha'     => $fecha->format('Y-m-d'),
+                'hechos'    => $hechos,
+                'estado'    => MostradorReporte::ESTADO_HECHOS,
+                'hechos_at' => now(),
+            ]);
+        }
+
+        $reporte->hechos = $hechos;
+        $reporte->hechos_at = now();
+        $reporte->error_mensaje = null;
+        $reporte->estado = is_null($reporte->contenido)
+            ? MostradorReporte::ESTADO_HECHOS
+            : MostradorReporte::ESTADO_LISTO;
+        $reporte->save();
+
+        return $reporte;
+    }
+
+    /**
+     * Forma de la respuesta de POST hechos y de GET reportes/{id}. Mientras el estado es
+     * 'calculando' los hechos viajan null aunque la fila conserve los de un cálculo
+     * anterior: la skill tiene que esperar los nuevos, no redactar sobre los viejos.
+     *
+     * @param MostradorReporte $reporte
+     * @param array $extra Claves que se suman (fecha_ignorada en el POST)
      * @return array
      */
-    protected function respuesta_hechos(MostradorReporte $reporte): array
+    protected function respuesta_hechos(MostradorReporte $reporte, array $extra = []): array
     {
-        return [
-            'reporte_id' => (int) $reporte->id,
-            'tipo'       => $reporte->tipo,
-            'fecha'      => $reporte->fecha->format('Y-m-d'),
-            'estado'     => $reporte->estado,
-            'hechos'     => $reporte->hechos,
-        ];
+        return array_merge([
+            'reporte_id'    => (int) $reporte->id,
+            'tipo'          => $reporte->tipo,
+            'fecha'         => $reporte->fecha->format('Y-m-d'),
+            'estado'        => $reporte->estado,
+            'hechos'        => $reporte->esta_calculando() ? null : $reporte->hechos,
+            'hechos_at'     => is_null($reporte->hechos_at) ? null : $reporte->hechos_at->toDateTimeString(),
+            'error_mensaje' => $reporte->error_mensaje,
+        ], $extra);
     }
 
     /**

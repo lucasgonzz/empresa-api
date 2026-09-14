@@ -12,6 +12,12 @@ use Illuminate\Database\Eloquent\Model;
  * skill /mostrador deposita `titulo`, `resumen` y `contenido` (JSON de bloques que
  * valida MostradorContenidoValidator). El escritorio del dueño lista SOLO los 'listo'.
  *
+ * Dos estados más, del cálculo asincrónico de compras y stock en un catálogo grande
+ * (CalcularHechosMostradorJob): 'calculando' mientras el job corre (la skill hace
+ * polling) y 'error' si reventó, con el motivo en `error_mensaje`. Al terminar bien, el
+ * job deja 'listo' si la fila ya tenía contenido depositado (un recálculo forzado sobre
+ * un informe visible) y 'hechos' si no.
+ *
  * tipo: 'dia' (rendimiento de ayer) | 'tienda' | 'compras' | 'stock'.
  *
  * La conversación del dueño sobre un informe es una AiConversation con
@@ -28,6 +34,15 @@ class MostradorReporte extends Model
     /** Estado de un informe con el contenido depositado por la skill. */
     const ESTADO_LISTO = 'listo';
 
+    /** Estado de un informe cuyos hechos está calculando CalcularHechosMostradorJob. */
+    const ESTADO_CALCULANDO = 'calculando';
+
+    /** Estado de un informe cuyo cálculo asincrónico falló (motivo en error_mensaje). */
+    const ESTADO_ERROR = 'error';
+
+    /** Los cuatro estados. */
+    const ESTADOS = ['hechos', 'listo', 'calculando', 'error'];
+
     /** Origen de las AiConversation que nacen de un informe del mostrador. */
     const ORIGEN_CONVERSACION = 'mostrador_reporte';
 
@@ -43,6 +58,7 @@ class MostradorReporte extends Model
         'hechos',
         'contenido',
         'estado',
+        'error_mensaje',
         'hechos_at',
         'generado_at',
         'leido_at',
@@ -81,6 +97,17 @@ class MostradorReporte extends Model
     public function scopeListos($query)
     {
         return $query->where('estado', self::ESTADO_LISTO);
+    }
+
+    /**
+     * true si el cálculo de los hechos está en curso (o se cree que está: ver
+     * AdminSync\MostradorController::calculo_vencido para la fila que quedó colgada).
+     *
+     * @return bool
+     */
+    public function esta_calculando()
+    {
+        return $this->estado === self::ESTADO_CALCULANDO;
     }
 
     /**

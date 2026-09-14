@@ -94,6 +94,17 @@ class RecolectorCompras extends RecolectorBase
     }
 
     /**
+     * Artículos que recorrería el motor de compras (ver RecolectorBase).
+     *
+     * @param User $owner
+     * @return int
+     */
+    public function cantidad_de_candidatos(User $owner): int
+    {
+        return count($this->articulos_candidatos($owner));
+    }
+
+    /**
      * Corre el motor de compras en memoria sobre los artículos que pueden disparar y
      * devuelve sus líneas (ver PurchaseSuggestionService::calcular_para_articulos).
      *

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Mostrador;
 
+use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Models\AiConversation;
 use App\Models\MostradorReporte;
 use App\Models\User;
@@ -191,7 +192,7 @@ class Dueno_Test extends MostradorTestCase
         $this->assertStringContainsString('El cliente Pérez debe hace 40 días', $conversation->contexto);
         $this->assertStringContainsString('Hechos: {', $conversation->contexto);
         $this->assertStringContainsString('"aplica":true', $conversation->contexto);
-        $this->assertLessThanOrEqual(12000, mb_strlen($conversation->contexto));
+        $this->assertLessThanOrEqual(20000, mb_strlen($conversation->contexto));
 
         // Segunda vez: la misma, sin crear otra.
         $segunda = $this->postJson('api/mostrador/reportes/' . $reporte->id . '/conversacion');
@@ -222,6 +223,101 @@ class Dueno_Test extends MostradorTestCase
         ]);
 
         $this->postJson('api/mostrador/reportes/' . $sin_texto->id . '/conversacion')->assertStatus(404);
+    }
+
+    /**
+     * Con un `dia` grande, el contexto de la conversación entra en el techo sin cortar
+     * nunca un JSON a la mitad: texto plano entero, hechos compactados (sin imagen_url,
+     * listas de 6) y, si no alcanza, secciones enteras afuera, las últimas primero.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function el_contexto_de_un_dia_grande_entra_sin_cortar_el_json_de_hechos()
+    {
+        $lista_larga = [];
+
+        for ($i = 1; $i <= 300; $i++) {
+            $lista_larga[] = [
+                'article_id' => $i,
+                'nombre'     => str_repeat('Artículo con un nombre largo número ' . $i . ' ', 4),
+                'cantidad'   => $i,
+                'total'      => $i * 1000.0,
+                'imagen_url' => 'https://cdn.test/imagen-' . $i . '.jpg',
+            ];
+        }
+
+        $hechos = [
+            'aplica'    => true,
+            'fecha'     => $this->ayer->format('Y-m-d'),
+            'ventas'    => ['cantidad' => 300, 'total' => 45150000.0, 'por_sucursal' => $lista_larga],
+            'articulos' => ['mas_vendidos' => $lista_larga, 'volvieron_a_venderse' => $lista_larga, 'quedaron_sin_stock' => $lista_larga],
+            'cobranzas' => ['pagos_recibidos' => $lista_larga, 'clientes_con_mas_deuda' => $lista_larga],
+            'caja'      => ['ingresos' => 1.0, 'cierres' => $lista_larga],
+        ];
+
+        $reporte = MostradorReporte::create([
+            'user_id'     => $this->comercio->id,
+            'tipo'        => 'dia',
+            'fecha'       => $this->ayer->format('Y-m-d'),
+            'titulo'      => 'Rendimiento de ayer',
+            'resumen'     => 'Muchísimas ventas.',
+            'hechos'      => $hechos,
+            'contenido'   => $this->contenido_valido(),
+            'estado'      => 'listo',
+            'generado_at' => now(),
+        ]);
+
+        $contexto = MostradorHelper::contexto_de_conversacion($reporte);
+
+        $this->assertLessThanOrEqual(MostradorHelper::MAX_CARACTERES_CONTEXTO, mb_strlen($contexto));
+        $this->assertStringContainsString('Ayer se vendió bien y quedaron dos cobranzas pendientes.', $contexto);
+        $this->assertStringContainsString('Llamar a Pérez', $contexto);
+
+        $json = mb_substr($contexto, mb_strpos($contexto, 'Hechos: ') + 8);
+        $decodificado = json_decode($json, true);
+
+        $this->assertSame(JSON_ERROR_NONE, json_last_error(), 'el JSON de hechos tiene que ser válido de punta a punta');
+        $this->assertTrue($decodificado['aplica']);
+        $this->assertStringNotContainsString('imagen_url', $json);
+        $this->assertCount(6, $decodificado['ventas']['por_sucursal']);
+        $this->assertSame(300, $decodificado['ventas']['cantidad']);
+
+        $compactos = MostradorHelper::compactar_hechos($hechos);
+        $this->assertCount(6, $compactos['articulos']['mas_vendidos']);
+        $this->assertArrayNotHasKey('imagen_url', $compactos['articulos']['mas_vendidos'][0]);
+        $this->assertSame(['aplica', 'fecha', 'ventas', 'articulos', 'cobranzas', 'caja'], array_keys($compactos));
+
+        // Y cuando ni compactado entra (40 secciones de ítems larguísimos), se sacan
+        // secciones enteras, las últimas primero: quedan las escalares y las primeras
+        // secciones, y el JSON sigue siendo válido.
+        $enorme = ['aplica' => true, 'fecha' => $this->ayer->format('Y-m-d')];
+
+        for ($n = 1; $n <= 40; $n++) {
+            $items = [];
+
+            for ($i = 1; $i <= 6; $i++) {
+                $items[] = ['nombre' => str_repeat('x', 500), 'cantidad' => $i];
+            }
+
+            $enorme['seccion_' . $n] = $items;
+        }
+
+        $reporte->hechos = $enorme;
+        $reporte->save();
+
+        $contexto = MostradorHelper::contexto_de_conversacion($reporte->fresh());
+
+        $this->assertLessThanOrEqual(MostradorHelper::MAX_CARACTERES_CONTEXTO, mb_strlen($contexto));
+
+        $json = mb_substr($contexto, mb_strpos($contexto, 'Hechos: ') + 8);
+        $decodificado = json_decode($json, true);
+
+        $this->assertSame(JSON_ERROR_NONE, json_last_error());
+        $this->assertTrue($decodificado['aplica']);
+        $this->assertArrayHasKey('seccion_1', $decodificado);
+        $this->assertArrayNotHasKey('seccion_40', $decodificado);
+        $this->assertLessThan(40, count($decodificado));
     }
 
     /**

@@ -103,13 +103,24 @@ class Recolector_dia_Test extends MostradorTestCase
         $this->venta($this->ayer->copy()->subDays(80)->setTime(12, 0), [[$destornillador, 1, 250]]);
         $this->venta($this->ayer->copy()->subDays(10)->setTime(12, 0), [[$martillo, 1, 1000]]);
 
-        // Nota de crédito ayer.
-        CurrentAcount::create([
+        // Nota de crédito ayer, del módulo de devoluciones: devuelve una pinza que había
+        // costado $150 (article_current_acount.cost), que Rendimiento vuelve a sumar.
+        $nota = CurrentAcount::create([
             'user_id'    => $this->comercio->id,
             'client_id'  => $perez->id,
             'haber'      => 200,
             'status'     => 'nota_credito',
             'created_at' => $this->ayer_a_las(16),
+        ]);
+
+        DB::table('article_current_acount')->insert([
+            'article_id'        => $pinza->id,
+            'current_acount_id' => $nota->id,
+            'amount'            => 1,
+            'price'             => 200,
+            'cost'              => 150,
+            'created_at'        => $this->ayer_a_las(16),
+            'updated_at'        => $this->ayer_a_las(16),
         ]);
 
         // Pagos: Pérez ayer, López hace 20 días, Gómez nunca.
@@ -453,16 +464,20 @@ class Recolector_dia_Test extends MostradorTestCase
 
         $this->assertSame(['tiene_tienda' => false, 'pedidos' => 0, 'total' => 0.0], $h['tienda']);
 
-        // Sin fila de company_performances: vendido 4500 - devolución 200 - costo 2300 = 2000;
-        // menos los gastos (1000) = 1000.
-        $this->assertSame(['ingresos_netos' => 2000.0, 'rentabilidad' => 1000.0], $h['resultado']);
+        // La fórmula completa de Rendimiento: vendido 4500 - devolución 200 - costo de lo
+        // vendido 2300 + costo de lo devuelto 150 = 2150; menos los gastos (1000) = 1150.
+        // Montos en pesos, no porcentajes.
+        $this->assertSame(['ingresos_netos' => 2150.0, 'rentabilidad' => 1150.0], $h['resultado']);
     }
 
     /**
+     * La fila de company_performances de ese día es una foto de cuando alguien abrió
+     * Rendimiento (puede ser de media mañana): no se lee, se calcula siempre.
+     *
      * @group mostrador
      * @test
      */
-    public function con_la_fila_de_company_performances_el_resultado_sale_de_ahi()
+    public function la_fila_de_company_performances_no_se_lee()
     {
         $this->sembrar_el_dia();
 
@@ -478,7 +493,56 @@ class Recolector_dia_Test extends MostradorTestCase
 
         $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
 
-        $this->assertSame(['ingresos_netos' => 999.5, 'rentabilidad' => 555.25], $h['resultado']);
+        $this->assertSame(['ingresos_netos' => 2150.0, 'rentabilidad' => 1150.0], $h['resultado']);
+    }
+
+    /**
+     * Misma regla de moneda que PerformanceHelper::procesar_gastos: moneda_id 0 y null son
+     * pesos (solo 2 es dólares), y un gasto en cero no cuenta.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function los_gastos_con_moneda_cero_son_pesos_y_los_de_importe_cero_no_cuentan()
+    {
+        $cafe = ExpenseConcept::create(['num' => 1, 'name' => 'Café', 'user_id' => $this->comercio->id]);
+
+        Expense::create(['user_id' => $this->comercio->id, 'expense_concept_id' => $cafe->id, 'amount' => 300, 'moneda_id' => 0, 'created_at' => $this->ayer_a_las(13)]);
+        Expense::create(['user_id' => $this->comercio->id, 'expense_concept_id' => $cafe->id, 'amount' => 100, 'moneda_id' => 2, 'created_at' => $this->ayer_a_las(13)]);
+        Expense::create(['user_id' => $this->comercio->id, 'expense_concept_id' => $cafe->id, 'amount' => 0, 'moneda_id' => 1, 'created_at' => $this->ayer_a_las(13)]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame(['cantidad' => 1, 'total' => 300.0, 'por_categoria' => [['categoria' => 'Café', 'total' => 300.0]]], $h['compras_y_gastos']['gastos']);
+        $this->assertSame(['ingresos_netos' => 0.0, 'rentabilidad' => -300.0], $h['resultado']);
+    }
+
+    /**
+     * Un pedido cancelado de la tienda no suma en el bloque `tienda` del día.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function un_pedido_cancelado_de_la_tienda_no_suma()
+    {
+        $this->comercio->online = 'https://ferreteria-mostrador.com.ar';
+        $this->comercio->save();
+
+        $confirmado = \App\Models\OrderStatus::where('name', 'Confirmado')->first() ?: \App\Models\OrderStatus::forceCreate(['name' => 'Confirmado']);
+        $cancelado  = \App\Models\OrderStatus::where('name', 'Cancelado')->first() ?: \App\Models\OrderStatus::forceCreate(['name' => 'Cancelado']);
+
+        $ana = \App\Models\Buyer::create(['name' => 'Ana', 'user_id' => $this->comercio->id]);
+
+        foreach ([[3000, 'confirmed', $confirmado->id], [9999, 'canceled', $cancelado->id], [7777, 'canceled', $confirmado->id]] as $datos) {
+            \App\Models\Order::create([
+                'user_id' => $this->comercio->id, 'buyer_id' => $ana->id, 'total' => $datos[0], 'status' => $datos[1], 'deliver' => 0,
+                'order_status_id' => $datos[2], 'created_at' => $this->ayer_a_las(10),
+            ]);
+        }
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame(['tiene_tienda' => true, 'pedidos' => 1, 'total' => 3000.0], $h['tienda']);
     }
 
     /**

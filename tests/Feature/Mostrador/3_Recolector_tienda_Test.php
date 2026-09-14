@@ -34,6 +34,9 @@ class Recolector_tienda_Test extends MostradorTestCase
         $this->comercio->online = 'https://ferreteria-mostrador.com.ar';
         $this->comercio->save();
 
+        // La tienda escribe buyer_tracking_events solo con esta extensión.
+        $this->dar_extension(null, 'tracking_buyers');
+
         // Los dos estados que usa el ERP: 1 = Sin confirmar (OrderController::indexUnconfirmed).
         $sin_confirmar = OrderStatus::find(1);
 
@@ -45,6 +48,12 @@ class Recolector_tienda_Test extends MostradorTestCase
 
         if (!$confirmado) {
             $confirmado = OrderStatus::forceCreate(['name' => 'Confirmado']);
+        }
+
+        $cancelado = OrderStatus::where('name', 'Cancelado')->first();
+
+        if (!$cancelado) {
+            $cancelado = OrderStatus::forceCreate(['name' => 'Cancelado']);
         }
 
         $martillo = $this->articulo('Martillo', ['stock' => 5, 'final_price' => 150]);
@@ -96,6 +105,18 @@ class Recolector_tienda_Test extends MostradorTestCase
                 'created_at'      => $datos[0],
             ]);
         }
+
+        // Un pedido de ayer CANCELADO (por el estado del ERP y por el enum de la tienda):
+        // no suma en ningún lado.
+        Order::create([
+            'user_id'         => $this->comercio->id,
+            'buyer_id'        => $beto->id,
+            'total'           => 99999,
+            'status'          => 'canceled',
+            'deliver'         => 0,
+            'order_status_id' => $cancelado->id,
+            'created_at'      => $this->ayer_a_las(20),
+        ]);
 
         // El pedido de Beto de ayer a las 18 lleva la pinza en sus renglones (article_order).
         $pedido_beto = $pedidos[1];
@@ -202,8 +223,10 @@ class Recolector_tienda_Test extends MostradorTestCase
         // El pendiente es de ayer a las 9: al menos 15 horas hasta hoy a las 0.
         $this->assertGreaterThanOrEqual(15, $p['pendientes_de_confirmar']['mas_viejo_horas']);
 
-        // Los dos de ayer + el de hace cinco días; el de hace diez queda afuera.
+        // Los dos de ayer + el de hace cinco días; el de hace diez queda afuera, y el
+        // cancelado de ayer no cuenta en ningún bloque.
         $this->assertSame(['cantidad' => 3, 'total' => 6000.0], $p['ultimos_7_dias']);
+        $this->assertTrue($h['tracking_activo']);
     }
 
     /**
@@ -247,6 +270,7 @@ class Recolector_tienda_Test extends MostradorTestCase
     {
         $this->comercio->online = 'https://ferreteria-mostrador.com.ar';
         $this->comercio->save();
+        $this->dar_extension(null, 'tracking_buyers');
 
         $balanza = $this->articulo('Balanza', ['stock' => null]);
         $cuchara = $this->articulo('Cuchara', ['stock' => 0]);
@@ -281,6 +305,105 @@ class Recolector_tienda_Test extends MostradorTestCase
         // Sin importe en el evento: 2 × precio actual (150).
         $this->assertEquals(300.00, $carrito['monto_estimado']);
         $this->assertGreaterThanOrEqual(12, $carrito['hace_horas']);
+        // La ventana de 24 horas del último agregado (ayer a las 12) está abierta solo si
+        // todavía no son las 12 de hoy.
+        $this->assertSame(now()->lt($this->ayer_a_las(12)->addHours(24)), $carrito['ventana_abierta']);
+    }
+
+    /**
+     * Un carrito que se vació con cart_remove no está abandonado; un checkout_complete
+     * anterior al agregado (el de un carrito previo) no lo cierra; y un comprador que
+     * agregó anónimo y compró logueado (mismo visitor_id) tampoco aparece.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function un_carrito_vaciado_no_esta_abandonado_y_un_checkout_anterior_no_lo_cierra()
+    {
+        $this->comercio->online = 'https://ferreteria-mostrador.com.ar';
+        $this->comercio->save();
+        $this->dar_extension(null, 'tracking_buyers');
+
+        $martillo = $this->articulo('Martillo', ['final_price' => 150]);
+        $pinza    = $this->articulo('Pinza', ['final_price' => 90]);
+
+        // Visitante 1: agrega tres martillos, quita dos, después quita la línea entera.
+        $this->evento('cart_add', $this->ayer_a_las(10), ['visitor_id' => 'v-uno', 'article_id' => $martillo->id, 'quantity' => 3, 'amount' => 450]);
+        $this->evento('cart_remove', $this->ayer_a_las(11), ['visitor_id' => 'v-uno', 'article_id' => $martillo->id, 'quantity' => 2]);
+        $this->evento('cart_remove', $this->ayer_a_las(12), ['visitor_id' => 'v-uno', 'article_id' => $martillo->id]);
+
+        // Visitante 2: cerró un carrito viejo a las 9 y DESPUÉS agregó una pinza: abandonada.
+        $this->evento('checkout_complete', $this->ayer_a_las(9), ['visitor_id' => 'v-dos', 'order_id' => 1, 'amount' => 500]);
+        $this->evento('cart_add', $this->ayer_a_las(10), ['visitor_id' => 'v-dos', 'article_id' => $pinza->id, 'quantity' => 1]);
+
+        // Visitante 3: agrega anónimo, se loguea (buyer) y compra desde el mismo visitor_id.
+        $carla = Buyer::create(['name' => 'Carla', 'user_id' => $this->comercio->id]);
+        $this->evento('cart_add', $this->ayer_a_las(14), ['visitor_id' => 'v-tres', 'article_id' => $martillo->id, 'quantity' => 1]);
+        $this->evento('checkout_complete', $this->ayer_a_las(15), ['visitor_id' => 'v-tres', 'buyer_id' => $carla->id, 'order_id' => 2, 'amount' => 150]);
+
+        // Visitante 4: agrega dos pinzas y quita una: queda una, abandonada por $90.
+        $this->evento('cart_add', $this->ayer_a_las(16), ['visitor_id' => 'v-cuatro', 'article_id' => $pinza->id, 'quantity' => 2, 'amount' => 180]);
+        $this->evento('cart_remove', $this->ayer_a_las(17), ['visitor_id' => 'v-cuatro', 'article_id' => $pinza->id, 'quantity' => 1]);
+
+        $h = (new RecolectorTienda())->recolectar($this->comercio, $this->ayer);
+
+        $carritos = $h['carritos_abandonados'];
+        $this->assertCount(2, $carritos);
+
+        // Anónimos los dos: por monto, 90 y 90 → por orden de llegada (v-dos primero).
+        $this->assertNull($carritos[0]['buyer_id']);
+        $this->assertSame([['nombre' => 'Pinza', 'cantidad' => 1]], $carritos[0]['articulos']);
+        $this->assertEquals(90.00, $carritos[0]['monto_estimado']);
+        $this->assertSame([['nombre' => 'Pinza', 'cantidad' => 1]], $carritos[1]['articulos']);
+        $this->assertEquals(90.00, $carritos[1]['monto_estimado']);
+        $this->assertArrayHasKey('ventana_abierta', $carritos[0]);
+    }
+
+    /**
+     * Sin la extensión tracking_buyers la tienda no escribe eventos: los bloques que
+     * salen del tracking viajan null (no ceros), y pedidos y clientes del local siguen.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function sin_la_extension_tracking_buyers_los_bloques_de_tracking_van_null()
+    {
+        $this->comercio->online = 'https://ferreteria-mostrador.com.ar';
+        $this->comercio->save();
+
+        $confirmado = OrderStatus::where('name', 'Confirmado')->first() ?: OrderStatus::forceCreate(['name' => 'Confirmado']);
+
+        $perez = $this->cliente('Pérez');
+        CreditAccount::create(['model_name' => 'client', 'model_id' => $perez->id, 'saldo' => 450, 'moneda_id' => 1, 'user_id' => $this->comercio->id]);
+
+        $ana = Buyer::create(['name' => 'Ana', 'user_id' => $this->comercio->id, 'comercio_city_client_id' => $perez->id]);
+
+        Order::create([
+            'user_id' => $this->comercio->id, 'buyer_id' => $ana->id, 'total' => 3000, 'status' => 'confirmed',
+            'deliver' => 0, 'order_status_id' => $confirmado->id, 'created_at' => $this->ayer_a_las(9),
+        ]);
+
+        $h = (new RecolectorTienda())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertTrue($h['aplica']);
+        $this->assertFalse($h['tracking_activo']);
+
+        foreach (['compradores', 'productos', 'carritos_abandonados', 'busquedas', 'vieron_y_no_compraron'] as $clave) {
+            $this->assertArrayHasKey($clave, $h);
+            $this->assertNull($h[$clave], $clave . ' tiene que viajar null sin tracking');
+        }
+
+        $this->assertSame(1, $h['pedidos']['ayer']['cantidad']);
+        $this->assertEquals(3000.00, $h['pedidos']['ayer']['total']);
+
+        // El cliente del local que hizo un pedido esta semana aparece aunque no haya tracking.
+        $this->assertSame([[
+            'buyer_id'            => $ana->id,
+            'client_id'           => $perez->id,
+            'nombre'              => 'Pérez',
+            'deuda'               => 450.0,
+            'ultima_compra_local' => null,
+        ]], $h['clientes_del_local_en_la_tienda']);
     }
 
     /**

@@ -2,11 +2,13 @@
 
 namespace Tests\Feature\Mostrador;
 
+use App\Jobs\CalcularHechosMostradorJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\MostradorMemoria;
 use App\Models\MostradorReporte;
 use App\Models\User;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Hash;
 
 /**
@@ -53,7 +55,205 @@ class Admin_sync_Test extends MostradorTestCase
         $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'dia', 'fecha' => '13/09/2026'])
             ->assertStatus(422);
 
+        // Con forma de fecha pero inválida: 422, no 500.
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'dia', 'fecha' => '2026-13-45'])
+            ->assertStatus(422);
+
         $this->assertSame(0, MostradorReporte::where('user_id', $this->comercio->id)->count());
+    }
+
+    /**
+     * dia y tienda hablan de un día cerrado: hoy o más adelante es 422. compras y stock
+     * hablan siempre de hoy: la fecha del body se ignora y la respuesta lo avisa.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function la_fecha_tiene_que_ser_un_dia_cerrado_para_dia_y_tienda_y_siempre_hoy_para_compras_y_stock()
+    {
+        $this->dar_extension();
+
+        $hoy = now()->format('Y-m-d');
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'dia', 'fecha' => $hoy])
+            ->assertStatus(422)
+            ->assertJsonFragment(['message' => 'El día tiene que estar cerrado: un informe de dia habla de ayer o de un día anterior, no de hoy.']);
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'tienda', 'fecha' => now()->addDays(3)->format('Y-m-d')])
+            ->assertStatus(422);
+
+        // Ayer y anteayer sí.
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'dia', 'fecha' => $this->ayer->copy()->subDay()->format('Y-m-d')])
+            ->assertStatus(200)
+            ->assertJsonPath('fecha', $this->ayer->copy()->subDay()->format('Y-m-d'))
+            ->assertJsonPath('fecha_ignorada', false);
+
+        // compras con otra fecha: es hoy igual, con el aviso.
+        $respuesta = $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'compras', 'fecha' => $this->ayer->format('Y-m-d')]);
+        $respuesta->assertStatus(200);
+        $respuesta->assertJsonPath('fecha', $hoy);
+        $respuesta->assertJsonPath('fecha_ignorada', true);
+
+        // stock sin fecha, o con la de hoy: sin aviso.
+        $this->sucursal('Única');
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'stock'])
+            ->assertStatus(200)
+            ->assertJsonPath('fecha', $hoy)
+            ->assertJsonPath('fecha_ignorada', false);
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'stock', 'fecha' => $hoy])
+            ->assertStatus(200)
+            ->assertJsonPath('fecha_ignorada', false);
+
+        $this->assertSame(0, MostradorReporte::where('user_id', $this->comercio->id)->where('fecha', '!=', $hoy)->where('tipo', 'compras')->count());
+    }
+
+    /**
+     * Compras y stock por encima del umbral no se calculan en el request: la fila queda
+     * en 'calculando', se despacha CalcularHechosMostradorJob y la respuesta es 202; un
+     * POST repetido no despacha otro; el job deja 'hechos' y GET reportes/{id} los sirve.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function por_encima_del_umbral_compras_va_a_la_cola_y_se_consulta_por_polling()
+    {
+        $this->dar_extension();
+        config(['mostrador.umbral_async' => 0]);
+
+        // Un artículo bajo su mínimo: un candidato, que ya supera el umbral 0.
+        $acme = $this->proveedor_nuevo('Acme');
+        $lija = $this->articulo('Lija', ['stock' => 2, 'stock_min' => 10, 'provider_id' => $acme->id, 'cost' => 50]);
+        $lija->providers()->attach($acme->id, ['cost' => 50]);
+
+        Bus::fake();
+
+        $respuesta = $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'compras']);
+
+        $respuesta->assertStatus(202);
+        $respuesta->assertJsonPath('estado', 'calculando');
+        $respuesta->assertJsonPath('hechos', null);
+        $respuesta->assertJsonPath('fecha', now()->format('Y-m-d'));
+        $respuesta->assertJsonPath('error_mensaje', null);
+
+        $reporte_id = $respuesta->json('reporte_id');
+
+        Bus::assertDispatched(CalcularHechosMostradorJob::class, 1);
+        $this->assertSame('calculando', MostradorReporte::find($reporte_id)->estado);
+
+        // Mientras calcula: otro POST responde 202 sin despachar de nuevo, y el polling dice calculando.
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'compras'])
+            ->assertStatus(202)
+            ->assertJsonPath('reporte_id', $reporte_id);
+        Bus::assertDispatched(CalcularHechosMostradorJob::class, 1);
+
+        $this->getJson(self::BASE . '/reportes/' . $reporte_id)
+            ->assertStatus(200)
+            ->assertJsonPath('estado', 'calculando')
+            ->assertJsonPath('hechos', null);
+
+        // El job corre (acá a mano, como lo haría el worker).
+        (new CalcularHechosMostradorJob($reporte_id))->handle();
+
+        $poll = $this->getJson(self::BASE . '/reportes/' . $reporte_id);
+        $poll->assertStatus(200);
+        $poll->assertJsonPath('reporte_id', $reporte_id);
+        $poll->assertJsonPath('tipo', 'compras');
+        $poll->assertJsonPath('estado', 'hechos');
+        $poll->assertJsonPath('hechos.aplica', true);
+        $poll->assertJsonPath('hechos.por_proveedor.0.articulos.0.article_id', $lija->id);
+        $poll->assertJsonPath('error_mensaje', null);
+        $this->assertNotNull($poll->json('hechos_at'));
+
+        // Volver a correr el job sobre una fila que ya no está calculando no hace nada.
+        MostradorReporte::where('id', $reporte_id)->update(['hechos_at' => '2026-01-01 05:00:00']);
+        (new CalcularHechosMostradorJob($reporte_id))->handle();
+        $this->assertSame('2026-01-01 05:00:00', MostradorReporte::find($reporte_id)->hechos_at->toDateTimeString());
+
+        // Por debajo del umbral (o para dia): sincrónico, 200.
+        config(['mostrador.umbral_async' => 2000]);
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'compras', 'forzar' => true])
+            ->assertStatus(200)
+            ->assertJsonPath('estado', 'hechos')
+            ->assertJsonPath('hechos.aplica', true);
+
+        $this->getJson(self::BASE . '/reportes/999999999')->assertStatus(404);
+    }
+
+    /**
+     * Si el job revienta, la fila queda en 'error' con el motivo para que el polling no
+     * espere para siempre; una fila colgada en 'calculando' más allá del timeout se vuelve
+     * a despachar; y un recálculo sobre un informe ya listo lo deja listo.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function el_job_deja_error_con_motivo_y_una_fila_colgada_se_vuelve_a_despachar()
+    {
+        $this->dar_extension();
+        config(['mostrador.umbral_async' => 0]);
+        $this->sucursal('Depósito');
+        $this->sucursal('Norte');
+
+        $tornillo = $this->articulo('Tornillo', ['stock' => 10]);
+        $tornillo->addresses()->attach(\App\Models\Address::where('user_id', $this->comercio->id)->first()->id, ['amount' => 8, 'stock_min' => 2]);
+        $tornillo->addresses()->attach(\App\Models\Address::where('user_id', $this->comercio->id)->orderByDesc('id')->first()->id, ['amount' => 2, 'stock_min' => 5]);
+
+        Bus::fake();
+
+        $reporte_id = $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'stock'])
+            ->assertStatus(202)
+            ->json('reporte_id');
+
+        // El dueño desaparece antes de que corra el job: error con motivo.
+        MostradorReporte::where('id', $reporte_id)->update(['user_id' => 999999999]);
+        (new CalcularHechosMostradorJob($reporte_id))->handle();
+
+        $reporte = MostradorReporte::find($reporte_id);
+        $this->assertSame('error', $reporte->estado);
+        $this->assertStringContainsString('ya no existe', $reporte->error_mensaje);
+
+        $this->getJson(self::BASE . '/reportes/' . $reporte_id)
+            ->assertStatus(200)
+            ->assertJsonPath('estado', 'error')
+            ->assertJsonPath('error_mensaje', $reporte->error_mensaje);
+
+        // Vuelve a ser del comercio; el próximo POST recalcula (en error no se devuelve lo guardado).
+        MostradorReporte::where('id', $reporte_id)->update(['user_id' => $this->comercio->id]);
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'stock'])
+            ->assertStatus(202)
+            ->assertJsonPath('reporte_id', $reporte_id)
+            ->assertJsonPath('error_mensaje', null);
+        Bus::assertDispatched(CalcularHechosMostradorJob::class, 2);
+
+        // Colgada: 'calculando' desde hace más del timeout → se vuelve a despachar.
+        MostradorReporte::where('id', $reporte_id)->update(['updated_at' => now()->subSeconds(config('mostrador.timeout_job') + 60)]);
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'stock'])->assertStatus(202);
+        Bus::assertDispatched(CalcularHechosMostradorJob::class, 3);
+
+        // Un informe ya listo, recalculado con forzar por la cola, vuelve a quedar listo.
+        (new CalcularHechosMostradorJob($reporte_id))->handle();
+        $this->assertSame('hechos', MostradorReporte::find($reporte_id)->estado);
+
+        $this->putJson(self::BASE . '/reportes/' . $reporte_id, [
+            'titulo' => 'Stock', 'resumen' => 'Un traslado.', 'contenido' => $this->contenido_valido(),
+        ])->assertStatus(200);
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'stock', 'forzar' => true])
+            ->assertStatus(202)
+            ->assertJsonPath('estado', 'calculando');
+
+        (new CalcularHechosMostradorJob($reporte_id))->handle();
+
+        $reporte = MostradorReporte::find($reporte_id);
+        $this->assertSame('listo', $reporte->estado);
+        $this->assertSame('Stock', $reporte->titulo);
+        $this->assertTrue($reporte->hechos['aplica']);
+        $this->assertCount(1, $reporte->hechos['movimientos_sugeridos']);
     }
 
     /**

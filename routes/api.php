@@ -1221,6 +1221,9 @@ Route::middleware('admin.api.key')
         // dueño entre corridas. Mismo header y mismo límite conocido que el resto del grupo.
         Route::get('mostrador/duenos', 'AdminSync\\MostradorController@duenos');
         Route::post('mostrador/hechos', 'AdminSync\\MostradorController@hechos');
+        // Polling después de un 202 de POST hechos (compras y stock en un catálogo grande
+        // se calculan en la cola): estado, hechos y error_mensaje de un informe.
+        Route::get('mostrador/reportes/{id}', 'AdminSync\\MostradorController@mostrar');
         Route::put('mostrador/reportes/{id}', 'AdminSync\\MostradorController@depositar');
         Route::get('mostrador/contexto/{user_id}', 'AdminSync\\MostradorController@contexto');
         Route::put('mostrador/memoria/{user_id}', 'AdminSync\\MostradorController@memoria');

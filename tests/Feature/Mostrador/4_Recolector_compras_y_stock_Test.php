@@ -208,6 +208,19 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         // Yunque: 3 en stock a $5.000, cargado hace 400 días y nunca vendido.
         $this->articulo('Yunque', ['stock' => 3, 'cost' => 5000, 'created_at' => $this->hoy->copy()->subDays(400)]);
 
+        // Dos con el costo en DÓLARES, nunca vendidos: el taladro (2 × USD 100) se cotiza al
+        // dólar de su proveedor (1.200); la amoladora (1 × USD 50), sin proveedor, al de la
+        // cuenta (1.500). En pesos: 240.000 y 75.000.
+        $this->comercio->dollar = 1500;
+        $this->comercio->save();
+
+        $importador = $this->proveedor_nuevo('Importador');
+        $importador->dolar = 1200;
+        $importador->save();
+
+        $taladro = $this->articulo('Taladro', ['stock' => 2, 'cost' => 100, 'cost_in_dollars' => 1, 'provider_id' => $importador->id, 'created_at' => $this->hoy->copy()->subDays(200)]);
+        $amoladora = $this->articulo('Amoladora', ['stock' => 1, 'cost' => 50, 'cost_in_dollars' => 1, 'created_at' => $this->hoy->copy()->subDays(100)]);
+
         $antes = StockSuggestion::count();
 
         $h = (new RecolectorStock())->recolectar($this->comercio, $this->hoy);
@@ -240,16 +253,23 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
             'prioridad'  => 2,
         ], $h['movimientos_sugeridos'][1]);
 
-        // Sin rotación: el yunque (400 días desde que se cargó) y el clavo (nunca vendido),
-        // por valor a costo; el tornillo se vendió hace 30 días y no entra.
-        $this->assertSame([$this->articulo_por_nombre('Yunque')->id, $clavo->id], array_column($h['sin_rotacion'], 'article_id'));
-        $this->assertSame(400, $h['sin_rotacion'][0]['dias_sin_venta']);
-        $this->assertEquals(3.0, $h['sin_rotacion'][0]['stock_total']);
-        $this->assertEquals(15000.00, $h['sin_rotacion'][0]['valor_a_costo']);
-        $this->assertEquals(100.00, $h['sin_rotacion'][1]['valor_a_costo']);
+        // Sin rotación, por valor a costo EN PESOS: taladro (240.000), amoladora (75.000),
+        // yunque (15.000, 400 días desde que se cargó) y clavo (100, nunca vendido); el
+        // tornillo se vendió hace 30 días y no entra.
+        $this->assertSame(
+            [$taladro->id, $amoladora->id, $this->articulo_por_nombre('Yunque')->id, $clavo->id],
+            array_column($h['sin_rotacion'], 'article_id')
+        );
+        $this->assertEquals(240000.00, $h['sin_rotacion'][0]['valor_a_costo']);
+        $this->assertSame(200, $h['sin_rotacion'][0]['dias_sin_venta']);
+        $this->assertEquals(75000.00, $h['sin_rotacion'][1]['valor_a_costo']);
+        $this->assertSame(400, $h['sin_rotacion'][2]['dias_sin_venta']);
+        $this->assertEquals(3.0, $h['sin_rotacion'][2]['stock_total']);
+        $this->assertEquals(15000.00, $h['sin_rotacion'][2]['valor_a_costo']);
+        $this->assertEquals(100.00, $h['sin_rotacion'][3]['valor_a_costo']);
 
         // Solo el tornillo tiene cobertura por debajo del punto de pedido (15 días).
-        $this->assertSame(['articulos_en_riesgo' => 1, 'valor_inmovilizado' => 15100.0], $h['resumen']);
+        $this->assertSame(['articulos_en_riesgo' => 1, 'valor_inmovilizado' => 330100.0], $h['resumen']);
     }
 
     /**

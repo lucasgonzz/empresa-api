@@ -3,6 +3,7 @@
 namespace App\Services\Mostrador;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Models\Article;
 use App\Models\User;
 use Carbon\Carbon;
@@ -36,6 +37,21 @@ abstract class RecolectorBase
      * @return array
      */
     abstract public function recolectar(User $owner, Carbon $fecha): array;
+
+    /**
+     * Cuántos artículos tendría que recorrer el cálculo de este tipo para este dueño.
+     * Es lo que el controlador admin-sync compara contra config('mostrador.umbral_async')
+     * para decidir si calcula en el request o despacha CalcularHechosMostradorJob: los
+     * tipos que no recorren catálogo (dia, tienda) devuelven 0 y siempre van en el
+     * request; compras y stock lo sobreescriben con sus candidatos.
+     *
+     * @param User $owner
+     * @return int
+     */
+    public function cantidad_de_candidatos(User $owner): int
+    {
+        return 0;
+    }
 
     /**
      * Respuesta de un tipo que no aplica a este comercio (tienda sin tienda online,
@@ -120,6 +136,40 @@ abstract class RecolectorBase
     protected function en_cero($q, string $columna)
     {
         return $q->whereNotNull($columna)->where($columna, '<=', 0);
+    }
+
+    /**
+     * Descarta los pedidos cancelados de una consulta sobre `orders`: un pedido cancelado
+     * no es una venta de la tienda y no suma ni en cantidad ni en total.
+     *
+     * "Cancelado" se resuelve por las DOS marcas que el sistema deja: el enum
+     * orders.status = 'canceled' (el que escribe la tienda) y order_status_id apuntando a
+     * la fila "Cancelado" de order_statuses (el que escribe el ERP al cambiar el estado).
+     * Esa fila se busca por NOMBRE, nunca por id: order_statuses no tiene ids garantizados
+     * entre instalaciones (cada base corre OrderStatusSeeder por su cuenta; ver
+     * OrderStatusHelper).
+     *
+     * @param \Illuminate\Database\Query\Builder $q Consulta cuyo FROM (o alias) es `orders`
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function sin_pedidos_cancelados($q)
+    {
+        $ids_cancelado = DB::table('order_statuses')
+            ->where('name', OrderStatusHelper::CANCELADO)
+            ->pluck('id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
+
+        return $q->where(function ($q2) {
+                $q2->whereNull('orders.status')->orWhere('orders.status', '!=', 'canceled');
+            })
+            ->when(!empty($ids_cancelado), function ($q2) use ($ids_cancelado) {
+                $q2->where(function ($q3) use ($ids_cancelado) {
+                    $q3->whereNull('orders.order_status_id')->orWhereNotIn('orders.order_status_id', $ids_cancelado);
+                });
+            });
     }
 
     /**

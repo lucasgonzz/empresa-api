@@ -57,22 +57,24 @@ abstract class MostradorTestCase extends TestCase
     }
 
     /**
-     * Asigna la extensión al comercio (creando la fila del catálogo si la base del
-     * slot todavía no la tiene sembrada).
+     * Asigna una extensión al comercio (creando la fila del catálogo si la base del
+     * slot todavía no la tiene sembrada). Por defecto la del módulo (asistente_ia);
+     * los tests de la tienda piden también tracking_buyers.
      *
      * @param User|null $user
+     * @param string $slug
      * @return void
      */
-    protected function dar_extension($user = null)
+    protected function dar_extension($user = null, $slug = self::SLUG)
     {
         $user = $user ?: $this->comercio;
 
-        $extencion = ExtencionEmpresa::where('slug', self::SLUG)->first();
+        $extencion = ExtencionEmpresa::where('slug', $slug)->first();
 
         if (!$extencion) {
             $extencion = ExtencionEmpresa::forceCreate([
-                'slug' => self::SLUG,
-                'name' => 'Asistente IA',
+                'slug' => $slug,
+                'name' => ucfirst(str_replace('_', ' ', $slug)),
             ]);
         }
 

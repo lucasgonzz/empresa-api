@@ -18,13 +18,20 @@ use Illuminate\Support\Facades\DB;
  * dueño y en PESOS: las ventas, compras, gastos y notas de crédito en dólares
  * (moneda_id = 2) quedan afuera de los totales, igual que en el reporte de
  * rendimiento del sistema (PerformanceHelper separa las dos monedas y acá solo viaja
- * la de pesos).
+ * la de pesos). Qué ventas son "del día" lo decide consulta_ventas(), que replica el
+ * criterio de Rendimiento (PerformanceHelper::set_sales + Sale::scopeEnRangoDeFechas).
  *
- * `resultado` sale de company_performances cuando existe la fila de ese día
- * (cualquier from_today); si no, se calcula sobre las mismas ventas con la fórmula de
- * PerformanceHelper::set_company_performance_props(): ingresos_netos = vendido -
- * devoluciones - costo de lo vendido, rentabilidad = ingresos_netos - gastos. Las dos
- * son MONTOS en pesos, no porcentajes (misma semántica que las columnas homónimas).
+ * `resultado` se calcula SIEMPRE sobre las ventas del día con la fórmula completa de
+ * PerformanceHelper::set_company_performance_props():
+ *
+ *   ingresos_netos = vendido - devoluciones - costo de lo vendido + costo de lo devuelto
+ *   rentabilidad   = ingresos_netos - gastos
+ *
+ * 🔴 Las dos son MONTOS EN PESOS, no porcentajes (misma semántica que las columnas
+ * homónimas de company_performances). No se lee company_performances: la fila de un
+ * día existe solo si alguien abrió Rendimiento para esa fecha, y es una foto de ese
+ * momento (puede ser de las 11 de la mañana, con medio día sin vender); calcular acá
+ * con la misma fórmula da el número fresco y el mismo que Rendimiento daría hoy.
  */
 class RecolectorDia extends RecolectorBase
 {
@@ -50,7 +57,8 @@ class RecolectorDia extends RecolectorBase
         $inicio = $fecha->copy()->startOfDay();
         $fin    = $fecha->copy()->endOfDay();
 
-        $ventas = $this->ventas($owner, $inicio, $fin);
+        $devoluciones = $this->devoluciones($owner, $inicio, $fin);
+        $ventas = $this->ventas($owner, $inicio, $fin, $devoluciones['total']);
         $gastos = $this->gastos($owner, $inicio, $fin);
 
         return [
@@ -67,7 +75,7 @@ class RecolectorDia extends RecolectorBase
             ],
             'caja'            => $this->caja($owner, $inicio, $fin),
             'tienda'          => $this->tienda($owner, $inicio, $fin),
-            'resultado'       => $this->resultado($owner, $fecha, $inicio, $fin, $ventas, $gastos),
+            'resultado'       => $this->resultado($owner, $inicio, $fin, $ventas, $gastos, $devoluciones['costos']),
         ];
     }
 
@@ -165,9 +173,10 @@ class RecolectorDia extends RecolectorBase
      * @param User $owner
      * @param Carbon $inicio
      * @param Carbon $fin
+     * @param float $devoluciones Total de notas de crédito del día en pesos (ver devoluciones())
      * @return array
      */
-    protected function ventas(User $owner, Carbon $inicio, Carbon $fin): array
+    protected function ventas(User $owner, Carbon $inicio, Carbon $fin, float $devoluciones): array
     {
         $ventas = $this->consulta_ventas($owner, $inicio, $fin)
             ->get([
@@ -221,7 +230,7 @@ class RecolectorDia extends RecolectorBase
             'total'              => $this->monto($total),
             'ticket_promedio'    => $cantidad > 0 ? $this->monto($total / $cantidad) : null,
             'a_cuenta_corriente' => $this->monto($a_cuenta_corriente),
-            'devoluciones'       => $this->devoluciones($owner, $inicio, $fin),
+            'devoluciones'       => $this->monto($devoluciones),
             'por_sucursal'       => $this->por_sucursal($owner, $ventas),
             'por_metodo_pago'    => $this->por_metodo_pago($mostrador, $a_cuenta_corriente),
             'por_vendedor'       => $this->por_vendedor($owner, $ventas),
@@ -229,26 +238,54 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
-     * Notas de crédito del día en pesos (PerformanceHelper::procesar_devoluciones).
+     * Notas de crédito del día en pesos: el total (lo que Rendimiento resta de lo
+     * vendido) y el costo de los artículos devueltos (lo que Rendimiento vuelve a sumar,
+     * porque ese costo ya se había restado con la venta). Es
+     * PerformanceHelper::procesar_devoluciones, con su misma resolución de moneda: si la
+     * nota cuelga de una credit_account manda la moneda de la cuenta; si no, la de la
+     * nota; sin ninguna, pesos. Los costos salen de article_current_acount (cost × amount
+     * de cada artículo de la nota; sin cost no aporta), que es lo que carga el módulo de
+     * devoluciones.
      *
      * @param User $owner
      * @param Carbon $inicio
      * @param Carbon $fin
-     * @return float
+     * @return array{total: float, costos: float}
      */
-    protected function devoluciones(User $owner, Carbon $inicio, Carbon $fin): float
+    protected function devoluciones(User $owner, Carbon $inicio, Carbon $fin): array
     {
-        $total = DB::table('current_acounts')
-            ->where('user_id', $owner->id)
-            ->where('status', 'nota_credito')
-            ->whereNotNull('haber')
-            ->where(function ($q) {
-                $q->whereNull('moneda_id')->orWhere('moneda_id', self::MONEDA_PESOS);
-            })
-            ->whereBetween('created_at', [$inicio, $fin])
-            ->sum('haber');
+        $notas = DB::table('current_acounts')
+            ->leftJoin('credit_accounts', 'credit_accounts.id', '=', 'current_acounts.credit_account_id')
+            ->where('current_acounts.user_id', $owner->id)
+            ->where('current_acounts.status', 'nota_credito')
+            ->whereNotNull('current_acounts.haber')
+            ->whereBetween('current_acounts.created_at', [$inicio, $fin])
+            ->whereRaw(
+                '(CASE WHEN credit_accounts.id IS NOT NULL THEN COALESCE(credit_accounts.moneda_id, ?) ELSE COALESCE(current_acounts.moneda_id, ?) END) <> 2',
+                [self::MONEDA_PESOS, self::MONEDA_PESOS]
+            )
+            ->get(['current_acounts.id', 'current_acounts.haber']);
 
-        return (float) $this->monto($total);
+        $total = 0.0;
+
+        foreach ($notas as $nota) {
+            $total += (float) $nota->haber;
+        }
+
+        $costos = 0.0;
+
+        if ($notas->isNotEmpty()) {
+            $costos = (float) DB::table('article_current_acount')
+                ->whereIn('current_acount_id', $notas->pluck('id')->all())
+                ->whereNotNull('cost')
+                ->selectRaw('COALESCE(SUM(cost * COALESCE(amount, 0)), 0) as costos')
+                ->value('costos');
+        }
+
+        return [
+            'total'  => (float) $this->monto($total),
+            'costos' => (float) $this->monto($costos),
+        ];
     }
 
     /**
@@ -798,7 +835,9 @@ class RecolectorDia extends RecolectorBase
 
     /**
      * Gastos del día en pesos, agrupados por categoría (o por concepto si el gasto no
-     * tiene categoría).
+     * tiene categoría). Misma regla de moneda que PerformanceHelper::procesar_gastos:
+     * solo moneda_id = 2 es dólares; 0, null y 1 son pesos (el 0 viene del alta sin la
+     * extensión de ventas en dólares). Y un gasto con importe cero o negativo no cuenta.
      *
      * @param User $owner
      * @param Carbon $inicio
@@ -812,8 +851,9 @@ class RecolectorDia extends RecolectorBase
             ->leftJoin('expense_concepts', 'expense_concepts.id', '=', 'expenses.expense_concept_id')
             ->where('expenses.user_id', $owner->id)
             ->where(function ($q) {
-                $q->whereNull('expenses.moneda_id')->orWhere('expenses.moneda_id', self::MONEDA_PESOS);
+                $q->whereNull('expenses.moneda_id')->orWhere('expenses.moneda_id', '!=', 2);
             })
+            ->where('expenses.amount', '>', 0)
             ->whereBetween('expenses.created_at', [$inicio, $fin])
             ->get(['expenses.amount', 'expense_categories.name as categoria', 'expense_concepts.name as concepto']);
 
@@ -889,7 +929,7 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
-     * Pedidos de la tienda del día.
+     * Pedidos de la tienda del día (sin los cancelados: RecolectorBase::sin_pedidos_cancelados).
      *
      * @param User $owner
      * @param Carbon $inicio
@@ -904,10 +944,10 @@ class RecolectorDia extends RecolectorBase
             return ['tiene_tienda' => false, 'pedidos' => 0, 'total' => 0.0];
         }
 
-        $fila = DB::table('orders')
-            ->where('user_id', $owner->id)
-            ->whereBetween('created_at', [$inicio, $fin])
-            ->selectRaw('COUNT(*) as cantidad, COALESCE(SUM(total), 0) as total')
+        $fila = $this->sin_pedidos_cancelados(DB::table('orders'))
+            ->where('orders.user_id', $owner->id)
+            ->whereBetween('orders.created_at', [$inicio, $fin])
+            ->selectRaw('COUNT(*) as cantidad, COALESCE(SUM(orders.total), 0) as total')
             ->first();
 
         return [
@@ -918,37 +958,26 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
-     * Resultado del día: la fila de company_performances de ese día si existe; si no,
-     * la misma fórmula sobre las ventas del día (ver docblock de la clase).
+     * Resultado del día con la fórmula completa de Rendimiento (ver docblock de la
+     * clase): ingresos_netos = vendido - devoluciones - costo de lo vendido + costo de lo
+     * devuelto; rentabilidad = ingresos_netos - gastos. Montos en pesos.
      *
      * @param User $owner
-     * @param Carbon $fecha
      * @param Carbon $inicio
      * @param Carbon $fin
-     * @param array $ventas Bloque ya calculado
-     * @param array $gastos Bloque ya calculado
-     * @return array
+     * @param array $ventas Bloque ya calculado (total y devoluciones)
+     * @param array $gastos Bloque ya calculado (total)
+     * @param float $costos_devolucion Costo de los artículos devueltos en el día
+     * @return array{ingresos_netos: float, rentabilidad: float}
      */
-    protected function resultado(User $owner, Carbon $fecha, Carbon $inicio, Carbon $fin, array $ventas, array $gastos): array
+    protected function resultado(User $owner, Carbon $inicio, Carbon $fin, array $ventas, array $gastos, float $costos_devolucion): array
     {
-        $fila = DB::table('company_performances')
-            ->where('user_id', $owner->id)
-            ->where('year', $fecha->year)
-            ->where('month', $fecha->month)
-            ->where('day', $fecha->day)
-            ->orderByDesc('id')
-            ->first(['ingresos_netos', 'rentabilidad']);
+        $costo_vendido = (float) $this->consulta_ventas($owner, $inicio, $fin)->sum('sales.total_cost');
 
-        if ($fila) {
-            return [
-                'ingresos_netos' => $this->monto($fila->ingresos_netos),
-                'rentabilidad'   => $this->monto($fila->rentabilidad),
-            ];
-        }
-
-        $costo_vendido = (float) $this->consulta_ventas($owner, $inicio, $fin)->sum('total_cost');
-
-        $ingresos_netos = (float) $ventas['total'] - (float) $ventas['devoluciones'] - $costo_vendido;
+        $ingresos_netos = (float) $ventas['total']
+            - (float) $ventas['devoluciones']
+            - $costo_vendido
+            + $costos_devolucion;
 
         return [
             'ingresos_netos' => $this->monto($ingresos_netos),

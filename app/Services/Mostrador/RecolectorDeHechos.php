@@ -20,6 +20,25 @@ use Carbon\Carbon;
 class RecolectorDeHechos
 {
     /**
+     * Los tipos que hablan SIEMPRE de hoy: la reposición y los traslados se deciden con el
+     * stock de esta mañana, y no tiene sentido pedirlos para otra fecha (el stock de ayer
+     * ya no existe). POST hechos ignora la fecha del body para estos dos.
+     */
+    const TIPOS_DE_HOY = ['compras', 'stock'];
+
+    /**
+     * true si el tipo habla siempre de hoy (compras, stock); false si habla de un día
+     * cerrado (dia, tienda).
+     *
+     * @param string $tipo
+     * @return bool
+     */
+    public static function es_de_hoy(string $tipo): bool
+    {
+        return in_array($tipo, self::TIPOS_DE_HOY, true);
+    }
+
+    /**
      * Fecha por defecto del tipo: ayer para dia/tienda, hoy para compras/stock.
      *
      * @param string $tipo
@@ -30,11 +49,11 @@ class RecolectorDeHechos
     {
         $hoy = is_null($hoy) ? now() : $hoy->copy();
 
-        if ($tipo === 'dia' || $tipo === 'tienda') {
-            return $hoy->subDay()->startOfDay();
+        if (self::es_de_hoy($tipo)) {
+            return $hoy->startOfDay();
         }
 
-        return $hoy->startOfDay();
+        return $hoy->subDay()->startOfDay();
     }
 
     /**

@@ -16,7 +16,13 @@ use App\Models\MostradorReporte;
 class MostradorHelper
 {
     /** Techo de caracteres del contexto de la conversación de un informe. */
-    const MAX_CARACTERES_CONTEXTO = 12000;
+    const MAX_CARACTERES_CONTEXTO = 20000;
+
+    /** Cuántos ítems de cada lista de los hechos viajan en el contexto. */
+    const TOPE_ITEMS_HECHOS = 6;
+
+    /** Claves de los hechos que no le sirven al asistente para responder y se sacan. */
+    const CLAVES_HECHOS_OMITIDAS = ['imagen_url'];
 
     /** Días hacia atrás que abarca la sección "anteriores" del escritorio. */
     const DIAS_ANTERIORES = 30;
@@ -244,8 +250,14 @@ class MostradorHelper
 
     /**
      * Contexto de fondo de la conversación de un informe: título y fecha, el contenido
-     * pasado a texto plano bloque por bloque, y los hechos en JSON; recortado a 12.000
-     * caracteres (el JSON de hechos es lo que se corta, el texto va entero primero).
+     * pasado a texto plano bloque por bloque (entero: es lo que el dueño tiene en
+     * pantalla y sobre lo que pregunta), y los hechos COMPACTADOS en JSON (sin
+     * imagen_url, listas recortadas a 6 ítems).
+     *
+     * 🔴 Nunca se corta un JSON a la mitad: un JSON truncado es basura para el asistente.
+     * Si con los hechos compactados el contexto supera el techo, se sacan secciones
+     * enteras del JSON (las últimas primero) hasta que entre; y si ni con "Hechos: {}"
+     * entra, lo que se recorta es el texto plano, que sí admite un corte.
      *
      * @param MostradorReporte $reporte
      * @return string
@@ -270,12 +282,97 @@ class MostradorHelper
             $partes[] = $texto;
         }
 
-        $hechos = is_array($reporte->hechos) ? $reporte->hechos : [];
-        $json_hechos = json_encode($hechos, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $cabecera = implode("\n\n", $partes);
 
-        $partes[] = 'Hechos: ' . ($json_hechos === false ? '{}' : $json_hechos);
+        $hechos = self::compactar_hechos(is_array($reporte->hechos) ? $reporte->hechos : []);
 
-        return mb_substr(implode("\n\n", $partes), 0, self::MAX_CARACTERES_CONTEXTO);
+        // Se sacan secciones enteras (las últimas primero) hasta que el contexto entre.
+        while (true) {
+            $contexto = $cabecera . "\n\n" . 'Hechos: ' . self::hechos_a_json($hechos);
+
+            if (mb_strlen($contexto) <= self::MAX_CARACTERES_CONTEXTO) {
+                return $contexto;
+            }
+
+            $clave = self::ultima_seccion($hechos);
+
+            if (is_null($clave)) {
+                break;
+            }
+
+            unset($hechos[$clave]);
+        }
+
+        // Ni con los hechos pelados entra: se recorta el texto plano, que admite un corte.
+        $cola = "\n\n" . 'Hechos: ' . self::hechos_a_json($hechos);
+        $lugar = max(0, self::MAX_CARACTERES_CONTEXTO - mb_strlen($cola));
+
+        return mb_substr($cabecera, 0, $lugar) . $cola;
+    }
+
+    /**
+     * Los hechos sin lo que no ayuda a responder: se sacan las claves de
+     * CLAVES_HECHOS_OMITIDAS en cualquier nivel y cada lista (array secuencial) queda
+     * con sus primeros TOPE_ITEMS_HECHOS ítems.
+     *
+     * @param array $hechos
+     * @return array
+     */
+    public static function compactar_hechos(array $hechos)
+    {
+        $es_lista = array_keys($hechos) === range(0, count($hechos) - 1);
+
+        if ($es_lista && count($hechos) > self::TOPE_ITEMS_HECHOS) {
+            $hechos = array_slice($hechos, 0, self::TOPE_ITEMS_HECHOS);
+        }
+
+        $resultado = [];
+
+        foreach ($hechos as $clave => $valor) {
+            if (!$es_lista && in_array((string) $clave, self::CLAVES_HECHOS_OMITIDAS, true)) {
+                continue;
+            }
+
+            $resultado[$clave] = is_array($valor) ? self::compactar_hechos($valor) : $valor;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * JSON de un array de hechos, siempre válido ('{}' si no se puede codificar).
+     *
+     * @param array $hechos
+     * @return string
+     */
+    protected static function hechos_a_json(array $hechos)
+    {
+        if (empty($hechos)) {
+            return '{}';
+        }
+
+        $json = json_encode($hechos, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return $json === false ? '{}' : $json;
+    }
+
+    /**
+     * La última clave de primer nivel de los hechos que sea una sección (un array): es la
+     * que se saca primero cuando el contexto no entra. Las claves escalares (aplica,
+     * fecha, dia_semana) se quedan siempre. Null si no queda ninguna sección.
+     *
+     * @param array $hechos
+     * @return string|int|null
+     */
+    protected static function ultima_seccion(array $hechos)
+    {
+        foreach (array_reverse(array_keys($hechos)) as $clave) {
+            if (is_array($hechos[$clave])) {
+                return $clave;
+            }
+        }
+
+        return null;
     }
 
     /**

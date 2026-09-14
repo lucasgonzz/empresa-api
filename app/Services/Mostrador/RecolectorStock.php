@@ -25,6 +25,12 @@ use Illuminate\Support\Facades\DB;
  * Solo se le pasan al motor los artículos que PUEDEN tener un traslado (stock en
  * dos o más sucursales y algún mínimo o máximo cargado): el resto no tiene ni
  * origen ni objetivo, y el motor los descartaría igual.
+ *
+ * `valor_a_costo` y `valor_inmovilizado` van EN PESOS: un artículo con el costo cargado
+ * en dólares (articles.cost_in_dollars) se cotiza como lo hace el sistema al fijar su
+ * precio (ArticleHelper::cotizar, ProviderOrderHelper): con el dólar del proveedor
+ * titular si lo tiene cargado, si no con el dólar de la cuenta (users.dollar). Sin
+ * ninguna cotización cargada el costo se toma tal cual (no hay con qué convertir).
  */
 class RecolectorStock extends RecolectorBase
 {
@@ -80,6 +86,24 @@ class RecolectorStock extends RecolectorBase
                 'valor_inmovilizado'  => $sin_rotacion['valor_inmovilizado'],
             ],
         ];
+    }
+
+    /**
+     * Artículos que recorrería el motor de traslados (ver RecolectorBase). Con menos de
+     * dos sucursales el tipo no aplica y no se recorre nada.
+     *
+     * @param User $owner
+     * @return int
+     */
+    public function cantidad_de_candidatos(User $owner): int
+    {
+        $sucursales = DB::table('addresses')->where('user_id', $owner->id)->count();
+
+        if ($sucursales < 2) {
+            return 0;
+        }
+
+        return count($this->articulos_candidatos($owner));
     }
 
     /**
@@ -280,8 +304,17 @@ class RecolectorStock extends RecolectorBase
     {
         $desde = $fecha->copy()->subDays(self::DIAS_SIN_ROTACION)->startOfDay();
 
+        // Valor a costo EN PESOS: stock × costo × cotización, donde la cotización es 1 para
+        // un costo en pesos y, para un costo en dólares, el dólar del proveedor titular
+        // (si lo tiene cargado y no es cero) o el de la cuenta (ver docblock de la clase).
+        $dollar_cuenta = (float) $owner->dollar > 0 ? (float) $owner->dollar : null;
+
+        $expresion_valor = 'articles.stock * COALESCE(articles.cost, 0) * '
+            . '(CASE WHEN COALESCE(articles.cost_in_dollars, 0) = 1 THEN COALESCE(NULLIF(providers.dolar, 0), ?, 1) ELSE 1 END)';
+
         // Artículos con stock cuya última venta real es anterior a la ventana (o no existe).
         $base = DB::table('articles')
+            ->leftJoin('providers', 'providers.id', '=', 'articles.provider_id')
             ->leftJoin('article_purchases', function ($join) use ($desde) {
                 $join->on('article_purchases.article_id', '=', 'articles.id')
                     ->where('article_purchases.created_at', '>=', $desde);
@@ -291,19 +324,23 @@ class RecolectorStock extends RecolectorBase
             ->whereNull('articles.deleted_at')
             ->where('articles.status', 'active')
             ->where('articles.stock', '>', 0)
-            ->groupBy('articles.id', 'articles.name', 'articles.stock', 'articles.cost', 'articles.created_at')
+            ->groupBy('articles.id', 'articles.name', 'articles.stock', 'articles.cost', 'articles.cost_in_dollars', 'providers.dolar', 'articles.created_at')
             ->havingRaw('MAX(CASE WHEN sales.deleted_at IS NULL AND (sales.is_consolidacion_facturacion IS NULL OR sales.is_consolidacion_facturacion = 0) THEN article_purchases.created_at ELSE NULL END) IS NULL');
 
         $totales = DB::query()
             ->fromSub(
-                (clone $base)->selectRaw('articles.id as id, articles.stock * COALESCE(articles.cost, 0) as valor'),
+                (clone $base)->selectRaw('articles.id as id, ' . $expresion_valor . ' as valor', [$dollar_cuenta]),
                 'sin_rotacion'
             )
             ->selectRaw('COUNT(*) as cantidad, COALESCE(SUM(valor), 0) as valor')
             ->first();
 
         $filas = (clone $base)
-            ->selectRaw('articles.id as id, articles.name as nombre, articles.stock as stock, articles.cost as cost, articles.created_at as creado, articles.stock * COALESCE(articles.cost, 0) as valor')
+            ->selectRaw(
+                'articles.id as id, articles.name as nombre, articles.stock as stock, articles.cost as cost, articles.created_at as creado, '
+                . $expresion_valor . ' as valor',
+                [$dollar_cuenta]
+            )
             ->orderByDesc('valor')
             ->orderBy('articles.id')
             ->limit(self::TOPE_LISTA)
