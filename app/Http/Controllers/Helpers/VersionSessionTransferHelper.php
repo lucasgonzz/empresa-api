@@ -23,9 +23,14 @@ class VersionSessionTransferHelper
      * Genera un token de transferencia para el usuario autenticado.
      *
      * @param int $user_id Id del usuario con sesión válida en la versión origen.
+     * @param bool $master_login_bypass Si la sesión de origen tenía el bypass de login maestro
+     *   activo (`master_login_bypass_user_last_activity`). Se propaga para que la API destino
+     *   reproduzca el mismo estado en vez de arrancar como una sesión cualquiera del usuario.
+     * @param bool $skip_offline_articles_sync Si la sesión de origen omitía la descarga de
+     *   artículos offline (solo login maestro básico, ver AuthController::login()).
      * @return string Token en claro para enviar al SPA destino vía query string.
      */
-    public static function create_for_user($user_id)
+    public static function create_for_user($user_id, $master_login_bypass = false, $skip_offline_articles_sync = false)
     {
         /** Token aleatorio que viaja en la URL del SPA destino. */
         $plain_token = Str::random(64);
@@ -39,6 +44,8 @@ class VersionSessionTransferHelper
         VersionSessionTransfer::create([
             'token_hash' => $token_hash,
             'user_id' => $user_id,
+            'master_login_bypass' => (bool) $master_login_bypass,
+            'skip_offline_articles_sync' => (bool) $skip_offline_articles_sync,
             'expires_at' => $expires_at,
         ]);
 
@@ -48,10 +55,11 @@ class VersionSessionTransferHelper
     }
 
     /**
-     * Valida el token, devuelve el user_id y elimina el registro (uso único).
+     * Valida el token, devuelve sus datos y elimina el registro (uso único).
      *
      * @param string $plain_token Token recibido desde el query string del SPA.
-     * @return int|null Id de usuario o null si el token no es válido.
+     * @return array|null Array con `user_id`, `master_login_bypass` y
+     *   `skip_offline_articles_sync`, o null si el token no es válido.
      */
     public static function consume($plain_token)
     {
@@ -72,13 +80,16 @@ class VersionSessionTransferHelper
             return null;
         }
 
-        /** user_id a autenticar en la API destino. */
-        $user_id = (int) $transfer->user_id;
+        $resultado = [
+            'user_id' => (int) $transfer->user_id,
+            'master_login_bypass' => (bool) $transfer->master_login_bypass,
+            'skip_offline_articles_sync' => (bool) $transfer->skip_offline_articles_sync,
+        ];
 
         $transfer->delete();
 
-        Log::info('Version session transfer consumido para user_id: '.$user_id);
+        Log::info('Version session transfer consumido para user_id: '.$resultado['user_id']);
 
-        return $user_id;
+        return $resultado;
     }
 }

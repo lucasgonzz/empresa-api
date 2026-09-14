@@ -1,0 +1,80 @@
+{
+  "sorted_by": "price",
+  "origin": {"id": 9323, "city": "Concepcion del Uruguay", "state": "Entre Rios", "country": "AR", "zipcode": "3260", "geolocation": {"lat": -32.48, "lng": -58.23}},
+  "destination": {"id": 1001, "city": "Cordoba", "state": "Cordoba", "country": "AR", "zipcode": "5000", "geolocation": {"lat": -31.41, "lng": -64.18}},
+  "declared_value": 12500,
+  "supplier_id": null,
+  "packages": [{"weight": 1500, "height": 20, "width": 15, "length": 30, "classification_id": 1}],
+  "results": {
+    "standard_delivery": {
+      "selectable": true, "impediments": null, "logistic_type": "carrier_dropoff",
+      "carrier": {"id": 12, "name": "Correo Argentino", "rating": 4.1, "logo": "https://cdn.zipnova.com/carriers/correo-argentino.png"},
+      "service_type": {"id": 1, "code": "standard_delivery", "name": "Envio a domicilio", "is_urgent": false},
+      "delivery_time": {"estimated_delivery": "2026-09-21T23:59:59+00:00", "estimation_expires_at": "2026-09-15T23:59:59+00:00", "times": {"preparation": "P1D", "crossdocking": "P0D", "carrier": {"min": "P2D", "max": "P4D"}, "total": {"min": "P3D", "max": "P5D"}}},
+      "amounts": {"price_shipment": 3800, "price_insurance": 200, "price": 4000, "price_incl_tax": 4840, "seller_price": 4000, "seller_price_incl_tax": 4840},
+      "rate": {"source": "zipnova", "id": 55, "tariff_id": 7},
+      "tags": ["cheapest"],
+      "pickup_points": null, "dropoff_points": null
+    },
+    "pickup_point": {
+      "selectable": true, "impediments": null, "logistic_type": "carrier_dropoff",
+      "carrier": {"id": 12, "name": "Correo Argentino", "rating": 4.1, "logo": "https://cdn.zipnova.com/carriers/correo-argentino.png"},
+      "service_type": {"id": 3, "code": "pickup_point", "name": "Retiro en sucursal", "is_urgent": false},
+      "delivery_time": {"estimated_delivery": "2026-09-20T23:59:59+00:00", "estimation_expires_at": "2026-09-15T23:59:59+00:00", "times": {"preparation": "P1D", "crossdocking": "P0D", "carrier": {"min": "P2D", "max": "P3D"}, "total": {"min": "P3D", "max": "P4D"}}},
+      "amounts": {"price_shipment": 3100, "price_insurance": 200, "price": 3300, "price_incl_tax": 3993, "seller_price": 3300, "seller_price_incl_tax": 3993},
+      "rate": {"source": "zipnova", "id": 56, "tariff_id": 7},
+      "tags": [],
+      "pickup_points": [
+        {"point_id": 501, "description": "Sucursal Cordoba Centro", "open_hours": "Lun a Vie 9 a 17", "phone": null, "location": {"street": "Av. Colon", "street_number": "210", "street_extras": null, "city": "Cordoba", "state": "Cordoba", "zipcode": "5000", "geolocation": {"lat": -31.41, "lng": -64.19, "distance": 850}}},
+        {"point_id": 502, "description": "Sucursal Nueva Cordoba", "open_hours": "Lun a Vie 9 a 17", "phone": "3514000000", "location": {"street": "Bv. Illia", "street_number": "400", "street_extras": null, "city": "Cordoba", "state": "Cordoba", "zipcode": "5000", "geolocation": {"lat": -31.42, "lng": -64.18, "distance": 1900}}}
+      ],
+      "dropoff_points": null
+    }
+  },
+  "all_results": [
+    {
+      "selectable": true, "impediments": null, "logistic_type": "carrier_dropoff",
+      "carrier": {"id": 12, "name": "Correo Argentino", "rating": 4.1, "logo": "https://cdn.zipnova.com/carriers/correo-argentino.png"},
+      "service_type": {"id": 1, "code": "standard_delivery", "name": "Envio a domicilio", "is_urgent": false},
+      "delivery_time": {"estimated_delivery": "2026-09-21T23:59:59+00:00", "estimation_expires_at": "2026-09-15T23:59:59+00:00", "times": {"preparation": "P1D", "crossdocking": "P0D", "carrier": {"min": "P2D", "max": "P4D"}, "total": {"min": "P3D", "max": "P5D"}}},
+      "amounts": {"price_shipment": 3800, "price_insurance": 200, "price": 4000, "price_incl_tax": 4840, "seller_price": 4000, "seller_price_incl_tax": 4840},
+      "rate": {"source": "zipnova", "id": 55, "tariff_id": 7},
+      "tags": ["cheapest"],
+      "pickup_points": null, "dropoff_points": null
+    },
+    {
+      "selectable": true, "impediments": null, "logistic_type": "carrier_dropoff",
+      "carrier": {"id": 12, "name": "Correo Argentino", "rating": 4.1, "logo": "https://cdn.zipnova.com/carriers/correo-argentino.png"},
+      "service_type": {"id": 3, "code": "pickup_point", "name": "Retiro en sucursal", "is_urgent": false},
+      "delivery_time": {"estimated_delivery": "2026-09-20T23:59:59+00:00", "estimation_expires_at": "2026-09-15T23:59:59+00:00", "times": {"preparation": "P1D", "crossdocking": "P0D", "carrier": {"min": "P2D", "max": "P3D"}, "total": {"min": "P3D", "max": "P4D"}}},
+      "amounts": {"price_shipment": 3100, "price_insurance": 200, "price": 3300, "price_incl_tax": 3993, "seller_price": 3300, "seller_price_incl_tax": 3993},
+      "rate": {"source": "zipnova", "id": 56, "tariff_id": 7},
+      "tags": [],
+      "pickup_points": [
+        {"point_id": 501, "description": "Sucursal Cordoba Centro", "open_hours": "Lun a Vie 9 a 17", "phone": null, "location": {"street": "Av. Colon", "street_number": "210", "street_extras": null, "city": "Cordoba", "state": "Cordoba", "zipcode": "5000", "geolocation": {"lat": -31.41, "lng": -64.19, "distance": 850}}},
+        {"point_id": 502, "description": "Sucursal Nueva Cordoba", "open_hours": "Lun a Vie 9 a 17", "phone": "3514000000", "location": {"street": "Bv. Illia", "street_number": "400", "street_extras": null, "city": "Cordoba", "state": "Cordoba", "zipcode": "5000", "geolocation": {"lat": -31.42, "lng": -64.18, "distance": 1900}}}
+      ],
+      "dropoff_points": null
+    },
+    {
+      "selectable": true, "impediments": null, "logistic_type": "carrier_dropoff",
+      "carrier": {"id": 56, "name": "Andreani", "rating": 4.6, "logo": "https://cdn.zipnova.com/carriers/andreani.png"},
+      "service_type": {"id": 1, "code": "standard_delivery", "name": "Envio a domicilio", "is_urgent": false},
+      "delivery_time": {"estimated_delivery": "2026-09-18T23:59:59+00:00", "estimation_expires_at": "2026-09-15T23:59:59+00:00", "times": {"preparation": "P1D", "crossdocking": "P0D", "carrier": {"min": "P1D", "max": "P2D"}, "total": {"min": "P2D", "max": "P3D"}}},
+      "amounts": {"price_shipment": 5100, "price_insurance": 250, "price": 5350, "price_incl_tax": 6473.5, "seller_price": 5350, "seller_price_incl_tax": 6473.5},
+      "rate": {"source": "zipnova", "id": 57, "tariff_id": 9},
+      "tags": ["fastest"],
+      "pickup_points": null, "dropoff_points": null
+    },
+    {
+      "selectable": false, "impediments": ["El transporte no cubre el destino"], "logistic_type": "carrier_pickup",
+      "carrier": {"id": 3, "name": "OCA", "rating": 3.9, "logo": null},
+      "service_type": {"id": 1, "code": "standard_delivery", "name": "Envio a domicilio", "is_urgent": false},
+      "delivery_time": {"estimated_delivery": null, "estimation_expires_at": null, "times": {"preparation": "P1D", "crossdocking": "P0D", "carrier": {"min": "P3D", "max": "P6D"}, "total": {"min": "P4D", "max": "P7D"}}},
+      "amounts": {"price_shipment": 2900, "price_insurance": 200, "price": 3100, "price_incl_tax": 3751, "seller_price": 3100, "seller_price_incl_tax": 3751},
+      "rate": {"source": "zipnova", "id": 58, "tariff_id": 2},
+      "tags": [],
+      "pickup_points": null, "dropoff_points": null
+    }
+  ]
+}

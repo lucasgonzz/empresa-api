@@ -1170,9 +1170,18 @@ class SaleController extends Controller
 
     function clear_actualizandose_por($sale_id) {
         $sale = Sale::find($sale_id);
-        $sale->actualizandose_por_id = null;
-        $sale->timestamps = false;
-        $sale->save();
+        /**
+         * find() devuelve null si la venta ya no existe (borrada, o el id quedo viejo en el
+         * frontend). Sin esta guarda, escribir sobre $sale null tira "Creating default object
+         * from empty value" y el frontend lo muestra como "Error al limpiar venta" -- confirmado
+         * en produccion (Tiju, 12/9/2026, sale_id inexistente). Si no existe, el objetivo de la
+         * llamada (que ese id no quede marcado como en edicion) ya esta cumplido de hecho.
+         */
+        if (!is_null($sale)) {
+            $sale->actualizandose_por_id = null;
+            $sale->timestamps = false;
+            $sale->save();
+        }
         return response(null, 200);
 
     }
