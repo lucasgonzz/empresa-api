@@ -146,6 +146,12 @@ class MostradorController extends Controller
             return response()->json($this->respuesta_hechos($reporte), 200);
         }
 
+        // Compras y stock recorren el catálogo con los motores de sugerencias: en un
+        // comercio grande son minutos. Se levanta el techo de PHP (y SOLO el de PHP,
+        // como en DemoSetupHelper: el del proxy no se toca desde acá) para que el
+        // cálculo no muera a mitad en un catálogo de cientos de miles de artículos.
+        set_time_limit(0);
+
         try {
             $hechos = (new RecolectorDeHechos())->recolectar($owner, $tipo, $fecha);
         } catch (\Throwable $e) {
