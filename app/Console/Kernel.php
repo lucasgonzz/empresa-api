@@ -325,6 +325,17 @@ class Kernel extends ConsoleKernel
         $schedule->command('zippin:refresh-tokens')
             ->daily()
             ->withoutOverlapping();
+
+        // Estado de los envíos en curso en Zipnova (misión zipnova-envios, 14/9/2026). Es la red de
+        // abajo del webhook `POST /api/zipnova/webhook`: si el WAF del hosting frena los avisos
+        // (pasó con Kapso) o el comercio conectó sin webhook, el operador igual ve el estado con
+        // no más de media hora de atraso. Corre para TODOS los comercios con envíos en curso (el
+        // conector es por comercio, no por instancia) y el comando saltea lo sincronizado hace
+        // menos de 30 minutos. Sin ->when(): la consulta que decide si hay trabajo es la misma
+        // que hace el comando, y cada 30 minutos (no cada minuto) un arranque de artisan no pesa.
+        $schedule->command('zipnova:sincronizar-envios')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping(25);
     }
 
     /**
