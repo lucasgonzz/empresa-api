@@ -1116,9 +1116,13 @@ class ArticleController extends Controller
     }
 
     function articles_por_defecto() {
+        // where('default_in_vender', '>', 0) y no whereNotNull: la columna es un INT que
+        // arranca en 0 (no en NULL) para los articulos que nunca se marcaron, asi que
+        // whereNotNull traia el catalogo entero en vez de solo los marcados. Mismo criterio
+        // que ultimos_actualizados() unas lineas mas abajo, que ya lo hacia bien.
         $models = Article::where('user_id', $this->userId())
                             ->where('status', 'active')
-                            ->whereNotNull('default_in_vender')
+                            ->where('default_in_vender', '>', 0)
                             ->orderBy('default_in_vender', 'DESC')
                             ->withAll()
                             ->get();
