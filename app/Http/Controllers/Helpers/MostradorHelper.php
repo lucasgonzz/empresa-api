@@ -61,26 +61,48 @@ class MostradorHelper
      */
     public static function escritorio($owner_id, $auth_user_id)
     {
-        $reportes = MostradorReporte::where('user_id', $owner_id)
-            ->listos()
-            ->whereDate('fecha', '>=', now()->subDays(self::DIAS_ANTERIORES)->format('Y-m-d'))
-            ->orderByDesc('fecha')
-            ->orderByDesc('id')
-            ->get();
-
+        // El más nuevo de cada tipo, sin ventana: la carpeta grande de cada tipo es su
+        // último informe aunque tenga más de 30 días.
         $ultimos_por_tipo = [];
-        $anteriores = [];
 
-        foreach ($reportes as $reporte) {
-            if (!isset($ultimos_por_tipo[$reporte->tipo])) {
-                $ultimos_por_tipo[$reporte->tipo] = $reporte;
-                continue;
+        foreach (MostradorReporte::TIPOS as $tipo) {
+            $ultimo = MostradorReporte::where('user_id', $owner_id)
+                ->listos()
+                ->where('tipo', $tipo)
+                ->orderByDesc('fecha')
+                ->orderByDesc('id')
+                ->first();
+
+            if ($ultimo) {
+                $ultimos_por_tipo[$tipo] = $ultimo;
             }
-
-            $anteriores[] = $reporte;
         }
 
-        $conversaciones = self::conversaciones_por_reporte($reportes->pluck('id')->all(), $auth_user_id);
+        $ids_ultimos = [];
+
+        foreach ($ultimos_por_tipo as $reporte) {
+            $ids_ultimos[] = (int) $reporte->id;
+        }
+
+        // El resto de los últimos 30 días.
+        $anteriores = MostradorReporte::where('user_id', $owner_id)
+            ->listos()
+            ->where('fecha', '>=', now()->subDays(self::DIAS_ANTERIORES)->format('Y-m-d'))
+            ->when(!empty($ids_ultimos), function ($q) use ($ids_ultimos) {
+                $q->whereNotIn('id', $ids_ultimos);
+            })
+            ->orderByDesc('fecha')
+            ->orderByDesc('id')
+            ->get()
+            ->all();
+
+        $ids_todos = $ids_ultimos;
+
+        foreach ($anteriores as $reporte) {
+            $ids_todos[] = (int) $reporte->id;
+        }
+
+        $conversaciones = self::conversaciones_por_reporte($ids_todos, $auth_user_id);
 
         $ultimos = [];
 

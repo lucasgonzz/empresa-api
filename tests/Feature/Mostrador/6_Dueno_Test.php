@@ -43,10 +43,11 @@ class Dueno_Test extends MostradorTestCase
         $this->dar_extension();
         $this->entrar_como($this->comercio);
 
-        $dia_ayer   = $this->reporte_listo('dia', $this->ayer->format('Y-m-d'));
-        $dia_viejo  = $this->reporte_listo('dia', $this->ayer->copy()->subDays(3)->format('Y-m-d'));
-        $stock_hoy  = $this->reporte_listo('stock', now()->format('Y-m-d'));
-        $muy_viejo  = $this->reporte_listo('tienda', $this->ayer->copy()->subDays(40)->format('Y-m-d'));
+        $dia_ayer     = $this->reporte_listo('dia', $this->ayer->format('Y-m-d'));
+        $dia_viejo    = $this->reporte_listo('dia', $this->ayer->copy()->subDays(3)->format('Y-m-d'));
+        $dia_remoto   = $this->reporte_listo('dia', $this->ayer->copy()->subDays(45)->format('Y-m-d'));
+        $stock_hoy    = $this->reporte_listo('stock', now()->format('Y-m-d'));
+        $tienda_vieja = $this->reporte_listo('tienda', $this->ayer->copy()->subDays(40)->format('Y-m-d'));
 
         // Con hechos y sin texto: no se lista.
         MostradorReporte::create([
@@ -64,9 +65,13 @@ class Dueno_Test extends MostradorTestCase
 
         $respuesta->assertStatus(200);
 
-        // Orden fijo por tipo: dia, (tienda no tiene uno reciente), (compras no está listo), stock.
-        $this->assertSame([$dia_ayer->id, $stock_hoy->id], array_column($respuesta->json('ultimos'), 'id'));
+        // Orden fijo por tipo: dia, tienda (su último informe, aunque tenga 40 días),
+        // (compras no está listo), stock.
+        $this->assertSame([$dia_ayer->id, $tienda_vieja->id, $stock_hoy->id], array_column($respuesta->json('ultimos'), 'id'));
+
+        // Anteriores: el resto de los últimos 30 días; el de hace 45 queda afuera.
         $this->assertSame([$dia_viejo->id], array_column($respuesta->json('anteriores'), 'id'));
+        $this->assertNotContains($dia_remoto->id, array_column($respuesta->json('anteriores'), 'id'));
 
         $fila = $respuesta->json('ultimos.0');
         $this->assertSame([
@@ -79,8 +84,8 @@ class Dueno_Test extends MostradorTestCase
         $this->assertArrayNotHasKey('contenido', $fila);
         $this->assertArrayNotHasKey('hechos', $fila);
 
-        // El de hace 40 días queda afuera de los 30.
-        $this->assertNotContains($muy_viejo->id, array_column($respuesta->json('anteriores'), 'id'));
+        $this->assertSame('tienda', $respuesta->json('ultimos.1.tipo'));
+        $this->assertSame($this->ayer->copy()->subDays(40)->format('Y-m-d'), $respuesta->json('ultimos.1.fecha'));
     }
 
     /**

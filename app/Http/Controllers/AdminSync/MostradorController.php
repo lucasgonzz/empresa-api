@@ -139,7 +139,7 @@ class MostradorController extends Controller
 
         $reporte = MostradorReporte::where('user_id', $owner->id)
             ->where('tipo', $tipo)
-            ->whereDate('fecha', $fecha->format('Y-m-d'))
+            ->where('fecha', $fecha->format('Y-m-d'))
             ->first();
 
         if ($reporte && $reporte->estado === MostradorReporte::ESTADO_LISTO && !$forzar) {
@@ -419,7 +419,7 @@ class MostradorController extends Controller
         $reportes = MostradorReporte::where('user_id', $owner->id)
             ->listos()
             ->whereNull('leido_at')
-            ->whereDate('fecha', '>=', now()->subDays(self::DIAS_NO_LEIDOS)->format('Y-m-d'))
+            ->where('fecha', '>=', now()->subDays(self::DIAS_NO_LEIDOS)->format('Y-m-d'))
             ->orderByDesc('fecha')
             ->orderBy('tipo')
             ->get(['id', 'tipo', 'fecha', 'titulo', 'resumen']);
