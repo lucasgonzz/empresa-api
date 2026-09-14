@@ -72,7 +72,14 @@ class WhatsappChatController extends Controller
             });
         }
 
-        return response()->json(['models' => $query->get()], 200);
+        $chats = $query->get();
+
+        // Estado para el tablero y el resaltado de la fila (misión whatsapp-tablero-clientes):
+        // 'esperando_aprobacion' | 'sin_responder' | null, calculado en lote para no pagar
+        // consultas por chat con la bandeja completa. Ver WhatsappChatHelper::attach_estados_pendientes().
+        WhatsappChatHelper::attach_estados_pendientes($chats);
+
+        return response()->json(['models' => $chats], 200);
     }
 
     /**

@@ -316,6 +316,11 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
      * envió), así que no cuentan como respuesta. Es el mismo criterio que usa el historial
      * que ve la IA.
      *
+     * 🔴 MISMO CRITERIO, A PROPÓSITO DUPLICADO, que `WhatsappChat::is_sin_responder()`
+     * (misión whatsapp-tablero-clientes, tarjeta y resaltado "sin responder" de la
+     * bandeja). No se centralizó acá porque este Job dispara respuestas reales a clientes
+     * reales: si el criterio cambia alguna vez, cambiarlo en los dos lugares.
+     *
      * @param WhatsappChat $chat
      *
      * @return bool

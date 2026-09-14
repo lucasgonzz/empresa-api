@@ -66,6 +66,11 @@ class WhatsappChatUpdated implements ShouldBroadcastNow
      * front necesita para actualizar la lista y la conversación abierta sin pedir
      * de nuevo el endpoint completo.
      *
+     * `estado_pendiente` (misión whatsapp-tablero-clientes) viaja siempre acá: es lo que
+     * mantiene el tablero y el resaltado de la fila al día EN VIVO ante cualquier cambio
+     * (entrante nuevo, respuesta pendiente generada, confirmada, descartada o fallida),
+     * sin depender de que el front vuelva a pedir el índice completo.
+     *
      * @return array
      */
     public function broadcastWith()
@@ -77,6 +82,7 @@ class WhatsappChatUpdated implements ShouldBroadcastNow
                 'id' => $this->chat->id,
                 'unread_count' => $this->chat->unread_count,
                 'last_message_at' => $this->chat->last_message_at,
+                'estado_pendiente' => $this->chat->estado_pendiente(),
             ],
         ];
     }
