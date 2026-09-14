@@ -34,6 +34,14 @@ class ListadoVentasHelper
     const PER_PAGE_MAXIMO = 200;
 
     /**
+     * Estado de la cuenta corriente de la venta tal como lo ve el navegador: el `status` de la
+     * PRIMERA fila de `current_acounts` de esa venta (el `hasOne` `Sale::current_acount`). Ver el
+     * comentario del filtro de cobradas en `aplicar_filtros_de_pantalla`. `CurrentAcount` no usa
+     * soft delete, asi que no hace falta filtrar `deleted_at`.
+     */
+    const SUBQUERY_ESTADO_DE_LA_CUENTA_CORRIENTE = '(SELECT ca.status FROM current_acounts ca WHERE ca.sale_id = sales.id ORDER BY ca.id ASC LIMIT 1)';
+
+    /**
      * Indica si el pedido activa el modo paginado.
      *
      * Se mira la presencia del parametro en la QUERY STRING, no su valor: `per_page=0` activa el
@@ -219,24 +227,35 @@ class ListadoVentasHelper
             });
         }
 
-        /* Show option cobradas / sin cobrar (espejo de `venta_cobrada` de mixins/generals.js). */
+        /*
+         * Show option cobradas / sin cobrar (espejo de `venta_cobrada` de mixins/generals.js).
+         *
+         * 🔴 Se mira UNA fila de `current_acounts` por venta -- la primera por id --, no "alguna".
+         * Es lo que mira el navegador: `sale.current_acount` es un `hasOne`, o sea la primera fila
+         * que Eloquent trae para ese `sale_id`, y esa es el debito de la venta (se crea al vender).
+         * Una devolucion a cuenta corriente agrega DESPUES una segunda fila con el mismo `sale_id`
+         * y `status = 'nota_credito'` (`CurrentAcountHelper::notaCredito`). Con un `EXISTS(status <>
+         * 'pagado')` esa venta, aunque su deuda ya este pagada, entraba en "sin cobrar" y sumaba en
+         * el chip; el navegador la escondia despues y la pagina quedaba corta. No es un caso raro:
+         * es cualquier venta a cuenta corriente con una devolucion.
+         */
         $cobradas = $request->query('ventas_cobradas_show_option', 'cobradas-y-no-cobradas');
 
+        $estado_de_la_cuenta = self::SUBQUERY_ESTADO_DE_LA_CUENTA_CORRIENTE;
+
         if ($cobradas === 'solo-cobradas') {
-            $query->where(function ($q) {
+            $query->where(function ($q) use ($estado_de_la_cuenta) {
                 $q->whereNull('sales.client_id')
                   ->orWhere('sales.client_id', 0)
                   ->orWhere('sales.omitir_en_cuenta_corriente', 1)
-                  ->orWhereHas('current_acounts', function ($q2) {
-                      $q2->where('current_acounts.status', 'pagado');
-                  });
+                  ->orWhereRaw($estado_de_la_cuenta . " = 'pagado'");
             });
         } else if ($cobradas === 'solo-sin-cobrar') {
+            /* `sale.client_id && sale.current_acount && status != 'pagado'`: sin fila de cuenta, no es "sin cobrar". */
             $query->whereNotNull('sales.client_id')
                   ->where('sales.client_id', '<>', 0)
-                  ->whereHas('current_acounts', function ($q2) {
-                      $q2->where('current_acounts.status', '<>', 'pagado');
-                  });
+                  ->whereRaw($estado_de_la_cuenta . " IS NOT NULL")
+                  ->whereRaw($estado_de_la_cuenta . " <> 'pagado'");
         }
 
         /* Show option con / sin factura. `whereHas` respeta el soft delete de AfipTicket, igual que el eager load. */

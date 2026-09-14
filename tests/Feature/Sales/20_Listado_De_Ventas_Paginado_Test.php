@@ -384,6 +384,41 @@ class Listado_De_Ventas_Paginado_Test extends TestCase
     }
 
     /**
+     * 🔴 Una venta con devolucion tiene DOS filas en `current_acounts`: el debito (primera, por id)
+     * y la nota de credito (`status = 'nota_credito'`, despues). El navegador mira solo la primera
+     * (`Sale::current_acount` es un hasOne), asi que una venta cuya deuda esta `pagado` es
+     * "cobrada" aunque tenga una NC atras, y una con la deuda `sin_pagar` sigue "sin cobrar".
+     *
+     * Es el candado de la revision adversarial del 14/9/2026: con un `EXISTS(status <> 'pagado')`
+     * la venta pagada con NC entraba en "sin cobrar" y sumaba en el chip (rojo con ese SQL; verde
+     * mirando la primera fila).
+     *
+     * @group sales
+     * @test
+     */
+    public function la_show_option_de_cobradas_mira_la_primera_fila_de_la_cuenta_como_el_navegador()
+    {
+        $pagada_con_nc    = $this->crear_venta(['client_id' => $this->client_id, 'omitir_en_cuenta_corriente' => 0])->id;
+        $sin_pagar_con_nc = $this->crear_venta(['client_id' => $this->client_id, 'omitir_en_cuenta_corriente' => 0])->id;
+
+        /* Primero el debito, despues la NC: mismo orden de ids que deja el sistema. */
+        $this->crear_cuenta_corriente($pagada_con_nc, 'pagado');
+        $this->crear_cuenta_corriente($pagada_con_nc, 'nota_credito');
+        $this->crear_cuenta_corriente($sin_pagar_con_nc, 'sin_pagar');
+        $this->crear_cuenta_corriente($sin_pagar_con_nc, 'nota_credito');
+
+        $response = $this->paginado(['ventas_cobradas_show_option' => 'solo-cobradas']);
+        $this->assertSame([$pagada_con_nc], $this->ids($response),
+            'La venta con la deuda pagada es cobrada aunque tenga una nota de credito atras.');
+        $response->assertJsonPath('totales.cantidad', 1);
+
+        $response = $this->paginado(['ventas_cobradas_show_option' => 'solo-sin-cobrar']);
+        $this->assertSame([$sin_pagar_con_nc], $this->ids($response),
+            'Solo la venta con la deuda sin pagar es "sin cobrar": la pagada con NC no puede sumar aca.');
+        $response->assertJsonPath('totales.cantidad', 1);
+    }
+
+    /**
      * Show option metodo de pago: deja las ventas pagadas (al menos en parte) con ese metodo, y
      * `totales.metodo_de_pago.total` suma solo lo pagado CON ESE METODO, no el total de la venta.
      *

@@ -100,7 +100,8 @@ class SaleController extends Controller
              * El criterio de fechado vive en Sale::scopeEnRangoDeFechas() y NO se copia aca: el
              * listado, los dos Excel, el grafico y Rendimiento tienen que moverse juntos o el
              * comercio ve el mismo mes con dos numeros distintos. Con la preferencia apagada este
-             * scope emite exactamente el mismo SQL sobre created_at que habia escrito aca.
+             * scope devuelve las mismas filas que el whereDate que habia escrito aca, pero pidiendo
+             * el dia como rango para poder usar el indice (ver el docblock del scope, 14/9/2026).
              */
             $models = $models->enRangoDeFechas($from_date, $until_date, $this->userId());
 
