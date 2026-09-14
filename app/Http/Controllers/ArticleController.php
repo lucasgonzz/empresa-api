@@ -160,6 +160,11 @@ class ArticleController extends Controller
         }
         
         $models = $models->orderBy('deleted_at', 'DESC')
+                            // Sin el vector de embeddings: mismo criterio que index() (misión
+                            // busqueda-lenta-y-pausa-embeddings, sobre lo que dejó optimizacion-vps-fase1
+                            // / 4.0.24). Esta consulta no usa withAll(), así que el scope no tiene que
+                            // ir antes de nada más: alcanza con encadenarlo antes de paginate().
+                            ->sinEmbedding()
                             ->paginate($per_page);
 
         return response()->json(['models' => $models], 200);

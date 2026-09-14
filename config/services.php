@@ -164,6 +164,16 @@ return [
      */
     'openai' => [
         'api_key' => env('OPENAI_API_KEY', ''),
+
+        /*
+         * Pausa global de la generación de embeddings (misión busqueda-lenta-y-pausa-embeddings,
+         * 14/9/2026), independiente de la extensión whatsapp_ia por cliente — ver
+         * EMBEDDINGS_GENERACION_PAUSADA en .env.example. Va acá y no se lee con env() directo en
+         * el código de aplicación: con config:cache activo (lo normal en producción) env() fuera
+         * de config/ devuelve el default, y esta misma clase de bug ya rompió DURACION_REPORTES
+         * en producción (ver CompanyPerformanceController::check_tiempo_ultima_creada()).
+         */
+        'embeddings_generacion_pausada' => filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /**

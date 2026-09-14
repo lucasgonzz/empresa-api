@@ -45,6 +45,9 @@ class Embeddings_observer_Test extends TestCase
     /** Slug de la extensión que habilita la vectorización del catálogo. */
     const SLUG = 'whatsapp_ia';
 
+    /** Variable de la pausa global (misión busqueda-lenta-y-pausa-embeddings, 14/9/2026). */
+    const VARIABLE_PAUSA = 'EMBEDDINGS_GENERACION_PAUSADA';
+
     /** @var User */
     protected $comercio;
 
@@ -58,6 +61,10 @@ class Embeddings_observer_Test extends TestCase
         // Sin Event::fake (ver el docblock de la clase): el broadcast se corta por config.
         config(['broadcasting.default' => 'null']);
 
+        // Por si un test anterior de este proceso quedó con la pausa prendida (ej. una falla a
+        // mitad de camino que se saltó el tearDown).
+        $this->activar_pausa_global(false);
+
         ArticleObserver::resetear_cache_gate();
 
         $this->comercio = User::create([
@@ -70,9 +77,24 @@ class Embeddings_observer_Test extends TestCase
 
     protected function tearDown(): void
     {
+        $this->activar_pausa_global(false);
         ArticleObserver::resetear_cache_gate();
 
         parent::tearDown();
+    }
+
+    /**
+     * Prende o apaga la pausa donde el código realmente la lee: config('services.openai.
+     * embeddings_generacion_pausada'), no la variable de entorno. Con config:cache activo en
+     * producción env() fuera de config/ devuelve el default (chequeo independiente, 14/9/2026:
+     * mismo bug que ya rompió DURACION_REPORTES en Fenix) — ver config/services.php.
+     *
+     * @param  bool  $encendida
+     * @return void
+     */
+    protected function activar_pausa_global($encendida)
+    {
+        config(['services.openai.embeddings_generacion_pausada' => $encendida]);
     }
 
     /**
@@ -157,6 +179,51 @@ class Embeddings_observer_Test extends TestCase
         Queue::fake();
         $articulo->update(['name' => 'Tornillo sin extensión, renombrado']);
         Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+    }
+
+    /**
+     * Misión busqueda-lenta-y-pausa-embeddings (14/9/2026): la pausa global corta el disparo
+     * inmediato del observer aunque el comercio SÍ tenga la extensión -- es un interruptor
+     * independiente, no un atajo para desactivar whatsapp_ia. Se prueba también el update, porque
+     * el paso "0.5" vive en debe_generar_embedding(), el único punto que consultan created() y
+     * updated() (y, por extensión, DescriptionObserver).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function con_la_pausa_global_prendida_no_se_encola_nada_aunque_tenga_la_extension()
+    {
+        $this->dar_extension();
+
+        $this->activar_pausa_global(true);
+        Queue::fake();
+
+        $articulo = $this->articulo('Tornillo con pausa global');
+
+        Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+
+        Queue::fake();
+        $articulo->update(['name' => 'Tornillo con pausa global, renombrado']);
+        Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+    }
+
+    /**
+     * Y apagada, el mismo comercio con el mismo artículo vuelve a encolar: confirma que la pausa
+     * (y no otra cosa del entorno) era lo único que frenaba arriba.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function con_la_pausa_global_apagada_el_mismo_escenario_encola_normalmente()
+    {
+        $this->dar_extension();
+
+        $this->activar_pausa_global(false);
+        Queue::fake();
+
+        $this->articulo('Tornillo sin pausa global');
+
+        Queue::assertPushed(GenerateArticleEmbeddingJob::class, 1);
     }
 
     /**

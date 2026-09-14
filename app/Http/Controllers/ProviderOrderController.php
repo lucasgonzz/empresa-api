@@ -39,7 +39,15 @@ class ProviderOrderController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
-    public function indexDaysToAdvise($from_date, $until_date = null) {
+    /*
+     * Sin parametros: la ruta (`provider-order/days-to-advise/not-received`) no declara ninguno
+     * y el cuerpo nunca los uso — la firma vieja `($from_date, $until_date = null)` venia
+     * copiada del index por fechas. MEDIDO en la exploracion de Alertas (3/9/2026): el endpoint
+     * respondia 200 igual con esa firma (el dispatcher de rutas invoca sin reventar aunque
+     * `$from_date` no tenga de donde salir), asi que esto es limpieza de firma muerta, no el
+     * arreglo de un 500. Se saca para que nadie vuelva a "arreglar" un parametro que no existe.
+     */
+    public function indexDaysToAdvise() {
         $models = ProviderOrder::where('user_id', $this->userId())
                                 ->orderBy('created_at', 'DESC')
                                 ->withAll()

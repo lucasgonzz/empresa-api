@@ -107,10 +107,23 @@ class Kernel extends ConsoleKernel
         // ninguno — la creación manual de un artículo sigue embebiendo al toque igual, porque eso
         // vive en ArticleObserver/DescriptionObserver y no pasa por acá. Default false: ningún
         // cliente real nota que esta variable existe.
+        //
+        // EMBEDDINGS_GENERACION_PAUSADA (misión busqueda-lenta-y-pausa-embeddings) es OTRO
+        // interruptor, con OTRO propósito: no es por instancia de demo, es la pausa global de
+        // TODO el parque. No reemplaza a EMBEDDINGS_OMITIR_IMPORTACION ni se mezcla con ella -- las
+        // dos se evalúan por separado y cualquiera de las dos alcanza para no agendar. El comando ya
+        // corta solo si está pausado (mismo chequeo en GenerateArticleEmbeddings::handle()), así que
+        // esto no es estrictamente necesario para la corrección; es consistente con la filosofía ya
+        // escrita acá arriba: cero arranques de artisan cuando no hay nada que hacer.
+        //
+        // Se lee con config('services.openai.embeddings_generacion_pausada'), no con env()
+        // directo: con config:cache activo (lo normal en producción) env() fuera de config/
+        // devuelve el default. Ver config/services.php.
         if (
             $company_owner
             && UserHelper::hasExtencion('whatsapp_ia', $company_owner)
             && ! filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)
+            && ! config('services.openai.embeddings_generacion_pausada')
         ) {
             $schedule->command('articles:generate-embeddings')
                 ->everyThirtyMinutes()

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
+use App\Notifications\SessionForcedLogoutNotification;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -79,6 +80,84 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = $skip_offline_articles_sync;
             $user->master_login_mode = $this->master_login_mode;
+        }
+
+        return response()->json([
+            'login'                 => $login,
+            'user'                  => $user,
+            'user_last_activity'    => $user_last_activity,
+            'user_last_activity_wait_minutes' => $user_last_activity_wait_minutes,
+        ], 200);
+    }
+
+    /**
+     * Variante de `login()` para el botón "cerrar la otra sesión e ingresar acá": el usuario ya
+     * vio el cartel de "cuenta en uso en otro dispositivo" y pidió expulsarlo.
+     *
+     * A propósito NO pasa por `loginLucas()`: este endpoint es solo para el camino normal de
+     * credenciales. El login maestro ya tiene su propia exención del candado
+     * (`debe_omitir_candado_de_actividad()`) y no necesita "forzar" nada — si alguien manda el
+     * comando maestro acá, se trata como credenciales inválidas.
+     *
+     * Nunca confía en que el cliente ya validó las credenciales en el intento anterior: vuelve a
+     * correr `Auth::attempt()` de cero. Sin esto, cualquiera que supiera el doc_number de otra
+     * persona podría expulsar su sesión sin saber la contraseña.
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse Misma forma que `login()`.
+     */
+    function login_forzado(Request $request) {
+        $login = false;
+        $user = null;
+        $user_last_activity = false;
+        $user_last_activity_wait_minutes = 0;
+
+        if (Auth::attempt(['doc_number' => $request->doc_number,
+                           'password' => $request->password], $request->remember)) {
+
+            $auth_user = Auth()->user();
+
+            /**
+             * Libera el candado que tenía tomado el otro dispositivo. Mismo método que ya usan
+             * logout() y create_version_session_token() -no hay una segunda forma de liberarlo.
+             */
+            $this->removeUserLastActivity($auth_user);
+
+            session()->forget($this->master_login_bypass_activity_key);
+
+            if ($this->checkUserLastActivity()) {
+                /**
+                 * Recién ACÁ, con el candado ya confirmado libre para este login, se avisa al
+                 * dispositivo que lo tenía tomado. Adentro del if a propósito: si quedara afuera
+                 * del if (emitido siempre que Auth::attempt() dé bien, sin importar el resultado
+                 * de este chequeo), una carrera rarísima -otro request retomando el candado justo
+                 * entre el removeUserLastActivity() de arriba y este checkUserLastActivity()-
+                 * expulsaría al dispositivo viejo IGUAL aunque este login termine fallando, y los
+                 * dos dispositivos quedarían afuera.
+                 *
+                 * Por qué no hace falta preocuparse porque el dispositivo NUEVO reciba su propio
+                 * aviso: `InstantBroadcastChannel` (fuera de consola) agenda el despacho real en
+                 * `app()->terminating()`, que corre recién después de que esta respuesta ya se
+                 * envió -el nuevo dispositivo todavía ni empezó a procesar `res.data.user`, mucho
+                 * menos a autenticarse contra `/broadcasting/auth` para poder suscribirse a su
+                 * propio canal privado-.
+                 */
+                $auth_user->notify(new SessionForcedLogoutNotification());
+
+                $user = $this->procesar_login();
+                $login = true;
+                Log::info("Usuario {$user->name}, doc: {$user->doc_number} forzo el ingreso expulsando otro dispositivo, desde: ".$request->header('referer'));
+            } else {
+                /** Paridad con login(): si por una carrera el candado no queda libre, no dejar la sesión autenticada a medias. */
+                Auth::logout();
+            }
+        }
+
+        session()->put('skip_offline_articles_sync', false);
+
+        if ($user) {
+            $user->skip_offline_articles_sync = false;
+            $user->master_login_mode = null;
         }
 
         return response()->json([
