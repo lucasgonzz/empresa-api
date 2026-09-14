@@ -2,6 +2,7 @@
 
 namespace App\Services\Mostrador;
 
+use App\Models\Sale;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -71,29 +72,70 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
-     * Consulta base de las ventas reales en pesos del dueño en un rango: no borradas,
-     * sin consolidaciones de facturación, terminadas (mismo criterio que
-     * PerformanceHelper::set_sales) y fechadas por created_at.
+     * Consulta base de las ventas reales en pesos del dueño en un rango de días: EL
+     * MISMO CONJUNTO que Rendimiento (PerformanceHelper::set_sales), para que el número
+     * del informe sea el que el dueño ve en el reporte de rendimiento de ese día.
+     *
+     * 🔴 El criterio de fecha lo decide Sale::scopeEnRangoDeFechas ("UN SOLO LUGAR DECIDE
+     * EL CRITERIO"): con `users.fechar_ventas_por_fecha_de_entrega` prendido, la venta
+     * entra por su fecha de pedido (COALESCE(fecha_entrega, created_at)); apagado, por
+     * created_at. Y en el camino apagado Rendimiento suma una segunda puerta que el scope
+     * no conoce: la venta entra también si `terminada_at` cae en el rango. Es lo que
+     * hace que una venta cargada un día y terminada al siguiente (extensión check_sales,
+     * ventas con fecha de entrega) aparezca en el día en que se terminó en vez de no
+     * aparecer en ningún "Rendimiento de ayer". Los dos caminos se replican tal cual;
+     * si PerformanceHelper::set_sales cambia, esto cambia con él.
+     *
+     * Siempre: no borradas (SoftDeletes de Sale), sin consolidaciones de facturación,
+     * terminadas y en pesos. Devuelve un builder de Eloquent (el scope vive en Sale).
+     *
+     * @param User $owner
+     * @param Carbon $desde Primer día del rango (se usa la parte fecha)
+     * @param Carbon $hasta Último día del rango (se usa la parte fecha)
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected function consulta_ventas(User $owner, Carbon $desde, Carbon $hasta)
+    {
+        $query = Sale::query()
+            ->where('sales.user_id', $owner->id)
+            ->soloVentasReales()
+            ->where('sales.terminada', 1)
+            ->where(function ($q) {
+                $q->whereNull('sales.moneda_id')->orWhere('sales.moneda_id', self::MONEDA_PESOS);
+            });
+
+        if (Sale::fechaDeReportePorPedido($owner)) {
+            return $query->enRangoDeFechas($desde, $hasta, $owner);
+        }
+
+        // Camino apagado de PerformanceHelper::set_sales: created_at O terminada_at en el
+        // rango. Los límites de terminada_at van como rango semiabierto por el mismo motivo
+        // que el scope (índice usable, mismas filas que DATE(terminada_at) BETWEEN).
+        $inicio = $desde->copy()->startOfDay()->format('Y-m-d H:i:s');
+        $fin_exclusivo = $hasta->copy()->startOfDay()->addDay()->format('Y-m-d H:i:s');
+
+        return $query->where(function ($q) use ($desde, $hasta, $owner, $inicio, $fin_exclusivo) {
+            $q->where(function ($q2) use ($desde, $hasta, $owner) {
+                $q2->enRangoDeFechas($desde, $hasta, $owner);
+            })->orWhere(function ($q2) use ($inicio, $fin_exclusivo) {
+                $q2->where('sales.terminada_at', '>=', $inicio)
+                    ->where('sales.terminada_at', '<', $fin_exclusivo);
+            });
+        });
+    }
+
+    /**
+     * Subconsulta con los ids de las ventas del rango (ver consulta_ventas), para acotar
+     * article_purchases al MISMO conjunto de ventas que los totales.
      *
      * @param User $owner
      * @param Carbon $desde
      * @param Carbon $hasta
-     * @return \Illuminate\Database\Query\Builder
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    protected function consulta_ventas(User $owner, Carbon $desde, Carbon $hasta)
+    protected function ids_de_ventas(User $owner, Carbon $desde, Carbon $hasta)
     {
-        return DB::table('sales')
-            ->where('sales.user_id', $owner->id)
-            ->whereNull('sales.deleted_at')
-            ->where(function ($q) {
-                $q->whereNull('sales.is_consolidacion_facturacion')
-                    ->orWhere('sales.is_consolidacion_facturacion', 0);
-            })
-            ->where('sales.terminada', 1)
-            ->where(function ($q) {
-                $q->whereNull('sales.moneda_id')->orWhere('sales.moneda_id', self::MONEDA_PESOS);
-            })
-            ->whereBetween('sales.created_at', [$desde, $hasta]);
+        return $this->consulta_ventas($owner, $desde, $hasta)->select('sales.id');
     }
 
     /**
@@ -411,8 +453,12 @@ class RecolectorDia extends RecolectorBase
     protected function articulos(User $owner, Carbon $inicio, Carbon $fin): array
     {
         // Todo lo vendido en el día, por artículo (sin tope: alimenta las tres listas).
+        // 🔴 Acotado a LAS MISMAS ventas que `ventas.cantidad/total` (misma fecha, mismo
+        // criterio, misma moneda): si acá se fechara por article_purchases.created_at, "más
+        // vendidos" contaría renglones de ventas que el total del día excluye (una venta en
+        // dólares, una cargada ayer y terminada hoy) y los dos bloques no cerrarían entre sí.
         $vendidos = $this->ventas_reales_desde_article_purchases(DB::table('article_purchases'), $owner->id)
-            ->whereBetween('article_purchases.created_at', [$inicio, $fin])
+            ->whereIn('article_purchases.sale_id', $this->ids_de_ventas($owner, $inicio, $fin))
             ->groupBy('article_purchases.article_id', 'articles.name')
             ->selectRaw(
                 'article_purchases.article_id as article_id,
@@ -451,7 +497,7 @@ class RecolectorDia extends RecolectorBase
 
         return [
             'mas_vendidos'         => $mas_vendidos,
-            'volvieron_a_venderse' => $this->volvieron_a_venderse($owner, $inicio, $ids_vendidos, $cantidad_por_articulo),
+            'volvieron_a_venderse' => $this->volvieron_a_venderse($owner, $inicio, $fin, $ids_vendidos, $cantidad_por_articulo),
             'quedaron_sin_stock'   => $this->quedaron_sin_stock($ids_vendidos),
             'bajo_minimo_total'    => $this->bajo_minimo_total($owner),
         ];
@@ -459,15 +505,19 @@ class RecolectorDia extends RecolectorBase
 
     /**
      * Artículos vendidos en el día cuya venta anterior fue hace 60 días o más. Un
-     * artículo que nunca se había vendido no "volvió": es nuevo, y no entra.
+     * artículo que nunca se había vendido no "volvió": es nuevo, y no entra. La "venta
+     * anterior" es cualquier venta real fuera del conjunto del día y anterior a él (por
+     * created_at del renglón): así una venta cargada hace tres días y terminada ayer
+     * —que ES del día— no se cuenta a sí misma como su propia venta anterior.
      *
      * @param User $owner
      * @param Carbon $inicio
+     * @param Carbon $fin
      * @param array $ids_vendidos
      * @param array $cantidad_por_articulo
      * @return array
      */
-    protected function volvieron_a_venderse(User $owner, Carbon $inicio, array $ids_vendidos, array $cantidad_por_articulo): array
+    protected function volvieron_a_venderse(User $owner, Carbon $inicio, Carbon $fin, array $ids_vendidos, array $cantidad_por_articulo): array
     {
         if (empty($ids_vendidos)) {
             return [];
@@ -477,6 +527,7 @@ class RecolectorDia extends RecolectorBase
 
         $previas = $this->ventas_reales_desde_article_purchases(DB::table('article_purchases'), $owner->id)
             ->whereIn('article_purchases.article_id', $ids_vendidos)
+            ->whereNotIn('article_purchases.sale_id', $this->ids_de_ventas($owner, $inicio, $fin))
             ->where('article_purchases.created_at', '<', $inicio)
             ->groupBy('article_purchases.article_id', 'articles.name')
             ->selectRaw('article_purchases.article_id as article_id, articles.name as nombre, MAX(article_purchases.created_at) as ultima')
@@ -500,7 +551,8 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
-     * De lo vendido en el día, lo que hoy está en cero (articles.stock <= 0).
+     * De lo vendido en el día, lo que hoy está en cero (articles.stock cargado y <= 0;
+     * un artículo con stock null no controla stock y no entra, ver RecolectorBase::en_cero).
      *
      * @param array $ids_vendidos
      * @return array
@@ -511,12 +563,9 @@ class RecolectorDia extends RecolectorBase
             return [];
         }
 
-        $filas = DB::table('articles')
+        $filas = $this->en_cero(DB::table('articles'), 'articles.stock')
             ->whereIn('id', $ids_vendidos)
             ->whereNull('deleted_at')
-            ->where(function ($q) {
-                $q->whereNull('stock')->orWhere('stock', '<=', 0);
-            })
             ->orderByDesc('stock_min')
             ->orderBy('id')
             ->limit(self::TOPE_LISTA)
@@ -605,22 +654,15 @@ class RecolectorDia extends RecolectorBase
 
     /**
      * Deuda total de clientes en pesos: credit_accounts.saldo, la fuente de verdad
-     * (nunca el espejo clients.saldo ni un recálculo).
+     * (nunca el espejo clients.saldo ni un recálculo). Mismo criterio que toda deuda
+     * del mostrador (RecolectorBase::consulta_deudas_en_pesos).
      *
      * @param User $owner
      * @return float
      */
     protected function deuda_clientes_total(User $owner): float
     {
-        $total = DB::table('credit_accounts')
-            ->where('user_id', $owner->id)
-            ->where('model_name', 'client')
-            ->where(function ($q) {
-                $q->whereNull('moneda_id')->orWhere('moneda_id', self::MONEDA_PESOS);
-            })
-            ->sum('saldo');
-
-        return (float) $this->monto($total);
+        return $this->deuda_total_en_pesos($owner, 'client');
     }
 
     /**

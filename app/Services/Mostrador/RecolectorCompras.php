@@ -510,15 +510,14 @@ class RecolectorCompras extends RecolectorBase
      */
     protected function demanda_sin_stock(User $owner): array
     {
-        $filas = DB::table('buyer_tracking_events as e')
+        // En cero = stock cargado y <= 0; con stock null el artículo no controla stock y la
+        // tienda lo vende como disponible (RecolectorBase::en_cero).
+        $filas = $this->en_cero(DB::table('buyer_tracking_events as e'), 'a.stock')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'product_view')
             ->where('e.occurred_at', '>=', now()->subDays(self::DIAS_DEMANDA)->startOfDay())
             ->whereNull('a.deleted_at')
-            ->where(function ($q) {
-                $q->whereNull('a.stock')->orWhere('a.stock', '<=', 0);
-            })
             ->groupBy('e.article_id', 'a.name')
             ->selectRaw('e.article_id as article_id, a.name as nombre, COUNT(*) as vistas')
             ->orderByDesc('vistas')

@@ -234,14 +234,13 @@ class RecolectorTienda extends RecolectorBase
             ];
         }
 
-        $sin_stock = DB::table('buyer_tracking_events as e')
+        // En cero = stock cargado y <= 0; con stock null el artículo no controla stock y la
+        // tienda lo vende como disponible (RecolectorBase::en_cero).
+        $sin_stock = $this->en_cero(DB::table('buyer_tracking_events as e'), 'a.stock')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'product_view')
             ->whereBetween('e.occurred_at', [$inicio, $fin])
-            ->where(function ($q) {
-                $q->whereNull('a.stock')->orWhere('a.stock', '<=', 0);
-            })
             ->groupBy('e.article_id', 'a.name')
             ->selectRaw('e.article_id as article_id, a.name as nombre, COUNT(*) as vistas')
             ->orderByDesc('vistas')
@@ -483,8 +482,16 @@ class RecolectorTienda extends RecolectorBase
 
     /**
      * Compradores identificados que miraron un artículo en los últimos 7 días y no lo
-     * compraron: sin checkout_complete de ese artículo en la ventana y sin venta del ERP
-     * (article_purchases del cliente asociado) posterior a la última vista.
+     * compraron: sin un pedido de la tienda con ese artículo en la ventana y sin venta
+     * del ERP (article_purchases del cliente asociado) posterior a la última vista.
+     *
+     * 🔴 "Compró en la tienda" se resuelve por el PEDIDO, no por el evento: el
+     * checkout_complete que emite la tienda (tienda-spa, mixins/cart.js) trae order_id y
+     * amount, NUNCA article_id, así que buscar el artículo en el evento no excluía a
+     * nadie. Se toman los pedidos (orders, del dueño) que llegan por el order_id de un
+     * checkout_complete del comprador en la ventana, más —por si el evento vino sin
+     * order_id (API vieja de la tienda) o se perdió— los pedidos del propio buyer_id en
+     * la ventana; y de ahí, los renglones (article_order) que contienen el artículo.
      *
      * @param User $owner
      * @param Carbon $desde
@@ -524,20 +531,7 @@ class RecolectorTienda extends RecolectorBase
             return (int) $id;
         })->all();
 
-        // Compras vistas desde la tienda (checkout con article_id) en la ventana.
-        $checkouts = DB::table('buyer_tracking_events')
-            ->where('user_id', $owner->id)
-            ->where('event_type', 'checkout_complete')
-            ->whereIn('buyer_id', $buyer_ids)
-            ->whereIn('article_id', $article_ids)
-            ->where('occurred_at', '>=', $desde)
-            ->get(['buyer_id', 'article_id']);
-
-        $comprado_en_tienda = [];
-
-        foreach ($checkouts as $checkout) {
-            $comprado_en_tienda[(int) $checkout->buyer_id . '-' . (int) $checkout->article_id] = true;
-        }
+        $comprado_en_tienda = $this->comprado_en_la_tienda($owner, $buyer_ids, $article_ids, $desde);
 
         // Compras del ERP del cliente asociado, posteriores al inicio de la ventana.
         $client_ids = $filas->pluck('client_id')->filter()->unique()->map(function ($id) {
@@ -595,8 +589,81 @@ class RecolectorTienda extends RecolectorBase
     }
 
     /**
+     * Pares (buyer_id, article_id) que el comprador compró en la tienda en la ventana:
+     * los pedidos que llegan por el order_id de sus checkout_complete más los pedidos
+     * del propio buyer_id, con sus renglones de article_order (ver vieron_y_no_compraron).
+     *
+     * @param User $owner
+     * @param array $buyer_ids
+     * @param array $article_ids
+     * @param Carbon $desde
+     * @return array Mapa "buyer_id-article_id" => true
+     */
+    protected function comprado_en_la_tienda(User $owner, array $buyer_ids, array $article_ids, Carbon $desde): array
+    {
+        $mapa = [];
+
+        if (empty($buyer_ids) || empty($article_ids)) {
+            return $mapa;
+        }
+
+        $checkouts = DB::table('buyer_tracking_events')
+            ->where('user_id', $owner->id)
+            ->where('event_type', 'checkout_complete')
+            ->whereIn('buyer_id', $buyer_ids)
+            ->whereNotNull('order_id')
+            ->where('occurred_at', '>=', $desde)
+            ->get(['buyer_id', 'order_id']);
+
+        // El comprador de cada pedido: el del evento que lo trajo, o el del pedido mismo.
+        $buyer_por_pedido = [];
+
+        foreach ($checkouts as $checkout) {
+            $buyer_por_pedido[(int) $checkout->order_id] = (int) $checkout->buyer_id;
+        }
+
+        $pedidos = DB::table('orders')
+            ->where('user_id', $owner->id)
+            ->where('created_at', '>=', $desde)
+            ->where(function ($q) use ($buyer_por_pedido, $buyer_ids) {
+                $q->whereIn('buyer_id', $buyer_ids);
+
+                if (!empty($buyer_por_pedido)) {
+                    $q->orWhereIn('id', array_keys($buyer_por_pedido));
+                }
+            })
+            ->get(['id', 'buyer_id']);
+
+        if ($pedidos->isEmpty()) {
+            return $mapa;
+        }
+
+        foreach ($pedidos as $pedido) {
+            if (!isset($buyer_por_pedido[(int) $pedido->id]) && $pedido->buyer_id) {
+                $buyer_por_pedido[(int) $pedido->id] = (int) $pedido->buyer_id;
+            }
+        }
+
+        $renglones = DB::table('article_order')
+            ->whereIn('order_id', $pedidos->pluck('id')->all())
+            ->whereIn('article_id', $article_ids)
+            ->get(['order_id', 'article_id']);
+
+        foreach ($renglones as $renglon) {
+            $order_id = (int) $renglon->order_id;
+
+            if (isset($buyer_por_pedido[$order_id])) {
+                $mapa[$buyer_por_pedido[$order_id] . '-' . (int) $renglon->article_id] = true;
+            }
+        }
+
+        return $mapa;
+    }
+
+    /**
      * Compradores de la tienda asociados a un cliente del ERP con actividad en los
-     * últimos 7 días: su deuda en cuenta corriente y su última compra en el local.
+     * últimos 7 días: su deuda en cuenta corriente (credit_accounts en pesos, la fuente
+     * de verdad: clients.saldo es una columna muerta) y su última compra en el local.
      *
      * @param User $owner
      * @param Carbon $desde
@@ -611,8 +678,8 @@ class RecolectorTienda extends RecolectorBase
             ->where('e.user_id', $owner->id)
             ->whereBetween('e.occurred_at', [$desde, $hasta])
             ->whereNotNull('b.comercio_city_client_id')
-            ->groupBy('e.buyer_id', 'b.comercio_city_client_id', 'c.name', 'c.saldo')
-            ->selectRaw('e.buyer_id as buyer_id, b.comercio_city_client_id as client_id, c.name as nombre, c.saldo as deuda, MAX(e.occurred_at) as ultima_actividad')
+            ->groupBy('e.buyer_id', 'b.comercio_city_client_id', 'c.name')
+            ->selectRaw('e.buyer_id as buyer_id, b.comercio_city_client_id as client_id, c.name as nombre, MAX(e.occurred_at) as ultima_actividad')
             ->orderByDesc('ultima_actividad')
             ->orderBy('e.buyer_id')
             ->limit(self::TOPE_LISTA)
@@ -625,6 +692,8 @@ class RecolectorTienda extends RecolectorBase
         $client_ids = $filas->pluck('client_id')->map(function ($id) {
             return (int) $id;
         })->all();
+
+        $deudas = $this->deudas_en_pesos($owner, 'client', $client_ids);
 
         $ultimas_compras = DB::table('sales')
             ->where('user_id', $owner->id)
@@ -649,7 +718,7 @@ class RecolectorTienda extends RecolectorBase
                 'buyer_id'            => (int) $fila->buyer_id,
                 'client_id'           => $client_id,
                 'nombre'              => (string) $fila->nombre,
-                'deuda'               => $this->monto($fila->deuda ?: 0),
+                'deuda'               => $this->monto(isset($deudas[$client_id]) ? $deudas[$client_id] : 0.0),
                 'ultima_compra_local' => isset($ultima_por_cliente[$client_id]) ? $ultima_por_cliente[$client_id] : null,
             ];
         }

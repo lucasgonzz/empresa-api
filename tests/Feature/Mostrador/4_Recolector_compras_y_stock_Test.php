@@ -86,9 +86,13 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
             'created_at'  => $this->hoy->copy()->subDays(20)->setTime(10, 0),
         ]);
 
-        // El rulo, en cero, lo abrieron dos veces en la tienda esta semana.
+        // El rulo, en cero, lo abrieron dos veces en la tienda esta semana. La balanza no
+        // controla stock (stock null) y también la abrieron: no es demanda sin stock.
+        $balanza = $this->articulo('Balanza', ['stock' => null, 'provider_id' => $acme->id]);
+
         foreach ([1, 2] as $dias) {
             $this->evento('product_view', $this->hoy->copy()->subDays($dias)->setTime(12, 0), ['article_id' => $rulo->id]);
+            $this->evento('product_view', $this->hoy->copy()->subDays($dias)->setTime(13, 0), ['article_id' => $balanza->id]);
         }
 
         $antes = PurchaseSuggestion::count();

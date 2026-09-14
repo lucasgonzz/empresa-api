@@ -3,9 +3,11 @@
 namespace Tests\Feature\Mostrador;
 
 use App\Models\Buyer;
+use App\Models\CreditAccount;
 use App\Models\Order;
 use App\Models\OrderStatus;
 use App\Services\Mostrador\RecolectorTienda;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Misión modulo-ia-mostrador — P3: el recolector de "Tu tienda".
@@ -49,9 +51,17 @@ class Recolector_tienda_Test extends MostradorTestCase
         $pinza    = $this->articulo('Pinza', ['stock' => 8, 'final_price' => 90]);
         $cuchara  = $this->articulo('Cuchara', ['stock' => 0, 'final_price' => 60]);
 
+        // La deuda de Pérez vive en credit_accounts (la fuente de verdad); clients.saldo
+        // es una columna muerta que el sistema ya no escribe.
         $perez = $this->cliente('Pérez');
-        $perez->saldo = 900;
-        $perez->save();
+
+        CreditAccount::create([
+            'model_name' => 'client',
+            'model_id'   => $perez->id,
+            'saldo'      => 900,
+            'moneda_id'  => 1,
+            'user_id'    => $this->comercio->id,
+        ]);
 
         $ana = Buyer::create([
             'name'                     => 'Ana',
@@ -68,13 +78,15 @@ class Recolector_tienda_Test extends MostradorTestCase
         ]);
 
         // Pedidos: dos ayer, uno hace cinco días, uno hace diez.
+        $pedidos = [];
+
         foreach ([
             [$this->ayer_a_las(9), 3000, $sin_confirmar->id, $ana->id],
             [$this->ayer_a_las(18), 2000, $confirmado->id, $beto->id],
             [$this->ayer->copy()->subDays(5)->setTime(12, 0), 1000, $confirmado->id, $beto->id],
             [$this->ayer->copy()->subDays(10)->setTime(12, 0), 7000, $confirmado->id, $beto->id],
         ] as $datos) {
-            Order::create([
+            $pedidos[] = Order::create([
                 'user_id'         => $this->comercio->id,
                 'buyer_id'        => $datos[3],
                 'total'           => $datos[1],
@@ -84,6 +96,18 @@ class Recolector_tienda_Test extends MostradorTestCase
                 'created_at'      => $datos[0],
             ]);
         }
+
+        // El pedido de Beto de ayer a las 18 lleva la pinza en sus renglones (article_order).
+        $pedido_beto = $pedidos[1];
+
+        DB::table('article_order')->insert([
+            'article_id' => $pinza->id,
+            'order_id'   => $pedido_beto->id,
+            'amount'     => 1,
+            'price'      => 90,
+            'created_at' => $this->ayer_a_las(18),
+            'updated_at' => $this->ayer_a_las(18),
+        ]);
 
         // Una compra de Pérez en el local hace tres días.
         $this->venta($this->ayer->copy()->subDays(3)->setTime(12, 0), [[$pinza, 1, 90]], ['client_id' => $perez->id]);
@@ -101,17 +125,19 @@ class Recolector_tienda_Test extends MostradorTestCase
             'buyer_id' => $ana->id, 'visitor_id' => $v_ana, 'article_id' => $martillo->id, 'quantity' => 2,
         ]);
 
-        // Beto: mira la pinza, la carretea y compra dos horas después.
+        // Beto: mira la pinza, la carretea y compra dos horas después. El checkout_complete
+        // va COMO LO EMITE LA TIENDA (tienda-spa, mixins/cart.js): order_id y amount del
+        // pedido, sin article_id; el artículo comprado se sabe por los renglones del pedido.
         $v_beto = 'visitante-beto';
 
         $this->evento('product_view', $this->ayer_a_las(14), [
             'buyer_id' => $beto->id, 'visitor_id' => $v_beto, 'article_id' => $pinza->id, 'dwell_ms' => 5000,
         ]);
         $this->evento('cart_add', $this->ayer_a_las(15), [
-            'buyer_id' => $beto->id, 'visitor_id' => $v_beto, 'article_id' => $pinza->id, 'quantity' => 1,
+            'buyer_id' => $beto->id, 'visitor_id' => $v_beto, 'article_id' => $pinza->id, 'quantity' => 1, 'amount' => 90,
         ]);
         $this->evento('checkout_complete', $this->ayer_a_las(17), [
-            'buyer_id' => $beto->id, 'visitor_id' => $v_beto, 'article_id' => $pinza->id, 'quantity' => 1, 'amount' => 90,
+            'buyer_id' => $beto->id, 'visitor_id' => $v_beto, 'order_id' => $pedido_beto->id, 'amount' => 90,
         ]);
 
         // Un visitante anónimo: mira dos veces la cuchara (sin stock) y busca.
@@ -133,7 +159,7 @@ class Recolector_tienda_Test extends MostradorTestCase
             'visitor_id' => $v_anon, 'search_term' => 'martillo', 'results_count' => 4,
         ]);
 
-        $this->s = compact('martillo', 'pinza', 'cuchara', 'perez', 'ana', 'beto');
+        $this->s = compact('martillo', 'pinza', 'cuchara', 'perez', 'ana', 'beto', 'pedido_beto');
     }
 
     /**
@@ -211,6 +237,31 @@ class Recolector_tienda_Test extends MostradorTestCase
     }
 
     /**
+     * stock = null es "no controla stock" y la tienda lo vende como disponible: un
+     * artículo así, por más que lo miren, no está "visto sin stock".
+     *
+     * @group mostrador
+     * @test
+     */
+    public function un_articulo_sin_control_de_stock_no_esta_visto_sin_stock()
+    {
+        $this->comercio->online = 'https://ferreteria-mostrador.com.ar';
+        $this->comercio->save();
+
+        $balanza = $this->articulo('Balanza', ['stock' => null]);
+        $cuchara = $this->articulo('Cuchara', ['stock' => 0]);
+
+        foreach ([$balanza, $cuchara] as $articulo) {
+            $this->evento('product_view', $this->ayer_a_las(10), ['visitor_id' => 'visitante-x', 'article_id' => $articulo->id]);
+        }
+
+        $h = (new RecolectorTienda())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame([$cuchara->id], array_column($h['productos']['vistos_sin_stock'], 'article_id'));
+        $this->assertCount(2, $h['productos']['mas_vistos']);
+    }
+
+    /**
      * @group mostrador
      * @test
      */
@@ -249,7 +300,8 @@ class Recolector_tienda_Test extends MostradorTestCase
 
         $this->assertSame([['termino' => 'taladro', 'veces' => 2]], $h['busquedas']['sin_resultados']);
 
-        // Ana miró el martillo y no lo compró; Beto compró la pinza y no aparece.
+        // Ana miró el martillo y no lo compró; Beto compró la pinza (el pedido de su
+        // checkout_complete la trae en los renglones) y no aparece.
         $this->assertSame([[
             'buyer_id'        => $this->s['ana']->id,
             'nombre'          => 'Ana García',

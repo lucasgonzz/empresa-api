@@ -108,6 +108,98 @@ abstract class RecolectorBase
     }
 
     /**
+     * Condición "quedó en cero" sobre una columna de stock: stock cargado Y en cero o
+     * negativo. `stock = NULL` NO es cero: es "no controla stock" (InventoryPerformanceHelper
+     * lo cuenta como "sin stockear" y la tienda lo vende como disponible), así que un
+     * artículo sin control de stock nunca puede "quedar sin stock".
+     *
+     * @param \Illuminate\Database\Query\Builder $q
+     * @param string $columna Columna calificada (articles.stock, a.stock, address_article.amount)
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function en_cero($q, string $columna)
+    {
+        return $q->whereNotNull($columna)->where($columna, '<=', 0);
+    }
+
+    /**
+     * Consulta base de las cuentas corrientes EN PESOS de un tipo de modelo (clientes o
+     * proveedores) del dueño. La fuente de verdad es credit_accounts.saldo (saldo
+     * positivo = deuda): nunca los espejos clients.saldo / providers.saldo (columna muerta
+     * que CurrentAcountHelper ya no escribe) ni saldo_pesos (nullable).
+     *
+     * 🔴 UN SOLO CRITERIO DE MONEDA para todo el mostrador: credit_accounts.moneda_id es
+     * NOT NULL en el esquema, pero por si una base vieja trajera un null, se trata como
+     * pesos (igual que cajas y cuentas viejas en el resto del sistema). Toda deuda que
+     * viaja en un informe —por cliente, por proveedor o total— sale de acá, así que no
+     * puede haber dos números distintos para la misma deuda según el bloque.
+     *
+     * @param User $owner
+     * @param string $model_name 'client' | 'provider'
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function consulta_deudas_en_pesos(User $owner, string $model_name)
+    {
+        return DB::table('credit_accounts')
+            ->where('user_id', $owner->id)
+            ->where('model_name', $model_name)
+            ->where(function ($q) {
+                $q->whereNull('moneda_id')->orWhere('moneda_id', self::MONEDA_PESOS);
+            });
+    }
+
+    /**
+     * Saldo en pesos de un lote de clientes o proveedores, por id de modelo (ver
+     * consulta_deudas_en_pesos).
+     *
+     * @param User $owner
+     * @param string $model_name 'client' | 'provider'
+     * @param array $model_ids
+     * @return array Mapa model_id => saldo (float)
+     */
+    protected function deudas_en_pesos(User $owner, string $model_name, array $model_ids): array
+    {
+        $mapa = [];
+
+        $model_ids = array_values(array_unique(array_filter(array_map('intval', $model_ids))));
+
+        if (empty($model_ids)) {
+            return $mapa;
+        }
+
+        $filas = $this->consulta_deudas_en_pesos($owner, $model_name)
+            ->whereIn('model_id', $model_ids)
+            ->get(['model_id', 'saldo']);
+
+        foreach ($filas as $fila) {
+            $model_id = (int) $fila->model_id;
+
+            if (!isset($mapa[$model_id])) {
+                $mapa[$model_id] = 0.0;
+            }
+
+            $mapa[$model_id] += (float) ($fila->saldo ?: 0);
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * Deuda total en pesos de los clientes o con los proveedores del dueño (mismo
+     * criterio que deudas_en_pesos, en una sola suma).
+     *
+     * @param User $owner
+     * @param string $model_name 'client' | 'provider'
+     * @return float
+     */
+    protected function deuda_total_en_pesos(User $owner, string $model_name): float
+    {
+        $total = $this->consulta_deudas_en_pesos($owner, $model_name)->sum('saldo');
+
+        return (float) $this->monto($total);
+    }
+
+    /**
      * URL pública de la primera imagen de cada artículo pedido (null si no tiene).
      * Una sola consulta para todo el lote; la URL la resuelve ArticleHelper::getFirstImage,
      * que es lo que ya usa el resto del sistema (incluido el prefijo de producción).

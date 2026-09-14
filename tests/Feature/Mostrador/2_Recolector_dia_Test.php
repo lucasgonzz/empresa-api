@@ -303,6 +303,103 @@ class Recolector_dia_Test extends MostradorTestCase
     }
 
     /**
+     * Con la preferencia de fecha apagada, Rendimiento (PerformanceHelper::set_sales) toma
+     * la venta si created_at O terminada_at cae en el día: una venta cargada hace tres
+     * días con la extensión check_sales y terminada ayer ES de ayer, y una cargada ayer
+     * que todavía no se terminó no lo es. Los artículos siguen al mismo conjunto.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function una_venta_cargada_antes_y_terminada_ayer_entra_como_en_rendimiento()
+    {
+        $martillo = $this->articulo('Martillo', ['stock' => 0]);
+        $pinza    = $this->articulo('Pinza', ['stock' => 3]);
+
+        // Cargada ayer y terminada en el acto.
+        $this->venta($this->ayer_a_las(10), [[$martillo, 2, 1000]], ['terminada_at' => $this->ayer_a_las(10)]);
+
+        // Cargada hace tres días para chequear (check_sales) y terminada ayer a las 16.
+        $this->venta($this->ayer->copy()->subDays(3)->setTime(9, 0), [[$pinza, 1, 500]], [
+            'terminada_at' => $this->ayer_a_las(16),
+        ]);
+
+        // Cargada ayer y todavía sin terminar: no es una venta de ayer (ni de ningún día).
+        $this->venta($this->ayer_a_las(12), [[$martillo, 5, 1000]], ['terminada' => 0, 'terminada_at' => null]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame(2, $h['ventas']['cantidad']);
+        $this->assertEquals(2500.00, $h['ventas']['total']);
+
+        $this->assertSame(
+            [$martillo->id, $pinza->id],
+            array_column($h['articulos']['mas_vendidos'], 'article_id')
+        );
+        $this->assertEquals(2.0, $h['articulos']['mas_vendidos'][0]['cantidad']);
+        $this->assertEquals(1.0, $h['articulos']['mas_vendidos'][1]['cantidad']);
+    }
+
+    /**
+     * Con users.fechar_ventas_por_fecha_de_entrega prendido, el criterio es el de
+     * Sale::scopeEnRangoDeFechas: la venta es del día de su fecha de pedido
+     * (COALESCE(fecha_entrega, created_at)), no del día en que se cargó.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function con_fecha_de_pedido_prendida_la_venta_es_del_dia_de_su_fecha_de_entrega()
+    {
+        $this->comercio->fechar_ventas_por_fecha_de_entrega = 1;
+        $this->comercio->save();
+
+        $martillo = $this->articulo('Martillo');
+        $pinza    = $this->articulo('Pinza');
+        $cuchara  = $this->articulo('Cuchara');
+
+        // Cargada hace tres días, con entrega ayer: es de ayer.
+        $this->venta($this->ayer->copy()->subDays(3)->setTime(9, 0), [[$pinza, 1, 500]], [
+            'fecha_entrega' => $this->ayer_a_las(9),
+        ]);
+
+        // Cargada ayer, con entrega hoy: NO es de ayer.
+        $this->venta($this->ayer_a_las(11), [[$cuchara, 4, 100]], [
+            'fecha_entrega' => $this->ayer->copy()->addDay()->setTime(9, 0),
+        ]);
+
+        // Cargada ayer sin fecha de entrega: es de ayer.
+        $this->venta($this->ayer_a_las(10), [[$martillo, 2, 1000]]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame(2, $h['ventas']['cantidad']);
+        $this->assertEquals(2500.00, $h['ventas']['total']);
+        $this->assertSame(
+            [$martillo->id, $pinza->id],
+            array_column($h['articulos']['mas_vendidos'], 'article_id')
+        );
+    }
+
+    /**
+     * stock = null es "no controla stock" (InventoryPerformanceHelper lo cuenta como sin
+     * stockear): un artículo así vendido ayer no "quedó sin stock".
+     *
+     * @group mostrador
+     * @test
+     */
+    public function un_articulo_sin_control_de_stock_no_queda_sin_stock()
+    {
+        $balanza  = $this->articulo('Balanza', ['stock' => null]);
+        $martillo = $this->articulo('Martillo', ['stock' => 0, 'stock_min' => 2]);
+
+        $this->venta($this->ayer_a_las(10), [[$balanza, 1, 5000], [$martillo, 1, 1000]]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame([$martillo->id], array_column($h['articulos']['quedaron_sin_stock'], 'article_id'));
+    }
+
+    /**
      * @group mostrador
      * @test
      */
