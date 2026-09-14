@@ -689,6 +689,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('integraciones/zippin/connect', 'ZippinOAuthController@connect');
     Route::post('integraciones/zippin/disconnect', 'ZippinOAuthController@disconnect');
 
+    // Zipnova (ex Zippin), misión zipnova-envios (14/9/2026): el comercio conecta SU cuenta con
+    // API Token + API Secret (no hay OAuth ni callback: las credenciales se prueban contra
+    // Zipnova y se guardan cifradas en platform_connectors). Las cinco responden `{integracion}`
+    // con la misma forma que un item de `integraciones`. El webhook que Zipnova llama está más
+    // abajo, fuera de este grupo. Las rutas `integraciones/zippin/*` de arriba quedan vivas pero
+    // la tarjeta ya no las usa.
+    Route::post('integraciones/zipnova/conectar', 'ZipnovaIntegracionController@conectar');
+    Route::post('integraciones/zipnova/disconnect', 'ZipnovaIntegracionController@disconnect');
+    Route::put('integraciones/zipnova/config', 'ZipnovaIntegracionController@config');
+    Route::post('integraciones/zipnova/origenes', 'ZipnovaIntegracionController@origenes');
+    Route::post('integraciones/zipnova/cotizar-prueba', 'ZipnovaIntegracionController@cotizar_prueba');
+
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -1005,6 +1018,7 @@ Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@cal
 // manda el bearer token del SPA en esta redirección); el comercio se identifica mediante el
 // `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
+
 
 // Grupo 211: export de articulos para flujos automatizados externos (n8n). Sin auth a proposito
 // (decision de Lucas): el consumidor solo pega una URL. El comercio se identifica por el
