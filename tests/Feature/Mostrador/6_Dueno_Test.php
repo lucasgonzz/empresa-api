@@ -110,7 +110,14 @@ class Dueno_Test extends MostradorTestCase
         $this->entrar_como($this->empleado(true));
 
         $this->getJson('api/mostrador/reportes')->assertStatus(200)->assertJsonCount(1, 'ultimos');
+        $this->getJson('api/mostrador/reportes/' . $reporte->id)->assertStatus(200)->assertJsonPath('model.leido_at', null);
+
+        // Que lo abra alguien con admin_access no lo marca leído: leído es leído por el dueño.
+        $this->assertNull($reporte->fresh()->leido_at);
+
+        $this->entrar_como($this->comercio);
         $this->getJson('api/mostrador/reportes/' . $reporte->id)->assertStatus(200);
+        $this->assertNotNull($reporte->fresh()->leido_at);
     }
 
     /**
@@ -223,6 +230,49 @@ class Dueno_Test extends MostradorTestCase
         ]);
 
         $this->postJson('api/mostrador/reportes/' . $sin_texto->id . '/conversacion')->assertStatus(404);
+    }
+
+    /**
+     * Dos pestañas que preguntan a la vez: las dos pasan el "no existe" y crean. Se
+     * simula metiendo la conversación competidora en el `creating` de la nuestra: la
+     * nuestra se borra (nace sin mensajes) y se devuelve la anterior, con 200.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function dos_pestanas_que_crean_a_la_vez_terminan_en_una_sola_conversacion()
+    {
+        $this->dar_extension();
+        $this->entrar_como($this->comercio);
+
+        $reporte = $this->reporte_listo('dia', $this->ayer->format('Y-m-d'));
+
+        $competidora = null;
+        $comercio = $this->comercio;
+
+        AiConversation::creating(function ($conversation) use (&$competidora, $comercio, $reporte) {
+            if (!is_null($competidora) || $conversation->origen !== 'mostrador_reporte') {
+                return;
+            }
+
+            $competidora = 'creando';
+            $competidora = AiConversation::create([
+                'user_id'       => $comercio->id,
+                'auth_user_id'  => $comercio->id,
+                'titulo'        => 'La de la otra pestaña',
+                'origen'        => 'mostrador_reporte',
+                'referencia_id' => $reporte->id,
+            ]);
+        });
+
+        $respuesta = $this->postJson('api/mostrador/reportes/' . $reporte->id . '/conversacion');
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertJsonPath('model.id', $competidora->id);
+        $respuesta->assertJsonPath('model.titulo', 'La de la otra pestaña');
+
+        $this->assertSame(1, AiConversation::where('origen', 'mostrador_reporte')->where('referencia_id', $reporte->id)->count());
+        $this->getJson('api/mostrador/reportes/' . $reporte->id)->assertJsonPath('model.conversation_id', $competidora->id);
     }
 
     /**

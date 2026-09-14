@@ -445,6 +445,12 @@ class RecolectorDia extends RecolectorBase
      * Bloque `comparacion`: el mismo día de la semana anterior y el promedio diario de
      * los últimos 30 días (incluido el día del informe).
      *
+     * El promedio se divide por los días TRANSCURRIDOS desde la primera venta de la
+     * ventana (mínimo 1, máximo 30), no por 30 fijo: un comercio que arrancó hace diez
+     * días vendió diez días, y dividir por 30 le achicaría el promedio tres veces.
+     * `dias_considerados` dice por cuánto se dividió; sin ventas en la ventana son los
+     * 30 (y el promedio, cero).
+     *
      * @param User $owner
      * @param Carbon $fecha
      * @return array
@@ -459,11 +465,11 @@ class RecolectorDia extends RecolectorBase
             $semana_pasada->copy()->endOfDay()
         );
 
-        $promedio = $this->cantidad_y_total(
-            $owner,
-            $fecha->copy()->subDays(self::DIAS_PROMEDIO - 1)->startOfDay(),
-            $fecha->copy()->endOfDay()
-        );
+        $desde = $fecha->copy()->subDays(self::DIAS_PROMEDIO - 1)->startOfDay();
+        $hasta = $fecha->copy()->endOfDay();
+
+        $promedio = $this->cantidad_y_total($owner, $desde, $hasta);
+        $dias = $this->dias_desde_la_primera_venta($owner, $desde, $hasta, $fecha);
 
         return [
             'mismo_dia_semana_anterior' => [
@@ -472,10 +478,40 @@ class RecolectorDia extends RecolectorBase
                 'total'    => $mismo_dia['total'],
             ],
             'promedio_diario_30_dias' => [
-                'cantidad' => round($promedio['cantidad'] / self::DIAS_PROMEDIO, 1),
-                'total'    => $this->monto($promedio['total'] / self::DIAS_PROMEDIO),
+                'cantidad'          => round($promedio['cantidad'] / $dias, 1),
+                'total'             => $this->monto($promedio['total'] / $dias),
+                'dias_considerados' => $dias,
             ],
         ];
+    }
+
+    /**
+     * Días entre la primera venta de la ventana y el día del informe, ambos incluidos,
+     * acotados a [1, DIAS_PROMEDIO]. La "fecha" de la venta es la del criterio del
+     * comercio (created_at, o la fecha de pedido si fecha por fecha de entrega). Sin
+     * ventas, la ventana entera.
+     *
+     * @param User $owner
+     * @param Carbon $desde
+     * @param Carbon $hasta
+     * @param Carbon $fecha
+     * @return int
+     */
+    protected function dias_desde_la_primera_venta(User $owner, Carbon $desde, Carbon $hasta, Carbon $fecha): int
+    {
+        $expresion = Sale::fechaDeReportePorPedido($owner) ? Sale::EXPRESION_FECHA_DE_PEDIDO : 'sales.created_at';
+
+        $primera = $this->consulta_ventas($owner, $desde, $hasta)
+            ->selectRaw('MIN(' . $expresion . ') as primera')
+            ->value('primera');
+
+        if (empty($primera)) {
+            return self::DIAS_PROMEDIO;
+        }
+
+        $dias = Carbon::parse($primera)->startOfDay()->diffInDays($fecha->copy()->startOfDay()) + 1;
+
+        return max(1, min(self::DIAS_PROMEDIO, $dias));
     }
 
     /**
@@ -535,7 +571,7 @@ class RecolectorDia extends RecolectorBase
         return [
             'mas_vendidos'         => $mas_vendidos,
             'volvieron_a_venderse' => $this->volvieron_a_venderse($owner, $inicio, $fin, $ids_vendidos, $cantidad_por_articulo),
-            'quedaron_sin_stock'   => $this->quedaron_sin_stock($ids_vendidos),
+            'quedaron_sin_stock'   => $this->quedaron_sin_stock($owner, $ids_vendidos),
             'bajo_minimo_total'    => $this->bajo_minimo_total($owner),
         ];
     }
@@ -588,17 +624,26 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
-     * De lo vendido en el día, lo que hoy está en cero (articles.stock cargado y <= 0;
-     * un artículo con stock null no controla stock y no entra, ver RecolectorBase::en_cero).
+     * De lo vendido en el día, lo que hoy está en cero: el artículo entero
+     * (articles.stock cargado y <= 0, `sucursal` null) y, en una cuenta con depósitos,
+     * también lo que quedó en cero EN UNA SUCURSAL (address_article.amount cargado y
+     * <= 0, con el nombre en `sucursal`) aunque en otra quede stock. Un artículo en cero
+     * global no repite sus sucursales. Un stock null no controla stock y no entra
+     * (RecolectorBase::en_cero). Sin depósitos la lista es la de siempre, con
+     * `sucursal` null.
      *
+     * @param User $owner
      * @param array $ids_vendidos
      * @return array
      */
-    protected function quedaron_sin_stock(array $ids_vendidos): array
+    protected function quedaron_sin_stock(User $owner, array $ids_vendidos): array
     {
         if (empty($ids_vendidos)) {
             return [];
         }
+
+        $lista = [];
+        $en_cero_global = [];
 
         $filas = $this->en_cero(DB::table('articles'), 'articles.stock')
             ->whereIn('id', $ids_vendidos)
@@ -608,14 +653,46 @@ class RecolectorDia extends RecolectorBase
             ->limit(self::TOPE_LISTA)
             ->get(['id', 'name', 'stock', 'stock_min']);
 
-        $lista = [];
-
         foreach ($filas as $fila) {
+            $en_cero_global[(int) $fila->id] = true;
+
             $lista[] = [
                 'article_id'   => (int) $fila->id,
                 'nombre'       => (string) $fila->name,
                 'stock'        => (float) ($fila->stock ?: 0),
                 'stock_minimo' => is_null($fila->stock_min) ? null : (int) $fila->stock_min,
+                'sucursal'     => null,
+            ];
+        }
+
+        if (count($lista) >= self::TOPE_LISTA) {
+            return $lista;
+        }
+
+        // Por sucursal: solo los que no están en cero global.
+        $por_sucursal = $this->en_cero(DB::table('address_article'), 'address_article.amount')
+            ->join('articles', 'articles.id', '=', 'address_article.article_id')
+            ->join('addresses', 'addresses.id', '=', 'address_article.address_id')
+            ->where('articles.user_id', $owner->id)
+            ->where('addresses.user_id', $owner->id)
+            ->whereNull('articles.deleted_at')
+            ->whereIn('address_article.article_id', $ids_vendidos)
+            ->when(!empty($en_cero_global), function ($q) use ($en_cero_global) {
+                $q->whereNotIn('address_article.article_id', array_keys($en_cero_global));
+            })
+            ->orderByDesc('address_article.stock_min')
+            ->orderBy('address_article.article_id')
+            ->orderBy('addresses.id')
+            ->limit(self::TOPE_LISTA - count($lista))
+            ->get(['articles.id', 'articles.name', 'address_article.amount', 'address_article.stock_min', 'addresses.street']);
+
+        foreach ($por_sucursal as $fila) {
+            $lista[] = [
+                'article_id'   => (int) $fila->id,
+                'nombre'       => (string) $fila->name,
+                'stock'        => (float) ($fila->amount ?: 0),
+                'stock_minimo' => is_null($fila->stock_min) ? null : (int) $fila->stock_min,
+                'sucursal'     => (string) $fila->street,
             ];
         }
 
@@ -651,8 +728,13 @@ class RecolectorDia extends RecolectorBase
      */
     protected function cobranzas(User $owner, Carbon $fecha, Carbon $inicio, Carbon $fin): array
     {
+        // El join a clients lleva el user_id del dueño en la condición (defensa en
+        // profundidad en la base compartida: un client_id que apunte a otro comercio no
+        // trae su nombre).
         $pagos = DB::table('current_acounts')
-            ->leftJoin('clients', 'clients.id', '=', 'current_acounts.client_id')
+            ->leftJoin('clients', function ($join) use ($owner) {
+                $join->on('clients.id', '=', 'current_acounts.client_id')->where('clients.user_id', $owner->id);
+            })
             ->where('current_acounts.user_id', $owner->id)
             ->where('current_acounts.status', 'pago_from_client')
             ->whereNotNull('current_acounts.haber')
@@ -744,7 +826,9 @@ class RecolectorDia extends RecolectorBase
     protected function clientes_con_mas_deuda(User $owner, Carbon $fecha): array
     {
         $cuentas = DB::table('credit_accounts')
-            ->leftJoin('clients', 'clients.id', '=', 'credit_accounts.model_id')
+            ->leftJoin('clients', function ($join) use ($owner) {
+                $join->on('clients.id', '=', 'credit_accounts.model_id')->where('clients.user_id', $owner->id);
+            })
             ->where('credit_accounts.user_id', $owner->id)
             ->where('credit_accounts.model_name', 'client')
             ->where(function ($q) {

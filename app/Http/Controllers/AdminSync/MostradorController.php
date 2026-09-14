@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\Mostrador\MostradorContenidoValidator;
 use App\Services\Mostrador\RecolectorDeHechos;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -560,12 +561,7 @@ class MostradorController extends Controller
     protected function marcar_calculando(User $owner, string $tipo, Carbon $fecha, $reporte): MostradorReporte
     {
         if (is_null($reporte)) {
-            return MostradorReporte::create([
-                'user_id' => $owner->id,
-                'tipo'    => $tipo,
-                'fecha'   => $fecha->format('Y-m-d'),
-                'estado'  => MostradorReporte::ESTADO_CALCULANDO,
-            ]);
+            $reporte = $this->crear_fila($owner, $tipo, $fecha);
         }
 
         $reporte->estado = MostradorReporte::ESTADO_CALCULANDO;
@@ -573,6 +569,38 @@ class MostradorController extends Controller
         $reporte->save();
 
         return $reporte;
+    }
+
+    /**
+     * Crea la fila de un informe (sin hechos todavía), atajando la carrera por la
+     * unique (user_id, tipo, fecha): si dos POST del mismo informe entran a la vez, el
+     * segundo INSERT choca contra el primero; en vez de un 500 se relee la fila que ganó
+     * y se sigue sobre ella.
+     *
+     * @param User $owner
+     * @param string $tipo
+     * @param Carbon $fecha
+     * @return MostradorReporte
+     */
+    protected function crear_fila(User $owner, string $tipo, Carbon $fecha): MostradorReporte
+    {
+        try {
+            return MostradorReporte::create([
+                'user_id' => $owner->id,
+                'tipo'    => $tipo,
+                'fecha'   => $fecha->format('Y-m-d'),
+                'estado'  => MostradorReporte::ESTADO_HECHOS,
+            ]);
+        } catch (QueryException $e) {
+            $reporte = $this->buscar_reporte($owner, $tipo, $fecha);
+
+            // No era la unique: el error es otro y tiene que subir.
+            if (is_null($reporte)) {
+                throw $e;
+            }
+
+            return $reporte;
+        }
     }
 
     /**
@@ -590,14 +618,7 @@ class MostradorController extends Controller
     protected function guardar_hechos(User $owner, string $tipo, Carbon $fecha, $reporte, array $hechos): MostradorReporte
     {
         if (is_null($reporte)) {
-            return MostradorReporte::create([
-                'user_id'   => $owner->id,
-                'tipo'      => $tipo,
-                'fecha'     => $fecha->format('Y-m-d'),
-                'hechos'    => $hechos,
-                'estado'    => MostradorReporte::ESTADO_HECHOS,
-                'hechos_at' => now(),
-            ]);
+            $reporte = $this->crear_fila($owner, $tipo, $fecha);
         }
 
         $reporte->hechos = $hechos;
@@ -684,7 +705,14 @@ class MostradorController extends Controller
             return null;
         }
 
-        $fecha = Carbon::createFromFormat('Y-m-d', $valor);
+        // Un '2026-13-45' tiene la forma pero no es un día: según la versión de Carbon
+        // vuelve desbordado (y no coincide con lo pedido) o tira InvalidFormatException.
+        // Las dos cosas son "fecha inválida" y valen un 422, nunca un 500.
+        try {
+            $fecha = Carbon::createFromFormat('Y-m-d', $valor);
+        } catch (\Throwable $e) {
+            return null;
+        }
 
         if ($fecha === false || $fecha->format('Y-m-d') !== $valor) {
             return null;

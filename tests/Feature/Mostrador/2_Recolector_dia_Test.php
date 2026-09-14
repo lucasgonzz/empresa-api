@@ -273,9 +273,43 @@ class Recolector_dia_Test extends MostradorTestCase
         ], $h['comparacion']['mismo_dia_semana_anterior']);
 
         // 3 ventas de ayer ($4.500) + 1 de la semana pasada ($1.000) + 1 de hace tres días ($500)
-        // + 1 de hace diez días ($1.000) = 6 ventas, $7.000 en la ventana de 30 días.
-        $this->assertEquals(round(6 / 30, 1), $h['comparacion']['promedio_diario_30_dias']['cantidad']);
-        $this->assertEquals(round(7000 / 30, 2), $h['comparacion']['promedio_diario_30_dias']['total']);
+        // + 1 de hace diez días ($1.000) = 6 ventas, $7.000 en la ventana de 30 días. La
+        // primera venta de la ventana es la de hace diez días: se divide por los 11 días
+        // transcurridos desde entonces (ayer incluido), no por 30.
+        $this->assertSame(11, $h['comparacion']['promedio_diario_30_dias']['dias_considerados']);
+        $this->assertEquals(round(6 / 11, 1), $h['comparacion']['promedio_diario_30_dias']['cantidad']);
+        $this->assertEquals(round(7000 / 11, 2), $h['comparacion']['promedio_diario_30_dias']['total']);
+    }
+
+    /**
+     * El promedio de 30 días se divide por los días transcurridos desde la primera
+     * venta de la ventana, entre 1 y 30: sin ventas son los 30; con la primera hace
+     * 40 días (fuera de la ventana) y otra ayer, cuenta desde la primera DE LA VENTANA.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function el_promedio_de_30_dias_se_divide_por_los_dias_desde_la_primera_venta()
+    {
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+        $this->assertSame(30, $h['comparacion']['promedio_diario_30_dias']['dias_considerados']);
+        $this->assertEquals(0.0, $h['comparacion']['promedio_diario_30_dias']['total']);
+
+        $pinza = $this->articulo('Pinza');
+        $this->venta($this->ayer->copy()->subDays(40)->setTime(12, 0), [[$pinza, 1, 500]]);
+        $this->venta($this->ayer_a_las(12), [[$pinza, 2, 500]]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+        $this->assertSame(1, $h['comparacion']['promedio_diario_30_dias']['dias_considerados']);
+        $this->assertEquals(1.0, $h['comparacion']['promedio_diario_30_dias']['cantidad']);
+        $this->assertEquals(1000.0, $h['comparacion']['promedio_diario_30_dias']['total']);
+
+        $this->venta($this->ayer->copy()->subDays(4)->setTime(12, 0), [[$pinza, 1, 500]]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+        $this->assertSame(5, $h['comparacion']['promedio_diario_30_dias']['dias_considerados']);
+        $this->assertEquals(round(2 / 5, 1), $h['comparacion']['promedio_diario_30_dias']['cantidad']);
+        $this->assertEquals(300.0, $h['comparacion']['promedio_diario_30_dias']['total']);
     }
 
     /**
@@ -306,7 +340,7 @@ class Recolector_dia_Test extends MostradorTestCase
         $this->assertEquals(4.0, $a['volvieron_a_venderse'][0]['cantidad']);
 
         $this->assertSame([
-            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 5],
+            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 5, 'sucursal' => null],
         ], $a['quedaron_sin_stock']);
 
         // Martillo (0 < 5) y Cuchara (4 < 5).
@@ -389,6 +423,44 @@ class Recolector_dia_Test extends MostradorTestCase
             [$martillo->id, $pinza->id],
             array_column($h['articulos']['mas_vendidos'], 'article_id')
         );
+    }
+
+    /**
+     * En una cuenta con depósitos, lo que quedó en cero EN UNA SUCURSAL también se lista,
+     * con el nombre de la sucursal; el artículo en cero global va una sola vez (sin
+     * sucursal), y el que tiene stock en todas no aparece.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function en_una_cuenta_con_depositos_se_lista_lo_que_quedo_en_cero_por_sucursal()
+    {
+        $central = $this->sucursal('Casa central');
+        $norte   = $this->sucursal('Norte');
+
+        // Pinza: 5 en Central, 0 en Norte → global 5: sin stock solo en Norte.
+        $pinza = $this->articulo('Pinza', ['stock' => 5]);
+        $pinza->addresses()->attach($central->id, ['amount' => 5, 'stock_min' => 2]);
+        $pinza->addresses()->attach($norte->id, ['amount' => 0, 'stock_min' => 3]);
+
+        // Martillo: 0 y 0 → global 0: una sola entrada, sin sucursal.
+        $martillo = $this->articulo('Martillo', ['stock' => 0, 'stock_min' => 4]);
+        $martillo->addresses()->attach($central->id, ['amount' => 0, 'stock_min' => 2]);
+        $martillo->addresses()->attach($norte->id, ['amount' => 0, 'stock_min' => 2]);
+
+        // Cuchara: stock en las dos: no aparece.
+        $cuchara = $this->articulo('Cuchara', ['stock' => 6]);
+        $cuchara->addresses()->attach($central->id, ['amount' => 3]);
+        $cuchara->addresses()->attach($norte->id, ['amount' => 3]);
+
+        $this->venta($this->ayer_a_las(10), [[$pinza, 1, 500], [$martillo, 1, 1000], [$cuchara, 1, 100]], ['address_id' => $norte->id]);
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+
+        $this->assertSame([
+            ['article_id' => $martillo->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 4, 'sucursal' => null],
+            ['article_id' => $pinza->id, 'nombre' => 'Pinza', 'stock' => 0.0, 'stock_minimo' => 3, 'sucursal' => 'Norte'],
+        ], $h['articulos']['quedaron_sin_stock']);
     }
 
     /**

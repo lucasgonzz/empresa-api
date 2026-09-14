@@ -44,8 +44,10 @@ class MostradorController extends Controller
     /**
      * GET mostrador/reportes/{id}
      *
-     * El informe con su contenido. La primera apertura estampa leido_at. 404 si no es
-     * del dueño o no está 'listo'.
+     * El informe con su contenido. La primera apertura POR EL DUEÑO estampa leido_at:
+     * si lo abre alguien con admin_access (o el acceso maestro), el informe sigue
+     * "sin leer" para el dueño y la skill lo sigue mencionando como no leído. 404 si no
+     * es del dueño o no está 'listo'.
      *
      * @param int $id
      * @return JsonResponse
@@ -62,7 +64,7 @@ class MostradorController extends Controller
             return response()->json(['message' => 'Informe no encontrado.'], 404);
         }
 
-        if (is_null($reporte->leido_at)) {
+        if (is_null($reporte->leido_at) && MostradorHelper::es_el_dueno()) {
             $reporte->leido_at = now();
             $reporte->save();
         }
@@ -115,6 +117,19 @@ class MostradorController extends Controller
             'contexto'        => MostradorHelper::contexto_de_conversacion($reporte),
             'last_message_at' => now(),
         ]);
+
+        // Dos pestañas que preguntan a la vez crean dos conversaciones (no hay unique
+        // sobre origen + referencia_id + auth_user_id): después de crear se relee la
+        // más vieja y, si no es la recién creada, la nuestra sobra —nace sin mensajes—
+        // y gana la anterior, que es la que el escritorio ya resuelve.
+        $anterior = MostradorHelper::conversacion_de($reporte, $auth_user_id);
+
+        if ($anterior && (int) $anterior->id !== (int) $conversation->id) {
+            $conversation->messages()->delete();
+            $conversation->delete();
+
+            return response()->json(['model' => $anterior], 200);
+        }
 
         // Mismo refresh que AiConversationController@store: la SPA necesita la fila
         // completa, con los defaults de la base.

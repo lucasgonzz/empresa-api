@@ -207,8 +207,12 @@ class RecolectorTienda extends RecolectorBase
      */
     protected function productos(User $owner, Carbon $inicio, Carbon $fin): array
     {
+        // Todos los joins a articles / buyers / clients llevan también el user_id del
+        // dueño: defensa en profundidad en la base compartida por varios comercios, por
+        // si un evento trajera un article_id ajeno.
         $vistas = DB::table('buyer_tracking_events as e')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
+            ->where('a.user_id', $owner->id)
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'product_view')
             ->whereBetween('e.occurred_at', [$inicio, $fin])
@@ -242,6 +246,7 @@ class RecolectorTienda extends RecolectorBase
 
         $carrito = DB::table('buyer_tracking_events as e')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
+            ->where('a.user_id', $owner->id)
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'cart_add')
             ->whereBetween('e.occurred_at', [$inicio, $fin])
@@ -266,6 +271,7 @@ class RecolectorTienda extends RecolectorBase
         // tienda lo vende como disponible (RecolectorBase::en_cero).
         $sin_stock = $this->en_cero(DB::table('buyer_tracking_events as e'), 'a.stock')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
+            ->where('a.user_id', $owner->id)
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'product_view')
             ->whereBetween('e.occurred_at', [$inicio, $fin])
@@ -610,6 +616,8 @@ class RecolectorTienda extends RecolectorBase
         $filas = DB::table('buyer_tracking_events as e')
             ->join('buyers as b', 'b.id', '=', 'e.buyer_id')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
+            ->where('b.user_id', $owner->id)
+            ->where('a.user_id', $owner->id)
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'product_view')
             ->whereBetween('e.occurred_at', [$desde, $hasta])

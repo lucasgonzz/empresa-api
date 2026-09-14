@@ -147,7 +147,7 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         ], $h['contexto_financiero']);
 
         $this->assertSame([
-            ['article_id' => $rulo->id, 'nombre' => 'Rulo', 'busquedas_tienda_7d' => 2, 'consultas_whatsapp_7d' => null],
+            ['article_id' => $rulo->id, 'nombre' => 'Rulo', 'vistas_tienda_7d' => 2, 'consultas_whatsapp_7d' => null],
         ], $h['demanda_sin_stock']);
     }
 

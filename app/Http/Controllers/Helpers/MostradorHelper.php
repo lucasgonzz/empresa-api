@@ -49,11 +49,23 @@ class MostradorHelper
             return false;
         }
 
-        if ((int) UserHelper::userId(false) === (int) UserHelper::userId(true)) {
+        if (self::es_el_dueno()) {
             return true;
         }
 
         return (bool) $persona->admin_access;
+    }
+
+    /**
+     * true si la persona autenticada ES el dueño de la cuenta (no un empleado con
+     * admin_access ni el acceso maestro). Es lo que decide si abrir un informe lo marca
+     * leído: "leído" quiere decir leído por el dueño.
+     *
+     * @return bool
+     */
+    public static function es_el_dueno()
+    {
+        return (int) UserHelper::userId(false) === (int) UserHelper::userId(true);
     }
 
     /**

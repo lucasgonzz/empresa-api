@@ -27,9 +27,14 @@ use Illuminate\Support\Facades\DB;
  * recorte de trabajo, no de resultado.
  *
  * `demanda_sin_stock`: artículos en cero que la gente sigue abriendo en la tienda
- * (product_view de los últimos 7 días). `consultas_whatsapp_7d` viaja null: el sistema
- * no registra a qué artículo se refiere cada consulta de WhatsApp, y un conteo por
- * coincidencia de nombre sería un número inventado.
+ * (`vistas_tienda_7d`: product_view de los últimos 7 días). `consultas_whatsapp_7d`
+ * viaja null: el sistema no registra a qué artículo se refiere cada consulta de
+ * WhatsApp, y un conteo por coincidencia de nombre sería un número inventado.
+ *
+ * Toda deuda (con cada proveedor, total con proveedores, de clientes) sale de
+ * credit_accounts con UN solo criterio de moneda, el de RecolectorBase::
+ * consulta_deudas_en_pesos: así `deuda_con_proveedor` y `deuda_total_proveedores` no
+ * pueden desacordar. De ContextoFinancieroService se toma solo el disponible en cajas.
  */
 class RecolectorCompras extends RecolectorBase
 {
@@ -67,27 +72,22 @@ class RecolectorCompras extends RecolectorBase
 
         $provider_ids = array_keys($por_titular);
 
-        // Deuda por proveedor y disponible en cajas, con el servicio del módulo de compras
-        // (una query a credit_accounts para todos los proveedores + N cajas).
-        $contexto = ContextoFinancieroService::armar($owner->id, $provider_ids, []);
+        // Disponible en cajas con el servicio del módulo de compras (N cajas). La deuda
+        // por proveedor NO se le pide: sale de credit_accounts con el mismo criterio que
+        // los totales (ver docblock de la clase).
+        $contexto = ContextoFinancieroService::armar($owner->id, [], []);
 
-        $deuda_por_proveedor = [];
-        $nombre_por_proveedor = [];
-
-        foreach ($contexto['proveedores'] as $proveedor) {
-            $deuda_por_proveedor[(int) $proveedor['provider_id']] = (float) $proveedor['deuda_pesos'];
-            $nombre_por_proveedor[(int) $proveedor['provider_id']] = $proveedor['nombre'];
-        }
+        $deuda_por_proveedor = $this->deudas_en_pesos($owner, 'provider', $provider_ids);
 
         return [
             'aplica'        => true,
             'fecha'         => $fecha->format('Y-m-d'),
-            'por_proveedor' => $this->por_proveedor($owner, $por_titular, $deuda_por_proveedor, $nombre_por_proveedor),
+            'por_proveedor' => $this->por_proveedor($owner, $por_titular, $deuda_por_proveedor),
             'sin_proveedor' => $this->sin_proveedor($sin_proveedor),
             'contexto_financiero' => [
                 'saldo_cajas'             => $this->monto($contexto['caja_disponible_pesos']),
-                'deuda_total_proveedores' => $this->deuda_total($owner, 'provider'),
-                'deuda_clientes'          => $this->deuda_total($owner, 'client'),
+                'deuda_total_proveedores' => $this->deuda_total_en_pesos($owner, 'provider'),
+                'deuda_clientes'          => $this->deuda_total_en_pesos($owner, 'client'),
             ],
             'demanda_sin_stock' => $this->demanda_sin_stock($owner),
         ];
@@ -186,11 +186,10 @@ class RecolectorCompras extends RecolectorBase
      *
      * @param User $owner
      * @param array $por_titular Mapa provider_id => líneas
-     * @param array $deuda_por_proveedor
-     * @param array $nombre_por_proveedor
+     * @param array $deuda_por_proveedor Mapa provider_id => deuda en pesos
      * @return array
      */
-    protected function por_proveedor(User $owner, array $por_titular, array $deuda_por_proveedor, array $nombre_por_proveedor): array
+    protected function por_proveedor(User $owner, array $por_titular, array $deuda_por_proveedor): array
     {
         if (empty($por_titular)) {
             return [];
@@ -288,9 +287,7 @@ class RecolectorCompras extends RecolectorBase
                 ];
             }
 
-            $nombre = isset($nombre_por_proveedor[$provider_id]) && !is_null($nombre_por_proveedor[$provider_id])
-                ? $nombre_por_proveedor[$provider_id]
-                : (isset($nombres_otros[$provider_id]) ? $nombres_otros[$provider_id] : 'Proveedor #' . $provider_id);
+            $nombre = isset($nombres_otros[$provider_id]) ? $nombres_otros[$provider_id] : 'Proveedor #' . $provider_id;
 
             $resultado[] = [
                 'provider_id'         => $provider_id,
@@ -492,27 +489,6 @@ class RecolectorCompras extends RecolectorBase
     }
 
     /**
-     * Deuda total en pesos con los proveedores o de los clientes (credit_accounts,
-     * la fuente de verdad; saldo positivo = deuda).
-     *
-     * @param User $owner
-     * @param string $model_name 'provider' | 'client'
-     * @return float
-     */
-    protected function deuda_total(User $owner, string $model_name): float
-    {
-        $total = DB::table('credit_accounts')
-            ->where('user_id', $owner->id)
-            ->where('model_name', $model_name)
-            ->where(function ($q) {
-                $q->whereNull('moneda_id')->orWhere('moneda_id', self::MONEDA_PESOS);
-            })
-            ->sum('saldo');
-
-        return (float) $this->monto($total);
-    }
-
-    /**
      * Artículos en cero que la gente abrió en la tienda en los últimos 7 días, los más
      * mirados primero. Sin tienda (sin eventos) la lista queda vacía.
      *
@@ -525,6 +501,7 @@ class RecolectorCompras extends RecolectorBase
         // tienda lo vende como disponible (RecolectorBase::en_cero).
         $filas = $this->en_cero(DB::table('buyer_tracking_events as e'), 'a.stock')
             ->join('articles as a', 'a.id', '=', 'e.article_id')
+            ->where('a.user_id', $owner->id)
             ->where('e.user_id', $owner->id)
             ->where('e.event_type', 'product_view')
             ->where('e.occurred_at', '>=', now()->subDays(self::DIAS_DEMANDA)->startOfDay())
@@ -540,9 +517,9 @@ class RecolectorCompras extends RecolectorBase
 
         foreach ($filas as $fila) {
             $lista[] = [
-                'article_id'           => (int) $fila->article_id,
-                'nombre'               => (string) $fila->nombre,
-                'busquedas_tienda_7d'  => (int) $fila->vistas,
+                'article_id'            => (int) $fila->article_id,
+                'nombre'                => (string) $fila->nombre,
+                'vistas_tienda_7d'      => (int) $fila->vistas,
                 'consultas_whatsapp_7d' => null,
             ];
         }

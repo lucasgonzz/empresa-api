@@ -63,6 +63,47 @@ class Admin_sync_Test extends MostradorTestCase
     }
 
     /**
+     * Dos POST del mismo informe a la vez: el segundo INSERT choca contra la unique
+     * (user_id, tipo, fecha). Se simula metiendo la fila competidora en el `creating`
+     * de la nuestra: en vez de un 500, se relee la que ganó y se guardan los hechos ahí.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function la_carrera_por_la_unique_relee_la_fila_en_vez_de_dar_500()
+    {
+        $this->dar_extension();
+
+        $competidora = null;
+        $comercio = $this->comercio;
+        $fecha = $this->ayer->format('Y-m-d');
+
+        MostradorReporte::creating(function ($reporte) use (&$competidora, $comercio, $fecha) {
+            if (!is_null($competidora)) {
+                return;
+            }
+
+            $competidora = 'creando';
+            $competidora = MostradorReporte::create([
+                'user_id' => $comercio->id,
+                'tipo'    => 'dia',
+                'fecha'   => $fecha,
+                'estado'  => 'hechos',
+            ]);
+        });
+
+        $respuesta = $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'dia']);
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertJsonPath('reporte_id', $competidora->id);
+        $respuesta->assertJsonPath('estado', 'hechos');
+        $respuesta->assertJsonPath('hechos.aplica', true);
+
+        $this->assertSame(1, MostradorReporte::where('user_id', $this->comercio->id)->where('tipo', 'dia')->count());
+        $this->assertNotNull($competidora->fresh()->hechos_at);
+    }
+
+    /**
      * dia y tienda hablan de un día cerrado: hoy o más adelante es 422. compras y stock
      * hablan siempre de hoy: la fecha del body se ignora y la respuesta lo avisa.
      *
