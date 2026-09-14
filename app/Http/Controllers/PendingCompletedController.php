@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\agenda\AgendaCompletarHelper;
+use App\Http\Controllers\Helpers\agenda\AgendaFechaInvalidaException;
 use App\Http\Controllers\Helpers\agenda\AgendaGastoRequeridoException;
 use App\Http\Controllers\Helpers\agenda\AgendaYaCompletadaException;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
@@ -114,6 +115,10 @@ class PendingCompletedController extends Controller
             return response()->json(['message' => $e->getMessage()], 409);
 
         } catch (AgendaGastoRequeridoException $e) {
+
+            return response()->json(['message' => $e->getMessage()], 422);
+
+        } catch (AgendaFechaInvalidaException $e) {
 
             return response()->json(['message' => $e->getMessage()], 422);
         }

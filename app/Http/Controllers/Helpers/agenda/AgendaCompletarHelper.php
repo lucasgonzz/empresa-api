@@ -26,9 +26,15 @@ class AgendaCompletarHelper {
     const MENSAJE_GASTO_REQUERIDO = 'Esta tarea tiene un gasto asociado: indicá cómo se pagó, o marcala como hecha sin registrar el gasto.';
 
     /**
-     * Mensaje del 409 cuando la ocurrencia ya estaba marcada.
+     * Mensaje del 409 cuando la ocurrencia ya estaba marcada. Lo lee el usuario tal cual, así
+     * que dice "tarea" y "fecha", no "ocurrencia" (jerga de este helper).
      */
-    const MENSAJE_YA_COMPLETADA = 'Esta ocurrencia ya estaba marcada como hecha.';
+    const MENSAJE_YA_COMPLETADA = 'Esta tarea ya estaba marcada como hecha para esa fecha.';
+
+    /**
+     * Mensaje del 422 cuando la fecha no es una ocurrencia de la tarea.
+     */
+    const MENSAJE_FECHA_INVALIDA = 'Esa fecha no corresponde a esta tarea.';
 
     /**
      * @param  \App\Models\Pending  $pending  La tarea, ya verificada como de la cuenta por el controller.
@@ -42,6 +48,7 @@ class AgendaCompletarHelper {
      *
      * @throws AgendaYaCompletadaException  Si la ocurrencia ya estaba marcada (→ 409).
      * @throws AgendaGastoRequeridoException  Si la tarea tiene gasto y faltan los datos para registrarlo (→ 422).
+     * @throws AgendaFechaInvalidaException  Si la fecha no es una ocurrencia de la tarea (→ 422).
      */
     static function completar($pending, Carbon $fecha, array $datos, $user_id, $num_expense_resolver) {
 
@@ -64,6 +71,14 @@ class AgendaCompletarHelper {
             if (is_null($pending)) {
 
                 throw new \RuntimeException('La tarea ya no existe.');
+            }
+
+            // El lock devolvió la fila sin relaciones: es_ocurrencia() necesita la unidad.
+            $pending->load('unidad_frecuencia');
+
+            if (!AgendaHelper::es_ocurrencia($pending, $fecha)) {
+
+                throw new AgendaFechaInvalidaException(self::MENSAJE_FECHA_INVALIDA);
             }
 
             $ya_completada = PendingCompleted::where('pending_id', $pending->id)

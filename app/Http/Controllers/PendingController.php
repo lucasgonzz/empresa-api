@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\agenda\AgendaHelper;
+use App\Models\ExpenseConcept;
 use App\Models\Pending;
 use App\Models\PendingCompleted;
 use App\Models\UnidadFrecuencia;
@@ -187,13 +188,37 @@ class PendingController extends Controller
         }
 
         /*
+         * Si cambió la REGLA de una recurrente (primera fecha, unidad o cantidad) y la primera
+         * fecha nueva quedó en el pasado, la base se mueve a la primera ocurrencia de la regla
+         * nueva desde hoy. Sin esto, las ocurrencias ya hechas bajo la regla vieja reaparecían
+         * como vencidas: una mensual del 5 con tres realizadas, editada al 10, devolvía 10/6, 10/7
+         * y 10/8 en rojo, porque la expansión arranca siempre en la base con la regla actual y
+         * las PendingCompleted viejas quedan colgadas de otras fechas. La edición de una regla
+         * es "de acá en adelante"; lo ya hecho queda en Realizadas con su fecha. Una edición que
+         * no toca la regla (detalle, notas, monto, gasto) no mueve nada. Lo encontró el chequeo
+         * independiente del 14/9/2026.
+         */
+        $datos['fecha_realizacion'] = $this->reanclar_si_cambio_la_regla($model, $datos);
+
+        /*
          * Hasta el 14/9/2026 update() no escribía `expense_amount`: el monto se perdía al editar
          * la tarea. Ahora se guarda el mismo conjunto de columnas que en store(), incluida
-         * `fecha_fin_recurrencia`. `completado` no se toca acá: lo maneja PendingCompletedController.
+         * `fecha_fin_recurrencia`.
          */
         foreach ($datos as $columna => $valor) {
 
             $model->{$columna} = $valor;
+        }
+
+        /*
+         * `completado` solo se puede BAJAR desde acá, y solo si viene explícito en false: es la
+         * salida para las puntuales que la SPA vieja dejó en `completado = 1` sin PendingCompleted
+         * (no tienen nada que deshacer en PendingCompletedController). Subirlo a 1 sigue siendo
+         * trabajo exclusivo de marcar como hecha, que es lo que registra el gasto.
+         */
+        if ($request->has('completado') && !$request->boolean('completado')) {
+
+            $model->completado = 0;
         }
 
         $model->save();
@@ -215,6 +240,61 @@ class PendingController extends Controller
         $model->delete();
         $this->sendDeleteModelNotification('Pending', $model->id);
         return response(null);
+    }
+
+    /**
+     * Fecha base que corresponde guardar al editar. Si la tarea sigue (o pasa a ser) recurrente y
+     * cambió alguno de los tres datos de la regla, y la primera fecha pedida es anterior a hoy,
+     * devuelve la primera ocurrencia de la regla nueva que cae en hoy o después. En cualquier
+     * otro caso devuelve la fecha tal como vino. Ver el comentario en update().
+     *
+     * @param  \App\Models\Pending  $model  La tarea como está guardada hoy.
+     * @param  array  $datos  Lo validado por validar_tarea().
+     * @return string  `Y-m-d 00:00:00`
+     */
+    protected function reanclar_si_cambio_la_regla($model, array $datos) {
+
+        if (!$datos['es_recurrente']) {
+
+            return $datos['fecha_realizacion'];
+        }
+
+        $misma_regla = (bool) $model->es_recurrente
+            && Carbon::parse($model->fecha_realizacion)->format('Y-m-d') === substr($datos['fecha_realizacion'], 0, 10)
+            && (int) $model->unidad_frecuencia_id === (int) $datos['unidad_frecuencia_id']
+            && (int) $model->cantidad_frecuencia === (int) $datos['cantidad_frecuencia'];
+
+        if ($misma_regla) {
+
+            return $datos['fecha_realizacion'];
+        }
+
+        $hoy = Carbon::today();
+        $base = Carbon::parse($datos['fecha_realizacion'])->startOfDay();
+
+        if ($base->gte($hoy)) {
+
+            return $datos['fecha_realizacion'];
+        }
+
+        // Una tarea "de mentira" con la regla nueva, solo para expandirla con AgendaHelper.
+        $regla = new Pending([
+            'es_recurrente'         => 1,
+            'fecha_realizacion'     => $base->format('Y-m-d 00:00:00'),
+            'unidad_frecuencia_id'  => $datos['unidad_frecuencia_id'],
+            'cantidad_frecuencia'   => $datos['cantidad_frecuencia'],
+        ]);
+        $regla->setRelation('unidad_frecuencia', UnidadFrecuencia::find($datos['unidad_frecuencia_id']));
+
+        for ($k = AgendaHelper::k_inicial($regla, $base, $hoy); ; $k++) {
+
+            $ocurrencia = AgendaHelper::ocurrencia($regla, $k, $base);
+
+            if ($ocurrencia->gte($hoy)) {
+
+                return $ocurrencia->format('Y-m-d 00:00:00');
+            }
+        }
     }
 
     /**
@@ -303,6 +383,14 @@ class PendingController extends Controller
         // Un select sin elegir llega como 0, '' o null: los tres son "sin gasto".
         $expense_concept_id = (int) $request->expense_concept_id > 0 ? (int) $request->expense_concept_id : null;
         $expense_amount = null;
+
+        // El concepto tiene que existir y ser de la cuenta: un id ajeno guardado acá terminaría
+        // creando gastos con el concepto de otro comercio al marcar la tarea como hecha.
+        if (!is_null($expense_concept_id)
+            && !ExpenseConcept::where('id', $expense_concept_id)->where('user_id', $this->userId())->exists()) {
+
+            return 'El concepto de gasto elegido no existe. Creá los conceptos en ABM → Gastos.';
+        }
 
         if (!is_null($expense_concept_id)) {
 

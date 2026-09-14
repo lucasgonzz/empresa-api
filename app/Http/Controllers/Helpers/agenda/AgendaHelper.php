@@ -55,9 +55,11 @@ class AgendaHelper {
      * @param  int  $k
      * @return \Carbon\Carbon
      */
-    static function ocurrencia($pending, $k) {
+    static function ocurrencia($pending, $k, Carbon $base = null) {
 
-        $fecha = self::fecha_base($pending);
+        // La base se puede pasar ya parseada: en las caminatas se llama cientos de veces por
+        // tarea y Carbon::parse en cada vuelta era lo que más pesaba.
+        $fecha = is_null($base) ? self::fecha_base($pending) : $base->copy();
 
         if ($k <= 0 || !self::regla_valida($pending)) {
 
@@ -67,6 +69,98 @@ class AgendaHelper {
         $metodo = self::METODO_POR_UNIDAD[$pending->unidad_frecuencia->slug];
 
         return $fecha->{$metodo}((int) $pending->cantidad_frecuencia * (int) $k);
+    }
+
+    /**
+     * Primer k cuya ocurrencia PUEDE caer en o después de `$desde`, calculado y no caminado.
+     *
+     * Sin esto, las dos caminatas (rango y vencidas) arrancaban en k = 0: una tarea diaria
+     * creada hace dos años eran ~700 vueltas por tarea, por request y por caminata. Se calcula
+     * por debajo (nunca por encima): para día y semana la cuenta es exacta; para mes y año la
+     * aritmética "sin desborde" puede mover el día, así que se resta uno y se deja que el loop
+     * avance lo que falte. El loop de arriba sigue siendo el que decide qué entra: esto solo le
+     * ahorra las vueltas que seguro quedan antes del rango.
+     *
+     * @param  \App\Models\Pending  $pending  Con la regla válida (ver regla_valida()).
+     * @param  \Carbon\Carbon  $base
+     * @param  \Carbon\Carbon  $desde
+     * @return int
+     */
+    static function k_inicial($pending, Carbon $base, Carbon $desde) {
+
+        if ($desde->lte($base)) {
+
+            return 0;
+        }
+
+        $n = max(1, (int) $pending->cantidad_frecuencia);
+
+        switch ($pending->unidad_frecuencia->slug) {
+
+            case 'day':
+                $k = intdiv($base->diffInDays($desde), $n);
+                break;
+
+            case 'week':
+                $k = intdiv($base->diffInDays($desde), 7 * $n);
+                break;
+
+            case 'month':
+                $k = intdiv($base->diffInMonths($desde), $n) - 1;
+                break;
+
+            case 'year':
+                $k = intdiv($base->diffInYears($desde), $n) - 1;
+                break;
+
+            default:
+                $k = 0;
+        }
+
+        return max(0, $k);
+    }
+
+    /**
+     * ¿`$fecha` es una ocurrencia real de la tarea? Una puntual solo tiene su fecha base; una
+     * recurrente, las que genera su regla (respetando el fin). Lo usa completar() para no dejar
+     * un PendingCompleted colgado de una fecha que ningún cálculo va a mirar (la SPA nunca lo
+     * manda; es defensa contra un llamador directo).
+     *
+     * @param  \App\Models\Pending  $pending
+     * @param  \Carbon\Carbon  $fecha
+     * @return bool
+     */
+    static function es_ocurrencia($pending, Carbon $fecha) {
+
+        $fecha = $fecha->copy()->startOfDay();
+        $base = self::fecha_base($pending);
+
+        if (!self::regla_valida($pending)) {
+
+            return $fecha->eq($base);
+        }
+
+        $fin = self::fecha_fin($pending);
+
+        if (!is_null($fin) && $fecha->gt($fin)) {
+
+            return false;
+        }
+
+        for ($k = self::k_inicial($pending, $base, $fecha); ; $k++) {
+
+            $ocurrencia = self::ocurrencia($pending, $k, $base);
+
+            if ($ocurrencia->eq($fecha)) {
+
+                return true;
+            }
+
+            if ($ocurrencia->gt($fecha)) {
+
+                return false;
+            }
+        }
     }
 
     /**
@@ -142,10 +236,11 @@ class AgendaHelper {
             }
 
             $fin = self::fecha_fin($pending);
+            $base = self::fecha_base($pending);
 
-            for ($k = 0; ; $k++) {
+            for ($k = self::k_inicial($pending, $base, $desde); ; $k++) {
 
-                $fecha = self::ocurrencia($pending, $k);
+                $fecha = self::ocurrencia($pending, $k, $base);
 
                 if ($fecha->gt($hasta) || (!is_null($fin) && $fecha->gt($fin))) {
 
@@ -222,12 +317,16 @@ class AgendaHelper {
             }
 
             $fin = self::fecha_fin($pending);
+            $base = self::fecha_base($pending);
 
             $de_esta_tarea = [];
 
+            // Acá sí se arranca en k = 0: vencida es toda ocurrencia desde la base que no se
+            // hizo, y la base es lo que la regla dice. Con la base ya parseada, cada vuelta es
+            // una suma de Carbon y nada más.
             for ($k = 0; ; $k++) {
 
-                $fecha = self::ocurrencia($pending, $k);
+                $fecha = self::ocurrencia($pending, $k, $base);
 
                 if ($fecha->gte($hoy) || (!is_null($fin) && $fecha->gt($fin))) {
 
