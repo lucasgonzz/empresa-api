@@ -197,7 +197,7 @@ class ListadoVentasHelper
         }
 
         /* Solapa de empleado. "Dueño" (only_owner) manda sobre employee_id, igual que en el Excel. */
-        $only_owner = (int) $request->query('only_owner', 0) === 1;
+        $only_owner = self::bandera($request, 'only_owner');
         $employee_id = $request->query('employee_id');
 
         if ($only_owner) {
@@ -448,7 +448,21 @@ class ListadoVentasHelper
      */
     static function mostrar_consolidadas(Request $request)
     {
-        return (int) $request->query('mostrar_consolidadas', 0) === 1;
+        return self::bandera($request, 'mostrar_consolidadas');
+    }
+
+    /**
+     * Lee una bandera 0/1 de la query string aceptando tambien `true`/`false`: en el store de la SPA
+     * `mostrar_consolidadas` y `only_owner` son booleanos, y si viajan sin convertir axios los
+     * serializa como "true"/"false", que un `(int)` leeria como 0.
+     *
+     * @param  Request $request
+     * @param  string  $nombre
+     * @return bool
+     */
+    static function bandera(Request $request, $nombre)
+    {
+        return filter_var($request->query($nombre, 0), FILTER_VALIDATE_BOOLEAN);
     }
 
     /**
