@@ -722,6 +722,49 @@ class IntegracionesZipnovaTest extends EmpresaTestCase
     }
 
     /**
+     * Un token que no se puede descifrar (APP_KEY cambiada, fila escrita en plano) se trata como
+     * NO conectado: la tarjeta lo muestra desconectado, y la prueba y los depósitos responden 422
+     * con un mensaje que apunta a la causa, sin mandarle a Zipnova un `Basic` vacío que volvería
+     * como "no reconoció el token o el secret" (culpando al comercio).
+     *
+     * @return void
+     */
+    public function test_un_token_indescifrable_se_trata_como_no_conectado()
+    {
+        Http::fake();
+
+        $conector = $this->conector_zipnova();
+
+        DB::table('platform_connectors')->where('id', $conector->id)->update(['access_token' => 'esto-no-es-un-cifrado-valido']);
+
+        $zipnova = $this->item_zipnova_del_listado();
+
+        $this->assertFalse($zipnova['connected'], 'Un conector cuyo token no se puede descifrar figuró conectado.');
+        $this->assertArrayNotHasKey('config', $zipnova);
+
+        $respuesta = $this->postJson('/api/integraciones/zipnova/cotizar-prueba', ['zipcode' => '5000']);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('sin_zipnova', $respuesta->json('codigo'));
+        $this->assertStringContainsString('La credencial guardada no se puede leer', $respuesta->json('message'));
+        $this->assertStringNotContainsString('no reconoció', $respuesta->json('message'));
+
+        $respuesta = $this->postJson('/api/integraciones/zipnova/origenes');
+
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('La credencial guardada no se puede leer', $respuesta->json('message'));
+
+        Http::assertNothingSent();
+
+        // Desconectar sigue andando (no necesita leer el token) y deja el conector limpio para
+        // volver a conectar.
+        $this->postJson('/api/integraciones/zipnova/disconnect')->assertStatus(200);
+
+        $this->assertNull($conector->fresh()->getAttributes()['access_token']);
+        $this->assertSame(PlatformConnector::STATUS_SIN_CONECTAR, $conector->fresh()->status);
+    }
+
+    /**
      * "Actualizar depósitos" vuelve a pedir `GET /addresses` y actualiza la lista; si el elegido
      * ya no existe en Zipnova pasa al primero de la lista nueva.
      *
