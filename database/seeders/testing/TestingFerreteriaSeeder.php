@@ -374,13 +374,12 @@ class TestingFerreteriaSeeder extends Seeder
         User::where('email', self::USER_EMAIL)->update(['usar_condicion_fiscal_en_costeo' => 1]);
 
         /*
-         * Vigencia del reporte de inventario en 1 minuto (produccion usa 30). Sin esto la
-         * exploracion de la pestaña "Stock minimo" de Alertas no es determinista: el reporte se
-         * regenera solo cuando vencio, asi que un spec que configura un stock minimo y espera
-         * verlo en los chips puede quedarse mirando un reporte de hace 20 minutos que ya no se
-         * va a regenerar durante toda la corrida. Con 1 minuto, re-entrar a la pestaña despues
-         * del cambio siempre encola la regeneracion (la procesa el worker de cola del slot).
-         * Exploracion de Alertas, 3/9/2026.
+         * Vigencia del reporte de inventario en 1 minuto. Lo dejo la exploracion de Alertas del
+         * 3/9/2026 para que el spec de "Stock minimo" pudiera forzar la regeneracion re-entrando a
+         * la pestaña. OJO: desde la 4.0.24 esta columna NO se lee (InventoryPerformanceHelper usa
+         * DIAS_DE_VIGENCIA = 7, fijo, y el reporte se genera de noche o con el boton Actualizar),
+         * asi que hoy el UPDATE es inofensivo pero no hace nada; el spec quedo en fixme hasta que se
+         * adapte al boton. Se conserva para no cambiar el fixture en el mismo merge (14/9/2026).
          */
         User::where('email', self::USER_EMAIL)->update(['duracion_reporte_inventario' => 1]);
 
