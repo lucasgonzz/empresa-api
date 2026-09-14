@@ -30,6 +30,26 @@ class EnvioDestinoHelper
     const OBLIGATORIOS_DOMICILIO = ['calle', 'numero'];
 
     /**
+     * Largo máximo de cada campo de texto. El destino lo escribe un endpoint público en un json
+     * del carrito y después en `orders.address` (TEXT): sin tope, un body de 100 KB en
+     * `referencia` es bloat gratis por request y un "Data too long" al crear el pedido.
+     */
+    const LARGOS = [
+        'nombre'        => 80,
+        'apellido'      => 80,
+        'documento'     => 11,
+        'email'         => 120,
+        'telefono'      => 30,
+        'calle'         => 120,
+        'numero'        => 20,
+        'piso_depto'    => 40,
+        'localidad'     => 80,
+        'provincia'     => 80,
+        'codigo_postal' => 8,
+        'referencia'    => 200,
+    ];
+
+    /**
      * Deja solo las claves conocidas, recortadas y con los tipos que corresponden.
      *
      * @param array $destino
@@ -54,6 +74,9 @@ class EnvioDestinoHelper
             $texto = is_scalar($valor) ? trim((string) $valor) : '';
             if ($clave === 'documento' || $clave === 'codigo_postal') {
                 $texto = preg_replace('/\s+/', '', $texto);
+            }
+            if (isset(self::LARGOS[$clave])) {
+                $texto = mb_substr($texto, 0, self::LARGOS[$clave]);
             }
             $limpio[$clave] = $texto === '' ? null : $texto;
         }

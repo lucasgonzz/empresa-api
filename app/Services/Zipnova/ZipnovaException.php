@@ -78,10 +78,25 @@ class ZipnovaException extends \RuntimeException
             return false;
         }
 
-        $texto = strtolower($this->getMessage() . ' ' . json_encode($this->body));
+        // Primero lo estructurado: errores de validación sobre `destination.*` (422 de Laravel
+        // del lado de Zipnova). Después el texto del mensaje, pero solo con palabras que hablen
+        // del destino: "state" o "city" a secas matchean cosas como "Invalid account state" y
+        // mandarían al comprador a cargar la localidad por un error que no es suyo.
+        if (isset($this->body['errors']) && is_array($this->body['errors'])) {
+            foreach (array_keys($this->body['errors']) as $campo) {
+                if (strpos((string) $campo, 'destination') === 0) {
+                    return true;
+                }
+            }
+        }
 
-        foreach (['destination', 'destino', 'ubicaci', 'location', 'zipcode', 'city', 'ciudad', 'localidad', 'state', 'provincia'] as $aguja) {
-            if (strpos($texto, $aguja) !== false) {
+        $mensaje = strtolower((string) $this->getMessage());
+        if (isset($this->body['message']) && is_string($this->body['message'])) {
+            $mensaje .= ' ' . strtolower($this->body['message']);
+        }
+
+        foreach (['destination', 'destino', 'ubicaci', 'location', 'localidad', 'zipcode', 'postal', 'código postal', 'codigo postal'] as $aguja) {
+            if (strpos($mensaje, $aguja) !== false) {
                 return true;
             }
         }

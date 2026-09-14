@@ -375,7 +375,12 @@ class ZipnovaClient
         try {
             $response = $this->ejecutar($method, $url, $query, $body);
 
-            if ($response->status() === 429) {
+            // El reintento ante 429 se apaga por config en la tienda (`services.zipnova.reintento_429`):
+            // ahí cotiza un endpoint público, y un worker PHP dormido 5 segundos por cada comprador
+            // mientras Zipnova limita por IP del servidor —compartida por todas las tiendas del
+            // shared— es justo lo que frena al cliente entero. En el ERP, que opera de a un envío,
+            // el reintento sí paga.
+            if ($response->status() === 429 && (bool) config('services.zipnova.reintento_429', true)) {
                 $espera = (int) $response->header('Retry-After');
                 if ($espera > 0) {
                     sleep(min($espera, self::MAX_RETRY_AFTER));
