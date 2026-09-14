@@ -65,7 +65,7 @@ class TiendaNubeOrderService extends BaseTiendaNubeService
                 'address_id'    => 0,
                 'payment_status'          => $this->traducir_payment_status($orden_data['payment_status']),
                 'tienda_nube_order_status_id' => 1,
-                'created_at'    => $order['created_at'],
+                'created_at'    => $orden_data['created_at'],
                 'user_id'       => UserHelper::userId(),
             ]);
 
