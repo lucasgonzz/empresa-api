@@ -47,11 +47,26 @@ class PreviusDayController extends Controller
         while ($start < $end) {
             $start_date = $start->format('Y-m-d H:i:s');
             $end_date = $start->addDay()->format('Y-m-d H:i:s');
-            $models = $model_name::where('user_id', UserHelper::userId())
+            /*
+             * Solo los ids. Hasta el 14/9/2026 esto bajaba las filas COMPLETAS de los 7 dias de la
+             * semana (para ventas, con todas sus columnas) y el unico consumidor, la tira de dias de
+             * `ControlFecha.vue`, leia `day.models.length` y nada mas. `models` se mantiene, con el
+             * mismo largo, para que la SPA vieja siga andando; `cantidad` es lo que lee la nueva.
+             * Es un endpoint generico para cualquier modelo fechado, asi que no se especializa.
+             *
+             * Van como arrays `['id' => N]` y NO como modelos con `select('id')`: al serializar un
+             * modelo, Eloquent corre sus `$appends` igual (ProviderOrder calcula `iva_breakdown`,
+             * ProductionBatch sus montos), o sea una consulta mas por fila para un dato que nadie
+             * lee. Un array no tiene accessors. La forma JSON es la misma: `[{"id": N}, ...]`.
+             */
+            $ids = $model_name::where('user_id', UserHelper::userId())
                             ->whereBetween($date_param, [$start_date, $end_date])
-                            ->get();
+                            ->pluck('id');
             $result[$index]['date'] = $start_date;
-            $result[$index]['models'] = $models;
+            $result[$index]['models'] = $ids->map(function ($id) {
+                return ['id' => $id];
+            })->values()->all();
+            $result[$index]['cantidad'] = count($ids);
             $index++;
         }
         return response()->json(['days' => $result], 200);

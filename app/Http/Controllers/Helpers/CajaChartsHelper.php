@@ -33,8 +33,9 @@ class CajaChartsHelper {
 		 * el mismo criterio que el listado: si no, prendida la preferencia el listado se mueve y el
 		 * grafico se queda en fecha de carga, que es justo el acoplamiento que esta mision cierra.
 		 *
-		 * El scope reproduce las dos ramas de aca tal cual (rango con until_date, o un solo dia sin
-		 * el), asi que con la preferencia apagada el SQL es el mismo de siempre. La unica diferencia
+		 * El scope reproduce las dos ramas de aca (rango con until_date, o un solo dia sin el), asi
+		 * que con la preferencia apagada las filas son las mismas de siempre (desde el 14/9/2026 el
+		 * dia se pide como rango y no con DATE(), para poder usar el indice). La unica diferencia
 		 * de forma esta en dos casos que esta funcion no recibe: un $from_date nulo/vacio (el scope
 		 * no filtra; el codigo viejo comparaba contra null) y un $until_date cadena vacia (el scope
 		 * lo trata como "un solo dia"). Los tres llamadores pasan o un parametro de ruta o un Carbon.

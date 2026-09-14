@@ -473,6 +473,18 @@ class SearchController extends Controller
             $models = $models->withAll();
         }
 
+        // Mismo gate que arriba, para scopeSinEmbedding (misión busqueda-lenta-y-pausa-embeddings).
+        // Hoy solo Article lo define, pero este endpoint es genérico para ~150 modelos y el gate por
+        // method_exists es OBLIGATORIO: llamar a ->sinEmbedding() sobre un modelo que no lo define
+        // tira BadMethodCallException, el mismo motivo de arriba para scopeWithAll. Va DESPUÉS de
+        // withAll() pero no hay conflicto de orden: sinEmbedding() hace un select() explícito (ver
+        // Article::scopeSinEmbedding) y withAll() solo agrega eager loads, nunca toca columnas. Y el
+        // select explícito sobrevive al paginate() de más abajo (pasa ['*'] como columnas, pero
+        // Eloquent solo usa ese valor si el builder todavía no tiene columnas seteadas).
+        if (method_exists($model_instance, 'scopeSinEmbedding')) {
+            $models = $models->sinEmbedding();
+        }
+
         // Exclusión de insumos (contexto Vender), aplicada ANTES del grupo de coincidencia de texto
         // para que quede AND'eada con el resto de la query, igual que search_nombre.
         if ($usar_contexto_vender) {
