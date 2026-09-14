@@ -22,6 +22,13 @@ use Illuminate\Database\Eloquent\Model;
  * - 'sugerencia_oferta': ídem con una corrida del motor de ofertas por cliente
  *   terminada (referencia_id = offer_suggestions.id). Toda misión que sume un
  *   origen actualiza esta lista en el MISMO commit: no hay enum ni constante.
+ * - 'mostrador_reporte': la abrió el dueño desde un informe del mostrador del
+ *   módulo IA (referencia_id = mostrador_reportes.id, misión modulo-ia-mostrador).
+ *   Una por (informe, persona); la crea MostradorController@conversacion con el
+ *   informe pasado a texto plano más sus hechos como `contexto`, y es la ÚNICA
+ *   conversación que después lee alguien más que la persona: la skill /mostrador
+ *   la recibe por admin-sync/mostrador/contexto para saber qué le importa al dueño
+ *   (MostradorReporte::ORIGEN_CONVERSACION).
  *
  * `contexto` guarda el bloque de DATOS ya calculados de la sugerencia (no las
  * instrucciones de redacción): viaja como segundo bloque del system en cada
