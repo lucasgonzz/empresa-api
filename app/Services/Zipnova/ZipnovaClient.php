@@ -400,7 +400,9 @@ class ZipnovaClient
         $json = $response->json();
         $body_decodificado = is_array($json) ? $json : [];
 
-        Log::warning('ZipnovaClient: ' . $method . ' ' . $path . ' respondió ' . $response->status() . ': ' . substr((string) $response->body(), 0, 1000));
+        // Solo los primeros 300 caracteres del body: alcanza para diagnosticar y evita dejar en
+        // laravel.log el `destination` entero (nombre, DNI, teléfono) que un 422 puede ecoar.
+        Log::warning('ZipnovaClient: ' . $method . ' ' . $path . ' respondió ' . $response->status() . ': ' . substr((string) $response->body(), 0, 300));
 
         throw new ZipnovaException(self::mensaje_de_error($response->status(), $body_decodificado), $response->status(), $body_decodificado);
     }

@@ -72,7 +72,12 @@ class EnvioDestinoHelper
             }
 
             $texto = is_scalar($valor) ? trim((string) $valor) : '';
-            if ($clave === 'documento' || $clave === 'codigo_postal') {
+            if ($clave === 'documento') {
+                // "30.111.222" y "20-30111222-3" son la forma en que la gente escribe su DNI o
+                // CUIT: se sacan puntos, guiones y espacios antes de validar los dígitos.
+                $texto = preg_replace('/[\s.\-]/', '', $texto);
+            }
+            if ($clave === 'codigo_postal') {
                 $texto = preg_replace('/\s+/', '', $texto);
             }
             if (isset(self::LARGOS[$clave])) {
