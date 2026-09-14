@@ -295,6 +295,9 @@ return [
         'base_url'         => env('ZIPNOVA_BASE_URL', 'https://api.zipnova.com.ar/v2'),
         // Segundos máximos de espera por respuesta. Zipnova cotiza en ~1-3 s; 20 cubre un pico.
         'timeout'          => (int) env('ZIPNOVA_TIMEOUT', 20),
+        // Reintento único ante 429 respetando Retry-After (máx. 5 s). En el ERP queda prendido:
+        // opera de a un envío. En la tienda está apagado (endpoint público, IP compartida).
+        'reintento_429'    => filter_var(env('ZIPNOVA_REINTENTO_429', true), FILTER_VALIDATE_BOOLEAN),
         // Verificación del certificado. Por defecto true (en el header viaja el token del
         // comercio: desactivarla no es opción en producción). En wamp el PHP no encuentra el
         // bundle solo: se le pasa por `guzzle_ca_bundle`, o cae al de `zippin` que ya está cargado.

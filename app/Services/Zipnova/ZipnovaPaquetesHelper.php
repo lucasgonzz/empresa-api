@@ -140,29 +140,6 @@ class ZipnovaPaquetesHelper
     }
 
     /**
-     * Hash de las líneas (artículo + cantidad), para saber si hace falta re-cotizar. No entra el
-     * precio: un cambio de precio no cambia el paquete.
-     *
-     * @param array $lineas Mismo formato que `items_desde_lineas`.
-     * @return string md5.
-     */
-    public static function hash_de_lineas(array $lineas)
-    {
-        $partes = [];
-        foreach ($lineas as $linea) {
-            if (!isset($linea['article']) || !is_object($linea['article'])) {
-                continue;
-            }
-            $id = isset($linea['article']->id) ? (string) $linea['article']->id : '0';
-            $amount = isset($linea['amount']) ? (int) $linea['amount'] : 1;
-            $partes[] = $id . 'x' . $amount;
-        }
-        sort($partes);
-
-        return md5(implode(',', $partes));
-    }
-
-    /**
      * Kilogramos (decimal) a gramos enteros dentro de los límites de Zipnova.
      *
      * @param float $kg
