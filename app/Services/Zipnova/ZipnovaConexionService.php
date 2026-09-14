@@ -40,6 +40,14 @@ class ZipnovaConexionService
     const MAX_ETIQUETA = 160;
 
     /**
+     * Mensaje para el operador cuando hay conector pero el token no se puede descifrar (la
+     * APP_KEY cambió, o la fila se escribió en plano). Apunta a la causa: sin esto la prueba
+     * respondía "Zipnova no reconoció el token o el secret", que culpa al comercio por unas
+     * credenciales que nunca llegaron a Zipnova.
+     */
+    const MENSAJE_CREDENCIAL_ILEGIBLE = 'La credencial guardada no se puede leer. Desconectá y volvé a conectar Zipnova.';
+
+    /**
      * Conecta la cuenta de Zipnova del comercio con su API Token + API Secret.
      *
      * Pasos, en orden y con el porqué:
@@ -232,8 +240,7 @@ class ZipnovaConexionService
     {
         $connector = $this->conector_conectado($user_id);
 
-        $credentials = ZipnovaCredentialsHelper::credentials((int) $user_id);
-        $client = new ZipnovaClient($credentials['basic'], $credentials['account_id']);
+        list($client, $credentials) = $this->client_del_comercio($user_id);
 
         $origins = $this->origenes_desde_addresses($client->addresses($credentials['account_id']));
 
@@ -268,10 +275,7 @@ class ZipnovaConexionService
      */
     public function cotizar_prueba($user_id, $zipcode, $city = null, $state = null)
     {
-        $this->conector_conectado($user_id);
-
-        $credentials = ZipnovaCredentialsHelper::credentials((int) $user_id);
-        $client = new ZipnovaClient($credentials['basic'], $credentials['account_id']);
+        list($client, $credentials) = $this->client_del_comercio($user_id);
         $config = $credentials['config'];
 
         $destination = ['zipcode' => trim((string) $zipcode)];
@@ -314,6 +318,31 @@ class ZipnovaConexionService
         }
 
         return $connector;
+    }
+
+    /**
+     * Cliente de Zipnova del comercio con la credencial YA descifrada, más las credenciales.
+     *
+     * `connector()` mira el atributo crudo; `credentials()` además lo descifra y devuelve
+     * `basic` null si no puede (APP_KEY cambiada, fila en plano). Ese caso NO arma el cliente:
+     * con un `Basic` vacío Zipnova responde 401 y el mensaje culparía a las credenciales del
+     * comercio, cuando lo que hay que hacer es desconectar y volver a conectar.
+     *
+     * @param int $user_id
+     * @return array{0: ZipnovaClient, 1: array} El cliente y el array de `credentials()`.
+     * @throws ZipnovaConexionException Si no está conectado o la credencial no se puede leer.
+     */
+    protected function client_del_comercio($user_id)
+    {
+        $this->conector_conectado($user_id);
+
+        $credentials = ZipnovaCredentialsHelper::credentials((int) $user_id);
+
+        if (is_null($credentials['basic'])) {
+            throw new ZipnovaConexionException(self::MENSAJE_CREDENCIAL_ILEGIBLE);
+        }
+
+        return [new ZipnovaClient($credentials['basic'], $credentials['account_id']), $credentials];
     }
 
     /**

@@ -127,6 +127,16 @@ class IntegracionesController extends Controller
     {
         $estado = self::estado_del_conector($connector);
 
+        // Para Zipnova "conectado" es "usable": el token tiene que poder descifrarse, porque es lo
+        // único con lo que se opera (no hay refresh ni OAuth que lo renueve solo). Un conector
+        // con un token cifrado con otra APP_KEY (base copiada de otra instancia, fila escrita en
+        // plano) figuraría conectado y después TODO fallaría con "no tiene Zipnova conectado":
+        // mejor que la tarjeta pida las credenciales de nuevo. Es lo mismo que decide
+        // `ZipnovaCredentialsHelper::credentials()` al leerlo.
+        if ($integracion['slug'] === Platform::SLUG_ZIPNOVA && $estado['connected']) {
+            $estado['connected'] = self::token_descifrable($connector);
+        }
+
         $item = [
             'slug'             => $integracion['slug'],
             'name'             => $integracion['name'],
@@ -224,6 +234,23 @@ class IntegracionesController extends Controller
             'webhook_registrado' => !empty($config['webhook_id']),
             'conectado_en'       => $config['conectado_en'],
         ];
+    }
+
+    /**
+     * True si el `access_token` del conector se puede descifrar y no está vacío. El cast
+     * `encrypted` tira `DecryptException` con una APP_KEY distinta o una fila en plano; acá eso
+     * es "no conectado", nunca un 500 en la pantalla de integraciones.
+     *
+     * @param PlatformConnector $connector
+     * @return bool
+     */
+    protected static function token_descifrable(PlatformConnector $connector)
+    {
+        try {
+            return (string) $connector->access_token !== '';
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**
