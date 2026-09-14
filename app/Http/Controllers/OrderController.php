@@ -13,6 +13,7 @@ use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
 use App\Models\OrderStatus;
 use App\Models\Sale;
+use App\Services\Zipnova\EnvioNoGenerableException;
 use App\Services\Zipnova\ZipnovaEnvioService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -379,8 +380,27 @@ class OrderController extends Controller
                 return;
             }
 
+            $service = new ZipnovaEnvioService();
+
             try {
-                (new ZipnovaEnvioService())->crear_desde_pedido($model);
+                $service->crear_desde_pedido($model);
+            } catch (EnvioNoGenerableException $e) {
+
+                /**
+                 * Una precondición que no se cumplió (sin conector, destino incompleto, nada que
+                 * enviar): el servicio no llegó a escribir ninguna fila, así que se deja una en
+                 * `error` con el motivo. Sin esto el listado diría "Sin generar" sin decir por
+                 * qué, y el operador no sabría qué arreglar antes de reintentar desde el modal.
+                 * Si el error de Zipnova fue después (ZipnovaException), la fila ya la dejó el
+                 * servicio.
+                 */
+                Log::warning('OrderController: el pedido '.$model->id.' se confirmó pero no se pudo generar el envío en Zipnova: '.$e->getMessage());
+
+                try {
+                    $service->registrar_fallo($model, $e->getMessage());
+                } catch (\Throwable $e_registro) {
+                    Log::warning('OrderController: tampoco se pudo dejar registrado el fallo del envío del pedido '.$model->id.': '.$e_registro->getMessage());
+                }
             } catch (\Throwable $e) {
                 Log::warning('OrderController: el pedido '.$model->id.' se confirmó pero no se pudo generar el envío en Zipnova: '.$e->getMessage());
             }
