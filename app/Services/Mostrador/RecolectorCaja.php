@@ -249,10 +249,13 @@ class RecolectorCaja extends RecolectorBase
      * - `proximos`: tareas con gasto sin hacer de hoy a 7 días (AgendaHelper::ocurrencias_entre)
      *   y cheques emitidos a un proveedor que se cobran en ese lapso, mezclados por fecha y, el
      *   mismo día, el monto más grande primero.
-     * - Los totales suman TODAS las filas que cumplen, no solo las que entran en el tope. Una
-     *   fila sin monto no suma y se cuenta en `sin_monto`, que cuenta ocurrencias (una tarea
-     *   mensual vencida dos veces cuenta dos): es lo que les falta a los totales, que también
-     *   suman por ocurrencia.
+     * - Los totales suman TODAS las filas que cumplen, no solo las que entran en el tope, y
+     *   suman por ocurrencia (una tarea mensual vencida dos veces suma dos veces). Una fila sin
+     *   monto no suma.
+     * - `sin_monto` cuenta TAREAS con gasto y sin monto (null o 0) entre las vencidas y las
+     *   próximas, no ocurrencias: es lo que el dueño tiene que corregir, y se corrige una sola
+     *   vez, en la tarea. Contando ocurrencias, una tarea semanal sin monto olvidada hace un mes
+     *   le aparecería como seis vencimientos sin monto.
      * - `agenda_con_vencimientos`: si el dueño tiene cargada alguna tarea con gasto que todavía
      *   pueda vencer. Si es false, la skill le cuenta dónde se cargan.
      *
@@ -268,7 +271,9 @@ class RecolectorCaja extends RecolectorBase
 
         $vencidos = [];
         $total_vencidos = 0.0;
-        $sin_monto = 0;
+
+        // Indexado por pending_id: una tarea con varias ocurrencias sin monto cuenta una vez.
+        $tareas_sin_monto = [];
 
         // vencidas() ya viene ordenada por fecha ascendente y tarea: lo más viejo primero.
         foreach ($vencidas as $ocurrencia) {
@@ -279,7 +284,7 @@ class RecolectorCaja extends RecolectorBase
             $monto = $this->monto($ocurrencia['expense_amount']);
 
             if (empty($monto)) {
-                $sin_monto++;
+                $tareas_sin_monto[(int) $ocurrencia['pending_id']] = true;
             } else {
                 $total_vencidos += $monto;
             }
@@ -315,7 +320,7 @@ class RecolectorCaja extends RecolectorBase
             }
 
             if (empty($monto)) {
-                $sin_monto++;
+                $tareas_sin_monto[(int) $ocurrencia['pending_id']] = true;
             } else {
                 $total_proximos += $monto;
             }
@@ -404,7 +409,7 @@ class RecolectorCaja extends RecolectorBase
             'total_vencidos'          => $this->monto($total_vencidos),
             'total_proximos'          => $this->monto($total_proximos),
             'total_proximos_30_dias'  => $this->monto($total_proximos_30_dias),
-            'sin_monto'               => $sin_monto,
+            'sin_monto'               => count($tareas_sin_monto),
             'agenda_con_vencimientos' => $this->agenda_con_vencimientos($owner),
         ];
     }
