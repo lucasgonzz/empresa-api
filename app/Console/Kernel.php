@@ -204,10 +204,10 @@ class Kernel extends ConsoleKernel
         // de worker. Ahora index() sólo encola si no hay reporte o si tiene más de 7 días, y el
         // botón Actualizar lo dispara a pedido.
         //
-        // 04:00: después del backup nocturno del VPS (03:15) y antes de sugerencias:generar (05:00)
-        // y compras:generar (05:30), que recorren el mismo catálogo del mismo comercio. Comparte la
-        // hora con tracking:purgar-buyers, que sólo corre con la extensión tracking_buyers y borra
-        // otra tabla. withoutOverlapping(120) y no el default de 1440: el job tiene timeout de
+        // 04:00: después del backup nocturno del VPS (03:15). (Hasta el 14/9/2026 iba también
+        // antes de sugerencias:generar y compras:generar, que ya no se agendan: las carpetas del
+        // mostrador los reemplazan, ver más abajo.) Comparte la hora con tracking:purgar-buyers,
+        // que sólo corre con la extensión tracking_buyers y borra otra tabla. withoutOverlapping(120) y no el default de 1440: el job tiene timeout de
         // 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
         //
         // Sin gate por extensión (el reporte es de todos los comercios) y sin ->when(): corre una
