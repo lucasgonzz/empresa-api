@@ -10,9 +10,10 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Lo que comparten los cuatro recolectores de hechos del mostrador (misión
- * modulo-ia-mostrador): la firma, los topes, el formato de montos y fechas, la
- * URL pública de la primera imagen de un artículo y la respuesta "no aplica".
+ * Lo que comparten los cinco recolectores de hechos del mostrador (misiones
+ * modulo-ia-mostrador y mostrador-caja-vencimientos): la firma, los topes, el formato de
+ * montos y fechas, los nombres de los días, las deudas con clientes y proveedores, la URL
+ * pública de la primera imagen de un artículo y la respuesta "no aplica".
  *
  * Reglas duras de todos los recolectores (§1.2 del plan):
  * - TODO scopeado por el user_id del dueño. Nunca User::all(), nunca tablas enteras.
@@ -29,6 +30,9 @@ abstract class RecolectorBase
     /** Moneda en pesos (cajas y cuentas viejas pueden tenerla null: se tratan como pesos). */
     const MONEDA_PESOS = 1;
 
+    /** Nombres de los días de la semana, por Carbon::dayOfWeek (0 = domingo). */
+    const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
     /**
      * Calcula los hechos del tipo para el dueño y la fecha pedidos.
      *
@@ -42,7 +46,7 @@ abstract class RecolectorBase
      * Cuántos artículos tendría que recorrer el cálculo de este tipo para este dueño.
      * Es lo que el controlador admin-sync compara contra config('mostrador.umbral_async')
      * para decidir si calcula en el request o despacha CalcularHechosMostradorJob: los
-     * tipos que no recorren catálogo (dia, tienda) devuelven 0 y siempre van en el
+     * tipos que no recorren catálogo (dia, caja, tienda) devuelven 0 y siempre van en el
      * request; compras y stock lo sobreescriben con sus candidatos.
      *
      * @param User $owner
@@ -247,6 +251,75 @@ abstract class RecolectorBase
         $total = $this->consulta_deudas_en_pesos($owner, $model_name)->sum('saldo');
 
         return (float) $this->monto($total);
+    }
+
+    /**
+     * Los clientes con más deuda en pesos, con los días desde su último pago (null si
+     * nunca pagaron).
+     *
+     * Vive en la base porque lo usan dos informes con la misma regla: `dia` (en
+     * cobranzas) y `caja` (los clientes para cobrar). Se subió tal cual estaba en
+     * RecolectorDia.
+     *
+     * @param User $owner
+     * @param Carbon $fecha
+     * @return array
+     */
+    protected function clientes_con_mas_deuda(User $owner, Carbon $fecha): array
+    {
+        $cuentas = DB::table('credit_accounts')
+            ->leftJoin('clients', function ($join) use ($owner) {
+                $join->on('clients.id', '=', 'credit_accounts.model_id')->where('clients.user_id', $owner->id);
+            })
+            ->where('credit_accounts.user_id', $owner->id)
+            ->where('credit_accounts.model_name', 'client')
+            ->where(function ($q) {
+                $q->whereNull('credit_accounts.moneda_id')->orWhere('credit_accounts.moneda_id', self::MONEDA_PESOS);
+            })
+            ->where('credit_accounts.saldo', '>', 0)
+            ->orderByDesc('credit_accounts.saldo')
+            ->orderBy('credit_accounts.model_id')
+            ->limit(self::TOPE_LISTA)
+            ->get(['credit_accounts.model_id', 'clients.name', 'credit_accounts.saldo']);
+
+        if ($cuentas->isEmpty()) {
+            return [];
+        }
+
+        $client_ids = $cuentas->pluck('model_id')->map(function ($id) {
+            return (int) $id;
+        })->all();
+
+        $ultimos_pagos = DB::table('current_acounts')
+            ->where('user_id', $owner->id)
+            ->where('status', 'pago_from_client')
+            ->whereIn('client_id', $client_ids)
+            ->groupBy('client_id')
+            ->selectRaw('client_id, MAX(created_at) as ultimo')
+            ->get();
+
+        $ultimo_por_cliente = [];
+
+        foreach ($ultimos_pagos as $fila) {
+            $ultimo_por_cliente[(int) $fila->client_id] = $fila->ultimo;
+        }
+
+        $lista = [];
+
+        foreach ($cuentas as $cuenta) {
+            $client_id = (int) $cuenta->model_id;
+
+            $lista[] = [
+                'client_id'      => $client_id,
+                'nombre'         => (string) ($cuenta->name ?: 'Cliente #' . $client_id),
+                'saldo'          => $this->monto($cuenta->saldo),
+                'dias_sin_pagar' => isset($ultimo_por_cliente[$client_id])
+                    ? Carbon::parse($ultimo_por_cliente[$client_id])->startOfDay()->diffInDays($fecha->copy()->startOfDay())
+                    : null,
+            ];
+        }
+
+        return $lista;
     }
 
     /**
