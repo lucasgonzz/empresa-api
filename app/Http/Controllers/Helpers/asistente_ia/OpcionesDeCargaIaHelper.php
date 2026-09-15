@@ -35,10 +35,10 @@ class OpcionesDeCargaIaHelper {
     const TOPE = 20;
 
     /**
-     * PaymentMethodsStep::show_caja_select(): "El metodo 1 es cuenta corriente: no mueve caja". En
-     * el catálogo que siembra CurrentAcountPaymentMethodSeeder el 1 es el Cheque; se deja afuera
-     * igual aunque su tipo no esté cargado, para no proponer nunca una fila que la pantalla dibuja
-     * sin caja.
+     * Id del método de pago que la pantalla trata aparte en la regla de caja obligatoria:
+     * PaymentMethodsStep.vue::show_caja_select() no le dibuja el selector de caja y
+     * `hay_metodo_de_pago_sin_caja()` no se la exige. En el catálogo de
+     * CurrentAcountPaymentMethodSeeder es el Cheque (tipo cheque). Ver motivo_no_usable().
      */
     const METODO_SIN_CAJA_ID = 1;
 
@@ -474,27 +474,32 @@ class OpcionesDeCargaIaHelper {
     /**
      * Por qué el asistente no puede cargar con ese método, o null si puede.
      *
-     * 🔴 El método 1 se mira PRIMERO, antes que su tipo. Es la otra punta de la regla de "caja
-     * obligatoria" de la pantalla: `hay_metodo_de_pago_sin_caja()` de
-     * src/mixins/metodos_de_pago_validacion.js (develop, misión agenda-ajustes-ux) exige caja a toda
-     * fila con monto SALVO la del método 1, porque PaymentMethodsStep.vue::show_caja_select() ni
-     * siquiera dibuja el selector de caja para él ("cuenta corriente, que no mueve caja"). Una fila
-     * con monto que no mueve ninguna caja es plata que desaparece sin error (el backend solo loguea un
-     * warning), así que el asistente no la propone nunca: esa carga se hace desde la pantalla.
+     * Primero el tipo, que da el motivo verdadero: el cheque pide banco, fecha de cobro y número, y
+     * la tarjeta de crédito recargo y cuotas. Esas cargas se hacen desde la pantalla.
+     *
+     * 🔴 Y el método de id 1 queda afuera SIEMPRE, tenga o no su tipo cargado, porque la pantalla lo
+     * trata aparte en las dos puntas de la regla de "caja obligatoria":
+     * PaymentMethodsStep.vue::show_caja_select() no le dibuja el selector de caja, y
+     * `hay_metodo_de_pago_sin_caja()` de src/mixins/metodos_de_pago_validacion.js (develop, misión
+     * agenda-ajustes-ux) no le exige caja. Una fila con monto y sin caja es plata que no impacta en
+     * ninguna caja (el backend solo loguea un warning), así que el asistente no la propone nunca. En
+     * el catálogo de CurrentAcountPaymentMethodSeeder el id 1 es el Cheque (tipo cheque), así que en
+     * una base normal ya quedó afuera por el tipo, con el motivo del cheque; la regla por id cubre una
+     * base donde ese tipo no esté cargado.
      *
      * @param  \App\Models\CurrentAcountPaymentMethod  $metodo  Con `type` cargado.
      * @return string|null
      */
     static function motivo_no_usable($metodo) {
 
-        if ((int) $metodo->id === self::METODO_SIN_CAJA_ID) {
-
-            return 'Ese método de pago no mueve caja: se carga desde la pantalla.';
-        }
-
         if (!is_null($metodo->type) && isset(self::MOTIVOS_NO_USABLES[$metodo->type->slug])) {
 
             return self::MOTIVOS_NO_USABLES[$metodo->type->slug];
+        }
+
+        if ((int) $metodo->id === self::METODO_SIN_CAJA_ID) {
+
+            return 'Ese método de pago se carga desde la pantalla.';
         }
 
         return null;

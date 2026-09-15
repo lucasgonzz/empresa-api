@@ -149,13 +149,20 @@ class ConsultasDeCargaIaHelper {
     }
 
     /**
-     * Cuentas corrientes visibles de un cliente o proveedor del dueño, una por moneda.
+     * Cuentas corrientes visibles de un cliente o proveedor del dueño: la de pesos y, solo con la
+     * extensión ventas_en_dolares, la de dólares.
      *
-     * Mismo criterio de moneda que RecolectorBase::consulta_deudas_en_pesos() (moneda_id null =
-     * pesos), y la de dólares solo con la extensión ventas_en_dolares: es lo que muestra
-     * BtnCurrentAcounts.vue::show() (`credit_account.moneda_id == 1 || hasExtencion('ventas_en_dolares')`).
-     * Sin ese filtro todo cliente tendría dos cuentas (crear_credit_accounts() crea las dos siempre)
-     * y el asistente preguntaría "¿pesos o dólares?" a un comercio que nunca vendió en dólares.
+     * 🔴 Es el espejo de BtnCurrentAcounts.vue::show() (`credit_account.moneda_id == 1 ||
+     * hasExtencion('ventas_en_dolares')`), que es el botón desde el que la pantalla abre la cuenta.
+     * CreditAccountHelper::crear_credit_accounts() crea SIEMPRE las dos cuentas (moneda 1 y 2) por
+     * cliente y por proveedor, aunque el comercio nunca venda en dólares: sin este filtro el asistente
+     * le preguntaría "¿pesos o dólares?" a todo el mundo y le mostraría una cuenta que la pantalla
+     * esconde. Sin la extensión, entonces, la única cuenta que existe para el asistente es la de
+     * moneda 1.
+     *
+     * La de pesos es la de moneda_id 1; solo si no hay ninguna, una con moneda_id null, que se trata
+     * como pesos con el criterio de RecolectorBase::consulta_deudas_en_pesos() (hoy la columna es NOT
+     * NULL, así que es una red para bases viejas).
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $model_name  client | provider
@@ -170,26 +177,52 @@ class ConsultasDeCargaIaHelper {
                                 ->orderBy('id')
                                 ->get();
 
-        $por_moneda = [];
+        $pesos = null;
+        $pesos_sin_moneda = null;
+        $dolares = null;
 
         foreach ($cuentas as $cuenta) {
 
-            $moneda_id = is_null($cuenta->moneda_id) ? 1 : (int) $cuenta->moneda_id;
+            if (is_null($cuenta->moneda_id)) {
 
-            if ($moneda_id === FormatoIaHelper::MONEDA_DOLARES && !$contexto->usa_dolares) {
+                if (is_null($pesos_sin_moneda)) {
 
-                continue;
+                    $pesos_sin_moneda = $cuenta;
+                }
+
+            } elseif ((int) $cuenta->moneda_id === 1) {
+
+                if (is_null($pesos)) {
+
+                    $pesos = $cuenta;
+                }
+
+            } elseif ((int) $cuenta->moneda_id === FormatoIaHelper::MONEDA_DOLARES) {
+
+                if (is_null($dolares)) {
+
+                    $dolares = $cuenta;
+                }
             }
-
-            if (!in_array($moneda_id, [1, FormatoIaHelper::MONEDA_DOLARES], true) || isset($por_moneda[$moneda_id])) {
-
-                continue;
-            }
-
-            $por_moneda[$moneda_id] = $cuenta;
         }
 
-        return array_values($por_moneda);
+        $visibles = [];
+
+        if (!is_null($pesos)) {
+
+            $visibles[] = $pesos;
+
+        } elseif (!is_null($pesos_sin_moneda)) {
+
+            $visibles[] = $pesos_sin_moneda;
+        }
+
+        if ($contexto->usa_dolares && !is_null($dolares)) {
+
+            $visibles[] = $dolares;
+        }
+
+        return $visibles;
     }
 
     /**
