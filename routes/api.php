@@ -1075,6 +1075,13 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
     Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
     Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
 
+    // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
+    // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
+    // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que
+    // el resto del chat (AiConversationController::conversacion_de_la_persona()).
+    Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
+    Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
     // del dueño, un informe abierto y su conversación. Mismo gate que el chat; encima, el
     // controlador deja pasar SOLO al dueño (o admin_access): los informes traen cobranzas

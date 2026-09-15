@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
@@ -291,6 +292,59 @@ class AiConversationController extends Controller
         }
 
         return response()->json(['model' => $message], 200);
+    }
+
+    /**
+     * Confirma una tarjeta de carga del asistente (misión asistente-ia-acciones, contrato §2.4):
+     * ejecuta el gasto, el pago o la tarea por el mismo camino que la pantalla, en este request
+     * autenticado como la persona y con candado contra el doble clic. La lógica vive en
+     * EjecutorAccionesIaHelper; acá queda la tenencia, que sigue viviendo en un solo lugar
+     * (conversacion_de_la_persona()), y la respuesta.
+     *
+     * @param  int  $id
+     * @param  int  $accion_id
+     * @return JsonResponse  200 {model} · 404 {message} · 409 {code, message, model} · 422 {message, model} · 500 {message}
+     */
+    public function confirmar_accion($id, $accion_id): JsonResponse
+    {
+        $conversation = $this->conversacion_de_la_persona($id);
+
+        if (is_null($conversation)) {
+            return response()->json(['message' => 'Conversación no encontrada.'], 404);
+        }
+
+        /*
+         * El correlativo del gasto va como closure para que Controller::num() corra ADENTRO de la
+         * transacción del ejecutor y su lockForUpdate se sostenga hasta el commit: resuelto antes,
+         * dos altas concurrentes podrían llevarse el mismo número (mismo criterio que
+         * ExpenseController::store() y PendingCompletedController::store()).
+         */
+        $resultado = EjecutorAccionesIaHelper::confirmar($conversation, $accion_id, UserHelper::user(false), function () {
+            return $this->num('expenses');
+        });
+
+        return response()->json($resultado['body'], $resultado['status']);
+    }
+
+    /**
+     * Cancela una tarjeta de carga del asistente (contrato §2.5): la deja 'cancelada' sin escribir
+     * nada más, con el mismo candado que confirmar.
+     *
+     * @param  int  $id
+     * @param  int  $accion_id
+     * @return JsonResponse  200 {model} · 404 {message} · 409 {code, message, model}
+     */
+    public function cancelar_accion($id, $accion_id): JsonResponse
+    {
+        $conversation = $this->conversacion_de_la_persona($id);
+
+        if (is_null($conversation)) {
+            return response()->json(['message' => 'Conversación no encontrada.'], 404);
+        }
+
+        $resultado = EjecutorAccionesIaHelper::cancelar($conversation, $accion_id);
+
+        return response()->json($resultado['body'], $resultado['status']);
     }
 
     /**
