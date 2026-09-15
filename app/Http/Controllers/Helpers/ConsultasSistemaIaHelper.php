@@ -88,6 +88,14 @@ class ConsultasSistemaIaHelper
      * A diferencia del resto, incluye `id`: la tool de movimientos del chat
      * lo necesita para encadenar. El endpoint AdminSync lo quita al responder.
      *
+     * 🔴 El saldo sale de credit_accounts (la deuda en pesos) y NO de
+     * clients.saldo (misión asistente-ia-acciones, 15/9/2026). clients.saldo es
+     * una columna muerta: CurrentAcountHelper ya no la escribe (el saldo vivo
+     * se sincroniza en credit_accounts y en clients.saldo_pesos/saldo_dolares),
+     * y leyéndola el asistente le decía a la persona "Juan no te debe nada"
+     * justo antes de cargarle un pago. Mismas claves y mismos tipos que antes
+     * (el canal "sistema:" de admin-api no cambia de forma): solo deja de mentir.
+     *
      * @param  int     $owner_id  Id del dueño (clients.user_id).
      * @param  string  $busqueda  Nombre o parte del nombre; vacío trae los primeros.
      * @return array<int, array<string, mixed>>
@@ -105,7 +113,9 @@ class ConsultasSistemaIaHelper
         $clients = $clients_query
             ->orderBy('name')
             ->limit(self::MAX_RESULTS)
-            ->get(['id', 'name', 'phone', 'email', 'saldo']);
+            ->get(['id', 'name', 'phone', 'email']);
+
+        $saldos = self::saldos_en_pesos_de_clientes($owner_id, $clients->pluck('id')->all());
 
         $result = [];
         foreach ($clients as $client) {
@@ -114,11 +124,65 @@ class ConsultasSistemaIaHelper
                 'cliente'   => (string) $client->name,
                 'telefono'  => (string) ($client->phone ?? ''),
                 'email'     => (string) ($client->email ?? ''),
-                'saldo'     => $client->saldo !== null ? (float) $client->saldo : 0,
+                // Sin cuenta corriente, 0 como cuando la columna vieja venía null.
+                'saldo'     => isset($saldos[(int) $client->id]) ? $saldos[(int) $client->id] : 0,
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Consulta base de las cuentas corrientes EN PESOS de los clientes del
+     * dueño. Mismo criterio que RecolectorBase::consulta_deudas_en_pesos() del
+     * mostrador: la fuente de verdad es credit_accounts.saldo (positivo = el
+     * cliente debe) y una moneda_id null se trata como pesos. Una sola regla de
+     * moneda para toda deuda que el sistema le cuenta a una IA: si el chat y el
+     * informe del mostrador leyeran distinto, darían dos números para la misma
+     * deuda.
+     *
+     * @param  int  $owner_id
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected static function cuentas_en_pesos_de_clientes(int $owner_id)
+    {
+        return DB::table('credit_accounts')
+            ->where('credit_accounts.user_id', $owner_id)
+            ->where('credit_accounts.model_name', 'client')
+            ->where(function ($q) {
+                $q->whereNull('credit_accounts.moneda_id')->orWhere('credit_accounts.moneda_id', 1);
+            });
+    }
+
+    /**
+     * Saldo en pesos de un lote de clientes (suma de sus cuentas en pesos, como
+     * RecolectorBase::deudas_en_pesos()).
+     *
+     * @param  int    $owner_id
+     * @param  array  $client_ids
+     * @return array<int, float>  client_id => saldo
+     */
+    protected static function saldos_en_pesos_de_clientes(int $owner_id, array $client_ids): array
+    {
+        $client_ids = array_values(array_unique(array_filter(array_map('intval', $client_ids))));
+
+        if (empty($client_ids)) {
+            return [];
+        }
+
+        $saldos = [];
+
+        foreach (self::cuentas_en_pesos_de_clientes($owner_id)->whereIn('credit_accounts.model_id', $client_ids)->get(['credit_accounts.model_id', 'credit_accounts.saldo']) as $cuenta) {
+            $client_id = (int) $cuenta->model_id;
+
+            if (!isset($saldos[$client_id])) {
+                $saldos[$client_id] = 0.0;
+            }
+
+            $saldos[$client_id] += (float) ($cuenta->saldo ?: 0);
+        }
+
+        return $saldos;
     }
 
     /**
@@ -202,25 +266,35 @@ class ConsultasSistemaIaHelper
      * Clientes del dueño con saldo pendiente de cobro (deuda en cuenta
      * corriente), ordenados por deuda descendente.
      *
+     * 🔴 La deuda sale de credit_accounts en pesos y NO de la columna muerta
+     * clients.saldo (misión asistente-ia-acciones, 15/9/2026; ver el docblock
+     * de clientes()). Mismas claves y tipos que antes: el endpoint AdminSync
+     * que consume admin-api no cambia de forma, solo deja de mentir.
+     *
      * @param  int  $owner_id  Id del dueño (clients.user_id).
      * @return array<int, array<string, mixed>>
      */
     public static function clientes_con_saldo_pendiente(int $owner_id): array
     {
-        // clients.saldo positivo = el cliente debe dinero (pendiente de cobro).
-        $clients = Client::query()
-            ->where('user_id', $owner_id)
-            ->where('saldo', '>', 0)
-            ->orderByDesc('saldo')
+        // credit_accounts.saldo positivo = el cliente debe dinero (pendiente de cobro).
+        // Los clientes borrados (soft delete) quedan afuera, como con Client::query().
+        $filas = self::cuentas_en_pesos_de_clientes($owner_id)
+            ->join('clients', 'clients.id', '=', 'credit_accounts.model_id')
+            ->where('clients.user_id', $owner_id)
+            ->whereNull('clients.deleted_at')
+            ->groupBy('clients.id', 'clients.name', 'clients.phone')
+            ->havingRaw('SUM(credit_accounts.saldo) > 0')
+            ->orderByRaw('SUM(credit_accounts.saldo) DESC')
+            ->orderBy('clients.id')
             ->limit(self::MAX_RESULTS)
-            ->get(['id', 'name', 'phone', 'saldo']);
+            ->get(['clients.id', 'clients.name', 'clients.phone', DB::raw('SUM(credit_accounts.saldo) as deuda')]);
 
         $result = [];
-        foreach ($clients as $client) {
+        foreach ($filas as $fila) {
             $result[] = [
-                'cliente'           => (string) $client->name,
-                'telefono'          => (string) ($client->phone ?? ''),
-                'saldo_pendiente'   => (float) $client->saldo,
+                'cliente'           => (string) $fila->name,
+                'telefono'          => (string) ($fila->phone ?? ''),
+                'saldo_pendiente'   => (float) $fila->deuda,
             ];
         }
 
