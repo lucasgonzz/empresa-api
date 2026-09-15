@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Jobs\CalcularHechosMostradorJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\Client;
 use App\Models\MostradorMemoria;
 use App\Models\MostradorReporte;
 use App\Models\User;
@@ -248,8 +249,9 @@ class MostradorController extends Controller
      *
      * Body: {titulo, resumen, contenido}. Valida el contenido con
      * MostradorContenidoValidator, guarda y deja el informe 'listo' (visible para el
-     * dueño) con generado_at = ahora. 422 con errores[] si el JSON no cumple; 404 si
-     * el informe no existe.
+     * dueño) con generado_at = ahora. 422 con errores[] si el JSON no cumple o si el
+     * client_id de una acción no es un cliente del dueño del informe (clientes_ajenos());
+     * 404 si el informe no existe.
      *
      * @param Request $request
      * @param int $id
@@ -294,6 +296,15 @@ class MostradorController extends Controller
 
         if ($contenido_legible) {
             $errores = array_merge($errores, (new MostradorContenidoValidator())->validar($contenido));
+
+            // 🔴 Después del formato, la tenencia: cada client_id de una acción "cobrar" tiene que
+            // ser un cliente de ESTE negocio. Ese id es el botón que le ofrece al dueño mandarle el
+            // recordatorio de cobro por WhatsApp a esa persona: un id equivocado es un botón que le
+            // ofrece mandarle un mensaje de cobro a otra (o, en una base compartida, al cliente de
+            // otro comercio). Se rechaza acá, al depositar, y no se descubre cuando el dueño hace clic.
+            if (is_array($contenido)) {
+                $errores = array_merge($errores, $this->clientes_ajenos($reporte, $contenido));
+            }
         }
 
         if (!empty($errores)) {
@@ -311,6 +322,43 @@ class MostradorController extends Controller
         $reporte->save();
 
         return response()->json(['ok' => true, 'reporte_id' => (int) $reporte->id], 200);
+    }
+
+    /**
+     * Un error legible por cada client_id de las acciones del contenido que no es un cliente del
+     * dueño del informe: clients.user_id = reporte.user_id y sin borrar. Client usa SoftDeletes,
+     * así que un cliente borrado no se encuentra y se rechaza igual que uno ajeno: el modal del
+     * recordatorio tampoco lo encontraría (su preview responde 404).
+     *
+     * @param MostradorReporte $reporte
+     * @param array $contenido
+     * @return array
+     */
+    protected function clientes_ajenos(MostradorReporte $reporte, array $contenido): array
+    {
+        $client_ids = MostradorContenidoValidator::client_ids($contenido);
+
+        if (empty($client_ids)) {
+            return [];
+        }
+
+        $del_negocio = Client::whereIn('id', $client_ids)
+            ->where('user_id', $reporte->user_id)
+            ->pluck('id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
+
+        $errores = [];
+
+        foreach ($client_ids as $client_id) {
+            if (!in_array($client_id, $del_negocio, true)) {
+                $errores[] = 'acciones.client_id: ' . $client_id . ' no es un cliente de este negocio (no existe, está borrado o es de otro comercio)';
+            }
+        }
+
+        return $errores;
     }
 
     /**
