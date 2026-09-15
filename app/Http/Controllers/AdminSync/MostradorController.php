@@ -37,8 +37,8 @@ use Illuminate\Support\Facades\Log;
  * de config('mostrador.umbral_async') artículos candidatos, POST hechos deja la fila en
  * 'calculando', despacha CalcularHechosMostradorJob y responde 202; la skill hace polling
  * con GET reportes/{id} hasta que el estado sea 'hechos' / 'listo' (o 'error', con el
- * motivo). Por debajo del umbral —y siempre para dia y tienda— el cálculo es sincrónico
- * y la respuesta es 200 con los hechos.
+ * motivo). Por debajo del umbral —y siempre para dia, caja y tienda— el cálculo es
+ * sincrónico y la respuesta es 200 con los hechos.
  */
 class MostradorController extends Controller
 {
@@ -107,10 +107,11 @@ class MostradorController extends Controller
      * (user_id, tipo, fecha) SIN pisar el contenido. Si el informe ya está 'listo' y no
      * viene forzar, devuelve los hechos guardados sin recalcular.
      *
-     * La fecha: para compras y stock es SIEMPRE hoy (la reposición y los traslados se
-     * deciden con el stock de esta mañana); si el body trae otra, se ignora y la
-     * respuesta lo avisa con "fecha_ignorada": true. Para dia y tienda es ayer por
-     * defecto y tiene que ser un día cerrado: hoy o más adelante es 422.
+     * La fecha: para caja, compras y stock es SIEMPRE hoy (la plata y los vencimientos se
+     * miran con el saldo de esta mañana; la reposición y los traslados, con el stock de
+     * esta mañana); si el body trae otra, se ignora y la respuesta lo avisa con
+     * "fecha_ignorada": true. Para dia y tienda es ayer por defecto y tiene que ser un día
+     * cerrado: hoy o más adelante es 422.
      *
      * Respuestas:
      *   200 {reporte_id, tipo, fecha, estado, hechos, hechos_at, error_mensaje, fecha_ignorada}
@@ -122,7 +123,7 @@ class MostradorController extends Controller
      *       de mostrador.timeout_job segundos colgada (worker caído): ahí se vuelve a
      *       despachar;
      *   404 si el dueño no existe o no tiene la extensión; 422 si el tipo no es uno de
-     *       los cuatro, la fecha no es Y-m-d válida o el día no está cerrado; 500 si el
+     *       MostradorReporte::TIPOS, la fecha no es Y-m-d válida o el día no está cerrado; 500 si el
      *       cálculo sincrónico reventó.
      *
      * @param Request $request
