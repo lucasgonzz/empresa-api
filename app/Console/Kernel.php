@@ -198,17 +198,16 @@ class Kernel extends ConsoleKernel
         }
 
         // Reporte de inventario (stock mínimo, sin stock, valuación) de cada comercio, una vez por
-        // noche (misión optimizacion-vps-fase1, 4.0.24). Hasta la 4.0.23 se regeneraba desde
-        // InventoryPerformanceController::index() en cada entrada al sistema con un reporte de más
-        // de 30 minutos, o sea todo el día: en servian (537k artículos) cada corrida son 18-20 min
-        // de worker. Ahora index() sólo encola si no hay reporte o si tiene más de 7 días, y el
-        // botón Actualizar lo dispara a pedido.
+        // noche (misión optimizacion-vps-fase1, 4.0.24). 04:00: después del backup nocturno del VPS
+        // (03:15) y con el servidor sin uso — sigue siendo el único momento en que conviene disparar
+        // una corrida que en catálogos grandes (537k artículos en servian) tarda 18-20 min.
         //
-        // 04:00: después del backup nocturno del VPS (03:15). (Hasta el 14/9/2026 iba también
-        // antes de sugerencias:generar y compras:generar, que ya no se agendan: las carpetas del
-        // mostrador los reemplazan, ver más abajo.) Comparte la hora con tracking:purgar-buyers,
-        // que sólo corre con la extensión tracking_buyers y borra otra tabla. withoutOverlapping(120) y no el default de 1440: el job tiene timeout de
-        // 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
+        // Desde la misión reporte-inventario-manual (15/9/2026) esta corrida nocturna y el botón
+        // Actualizar (`generate()`) son las DOS ÚNICAS formas de generar el reporte: se sacó la red
+        // de seguridad que tenía InventoryPerformanceController::index() (regenerar si el último
+        // reporte tenía más de 7 días), que lo disparaba en horario comercial con el servidor en uso
+        // — justo lo que se quería evitar. withoutOverlapping(120) y no el default de 1440: el job
+        // tiene timeout de 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
         //
         // Sin gate por extensión (el reporte es de todos los comercios) y sin ->when(): corre una
         // vez por día, no por minuto, y adentro el candado atómico de Cache::add evita que se pise
