@@ -307,4 +307,44 @@ class Tokens_agente_Test extends TestCase
             'Sin respuesta válida no hay consumo que imputar: la fila no se graba.'
         );
     }
+
+    /**
+     * Misión whatsapp-mejoras-interfaz (15/9/2026). Antes de este cambio, `suggest()` devolvía
+     * 200 con `suggestion: ''` para CUALQUIER motivo de fallo interno del service —sin
+     * conexión configurada, la API caída, sin historial— indistinguibles entre sí y del front,
+     * que se quedaba sin ninguna sugerencia y sin ningún error a la vista. Este test fija el
+     * caso más fácil de reproducir sin mockear Anthropic: un chat que todavía no tiene ningún
+     * mensaje. Los otros motivos (`sin_configurar`, `error_api`, `excepcion`, `solo_foto`)
+     * comparten el mismo camino de vuelta en el controller; no hace falta un test por cada uno.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function sugerir_respuesta_sin_historial_devuelve_422_con_mensaje_explicito()
+    {
+        $this->dar_extension();
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        // No debería llegar a pegarle a la red (el corte es antes), pero se fakea igual:
+        // sin esto, un request sin stub sale a la red de verdad si el orden cambia mañana.
+        $this->fakes_de_red($this->respuesta_con_usage('no debería usarse'));
+
+        $chat_sin_mensajes = WhatsappChat::create([
+            'user_id'    => $this->comercio->id,
+            'phone'      => '5493416003399',
+            'ai_enabled' => true,
+        ]);
+
+        $this->actingAs($this->empleado, 'web');
+
+        $response = $this->postJson('api/whatsapp-chats/' . $chat_sin_mensajes->id . '/suggest');
+
+        $response->assertStatus(422);
+        $this->assertEquals('', $response->json('suggestion'));
+        $this->assertStringContainsStringIgnoringCase(
+            'no hay mensajes',
+            (string) $response->json('message'),
+            'El mensaje tiene que decir POR QUÉ no hay sugerencia, no solo que no la hay.'
+        );
+        $this->assertCount(0, $this->consumos(), 'Sin llamada a la IA, no hay consumo que imputar.');
+    }
 }
