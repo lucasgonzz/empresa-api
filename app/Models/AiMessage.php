@@ -17,10 +17,21 @@ use Illuminate\Database\Eloquent\Model;
  *   usuario SÍ ve en la conversación y `error_mensaje` el detalle técnico.
  *
  * Los mensajes 'user' nacen directamente 'listo'.
+ *
+ * `acciones_habilitadas` (misión asistente-ia-acciones): true si el assistant
+ * se generó con las herramientas de carga (la SPA nueva manda `acciones: true`
+ * en el POST). Sin el flag, la respuesta es de solo lectura como siempre.
  */
 class AiMessage extends Model
 {
     protected $guarded = [];
+
+    /**
+     * @var array<string,string>
+     */
+    protected $casts = [
+        'acciones_habilitadas' => 'boolean',
+    ];
 
     /**
      * Conversación a la que pertenece el mensaje.
@@ -28,5 +39,15 @@ class AiMessage extends Model
     public function conversation()
     {
         return $this->belongsTo(AiConversation::class, 'ai_conversation_id');
+    }
+
+    /**
+     * Tarjetas de carga que propuso este mensaje, en el orden en que se crearon.
+     * Qué se muestra de cada mensaje lo decide AccionesIaHelper::cargar_en_mensajes():
+     * un mensaje que no está 'listo' nunca muestra tarjetas.
+     */
+    public function acciones()
+    {
+        return $this->hasMany(AiMessageAction::class, 'ai_message_id')->orderBy('id');
     }
 }
