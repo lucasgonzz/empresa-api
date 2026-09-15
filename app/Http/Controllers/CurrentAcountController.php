@@ -17,6 +17,7 @@ use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCuotaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
 use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
 use App\Http\Controllers\Pdf\CurrentAcount\NewPagoPdf;
@@ -94,105 +95,29 @@ class CurrentAcountController extends Controller
             ], 422);
         }
 
-        $pago = CurrentAcount::create([
-            'haber'                             => $this->get_haber($request),
-            'description'                       => $request->description,
-            'numero_orden_de_compra'            => $request->numero_orden_de_compra,
-            'credit_account_id'                 => $request->credit_account_id,
-            'is_provisorio'                     => $request->is_provisorio,
-            'status'                            => 'pago_from_client',
-            'user_id'                           => $this->userId(),
-            'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
-            /*
-             * to_pay explícito del request, o —si el pago viene de una cuota de un plan de
-             * pago— el débito de la venta del plan (tanda correctivos 2408, ítem 13: regla
-             * de Lucas, el pago de una cuota se imputa a la venta del plan y no al
-             * comprobante más viejo). Ver CurrentAcountCuotaHelper::get_to_pay_id().
-             */
-            'to_pay_id'                         => CurrentAcountCuotaHelper::get_to_pay_id($request),
-            'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
-            'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
-            'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
-            'employee_id'                       => UserHelper::userId(false),
-        ]);
+        /*
+         * El alta en sí (el create, los métodos de pago con sus movimientos de caja, el saldo, la
+         * imputación contra los débitos y la cuota) vive en CurrentAcountPagoAltaHelper::registrar()
+         * desde la misión asistente-ia-acciones (15/9/2026), junto con get_haber(): el asistente de
+         * IA registra pagos por el MISMO camino, adentro de su propia transacción. Acá queda lo que
+         * es del HTTP: la prevalidación de cajas de arriba, armar las 12 claves que el alta le leía
+         * al request, la notificación y la respuesta. El payload y las respuestas de
+         * `POST api/current-acount/pago` no cambiaron, y esta pantalla sigue sin transacción
+         * (hallazgo 5 del informe del 21/8/2026, fuera de alcance).
+         */
+        $datos = [];
 
-        $pago->detalle = 'Pago N°'.$pago->num_receipt;
-        $pago->save();
+        foreach (CurrentAcountPagoAltaHelper::CLAVES as $clave) {
 
-        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods, $request->model_name);
-
-        if (!$pago->is_provisorio) {
-
-            // Calcular el saldo que genera este pago y persistirlo
-            // Se resta el haber al saldo previo de la cuenta corriente
-            $saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $pago) - (float)$request->haber;
-            $pago->saldo = $saldo;
-            $pago->save();
-            // Sincroniza saldo de la cuenta corriente y saldo por moneda en el model asociado.
-            CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
-
-            /*
-             * 🔴 LAS DOS RAMAS SALDAN EL MISMO DÉBITO, ASÍ QUE LAS DOS TIENEN QUE DEJAR TODO
-             *    LO QUE DEPENDE DE QUE UN DÉBITO QUEDE SALDADO.
-             *
-             * `current_date` NO es una bandera de negocio: es una optimización. Con fecha pasada
-             * hay que recalcular la cuenta entera porque el pago se mete en el medio del orden
-             * cronológico; con la fecha de hoy alcanza con imputar el pago nuevo contra los
-             * débitos pendientes. El hecho económico es el mismo.
-             *
-             * Y el default de la SPA es `current_date = 1`, o sea que la rama de abajo es EL
-             * COBRO DE TODOS LOS DÍAS, no el caso raro. Cualquier efecto que se enganche a "el
-             * débito quedó pagado" y viva solo del lado del recálculo completo va a andar en la
-             * excepción y fallar en la regla — es exactamente lo que pasó con los puntos para
-             * clientes hasta el 22/8/2026.
-             *
-             * Por eso acá NO hay ninguna llamada al módulo de puntos, ni la tiene que haber:
-             * el enganche está al final de `CurrentAcountPagoHelper::init()`, que es el único
-             * método por el que pasan las DOS ramas (check_saldos_y_pagos() también termina
-             * llamándolo, una vez por pago). Si mañana aparece otro efecto de ese tipo, el lugar
-             * es ése y no una copia en cada rama de este if.
-             */
-            if (!$request->current_date) {
-                // Pago con fecha pasada: el recálculo completo ya se encarga
-                // de recalcular saldos e imputar todos los pagos (incluyendo este)
-                Log::info('Chequeando cuenta corriente entera');
-                CurrentAcountHelper::check_saldos_y_pagos($request->credit_account_id);
-            } else {
-                // Pago con fecha actual: solo imputar el nuevo pago a los débitos pendientes
-                // No hace falta recalcular toda la cuenta corriente
-                Log::info('NO se chequeo cuenta corriente entera');
-                $pago_helper = new CurrentAcountPagoHelper($request->credit_account_id, $request->model_name, $request->model_id, $pago);
-                $pago_helper->init();
-            }
-
-
-            CurrentAcountCuotaHelper::pagar_cuota($pago, $request);
+            // `$request->clave` devuelve null si no vino: es exactamente lo que leía pago().
+            $datos[$clave] = $request->{$clave};
         }
+
+        $pago = CurrentAcountPagoAltaHelper::registrar($datos);
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');
         return response()->json(['current_acount' => $pago], 201);
-    }
-
-    function get_haber($request) {
-        $total = 0;
-        foreach ($request->current_acount_payment_methods as $payment_method) {
-            
-            if (
-                isset($payment_method['amount_cotizado'])
-                && !is_null($payment_method['amount_cotizado'])
-                && $payment_method['amount_cotizado'] != ''
-                && (float)$payment_method['amount_cotizado'] > 0
-            ) {
-                $haber = (float)$payment_method['amount_cotizado'];
-            } else {
-
-                $haber = (float)$payment_method['amount'];
-            }
-
-            $total += $haber;
-        }
-        return $total;
     }
 
     /**
