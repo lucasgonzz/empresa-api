@@ -371,6 +371,37 @@ class Dueno_Test extends MostradorTestCase
     }
 
     /**
+     * Con los cinco tipos listos, `ultimos` sale en el orden del escritorio (misión
+     * mostrador-caja-vencimientos): dia, caja, tienda, compras, stock, sin importar el orden en que
+     * se generaron.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function el_escritorio_ordena_los_ultimos_dia_caja_tienda_compras_stock()
+    {
+        $this->dar_extension();
+        $this->entrar_como($this->comercio);
+
+        $hoy  = now()->format('Y-m-d');
+        $ayer = $this->ayer->format('Y-m-d');
+
+        // Generados en otro orden a propósito.
+        $stock   = $this->reporte_listo('stock', $hoy);
+        $caja    = $this->reporte_listo('caja', $hoy);
+        $compras = $this->reporte_listo('compras', $hoy);
+        $dia     = $this->reporte_listo('dia', $ayer);
+        $tienda  = $this->reporte_listo('tienda', $ayer);
+
+        $respuesta = $this->getJson('api/mostrador/reportes');
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(['dia', 'caja', 'tienda', 'compras', 'stock'], array_column($respuesta->json('ultimos'), 'tipo'));
+        $this->assertSame([$dia->id, $caja->id, $tienda->id, $compras->id, $stock->id], array_column($respuesta->json('ultimos'), 'id'));
+        $this->assertSame([], $respuesta->json('anteriores'));
+    }
+
+    /**
      * Un informe listo (con texto) de un dueño.
      *
      * @param string $tipo
