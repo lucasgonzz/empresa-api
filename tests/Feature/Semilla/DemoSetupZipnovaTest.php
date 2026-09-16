@@ -54,15 +54,28 @@ class DemoSetupZipnovaTest extends EmpresaTestCase
         );
     }
 
+    /**
+     * Mismas claves que `ZipnovaCredentialsHelper::config_defaults()`: el fixture tiene que
+     * hablar la forma real de `extra_config`, no una inventada — si mañana `restaurar_zipnova()`
+     * pasa a tocar una clave puntual en vez de mover el array entero como blob, este test tiene
+     * que poder detectarlo.
+     *
+     * @return array
+     */
     private function config_de_prueba()
     {
         return [
-            'cuenta'             => 'ComercioCity',
-            'deposito_origen_id' => 'DEP-1',
+            'account_name'       => 'ComercioCity',
+            'accounts'           => [['id' => '21850', 'name' => 'ComercioCity']],
+            'origin_id'          => 'DEP-1',
+            'origin_label'       => 'Carmen Gadea 787, Gualeguay',
+            'origins'            => [['id' => 'DEP-1', 'label' => 'Carmen Gadea 787, Gualeguay']],
             'bulto_default'      => ['peso' => 1000, 'alto' => 10, 'ancho' => 10, 'profundidad' => 10],
+            'declarar_valor'     => true,
             'envio_gratis_desde' => 50000,
             'webhook_id'         => 'wh-de-prueba',
             'webhook_url'        => 'https://api-demo.comerciocity.com/api/zipnova/webhook',
+            'conectado_en'       => '2026-09-14 12:00:00',
         ];
     }
 
