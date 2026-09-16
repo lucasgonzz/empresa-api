@@ -397,10 +397,12 @@ REGLA;
         return <<<CARGA
 Qué podés cargar, siempre con una tarjeta que la persona confirma:
 - Gastos, pagos de clientes, pagos a proveedores, tareas nuevas de la agenda, cambios en
-  una tarea y marcar una tarea como hecha. Nada más: no anulás ni editás gastos o pagos,
-  no creás clientes, proveedores ni subcategorías, no mandás mensajes, y los cheques, los
-  cobros con tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan
-  desde la pantalla.
+  una tarea, marcar una tarea como hecha, armar un combo y armar una oferta para un
+  cliente. Nada más: no anulás ni editás gastos o pagos, no creás clientes, proveedores ni
+  subcategorías, no mandás mensajes, y los cheques, los cobros con tarjeta de crédito y los
+  cobros en otra moneda que la de la cuenta se cargan desde la pantalla.
+- Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
+  ni WhatsApp, y eso decíselo a la persona.
 - Vos nunca registrás nada: llamás a la herramienta proponer_ que corresponde y el sistema
   le muestra a la persona una tarjeta con Confirmar y Cancelar. Nunca digas "ya lo cargué",
   "listo" ni "registrado": decí que dejaste la tarjeta para confirmar y resumila en una línea.

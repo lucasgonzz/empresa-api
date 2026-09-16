@@ -238,6 +238,42 @@ class Acciones_service_y_job_Test extends TestCase
     }
 
     /**
+     * 🔴 TODA HERRAMIENTA DE CARGA TIENE QUE ESTAR NOMBRADA EN LA ENUMERACIÓN DEL PROMPT, porque
+     * esa enumeración cierra con "Nada más:". Una tool que viaja en el bloque `tools` pero no
+     * figura ahí es una tool construida y MUDA: el modelo la tiene y se niega a usarla porque el
+     * prompt le dijo que eso no se puede. Es un defecto sin síntoma — no hay error, no hay log, la
+     * funcionalidad simplemente no aparece nunca.
+     *
+     * Pasó con los combos y las ofertas (misión agente-ia-mano-derecha): se sumaron a
+     * HerramientasDeCarga y el "Nada más" del prompt las habría dejado afuera.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_enumeracion_del_prompt_nombra_todo_lo_que_se_puede_cargar()
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->end_turn('Listo.'), 200)]);
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente(true, 'Armame un combo');
+
+        $this->service->responder($conversation, $assistant);
+
+        $prompt = Http::recorded()[0][0]->data()['system'][0]['text'];
+
+        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda'] as $lo_que_se_carga) {
+            $this->assertStringContainsString(
+                $lo_que_se_carga,
+                $prompt,
+                'La enumeración del prompt no nombra "' . $lo_que_se_carga . '", y cierra con "Nada más": la herramienta queda muda.'
+            );
+        }
+
+        // 🔴 El aviso al cliente queda apagado a propósito: si el modelo promete que le avisó,
+        // miente. El prompt tiene que decírselo.
+        $this->assertStringContainsString('no se le manda ningún mail', $prompt);
+    }
+
+    /**
      * @group chat-ia
      * @test
      */
