@@ -407,6 +407,13 @@ class DemoSetupHelper
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
         self::restaurar_mercado_pago($user, $foto_mercado_pago);
 
+        // Sin nada que restaurar (primer armado, o nadie conectó nunca a mano), la instancia se
+        // conecta sola con lo que haya en el .env. Si ALGUIEN ya conectó una cuenta —por OAuth o a
+        // mano—, esto no la pisa: restaurar_mercado_pago() ya se encargó.
+        if (empty($foto_mercado_pago)) {
+            self::conectar_mercado_pago_desde_env($user);
+        }
+
         // Misma sobrevida para la cuenta de Zipnova con la que la tienda cotiza y despacha envíos.
         self::restaurar_zipnova($user, $foto_zipnova);
 
@@ -1391,6 +1398,68 @@ class DemoSetupHelper
                 : $e->getMessage();
 
             Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$detalle);
+        }
+    }
+
+    /**
+     * Conecta Mercado Pago con las credenciales del `.env` de la instancia, cuando no hay ninguna
+     * conexión previa que restaurar — misión `mp-precio-servidor-y-credenciales-env`, 16/9/2026.
+     *
+     * Solo se llama cuando `foto_de_mercado_pago()` devolvió null: primer armado de la instancia,
+     * o una que nunca tuvo a nadie conectando a mano desde ABM -> Integraciones. Si YA hay una
+     * conexión (real o restaurada), esto no se ejecuta y no la pisa — el `.env` es el default para
+     * cuando no hay nada, no una fuente que gane siempre.
+     *
+     * Mismo mecanismo que "pegar el Access Token y la Public Key" a mano desde el ABM (la opción
+     * manual del conector, sin pasar por el OAuth): se escribe el conector y se espeja en
+     * `payment_methods` con el mismo método que usa el callback del OAuth, para que la tienda
+     * cobre igual lea del conector o del espejo.
+     *
+     * Sin las dos variables no hace nada — es el estado de hoy, con ninguna instancia
+     * configurada. Un error nunca frena el setup: la demo se arma sin la conexión.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @return void
+     */
+    private static function conectar_mercado_pago_desde_env(User $user)
+    {
+        $access_token = env('MERCADOPAGO_DEMO_ACCESS_TOKEN');
+        $public_key   = env('MERCADOPAGO_DEMO_PUBLIC_KEY');
+
+        if (empty($access_token) || empty($public_key)) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó desde el .env.');
+
+                return;
+            }
+
+            $connector->access_token     = $access_token;
+            $connector->public_key       = $public_key;
+            $connector->refresh_token    = null;
+            $connector->expires_at       = null;
+            $connector->platform_user_id = null;
+            $connector->status           = PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message    = null;
+            $connector->save();
+
+            $service = new MercadoPagoOAuthService();
+            $service->espejar_en_payment_methods((int) $user->id, $access_token, $public_key);
+
+            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales del .env de la instancia.', [
+                'user_id' => $user->id,
+            ]);
+        } catch (\Throwable $e) {
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago desde el .env: '.$detalle);
         }
     }
 
