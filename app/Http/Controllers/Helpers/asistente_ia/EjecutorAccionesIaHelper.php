@@ -18,6 +18,11 @@ use Illuminate\Support\Facades\Log;
  *
  * Devuelve `['status' => int, 'body' => array]` con el contrato §2.4/§2.5; la tenencia de la
  * conversación ya la resolvió el controller (conversacion_de_la_persona()).
+ *
+ * Misión asistente-por-whatsapp (16/9/2026): por WhatsApp no hay botón, así que el mismo
+ * confirmar()/cancelar() lo llama ConfirmacionPorTextoIaHelper desde adentro del job — con la
+ * persona puesta en Auth, porque los helpers de plata la leen de ahí — cuando el dueño contesta que
+ * sí por texto. La lógica no cambia: lo que cambia es quién aprieta el botón.
  */
 class EjecutorAccionesIaHelper {
 
@@ -249,6 +254,9 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_OFERTA:
                 return PropuestaOfertaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_COMPRA_CON_FACTURA:
+                return PropuestaCompraConFacturaIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

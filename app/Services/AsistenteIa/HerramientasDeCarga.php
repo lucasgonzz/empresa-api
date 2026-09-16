@@ -2,11 +2,13 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
@@ -39,11 +41,19 @@ class HerramientasDeCarga
     /**
      * Definiciones con su input_schema para la API de Anthropic.
      *
+     * Misión asistente-por-whatsapp: con `$con_whatsapp` se suman confirmar_carga_pendiente y
+     * cancelar_carga_pendiente, que son el equivalente de los botones Confirmar y Cancelar de la
+     * tarjeta. Sin el flag la lista es EXACTAMENTE la de antes de esa misión, que es lo que ve el
+     * chat de la pantalla: ahí la decisión la toma la persona con el dedo y darle a la IA una
+     * herramienta para confirmar sola lo que ella misma propuso sería sacarle el control a quien
+     * tiene que darlo.
+     *
+     * @param  bool  $con_whatsapp
      * @return array<int, array<string, mixed>>
      */
-    public static function definiciones(): array
+    public static function definiciones($con_whatsapp = false): array
     {
-        return [
+        $definiciones = [
             [
                 'name'         => 'consultar_opciones_de_carga',
                 'description'  => 'Devuelve lo necesario para armar una carga sin suponer nada: hoy con su día de la semana, qué puede cargar la persona (gastos, tareas, pagos de clientes, pagos a proveedores), si la cuenta trabaja en dólares, los métodos de pago (cuáles se pueden usar y el motivo de los que no), las cajas que la persona puede usar, la caja por defecto de cada método y moneda, y las unidades de repetición de las tareas. Usala antes de proponer un gasto, un pago o marcar hecha una tarea con gasto.',
@@ -391,16 +401,98 @@ class HerramientasDeCarga
                 ],
             ],
         ];
+
+        if ($con_whatsapp) {
+
+            foreach (self::definiciones_de_whatsapp() as $definicion) {
+
+                $definiciones[] = $definicion;
+            }
+        }
+
+        return $definiciones;
     }
 
     /**
-     * Nombres de todas las herramientas de carga.
+     * Las herramientas que solo existen en el canal de WhatsApp (misión asistente-por-whatsapp).
      *
+     * - confirmar_carga_pendiente / cancelar_carga_pendiente: el equivalente de los botones
+     *   Confirmar y Cancelar, porque en WhatsApp no hay tarjeta que tocar.
+     * - proponer_compra_con_factura: va acá y no en la lista común porque SU MATERIA PRIMA ES
+     *   EXCLUSIVA DE ESTE CANAL. Las filas de `ai_message_imagenes` las escribe únicamente
+     *   AdminSync\AsistenteController: el panel del chat no tiene forma de adjuntar una foto, así
+     *   que declarada en el sistema la herramienta solo podría contestar "no tengo ninguna foto".
+     *   Y para la foto que el dueño ya tiene en la mano estando frente a la pantalla, el camino es
+     *   el escaneo de facturas, que además se la muestra.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function definiciones_de_whatsapp(): array
+    {
+        return [
+            [
+                'name'         => 'proponer_compra_con_factura',
+                'description'  => 'Arma la tarjeta para dar de alta la compra de un proveedor y cargarle la foto de la factura que la persona te mandó, para que el sistema la lea: NO registra nada. Las fotos las saco solas de las que te mandó en esta conversación y todavía no se usaron, así que no me las pases. Si ya hay una compra de ese proveedor vacía y reciente se usa esa, y si no se crea una nueva: la respuesta te dice cuál de las dos. Los artículos no se cargan acá, los revisa la persona desde Compras cuando la lectura termina. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'proveedor'   => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del proveedor de la factura, tal como lo dijo la persona. Nunca lo inventes: si no lo dijo, preguntalo.',
+                        ],
+                        'sucursal'    => [
+                            'type'        => 'string',
+                            'description' => 'Sucursal a la que entra la mercadería. Solo hace falta si el negocio tiene más de una.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['proveedor'],
+                ],
+            ],
+            [
+                'name'         => 'confirmar_carga_pendiente',
+                'description'  => 'Registra de verdad una carga que propusiste en un mensaje ANTERIOR y que la persona ya te dijo que sí. Es el equivalente del botón Confirmar de la pantalla. 🔴 No la podés llamar en el mismo mensaje en el que proponés: tiene que haber una respuesta de la persona en el medio, y si lo intentás te la rechaza. Si la respuesta trae "error", contá ese motivo tal cual y no digas que quedó cargado.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tarjeta_id' => [
+                            'type'        => 'integer',
+                            'description' => 'El tarjeta_id que te devolvió la herramienta proponer_ correspondiente.',
+                        ],
+                    ],
+                    'required'   => ['tarjeta_id'],
+                ],
+            ],
+            [
+                'name'         => 'cancelar_carga_pendiente',
+                'description'  => 'Da de baja una carga que propusiste en un mensaje ANTERIOR y que la persona te dijo que no. Es el equivalente del botón Cancelar de la pantalla. No registra nada ni deshace nada ya registrado.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tarjeta_id' => [
+                            'type'        => 'integer',
+                            'description' => 'El tarjeta_id que te devolvió la herramienta proponer_ correspondiente.',
+                        ],
+                    ],
+                    'required'   => ['tarjeta_id'],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Nombres de las herramientas de carga.
+     *
+     * Sin argumento devuelve las que ve el chat de la pantalla; con `true`, también las del canal
+     * de WhatsApp. maneja() usa la lista completa: una herramienta que se despacha tiene que estar
+     * ahí aunque no se declare en todos los canales.
+     *
+     * @param  bool  $con_whatsapp
      * @return array<int, string>
      */
-    public static function nombres(): array
+    public static function nombres($con_whatsapp = false): array
     {
-        return array_column(self::definiciones(), 'name');
+        return array_column(self::definiciones($con_whatsapp), 'name');
     }
 
     /**
@@ -411,7 +503,7 @@ class HerramientasDeCarga
      */
     public static function maneja($tool_name): bool
     {
-        return in_array((string) $tool_name, self::nombres(), true);
+        return in_array((string) $tool_name, self::nombres(true), true);
     }
 
     /**
@@ -436,6 +528,24 @@ class HerramientasDeCarga
                 'content'  => 'Error al ejecutar '.$tool_name.': una propuesta necesita el mensaje que se está generando.',
                 'is_error' => true,
             ];
+        }
+
+        /*
+         * Misión asistente-por-whatsapp: las herramientas del canal solo existen en WhatsApp.
+         * maneja() las reconoce siempre (si no, execute_tool_calls no las despacharía nunca), así
+         * que el corte por canal va acá: en el sistema la confirmación es el botón —una IA que
+         * pueda confirmar sola lo que propuso le saca la decisión a la persona— y las fotos no
+         * existen. Ver el docblock de definiciones_de_whatsapp().
+         */
+        if (in_array($tool_name, array_column(self::definiciones_de_whatsapp(), 'name'), true)) {
+
+            if (!($assistant_message instanceof AiMessage) || !$assistant_message->es_de_whatsapp()) {
+
+                return [
+                    'content'  => 'Tool desconocida: '.$tool_name,
+                    'is_error' => true,
+                ];
+            }
         }
 
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
@@ -478,6 +588,15 @@ class HerramientasDeCarga
 
             case 'proponer_oferta':
                 return self::resultado(PropuestaOfertaIaHelper::proponer($contexto, $assistant_message, $input));
+
+            case 'proponer_compra_con_factura':
+                return self::resultado(PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input));
+
+            case 'confirmar_carga_pendiente':
+                return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
+
+            case 'cancelar_carga_pendiente':
+                return self::resultado(ConfirmacionPorTextoIaHelper::cancelar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
         }
 
         return [

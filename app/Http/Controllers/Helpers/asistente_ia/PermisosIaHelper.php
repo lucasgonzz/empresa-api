@@ -41,6 +41,15 @@ use App\Http\Controllers\Helpers\UserHelper;
  *   - Ofertas por cliente → `buyer.index`: la pantalla de Promociones entra por el menú de Tienda
  *     Online con `can: 'buyer.index'` (src/router/routes.js:366).
  *
+ *   - Compras → `provider_order.store` (misión asistente-por-whatsapp, 16/9/2026). 🔴 El plan de
+ *     esa misión proponía `provider_order.create` y pedía verificarlo antes de fijarlo: medido, ese
+ *     slug NO EXISTE. Lo único que lo nombra es el "o" de la solapa de compras
+ *     (src/components/provider/components/Nav.vue:25), y ningún seeder lo crea. El permiso real de
+ *     compras es `provider_order.store` — "Hacer pedidos a los Proveedores"
+ *     (database/seeders/PermissionsTableSeeder.php:221) —, y es exactamente el que pide el botón
+ *     "Nuevo" de la vista de compras, que se dibuja con `can(model_name + '.store')`
+ *     (src/common-vue/components/view/header/Index.vue:262). Mismo origen que el de Gastos.
+ *
  * ⚠️ LOS PERMISOS NO SON EL ÚNICO GATE. Combos y ofertas viven detrás de una EXTENSIÓN
  * (`combos` y `motor_de_ofertas`), que es otra cosa: el permiso dice si esta persona puede, la
  * extensión si el comercio compró el módulo. Esa se chequea aparte, con UserHelper::hasExtencion()
@@ -59,6 +68,8 @@ class PermisosIaHelper {
     const COMBOS = 'article.index';
 
     const OFERTAS = 'buyer.index';
+
+    const COMPRAS = 'provider_order.store';
 
     /** Extensión que enciende el módulo de Combos (ExtencionSeeder). */
     const EXTENCION_COMBOS = 'combos';

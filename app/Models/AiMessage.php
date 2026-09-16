@@ -26,9 +26,37 @@ use Illuminate\Database\Eloquent\Model;
  * `menciones` (misión agente-ia-mano-derecha): los clientes y artículos que la
  * respuesta nombró, con el literal exacto con que los nombró, para que la SPA
  * los pinte clickeables. Ver MencionesIaHelper.
+ *
+ * `canal` (misión asistente-por-whatsapp): 'sistema' (el panel del chat, el
+ * default de la columna y lo que era todo hasta hoy) | 'whatsapp' (el dueño
+ * escribiendo al número de ComercioCity, empujado por el admin). El canal
+ * cambia el prompt y qué herramientas se declaran: en WhatsApp no hay tarjeta
+ * que tocar, así que la confirmación es por texto (confirmar_carga_pendiente).
+ * `whatsapp_message_id` guarda el wamid del entrante que originó el turno. Va en
+ * las DOS filas del turno (el 'user' y el 'assistant') y es lo que vuelve
+ * idempotente el reintento del admin: si ese wamid ya entró, se devuelven los
+ * ids de la primera vez en vez de crear un segundo turno y mandarle al dueño dos
+ * veces la misma respuesta.
+ *
+ * `tipo`: 'texto' | 'audio' | 'imagen' — con qué lo mandó la persona. Un audio
+ * llega ya transcripto por Kapso; el que llega SIN transcribir se contesta de
+ * forma determinista y sin salir a la IA (ver AdminSync\AsistenteController).
  */
 class AiMessage extends Model
 {
+    /** Canal de un mensaje escrito desde el panel del chat del sistema (default de la columna). */
+    const CANAL_SISTEMA = 'sistema';
+
+    /** Canal de un mensaje que entró por WhatsApp, empujado por el admin. */
+    const CANAL_WHATSAPP = 'whatsapp';
+
+    /** Con qué lo mandó la persona. 'texto' es el default de la columna y lo único que hay en la pantalla. */
+    const TIPO_TEXTO = 'texto';
+
+    const TIPO_AUDIO = 'audio';
+
+    const TIPO_IMAGEN = 'imagen';
+
     protected $guarded = [];
 
     /**
@@ -107,5 +135,24 @@ class AiMessage extends Model
     public function acciones()
     {
         return $this->hasMany(AiMessageAction::class, 'ai_message_id')->orderBy('id');
+    }
+
+    /**
+     * Fotos que trajo este mensaje, en el orden en que llegaron (misión asistente-por-whatsapp).
+     * Solo las tienen los mensajes 'user' de canal 'whatsapp'.
+     */
+    public function imagenes()
+    {
+        return $this->hasMany(AiMessageImagen::class, 'ai_message_id')->orderBy('orden');
+    }
+
+    /**
+     * true si el mensaje entró por WhatsApp.
+     *
+     * @return bool
+     */
+    public function es_de_whatsapp()
+    {
+        return (string) $this->canal === self::CANAL_WHATSAPP;
     }
 }

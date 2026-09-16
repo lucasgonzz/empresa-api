@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Models\AiConversation;
@@ -184,9 +185,20 @@ class AsistenteIaService
          */
         $con_acciones = (bool) $assistant_message->acciones_habilitadas;
 
-        $system   = $this->build_system_payload($conversation, $owner, $con_acciones);
+        /*
+         * Misión asistente-por-whatsapp: el canal sale del MENSAJE y no de la
+         * conversación, por el mismo motivo por el que `acciones_habilitadas`
+         * vive en el mensaje. Una conversación de WhatsApp se puede seguir
+         * desde el panel del chat (es la misma conversación, §4 del plan): ese
+         * mensaje tiene canal 'sistema', la persona está mirando la pantalla y
+         * su respuesta tiene que traer tarjetas con Confirmar, no el flujo de
+         * confirmación por texto.
+         */
+        $es_whatsapp = $assistant_message->es_de_whatsapp();
+
+        $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp);
         $messages = $this->build_messages_payload($conversation);
-        $tools    = $this->build_tools($con_acciones);
+        $tools    = $this->build_tools($con_acciones, $es_whatsapp);
         $model    = (string) config('services.anthropic.model');
         $http     = $this->build_http_client();
 
@@ -361,9 +373,10 @@ class AsistenteIaService
      * @param AiConversation $conversation
      * @param User|null $owner Dueño de la cuenta, para el nombre del negocio.
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
+     * @param bool $es_whatsapp true si el mensaje entró por WhatsApp (misión asistente-por-whatsapp).
      * @return string
      */
-    public function build_system_prompt(AiConversation $conversation, $owner, $con_acciones = false): string
+    public function build_system_prompt(AiConversation $conversation, $owner, $con_acciones = false, $es_whatsapp = false): string
     {
         // Mismo fallback que el resto del sistema cuando el negocio no cargó su nombre.
         $company_name = '';
@@ -402,6 +415,14 @@ class AsistenteIaService
         $regla_de_solo_lectura = $con_acciones ? '' : $this->regla_de_solo_lectura();
         $bloque_de_carga = $con_acciones ? $this->bloque_de_carga() : '';
 
+        /*
+         * Misión asistente-por-whatsapp: el bloque del canal va DESPUÉS del de
+         * carga a propósito, porque lo corrige. El de carga habla de "la
+         * tarjeta que la persona confirma" y en WhatsApp no hay tarjeta que
+         * tocar: la confirmación es por texto.
+         */
+        $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones) : '';
+
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
 adentro del sistema de gestión de ese negocio y le hablás a la persona que lo usa.
@@ -433,7 +454,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_whatsapp}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -514,6 +535,70 @@ CARGA;
     }
 
     /**
+     * Las reglas del canal de WhatsApp (misión asistente-por-whatsapp, §3.5 del
+     * plan), con una línea en blanco al final. Solo va cuando el mensaje entró
+     * por WhatsApp.
+     *
+     * 🔴 VA DESPUÉS DEL BLOQUE DE CARGA PORQUE LO CORRIGE. El bloque de carga
+     * dice "el sistema le muestra a la persona una tarjeta con Confirmar y
+     * Cancelar" y en WhatsApp eso es mentira: no hay nada que tocar. Dejarlo
+     * sin corregir es la peor forma de fallar de este canal — el dueño lee
+     * "te dejé la tarjeta para que la confirmes", busca la tarjeta, no la
+     * encuentra, y el gasto no se carga nunca.
+     *
+     * La segunda mitad (la confirmación por texto) solo se escribe cuando el
+     * mensaje tiene las herramientas de carga: sin ellas no hay nada que
+     * confirmar y el renglón sobraría.
+     *
+     * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
+     * @return string
+     */
+    protected function bloque_de_whatsapp($con_acciones = false): string
+    {
+        $confirmacion = $con_acciones ? $this->bloque_de_confirmacion_por_texto() : '';
+
+        return <<<WHATSAPP
+Estás hablando por WhatsApp, no por la pantalla del sistema:
+- La persona te lee en el teléfono, muchas veces en la calle. Mensajes cortos de verdad:
+  dos o tres oraciones. Si hay mucho para contar, decí lo importante y ofrecé el detalle.
+- Nunca nombres botones, pantallas, tarjetas ni "el panel": acá no hay nada para tocar.
+  Si algo se hace desde el sistema, decí en qué parte del sistema, no qué botón apretar.
+- La mayoría de las veces te va a hablar por audio y te llega ya pasado a texto. Si te
+  llega un audio sin transcribir, decilo en una línea y pedile que te lo escriba.
+{$confirmacion}
+WHATSAPP;
+    }
+
+    /**
+     * Cómo se confirma una carga cuando no hay tarjeta que tocar.
+     *
+     * 🔴 La regla del medio (no confirmar en el mismo mensaje en el que se
+     * propone) está además puesta con una guarda dura en
+     * HerramientasDeCarga::confirmar_carga_pendiente(): el prompt la explica
+     * para que la IA no la intente, y la guarda la sostiene para cuando la
+     * intente igual. Sin las dos, la IA puede proponer y confirmar de una sola
+     * pasada y la persona se entera de la carga cuando ya está hecha.
+     *
+     * @return string
+     */
+    protected function bloque_de_confirmacion_por_texto(): string
+    {
+        return <<<CONFIRMACION
+- Cómo se confirma una carga acá, que REEMPLAZA lo de la tarjeta: llamás igual a la
+  herramienta proponer_ que corresponde, pero no digas que dejaste una tarjeta. Decí los
+  datos exactos de lo que vas a cargar (cuánto, a quién, de qué, qué día, cómo se paga) y
+  preguntá si lo registrás.
+- Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
+  tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
+- 🔴 No podés proponer y confirmar en el mismo mensaje: siempre tiene que haber una
+  respuesta de la persona en el medio. Si lo intentás, la herramienta te lo rechaza.
+- Nunca digas que algo quedó cargado hasta que confirmar_carga_pendiente te conteste que
+  sí. Cuando te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la
+  compra) en una línea.
+CONFIRMACION;
+    }
+
+    /**
      * Array `system` completo para la API: el bloque 1 (común, con
      * cache_control ephemeral) y, si la conversación tiene contexto de
      * fondo (datos ya calculados de una sugerencia), un bloque 2 SIN
@@ -523,14 +608,15 @@ CARGA;
      * @param AiConversation $conversation
      * @param User|null $owner
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
+     * @param bool $es_whatsapp true si el mensaje entró por WhatsApp (misión asistente-por-whatsapp).
      * @return array<int, array<string, mixed>>
      */
-    public function build_system_payload(AiConversation $conversation, $owner, $con_acciones = false): array
+    public function build_system_payload(AiConversation $conversation, $owner, $con_acciones = false, $es_whatsapp = false): array
     {
         $system = [
             [
                 'type'          => 'text',
-                'text'          => $this->build_system_prompt($conversation, $owner, $con_acciones),
+                'text'          => $this->build_system_prompt($conversation, $owner, $con_acciones, $es_whatsapp),
                 'cache_control' => ['type' => 'ephemeral'],
             ],
         ];
@@ -562,19 +648,50 @@ CARGA;
      * carga suma al final una línea por tarjeta (ver
      * contenido_para_el_historial()). Un mensaje sin tarjetas viaja idéntico.
      *
+     * Misión asistente-por-whatsapp: un mensaje del dueño puede traer fotos.
+     * El `content` de un turno pasa a ser ARRAY DE BLOQUES (imágenes primero,
+     * el texto al final) SOLO en ese caso; sin fotos sigue siendo el string de
+     * siempre, y el chat de la pantalla arma exactamente el mismo payload que
+     * antes de la misión.
+     *
+     * 🔴 SOLO EL ÚLTIMO MENSAJE DEL USUARIO MANDA SUS FOTOS EN BASE64. Las de
+     * los mensajes anteriores viajan como "[Foto adjunta]" dentro del texto
+     * (ver contenido_para_el_historial()). Sin esta regla, cada turno reenvía
+     * todo el historial de imágenes y el costo de una conversación crece sin
+     * techo: cinco fotos charladas durante la mañana se pagarían de nuevo en
+     * cada pregunta de la tarde. Lo que hace que no se pierda nada es que la
+     * foto no la necesita el modelo para cargar la compra: la engancha
+     * proponer_compra_con_factura leyendo las que todavía no se gestionaron.
+     *
      * @param AiConversation $conversation
-     * @return array<int, array{role: string, content: string}>
+     * @return array<int, array{role: string, content: string|array}>
      */
     public function build_messages_payload(AiConversation $conversation): array
     {
-        // Los últimos N en orden inverso: el recorte por caracteres protege lo más nuevo.
+        /*
+         * Los últimos N en orden inverso: el recorte por caracteres protege lo más nuevo.
+         *
+         * 🔴 UN MENSAJE CON FOTOS VIAJA AUNQUE NO TENGA TEXTO. Mandar la foto de la factura sin
+         * escribir nada es el caso normal de WhatsApp, y con el filtro de siempre
+         * (`contenido != ''`) ese mensaje quedaba afuera del historial: el modelo nunca veía la
+         * foto, y la conversación tenía un hueco justo donde estaba lo importante. Para todo lo que
+         * no tiene fotos —o sea, todo el chat de la pantalla— la condición es exactamente la de
+         * antes.
+         */
         $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('estado', 'listo')
-            ->whereNotNull('contenido')
-            ->where('contenido', '!=', '')
+            ->where(function ($query) {
+                $query->where(function ($con_texto) {
+                    $con_texto->whereNotNull('contenido')->where('contenido', '!=', '');
+                })->orWhereExists(function ($con_fotos) {
+                    $con_fotos->selectRaw('1')
+                        ->from('ai_message_imagenes')
+                        ->whereColumn('ai_message_imagenes.ai_message_id', 'ai_messages.id');
+                });
+            })
             ->orderBy('id', 'DESC')
             ->limit(self::MAX_MENSAJES_HISTORIAL)
-            ->with('acciones')
+            ->with(['acciones', 'imagenes'])
             ->get();
 
         $seleccionados = [];
@@ -598,11 +715,29 @@ CARGA;
         // Recién acá se ordena ascendente (venían del más nuevo al más viejo).
         $seleccionados = array_reverse($seleccionados);
 
+        /*
+         * Cuál es el último mensaje del usuario de los que van a viajar: el único que puede
+         * mandar sus fotos en base64 (ver el 🔴 del docblock). Se decide ya ordenado y ya
+         * recortado, para que sea el último REAL del payload y no el último de la base.
+         */
+        $id_ultimo_user = 0;
+
+        foreach ($seleccionados as $message) {
+            if ($message->rol === 'user') {
+                $id_ultimo_user = (int) $message->id;
+            }
+        }
+
         $turns = [];
 
         foreach ($seleccionados as $message) {
-            $body = trim($this->contenido_para_el_historial($message));
-            if ($body === '') {
+            $body = trim($this->contenido_para_el_historial($message, (int) $message->id === $id_ultimo_user));
+
+            $imagenes = (int) $message->id === $id_ultimo_user
+                ? $this->bloques_de_imagen($message)
+                : [];
+
+            if ($body === '' && count($imagenes) === 0) {
                 continue;
             }
 
@@ -611,9 +746,10 @@ CARGA;
 
             if ($last_index >= 0 && $turns[$last_index]['role'] === $role) {
                 // Mismo rol que el turno anterior: se funde en un solo mensaje.
-                $turns[$last_index]['content'] .= "\n" . $body;
+                $turns[$last_index]['texto'] = trim($turns[$last_index]['texto'] . "\n" . $body);
+                $turns[$last_index]['imagenes'] = array_merge($turns[$last_index]['imagenes'], $imagenes);
             } else {
-                $turns[] = ['role' => $role, 'content' => $body];
+                $turns[] = ['role' => $role, 'texto' => $body, 'imagenes' => $imagenes];
             }
         }
 
@@ -626,7 +762,94 @@ CARGA;
             array_shift($turns);
         }
 
-        return $turns;
+        return $this->turnos_para_la_api($turns);
+    }
+
+    /**
+     * Pasa los turnos internos a la forma que espera la API.
+     *
+     * Un turno sin fotos viaja con `content` string, exactamente como antes de
+     * la misión asistente-por-whatsapp: el chat de la pantalla no cambia de
+     * payload por existir el canal de WhatsApp. Uno con fotos viaja con
+     * `content` array de bloques, las imágenes primero y el texto al final.
+     *
+     * Un bloque `text` vacío NO se agrega: la API rechaza el request entero con
+     * un 400 si un bloque de texto viene en blanco, y una foto sola (sin
+     * epígrafe) es un mensaje perfectamente válido de WhatsApp.
+     *
+     * @param array<int, array{role: string, texto: string, imagenes: array}> $turns
+     * @return array<int, array{role: string, content: string|array}>
+     */
+    protected function turnos_para_la_api(array $turns): array
+    {
+        $payload = [];
+
+        foreach ($turns as $turn) {
+            if (count($turn['imagenes']) === 0) {
+                $payload[] = ['role' => $turn['role'], 'content' => $turn['texto']];
+
+                continue;
+            }
+
+            $bloques = $turn['imagenes'];
+
+            if (trim($turn['texto']) !== '') {
+                $bloques[] = ['type' => 'text', 'text' => $turn['texto']];
+            }
+
+            $payload[] = ['role' => $turn['role'], 'content' => $bloques];
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Los bloques `image` de un mensaje, en base64, listos para la API.
+     *
+     * 🔴 El `media_type` sale DE LOS BYTES (AsistenteImagenHelper::media_type,
+     * con getimagesizefromstring) y nunca de la columna `mime`. Es lo que ya
+     * hace SupportAiImageCollector en el admin: si la columna dijera una cosa y
+     * el archivo fuera otra, Anthropic rebota el request completo con un 400
+     * que no nombra la imagen y la conversación entera queda muda.
+     *
+     * Una foto cuyo archivo ya no está, o que no es de un tipo que Anthropic
+     * acepte, se saltea sin voltear nada: el texto del mensaje viaja igual.
+     *
+     * @param AiMessage $message
+     * @return array<int, array<string, mixed>>
+     */
+    protected function bloques_de_imagen(AiMessage $message): array
+    {
+        if ($message->rol !== 'user' || ! $message->relationLoaded('imagenes') || $message->imagenes->isEmpty()) {
+            return [];
+        }
+
+        $bloques = [];
+
+        foreach ($message->imagenes as $imagen) {
+            $binario = AsistenteImagenHelper::binario($imagen);
+
+            if (is_null($binario)) {
+                continue;
+            }
+
+            $media_type = AsistenteImagenHelper::media_type($binario);
+
+            if (is_null($media_type)) {
+                continue;
+            }
+
+            $bloques[] = [
+                'type'   => 'image',
+                'source' => [
+                    'type'       => 'base64',
+                    'media_type' => $media_type,
+                    'data'       => base64_encode($binario),
+                ],
+            ];
+        }
+
+        return $bloques;
     }
 
     /**
@@ -637,14 +860,37 @@ CARGA;
      * confirmó, qué se canceló y qué quedó reemplazado, y no vuelve a
      * proponer lo que ya está cargado. Sin tarjetas, el contenido de siempre.
      *
-     * @param AiMessage $message Con la relación `acciones` cargada.
+     * Misión asistente-por-whatsapp: un mensaje del dueño con fotos que NO es
+     * el último del payload suma "[Foto adjunta]" (o "[N fotos adjuntas]") al
+     * final del texto. Es la contracara de la regla del base64: el modelo tiene
+     * que saber que hubo una foto —para poder decir "la que me mandaste
+     * recién"— sin que la imagen se vuelva a pagar en cada turno.
+     *
+     * @param AiMessage $message Con las relaciones `acciones` e `imagenes` cargadas.
+     * @param bool $manda_las_imagenes true si este mensaje manda sus fotos en base64.
      * @return string
      */
-    protected function contenido_para_el_historial(AiMessage $message): string
+    protected function contenido_para_el_historial(AiMessage $message, $manda_las_imagenes = false): string
     {
         $contenido = (string) $message->contenido;
 
-        if ($message->rol === 'user' || ! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
+        if ($message->rol === 'user') {
+            if ($manda_las_imagenes || ! $message->relationLoaded('imagenes')) {
+                return $contenido;
+            }
+
+            $cuantas = $message->imagenes->count();
+
+            if ($cuantas === 0) {
+                return $contenido;
+            }
+
+            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
+
+            return trim($contenido) === '' ? $marca : rtrim($contenido) . "\n" . $marca;
+        }
+
+        if (! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
             return $contenido;
         }
 
@@ -672,16 +918,24 @@ CARGA;
      * que dependa del usuario, de la fecha o de la conversación. Lo único que cambia el juego de
      * tools es el flag `acciones`, que es por mensaje y da dos prefijos distintos, cada uno con su
      * propio caché.
+ *
+     * Misión asistente-por-whatsapp: con el canal de WhatsApp se suman además
+     * confirmar_carga_pendiente y cancelar_carga_pendiente, que son el
+     * equivalente de los botones Confirmar y Cancelar de la tarjeta. En el
+     * sistema NO se declaran: ahí la decisión la toma la persona con el dedo,
+     * y darle a la IA una herramienta para confirmar sola lo que ella misma
+     * propuso sería sacarle el control a quien tiene que darlo.
      *
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
+     * @param bool $es_whatsapp true si el mensaje entró por WhatsApp.
      * @return array<int, array<string, mixed>>
      */
-    public function build_tools($con_acciones = false): array
+    public function build_tools($con_acciones = false, $es_whatsapp = false): array
     {
         $tools = $this->herramientas_de_lectura();
 
         if ($con_acciones) {
-            foreach (HerramientasDeCarga::definiciones() as $definicion) {
+            foreach (HerramientasDeCarga::definiciones($es_whatsapp) as $definicion) {
                 $tools[] = $definicion;
             }
         }
