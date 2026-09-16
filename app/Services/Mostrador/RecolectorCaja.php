@@ -44,7 +44,11 @@ class RecolectorCaja extends RecolectorBase
     /** Días del detalle de vencimientos, cheques y cuotas próximas, y de la proyección. */
     const HORIZONTE_DIAS = 7;
 
-    /** Días del total de vencimientos a mediano plazo (`total_proximos_30_dias`). */
+    /**
+     * Días del total de vencimientos a mediano plazo (`total_proximos_30_dias`) y, hacia atrás,
+     * de lo vencido que todavía se considera plata del mes corriente
+     * (`total_vencidos_recientes`).
+     */
     const HORIZONTE_TOTAL_DIAS = 30;
 
     /**
@@ -244,18 +248,31 @@ class RecolectorCaja extends RecolectorBase
     /**
      * Bloque `a_pagar`: lo que sale.
      *
-     * - `vencidos`: tareas de la Agenda con gasto que vencieron y no se marcaron
-     *   (AgendaHelper::vencidas), lo más viejo primero.
+     * - `vencidos`: UNA FILA POR TAREA de la Agenda con gasto que venció y no se marcó, no una
+     *   por ocurrencia, con la ocurrencia más reciente como representante (`fecha`,
+     *   `dias_vencido`, `monto`) y dos claves que cuentan el arrastre: `ocurrencias_vencidas`
+     *   (períodos sin marcar) y `monto_acumulado` (lo que suman, null si la tarea no tiene
+     *   monto). 🔴 Por ocurrencia, un alquiler mensual cargado en 2023 y pagado siempre por
+     *   fuera del sistema llenaba las 10 filas con renglones de 2023 y escondía el impuesto que
+     *   venció anteayer. Por eso el orden es por fecha DESCENDENTE: lo más reciente es lo
+     *   accionable, el arrastre viejo se cuenta pero no tapa. `vencidos_omitidos` son las tareas
+     *   que no entraron en el tope.
+     *   ⚠️ El arrastre que se ve es el que ve AgendaHelper::vencidas(), que devuelve hasta
+     *   TOPE_VENCIDAS_POR_TAREA (30) ocurrencias por tarea: una tarea diaria ignorada dos años
+     *   informa 30 períodos, no 700. Las tres cifras (ocurrencias, acumulado y total) salen de
+     *   las mismas ocurrencias, así que nunca se contradicen entre ellas.
      * - `proximos`: tareas con gasto sin hacer de hoy a 7 días (AgendaHelper::ocurrencias_entre)
      *   y cheques emitidos a un proveedor que se cobran en ese lapso, mezclados por fecha y, el
      *   mismo día, el monto más grande primero.
      * - Los totales suman TODAS las filas que cumplen, no solo las que entran en el tope, y
      *   suman por ocurrencia (una tarea mensual vencida dos veces suma dos veces). Una fila sin
-     *   monto no suma.
+     *   monto no suma. `total_vencidos` es el arrastre histórico completo; `total_vencidos_recientes`,
+     *   solo las ocurrencias de los últimos HORIZONTE_TOTAL_DIAS días, que es lo que la
+     *   proyección puede tratar como plata que todavía hay que poner (ver proyeccion()).
      * - `sin_monto` cuenta TAREAS con gasto y sin monto (null o 0) entre las vencidas y las
-     *   próximas, no ocurrencias: es lo que el dueño tiene que corregir, y se corrige una sola
-     *   vez, en la tarea. Contando ocurrencias, una tarea semanal sin monto olvidada hace un mes
-     *   le aparecería como seis vencimientos sin monto.
+     *   próximas de los 30 días, no ocurrencias: es lo que el dueño tiene que corregir, y se
+     *   corrige una sola vez, en la tarea. Contando ocurrencias, una tarea semanal sin monto
+     *   olvidada hace un mes le aparecería como seis vencimientos sin monto.
      * - `agenda_con_vencimientos`: si el dueño tiene cargada alguna tarea con gasto que todavía
      *   pueda vencer. Si es false, la skill le cuenta dónde se cargan.
      *
@@ -268,37 +285,66 @@ class RecolectorCaja extends RecolectorBase
     protected function a_pagar(User $owner, Carbon $hoy, array $ocurrencias, array $vencidas): array
     {
         $limite_detalle = $hoy->copy()->addDays(self::HORIZONTE_DIAS)->format('Y-m-d');
-
-        $vencidos = [];
-        $total_vencidos = 0.0;
+        $desde_reciente = $hoy->copy()->subDays(self::HORIZONTE_TOTAL_DIAS)->format('Y-m-d');
 
         // Indexado por pending_id: una tarea con varias ocurrencias sin monto cuenta una vez.
         $tareas_sin_monto = [];
 
-        // vencidas() ya viene ordenada por fecha ascendente y tarea: lo más viejo primero.
+        // Indexado por pending_id: una fila por tarea, no por ocurrencia.
+        $por_tarea = [];
+        $total_vencidos = 0.0;
+        $total_vencidos_recientes = 0.0;
+
+        // vencidas() ya viene ordenada por fecha ascendente y tarea, así que la última ocurrencia
+        // que se ve de cada tarea es la más reciente: la que queda como representante de la fila.
         foreach ($vencidas as $ocurrencia) {
             if (!$this->tiene_gasto($ocurrencia)) {
                 continue;
             }
 
+            $pending_id = (int) $ocurrencia['pending_id'];
             $monto = $this->monto($ocurrencia['expense_amount']);
 
             if (empty($monto)) {
-                $tareas_sin_monto[(int) $ocurrencia['pending_id']] = true;
+                $tareas_sin_monto[$pending_id] = true;
             } else {
                 $total_vencidos += $monto;
+
+                if ($ocurrencia['fecha'] >= $desde_reciente) {
+                    $total_vencidos_recientes += $monto;
+                }
             }
 
-            $vencidos[] = [
-                'origen'       => 'agenda',
-                'pending_id'   => (int) $ocurrencia['pending_id'],
-                'detalle'      => $ocurrencia['detalle'],
-                'concepto'     => $this->concepto_de($ocurrencia),
-                'fecha'        => $ocurrencia['fecha'],
-                'dias_vencido' => Carbon::parse($ocurrencia['fecha'])->startOfDay()->diffInDays($hoy),
-                'monto'        => $monto,
+            $ocurrencias_previas = isset($por_tarea[$pending_id]) ? $por_tarea[$pending_id]['ocurrencias_vencidas'] : 0;
+            $acumulado_previo = isset($por_tarea[$pending_id]) ? $por_tarea[$pending_id]['monto_acumulado'] : null;
+
+            // Una tarea sin monto arrastra null, no 0: no se sabe cuánto debe, y decir "$ 0" sería
+            // afirmar que no debe nada.
+            $acumulado = is_null($monto) ? $acumulado_previo : (float) $acumulado_previo + $monto;
+
+            $por_tarea[$pending_id] = [
+                'origen'               => 'agenda',
+                'pending_id'           => $pending_id,
+                'detalle'              => $ocurrencia['detalle'],
+                'concepto'             => $this->concepto_de($ocurrencia),
+                'fecha'                => $ocurrencia['fecha'],
+                'dias_vencido'         => Carbon::parse($ocurrencia['fecha'])->startOfDay()->diffInDays($hoy),
+                'monto'                => $monto,
+                'ocurrencias_vencidas' => $ocurrencias_previas + 1,
+                'monto_acumulado'      => $this->monto($acumulado),
             ];
         }
+
+        $vencidos = array_values($por_tarea);
+
+        usort($vencidos, function ($a, $b) {
+            if ($a['fecha'] !== $b['fecha']) {
+                // Descendente: lo que venció anteayer va antes que el arrastre de 2023.
+                return strcmp($b['fecha'], $a['fecha']);
+            }
+
+            return $a['pending_id'] <=> $b['pending_id'];
+        });
 
         $proximos = [];
         $total_proximos = 0.0;
@@ -311,7 +357,13 @@ class RecolectorCaja extends RecolectorBase
 
             $monto = $this->monto($ocurrencia['expense_amount']);
 
-            if (!is_null($monto)) {
+            // 🔴 sin_monto se cuenta acá, ANTES del corte de los 7 días: es el mismo horizonte de
+            // 30 que total_proximos_30_dias, que es justamente el total al que estas tareas le
+            // faltan. Contándolo después del corte, una tarea sin monto que vence en 20 días no
+            // le aparecía al dueño en ningún lado.
+            if (empty($monto)) {
+                $tareas_sin_monto[(int) $ocurrencia['pending_id']] = true;
+            } else {
                 $total_proximos_30_dias += $monto;
             }
 
@@ -319,9 +371,7 @@ class RecolectorCaja extends RecolectorBase
                 continue;
             }
 
-            if (empty($monto)) {
-                $tareas_sin_monto[(int) $ocurrencia['pending_id']] = true;
-            } else {
+            if (!is_null($monto)) {
                 $total_proximos += $monto;
             }
 
@@ -404,13 +454,15 @@ class RecolectorCaja extends RecolectorBase
         });
 
         return [
-            'vencidos'                => array_slice($vencidos, 0, self::TOPE_LISTA),
-            'proximos'                => array_slice($proximos, 0, self::TOPE_PROXIMOS),
-            'total_vencidos'          => $this->monto($total_vencidos),
-            'total_proximos'          => $this->monto($total_proximos),
-            'total_proximos_30_dias'  => $this->monto($total_proximos_30_dias),
-            'sin_monto'               => count($tareas_sin_monto),
-            'agenda_con_vencimientos' => $this->agenda_con_vencimientos($owner),
+            'vencidos'                 => array_slice($vencidos, 0, self::TOPE_LISTA),
+            'vencidos_omitidos'        => max(0, count($vencidos) - self::TOPE_LISTA),
+            'proximos'                 => array_slice($proximos, 0, self::TOPE_PROXIMOS),
+            'total_vencidos'           => $this->monto($total_vencidos),
+            'total_vencidos_recientes' => $this->monto($total_vencidos_recientes),
+            'total_proximos'           => $this->monto($total_proximos),
+            'total_proximos_30_dias'   => $this->monto($total_proximos_30_dias),
+            'sin_monto'                => count($tareas_sin_monto),
+            'agenda_con_vencimientos'  => $this->agenda_con_vencimientos($owner),
         ];
     }
 
@@ -912,10 +964,18 @@ class RecolectorCaja extends RecolectorBase
      * Bloque `proyeccion`: los próximos 7 días, solo en pesos.
      *
      * `entra` son los cheques recibidos (para depositar y los que se cobran en la semana): lo
-     * único con fecha cierta. No suma deudas de clientes ni liquidaciones pendientes. `sale` son
-     * los vencidos más los próximos. `queda` = disponible + entra − sale, y el estado:
-     * sin nada que salga, "sin_vencimientos"; en negativo, "no_alcanza"; por debajo de la quinta
-     * parte de lo que sale (UMBRAL_AJUSTADO), "ajustado"; si no, "alcanza".
+     * único con fecha cierta. No suma deudas de clientes ni liquidaciones pendientes.
+     *
+     * 🔴 `sale` es `total_vencidos_recientes` + `total_proximos`, NO el arrastre histórico
+     * completo (`total_vencidos`), y eso no se "simplifica" de vuelta. Una tarea recurrente que
+     * el dueño paga siempre por fuera del sistema y nunca marca acumula una ocurrencia vencida
+     * por período para siempre: un alquiler de $ 800.000 cargado en 2023 arrastra $ 24.000.000
+     * que nadie va a pagar este mes. Sumado a `sale`, la proyección daba "no_alcanza" TODOS los
+     * días, en todos los comercios con una recurrente sin marcar — o sea, el informe mentía
+     * siempre y el dueño dejaba de creerle. Con la ventana de HORIZONTE_TOTAL_DIAS días, lo que
+     * entra en `sale` es lo que de verdad puede haber quedado sin pagar del mes corriente; el
+     * arrastre viejo sigue viajando en `total_vencidos` y en `monto_acumulado` de cada tarea,
+     * para que la skill lo pueda contar como lo que es (deuda vieja o tareas mal marcadas).
      *
      * @param array $cajas
      * @param array $a_pagar
@@ -926,7 +986,7 @@ class RecolectorCaja extends RecolectorBase
     {
         $disponible = (float) $cajas['disponible_pesos'];
         $entra = (float) $this->monto($a_cobrar['total_cheques_para_depositar'] + $a_cobrar['total_cheques_proximos']);
-        $sale = (float) $this->monto($a_pagar['total_vencidos'] + $a_pagar['total_proximos']);
+        $sale = (float) $this->monto($a_pagar['total_vencidos_recientes'] + $a_pagar['total_proximos']);
         $queda = (float) $this->monto($disponible + $entra - $sale);
 
         if ($sale <= 0) {
