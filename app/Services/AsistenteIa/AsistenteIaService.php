@@ -555,17 +555,28 @@ CARGA;
     }
 
     /**
-     * Las tools de LECTURA del asistente, con su input_schema para la API de
-     * Anthropic. Ninguna crea, modifica ni borra nada.
+     * El registro ÚNICO de las tools de LECTURA del asistente: cada entrada lleva JUNTAS su
+     * definición para la API de Anthropic (name / description / input_schema) y el `handler` que la
+     * resuelve cuando Claude la llama. Ninguna crea, modifica ni borra nada.
      *
-     * 🔴 Toda tool se declara en DOS lugares de este archivo: acá (para que
-     * Claude sepa que existe) y en el if/elseif de execute_tool_calls() (para
-     * que al usarla se resuelva). Con una sola de las dos, la IA "tiene" la
-     * tool y al llamarla recibe "Tool desconocida". Se agregan juntas.
+     * 🔴 POR QUÉ UN REGISTRO Y NO DOS LISTAS: hasta esta misión toda tool se declaraba en DOS
+     * lugares de este archivo —el array de definiciones y su rama del if/elseif de
+     * execute_tool_calls()—, y con una sola de las dos la IA "tenía" la tool y al usarla recibía
+     * "Tool desconocida". Acá las dos puntas son la MISMA entrada: agregar una tool es agregar un
+     * elemento a este array, y olvidarse una punta dejó de ser posible. Es el mismo movimiento que
+     * ya había hecho HerramientasDeCarga con sus definiciones y su despacho.
+     *
+     * El `handler` recibe (array $input, int $owner_id) y devuelve los DATOS crudos: el json_encode
+     * con su fallback vive centralizado en contenido_de_tool_result() y la defensa del enum `dias`
+     * en dias_del_enum(), en vez de repetidos ocho y tres veces. La clave `handler` va siempre
+     * ÚLTIMA: herramientas_de_lectura() la saca, y lo que viaja a la API queda con el mismo orden
+     * de claves de siempre.
+     *
+     * 🔴 EL ORDEN DE ESTE ARRAY ES PARTE DEL CACHÉ DE PROMPT (ver build_tools): no se reordena.
      *
      * @return array<int, array<string, mixed>>
      */
-    public function herramientas_de_lectura(): array
+    protected function registro_de_lectura(): array
     {
         return [
             [
@@ -581,6 +592,9 @@ CARGA;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_clientes',
@@ -595,6 +609,9 @@ CARGA;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::clientes($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_movimientos_de_cuenta_corriente',
@@ -609,6 +626,9 @@ CARGA;
                     ],
                     'required' => ['client_id'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente($owner_id, (int) ($input['client_id'] ?? 0));
+                },
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
@@ -624,6 +644,9 @@ CARGA;
                     ],
                     'required' => [],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::mas_vendidos($owner_id, self::dias_del_enum($input));
+                },
             ],
             [
                 'name' => 'consultar_precios_de_proveedores',
@@ -638,6 +661,9 @@ CARGA;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::precios_de_proveedores($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_ofertas_activas',
@@ -652,6 +678,9 @@ CARGA;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::ofertas_activas($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_actividad_de_un_cliente',
@@ -671,6 +700,9 @@ CARGA;
                     ],
                     'required' => ['client_id'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::actividad_de_un_cliente($owner_id, (int) ($input['client_id'] ?? 0), self::dias_del_enum($input));
+                },
             ],
             [
                 'name' => 'consultar_interesados_en_un_articulo',
@@ -690,8 +722,105 @@ CARGA;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input));
+                },
             ],
         ];
+    }
+
+    /**
+     * Las tools de lectura tal como viajan a la API: el registro sin la clave `handler`, que es
+     * interna (y además es un Closure, que no se serializa a JSON).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function herramientas_de_lectura(): array
+    {
+        $definiciones = [];
+
+        foreach ($this->registro_de_lectura() as $herramienta) {
+            unset($herramienta['handler']);
+            $definiciones[] = $herramienta;
+        }
+
+        return $definiciones;
+    }
+
+    /**
+     * Nombres de todas las tools de lectura, derivados del registro (mismo patrón que
+     * HerramientasDeCarga::nombres()).
+     *
+     * @return array<int, string>
+     */
+    public function nombres_de_lectura(): array
+    {
+        return array_column($this->registro_de_lectura(), 'name');
+    }
+
+    /**
+     * true si la tool es de lectura (mismo patrón que HerramientasDeCarga::maneja()).
+     *
+     * @param string $tool_name
+     * @return bool
+     */
+    public function maneja_lectura($tool_name): bool
+    {
+        return in_array((string) $tool_name, $this->nombres_de_lectura(), true);
+    }
+
+    /**
+     * El handler de una tool de lectura, o null si el nombre no está en el registro.
+     *
+     * @param string $tool_name
+     * @return callable|null
+     */
+    protected function handler_de_lectura($tool_name)
+    {
+        foreach ($this->registro_de_lectura() as $herramienta) {
+            if ($herramienta['name'] === (string) $tool_name) {
+
+                return $herramienta['handler'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * El contenido JSON de un tool_result.
+     *
+     * El fallback `?: '[]'` estaba repetido en las ocho ramas del despacho y es el mismo que usa
+     * HerramientasDeCarga::resultado(): con UTF-8 inválido en la base (nombres importados de un
+     * Excel roto) json_encode devuelve false, y un content false rompería el request siguiente del
+     * loop con un 400 críptico.
+     *
+     * @param mixed $datos
+     * @return string
+     */
+    protected function contenido_de_tool_result($datos): string
+    {
+        return json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]';
+    }
+
+    /**
+     * La ventana de días de un input, defendida contra un valor fuera del enum: cualquier cosa que
+     * no sea 7, 30 o 90 se cae al default de 30. Lo usan las tres tools que aceptan `dias`, que
+     * repetían el mismo bloque.
+     *
+     * @param array $input
+     * @return int
+     */
+    protected static function dias_del_enum(array $input): int
+    {
+        $dias = (int) ($input['dias'] ?? 30);
+
+        if (! in_array($dias, [7, 30, 90], true)) {
+
+            return 30;
+        }
+
+        return $dias;
     }
 
     /**
@@ -726,12 +855,6 @@ CARGA;
             $tool_name  = (string) ($block['name'] ?? '');
             $tool_input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
 
-            /*
-             * A los cuatro json_encode se les pone el fallback `?: '[]'`:
-             * con UTF-8 inválido en la base (nombres importados de un Excel
-             * roto) json_encode devuelve false, y un content false rompería
-             * el request siguiente del loop con un 400 críptico.
-             */
             try {
                 // true cuando la tool pedida no está en la whitelist: el
                 // tool_result viaja con is_error para que Claude no lo lea
@@ -743,58 +866,12 @@ CARGA;
                 // la tarjeta): también viaja con is_error.
                 $error_de_la_herramienta = false;
 
-                if ($tool_name === 'consultar_stock_de_articulos') {
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_clientes') {
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::clientes($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_movimientos_de_cuenta_corriente') {
-                    $client_id = (int) ($tool_input['client_id'] ?? 0);
-                    $data = ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente($owner_id, $client_id);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_articulos_mas_vendidos') {
-                    $dias = (int) ($tool_input['dias'] ?? 30);
-                    // Defensa contra un valor fuera del enum: se cae al default.
-                    if (! in_array($dias, [7, 30, 90], true)) {
-                        $dias = 30;
-                    }
-                    $data = ConsultasSistemaIaHelper::mas_vendidos($owner_id, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_precios_de_proveedores') {
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::precios_de_proveedores($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_ofertas_activas') {
-                    // La otra punta de esta tool está en build_tools(): las dos
-                    // se agregan juntas o la IA la llama y recibe un error.
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::ofertas_activas($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_actividad_de_un_cliente') {
-                    // La otra punta de esta tool está en build_tools(): las dos
-                    // se agregan juntas o la IA la llama y recibe un error.
-                    $client_id = (int) ($tool_input['client_id'] ?? 0);
-                    $dias = (int) ($tool_input['dias'] ?? 30);
-                    // Defensa contra un valor fuera del enum: se cae al default.
-                    if (! in_array($dias, [7, 30, 90], true)) {
-                        $dias = 30;
-                    }
-                    $data = ConsultasSistemaIaHelper::actividad_de_un_cliente($owner_id, $client_id, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_interesados_en_un_articulo') {
-                    // La otra punta de esta tool está en build_tools(): las dos
-                    // se agregan juntas o la IA la llama y recibe un error.
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $dias = (int) ($tool_input['dias'] ?? 30);
-                    // Defensa contra un valor fuera del enum: se cae al default.
-                    if (! in_array($dias, [7, 30, 90], true)) {
-                        $dias = 30;
-                    }
-                    $data = ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, $busqueda, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                $handler = $this->handler_de_lectura($tool_name);
+
+                if (! is_null($handler)) {
+                    // Las dos puntas de una tool de lectura (su definición y su handler) son la
+                    // misma entrada de registro_de_lectura(): acá solo se la invoca.
+                    $content = $this->contenido_de_tool_result(call_user_func($handler, $tool_input, $owner_id));
                 } elseif (! is_null($assistant_message) && $assistant_message->acciones_habilitadas && HerramientasDeCarga::maneja($tool_name)) {
                     // Las dos puntas de las herramientas de carga (definición y
                     // despacho) viven juntas en HerramientasDeCarga: acá solo se

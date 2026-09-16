@@ -78,23 +78,42 @@ class Chat_y_tool_de_ofertas_Test extends TestCase
     }
 
     /**
-     * 🔴 EL TEST DE LAS DOS PUNTAS. Toda tool de build_tools() tiene que estar
-     * despachada en execute_tool_calls(). Se lee el archivo porque el if/elseif
-     * no es introspectable de otra forma.
+     * 🔴 EL TEST DE LAS DOS PUNTAS. Toda tool de build_tools() tiene que estar despachada en
+     * execute_tool_calls().
+     *
+     * Hasta la misión agente-ia-mano-derecha esto se medía leyendo el archivo y buscando el texto
+     * "$tool_name === 'nombre'", porque el if/elseif no era introspectable de otra forma. Ese
+     * if/elseif ya no existe: las dos puntas son la misma entrada de registro_de_lectura(), así que
+     * el texto que buscaba tampoco existe. Lo que cambia acá es el MECANISMO de la medición, no lo
+     * que se exige — y se mide EJECUTÁNDOLAS, que es más fuerte que el texto: el test viejo pasaba
+     * igual si la rama despachaba al helper equivocado o si estaba adentro de un comentario (la
+     * misma observación que ya dejó escrita ChatIa/12_Acciones_gasto_Test para las de carga).
      *
      * @group motor-de-ofertas
      * @test
      */
     public function toda_tool_declarada_tiene_su_despacho_en_el_mismo_archivo()
     {
-        $contenido = file_get_contents(app_path('Services/AsistenteIa/AsistenteIaService.php'));
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+        ]);
+
         $tools = $this->service->build_tools();
         $this->assertNotEmpty($tools);
 
         foreach ($tools as $tool) {
-            $this->assertStringContainsString(
-                "\$tool_name === '" . $tool['name'] . "'",
-                $contenido,
+            $resultados = $this->service->execute_tool_calls([[
+                'type'  => 'tool_use',
+                'id'    => 'toolu_' . uniqid(),
+                'name'  => $tool['name'],
+                'input' => [],
+            ]], $conversation);
+
+            $this->assertCount(1, $resultados, 'La tool ' . $tool['name'] . ' no devolvió ningún tool_result.');
+            $this->assertStringNotContainsString(
+                'Tool desconocida',
+                $resultados[0]['content'],
                 'La tool ' . $tool['name'] . ' esta declarada en build_tools() pero no se despacha en execute_tool_calls(): la IA la llama y recibe "Tool desconocida".'
             );
         }
