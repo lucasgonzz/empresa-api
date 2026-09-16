@@ -272,6 +272,8 @@ class PagosIaHelper {
             }
         }
 
+        self::verificar_cajas_ofrecibles($contexto, $payment_methods);
+
         $sin_apertura = CurrentAcountCajaHelper::cajas_sin_apertura_en_payload($payment_methods);
 
         if (count($sin_apertura)) {
@@ -281,6 +283,125 @@ class PagosIaHelper {
                 'Las siguientes cajas nunca se abrieron: '.implode(', ', $sin_apertura).'. Hay que abrirlas para poder registrar '.$que.'.'
             );
         }
+    }
+
+    /**
+     * 🔴 LA CAJA TIENE QUE SEGUIR SIENDO OFRECIBLE, NO SOLO TENER ALGUNA APERTURA.
+     *
+     * `cajas_sin_apertura_en_payload()` deja pasar a propósito una caja CERRADA que tenga aperturas
+     * previas, y para la pantalla eso está bien: su desplegable nunca ofrece una caja cerrada
+     * (`get_caja_options()` arranca con `filter(caja => caja.abierta)`), así que el caso no puede
+     * darse desde ahí. Acá sí puede: la tarjeta se propone con la caja abierta y la persona la
+     * confirma hasta 24 h después, con el cajero habiendo cerrado la caja en el medio. El movimiento
+     * se colgaría de una apertura YA CERRADA y descuadraría ese arqueo, sin que nada lo avise.
+     *
+     * Se revalida contra el MISMO desplegable que se le ofreció (`cajas_ofrecibles`), no contra una
+     * condición propia: eso cubre de una las otras tres cosas que podían cambiar entre la propuesta y
+     * el clic y tampoco se revisaban — la sucursal de la caja, su moneda y quién la puede usar
+     * (`caja_user`).
+     *
+     * La moneda sale de cada fila (`moneda_id`, que guarda `fila_de_pantalla()`), porque un pago
+     * repartido puede tener una fila en pesos y otra en dólares y cada una tiene su propio universo
+     * de cajas.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $payment_methods  Filas guardadas en `datos` de la tarjeta.
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_cajas_ofrecibles(ContextoDeCargaIa $contexto, array $payment_methods) {
+
+        /** Cajas de la cuenta, cargadas una sola vez (null = todavía no hizo falta). */
+        $cajas = null;
+
+        /** Calles de las sucursales, para nombrar las cajas igual que el desplegable. */
+        $calles = [];
+
+        /** Ofrecibles por moneda, para no recalcular el filtro en cada fila. */
+        $ofrecibles_por_moneda = [];
+
+        foreach ($payment_methods as $fila) {
+
+            $caja_id = is_array($fila) && isset($fila['caja_id']) ? (int) $fila['caja_id'] : 0;
+
+            // Una fila sin caja es válida (cuenta sin cajas): no hay nada que revalidar.
+            if ($caja_id <= 0) {
+
+                continue;
+            }
+
+            $moneda_id = is_array($fila) && isset($fila['moneda_id']) ? (int) $fila['moneda_id'] : 1;
+
+            if (is_null($cajas)) {
+
+                $cajas = OpcionesDeCargaIaHelper::cajas_de_la_cuenta($contexto->owner_id);
+                $calles = OpcionesDeCargaIaHelper::calles_de_sucursales($contexto->owner_id);
+            }
+
+            if (!isset($ofrecibles_por_moneda[$moneda_id])) {
+
+                $ofrecibles_por_moneda[$moneda_id] = OpcionesDeCargaIaHelper::cajas_ofrecibles($contexto, $moneda_id, $cajas);
+            }
+
+            $sigue_ofrecible = false;
+
+            foreach ($ofrecibles_por_moneda[$moneda_id] as $ofrecible) {
+
+                if ((int) $ofrecible->id === $caja_id) {
+
+                    $sigue_ofrecible = true;
+                    break;
+                }
+            }
+
+            if ($sigue_ofrecible) {
+
+                continue;
+            }
+
+            throw new AccionIaException(422, self::mensaje_de_caja_no_ofrecible($cajas, $ofrecibles_por_moneda[$moneda_id], $calles, $caja_id));
+        }
+    }
+
+    /**
+     * El 422 de una caja que salió del desplegable: la nombra y dice cuáles quedan, para que la
+     * persona pueda pedir la carga de nuevo sin adivinar (el prompt obliga a repetir el motivo tal
+     * cual, así que el texto es el que va a leer).
+     *
+     * @param  \Illuminate\Support\Collection  $cajas  Cajas de la cuenta.
+     * @param  array  $ofrecibles  Las que el desplegable ofrece ahora para esa moneda.
+     * @param  array<int,string>  $calles
+     * @param  int  $caja_id  La que ya no se puede usar.
+     * @return string
+     */
+    protected static function mensaje_de_caja_no_ofrecible($cajas, array $ofrecibles, array $calles, $caja_id) {
+
+        $nombre = 'La caja de la tarjeta';
+
+        foreach ($cajas as $candidata) {
+
+            if ((int) $candidata->id === (int) $caja_id) {
+
+                $nombre = OpcionesDeCargaIaHelper::nombre_de_caja($candidata, $calles);
+                break;
+            }
+        }
+
+        if (!count($ofrecibles)) {
+
+            return $nombre.' ya no está disponible y no te queda ninguna otra: abrí una caja en Tesorería y pedímelo de nuevo.';
+        }
+
+        $nombres = [];
+
+        foreach ($ofrecibles as $ofrecible) {
+
+            $nombres[] = OpcionesDeCargaIaHelper::nombre_de_caja($ofrecible, $calles);
+        }
+
+        return $nombre.' ya no está disponible (la cerraron, cambió de sucursal o de moneda, o ya no la podés usar). '.
+            'Ahora podés usar: '.implode(', ', $nombres).'. Pedímelo de nuevo con una de esas.';
     }
 
     /**

@@ -642,4 +642,158 @@ class Acciones_gasto_Test extends EmpresaTestCase
 
         Caja::where('id', $caja_sin_apertura->id)->delete();
     }
+
+    /**
+     * 🔴 La caja se cierra DESPUÉS de proponer la tarjeta y antes del clic (el cajero cerró el turno).
+     * Tiene apertura previa, así que el chequeo de aperturas la dejaría pasar y el movimiento se
+     * colgaría de una apertura ya cerrada, descuadrando ese arqueo. Se revalida contra el mismo
+     * desplegable que se ofreció (cajas_ofrecibles) y el 422 nombra las que quedan.
+     *
+     * @test
+     */
+    public function una_caja_que_salio_de_las_ofrecibles_da_422_al_confirmar()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+
+        // La otra caja del fixture queda abierta para que el 422 tenga qué ofrecer.
+        $otra = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_MP);
+        $this->asegurar_caja_abierta($otra);
+
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 900,
+            'pagos'           => [$this->pago($metodo, $caja)],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        // Y acá el cajero cierra la caja.
+        Caja::where('id', $caja->id)->update(['abierta' => 0]);
+
+        $gastos_antes = Expense::where('user_id', $this->dueno->id)->count();
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        $confirmar = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar');
+
+        $confirmar->assertStatus(422);
+
+        $motivo = $confirmar->json('model.error_mensaje');
+
+        $this->assertStringContainsString(TestingFerreteriaSeeder::CAJA_EFECTIVO, $motivo);
+        $this->assertStringContainsString('ya no está disponible', $motivo);
+        $this->assertStringContainsString(TestingFerreteriaSeeder::CAJA_MP, $motivo, 'El 422 tiene que decir qué cajas quedan.');
+        $this->assertEquals('propuesta', $confirmar->json('model.estado'));
+
+        $this->assertEquals($gastos_antes, Expense::where('user_id', $this->dueno->id)->count(), 'No se puede haber escrito el gasto.');
+        $this->assertEquals(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count());
+    }
+
+    /**
+     * La caja se borra entre la propuesta y el clic: corta antes de escribir.
+     *
+     * @test
+     */
+    public function una_caja_borrada_entre_la_propuesta_y_el_clic_da_422()
+    {
+        $caja = Caja::create([
+            'name'                  => 'Caja que se borra P12',
+            'num'                   => (int) Caja::where('user_id', $this->dueno->id)->max('num') + 1,
+            'user_id'               => $this->dueno->id,
+            'abierta'               => 0,
+            'saldo'                 => 0,
+            'comision_iva_incluido' => 0,
+        ]);
+
+        // Con apertura real, para que lo único que falle sea que la caja ya no existe.
+        $this->asegurar_caja_abierta($caja);
+
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 800,
+            'pagos'           => [$this->pago($metodo, $caja)],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        Caja::where('id', $caja->id)->delete();
+
+        $gastos_antes = Expense::where('user_id', $this->dueno->id)->count();
+
+        $confirmar = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar');
+
+        $confirmar->assertStatus(422);
+        $this->assertStringContainsString('ya no existe', $confirmar->json('model.error_mensaje'));
+        $this->assertEquals('propuesta', $confirmar->json('model.estado'));
+        $this->assertEquals($gastos_antes, Expense::where('user_id', $this->dueno->id)->count());
+    }
+
+    /**
+     * El permiso se revoca entre la propuesta y el clic: el ejecutor lo revalida con la persona
+     * autenticada de ESE request, no con la que propuso.
+     *
+     * @test
+     */
+    public function un_permiso_revocado_entre_la_propuesta_y_el_clic_da_422()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        // Un encargado con acceso de administrador: can() le da true a todo (es_admin).
+        $encargado = User::create([
+            'name'         => 'Encargado P12',
+            'email'        => 'acciones-p12-encargado-' . uniqid() . '@test.local',
+            'password'     => Hash::make('secret'),
+            'owner_id'     => $this->dueno->id,
+            'admin_access' => 1,
+        ]);
+
+        $this->actingAs($encargado, 'web');
+
+        list($conversation, $assistant) = $this->conversacion($encargado);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 1100,
+            'pagos'           => [$this->pago($metodo, $caja)],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], 'Con admin_access tiene que poder proponer: ' . json_encode($respuesta));
+
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        // Y acá el dueño le saca el acceso.
+        User::where('id', $encargado->id)->update(['admin_access' => 0]);
+
+        $gastos_antes = Expense::where('user_id', $this->dueno->id)->count();
+
+        $confirmar = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar');
+
+        $confirmar->assertStatus(422);
+        $this->assertEquals('No tenés permiso para cargar gastos desde tu usuario.', $confirmar->json('model.error_mensaje'));
+        $this->assertEquals('propuesta', $confirmar->json('model.estado'));
+        $this->assertEquals($gastos_antes, Expense::where('user_id', $this->dueno->id)->count());
+    }
 }
