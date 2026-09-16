@@ -538,6 +538,16 @@ CARGA;
      * acciones se suman las de HerramientasDeCarga, que declaran y despachan
      * sus herramientas juntas en su propio archivo.
      *
+     * 🔴 EL ORDEN TIENE QUE SER ESTABLE ENTRE LLAMADAS, y no es cosmética: el caché de prompt de
+     * Anthropic es por PREFIJO de bytes y el request se renderiza tools → system → messages, así
+     * que las tools son el prefijo de todo. Mover una sola tool de lugar entre dos llamadas cambia
+     * esos bytes y tira el caché entero, el de las tools y el del system que viene atrás. Por eso
+     * las dos fuentes son arrays literales —registro_de_lectura() y HerramientasDeCarga::
+     * definiciones()— recorridos en orden: sin sort, sin claves que vengan de la base y sin nada
+     * que dependa del usuario, de la fecha o de la conversación. Lo único que cambia el juego de
+     * tools es el flag `acciones`, que es por mensaje y da dos prefijos distintos, cada uno con su
+     * propio caché.
+     *
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @return array<int, array<string, mixed>>
      */
@@ -550,6 +560,44 @@ CARGA;
                 $tools[] = $definicion;
             }
         }
+
+        return $this->con_cache_control($tools);
+    }
+
+    /**
+     * Le pone el marcador de caché a la ÚLTIMA tool del array, que es como la API de Anthropic
+     * cachea el bloque `tools` COMPLETO: el marcador no cachea "esa tool", cierra el prefijo que
+     * viene hasta ahí.
+     *
+     * POR QUÉ HACE FALTA SI EL BLOQUE 1 DEL SYSTEM YA TIENE UNO (build_system_payload): el system se
+     * renderiza DESPUÉS de las tools, así que su marcador cachea tools+system juntos — pero ese
+     * prefijo se rompe cada vez que el system cambia, y el system cambia siempre: lleva la fecha de
+     * hoy, el nombre del negocio y el prompt de carga o el de solo lectura. Un marcador propio al
+     * final de las tools deja el bloque de definiciones cacheado POR SÍ SOLO: sobrevive al cambio
+     * de system, al cambio de día y al cambio de dueño, y lo comparten todas las conversaciones que
+     * van con el mismo juego de tools.
+     *
+     * Lo que se ahorra, medido el 16/9/2026 sobre el JSON que se manda: 5.534 bytes de definiciones
+     * de lectura (≈1,6k tokens) y 15.956 con las de carga (≈4,5k), en CADA iteración del loop —
+     * hasta 8 por mensaje. El mínimo cacheable de un Sonnet es 1024 tokens, así que los dos casos
+     * entran; abajo de ese piso la API no avisa nada, simplemente no cachea.
+     *
+     * Dos marcadores no cuestan dos escrituras: el tramo entre uno y otro se escribe una sola vez.
+     * El techo de la API son 4 breakpoints por request y acá van 2 (tools y bloque 1 del system).
+     *
+     * @param array<int, array<string, mixed>> $tools
+     * @return array<int, array<string, mixed>>
+     */
+    protected function con_cache_control(array $tools): array
+    {
+        if (empty($tools)) {
+
+            return $tools;
+        }
+
+        $ultima = count($tools) - 1;
+
+        $tools[$ultima]['cache_control'] = ['type' => 'ephemeral'];
 
         return $tools;
     }
