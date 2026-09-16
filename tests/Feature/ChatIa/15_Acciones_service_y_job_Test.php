@@ -25,7 +25,7 @@ use Tests\TestCase;
  * Misión asistente-ia-acciones — el servicio y el job con las herramientas de carga.
  *
  * Lo que protege este archivo: que SIN el flag `acciones` el asistente sea exactamente el de antes
- * (las mismas 8 tools de lectura y el prompt de solo lectura) y CON el flag lleve las de carga; que
+ * (las mismas tools de lectura y el prompt de solo lectura) y CON el flag lleve las de carga; que
  * el loop de tool use deje la tarjeta colgada del mensaje; el reemplazo por clave y el aviso de
  * carga parecida (las dos defensas contra la carga duplicada); que el job en error descarte las
  * tarjetas; que el historial le cuente a la IA qué pasó con cada tarjeta; que el prompt traiga el
@@ -40,7 +40,18 @@ class Acciones_service_y_job_Test extends TestCase
 {
     use DatabaseTransactions;
 
-    /** Las 8 tools de lectura que el asistente tenía antes de la misión, en su orden. */
+    /**
+     * Las tools de lectura del asistente, EN SU ORDEN.
+     *
+     * 🔴 El orden es parte de la aserción y no un detalle: `AsistenteIaService::con_cache_control()`
+     * cachea el bloque `tools` como un prefijo, así que reordenar el registro invalida el caché de
+     * todas las conversaciones. Las ocho primeras son las de antes de la misión
+     * agente-ia-mano-derecha y no se mueven; las siete de abajo son las del bloque B y por eso van
+     * al final.
+     *
+     * ⚠️ Esta lista se mantiene AL DÍA a mano, a propósito: es la que denuncia una tool agregada
+     * sin querer (o sacada sin querer). Derivarla del registro la volvería una tautología.
+     */
     const HERRAMIENTAS_DE_LECTURA = [
         'consultar_stock_de_articulos',
         'consultar_clientes',
@@ -50,6 +61,13 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_ofertas_activas',
         'consultar_actividad_de_un_cliente',
         'consultar_interesados_en_un_articulo',
+        'consultar_ventas_impagas_de_un_cliente',
+        'consultar_quien_compro_un_articulo',
+        'consultar_compras_de_un_articulo',
+        'consultar_compras_a_un_proveedor',
+        'consultar_stock_por_deposito',
+        'que_puedo_consultar',
+        'consultar_datos',
     ];
 
     /** @var User */
@@ -187,7 +205,7 @@ class Acciones_service_y_job_Test extends TestCase
      * @group chat-ia
      * @test
      */
-    public function sin_acciones_el_request_lleva_las_mismas_ocho_tools_y_el_prompt_de_solo_lectura()
+    public function sin_acciones_el_request_lleva_solo_las_tools_de_lectura_y_el_prompt_de_solo_lectura()
     {
         Http::fake(['api.anthropic.com/*' => Http::response($this->end_turn('Tenés 12 tornillos.'), 200)]);
 
@@ -197,7 +215,7 @@ class Acciones_service_y_job_Test extends TestCase
 
         $body = Http::recorded()[0][0]->data();
 
-        $this->assertEquals(self::HERRAMIENTAS_DE_LECTURA, array_column($body['tools'], 'name'), 'Sin el flag viajan exactamente las 8 tools de lectura de siempre.');
+        $this->assertEquals(self::HERRAMIENTAS_DE_LECTURA, array_column($body['tools'], 'name'), 'Sin el flag viajan exactamente las tools de lectura declaradas, en su orden.');
 
         $prompt = $body['system'][0]['text'];
 
@@ -235,6 +253,42 @@ class Acciones_service_y_job_Test extends TestCase
         // La tool sin argumentos viaja con properties como OBJETO JSON: Anthropic rechaza un array.
         $this->assertStringContainsString('"name":"consultar_opciones_de_carga","description"', Http::recorded()[0][0]->body());
         $this->assertStringNotContainsString('"properties":[]', Http::recorded()[0][0]->body());
+    }
+
+    /**
+     * 🔴 TODA HERRAMIENTA DE CARGA TIENE QUE ESTAR NOMBRADA EN LA ENUMERACIÓN DEL PROMPT, porque
+     * esa enumeración cierra con "Nada más:". Una tool que viaja en el bloque `tools` pero no
+     * figura ahí es una tool construida y MUDA: el modelo la tiene y se niega a usarla porque el
+     * prompt le dijo que eso no se puede. Es un defecto sin síntoma — no hay error, no hay log, la
+     * funcionalidad simplemente no aparece nunca.
+     *
+     * Pasó con los combos y las ofertas (misión agente-ia-mano-derecha): se sumaron a
+     * HerramientasDeCarga y el "Nada más" del prompt las habría dejado afuera.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_enumeracion_del_prompt_nombra_todo_lo_que_se_puede_cargar()
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->end_turn('Listo.'), 200)]);
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente(true, 'Armame un combo');
+
+        $this->service->responder($conversation, $assistant);
+
+        $prompt = Http::recorded()[0][0]->data()['system'][0]['text'];
+
+        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda'] as $lo_que_se_carga) {
+            $this->assertStringContainsString(
+                $lo_que_se_carga,
+                $prompt,
+                'La enumeración del prompt no nombra "' . $lo_que_se_carga . '", y cierra con "Nada más": la herramienta queda muda.'
+            );
+        }
+
+        // 🔴 El aviso al cliente queda apagado a propósito: si el modelo promete que le avisó,
+        // miente. El prompt tiene que decírselo.
+        $this->assertStringContainsString('no se le manda ningún mail', $prompt);
     }
 
     /**
@@ -627,7 +681,11 @@ class Acciones_service_y_job_Test extends TestCase
     {
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 
-        $this->assertCount(10, HerramientasDeCarga::definiciones());
+        // El inventario: 10 de la misión asistente-ia-acciones + proponer_combo y proponer_oferta,
+        // que sumó agente-ia-mano-derecha (16/9/2026). El número se toca SOLO cuando se agrega o se
+        // saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es que algo se
+        // declaró (o se borró) de más.
+        $this->assertCount(12, HerramientasDeCarga::definiciones());
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {
             $this->assertStringContainsString(

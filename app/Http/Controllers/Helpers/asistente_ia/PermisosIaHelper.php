@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\UserHelper;
+
 /**
  * Qué puede cargar cada persona desde el asistente de IA (misión asistente-ia-acciones, 15/9/2026).
  *
@@ -29,6 +31,16 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
  *     /proveedores, `can: 'provider.index'`). El nav de proveedores también se muestra con
  *     `provider.create` (src/components/provider/components/Nav.vue:22), pero sin `provider.index`
  *     no se entra al listado desde donde se abre la cuenta corriente, así que ese "o" NO se copia.
+ *   - Combos → `article.index`: los combos se crean desde un modal del Listado de artículos
+ *     (src/components/listado/components/combos/), cuya ruta /listado-de-articulos pide
+ *     `can: 'article.index'` (src/router/routes.js:59). ⚠️ Adentro del modal NO hay otro can(): el
+ *     view-component se monta sin `check_permissions`, que por defecto es false
+ *     (src/common-vue/components/view/header/Index.vue:153-156), así que el botón "Nuevo Combo" no
+ *     chequea `combo.store` — y ese slug ni siquiera está sembrado. Se copia lo que la pantalla
+ *     hace, no lo que uno esperaría que hiciera.
+ *   - Ofertas por cliente → `buyer.index`: la pantalla de Promociones entra por el menú de Tienda
+ *     Online con `can: 'buyer.index'` (src/router/routes.js:366).
+ *
  *   - Compras → `provider_order.store` (misión asistente-por-whatsapp, 16/9/2026). 🔴 El plan de
  *     esa misión proponía `provider_order.create` y pedía verificarlo antes de fijarlo: medido, ese
  *     slug NO EXISTE. Lo único que lo nombra es el "o" de la solapa de compras
@@ -37,6 +49,11 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
  *     (database/seeders/PermissionsTableSeeder.php:221) —, y es exactamente el que pide el botón
  *     "Nuevo" de la vista de compras, que se dibuja con `can(model_name + '.store')`
  *     (src/common-vue/components/view/header/Index.vue:262). Mismo origen que el de Gastos.
+ *
+ * ⚠️ LOS PERMISOS NO SON EL ÚNICO GATE. Combos y ofertas viven detrás de una EXTENSIÓN
+ * (`combos` y `motor_de_ofertas`), que es otra cosa: el permiso dice si esta persona puede, la
+ * extensión si el comercio compró el módulo. Esa se chequea aparte, con UserHelper::hasExtencion()
+ * sobre el dueño, en el helper de cada propuesta.
  */
 class PermisosIaHelper {
 
@@ -48,7 +65,48 @@ class PermisosIaHelper {
 
     const PAGOS_A_PROVEEDORES = 'provider.index';
 
+    const COMBOS = 'article.index';
+
+    const OFERTAS = 'buyer.index';
+
     const COMPRAS = 'provider_order.store';
+
+    /** Extensión que enciende el módulo de Combos (ExtencionSeeder). */
+    const EXTENCION_COMBOS = 'combos';
+
+    /** Extensión que enciende el motor de ofertas por cliente (ExtencionMotorDeOfertasSeeder). */
+    const EXTENCION_OFERTAS = 'motor_de_ofertas';
+
+    /**
+     * true si el COMERCIO tiene el módulo comprado. Se mira sobre el DUEÑO y no sobre quien charla,
+     * que es el mismo criterio del middleware `check_extencion_empresa` del API y del
+     * `hasExtencion()` de la SPA.
+     *
+     * 🔴 Sin dueño devuelve false y NO cae en UserHelper::hasExtencion(slug, null), que ahí se
+     * resolvería por Auth: estas herramientas corren adentro del job, sin sesión, y ahí Auth es el
+     * USER_ID de config, o sea otro comercio.
+     *
+     * @param  \App\Models\User|null  $owner
+     * @param  string  $slug
+     * @return bool
+     */
+    static function tiene_extencion($owner, $slug) {
+
+        return !is_null($owner) && UserHelper::hasExtencion($slug, $owner);
+    }
+
+    /**
+     * Texto que devuelve una herramienta (y el 422 al confirmar) cuando el comercio no tiene el
+     * módulo. Se distingue a propósito del de permisos: uno lo arregla el dueño dándole permiso a
+     * la persona, el otro lo activa ComercioCity.
+     *
+     * @param  string  $que  "Combos", "Promociones".
+     * @return string
+     */
+    static function mensaje_sin_extencion($que) {
+
+        return 'Tu cuenta no tiene activado el módulo de '.$que.'.';
+    }
 
     /**
      * true si la persona puede hacer lo que pide el slug. Mismo orden que `can()` de la SPA.

@@ -96,7 +96,14 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
     /**
      * 🔴 Las dos puntas de toda herramienta del canal viven juntas en HerramientasDeCarga: la
      * definición y su `case` en el despacho. Es la misma regla que ya verifica
-     * 15_Acciones_service_y_job_Test para las diez de la pantalla, extendida a las del canal.
+     * 15_Acciones_service_y_job_Test para las de la pantalla, extendida a las del canal.
+     *
+     * ⚠️ EL NÚMERO DE ABAJO ES UN CENSO Y SE MUEVE CON EL INVENTARIO. Nació en 13 (diez de la
+     * pantalla más tres del canal) y al unir esta misión con agente-ia-mano-derecha pasó a 15:
+     * esa misión agregó proponer_combo y proponer_oferta, que son de la pantalla y van en las dos
+     * listas. Es el mismo movimiento que ya hizo 15_Acciones_service_y_job_Test cuando su
+     * assertCount pasó de 10 a 12. Lo que este test protege de verdad es el foreach de abajo
+     * —que ninguna declarada se quede sin `case`—, y eso no se toca.
      *
      * @group asistente-whatsapp
      * @test
@@ -107,7 +114,7 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
 
         $nombres = HerramientasDeCarga::nombres(true);
 
-        $this->assertCount(13, $nombres, 'Diez de la pantalla más las tres del canal de WhatsApp.');
+        $this->assertCount(15, $nombres, 'Doce de la pantalla más las tres del canal de WhatsApp.');
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(

@@ -245,6 +245,18 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('MP_GUZZLE_CA_BUNDLE', ''),
+
+        /*
+         * Credenciales de Mercado Pago para conectar SOLAS una demo que no tiene ninguna cuenta
+         * conectada todavía (misión mp-precio-servidor-y-credenciales-env, 16/9/2026). Van acá y
+         * no se leen con env() directo en el código de aplicación: con config:cache activo (lo
+         * normal en producción) env() fuera de config/ devuelve el default, y esta misma clase de
+         * bug ya rompió DURACION_REPORTES en producción — ver el comentario de
+         * 'embeddings_generacion_pausada' más arriba en este archivo, o
+         * CompanyPerformanceController::check_tiempo_ultima_creada().
+         */
+        'demo_access_token' => env('MERCADOPAGO_DEMO_ACCESS_TOKEN'),
+        'demo_public_key'   => env('MERCADOPAGO_DEMO_PUBLIC_KEY'),
     ],
 
     /**

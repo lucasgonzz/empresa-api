@@ -407,6 +407,13 @@ class DemoSetupHelper
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
         self::restaurar_mercado_pago($user, $foto_mercado_pago);
 
+        // Sin nada que restaurar (primer armado, o nadie conectó nunca a mano), la instancia se
+        // conecta sola con lo que haya en el .env. Si ALGUIEN ya conectó una cuenta —por OAuth o a
+        // mano—, esto no la pisa: restaurar_mercado_pago() ya se encargó.
+        if (empty($foto_mercado_pago)) {
+            self::conectar_mercado_pago_desde_env($user);
+        }
+
         // Misma sobrevida para la cuenta de Zipnova con la que la tienda cotiza y despacha envíos.
         self::restaurar_zipnova($user, $foto_zipnova);
 
@@ -1391,6 +1398,76 @@ class DemoSetupHelper
                 : $e->getMessage();
 
             Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$detalle);
+        }
+    }
+
+    /**
+     * Conecta Mercado Pago con las credenciales de demo de `config('services.mercadopago')`,
+     * cuando no hay ninguna conexión previa que restaurar — misión
+     * `mp-precio-servidor-y-credenciales-env`, 16/9/2026.
+     *
+     * Solo se llama cuando `foto_de_mercado_pago()` devolvió null: primer armado de la instancia,
+     * o una que nunca tuvo una cuenta conectada. Si YA hay una conexión (restaurada, o conectada
+     * por OAuth desde ABM -> Integraciones, que es la única vía real hoy: la carga manual de
+     * Access Token/Public Key se sacó del SPA), esto no se ejecuta y no la pisa — la config es el
+     * default para cuando no hay nada, no una fuente que gane siempre.
+     *
+     * Escribe el conector y lo espeja en `payment_methods` con el mismo método que usa el
+     * callback del OAuth (`MercadoPagoOAuthService::espejar_en_payment_methods()`), para que la
+     * tienda cobre igual lea del conector o del espejo — misma forma que deja cualquier conexión
+     * real, aunque el origen del dato acá sea la config y no un intercambio OAuth.
+     *
+     * 🔴 Las credenciales se leen de `config()`, NUNCA de `env()` directo: con `config:cache`
+     * activo (lo normal en producción) `env()` fuera de `config/*.php` devuelve el default, y esta
+     * misma clase de bug ya rompió `DURACION_REPORTES` en producción (ver el comentario de
+     * `config/services.php` junto a `demo_access_token`). Sin esto, la conexión automática
+     * quedaría muerta en cualquier instancia con la config cacheada, sin ningún aviso.
+     *
+     * Sin las dos claves cargadas no hace nada — es el estado de hoy, con ninguna instancia
+     * configurada. Un error nunca frena el setup: la demo se arma sin la conexión.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @return void
+     */
+    private static function conectar_mercado_pago_desde_env(User $user)
+    {
+        $access_token = config('services.mercadopago.demo_access_token');
+        $public_key   = config('services.mercadopago.demo_public_key');
+
+        if (empty($access_token) || empty($public_key)) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo de la config.');
+
+                return;
+            }
+
+            $connector->access_token     = $access_token;
+            $connector->public_key       = $public_key;
+            $connector->refresh_token    = null;
+            $connector->expires_at       = null;
+            $connector->platform_user_id = null;
+            $connector->status           = PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message    = null;
+            $connector->save();
+
+            $service = new MercadoPagoOAuthService();
+            $service->espejar_en_payment_methods((int) $user->id, $access_token, $public_key);
+
+            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo de la config.', [
+                'user_id' => $user->id,
+            ]);
+        } catch (\Throwable $e) {
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo de la config: '.$detalle);
         }
     }
 

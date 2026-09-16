@@ -37,7 +37,7 @@ class AiConversationController extends Controller
     /**
      * Minutos tras los cuales un assistant 'pendiente' deja de bloquear el
      * POST de un mensaje nuevo. El techo real del job de respuesta es menor
-     * (ResponderMensajeChatIaJob::$timeout = 240s = 4 minutos): un pendiente
+     * (ResponderMensajeChatIaJob::$timeout = 300s = 5 minutos): un pendiente
      * más viejo que esto es un huérfano de un dispatch que falló o de un
      * worker caído ANTES de failed(), y sin este vencimiento la conversación
      * quedaba clavada en 409 `respuesta_en_curso` para siempre.
