@@ -92,6 +92,11 @@ class PdfColumnProfileController extends Controller
             'show_comissions' => (bool) $request->input('show_comissions', false),
             'show_total_costs' => (bool) $request->input('show_total_costs', false),
             /**
+             * Flag para mostrar/ocultar las observaciones del cliente (clients.description)
+             * debajo del header. Default true para compatibilidad con perfiles existentes.
+             */
+            'show_client_description' => (bool) $request->input('show_client_description', true),
+            /**
              * Texto libre del pie de página; null si no se envía.
              */
             'footer_text' => $request->input('footer_text') ?: null,
@@ -192,6 +197,7 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page',
             'show_comissions',
             'show_total_costs',
+            'show_client_description',
             'footer_text',
             'show_total_in_footer',
             'discount_display_mode',
@@ -401,6 +407,7 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => 'mostrar totales en cada hoja',
             'show_comissions' => 'mostrar comisiones',
             'show_total_costs' => 'mostrar total costos',
+            'show_client_description' => 'mostrar observaciones del cliente',
             'footer_text' => 'pie de página',
             'show_total_in_footer' => 'mostrar total en el pie',
             'table_header_font_size' => 'tamaño de letra del encabezado de columnas',
@@ -440,6 +447,7 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
             'show_comissions' => ['sometimes', 'boolean'],
             'show_total_costs' => ['sometimes', 'boolean'],
+            'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
@@ -487,6 +495,7 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
             'show_comissions' => ['sometimes', 'boolean'],
             'show_total_costs' => ['sometimes', 'boolean'],
+            'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
