@@ -581,9 +581,9 @@ class Acciones_pago_Test extends EmpresaTestCase
     {
         $ajeno = DB::table('providers')->where('user_id', '!=', $this->dueno->id)->whereNull('deleted_at')->first();
 
-        if (is_null($ajeno)) {
-            $this->markTestSkipped('La base no tiene ningún proveedor de otro dueño para probar la tenencia.');
-        }
+        // 🔴 Antes acá había un markTestSkipped: una corrida verde que no probaba la tenencia si el
+        // fixture cambiaba (hallazgo del chequeo del contrato). Si la premisa se cae, el test falla.
+        $this->assertNotNull($ajeno, 'El fixture tiene que traer un proveedor de otro dueño (hoy es el 4, user_id 2): sin eso este test no prueba nada.');
 
         list($conversation, $assistant) = $this->conversacion();
 

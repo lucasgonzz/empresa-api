@@ -796,4 +796,236 @@ class Acciones_gasto_Test extends EmpresaTestCase
         $this->assertEquals('propuesta', $confirmar->json('model.estado'));
         $this->assertEquals($gastos_antes, Expense::where('user_id', $this->dueno->id)->count());
     }
+
+    /**
+     * 🔴 UN GASTO REPARTIDO EN DOS MÉTODOS DE PAGO. Es el caso de plata que ningún test ejercía: la
+     * suma de las filas contra el total, la caja resuelta POR FILA, los dos renglones "Pago" de la
+     * tarjeta y los dos movimientos de caja, uno en cada caja. Si el reparto se rompe, la plata
+     * termina en una caja que no es.
+     *
+     * @test
+     */
+    public function un_gasto_repartido_en_dos_metodos_mueve_las_dos_cajas_y_suma_las_filas()
+    {
+        $caja_efectivo = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja_efectivo);
+        $caja_mp = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_MP);
+        $this->asegurar_caja_abierta($caja_mp);
+
+        $efectivo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $transferencia = CurrentAcountPaymentMethod::where('name', 'Transferencia')->first();
+        $this->assertNotNull($transferencia, 'El catálogo del fixture tiene que traer Transferencia.');
+
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 8000,
+            'pagos'           => [
+                $this->pago($efectivo, $caja_efectivo, 5000),
+                $this->pago($transferencia, $caja_mp, 3000),
+            ],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $pagos = [];
+        foreach ($accion->presentacion['renglones'] as $renglon) {
+            if ($renglon['etiqueta'] === 'Pago') {
+                $pagos[] = $renglon['valor'];
+            }
+        }
+
+        $this->assertCount(2, $pagos, 'La tarjeta tiene que mostrar las dos formas de pago.');
+        $this->assertStringContainsString($caja_efectivo->name, $pagos[0]);
+        $this->assertStringContainsString($caja_mp->name, $pagos[1]);
+        $this->assertStringContainsString('5.000', $pagos[0]);
+        $this->assertStringContainsString('3.000', $pagos[1]);
+
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        $confirmar = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $accion->id . '/confirmar');
+
+        $this->registrar_movimientos_caja_nuevos($movimientos_antes);
+
+        $confirmar->assertStatus(200);
+
+        $gasto = Expense::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+
+        $this->gastos_creados_por_escenarios[] = $gasto->id;
+
+        $this->assertEqualsWithDelta(8000, (float) $gasto->amount, self::DELTA, 'El gasto vale la suma de las filas.');
+
+        $gasto->load('current_acount_payment_methods');
+        $this->assertCount(2, $gasto->current_acount_payment_methods);
+
+        $por_caja = [];
+        foreach ($gasto->current_acount_payment_methods as $metodo) {
+            $por_caja[(int) $metodo->pivot->caja_id] = (float) $metodo->pivot->amount;
+        }
+
+        $this->assertEqualsWithDelta(5000, $por_caja[$caja_efectivo->id], self::DELTA);
+        $this->assertEqualsWithDelta(3000, $por_caja[$caja_mp->id], self::DELTA);
+
+        $movimientos = MovimientoCaja::where('expense_id', $gasto->id)->get();
+
+        $this->assertCount(2, $movimientos, 'Cada fila con caja deja su movimiento.');
+
+        $egresos = [];
+        foreach ($movimientos as $movimiento) {
+            $egresos[(int) $movimiento->caja_id] = (float) $movimiento->egreso;
+        }
+
+        $this->assertEqualsWithDelta(5000, $egresos[$caja_efectivo->id], self::DELTA);
+        $this->assertEqualsWithDelta(3000, $egresos[$caja_mp->id], self::DELTA);
+    }
+
+    /**
+     * 🔴 La tarjeta escribe la fecha CON EL NOMBRE DEL DÍA, y este test lo asierta. Sin él, el defecto
+     * que originó la misión —el asistente contestó "viernes 19/09/2026" siendo el 15/09 martes— podría
+     * volver por un corrimiento de FormatoIaHelper::DIAS y toda la suite seguiría verde: ninguna otra
+     * aserción de tarjeta mira el día de la semana.
+     *
+     * @test
+     */
+    public function la_fecha_de_la_tarjeta_lleva_el_nombre_del_dia_de_la_semana()
+    {
+        $this->fijar_reloj_en(Carbon::parse('2026-09-18 10:00:00'));
+
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 1000,
+            'pagos'           => [$this->pago($metodo, $caja)],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertEquals('viernes 18/09/2026', $this->renglon($accion->presentacion, 'Fecha'));
+    }
+
+    /**
+     * 🔴 Los params de la ruta tienen que viajar como objeto vacío y no como lista: la SPA los pasa a
+     * router.push. Se asierta sobre el contenido CRUDO porque el json() de TestResponse convierte las
+     * dos formas al mismo array de PHP y no las distingue.
+     *
+     * @test
+     */
+    public function los_params_de_la_ruta_viajan_como_objeto_vacio_y_no_como_lista()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 2500,
+            'pagos'           => [$this->pago($metodo, $caja)],
+        ]);
+
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        $confirmar = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar');
+
+        $this->registrar_movimientos_caja_nuevos($movimientos_antes);
+
+        $confirmar->assertStatus(200);
+
+        $gasto = Expense::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+        $this->gastos_creados_por_escenarios[] = $gasto->id;
+
+        $this->assertStringContainsString('"params":{}', $confirmar->getContent(), 'Con params como lista la SPA recibiría una lista vacía en vez de un objeto.');
+    }
+
+    /**
+     * Las dos lecturas nuevas que el asistente usa para no inventar ids: las subcategorías (que en la
+     * pantalla se llaman "Sub categoría") y los proveedores con las cuentas que muestra la pantalla.
+     * Ningún otro test las llamaba.
+     *
+     * @test
+     */
+    public function las_lecturas_de_subcategorias_y_proveedores_devuelven_los_ids_que_piden_las_propuestas()
+    {
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $subcategorias = $this->herramienta($conversation, $assistant, 'consultar_subcategorias_de_gasto', [
+            'busqueda' => mb_substr(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO, 0, 5),
+        ]);
+
+        $ids = [];
+        foreach ($subcategorias as $fila) {
+            $ids[] = (int) $fila['id'];
+        }
+
+        $this->assertContains((int) $concepto->id, $ids, 'La subcategoría del fixture tiene que aparecer con su id.');
+
+        $proveedores = $this->herramienta($conversation, $assistant, 'consultar_proveedores', [
+            'busqueda' => TestingFerreteriaSeeder::PROVIDER_BSAS,
+        ]);
+
+        $this->assertNotEmpty($proveedores, 'El proveedor del fixture tiene que aparecer.');
+        $this->assertArrayHasKey('id', $proveedores[0]);
+        $this->assertArrayHasKey('cuentas', $proveedores[0]);
+        $this->assertCount(1, $proveedores[0]['cuentas'], 'Sin ventas_en_dolares va una sola cuenta, como en BtnCurrentAcounts::show.');
+    }
+
+    /**
+     * 🔴 TODA HERRAMIENTA DECLARADA TIENE QUE ESTAR DESPACHADA, y acá se verifica EJECUTÁNDOLAS. El
+     * test que compara el texto "case 'nombre':" del archivo pasa igual si ese case despacha al
+     * helper equivocado o si está adentro de un comentario (hallazgo del chequeo del contrato). Con
+     * input vacío ninguna propuesta escribe nada: devuelven "faltan" o "error", y lo único que este
+     * test mira es que NO vuelva "Tool desconocida".
+     *
+     * @test
+     */
+    public function toda_herramienta_declarada_responde_algo_que_no_sea_tool_desconocida()
+    {
+        list($conversation, $assistant) = $this->conversacion();
+
+        $definiciones = \App\Services\AsistenteIa\HerramientasDeCarga::definiciones();
+
+        $this->assertNotEmpty($definiciones, 'Sin definiciones este test no prueba nada.');
+
+        foreach ($definiciones as $definicion) {
+
+            $resultados = $this->service->execute_tool_calls([[
+                'type'  => 'tool_use',
+                'id'    => 'toolu_' . uniqid(),
+                'name'  => $definicion['name'],
+                'input' => [],
+            ]], $conversation, $assistant);
+
+            $this->assertCount(1, $resultados, 'La herramienta ' . $definicion['name'] . ' no devolvió ningún tool_result.');
+            $this->assertStringNotContainsString(
+                'Tool desconocida',
+                $resultados[0]['content'],
+                'La herramienta ' . $definicion['name'] . ' está declarada y no está despachada.'
+            );
+        }
+    }
 }
