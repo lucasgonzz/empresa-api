@@ -225,16 +225,23 @@ class RecolectorCaja extends RecolectorBase
     }
 
     /**
-     * Moneda de una caja como la lee el informe: null o 1 → 'pesos' (el criterio de
-     * ContextoFinancieroService, que es de donde sale `disponible_pesos`), 2 → 'dolares', otro
+     * Moneda de una caja como la lee el informe: null, 0 o 1 → 'pesos', 2 → 'dolares', otro
      * valor → 'otra'.
+     *
+     * 🔴 El criterio de que el 0 es pesos sale de Contabilidad (RecolectorBase::MONEDAS_PESOS) y
+     * es el mismo que usan ContextoFinancieroService, de donde salía `disponible_pesos`, y
+     * FlujoCajaHelper, de donde sale `liquidaciones_pendientes_pesos`. Contando solo null y 1,
+     * una caja de pesos con `moneda_id = 0` quedaba como moneda "otra" y su disponible afuera de
+     * `disponible_pesos`, pero sus liquidaciones adentro de `liquidaciones_pendientes_pesos`:
+     * plata en tránsito de una caja que el informe decía que no era de pesos, y un "no_alcanza"
+     * falso.
      *
      * @param mixed $moneda_id
      * @return string
      */
     protected function moneda_de_caja($moneda_id): string
     {
-        if (is_null($moneda_id) || (int) $moneda_id === self::MONEDA_PESOS) {
+        if ($this->es_pesos($moneda_id)) {
             return 'pesos';
         }
 

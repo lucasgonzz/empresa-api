@@ -30,6 +30,18 @@ abstract class RecolectorBase
     /** Moneda en pesos (cajas y cuentas viejas pueden tenerla null: se tratan como pesos). */
     const MONEDA_PESOS = 1;
 
+    /**
+     * 🔴 Los tres valores de `moneda_id` que son PESOS en toda la base, y el criterio sale de
+     * Contabilidad: ContabilidadRepository dice textual "solo `moneda_id = 2` es USD; `0`, `null`
+     * y `1` son pesos" y FlujoCajaHelper filtra las cajas con `whereNull OR whereIn [0, 1]`. El
+     * `0` no es basura: lo deja un alta donde el select de moneda no se eligió, y hay filas así
+     * en producción. Contando solo null y 1, una caja de pesos con `moneda_id = 0` quedaba como
+     * moneda "otra" (su disponible afuera de `disponible_pesos`, pero sus liquidaciones adentro
+     * de `liquidaciones_pendientes_pesos`, que sí usa el criterio de Contabilidad) y una cuenta
+     * corriente con `moneda_id = 0` desaparecía de la deuda de clientes.
+     */
+    const MONEDAS_PESOS = [0, 1];
+
     /** Nombres de los días de la semana, por Carbon::dayOfWeek (0 = domingo). */
     const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
@@ -182,11 +194,10 @@ abstract class RecolectorBase
      * positivo = deuda): nunca los espejos clients.saldo / providers.saldo (columna muerta
      * que CurrentAcountHelper ya no escribe) ni saldo_pesos (nullable).
      *
-     * 🔴 UN SOLO CRITERIO DE MONEDA para todo el mostrador: credit_accounts.moneda_id es
-     * NOT NULL en el esquema, pero por si una base vieja trajera un null, se trata como
-     * pesos (igual que cajas y cuentas viejas en el resto del sistema). Toda deuda que
-     * viaja en un informe —por cliente, por proveedor o total— sale de acá, así que no
-     * puede haber dos números distintos para la misma deuda según el bloque.
+     * 🔴 UN SOLO CRITERIO DE MONEDA para todo el mostrador, y es el de Contabilidad (ver
+     * MONEDAS_PESOS): null, 0 y 1 son pesos. Toda deuda que viaja en un informe —por cliente,
+     * por proveedor o total— sale de acá, así que no puede haber dos números distintos para la
+     * misma deuda según el bloque.
      *
      * @param User $owner
      * @param string $model_name 'client' | 'provider'
@@ -194,12 +205,39 @@ abstract class RecolectorBase
      */
     protected function consulta_deudas_en_pesos(User $owner, string $model_name)
     {
-        return DB::table('credit_accounts')
+        $consulta = DB::table('credit_accounts')
             ->where('user_id', $owner->id)
-            ->where('model_name', $model_name)
-            ->where(function ($q) {
-                $q->whereNull('moneda_id')->orWhere('moneda_id', self::MONEDA_PESOS);
-            });
+            ->where('model_name', $model_name);
+
+        return $this->solo_pesos($consulta, 'moneda_id');
+    }
+
+    /**
+     * Acota una consulta a las filas EN PESOS por su columna de moneda: null, 0 o 1 (ver
+     * MONEDAS_PESOS, que dice de dónde sale el criterio). Es el único lugar del mostrador donde
+     * se escribe esa condición.
+     *
+     * @param \Illuminate\Database\Query\Builder $consulta
+     * @param string $columna Columna calificada o no (credit_accounts.moneda_id, moneda_id)
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function solo_pesos($consulta, string $columna)
+    {
+        return $consulta->where(function ($q) use ($columna) {
+            $q->whereNull($columna)->orWhereIn($columna, self::MONEDAS_PESOS);
+        });
+    }
+
+    /**
+     * true si un `moneda_id` leído de la base es pesos (ver MONEDAS_PESOS). Para los casos que
+     * no son una consulta, como resolver la moneda de una caja ya traída.
+     *
+     * @param mixed $moneda_id
+     * @return bool
+     */
+    protected function es_pesos($moneda_id): bool
+    {
+        return is_null($moneda_id) || in_array((int) $moneda_id, self::MONEDAS_PESOS, true);
     }
 
     /**
@@ -267,15 +305,16 @@ abstract class RecolectorBase
      */
     protected function clientes_con_mas_deuda(User $owner, Carbon $fecha): array
     {
-        $cuentas = DB::table('credit_accounts')
+        $consulta = DB::table('credit_accounts')
             ->leftJoin('clients', function ($join) use ($owner) {
                 $join->on('clients.id', '=', 'credit_accounts.model_id')->where('clients.user_id', $owner->id);
             })
             ->where('credit_accounts.user_id', $owner->id)
-            ->where('credit_accounts.model_name', 'client')
-            ->where(function ($q) {
-                $q->whereNull('credit_accounts.moneda_id')->orWhere('credit_accounts.moneda_id', self::MONEDA_PESOS);
-            })
+            ->where('credit_accounts.model_name', 'client');
+
+        // El mismo criterio de consulta_deudas_en_pesos (no se puede reusar tal cual: con el join
+        // a clients, un `user_id` sin calificar sería ambiguo).
+        $cuentas = $this->solo_pesos($consulta, 'credit_accounts.moneda_id')
             ->where('credit_accounts.saldo', '>', 0)
             ->orderByDesc('credit_accounts.saldo')
             ->orderBy('credit_accounts.model_id')
