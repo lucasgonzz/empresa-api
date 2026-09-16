@@ -6,7 +6,9 @@ use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Models\AiConversation;
@@ -14,7 +16,8 @@ use App\Models\AiMessage;
 
 /**
  * Las herramientas de carga del asistente de IA (misión asistente-ia-acciones, §3.3 del plan): cinco
- * lecturas nuevas y cinco propuestas que arman tarjetas para que la persona confirme.
+ * lecturas nuevas y cinco propuestas que arman tarjetas para que la persona confirme. La misión
+ * agente-ia-mano-derecha (16/9/2026) le sumó dos propuestas más: proponer_combo y proponer_oferta.
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
  * Claude ve) y el despacho (el `case` de ejecutar(), lo que corre al llamarla). Es la misma regla que
@@ -293,6 +296,96 @@ class HerramientasDeCarga
                     'required'   => ['tarea_id'],
                 ],
             ],
+            [
+                'name'         => 'proponer_combo',
+                'description'  => 'Arma la tarjeta de un combo —varios artículos que se venden juntos con un precio propio— para que la persona la confirme: NO lo crea. Conseguí el id de cada artículo con consultar_stock_de_articulos. Las cantidades van en unidades enteras. Al venderse, el combo descuenta el stock de cada artículo que lo compone. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'nombre'      => [
+                            'type'        => 'string',
+                            'description' => 'Cómo se va a llamar el combo (es con lo que se lo busca en Vender).',
+                        ],
+                        'articulos'   => [
+                            'type'        => 'array',
+                            'description' => 'Los artículos que lo componen, una fila por artículo.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'articulo_id' => [
+                                        'type'        => 'integer',
+                                        'description' => 'Id de consultar_stock_de_articulos.',
+                                    ],
+                                    'cantidad'    => [
+                                        'type'        => 'integer',
+                                        'description' => 'Cuántas unidades de ese artículo lleva el combo.',
+                                    ],
+                                ],
+                                'required'   => ['articulo_id', 'cantidad'],
+                            ],
+                        ],
+                        'precio'      => [
+                            'type'        => 'number',
+                            'description' => 'Precio de venta del combo. Es independiente de la suma de los precios sueltos: ese es el sentido de la promoción.',
+                        ],
+                        'costo'       => [
+                            'type'        => 'number',
+                            'description' => 'Costo del combo. Solo si la persona lo dice.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['nombre', 'articulos', 'precio'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_oferta',
+                'description'  => 'Arma la tarjeta de una oferta para UN cliente sobre UN artículo, para que la persona la confirme: NO la activa. El descuento puede ser plano (porcentaje) o por tramos de cantidad comprada (tramos: cuanto más lleva, más descuento). Conseguí los ids con consultar_clientes y consultar_stock_de_articulos. La oferta se le muestra a ese cliente en la tienda online; desde acá NO se le manda ningún mail ni WhatsApp. Cada artículo tiene un descuento máximo según su costo y su precio de hoy: si te pasás, la herramienta te dice cuál es y NO se recorta solo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'cliente_id'  => [
+                            'type'        => 'integer',
+                            'description' => 'Id de consultar_clientes.',
+                        ],
+                        'articulo_id' => [
+                            'type'        => 'integer',
+                            'description' => 'Id de consultar_stock_de_articulos.',
+                        ],
+                        'hasta'       => [
+                            'type'        => 'string',
+                            'description' => 'AAAA-MM-DD hasta la que vale la oferta. No puede ser anterior a hoy ni durar más de 180 días.',
+                        ],
+                        'porcentaje'  => [
+                            'type'        => 'integer',
+                            'description' => 'Descuento plano, en porcentaje entero. Para un descuento por tramos no lo mandes: mandá tramos.',
+                        ],
+                        'tramos'      => [
+                            'type'        => 'array',
+                            'description' => 'Descuento por cantidad comprada. Tienen que arrancar en 1 unidad, ser contiguos (sin huecos) y el último NO lleva max: es el que vale de ahí en adelante.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'min'        => [
+                                        'type'        => 'integer',
+                                        'description' => 'Desde cuántas unidades vale este tramo.',
+                                    ],
+                                    'max'        => [
+                                        'type'        => 'integer',
+                                        'description' => 'Hasta cuántas unidades. En el último tramo no se manda.',
+                                    ],
+                                    'porcentaje' => [
+                                        'type'        => 'integer',
+                                        'description' => 'Descuento de este tramo, en porcentaje entero.',
+                                    ],
+                                ],
+                                'required'   => ['min', 'porcentaje'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['cliente_id', 'articulo_id', 'hasta'],
+                ],
+            ],
         ];
     }
 
@@ -375,6 +468,12 @@ class HerramientasDeCarga
 
             case 'proponer_marcar_tarea_hecha':
                 return self::resultado(PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input));
+
+            case 'proponer_combo':
+                return self::resultado(PropuestaComboIaHelper::proponer($contexto, $assistant_message, $input));
+
+            case 'proponer_oferta':
+                return self::resultado(PropuestaOfertaIaHelper::proponer($contexto, $assistant_message, $input));
         }
 
         return [

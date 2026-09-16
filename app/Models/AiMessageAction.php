@@ -43,6 +43,10 @@ class AiMessageAction extends Model
     const TIPO_TAREA_EDITAR    = 'tarea_editar';
     const TIPO_TAREA_COMPLETAR = 'tarea_completar';
 
+    /* Misión agente-ia-mano-derecha (16/9/2026): armar un combo y armar una oferta por cliente. */
+    const TIPO_COMBO           = 'combo';
+    const TIPO_OFERTA          = 'oferta';
+
     protected $guarded = [];
 
     /**
