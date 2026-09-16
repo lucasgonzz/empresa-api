@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\agenda\AgendaHelper;
 use App\Models\Client;
 use App\Models\CreditAccount;
+use App\Services\Mostrador\RecolectorBase;
 use App\Models\Provider;
 use Carbon\Carbon;
 
@@ -190,7 +191,20 @@ class ConsultasDeCargaIaHelper {
                     $pesos_sin_moneda = $cuenta;
                 }
 
-            } elseif ((int) $cuenta->moneda_id === 1) {
+            } elseif (in_array((int) $cuenta->moneda_id, RecolectorBase::MONEDAS_PESOS, true)) {
+
+                /*
+                 * 🔴 Pesos es [0, 1], el mismo criterio que RecolectorBase::MONEDAS_PESOS del
+                 * mostrador (develop, 15/9, commit 8ddbac31): hay cuentas con moneda_id = 0 en
+                 * produccion y ahi puede vivir la deuda. Con solo el 1, un cliente asi quedaba sin
+                 * cuenta en pesos y, si tenia una en dolares, el pago se iba SIN PREGUNTAR a la de
+                 * dolares.
+                 *
+                 * Divergencia declarada con BtnCurrentAcounts.vue::show(), que compara == 1 y por
+                 * eso ESCONDE una cuenta en 0: la pantalla no la muestra, el mostrador cuenta su
+                 * deuda. Se eligio el criterio del mostrador porque es donde vive la deuda; que la
+                 * pantalla la esconda esta reportado como hallazgo aparte.
+                 */
 
                 if (is_null($pesos)) {
 

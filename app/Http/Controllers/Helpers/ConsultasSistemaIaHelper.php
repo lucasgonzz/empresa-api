@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Services\Mostrador\RecolectorBase;
 use App\Services\ActividadDeClientes\ActividadDeClientesService;
 use Illuminate\Support\Facades\DB;
 
@@ -150,7 +151,14 @@ class ConsultasSistemaIaHelper
             ->where('credit_accounts.user_id', $owner_id)
             ->where('credit_accounts.model_name', 'client')
             ->where(function ($q) {
-                $q->whereNull('credit_accounts.moneda_id')->orWhere('credit_accounts.moneda_id', 1);
+                /*
+                 * 🔴 El criterio de que es pesos sale de RecolectorBase::MONEDAS_PESOS ([0, 1]) y no
+                 * de un 1 escrito aca: develop lo corrigio el 15/9 (commit 8ddbac31) porque hay
+                 * cuentas con moneda_id = 0 en produccion -las deja un alta donde el select de
+                 * moneda no se eligio- y contando solo 1 esa deuda desaparecia. Si el chat y el
+                 * informe del mostrador leyeran distinto, darian dos numeros para la misma deuda.
+                 */
+                $q->whereNull('credit_accounts.moneda_id')->orWhereIn('credit_accounts.moneda_id', RecolectorBase::MONEDAS_PESOS);
             });
     }
 

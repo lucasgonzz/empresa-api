@@ -597,4 +597,66 @@ class Acciones_pago_Test extends EmpresaTestCase
         $this->assertEquals('No encontré ese proveedor entre los tuyos.', $respuesta['error']);
         $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
     }
+
+    /**
+     * 🔴 UNA CUENTA CON moneda_id = 0 ES UNA CUENTA EN PESOS. Esas filas las deja un alta donde el
+     * select de moneda no se eligió, y hay varias en producción: develop fijó el criterio [0, 1] el
+     * 15/9 (RecolectorBase::MONEDAS_PESOS, commit 8ddbac31) porque contando solo el 1 la deuda de esos
+     * clientes desaparecía del informe del mostrador. Este test fija las dos puntas del asistente:
+     * que la LECTURA la cuente —es la que alimenta también el endpoint de AdminSync que consume
+     * admin-api— y que el PAGO entre en esa cuenta, que es donde vive la deuda, sin preguntar la
+     * moneda. Lo encontró el revisor de merge: el criterio había quedado en "null o 1", y como la
+     * columna es NOT NULL, la rama viva era justamente la que se descartaba.
+     *
+     * @test
+     */
+    public function una_cuenta_en_moneda_cero_cuenta_como_pesos_y_es_la_que_recibe_el_pago()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $cliente = $this->resolver_cliente_por_nombre(TestingFerreteriaSeeder::CLIENTE_CC);
+
+        $cuenta = $this->cuenta('client', $cliente->id, 1);
+        $cuenta->moneda_id = 0;
+        $cuenta->saldo = 1234.56;
+        $cuenta->save();
+
+        $filas = \App\Http\Controllers\Helpers\ConsultasSistemaIaHelper::clientes($this->dueno->id, $cliente->name);
+
+        $saldo_leido = null;
+
+        foreach ($filas as $fila) {
+            if ((int) $fila['id'] === (int) $cliente->id) {
+                $saldo_leido = $fila['saldo'];
+            }
+        }
+
+        $this->assertNotNull($saldo_leido, 'El cliente tiene que aparecer en la lectura del asistente.');
+        $this->assertEqualsWithDelta(1234.56, (float) $saldo_leido, 0.01, 'Una cuenta en moneda 0 es pesos: su deuda tiene que contarse igual que en el mostrador.');
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->proponer_pago($conversation, $assistant, [
+            'tipo'  => 'cliente',
+            'id'    => $cliente->id,
+            'monto' => 100,
+            'pagos' => [['metodo_de_pago_id' => $metodo->id, 'caja_id' => $caja->id]],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], 'Con una sola cuenta en pesos no hay moneda que preguntar: ' . json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertEquals((int) $cuenta->id, (int) $accion->datos['credit_account_id'], 'El pago tiene que entrar en la cuenta donde vive la deuda.');
+
+        $renglones = [];
+
+        foreach ($accion->presentacion['renglones'] as $renglon) {
+            $renglones[$renglon['etiqueta']] = $renglon['valor'];
+        }
+
+        $this->assertArrayHasKey('Cliente', $renglones);
+        $this->assertStringContainsString('cuenta en pesos', $renglones['Cliente']);
+    }
 }
