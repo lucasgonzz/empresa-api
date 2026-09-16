@@ -15,6 +15,19 @@ use Carbon\Carbon;
  * ya distingue `GenerateArticleEmbeddings::handle()` para elegir qué procesar es exactamente
  * `sin_generar` y `pendiente` de acá, partido en dos mitades excluyentes por `whereNotNull`.
  *
+ * 🔴 EL CORTE ES POR `embedding`, NO POR `embedding_generated_at` -- corregido tras el chequeo
+ * independiente de esta misma misión. `embedding_generated_at` no es "tiene un vector": es "ya se
+ * intentó". `GenerateArticleEmbeddingJob` escribe ese timestamp por query builder incluso cuando
+ * `ArticleEmbeddingService::update_article_embedding()` no encontró texto representativo y NO
+ * escribió ningún vector (`embedding` queda NULL para siempre). Con el corte viejo
+ * (`whereNull('embedding_generated_at')`) ese artículo no caía en `sin_generar` -tiene el
+ * timestamp- ni en `pendiente` -el query builder no toca `updated_at`, así que no queda posterior
+ * al timestamp-: desaparecía de los dos contadores aunque el comando siguiera re-encolándolo cada
+ * ciclo para siempre (matchea su `whereNull('embedding')`). Es un caso raro en la práctica (exige
+ * artículo sin nombre, sin categoría, sin marca, sin código de barras y sin descripciones, ver
+ * `ArticleEmbeddingService::embedding_for_article()`), pero el corte por `embedding` lo cubre sin
+ * costo y es un espejo exacto de lo que el comando de verdad evalúa.
+ *
  * `generandose` no se puede saber a nivel de artículo (exigiría leer la tabla `jobs` de Laravel,
  * sin ningún precedente en el repo, y en el hosting compartido -la mayoría de los clientes- el
  * worker corre un proceso por vez cada un minuto: ese número leería casi siempre 0 o 1). Se
@@ -34,15 +47,23 @@ class ArticleEmbeddingsEstadoHelper {
             ->where('status', 'active')
             ->whereNull('deleted_at');
 
-        // Nunca se le generó un embedding (primera vez). Mismo criterio que la primera mitad del
-        // WHERE de GenerateArticleEmbeddings::handle().
-        $sin_generar = (clone $base)->whereNull('embedding_generated_at')->count();
+        // Nunca se le escribió un vector (primera vez, o el intento no encontró texto que
+        // vectorizar). Mismo criterio que la primera rama del WHERE de
+        // GenerateArticleEmbeddings::handle() (whereNull('embedding')).
+        $sin_generar = (clone $base)->whereNull('embedding')->count();
 
-        // Ya tuvo un embedding, pero el artículo cambió después: desactualizado, a la espera de
-        // que el próximo ciclo lo regenere. El whereNotNull lo deja excluyente de sin_generar.
+        // Ya tiene un vector, pero le falta el timestamp o el artículo cambió después de la
+        // última generación: desactualizado, a la espera de que el próximo ciclo lo regenere.
+        // El whereNotNull('embedding') lo deja excluyente de sin_generar. Cubre las otras dos
+        // ramas del WHERE del comando (whereNull('embedding_generated_at') OR
+        // whereColumn('updated_at', '>', 'embedding_generated_at')), que sin el whereNotNull de
+        // acá se solaparían con sin_generar.
         $pendiente = (clone $base)
-            ->whereNotNull('embedding_generated_at')
-            ->whereColumn('updated_at', '>', 'embedding_generated_at')
+            ->whereNotNull('embedding')
+            ->where(function ($q) {
+                $q->whereNull('embedding_generated_at')
+                  ->orWhereColumn('updated_at', '>', 'embedding_generated_at');
+            })
             ->count();
 
         return [

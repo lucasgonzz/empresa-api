@@ -23,6 +23,9 @@ class ArticleEmbeddingsEstadoTest extends TestCase
 {
     use DatabaseTransactions;
 
+    /** Vector de prueba, mismo formato (json_encode de floats) que ya usan los tests hermanos. */
+    const VECTOR = [1.0, 0.0, 0.0];
+
     /** @var User */
     protected $comercio;
 
@@ -103,10 +106,14 @@ class ArticleEmbeddingsEstadoTest extends TestCase
 
     function test_pendiente_cuenta_los_articulos_con_embedding_desactualizado()
     {
-        // Se genero hace una hora; el articulo se edito despues (updated_at > embedding_generated_at).
+        // Ya tiene vector, generado hace una hora; el articulo se edito despues
+        // (updated_at > embedding_generated_at).
         $articulo = $this->articulo(['embedding_generated_at' => Carbon::now()->subHour()]);
 
-        DB::table('articles')->where('id', $articulo->id)->update(['updated_at' => Carbon::now()]);
+        DB::table('articles')->where('id', $articulo->id)->update([
+            'embedding'   => json_encode(self::VECTOR),
+            'updated_at'  => Carbon::now(),
+        ]);
 
         $response = $this->actingAs($this->comercio, 'sanctum')
             ->getJson('api/article-embeddings/estado');
@@ -120,16 +127,46 @@ class ArticleEmbeddingsEstadoTest extends TestCase
 
     function test_un_articulo_al_dia_no_cuenta_en_ninguno_de_los_dos()
     {
-        // embedding_generated_at posterior a updated_at: al dia, no pendiente y no sin_generar.
+        // Ya tiene vector, generado despues de la ultima edicion: al dia, no pendiente y no sin_generar.
         $articulo = $this->articulo(['embedding_generated_at' => Carbon::now()]);
 
-        DB::table('articles')->where('id', $articulo->id)->update(['updated_at' => Carbon::now()->subHour()]);
+        DB::table('articles')->where('id', $articulo->id)->update([
+            'embedding'   => json_encode(self::VECTOR),
+            'updated_at'  => Carbon::now()->subHour(),
+        ]);
 
         $response = $this->actingAs($this->comercio, 'sanctum')
             ->getJson('api/article-embeddings/estado');
 
         $response->assertJson([
             'sin_generar' => 0,
+            'pendiente'   => 0,
+            'generandose' => 0,
+        ]);
+    }
+
+    /**
+     * El caso que encontró el chequeo independiente de esta misión: el job escribe
+     * `embedding_generated_at` por query builder incluso cuando no encontró texto que vectorizar
+     * (`embedding` queda NULL para siempre, `updated_at` no se toca). Con el corte viejo
+     * (por `embedding_generated_at`) este artículo no contaba en ningún lado, aunque el comando
+     * real lo siguiera re-encolando cada ciclo. El corte por `embedding` lo deja en sin_generar,
+     * que es lo que de verdad va a pasar: el comando lo va a volver a intentar.
+     */
+    function test_un_articulo_con_intento_fallido_cuenta_como_sin_generar()
+    {
+        $articulo = $this->articulo(['embedding_generated_at' => null]);
+
+        // El job marca el intento (embedding_generated_at) sin haber escrito ningun vector.
+        DB::table('articles')->where('id', $articulo->id)->update([
+            'embedding_generated_at' => Carbon::now(),
+        ]);
+
+        $response = $this->actingAs($this->comercio, 'sanctum')
+            ->getJson('api/article-embeddings/estado');
+
+        $response->assertJson([
+            'sin_generar' => 1,
             'pendiente'   => 0,
             'generandose' => 0,
         ]);
