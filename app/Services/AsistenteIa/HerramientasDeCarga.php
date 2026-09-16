@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
@@ -35,11 +36,19 @@ class HerramientasDeCarga
     /**
      * Definiciones con su input_schema para la API de Anthropic.
      *
+     * Misión asistente-por-whatsapp: con `$con_whatsapp` se suman confirmar_carga_pendiente y
+     * cancelar_carga_pendiente, que son el equivalente de los botones Confirmar y Cancelar de la
+     * tarjeta. Sin el flag la lista es EXACTAMENTE la de antes de esa misión, que es lo que ve el
+     * chat de la pantalla: ahí la decisión la toma la persona con el dedo y darle a la IA una
+     * herramienta para confirmar sola lo que ella misma propuso sería sacarle el control a quien
+     * tiene que darlo.
+     *
+     * @param  bool  $con_whatsapp
      * @return array<int, array<string, mixed>>
      */
-    public static function definiciones(): array
+    public static function definiciones($con_whatsapp = false): array
     {
-        return [
+        $definiciones = [
             [
                 'name'         => 'consultar_opciones_de_carga',
                 'description'  => 'Devuelve lo necesario para armar una carga sin suponer nada: hoy con su día de la semana, qué puede cargar la persona (gastos, tareas, pagos de clientes, pagos a proveedores), si la cuenta trabaja en dólares, los métodos de pago (cuáles se pueden usar y el motivo de los que no), las cajas que la persona puede usar, la caja por defecto de cada método y moneda, y las unidades de repetición de las tareas. Usala antes de proponer un gasto, un pago o marcar hecha una tarea con gasto.',
@@ -294,16 +303,71 @@ class HerramientasDeCarga
                 ],
             ],
         ];
+
+        if ($con_whatsapp) {
+
+            foreach (self::definiciones_de_whatsapp() as $definicion) {
+
+                $definiciones[] = $definicion;
+            }
+        }
+
+        return $definiciones;
     }
 
     /**
-     * Nombres de todas las herramientas de carga.
+     * Las dos herramientas que solo existen en el canal de WhatsApp: confirmar y cancelar una carga
+     * por texto, porque ahí no hay tarjeta que tocar.
      *
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function definiciones_de_whatsapp(): array
+    {
+        return [
+            [
+                'name'         => 'confirmar_carga_pendiente',
+                'description'  => 'Registra de verdad una carga que propusiste en un mensaje ANTERIOR y que la persona ya te dijo que sí. Es el equivalente del botón Confirmar de la pantalla. 🔴 No la podés llamar en el mismo mensaje en el que proponés: tiene que haber una respuesta de la persona en el medio, y si lo intentás te la rechaza. Si la respuesta trae "error", contá ese motivo tal cual y no digas que quedó cargado.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tarjeta_id' => [
+                            'type'        => 'integer',
+                            'description' => 'El tarjeta_id que te devolvió la herramienta proponer_ correspondiente.',
+                        ],
+                    ],
+                    'required'   => ['tarjeta_id'],
+                ],
+            ],
+            [
+                'name'         => 'cancelar_carga_pendiente',
+                'description'  => 'Da de baja una carga que propusiste en un mensaje ANTERIOR y que la persona te dijo que no. Es el equivalente del botón Cancelar de la pantalla. No registra nada ni deshace nada ya registrado.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tarjeta_id' => [
+                            'type'        => 'integer',
+                            'description' => 'El tarjeta_id que te devolvió la herramienta proponer_ correspondiente.',
+                        ],
+                    ],
+                    'required'   => ['tarjeta_id'],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Nombres de las herramientas de carga.
+     *
+     * Sin argumento devuelve las que ve el chat de la pantalla; con `true`, también las del canal
+     * de WhatsApp. maneja() usa la lista completa: una herramienta que se despacha tiene que estar
+     * ahí aunque no se declare en todos los canales.
+     *
+     * @param  bool  $con_whatsapp
      * @return array<int, string>
      */
-    public static function nombres(): array
+    public static function nombres($con_whatsapp = false): array
     {
-        return array_column(self::definiciones(), 'name');
+        return array_column(self::definiciones($con_whatsapp), 'name');
     }
 
     /**
@@ -314,7 +378,7 @@ class HerramientasDeCarga
      */
     public static function maneja($tool_name): bool
     {
-        return in_array((string) $tool_name, self::nombres(), true);
+        return in_array((string) $tool_name, self::nombres(true), true);
     }
 
     /**
@@ -339,6 +403,24 @@ class HerramientasDeCarga
                 'content'  => 'Error al ejecutar '.$tool_name.': una propuesta necesita el mensaje que se está generando.',
                 'is_error' => true,
             ];
+        }
+
+        /*
+         * Misión asistente-por-whatsapp: las dos herramientas de confirmación solo existen en el
+         * canal de WhatsApp. maneja() las reconoce siempre (si no, execute_tool_calls no las
+         * despacharía nunca), así que el corte por canal va acá: en el sistema la confirmación es
+         * el botón, y una IA que pueda confirmar sola lo que propuso le saca la decisión a la
+         * persona.
+         */
+        if (in_array($tool_name, ['confirmar_carga_pendiente', 'cancelar_carga_pendiente'], true)) {
+
+            if (!($assistant_message instanceof AiMessage) || !$assistant_message->es_de_whatsapp()) {
+
+                return [
+                    'content'  => 'Tool desconocida: '.$tool_name,
+                    'is_error' => true,
+                ];
+            }
         }
 
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
@@ -375,6 +457,12 @@ class HerramientasDeCarga
 
             case 'proponer_marcar_tarea_hecha':
                 return self::resultado(PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input));
+
+            case 'confirmar_carga_pendiente':
+                return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
+
+            case 'cancelar_carga_pendiente':
+                return self::resultado(ConfirmacionPorTextoIaHelper::cancelar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
         }
 
         return [
