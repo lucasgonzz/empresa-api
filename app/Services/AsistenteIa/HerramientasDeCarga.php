@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
+use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 
@@ -353,7 +354,10 @@ class HerramientasDeCarga
                         ],
                         'hasta'       => [
                             'type'        => 'string',
-                            'description' => 'AAAA-MM-DD hasta la que vale la oferta. No puede ser anterior a hoy ni durar más de 180 días.',
+                            // 🔴 El tope sale de la constante y NO de un número escrito acá: es el
+                            // mismo defecto que ya se pagó una vez en este módulo (el motor
+                            // precargaba fechas que la activación después rechazaba con 422).
+                            'description' => 'AAAA-MM-DD hasta la que vale la oferta. No puede ser anterior a hoy ni durar más de '.ClientOfertaAltaHelper::MAX_DIAS_VIGENCIA.' días.',
                         ],
                         'porcentaje'  => [
                             'type'        => 'integer',
