@@ -23,11 +23,16 @@ use Tests\TestCase;
  * El redondeo del usuario llega al precio final de CADA LISTA, por los dos caminos. 16/9/2026.
  *
  * Reportado por golonorte: redondeo de centavos prendido y los tres precios de lista con centavos.
- * La causa es que `ArticleHelper::redondear()` se aplicaba solo al precio final UNICO del articulo
- * -- y en una cuenta con listas el precio que se cobra sale del pivote
- * (`ArticlePricesHelper::resolver_precio_de_venta()` devuelve `pivot->final_price`), no de
- * `article->final_price`. O sea que la configuracion, prendida, no tocaba ningun precio que el
- * negocio cobre.
+ * La causa es que `ArticleHelper::redondear()` se aplicaba solo al precio final UNICO del articulo,
+ * asi que la configuracion, prendida, no tocaba ningun precio de lista: ni el de la tarjeta, ni el
+ * del Excel para clientes, ni el que publica la tienda.
+ *
+ * ⚠️ Con una precision que cuesta caro si se cita de memoria: en una cuenta con `listas_de_precio = 1`
+ * el precio de venta SI sale del pivote (`ArticlePricesHelper::resolver_precio_de_venta()` devuelve
+ * `pivot->final_price`), pero en una cuenta de margenes por categoria -- que es el caso de golonorte,
+ * con `listas_de_precio = 0` -- ese resolvedor corta antes de mirar el pivote y devuelve
+ * `article->final_price`. O sea que para golonorte el precio de la pivote es el que se MUESTRA, no
+ * necesariamente el que se cobra. Declarado como hallazgo aparte en el informe de la mision.
  *
  * 🔴 DE DONDE SALEN LOS NUMEROS: de la regla, a mano, no de correr el codigo. Cuenta legacy
  * (`usar_condicion_fiscal_en_costeo = 0` + `aplicar_iva_al_costo = 1`), asi que el IVA entra al
@@ -217,7 +222,12 @@ class RedondeoDeListasDePreciosTest extends TestCase
             ArticlePricesHelper::$sale_taxes_cache = [];
         }
 
-        PriceTypeSurchage::where('name', 'zz-temp-recargo-redondeo')->delete();
+        // Acotado por lista, no solo por nombre: `price_type_surchages` no tiene user_id, y un
+        // delete por nombre suelto es justo el patron que despues alguien copia afuera de una
+        // transaccion.
+        PriceTypeSurchage::where('price_type_id', $this->distribuidor->id)
+                        ->where('name', 'zz-temp-recargo-redondeo')
+                        ->delete();
 
         $this->pinza->price_types()->detach([$this->distribuidor->id, $this->mayorista->id]);
 
@@ -467,17 +477,22 @@ class RedondeoDeListasDePreciosTest extends TestCase
     }
 
     /**
-     * Con un recargo de lista de por medio, las DOS columnas que persiste el pivote quedan
-     * redondeadas y la ganancia cierra contra el precio redondeado.
+     * Con un recargo de lista de por medio: se redondea el precio de la lista, y el recargo se
+     * aplica DESPUES, sobre el precio ya redondeado.
      *
-     * Numeros, a mano: 1609,30 -> redondeo de centavos -> 1609 -> el recargo resta 5% -> 1528,55 ->
-     * redondeo de centavos -> 1529. La ganancia es neta de IVA y de impuestos sobre ventas, pero en
-     * una cuenta legacy el IVA no participa del precio de la lista (ya esta en el costo) y no hay
-     * sale_taxes activos, asi que la base es el precio mismo: 1529 - 1210 = 319.
+     * 🔴 `precio_luego_de_recargos` NO se vuelve a redondear, y es a proposito: es un derivado que
+     * solo se muestra (el que se cobra es `final_price`), y redondearlo se come el recargo. Medido
+     * el 16/9/2026: con `redondear_de_a_50` y un recargo del 1%, 1650 -> 1633,50 -> ceil() -> 1650,
+     * o sea el recargo desaparecido. Este test es el que fija ese criterio.
+     *
+     * Numeros, a mano: 1609,30 -> redondeo de centavos -> 1609 -> el recargo resta 5% -> 1528,55.
+     * La ganancia es neta de IVA y de impuestos sobre ventas, pero en una cuenta legacy el IVA no
+     * participa del precio de la lista (ya esta en el costo) y no hay sale_taxes activos, asi que la
+     * base es el precio mismo: 1528,55 - 1210 = 318,55.
      *
      * @test
      */
-    public function con_recargo_de_lista_las_dos_columnas_quedan_redondeadas()
+    public function el_recargo_de_lista_se_aplica_sobre_el_precio_ya_redondeado()
     {
         $this->configurar_listas_propias();
         $this->prender_solo('redondear_precios_en_centavos');
@@ -501,17 +516,89 @@ class RedondeoDeListasDePreciosTest extends TestCase
         );
 
         $this->assertEqualsWithDelta(
-            1529.0,
+            1528.55,
             $this->precio_de_lista($this->distribuidor->id, 'precio_luego_de_recargos'),
             self::DELTA,
-            'precio_luego_de_recargos: el recargo volvio a meter centavos y hay que redondear de nuevo'
+            'precio_luego_de_recargos sale del precio redondeado menos el recargo, y NO se vuelve a '
+            .'redondear: redondearlo se come los recargos chicos'
         );
 
         $this->assertEqualsWithDelta(
-            319.0,
+            318.55,
             $this->precio_de_lista($this->distribuidor->id, 'monto_ganancia'),
             self::DELTA,
-            'La ganancia tiene que cerrar contra el precio REDONDEADO, no contra el de antes'
+            'La ganancia tiene que cerrar contra el precio con recargos que se persiste'
+        );
+    }
+
+    /**
+     * El precio de lista que fijo una persona a mano NO se redondea.
+     *
+     * Dos motivos, y los dos se midieron el 16/9/2026: ese numero es el que se cobra tal cual, y la
+     * columna `final_price` del pivote es **la misma** que la persona tipea en la tarjeta, asi que
+     * redondearla le pisa el dato con otro. Con un precio a mano de 1899 y `redondear_miles_en_vender`
+     * volvia 2000, al lado de un `percentage` de 56,94% derivado del 1899 que ya no cerraba.
+     *
+     * Mismo criterio que la mision `precio-manual-no-suma-iva` del 10/9/2026 para el precio unico.
+     *
+     * @test
+     */
+    public function un_precio_de_lista_fijado_a_mano_no_se_redondea()
+    {
+        $this->configurar_listas_propias();
+
+        $this->pinza->price_types()->updateExistingPivot($this->distribuidor->id, [
+            'setear_precio_final' => 1,
+            'final_price'         => 1899,
+        ]);
+
+        // La regla mas agresiva de las cinco: si alguna lo pisa, es esta.
+        $this->prender_solo('redondear_miles_en_vender');
+
+        $this->refrescar();
+        $this->recalcular();
+
+        $this->assertEqualsWithDelta(
+            1899.0,
+            $this->precio_de_lista($this->distribuidor->id),
+            self::DELTA,
+            'El precio que la persona tipeo tiene que quedar intacto, no volver redondeado a 2000'
+        );
+    }
+
+    /**
+     * En el camino por categoria, `price` y `final_price` del pivote tienen que quedar IGUALES.
+     *
+     * No es cosmetico: `tienda-api` lee `pivot->price` -- no `final_price` -- para los rangos de
+     * precio por cantidad (`ArticleHelper::set_ranges()` y `CartHelper::get_price_range()`, que es
+     * lo que cobra el carrito). Si divergen, el ERP cobra un numero y la tienda otro, sin ninguna
+     * señal. Las dos columnas venian siendo identicas en este camino.
+     *
+     * @test
+     */
+    public function en_el_camino_por_categoria_price_y_final_price_no_divergen()
+    {
+        $this->configurar_por_categoria();
+        $this->prender_solo('redondear_de_a_50');
+
+        $this->recalcular();
+
+        $final_price = $this->precio_de_lista($this->mayorista->id);
+        $price = $this->precio_de_lista($this->mayorista->id, 'price');
+
+        $this->assertEqualsWithDelta(
+            1650.0,
+            $final_price,
+            self::DELTA,
+            'ceil(1609,30 / 50) x 50 = 1650'
+        );
+
+        $this->assertEqualsWithDelta(
+            $final_price,
+            $price,
+            self::DELTA,
+            'La columna `price` es la que lee la tienda para los rangos por cantidad: tiene que ser '
+            .'el mismo numero que `final_price`'
         );
     }
 
@@ -604,7 +691,9 @@ class RedondeoDeListasDePreciosTest extends TestCase
         $this->assertSame(
             Numbers::price(1609, true),
             $cierre['valor'],
-            'El renglon de cierre tiene que mostrar el precio REDONDEADO de la lista, el mismo que la tarjeta'
+            'El renglon de cierre tiene que mostrar el precio REDONDEADO de la lista. Ojo: esta lista no
+            tiene recargos, asi que coincide con la tarjeta; con recargos, este renglon muestra el
+            precio_luego_de_recargos y la tarjeta el final_price'
         );
     }
 }
