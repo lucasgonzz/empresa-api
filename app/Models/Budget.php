@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class Budget extends Model
@@ -17,8 +18,16 @@ class Budget extends Model
             el presupuesto, `BudgetHelper::attachSaleCombos()` tiene que descontar el stock de CADA
             articulo componente del combo. Sin los articulos cargados, ese descuento saldria a
             buscarlos de a uno (N+1) o —peor— no encontraria nada segun por donde entre el modelo.
+
+            🔴 Y entra por `ComboEsquemaHelper::relaciones_de_combos()`, no como una cadena mas de
+            la lista: en un cliente que todavia no corrio la migracion de `budget_combo`, pedirlo a
+            secas tira `Base table or view not found` y el LISTADO DE PRESUPUESTOS deja de abrir.
+            La lista se arma en un array justamente para poder agregarlo condicionalmente, igual
+            que en `Order::scopeWithAll()`.
         */
-        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts.moneda', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type', 'sale_status', 'services', 'promocion_vinotecas', 'combos.articles');
+        $relaciones = ['client.iva_condition', 'client.price_type', 'client.credit_accounts.moneda', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type', 'sale_status', 'services', 'promocion_vinotecas'];
+
+        $query->with(array_merge($relaciones, ComboEsquemaHelper::relaciones_de_combos()));
         // $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'optional_order_production_statuses');
     }
 

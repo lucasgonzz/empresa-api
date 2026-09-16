@@ -218,13 +218,18 @@ class BudgetDuplicarHelper {
      * significa "el que manda esto no sabe de combos" y ahi `attachCombos()` no toca nada. Un
      * duplicado si sabe, y si el origen no tiene combos el duplicado tampoco tiene que tenerlos.
      *
+     * 🔴 El origen se lee por `ComboEsquemaHelper` y no por `$source->combos`: en un cliente que
+     * todavia no corrio la migracion de `budget_combo`, tocar la relacion aca dejaria sin poder
+     * DUPLICAR ningun presupuesto. Sin tabla el duplicado sale sin combos, que es lo mismo que
+     * tiene el origen.
+     *
      * @param Budget $source Presupuesto origen con relación `combos` cargada.
      * @return array<int, array<string, mixed>>
      */
     private static function combos_to_payload(Budget $source): array {
         /** Filas con id y pivot amount/price. */
         $rows = [];
-        foreach ($source->combos as $combo) {
+        foreach (ComboEsquemaHelper::combos_del_presupuesto($source) as $combo) {
             $rows[] = [
                 'id' => $combo->id,
                 'pivot' => [

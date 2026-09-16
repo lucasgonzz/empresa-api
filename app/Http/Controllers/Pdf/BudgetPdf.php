@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf; 
 
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
+use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
@@ -227,8 +228,13 @@ class BudgetPdf extends fpdf {
 			justo lo que esas tres lecturas chequean. Y `isset($combo->images)` da false porque
 			`Combo` no tiene relacion `images` (a diferencia de `PromocionVinoteca`), asi que la
 			rama de imagenes ni se entra.
+
+			🔴 Y salen por `ComboEsquemaHelper`, no por `$this->budget->combos`: aca el presupuesto
+			llega con `Budget::find()` pelado (`BudgetController::pdf()`), asi que la relacion se
+			carga en el acto. En un cliente que todavia no corrio la migracion de `budget_combo`,
+			eso deja sin PDF a todos los presupuestos, tengan combos o no.
 		*/
-		foreach ($this->budget->combos as $combo) {
+		foreach (ComboEsquemaHelper::combos_del_presupuesto($this->budget) as $combo) {
 			if ($this->fits($combo)) {
 				$this->printArticle($combo);
 			} else {

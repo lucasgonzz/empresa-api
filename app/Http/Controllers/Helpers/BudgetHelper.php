@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -205,13 +206,17 @@ class BudgetHelper {
 	 * `$previus_combos` va en null a proposito: la venta se acaba de crear en `saveSale()`, asi que
 	 * no hay cantidad previa contra la cual calcular una diferencia.
 	 *
+	 * 🔴 Los combos salen por `ComboEsquemaHelper` y no por `$budget->combos`: en un cliente que
+	 * todavia no corrio la migracion de `budget_combo`, tocar la relacion aca dejaria sin poder
+	 * CONFIRMAR ningun presupuesto, que es lo que le da la venta al comercio.
+	 *
 	 * @param  \App\Models\Sale    $sale
 	 * @param  \App\Models\Budget  $budget
 	 * @return void
 	 */
 	static function attachSaleCombos($sale, $budget) {
 
-		foreach ($budget->combos as $combo) {
+		foreach (ComboEsquemaHelper::combos_del_presupuesto($budget) as $combo) {
 
 			/*
 				`created_at` a mano, igual que su gemelo `SaleHelper::attachCombos()`
@@ -337,7 +342,16 @@ class BudgetHelper {
 		$budget->load('articles');
 		$budget->load('promocion_vinotecas');
 		$budget->load('services');
-		$budget->load('combos');
+
+		/*
+			🔴 El `load('combos')` va adentro de la guarda y no afuera: `load()` dispara la consulta
+			en el acto, asi que en un cliente que todavia no corrio la migracion de `budget_combo`
+			esta linea sola tumbaba el alta y el update de CUALQUIER presupuesto, tuviera combos o
+			no. Preguntar despues no sirve: la consulta ya salio.
+		*/
+		if (ComboEsquemaHelper::hay_tabla()) {
+			$budget->load('combos');
+		}
 
 		/*
 			🔴 LA GUARDA QUE NO SE PUEDE SIMPLIFICAR: con `aplicar_recargos_directo_a_items`
@@ -403,8 +417,12 @@ class BudgetHelper {
 			`aplicar_recargos_directo_a_items` activo el precio del pivot YA TRAE el recargo adentro
 			y volver a sumarlo lo aplicaria dos veces —el mismo bug, en el mismo lugar, para otro
 			tipo de item—. Ver el comentario largo de arriba de `$aplicar_surchages`.
+
+			El bucket entra por `ComboEsquemaHelper`: sin la tabla `budget_combo` es un bucket
+			vacio, que es exactamente lo que vale para un cliente que todavia no puede tener ningun
+			combo presupuestado.
 		*/
-		foreach ($budget->combos as $combo) {
+		foreach (ComboEsquemaHelper::combos_del_presupuesto($budget) as $combo) {
 			$total_combo = Self::totalArticle($combo);
 
 			foreach ($budget->discounts as $discount) {
@@ -596,11 +614,22 @@ class BudgetHelper {
 	 *    exactamente el criterio que este mismo archivo ya aplica con `name_vender_personalizado`
 	 *    en `attachArticles()`: lo que el payload no nombra, no se pisa.
 	 *
+	 * 🔴 Y ANTES QUE TODO ESO, la guarda de esquema. Sin la tabla `budget_combo` no hay ni donde
+	 * detachar ni donde adjuntar: `$budget->combos()->detach()` es un DELETE contra una tabla que
+	 * no existe y se lleva puesta el alta entera del presupuesto. Se corta primero y el presupuesto
+	 * se guarda sin combos, que es lo unico que ese cliente puede tener hasta que migre. Si el
+	 * payload traia combos, se pierden en silencio: es la unica salida posible —no hay tabla donde
+	 * escribirlos— y es preferible a un 500 que le impide guardar.
+	 *
 	 * @param  \App\Models\Budget  $budget
 	 * @param  array|null          $combos
 	 * @return void
 	 */
 	static function attachCombos($budget, $combos) {
+
+		if (!ComboEsquemaHelper::hay_tabla()) {
+			return;
+		}
 
 		if (!is_array($combos)) {
 			return;
