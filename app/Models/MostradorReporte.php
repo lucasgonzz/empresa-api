@@ -23,6 +23,11 @@ use Illuminate\Database\Eloquent\Model;
  *
  * La conversación del dueño sobre un informe es una AiConversation con
  * origen = 'mostrador_reporte' y referencia_id = este id (una por persona).
+ *
+ * `avisado_at` (misión asistente-por-whatsapp, 16/9/2026): cuándo se le avisó de este
+ * informe al dueño por WhatsApp. El comando del admin pide los 'listo' de hoy con la
+ * columna en null y la sella DESPUÉS de que el envío salió, en un segundo request: si el
+ * WhatsApp falla, el informe no queda marcado y el aviso sale la próxima corrida.
  */
 class MostradorReporte extends Model
 {
@@ -63,6 +68,7 @@ class MostradorReporte extends Model
         'hechos_at',
         'generado_at',
         'leido_at',
+        'avisado_at',
     ];
 
     /**
@@ -76,6 +82,7 @@ class MostradorReporte extends Model
         'hechos_at'   => 'datetime',
         'generado_at' => 'datetime',
         'leido_at'    => 'datetime',
+        'avisado_at'  => 'datetime',
     ];
 
     /**

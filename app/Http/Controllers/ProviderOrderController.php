@@ -9,10 +9,10 @@ use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
+use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
 use App\Models\ProviderOrder;
-use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -68,67 +68,36 @@ class ProviderOrderController extends Controller
         return response()->json(['models' => $results], 200);
     }
 
+    /**
+     * El cuerpo de este alta vive en ProviderOrderAltaHelper (misión asistente-por-whatsapp,
+     * 16/9/2026): el asistente de IA también crea compras —la que va a recibir la foto de la
+     * factura que el dueño manda por WhatsApp— y no tiene request del que leer los campos.
+     * Dejar el alta inline acá era la clase de error "el store() que lee un subconjunto del
+     * request y el llamador que le manda el resto" (APRENDER_NO_PARCHEAR.md, 5/9/2026).
+     *
+     * La extracción no cambió nada observable: misma transacción, mismo orden, mismo evento de
+     * demo y misma respuesta 201 con el fullModel.
+     */
     public function store(Request $request) {
 
-        /*
-         * Toda la creación va en una transacción (tanda correctivos 2408, ítem 14): entre el
-         * create y procesar_pedido() se escriben la orden, el pivot de artículos, stock,
-         * precios, descuentos materializados y la cuenta corriente del proveedor. Si algo
-         * revienta a mitad de camino, sin transacción quedaba una compra a medias (orden sin
-         * artículos, o stock sumado sin deuda registrada). Mismo criterio que la confirmación
-         * del escaneo (ProviderOrderScanController::confirmar), hasta hoy el único camino
-         * transaccional de compras. La excepción sigue subiendo al handler global (500), igual
-         * que antes: DB::transaction re-lanza después del rollback.
-         */
-        $model = DB::transaction(function () use ($request) {
-
-            $model = ProviderOrder::create([
-                'num'                                       => $this->num('provider_orders'),
-                'modo_facturacion'                          => $request->modo_facturacion,
-                'total_with_iva'                            => $request->total_with_iva,
-                'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
-                'provider_id'                               => $request->provider_id,
-                'provider_order_status_id'                  => $request->provider_order_status_id,
-                'days_to_advise'                            => $request->days_to_advise,
-                'update_stock'                              => $request->update_stock,
-                'update_prices'                             => $request->update_prices,
-                'precios_incluyen_iva'                      => $request->precios_incluyen_iva,
-                'moneda_id'                                 => $request->moneda_id,
-                'generate_current_acount'                   => $request->generate_current_acount,
-                'address_id'                                => $request->address_id,
-                'numero_comprobante'                        => $request->numero_comprobante,
-                'user_id'                                   => $this->userId(),
-            ]);
-
-            $this->updateRelationsCreated('provider_order', $model->id, $request->childrens);
-
-
-            $helper = new NewProviderOrderHelper($model, $request->articles);
-
-            // Prompt 262: al crear la orden, pre-carga las bonificaciones del proveedor como
-            // descuentos editables de esta orden puntual (si el request no trajo descuentos propios).
-            $helper->precargar_bonificaciones_proveedor();
-
-            $helper->attach_articles();
-
-            ModoFacturacionHelper::check_modo_facturacion($model, $helper);
-
-            $helper->procesar_pedido();
-
-            return $model;
-        });
-
-        /**
-         * Evento de la demo (mision 50). Va al final, con la orden ya creada y procesada
-         * (stock y precios incluidos): antes de eso todavia puede tirar y el evento estaria
-         * reportando una compra que no quedo. Queda FUERA de la transacción a propósito: si
-         * el emisor tirara, la compra ya commiteada no se revierte por un evento decorativo
-         * (mismo comportamiento visible que antes del ítem 14).
-         *
-         * En una instancia de cliente real no cuesta ni una query: la primera guarda del
-         * emisor mira el marcador de sesion de demo y sale.
-         */
-        DemoEventoEmitter::emitir('compra.creada', null, ['id' => $model->id]);
+        $model = ProviderOrderAltaHelper::crear([
+            'user_id'                                   => $this->userId(),
+            'modo_facturacion'                          => $request->modo_facturacion,
+            'total_with_iva'                            => $request->total_with_iva,
+            'total_from_provider_order_afip_tickets'    => $request->total_from_provider_order_afip_tickets,
+            'provider_id'                               => $request->provider_id,
+            'provider_order_status_id'                  => $request->provider_order_status_id,
+            'days_to_advise'                            => $request->days_to_advise,
+            'update_stock'                              => $request->update_stock,
+            'update_prices'                             => $request->update_prices,
+            'precios_incluyen_iva'                      => $request->precios_incluyen_iva,
+            'moneda_id'                                 => $request->moneda_id,
+            'generate_current_acount'                   => $request->generate_current_acount,
+            'address_id'                                => $request->address_id,
+            'numero_comprobante'                        => $request->numero_comprobante,
+            'childrens'                                 => $request->childrens,
+            'articles'                                  => $request->articles,
+        ]);
 
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
     }

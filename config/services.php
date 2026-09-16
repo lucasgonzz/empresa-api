@@ -385,4 +385,25 @@ return [
         'url' => env('DOLAR_API_URL', 'https://dolarapi.com/v1/dolares'),
     ],
 
+    /**
+     * El mostrador del módulo IA visto desde afuera (misión asistente-por-whatsapp, 16/9/2026).
+     *
+     * `spa_url` es la URL del SISTEMA de este cliente —lo que el dueño abre en el navegador,
+     * https://<cliente>.comerciocity.com—, y se usa para armar el link con el que el informe de la
+     * mañana se abre desde el teléfono (MostradorAccesoHelper).
+     *
+     * 🔴 NO tiene repliegue a `app.url` a propósito. `app.url` es la URL de la API
+     * (api-<cliente>.comerciocity.com): un link armado con eso da 404 en el teléfono del dueño, y
+     * el error aparece recién cuando 40 dueños tocan el link a las 8:30 de la mañana. Es la clase
+     * "la URL que un sistema le entrega a otro, armada con APP_URL" de APRENDER_NO_PARCHEAR.md
+     * (9/9/2026). Sin esta variable cargada, el informe se manda SIN link y queda registrado en el
+     * log: fallar visible antes que mandar un link roto.
+     *
+     * Va en config y no leído con env() adentro del código por el mismo motivo que
+     * github_error_reporter: con `config:cache` corrido en producción, un env() devuelve null.
+     */
+    'mostrador' => [
+        'spa_url' => env('SPA_URL'),
+    ],
+
 ];

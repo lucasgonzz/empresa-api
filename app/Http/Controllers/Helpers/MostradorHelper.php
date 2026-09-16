@@ -217,6 +217,62 @@ class MostradorHelper
     }
 
     /**
+     * La conversación de un informe, creándola si todavía no existe. Idempotente por
+     * (informe, persona).
+     *
+     * 🔴 ESTE ES EL ÚNICO LUGAR DONDE NACE UNA CONVERSACIÓN DE INFORME. Lo llaman los dos puntos de
+     * entrada: el botón "Preguntar" de la pantalla (MostradorController::conversacion) y el envío
+     * del informe por WhatsApp (misión asistente-por-whatsapp), que manda el `ai_conversation_id`
+     * junto con el link para que la respuesta del dueño caiga en la conversación DE ESE INFORME y
+     * no en una charla cualquiera. Con dos copias, el día que cambie el `contexto` de fondo una de
+     * las dos quedaría contestando sin los números del informe.
+     *
+     * La carrera de las dos pestañas se resuelve como antes: no hay unique sobre
+     * (origen, referencia_id, auth_user_id), así que después de crear se relee la más vieja y, si
+     * no es la recién creada, la nuestra sobra —nace sin mensajes— y gana la anterior.
+     *
+     * @param MostradorReporte $reporte Informe 'listo' del dueño.
+     * @param int $user_id Dueño de la cuenta.
+     * @param int $auth_user_id Persona dueña de la conversación.
+     * @return array{model: AiConversation, creada: bool}
+     */
+    public static function asegurar_conversacion($reporte, $user_id, $auth_user_id)
+    {
+        $existente = self::conversacion_de($reporte, $auth_user_id);
+
+        if ($existente) {
+            return ['model' => $existente, 'creada' => false];
+        }
+
+        $conversation = AiConversation::create([
+            'user_id'         => $user_id,
+            'auth_user_id'    => $auth_user_id,
+            // Título fijo y no null: null significa "se está infiriendo" (la SPA muestra
+            // "Nueva conversación") y acá la conversación nace con nombre propio.
+            'titulo'          => self::titulo_de_conversacion($reporte),
+            'origen'          => MostradorReporte::ORIGEN_CONVERSACION,
+            'referencia_id'   => $reporte->id,
+            'contexto'        => self::contexto_de_conversacion($reporte),
+            'last_message_at' => now(),
+        ]);
+
+        $anterior = self::conversacion_de($reporte, $auth_user_id);
+
+        if ($anterior && (int) $anterior->id !== (int) $conversation->id) {
+            $conversation->messages()->delete();
+            $conversation->delete();
+
+            return ['model' => $anterior, 'creada' => false];
+        }
+
+        // Mismo refresh que AiConversationController@store: la SPA necesita la fila
+        // completa, con los defaults de la base.
+        $conversation->refresh();
+
+        return ['model' => $conversation, 'creada' => true];
+    }
+
+    /**
      * Forma de un informe para la SPA: sin `hechos` nunca, y con `contenido` solo cuando
      * se pide el informe abierto.
      *
