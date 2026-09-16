@@ -593,6 +593,26 @@ class PropuestaTareaIaHelper {
         $tiene_gasto = (int) $pending->expense_concept_id > 0;
         $sin_gasto = $tiene_gasto && !empty($input['sin_gasto']);
 
+        $gasto = EntradaDeCargaIa::valor($input, 'gasto');
+        $gasto = is_array($gasto) ? $gasto : [];
+
+        /*
+         * 🔴 UNA TAREA SIN SUBCATEGORÍA NO TIENE DÓNDE GUARDAR EL GASTO, Y ANTES SE DESCARTABA EN
+         * SILENCIO. `AgendaCompletarHelper` solo registra el gasto de una tarea con
+         * `expense_concept_id` (es la subcategoría del gasto que va a crear): si la tarea no la tiene
+         * y la herramienta igual venía con el bloque `gasto`, ese bloque se ignoraba, la tarjeta salía
+         * sin gasto, la IA no se enteraba —así que le decía a la persona que el gasto quedaba
+         * registrado— y al confirmar no había ningún gasto. Ahora se corta con el motivo, que es lo
+         * que el prompt obliga a repetir tal cual.
+         */
+        if (!$tiene_gasto && count($gasto)) {
+
+            return RespuestaDeCargaIa::error(
+                'La tarea "'.$pending->detalle.'" no tiene gasto asociado, así que no puedo registrarlo al marcarla como hecha: '.
+                'agregale la subcategoría de gasto a la tarea en la Agenda, o pedime el gasto aparte.'
+            );
+        }
+
         $renglones = [
             ['etiqueta' => 'Tarea', 'valor' => (string) $pending->detalle],
             ['etiqueta' => 'Fecha', 'valor' => FormatoIaHelper::fecha_con_dia($fecha)],
@@ -603,9 +623,6 @@ class PropuestaTareaIaHelper {
         $resumen_del_gasto = '';
 
         if ($tiene_gasto && !$sin_gasto) {
-
-            $gasto = EntradaDeCargaIa::valor($input, 'gasto');
-            $gasto = is_array($gasto) ? $gasto : [];
 
             $monto = EntradaDeCargaIa::valor($gasto, 'monto');
 

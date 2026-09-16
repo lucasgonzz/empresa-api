@@ -392,6 +392,43 @@ class Acciones_tareas_Test extends AgendaTestCase
     }
 
     /**
+     * 🔴 Marcar hecha una tarea SIN subcategoría, mandando el bloque `gasto`: antes el bloque se
+     * descartaba en silencio (la tarjeta salía sin gasto, la IA no se enteraba y al confirmar no
+     * había ningún gasto). Tiene que cortar con el motivo y sin tarjeta.
+     *
+     * @test
+     */
+    public function marcar_hecha_con_gasto_sobre_una_tarea_sin_subcategoria_da_error()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+
+        $tarea = $this->crear_tarea(['detalle' => 'Barrer sin subcategoria P14', 'fecha_realizacion' => Carbon::today()->format('Y-m-d')]);
+
+        $this->assertNull($tarea->expense_concept_id, 'La tarea de este test no tiene gasto asociado.');
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_marcar_tarea_hecha', [
+            'tarea_id' => $tarea->id,
+            'gasto'    => [
+                'monto' => 2500,
+                'pagos' => [['metodo_de_pago_id' => $metodo->id, 'caja_id' => $caja->id]],
+            ],
+        ]);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringContainsString('no tiene gasto asociado', $respuesta['error']);
+        $this->assertStringContainsString('Barrer sin subcategoria P14', $respuesta['error']);
+        $this->assertStringContainsString('subcategoría de gasto', $respuesta['error']);
+
+        $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'No se arma ninguna tarjeta.');
+        $this->assertEquals(0, PendingCompleted::where('pending_id', $tarea->id)->count());
+        $this->assertFalse((bool) $tarea->fresh()->completado);
+    }
+
+    /**
      * @test
      */
     public function marcar_hecha_con_gasto_usa_el_monto_estimado_y_registra_el_gasto()
