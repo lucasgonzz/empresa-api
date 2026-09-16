@@ -100,7 +100,7 @@ class AsistenteIaService
      * para el caso patológico, que es para lo que se escribió. Con 150 daban 21s por vuelta: el
      * reloj cortaba antes que el techo de iteraciones que se había subido a 8.
      *
-     * Y LA CADENA COMPLETA, que tiene que quedar coherente en los cuatro escalones:
+     * Y LA CADENA COMPLETA, que tiene que quedar coherente en los cinco escalones:
      *
      *   1. TIMEOUT_SEGUNDOS = 60      una llamada HTTP, lo único que corta a Anthropic
      *   2. PRESUPUESTO_SEGUNDOS = 210 el loop no arranca una vuelta nueva pasado esto
@@ -108,10 +108,14 @@ class AsistenteIaService
      *   4. $timeout del job = 300     tiene que ser MAYOR que 270 (donde hay pcntl, si no mataría
      *                                 al worker antes del corte prolijo) más el margen de las
      *                                 tools, los saves y el broadcast
+     *   5. corte del polling de la SPA = 360 (ai_chat.js) — el ÚLTIMO de la cadena, por encima de
+     *                                 los 270 y también del timeout del job. Empatar en 300 no
+     *                                 alcanzaba: el reloj de la SPA arranca AL DESPACHAR y el del
+     *                                 job cuando el worker lo levanta, así que la espera en la
+     *                                 cola corre solo del lado de la SPA y ésta se rendía antes
+     *                                 de que el job muriera.
      *
-     * El quinto escalón vive en la SPA (ai_chat.js): el aviso de demora tiene que estar por encima
-     * de 270, no de 210 — si no, la SPA dice "demorado" y deja de pollear mientras el servidor
-     * todavía está trabajando bien.
+     * Si alguien toca uno de los cinco números, tiene que tocar los cinco.
      */
     const PRESUPUESTO_SEGUNDOS = 210;
 

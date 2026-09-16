@@ -54,9 +54,12 @@ class ResponderMensajeChatIaJob implements ShouldQueue
      * al worker antes del corte prolijo. La cadena completa de los cuatro techos
      * está comentada en AsistenteIaService::PRESUPUESTO_SEGUNDOS.
      *
-     * ⚠️ El quinto escalón vive en la SPA: ai_chat.js deja de pollear a los 180s
-     * y muestra el aviso de demora. Con el peor caso en 270s ese número quedó
-     * abajo del techo del servidor — se sube a 300s del lado de la SPA.
+     * ⚠️ El quinto escalón vive en la SPA: ai_chat.js deja de pollear y muestra el
+     * aviso de demora a los 360s. NO a los 300: contra este timeout eso sería un
+     * empate, y además los dos relojes no arrancan juntos — el de la SPA arranca al
+     * DESPACHAR el job y éste recién cuando el worker lo levanta, así que la espera en
+     * la cola corre solo del lado de la SPA y con los dos en 300 se rendía antes de
+     * que el job muriera.
      *
      * @var int
      */
