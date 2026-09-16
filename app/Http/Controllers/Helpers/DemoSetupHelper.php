@@ -1442,7 +1442,7 @@ class DemoSetupHelper
             $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
 
             if (!$connector) {
-                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó desde el .env.');
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo de la config.');
 
                 return;
             }
@@ -1459,7 +1459,7 @@ class DemoSetupHelper
             $service = new MercadoPagoOAuthService();
             $service->espejar_en_payment_methods((int) $user->id, $access_token, $public_key);
 
-            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales del .env de la instancia.', [
+            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo de la config.', [
                 'user_id' => $user->id,
             ]);
         } catch (\Throwable $e) {
@@ -1467,7 +1467,7 @@ class DemoSetupHelper
                 ? 'QueryException (SQLSTATE '.$e->getCode().')'
                 : $e->getMessage();
 
-            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago desde el .env: '.$detalle);
+            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo de la config: '.$detalle);
         }
     }
 
