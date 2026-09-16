@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Events\ChatIaMensajeActualizado;
+use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Models\AiConversation;
@@ -45,22 +46,31 @@ class ResponderMensajeChatIaJob implements ShouldQueue
     public $tries = 1;
 
     /**
-     * Coherente con el presupuesto del servicio (arreglo post-chequeo): el
-     * peor caso del loop es PRESUPUESTO_SEGUNDOS (150) más una llamada HTTP
-     * de 60s ya en vuelo ≈ 210s; 240 deja margen para las tools y los saves.
-     * En WAMP/Windows sin pcntl este timeout NO rige (por eso existe el
-     * presupuesto adentro del servicio); donde sí rige, tiene que ser MAYOR
-     * que el presupuesto o mataría al worker antes del corte prolijo. El
-     * polling de la SPA corta su espera a los 180s con el aviso de demora,
-     * pero una respuesta que llegue después la registra igual el evento.
+     * Coherente con el presupuesto del servicio: el peor caso del loop es
+     * PRESUPUESTO_SEGUNDOS (210) más una llamada HTTP de 60s ya en vuelo = 270s;
+     * 300 deja margen para las tools, los saves y el broadcast. En WAMP/Windows
+     * sin pcntl este timeout NO rige (por eso existe el presupuesto adentro del
+     * servicio); donde sí rige, tiene que ser MAYOR que ese peor caso o mataría
+     * al worker antes del corte prolijo. La cadena completa de los cuatro techos
+     * está comentada en AsistenteIaService::PRESUPUESTO_SEGUNDOS.
+     *
+     * ⚠️ El quinto escalón vive en la SPA: ai_chat.js deja de pollear y muestra el
+     * aviso de demora a los 360s. NO a los 300: contra este timeout eso sería un
+     * empate, y además los dos relojes no arrancan juntos — el de la SPA arranca al
+     * DESPACHAR el job y éste recién cuando el worker lo levanta, así que la espera en
+     * la cola corre solo del lado de la SPA y con los dos en 300 se rendía antes de
+     * que el job muriera.
      *
      * @var int
      */
-    public $timeout = 240;
+    public $timeout = 300;
 
     /**
-     * Texto amigable que ve el usuario cuando la generación falla. El detalle
-     * técnico va aparte, en la columna error_mensaje.
+     * Texto amigable que ve el usuario cuando la generación falla SIN un motivo más fino. El
+     * detalle técnico va aparte, en la columna error_mensaje.
+     *
+     * 🔴 Es el GENÉRICO, no "el" mensaje de error: cuando la falla trae un motivo
+     * (AsistenteIaException) gana el texto de ese motivo. Ver contenido_para_la_persona().
      *
      * @var string
      */
@@ -141,15 +151,23 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             $message->contenido = $texto;
             $message->estado = 'listo';
             $message->error_mensaje = null;
+            /*
+             * Misión agente-ia-mano-derecha (§1): las menciones se guardan CON el mensaje, en la
+             * misma pasada, porque se arman cruzando los resultados de las tools de esta respuesta
+             * contra este texto — y eso solo existe adentro del loop que acaba de terminar. Guardadas,
+             * el dueño recarga la pantalla y siguen ahí.
+             */
+            $message->menciones = $service->menciones();
             $message->save();
         } catch (\Throwable $e) {
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [
                 'ai_message_id'      => $this->ai_message_id,
                 'ai_conversation_id' => $conversation->id,
+                'motivo'             => $e instanceof AsistenteIaException ? $e->motivo() : 'sin_motivo',
                 'message'            => $e->getMessage(),
             ]);
 
-            $this->marcar_error($message, self::CONTENIDO_ERROR_AMIGABLE, $e->getMessage());
+            $this->marcar_error($message, $this->contenido_para_la_persona($e), $e->getMessage());
         }
 
         $this->avisar($conversation, $message);
@@ -178,13 +196,44 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             return;
         }
 
-        $this->marcar_error($message, self::CONTENIDO_ERROR_AMIGABLE, $exception->getMessage());
+        $this->marcar_error($message, $this->contenido_para_la_persona($exception), $exception->getMessage());
 
         $conversation = AiConversation::find($message->ai_conversation_id);
 
         if ($conversation) {
             $this->avisar($conversation, $message);
         }
+    }
+
+    /**
+     * El texto que ve el dueño para una falla.
+     *
+     * 🔴 POR QUÉ NO ES SIEMPRE EL MISMO. Hasta la misión agente-ia-mano-derecha este catch
+     * aplastaba CUATRO modos de falla distintos —presupuesto agotado, techo de iteraciones sin
+     * respuesta, 529 de Anthropic y cualquier otro \Throwable— contra el mismo texto rojo, pisando
+     * los mensajes finos que AsistenteIaService sí sabía producir. Y "probá de nuevo en unos
+     * segundos" es un consejo correcto para el 529 y uno inútil para una consulta que se hizo
+     * larga: repetirla igual vuelve a chocar con el mismo techo.
+     *
+     * 🔴 El texto sale del MAPA FIJO de AsistenteIaException, nunca de getMessage(): ese mensaje
+     * puede traer el body crudo de la respuesta de Anthropic y eso no llega a la pantalla. Va a la
+     * columna error_mensaje y al log, como siempre.
+     *
+     * @param \Throwable $exception
+     * @return string
+     */
+    protected function contenido_para_la_persona(\Throwable $exception)
+    {
+        if ($exception instanceof AsistenteIaException) {
+            $propio = $exception->mensaje_para_la_persona();
+
+            if (!is_null($propio)) {
+
+                return $propio;
+            }
+        }
+
+        return self::CONTENIDO_ERROR_AMIGABLE;
     }
 
     /**

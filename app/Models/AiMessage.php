@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -21,6 +22,10 @@ use Illuminate\Database\Eloquent\Model;
  * `acciones_habilitadas` (misión asistente-ia-acciones): true si el assistant
  * se generó con las herramientas de carga (la SPA nueva manda `acciones: true`
  * en el POST). Sin el flag, la respuesta es de solo lectura como siempre.
+ *
+ * `menciones` (misión agente-ia-mano-derecha): los clientes y artículos que la
+ * respuesta nombró, con el literal exacto con que los nombró, para que la SPA
+ * los pinte clickeables. Ver MencionesIaHelper.
  *
  * `canal` (misión asistente-por-whatsapp): 'sistema' (el panel del chat, el
  * default de la columna y lo que era todo hasta hoy) | 'whatsapp' (el dueño
@@ -60,6 +65,59 @@ class AiMessage extends Model
     protected $casts = [
         'acciones_habilitadas' => 'boolean',
     ];
+
+    /**
+     * 🔴 `menciones` va en $appends ADEMÁS de ser una columna, y no es redundante: el
+     * `assistant_message` que devuelve el POST es un modelo recién creado, y un modelo recién
+     * creado SOLO tiene en $attributes lo que se le pasó al create(). Sin el append, la clave no
+     * viajaba en ese tercero de los tres lugares —justo el que la SPA usa para pintar el globo
+     * optimista— y el contrato dice "nunca ausente". Es el mismo problema que en este mismo módulo
+     * resolvió el refresh() de AiConversationController::store(), acá resuelto sin una consulta de
+     * más en el camino caliente del POST.
+     *
+     * @var array<int, string>
+     */
+    protected $appends = ['menciones'];
+
+    /**
+     * Las menciones SIEMPRE como lista (contrato §1: si no hay va `[]`, nunca null y nunca
+     * ausente, igual que `acciones`).
+     *
+     * 🔴 POR QUÉ UN ACCESSOR Y NO UN CAST NI UN ARMADO EN EL CONTROLLER. Un mensaje viaja por TRES
+     * lugares —el índice paginado, show_message y el `assistant_message` del POST— y la SPA usa los
+     * tres. Con el accessor, cualquier serialización de un AiMessage sale con `menciones`: no hay
+     * una cuarta punta que se pueda olvidar mañana. Con el cast 'array' la columna en null saldría
+     * como null, que es justo lo que el contrato prohíbe.
+     *
+     * ⚠️ Lee de $attributes y NO del argumento: por el append, Laravel llama a este accessor una
+     * segunda vez con null (Model::attributesToArray()), y si se usara el argumento esa pasada
+     * pisaría las menciones reales con [].
+     *
+     * @param  mixed  $valor  Ignorado a propósito (ver arriba).
+     * @return array<int, array<string, mixed>>
+     */
+    public function getMencionesAttribute($valor = null)
+    {
+        $crudo = array_key_exists('menciones', $this->attributes) ? $this->attributes['menciones'] : null;
+
+        return MencionesIaHelper::normalizar($crudo);
+    }
+
+    /**
+     * Guarda las menciones como JSON. Una lista vacía se guarda como null: es lo mismo que "no
+     * tiene" y deja la columna igual a la de todos los mensajes anteriores a la misión.
+     *
+     * @param  mixed  $valor
+     * @return void
+     */
+    public function setMencionesAttribute($valor)
+    {
+        $menciones = MencionesIaHelper::normalizar($valor);
+
+        $this->attributes['menciones'] = empty($menciones)
+            ? null
+            : json_encode($menciones, JSON_UNESCAPED_UNICODE);
+    }
 
     /**
      * Conversación a la que pertenece el mensaje.

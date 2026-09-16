@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
@@ -184,6 +185,33 @@ class ArticleController extends Controller
 
     function show($id) {
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
+    }
+
+    /**
+     * La ficha del artículo para la tarjeta que abre el hover sobre una mención del chat del
+     * asistente (misión agente-ia-mano-derecha, §2 del contrato, 16/9/2026): nombre, foto, código,
+     * precio, proveedor, stock total, stock por depósito y listas de precios en UN request.
+     *
+     * 🔴 Es una ruta aparte de `show()` y no un `with` más: `show()` resuelve por id PELADO
+     * (Controller::fullModel()) y devuelve el artículo de cualquier comercio; acá la consulta va
+     * scopeada por `user_id` y contesta 404 si el artículo no es del dueño. Y devuelve SOLO lo que
+     * la tarjeta dibuja: `show()` arrastra el modelo entero con todas sus relaciones, que para un
+     * hover de dos segundos es pagar de más.
+     *
+     * El recorte por `article.stock_only_sucursal` lo hace el helper: la SPA dibuja lo que llega.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse  200 {model} · 404 {message}
+     */
+    function ficha_asistente($id) {
+        $model = FichaArticuloIaHelper::ficha($id, $this->userId(), UserHelper::user(false));
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'Artículo no encontrado.'], 404);
+        }
+
+        return response()->json(['model' => $model], 200);
     }
 
     /**
