@@ -52,14 +52,6 @@ use Illuminate\Support\Facades\DB;
 class CatalogoDeDatosIaHelper
 {
     /**
-     * Operadores que acepta un filtro, y a qué clave de ColumnFiltersHelper se traduce cada uno
-     * según el tipo del campo.
-     *
-     * @var array
-     */
-    const OPERADORES = ['contiene', 'igual', 'mayor', 'menor', 'vacio', 'no_vacio'];
-
-    /**
      * LA WHITELIST. entidad => declaración.
      *
      * Arranca por las diez de GlobalSearchDefaultsHelper::DEFAULTS (menos `movimiento_caja`, que no
@@ -484,7 +476,9 @@ class CatalogoDeDatosIaHelper
             $pagina = 1;
         }
 
-        $limite = self::limite_pedido($limite);
+        // El mismo default y el mismo techo duro que las consultas de intención: el tope está para
+        // que el JSON de una tool no se coma el presupuesto de tiempo, así que es uno solo.
+        $limite = ConsultasSistemaIaHelper::limite_pedido($limite);
 
         /*
          * El Request se arma a mano porque `SearchController::search()` lee de ahí la página
@@ -788,26 +782,6 @@ class CatalogoDeDatosIaHelper
         $texto = strtolower(trim((string) $valor));
 
         return in_array($texto, ['1', 'true', 'si', 'sí'], true);
-    }
-
-    /**
-     * Normaliza el límite pedido con el mismo criterio y los mismos topes que las consultas de
-     * intención: MAX_RESULTS por defecto, TOPE_DURO_DE_RESULTADOS como techo.
-     *
-     * @param  int  $limite
-     * @return int
-     */
-    protected static function limite_pedido(int $limite): int
-    {
-        if ($limite <= 0) {
-            return ConsultasSistemaIaHelper::MAX_RESULTS;
-        }
-
-        if ($limite > ConsultasSistemaIaHelper::TOPE_DURO_DE_RESULTADOS) {
-            return ConsultasSistemaIaHelper::TOPE_DURO_DE_RESULTADOS;
-        }
-
-        return $limite;
     }
 
     /**

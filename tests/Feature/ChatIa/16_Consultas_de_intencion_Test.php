@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
+use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
@@ -189,21 +190,107 @@ class Consultas_de_intencion_Test extends TestCase
     }
 
     /**
-     * Un cliente de otro dueño no devuelve "no debe nada": devuelve vacío, que es otra cosa.
+     * 🔴 UN CLIENTE QUE NO ES DEL DUEÑO NO PUEDE CONTESTAR COMO "NO DEBE NADA".
+     *
+     * Vacío se lee como "no hay nada que informar", y "Fulano no te debe nada" es una afirmación
+     * sobre la plata del comerciante. Dicha porque no encontramos a Fulano, es una respuesta falsa
+     * dicha con total seguridad — que es el peor modo de falla que tiene un asistente.
      *
      * @group chat-ia
      * @test
      */
-    public function ventas_impagas_de_un_cliente_ajeno_devuelve_vacio()
+    public function un_cliente_ajeno_contesta_que_no_lo_encontro_y_no_que_no_debe_nada()
     {
         $ajeno = Client::create([
             'name'    => 'Cliente B1 ajeno',
             'user_id' => $this->otro_comercio->id,
         ]);
 
-        $resultado = ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente($this->comercio->id, $ajeno->id);
+        foreach ([
+            ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente($this->comercio->id, $ajeno->id),
+            ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente_detalle($this->comercio->id, $ajeno->id),
+        ] as $resultado) {
+            $this->assertArrayHasKey('error', $resultado);
+            $this->assertArrayHasKey('como_sigo', $resultado);
 
-        $this->assertEquals([], $resultado);
+            // Y NO trae las claves de una respuesta normal: es lo que impide leerlo como un cero.
+            $this->assertArrayNotHasKey('ventas', $resultado);
+            $this->assertArrayNotHasKey('movimientos', $resultado);
+            $this->assertArrayNotHasKey('saldo_en_cuenta_corriente_en_pesos', $resultado);
+        }
+    }
+
+    /**
+     * 🔴 LAS VENTAS IMPAGAS DICEN EN QUÉ MONEDA ESTÁ CADA UNA, Y EL TOTAL NO LAS MEZCLA.
+     *
+     * En un comercio con la extensión `ventas_en_dolares`, una venta impaga en USD llegaba como un
+     * número pelado — y el prompt le dice al asistente que los importes son en pesos salvo aviso,
+     * así que la informaba en pesos. Peor: `saldo_en_cuenta_corriente_en_pesos` SÍ excluye esa
+     * cuenta, con lo cual los dos números del mismo JSON no cerraban y no había con qué explicarlo.
+     *
+     * Es el mismo criterio que esta clase ya aplicaba en compras_a_un_proveedor y en
+     * compras_de_un_articulo: esta consulta había quedado afuera de su propia regla.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function las_ventas_impagas_declaran_su_moneda_y_el_total_no_suma_dolares_con_pesos()
+    {
+        $cliente = Client::create(['name' => 'Cliente B1 bimoneda', 'user_id' => $this->comercio->id]);
+
+        // La vieja y en DÓLARES: es la que el asistente informaba como pesos.
+        $en_dolares = $this->venta_impaga($cliente, 1200, 300, 'Venta B1 en dolares', 2);
+
+        // Y una en pesos, para que el total tenga algo legítimo que sumar.
+        $en_pesos = $this->venta_impaga($cliente, 500, 10, 'Venta B1 en pesos', 1);
+
+        // Una tercera sin moneda cargada: se lee como pesos, igual que en todo el resto del sistema.
+        $sin_moneda = $this->venta_impaga($cliente, 300, 5, 'Venta B1 sin moneda', null);
+
+        $resultado = ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente($this->comercio->id, $cliente->id);
+
+        $this->assertEquals(3, $resultado['ventas_impagas_encontradas']);
+
+        $por_venta = [];
+        foreach ($resultado['ventas'] as $fila) {
+            $por_venta[$fila['venta_id']] = $fila;
+        }
+
+        $this->assertFalse($por_venta[$en_dolares->id]['en_pesos'], 'La venta en dólares tiene que declararlo.');
+        $this->assertEquals(2, $por_venta[$en_dolares->id]['moneda_id']);
+
+        $this->assertTrue($por_venta[$en_pesos->id]['en_pesos']);
+        $this->assertTrue($por_venta[$sin_moneda->id]['en_pesos'], 'Sin moneda cargada se lee como pesos, igual que en el resto.');
+
+        // 🔴 El total NO suma los 1.200 dólares con los 800 pesos.
+        $this->assertEquals(
+            800.0,
+            $resultado['total_pendiente_en_pesos_en_esta_lista'],
+            'Solo las dos en pesos: 500 + 300. Un total que mezcla monedas es un número falso que nadie puede detectar mirándolo.'
+        );
+
+        $this->assertEquals(1, $resultado['ventas_en_otra_moneda_en_esta_lista']);
+
+        // La más vieja de todas es la de dólares, y también lo declara.
+        $this->assertEquals((int) $en_dolares->id, $resultado['venta_impaga_mas_vieja']['venta_id']);
+        $this->assertFalse($resultado['venta_impaga_mas_vieja']['en_pesos']);
+    }
+
+    /**
+     * Sin movimientos, la respuesta dice "página 1 de 1" y no "página 1 de 0", que no se puede leer.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function sin_movimientos_la_paginacion_informa_una_sola_pagina()
+    {
+        $cliente = Client::create(['name' => 'Cliente B2 sin movimientos', 'user_id' => $this->comercio->id]);
+
+        $resultado = ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente_detalle($this->comercio->id, $cliente->id);
+
+        $this->assertEquals(0, $resultado['movimientos_encontrados']);
+        $this->assertEquals(1, $resultado['pagina']);
+        $this->assertEquals(1, $resultado['paginas']);
     }
 
     /**
@@ -224,7 +311,7 @@ class Consultas_de_intencion_Test extends TestCase
         $this->assertEquals(0, $resultado['ventas_en_esta_lista']);
         $this->assertEquals([], $resultado['ventas']);
         $this->assertNull($resultado['venta_impaga_mas_vieja'], 'Sin ventas impagas no hay una más vieja, y eso es null y no una fila inventada.');
-        $this->assertEquals(0, $resultado['total_pendiente_en_esta_lista']);
+        $this->assertEquals(0, $resultado['total_pendiente_en_pesos_en_esta_lista']);
     }
 
     /**
@@ -259,34 +346,14 @@ class Consultas_de_intencion_Test extends TestCase
          * Sale::scopeSoloVentasReales() sus unidades se suman de nuevo y el artículo aparece
          * vendido el doble.
          */
-        $consolidacion = Sale::create([
-            'user_id'                     => $this->comercio->id,
-            'client_id'                   => $grande->id,
-            'is_consolidacion_facturacion' => 1,
-            'created_at'                  => now()->subDays(1),
-        ]);
-        ArticlePurchase::create([
-            'sale_id'    => $consolidacion->id,
-            'client_id'  => $grande->id,
-            'article_id' => $articulo->id,
-            'amount'     => 10,
-            'price'      => 100,
-            'created_at' => now()->subDays(1),
-        ]);
+        $this->venta_con_articulo($articulo, $grande, 10, 100, 1, ['is_consolidacion_facturacion' => 1]);
 
         // Venta borrada: sus unidades no suman.
         $borrada = $this->venta_con_articulo($articulo, $chico, 50, 100, 3);
         $borrada->delete();
 
         // Venta de otro dueño sobre el mismo artículo: jamás.
-        $venta_ajena = Sale::create(['user_id' => $this->otro_comercio->id, 'created_at' => now()->subDays(2)]);
-        ArticlePurchase::create([
-            'sale_id'    => $venta_ajena->id,
-            'client_id'  => $grande->id,
-            'article_id' => $articulo->id,
-            'amount'     => 77,
-            'created_at' => now()->subDays(2),
-        ]);
+        $this->venta_con_articulo($articulo, $grande, 77, 100, 2, ['user_id' => $this->otro_comercio->id]);
 
         $resultado = ConsultasSistemaIaHelper::quien_compro_un_articulo($this->comercio->id, 'Lampara B1');
 
@@ -331,6 +398,88 @@ class Consultas_de_intencion_Test extends TestCase
 
         $this->assertEquals(30, $mes['ventana_dias']);
         $this->assertEquals(5.0, $mes['unidades_vendidas_en_total'], 'La venta de hace 40 días queda afuera.');
+    }
+
+    /**
+     * 🔴 LAS UNIDADES SIN PRECIO CARGADO NO SE SUMAN COMO CERO PESOS, Y SE DICEN.
+     *
+     * `ArticlePurchaseHelper::set_costo_y_price()` llena `price` SOLO con `moneda_id == 1`, y
+     * `price_dolar` SOLO con `== 2`: con null o 0 no llena NINGUNO de los dos. Y `sales.moneda_id`
+     * es nullable sin default desde la migración del 29/8/2025, que no hizo backfill — o sea que
+     * TODA venta anterior a esa fecha tiene `price` null.
+     *
+     * Con el `COALESCE(price, 0)` que tenía la consulta, esas unidades entraban al total como CERO
+     * pesos: el comerciante leía "Fulano te compró 15 unidades por $1.000" cuando fueron muchas
+     * más. Plausible, bajo e indetectable — y la pregunta apunta justo ahí, porque la ventana por
+     * defecto es toda la historia.
+     *
+     * 🔴 El fixture de este test pasa por ArticlePurchaseHelper a propósito: es el único que
+     * produce la combinación real (venta sin moneda → `price` null). Armando la fila a mano el
+     * defecto no aparece, que es exactamente lo que pasaba antes.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function las_unidades_sin_precio_cargado_no_se_suman_como_cero_pesos()
+    {
+        $articulo = Article::create(['name' => 'Lampara B1 sin precio', 'user_id' => $this->comercio->id]);
+        $cliente  = Client::create(['name' => 'Cliente B1 sin precio', 'user_id' => $this->comercio->id]);
+
+        // Venta vieja, de antes de que existiera la columna: moneda_id null.
+        $vieja = $this->venta_con_articulo($articulo, $cliente, 10, 1000, 400, ['moneda_id' => null]);
+
+        // Venta en dólares: llena price_dolar y deja price en null.
+        $dolares = $this->venta_con_articulo($articulo, $cliente, 5, 80, 200, ['moneda_id' => 2]);
+
+        // La única cuyo monto en pesos se conoce de verdad.
+        $pesos = $this->venta_con_articulo($articulo, $cliente, 2, 500, 10);
+
+        /*
+         * 🔴 PRIMERO SE VERIFICA EL FIXTURE. Si estas tres aserciones no se cumplen, el test de
+         * abajo no está probando lo que dice: la combinación tiene que venir del sistema.
+         */
+        $this->assertNull(
+            ArticlePurchase::where('sale_id', $vieja->id)->first()->price,
+            'Una venta sin moneda deja price en null: es lo que produce el defecto.'
+        );
+        $this->assertNull(
+            ArticlePurchase::where('sale_id', $dolares->id)->first()->price,
+            'Una venta en dólares llena price_dolar, no price.'
+        );
+        $this->assertNotNull(
+            ArticlePurchase::where('sale_id', $pesos->id)->first()->price,
+            'Una venta en pesos SÍ llena price.'
+        );
+
+        $resultado = ConsultasSistemaIaHelper::quien_compro_un_articulo($this->comercio->id, 'Lampara B1 sin precio');
+
+        // Las unidades son exactas: eso no se toca.
+        $this->assertEquals(17.0, $resultado['unidades_vendidas_en_total']);
+
+        $fila = $resultado['clientes'][0];
+
+        $this->assertEquals(17.0, $fila['unidades']);
+        $this->assertEquals(
+            1000.0,
+            $fila['monto_en_pesos'],
+            'Solo la venta en pesos: 2 x 500. Las otras 15 unidades no tienen precio y no se inventan.'
+        );
+
+        /*
+         * Y ESTO es lo que convierte un total incompleto en un total que se puede leer: 15 unidades
+         * quedaron afuera del monto. Sin este número, $1.000 sobre 17 unidades se lee como si el
+         * artículo se vendiera a $59.
+         */
+        $this->assertEquals(15.0, $fila['unidades_sin_precio_en_pesos']);
+        $this->assertEquals(15.0, $resultado['unidades_sin_precio_en_pesos']);
+
+        /*
+         * 🔴 La bandera vieja NO puede seguir existiendo. Se calculaba con `moneda_id = 2`, así que
+         * contaba 5 y dejaba las 10 de la venta sin moneda afuera: prometía explicar el hueco del
+         * monto y explicaba un tercio. Una bandera que miente es peor que ninguna.
+         */
+        $this->assertArrayNotHasKey('unidades_de_ventas_en_dolares', $resultado);
+        $this->assertArrayNotHasKey('monto', $fila);
     }
 
     /**
@@ -524,26 +673,37 @@ class Consultas_de_intencion_Test extends TestCase
     }
 
     /**
-     * Una búsqueda que no matchea ningún artículo del dueño devuelve vacío en las tres consultas
-     * de artículo: contestar sobre "el primer artículo del catálogo" sería la peor forma de estar
-     * equivocado.
+     * Una busqueda que no matchea ningun articulo del dueño no contesta vacio: contesta el motivo.
+     * Vacio se leeria como "no lo compro nadie" o "no tiene compras", que son afirmaciones sobre el
+     * negocio; y contestar sobre "el primer articulo del catalogo" seria peor todavia.
      *
      * @group chat-ia
      * @test
      */
-    public function las_consultas_de_articulo_devuelven_vacio_cuando_no_resuelven_el_articulo()
+    public function las_consultas_de_articulo_dicen_que_no_lo_encontraron_en_vez_de_contestar_vacio()
     {
         Article::create(['name' => 'Articulo B1 del otro', 'user_id' => $this->otro_comercio->id]);
 
-        $this->assertEquals([], ConsultasSistemaIaHelper::quien_compro_un_articulo($this->comercio->id, 'Articulo B1 del otro'));
-        $this->assertEquals([], ConsultasSistemaIaHelper::compras_de_un_articulo($this->comercio->id, 'Articulo B1 del otro'));
-        $this->assertEquals([], ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, 'Articulo B1 del otro'));
-        $this->assertEquals([], ConsultasSistemaIaHelper::compras_a_un_proveedor($this->comercio->id, 'Proveedor que no existe B1'));
+        foreach ([
+            ConsultasSistemaIaHelper::quien_compro_un_articulo($this->comercio->id, 'Articulo B1 del otro'),
+            ConsultasSistemaIaHelper::compras_de_un_articulo($this->comercio->id, 'Articulo B1 del otro'),
+            ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, 'Articulo B1 del otro'),
+            ConsultasSistemaIaHelper::compras_a_un_proveedor($this->comercio->id, 'Proveedor que no existe B1'),
+        ] as $resultado) {
+            $this->assertArrayHasKey('error', $resultado);
+            $this->assertArrayHasKey('como_sigo', $resultado);
+            $this->assertArrayNotHasKey('clientes', $resultado);
+            $this->assertArrayNotHasKey('compras', $resultado);
+            $this->assertArrayNotHasKey('depositos', $resultado);
+        }
 
-        // Y con la búsqueda vacía tampoco se elige uno al azar.
+        // Y con la busqueda vacia tampoco se elige uno al azar: se dice que falta el dato.
         Article::create(['name' => 'Articulo B1 propio', 'user_id' => $this->comercio->id]);
 
-        $this->assertEquals([], ConsultasSistemaIaHelper::quien_compro_un_articulo($this->comercio->id, '   '));
+        $sin_busqueda = ConsultasSistemaIaHelper::quien_compro_un_articulo($this->comercio->id, '   ');
+
+        $this->assertArrayHasKey('error', $sin_busqueda);
+        $this->assertArrayNotHasKey('clientes', $sin_busqueda);
     }
 
     /**
@@ -740,12 +900,13 @@ class Consultas_de_intencion_Test extends TestCase
      * @param  string  $detalle
      * @return Sale
      */
-    protected function venta_impaga($cliente, $total, $dias, $detalle)
+    protected function venta_impaga($cliente, $total, $dias, $detalle, $moneda_id = 1)
     {
         $venta = Sale::create([
             'user_id'    => $cliente->user_id,
             'client_id'  => $cliente->id,
             'total'      => $total,
+            'moneda_id'  => $moneda_id,
             'created_at' => now()->subDays($dias),
         ]);
 
@@ -757,6 +918,7 @@ class Consultas_de_intencion_Test extends TestCase
             'debe'       => $total,
             'saldo'      => $total,
             'status'     => 'sin_pagar',
+            'moneda_id'  => $moneda_id,
             'created_at' => now()->subDays($dias),
         ]);
 
@@ -764,31 +926,44 @@ class Consultas_de_intencion_Test extends TestCase
     }
 
     /**
-     * Una venta con un renglón de un artículo, como la deja ArticlePurchaseHelper.
+     * Una venta con un renglón de un artículo.
+     *
+     * 🔴 LA FILA DE `article_purchases` LA ESCRIBE `ArticlePurchaseHelper`, NO EL TEST. Hasta el
+     * 16/9/2026 este método la creaba a mano con `price` seteado y la venta SIN `moneda_id` — una
+     * combinación que en producción no existe, porque es justamente `set_costo_y_price()` el que
+     * decide si `price` se llena. El fixture inventado tapaba el defecto que el test creía cubrir:
+     * con `moneda_id` null o 0 ese método no llena NI `price` NI `price_dolar`, y toda venta
+     * anterior al 29/8/2025 tiene `moneda_id` null porque la migración que agregó la columna no
+     * hizo backfill.
+     *
+     * Regla que dejó este caso: cuando lo que se está probando depende de CÓMO el sistema escribe
+     * una fila, la fila se siembra por el camino del sistema. Un fixture a mano prueba el fixture.
      *
      * @param  Article      $articulo
      * @param  Client|null  $cliente   null = mostrador.
      * @param  float        $cantidad
      * @param  float        $precio
      * @param  int          $dias
+     * @param  array        $extra     Atributos de la venta; `moneda_id` arranca en 1 (pesos).
      * @return Sale
      */
-    protected function venta_con_articulo($articulo, $cliente, $cantidad, $precio, $dias)
+    protected function venta_con_articulo($articulo, $cliente, $cantidad, $precio, $dias, array $extra = [])
     {
-        $venta = Sale::create([
+        $venta = Sale::create(array_merge([
             'user_id'    => $articulo->user_id,
             'client_id'  => is_null($cliente) ? null : $cliente->id,
+            'moneda_id'  => 1,
             'created_at' => now()->subDays($dias),
+        ], $extra));
+
+        $venta->articles()->attach($articulo->id, [
+            'amount' => $cantidad,
+            'price'  => $precio,
+            'cost'   => 0,
         ]);
 
-        ArticlePurchase::create([
-            'sale_id'    => $venta->id,
-            'client_id'  => is_null($cliente) ? null : $cliente->id,
-            'article_id' => $articulo->id,
-            'amount'     => $cantidad,
-            'price'      => $precio,
-            'created_at' => now()->subDays($dias),
-        ]);
+        $helper = new ArticlePurchaseHelper();
+        $helper->set_article_purcase($venta->fresh());
 
         return $venta;
     }

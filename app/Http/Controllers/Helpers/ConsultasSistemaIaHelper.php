@@ -310,8 +310,13 @@ class ConsultasSistemaIaHelper
             ->where('id', $client_id)
             ->first(['id', 'name']);
 
+        // Mismo criterio que ventas_impagas_de_un_cliente: "no lo encontré" nunca puede leerse
+        // como "no tiene movimientos".
         if (is_null($cliente)) {
-            return [];
+            return self::no_encontrado(
+                'No encontré ningún cliente con el id ' . $client_id . ' en este negocio.',
+                'Buscá el cliente con consultar_clientes y volvé a llamar con el id que devuelva.'
+            );
         }
 
         $cuentas = self::cuentas_de_un_cliente($owner_id, (int) $cliente->id);
@@ -411,7 +416,8 @@ class ConsultasSistemaIaHelper
             'movimientos_encontrados'   => (int) $encontrados,
             'movimientos_en_esta_lista' => count($lista),
             'pagina'                    => $pagina,
-            'paginas'                   => $limite > 0 ? (int) ceil($encontrados / $limite) : 1,
+            // Nunca 0: "pagina 1 de 0" no se puede leer, y sin movimientos la unica pagina es la 1.
+            'paginas'                   => $limite > 0 ? (int) max(1, ceil($encontrados / $limite)) : 1,
             'movimientos'               => $lista,
         ];
     }
@@ -1164,6 +1170,30 @@ class ConsultasSistemaIaHelper
     }
 
     /**
+     * "No encontré sobre qué contestar", dicho de forma que no se pueda leer como una respuesta.
+     *
+     * 🔴 POR QUÉ NO ALCANZA CON DEVOLVER VACÍO. Una lista vacía es indistinguible de "no hay nada
+     * que informar", y las dos cosas se contestan MUY distinto: "Fulano no te debe nada" es una
+     * afirmación sobre la plata del comerciante, y decirla porque no encontramos a Fulano es una
+     * respuesta falsa dicha con total seguridad. Lo mismo con un artículo que nadie compró contra
+     * un artículo que no existe.
+     *
+     * Misma forma que los errores de CatalogoDeDatosIaHelper: `error` con el motivo y `como_sigo`
+     * con la salida, para que el modelo pueda corregir sin gastar una vuelta preguntando.
+     *
+     * @param  string  $motivo
+     * @param  string  $como_sigo
+     * @return array<string, string>
+     */
+    protected static function no_encontrado(string $motivo, string $como_sigo): array
+    {
+        return [
+            'error'     => $motivo,
+            'como_sigo' => $como_sigo,
+        ];
+    }
+
+    /**
      * Normaliza el límite que pidió el que llama.
      *
      * 0 (o negativo) = "el de siempre", MAX_RESULTS. Un pedido más grande se acepta hasta
@@ -1171,10 +1201,14 @@ class ConsultasSistemaIaHelper
      * coma el presupuesto de tiempo del asistente, así que no puede depender de lo que pida el
      * modelo.
      *
+     * Es público porque la consulta genérica (CatalogoDeDatosIaHelper) normaliza su límite con
+     * ESTE método y no con una copia: dos copias del mismo techo se desincronizan sin que nada lo
+     * denuncie, y la que quede alta es la que se come el presupuesto.
+     *
      * @param  int  $limite
      * @return int
      */
-    protected static function limite_pedido(int $limite): int
+    public static function limite_pedido(int $limite): int
     {
         if ($limite <= 0) {
             return self::MAX_RESULTS;
@@ -1253,10 +1287,13 @@ class ConsultasSistemaIaHelper
         /*
          * La tenencia se controla acá y no adentro de la query: sin este first() un client_id de
          * otro comercio devolvería lista vacía (que es correcto) pero indistinguible de "este
-         * cliente no te debe nada" (que es otra cosa muy distinta).
+         * cliente no te debe nada" (que es otra cosa muy distinta, y es plata).
          */
         if (is_null($cliente)) {
-            return [];
+            return self::no_encontrado(
+                'No encontré ningún cliente con el id ' . $client_id . ' en este negocio.',
+                'Buscá el cliente con consultar_clientes y volvé a llamar con el id que devuelva. No digas que no debe nada: no se pudo mirar.'
+            );
         }
 
         if ($dias < 0) {
@@ -1278,12 +1315,22 @@ class ConsultasSistemaIaHelper
             ->get();
 
         $lista = [];
-        $pendiente_en_la_lista = 0.0;
+        $pendiente_en_pesos = 0.0;
+        $en_otra_moneda = 0;
 
         foreach ($ventas as $venta) {
             $fila = self::fila_de_venta_impaga($venta);
 
-            $pendiente_en_la_lista += $fila['pendiente'];
+            /*
+             * 🔴 El total suma SOLO las ventas en pesos, y las otras se cuentan aparte. Es la misma
+             * regla de compras_a_un_proveedor y por el mismo motivo, escrito ahí: un total que
+             * mezcla monedas es un número falso que nadie puede detectar mirándolo.
+             */
+            if ($fila['en_pesos']) {
+                $pendiente_en_pesos += $fila['pendiente'];
+            } else {
+                $en_otra_moneda++;
+            }
 
             $lista[] = $fila;
         }
@@ -1316,16 +1363,21 @@ class ConsultasSistemaIaHelper
             'ventas_impagas_encontradas'    => (int) $encontradas,
             'ventas_en_esta_lista'          => count($lista),
             /*
-             * 🔴 El nombre dice de dónde sale: es la suma de LO QUE ESTÁ EN ESTA LISTA, no la deuda
-             * del cliente. Con la lista recortada las dos cifras son distintas, y un total de la
-             * pantalla informado como total del negocio es exactamente el defecto que
-             * consultar_actividad_de_un_cliente vino a arreglar.
+             * 🔴 El nombre dice las DOS cosas que lo acotan: es la suma de lo que está EN ESTA
+             * LISTA (con la lista recortada no es la deuda del cliente) y solo de las ventas EN
+             * PESOS. Un total de la pantalla informado como total del negocio es el defecto que
+             * consultar_actividad_de_un_cliente vino a arreglar; un total que mezcla monedas es el
+             * que arregla compras_a_un_proveedor. Acá pasaban los dos.
              */
-            'total_pendiente_en_esta_lista' => round($pendiente_en_la_lista, 2),
+            'total_pendiente_en_pesos_en_esta_lista' => round($pendiente_en_pesos, 2),
+            // Cuántas de las ventas listadas NO están en ese total porque van en otra moneda.
+            'ventas_en_otra_moneda_en_esta_lista'    => $en_otra_moneda,
             /*
              * La deuda de verdad sale de credit_accounts, que es la única fuente de deuda que el
              * sistema le cuenta a una IA (ver el docblock de clientes()). Incluye lo que no está en
-             * ninguna venta: saldos iniciales, notas de crédito, ajustes.
+             * ninguna venta: saldos iniciales, notas de crédito, ajustes. Y es SOLO en pesos, que es
+             * la otra mitad de por qué las ventas en dólares tienen que declararse: si no, este
+             * número y el de arriba no cierran y no hay forma de saber por qué.
              */
             'saldo_en_cuenta_corriente_en_pesos' => isset($saldos[(int) $cliente->id]) ? $saldos[(int) $cliente->id] : 0,
             'venta_impaga_mas_vieja'        => $fila_mas_vieja,
@@ -1347,6 +1399,25 @@ class ConsultasSistemaIaHelper
         $debe      = (is_null($cuenta) || is_null($cuenta->debe)) ? 0.0 : (float) $cuenta->debe;
         $pagandose = (is_null($cuenta) || is_null($cuenta->pagandose)) ? 0.0 : (float) $cuenta->pagandose;
 
+        /*
+         * 🔴 LA MONEDA DE LA VENTA VIAJA EN LA FILA. Sin esto, una venta en dólares de un comercio
+         * con la extensión `ventas_en_dolares` llega como un número pelado — y el prompt le dice al
+         * asistente que los importes son en pesos salvo aviso, así que la informa en pesos. Es el
+         * mismo criterio que ya aplican compras_a_un_proveedor (`en_pesos`) y compras_de_un_articulo
+         * (`costo_en_dolares`): esta consulta había quedado afuera de su propia regla.
+         *
+         * Manda la moneda de la CUENTA CORRIENTE, que es la fila donde vive la deuda, y la de la
+         * venta queda de respaldo para las filas viejas que no la tengan. null se lee como pesos,
+         * igual que en todo el resto (RecolectorBase::MONEDAS_PESOS incluye el 0 además del 1).
+         */
+        $moneda_id = null;
+
+        if (! is_null($cuenta) && ! is_null($cuenta->moneda_id)) {
+            $moneda_id = (int) $cuenta->moneda_id;
+        } elseif (! is_null($venta->moneda_id)) {
+            $moneda_id = (int) $venta->moneda_id;
+        }
+
         return [
             'venta_id'        => (int) $venta->id,
             'numero'          => is_null($venta->num) ? null : (int) $venta->num,
@@ -1360,6 +1431,8 @@ class ConsultasSistemaIaHelper
             'pagado_a_cuenta' => $pagandose,
             'pendiente'       => round($debe - $pagandose, 2),
             'estado'          => is_null($cuenta) ? null : (string) $cuenta->status,
+            'moneda_id'       => $moneda_id,
+            'en_pesos'        => is_null($moneda_id) || in_array($moneda_id, RecolectorBase::MONEDAS_PESOS, true),
         ];
     }
 
@@ -1379,6 +1452,19 @@ class ConsultasSistemaIaHelper
      * vendido el doble. Es el mismo scope que usan los reportes de rendimiento, y por eso se
      * invoca y no se reescribe.
      *
+     * 🔴 LAS UNIDADES SON EXACTAS; EL MONTO PUEDE ESTAR INCOMPLETO, Y CUÁNTO SE DICE.
+     * `ArticlePurchaseHelper::set_costo_y_price()` (`:50-67`) llena `article_purchases.price` SOLO
+     * cuando la venta tiene `moneda_id == 1`; con `== 2` llena `price_dolar`; y con null o 0 NO
+     * LLENA NINGUNO DE LOS DOS. Y `sales.moneda_id` es nullable sin default desde la migración
+     * `2025_08_29_162530`, que no hizo backfill: TODA venta anterior al 29/8/2025 lo tiene en null.
+     *
+     * Hasta el 16/9/2026 el monto se calculaba con `COALESCE(price, 0)`, así que esas unidades
+     * entraban como CERO PESOS. No daba un cero sospechoso: daba un total bajo y plausible, y el
+     * comerciante leía "Fulano te compró 500 unidades por $40.000" cuando fueron $300.000. Y la
+     * ventana por defecto de esta consulta es TODA LA HISTORIA, o sea que la pregunta apunta justo
+     * a las ventas viejas. Ahora esas unidades no entran al monto y viajan contadas en
+     * `unidades_sin_precio_en_pesos`, por cliente y en el total.
+     *
      * @param  int     $owner_id  Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
      * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
      * @param  int     $dias      Ventana hacia atrás; 0 = toda la historia.
@@ -1391,8 +1477,15 @@ class ConsultasSistemaIaHelper
 
         $articulo = self::resolver_articulo($owner_id, $busqueda);
 
+        // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
+        // distintas, y vacio se lee como la segunda. Ver no_encontrado().
         if (is_null($articulo)) {
-            return [];
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
+            );
         }
 
         $base = Sale::query()
@@ -1413,7 +1506,7 @@ class ConsultasSistemaIaHelper
             . 'COUNT(DISTINCT sales.id) as ventas, '
             . 'COUNT(DISTINCT CASE WHEN article_purchases.client_id > 0 THEN article_purchases.client_id END) as clientes, '
             . 'COALESCE(SUM(CASE WHEN article_purchases.client_id IS NULL OR article_purchases.client_id = 0 THEN article_purchases.amount ELSE 0 END), 0) as sin_cliente, '
-            . 'COALESCE(SUM(CASE WHEN sales.moneda_id = 2 THEN article_purchases.amount ELSE 0 END), 0) as en_dolares'
+            . 'COALESCE(SUM(CASE WHEN article_purchases.price IS NULL THEN article_purchases.amount ELSE 0 END), 0) as sin_precio'
         )->first();
 
         $filas = (clone $base)
@@ -1429,7 +1522,20 @@ class ConsultasSistemaIaHelper
                 . 'COALESCE(SUM(article_purchases.amount), 0) as unidades, '
                 . 'COUNT(DISTINCT sales.id) as ventas, '
                 . 'MAX(sales.created_at) as ultima, '
-                . 'COALESCE(SUM(article_purchases.amount * COALESCE(article_purchases.price, 0)), 0) as monto'
+                /*
+                 * 🔴 UN RENGLÓN SIN PRECIO NO VALE CERO PESOS: NO ENTRA AL TOTAL Y SE CUENTA APARTE.
+                 * Acá había un COALESCE(price, 0) y era plata mal informada en silencio (ver el
+                 * docblock del método).
+                 *
+                 * ⚠️ La condición es `price IS NULL` y NO una sobre `sales.moneda_id`, y eso no es
+                 * un gusto: en SQL, `NULL NOT IN (0, 1)` no da TRUE, da NULL — así que un CASE
+                 * armado sobre la moneda deja afuera justamente las filas de las ventas viejas, que
+                 * son las que se quiere contar. `price IS NULL` es la condición sobre la MISMA
+                 * columna que lee el SUM, así que las dos ramas cubren todas las filas por
+                 * construcción, sin importar qué diga (o no diga) la moneda de la venta.
+                 */
+                . 'COALESCE(SUM(CASE WHEN article_purchases.price IS NOT NULL THEN article_purchases.amount * article_purchases.price ELSE 0 END), 0) as monto, '
+                . 'COALESCE(SUM(CASE WHEN article_purchases.price IS NULL THEN article_purchases.amount ELSE 0 END), 0) as sin_precio'
             )
             ->orderByDesc('unidades')
             ->orderBy('article_purchases.client_id')
@@ -1447,12 +1553,21 @@ class ConsultasSistemaIaHelper
                 'ventas'         => (int) $fila->ventas,
                 'ultima_compra'  => self::fecha_legible($fila->ultima),
                 /*
-                 * 🔴 EN PESOS, y por eso lo dice la clave. article_purchases guarda el precio en
-                 * `price` sólo cuando la venta fue en pesos; una venta en dólares deja `price` en
-                 * null y su plata NO está en este número (las unidades sí). El contador
-                 * `unidades_de_ventas_en_dolares` de los totales es lo que permite darse cuenta.
+                 * 🔴 EN PESOS Y SOLO DE LO QUE TIENE PRECIO, y por eso van las dos claves juntas.
+                 * `article_purchases.price` lo llena ArticlePurchaseHelper::set_costo_y_price()
+                 * SOLO cuando la venta tiene `moneda_id == 1`; con 2 llena `price_dolar`, y con
+                 * null o 0 NO LLENA NINGUNO. Y `sales.moneda_id` es nullable sin default desde la
+                 * migración del 29/8/2025, que no hizo backfill: toda venta anterior a esa fecha
+                 * cae en el último caso.
                  */
                 'monto_en_pesos' => round((float) $fila->monto, 2),
+                /*
+                 * Cuántas de las unidades de arriba NO están representadas en ese monto. Va SIEMPRE,
+                 * aunque sea 0: sin este número, un total bajo sobre muchas unidades se lee como un
+                 * artículo barato y no como un dato incompleto, que es la diferencia entre
+                 * equivocarse y no saber que uno se equivocó.
+                 */
+                'unidades_sin_precio_en_pesos' => (float) $fila->sin_precio,
             ];
         }
 
@@ -1467,7 +1582,15 @@ class ConsultasSistemaIaHelper
             // Mostrador: ventas sin cliente cargado. Sin esta clave, un artículo que se vende todo
             // por mostrador llega como lista vacía y el asistente contesta "no lo compró nadie".
             'unidades_sin_cliente'          => (float) $totales->sin_cliente,
-            'unidades_de_ventas_en_dolares' => (float) $totales->en_dolares,
+            /*
+             * 🔴 Cuántas unidades quedaron afuera de los montos en pesos. Reemplaza a una bandera
+             * anterior (`unidades_de_ventas_en_dolares`) que se calculaba con `sales.moneda_id = 2`
+             * y por eso NO contaba las ventas viejas sin moneda, que son la mayoría de las que
+             * faltan: prometía explicar el hueco del monto y explicaba una parte. Una bandera de
+             * escape que no cubre todo el hueco es peor que ninguna, porque viaja en un número bajo
+             * y se lee como "acá no hay nada raro".
+             */
+            'unidades_sin_precio_en_pesos'  => (float) $totales->sin_precio,
             'clientes'                      => $lista,
         ];
     }
@@ -1498,8 +1621,15 @@ class ConsultasSistemaIaHelper
 
         $articulo = self::resolver_articulo($owner_id, $busqueda);
 
+        // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
+        // distintas, y vacio se lee como la segunda. Ver no_encontrado().
         if (is_null($articulo)) {
-            return [];
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
+            );
         }
 
         $base = DB::table('article_provider_order')
@@ -1598,8 +1728,14 @@ class ConsultasSistemaIaHelper
 
         $proveedor = self::resolver_proveedor($owner_id, $busqueda);
 
+        // Mismo criterio que con el articulo: vacio se leeria como "no le compraste nada".
         if (is_null($proveedor)) {
-            return [];
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre, la razon social o el CUIT del proveedor para poder buscarlo.'
+                    : 'No encontre ningun proveedor de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Preguntale a la persona por el nombre exacto del proveedor, o proba con parte del nombre.'
+            );
         }
 
         $monedas_pesos = implode(',', RecolectorBase::MONEDAS_PESOS);
@@ -1741,8 +1877,15 @@ class ConsultasSistemaIaHelper
 
         $articulo = self::resolver_articulo($owner_id, $busqueda);
 
+        // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
+        // distintas, y vacio se lee como la segunda. Ver no_encontrado().
         if (is_null($articulo)) {
-            return [];
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
+            );
         }
 
         // Las sucursales del comercio son las addresses del dueño, igual que en AddressController
