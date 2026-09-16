@@ -213,6 +213,31 @@ class BudgetPdf extends fpdf {
 			}
 		}
 
+		/*
+			Combos (mision combos-y-rangos-de-precio, 16/9/2026).
+
+			Van por el mismo `printArticle()` que los articulos y las promociones, y eso NO es
+			casualidad: `$this->total_original` se acumula ahi adentro, renglon por renglon. Un
+			bloque aparte que imprimiera el combo sin pasar por ese metodo dejaria el combo en la
+			hoja pero afuera del total impreso, que es el peor de los dos errores posibles (el
+			cliente firma un presupuesto cuyo total no es la suma de lo que ve).
+
+			`printArticle()` aguanta un Combo tal cual: `pivot->name`, `pivot->variant_description`
+			y `pivot->bonus` no existen en `budget_combo` y Eloquent los devuelve null, que es
+			justo lo que esas tres lecturas chequean. Y `isset($combo->images)` da false porque
+			`Combo` no tiene relacion `images` (a diferencia de `PromocionVinoteca`), asi que la
+			rama de imagenes ni se entra.
+		*/
+		foreach ($this->budget->combos as $combo) {
+			if ($this->fits($combo)) {
+				$this->printArticle($combo);
+			} else {
+				$this->AddPage();
+				$this->x = 5;
+				$this->printArticle($combo);
+			}
+		}
+
 		// Servicios
 		foreach ($this->budget->services as $service) {
 			if ($this->fits($service)) {

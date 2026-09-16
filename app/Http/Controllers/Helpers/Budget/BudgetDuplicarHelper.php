@@ -83,6 +83,15 @@ class BudgetDuplicarHelper {
         BudgetHelper::attachArticles($model, self::articles_to_payload($source));
         BudgetHelper::attachServices($model, self::services_to_payload($source));
         BudgetHelper::attachPromocionVinotecas($model, self::promociones_vinoteca_to_payload($source));
+        /*
+            Sin esta linea el duplicado pierde los combos y muere con el mismo 500 que el alta: el
+            `total` se copia del origen (con los combos adentro) pero `BudgetHelper::getTotal()` los
+            busca en el duplicado y no los encuentra, la diferencia se pasa del margen de 3 y
+            `BudgetController::duplicate()` corta con "El total del presupuesto no corresponde con
+            los productos ingresados". Mismo motivo por el que `aplicar_recargos_directo_a_items` se
+            copia unas lineas mas arriba.
+        */
+        BudgetHelper::attachCombos($model, self::combos_to_payload($source));
 
         BudgetHelper::checkStatus($controller->fullModel('Budget', $model->id), $previus_articles);
 
@@ -195,6 +204,32 @@ class BudgetDuplicarHelper {
                 'pivot' => [
                     'amount' => $promo->pivot->amount,
                     'price' => $promo->pivot->price,
+                ],
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Convierte los combos del origen al formato de `BudgetHelper::attachCombos`
+     * (mision combos-y-rangos-de-precio, 16/9/2026).
+     *
+     * Devuelve SIEMPRE un array —vacio si el origen no tiene combos— y no null: la clave ausente
+     * significa "el que manda esto no sabe de combos" y ahi `attachCombos()` no toca nada. Un
+     * duplicado si sabe, y si el origen no tiene combos el duplicado tampoco tiene que tenerlos.
+     *
+     * @param Budget $source Presupuesto origen con relación `combos` cargada.
+     * @return array<int, array<string, mixed>>
+     */
+    private static function combos_to_payload(Budget $source): array {
+        /** Filas con id y pivot amount/price. */
+        $rows = [];
+        foreach ($source->combos as $combo) {
+            $rows[] = [
+                'id' => $combo->id,
+                'pivot' => [
+                    'amount' => $combo->pivot->amount,
+                    'price' => $combo->pivot->price,
                 ],
             ];
         }
