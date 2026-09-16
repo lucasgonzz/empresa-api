@@ -43,6 +43,13 @@ class AiMessageAction extends Model
     const TIPO_TAREA_EDITAR    = 'tarea_editar';
     const TIPO_TAREA_COMPLETAR = 'tarea_completar';
 
+    /**
+     * La compra que nace para recibir la foto de una factura (misión asistente-por-whatsapp,
+     * 16/9/2026). Al confirmarla se crea (o se reusa) la compra del proveedor y se le cuelga el
+     * escaneo; los artículos los carga el dueño después, revisando el escaneo desde la pantalla.
+     */
+    const TIPO_COMPRA_CON_FACTURA = 'compra_con_factura';
+
     protected $guarded = [];
 
     /**

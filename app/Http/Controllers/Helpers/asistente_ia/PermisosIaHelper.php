@@ -29,6 +29,14 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
  *     /proveedores, `can: 'provider.index'`). El nav de proveedores también se muestra con
  *     `provider.create` (src/components/provider/components/Nav.vue:22), pero sin `provider.index`
  *     no se entra al listado desde donde se abre la cuenta corriente, así que ese "o" NO se copia.
+ *   - Compras → `provider_order.store` (misión asistente-por-whatsapp, 16/9/2026). 🔴 El plan de
+ *     esa misión proponía `provider_order.create` y pedía verificarlo antes de fijarlo: medido, ese
+ *     slug NO EXISTE. Lo único que lo nombra es el "o" de la solapa de compras
+ *     (src/components/provider/components/Nav.vue:25), y ningún seeder lo crea. El permiso real de
+ *     compras es `provider_order.store` — "Hacer pedidos a los Proveedores"
+ *     (database/seeders/PermissionsTableSeeder.php:221) —, y es exactamente el que pide el botón
+ *     "Nuevo" de la vista de compras, que se dibuja con `can(model_name + '.store')`
+ *     (src/common-vue/components/view/header/Index.vue:262). Mismo origen que el de Gastos.
  */
 class PermisosIaHelper {
 
@@ -39,6 +47,8 @@ class PermisosIaHelper {
     const PAGOS_DE_CLIENTES = 'client.index';
 
     const PAGOS_A_PROVEEDORES = 'provider.index';
+
+    const COMPRAS = 'provider_order.store';
 
     /**
      * true si la persona puede hacer lo que pide el slug. Mismo orden que `can()` de la SPA.

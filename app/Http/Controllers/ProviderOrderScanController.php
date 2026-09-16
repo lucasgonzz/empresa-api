@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
-use App\Jobs\RunProviderOrderScanJob;
+use App\Http\Controllers\Helpers\providerOrder\ProviderOrderScanAltaHelper;
 use App\Models\Article;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
@@ -14,9 +14,6 @@ use App\Models\ProviderOrderScanImage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
-use Intervention\Image\ImageManager;
 
 /**
  * Escaneo de facturas de compra con IA (misión escaneo-factura-compra).
@@ -179,131 +176,18 @@ class ProviderOrderScanController extends Controller
         }
 
         /*
-         * Un solo escaneo en curso por compra: dos jobs escribiendo la misma compra al mismo
-         * tiempo se pisarían, y el usuario no tendría forma de saber cuál ganó.
+         * El cuerpo del alta vive en ProviderOrderScanAltaHelper (misión asistente-por-whatsapp,
+         * 16/9/2026): el asistente de IA también crea escaneos —la foto de la factura que el
+         * dueño manda por WhatsApp— y no tiene request del que leer las fotos. La extracción no
+         * cambió nada observable: la misma guarda del escaneo en curso, el mismo redimensionado,
+         * las mismas filas, el mismo despacho y los mismos códigos y textos (202, 409, 422, 500).
          *
-         * 🔴 Solo cuentan los RECIENTES (ver self::MINUTOS_ESCANEO_EN_CURSO). Un escaneo en
-         * 'pendiente'/'procesando' más viejo que la ventana se considera abandonado y no
-         * bloquea: no hay ningún worker que lo vaya a terminar, y sin este vencimiento la
-         * compra queda tapiada para siempre.
-         *
-         * Se mira `created_at` y no `updated_at` a propósito: `updated_at` lo refresca cada
-         * escritura de progreso, así que un job zombi que alcanzó a marcar 'procesando' y se
-         * murió tendría un `updated_at` tan viejo como su `created_at` igual — pero un escaneo
-         * que nunca salió de 'pendiente' porque el worker estaba caído no tiene NINGUNA
-         * escritura posterior, y `created_at` es lo único que lo fecha.
+         * Lo que se queda acá es la validación del lote de arriba: eso es validación del request,
+         * y es quien tiene el UploadedFile con su nombre original.
          */
-        $desde = now()->subMinutes(self::MINUTOS_ESCANEO_EN_CURSO);
+        $resultado = ProviderOrderScanAltaHelper::crear($provider_order, $imagenes, auth()->user());
 
-        $hay_uno_en_curso = ProviderOrderScan::where('provider_order_id', $provider_order->id)
-                                                ->where('user_id', $owner_id)
-                                                ->whereIn('estado', self::ESTADOS_EN_CURSO)
-                                                ->where('created_at', '>=', $desde)
-                                                ->exists();
-
-        if ($hay_uno_en_curso) {
-            return response()->json([
-                'message' => 'Esta compra ya tiene un escaneo en curso. Esperá a que termine.',
-            ], 409);
-        }
-
-        /*
-         * El uuid se genera acá porque forma parte de la ruta donde se guardan las fotos
-         * (storage/app/provider_order_scans/{user_id}/{uuid}/{orden}.webp) y las fotos se guardan
-         * antes de crear la fila.
-         */
-        $uuid      = Str::uuid()->toString();
-        $carpeta   = 'provider_order_scans/' . $owner_id . '/' . $uuid;
-        $guardadas = [];
-
-        try {
-
-            $orden = 1;
-
-            foreach ($imagenes as $imagen) {
-
-                $binario = $this->redimensionar_a_webp(file_get_contents($imagen->getRealPath()));
-
-                if (is_null($binario)) {
-
-                    /* Salimos por el 422 y no por el catch: hay que limpiar lo ya guardado igual. */
-                    $this->borrar_carpeta_del_escaneo($carpeta);
-
-                    return response()->json([
-                        'message' => 'No se pudo procesar la imagen "' . $imagen->getClientOriginalName() .
-                                     '". Probá con otra foto.',
-                    ], 422);
-                }
-
-                $path = $carpeta . '/' . $orden . '.webp';
-
-                /* Disco 'local' (privado): una factura es información fiscal, nunca va al disco público. */
-                Storage::disk('local')->put($path, $binario);
-
-                $guardadas[] = [
-                    'orden'           => $orden,
-                    'path'            => $path,
-                    'mime'            => 'image/webp',
-                    'bytes'           => strlen($binario),
-                    'nombre_original' => (string) $imagen->getClientOriginalName(),
-                ];
-
-                $orden++;
-            }
-
-            $scan = ProviderOrderScan::create([
-                'uuid'              => $uuid,
-                'user_id'           => $owner_id,
-                /*
-                 * Quién disparó el escaneo. El canal global_notification.{owner_id} lo escuchan
-                 * TODOS los empleados: sin este id, el aviso de "terminó" le llegaría también a
-                 * los compañeros que no sacaron ninguna foto.
-                 */
-                'auth_user_id'      => optional(auth()->user())->id,
-                'provider_order_id' => $provider_order->id,
-                'estado'            => 'pendiente',
-                'progreso'          => 0,
-            ]);
-
-            foreach ($guardadas as $datos) {
-
-                ProviderOrderScanImage::create([
-                    'provider_order_scan_id' => $scan->id,
-                    /* Desnormalizados a propósito: ver §1.2 del plan. */
-                    'provider_order_id'      => $provider_order->id,
-                    'user_id'                => $owner_id,
-                    'orden'                  => $datos['orden'],
-                    'path'                   => $datos['path'],
-                    'mime'                   => $datos['mime'],
-                    'bytes'                  => $datos['bytes'],
-                    'nombre_original'        => $datos['nombre_original'],
-                ]);
-            }
-
-            /* Solo el id, no el modelo (mismo criterio que RunExcelAnalysisJob). */
-            RunProviderOrderScanJob::dispatch($scan->id);
-
-            return response()->json([
-                'uuid'              => $scan->uuid,
-                'estado'            => $scan->estado,
-                'provider_order_id' => $provider_order->id,
-                'cantidad_imagenes' => count($guardadas),
-            ], 202);
-
-        } catch (\Throwable $e) {
-
-            /* Si algo falló a mitad, no dejamos fotos huérfanas ocupando disco. */
-            $this->borrar_carpeta_del_escaneo($carpeta);
-
-            Log::error('ProviderOrderScanController::store - error al encolar el escaneo', [
-                'message' => $e->getMessage(),
-                'trace'   => $e->getTraceAsString(),
-            ]);
-
-            return response()->json([
-                'message' => 'Ocurrió un error inesperado al iniciar el escaneo: ' . $e->getMessage(),
-            ], 500);
-        }
+        return response()->json($resultado['body'], $resultado['status']);
     }
 
     /**
@@ -1177,66 +1061,13 @@ class ProviderOrderScanController extends Controller
         return $resultado['articulos'];
     }
 
-    /**
-     * Redimensiona el binario de una foto al lado mayor configurado y lo re-encodea como webp.
-     *
-     * No se guarda el original: para el respaldo del comprobante alcanza una imagen legible, y
-     * guardar los 8 MB que saca la cámara de un teléfono por cada página solo llena el disco.
-     *
-     * @param  string  $binario
-     * @return string|null  Binario webp, o null si Intervention no pudo procesar la imagen.
+    /*
+     * redimensionar_a_webp() y borrar_carpeta_del_escaneo() se fueron a
+     * ProviderOrderScanAltaHelper con el resto del alta (misión asistente-por-whatsapp,
+     * 16/9/2026). Acá quedaban sin ningún llamador, y dos copias del mismo redimensionado son
+     * dos criterios que se separan solos: el día que cambie el lado máximo, la mitad de las
+     * fotos quedaría en el viejo.
      */
-    protected function redimensionar_a_webp($binario)
-    {
-        /*
-         * 1568 px, no 512 como la validación de imágenes de producto: para leer un código de
-         * artículo de 8 caracteres impreso chico hace falta resolución. Es además el lado máximo
-         * que Anthropic procesa sin downsamplear.
-         */
-        $max_side = (int) config('services.escaneo_factura_compra.max_side', 1568);
-        $max_side = $max_side > 0 ? $max_side : 1568;
-
-        try {
-
-            $manager = new ImageManager();
-            $img     = $manager->make($binario);
-
-            $img->resize($max_side, $max_side, function ($constraint) {
-                $constraint->aspectRatio();
-                /* upsize evita agrandar una foto que ya es más chica: solo agregaría peso. */
-                $constraint->upsize();
-            });
-
-            $encoded = (string) $img->encode('webp', 80);
-
-        } catch (\Throwable $e) {
-
-            Log::info('ProviderOrderScanController: Intervention no pudo procesar la imagen -- ' . $e->getMessage());
-
-            return null;
-        }
-
-        if ($encoded === '') {
-            return null;
-        }
-
-        return $encoded;
-    }
-
-    /**
-     * Borra la carpeta de fotos de un escaneo que no llegó a crearse.
-     *
-     * @param  string  $carpeta
-     * @return void
-     */
-    protected function borrar_carpeta_del_escaneo($carpeta)
-    {
-        try {
-            Storage::disk('local')->deleteDirectory($carpeta);
-        } catch (\Throwable $e) {
-            Log::info('ProviderOrderScanController: no se pudo limpiar ' . $carpeta . ' -- ' . $e->getMessage());
-        }
-    }
 
     /**
      * Normaliza un valor de texto del request: null si vino vacío.
