@@ -23,8 +23,15 @@ namespace App\Services\Mostrador;
  *     {"tipo": "lista",     "titulo?", "items": [{texto, tono?}]}                        ≤ 15
  *     {"tipo": "tabla",     "titulo?", "columnas": [..], "filas": [[..]]}     ≤ 8 × 30
  *     {"tipo": "articulos", "titulo?", "items": [{article_id, nombre, imagen_url?, linea_1?, linea_2?, tono?}]}  ≤ 12
- *     {"tipo": "acciones",  "titulo?", "items": [{texto, tipo}]}                         ≤ 8
+ *     {"tipo": "acciones",  "titulo?", "items": [{texto, tipo, client_id?}]}             ≤ 8
  *   ]}
+ *
+ * `client_id` (misión mostrador-caja-vencimientos) es opcional y solo va en acciones de
+ * tipo "cobrar": es el cliente al que el botón del informe le ofrece mandar el
+ * recordatorio de cobro. Es una clave nueva y opcional, así que la versión sigue en 1 y
+ * un contenido viejo sigue siendo válido. Que ese cliente sea del negocio del informe
+ * no se puede saber acá (el validador no conoce al dueño): lo chequea
+ * AdminSync\MostradorController::depositar() con client_ids().
  *
  * validar() devuelve la lista de errores legibles (vacía = válido); el controlador
  * la convierte en el 422 con `errores[]`.
@@ -46,6 +53,9 @@ class MostradorContenidoValidator
 
     /** Tipos de acción. */
     const TIPOS_ACCION = ['cobrar', 'comprar', 'mover', 'ofertar', 'revisar', 'contactar'];
+
+    /** El único tipo de acción que lleva `client_id`. */
+    const TIPO_ACCION_COBRAR = 'cobrar';
 
     /** Topes de texto. */
     const MAX_RESUMEN   = 600;
@@ -111,6 +121,44 @@ class MostradorContenidoValidator
         }
 
         return $this->errores;
+    }
+
+    /**
+     * Los client_id de todas las acciones del contenido, sin repetidos y en el orden en que
+     * aparecen. Solo junta los que tienen la forma válida (enteros positivos): lo demás ya lo
+     * rechaza validar().
+     *
+     * Es lo que usa AdminSync\MostradorController::depositar() para chequear que cada cliente
+     * sea del dueño del informe, que es lo que este validador no puede saber.
+     *
+     * @param array $contenido
+     * @return array<int, int>
+     */
+    public static function client_ids(array $contenido): array
+    {
+        $ids = [];
+
+        $bloques = isset($contenido['bloques']) && is_array($contenido['bloques']) ? $contenido['bloques'] : [];
+
+        foreach ($bloques as $bloque) {
+            if (!is_array($bloque) || !isset($bloque['tipo']) || $bloque['tipo'] !== 'acciones') {
+                continue;
+            }
+
+            $items = isset($bloque['items']) && is_array($bloque['items']) ? $bloque['items'] : [];
+
+            foreach ($items as $item) {
+                if (!is_array($item) || !isset($item['client_id']) || !is_int($item['client_id']) || $item['client_id'] <= 0) {
+                    continue;
+                }
+
+                if (!in_array($item['client_id'], $ids, true)) {
+                    $ids[] = $item['client_id'];
+                }
+            }
+        }
+
+        return $ids;
     }
 
     /**
@@ -207,7 +255,7 @@ class MostradorContenidoValidator
                 $this->solo_claves($bloque, ['tipo', 'titulo', 'items'], $ruta);
                 $this->texto_opcional($bloque, 'titulo', self::MAX_TITULO, $ruta);
                 $this->items($bloque, $ruta, self::MAX_ACCIONES, function ($item, $ruta_item) {
-                    $this->solo_claves($item, ['texto', 'tipo'], $ruta_item);
+                    $this->solo_claves($item, ['texto', 'tipo', 'client_id'], $ruta_item);
                     $this->texto_obligatorio($item, 'texto', self::MAX_ITEM_TEXTO, $ruta_item);
 
                     $tipo_accion = isset($item['tipo']) ? $item['tipo'] : null;
@@ -215,8 +263,35 @@ class MostradorContenidoValidator
                     if (!is_string($tipo_accion) || !in_array($tipo_accion, self::TIPOS_ACCION, true)) {
                         $this->error($ruta_item . '.tipo', $this->describir($tipo_accion) . ' no es un tipo de acción válido (' . implode(', ', self::TIPOS_ACCION) . ')');
                     }
+
+                    $this->client_id($item, $tipo_accion, $ruta_item);
                 });
                 break;
+        }
+    }
+
+    /**
+     * `client_id` opcional de una acción (puede faltar o ser null): si viene, un entero
+     * positivo y solo en una acción de tipo "cobrar". En cualquier otro tipo no hay botón que
+     * lo use, y aceptarlo dejaría viajar un id que nadie mira.
+     *
+     * @param array $item
+     * @param mixed $tipo_accion
+     * @param string $ruta
+     * @return void
+     */
+    protected function client_id(array $item, $tipo_accion, string $ruta)
+    {
+        if (!array_key_exists('client_id', $item) || is_null($item['client_id'])) {
+            return;
+        }
+
+        if (!is_int($item['client_id']) || $item['client_id'] <= 0) {
+            $this->error($ruta . '.client_id', 'tiene que ser un entero positivo');
+        }
+
+        if ($tipo_accion !== self::TIPO_ACCION_COBRAR) {
+            $this->error($ruta . '.client_id', 'solo va en acciones de tipo "' . self::TIPO_ACCION_COBRAR . '"');
         }
     }
 

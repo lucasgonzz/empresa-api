@@ -30,6 +30,7 @@ class MostradorHelper
     /** Nombre de cada tipo, como lo lee el dueño. */
     const NOMBRES_TIPO = [
         'dia'     => 'Rendimiento de ayer',
+        'caja'    => 'Caja y vencimientos',
         'tienda'  => 'Tu tienda',
         'compras' => 'Compras',
         'stock'   => 'Stock',
@@ -70,7 +71,8 @@ class MostradorHelper
 
     /**
      * Los informes listos del dueño para el escritorio: `ultimos` (el más nuevo de cada
-     * tipo, en el orden fijo dia, tienda, compras, stock) y `anteriores` (el resto de
+     * tipo, en el orden fijo de MostradorReporte::TIPOS: dia, caja, tienda, compras, stock) y
+     * `anteriores` (el resto de
      * los últimos 30 días, por fecha descendente y tipo).
      *
      * @param int $owner_id

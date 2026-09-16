@@ -10,9 +10,10 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Lo que comparten los cuatro recolectores de hechos del mostrador (misión
- * modulo-ia-mostrador): la firma, los topes, el formato de montos y fechas, la
- * URL pública de la primera imagen de un artículo y la respuesta "no aplica".
+ * Lo que comparten los cinco recolectores de hechos del mostrador (misiones
+ * modulo-ia-mostrador y mostrador-caja-vencimientos): la firma, los topes, el formato de
+ * montos y fechas, los nombres de los días, las deudas con clientes y proveedores, la URL
+ * pública de la primera imagen de un artículo y la respuesta "no aplica".
  *
  * Reglas duras de todos los recolectores (§1.2 del plan):
  * - TODO scopeado por el user_id del dueño. Nunca User::all(), nunca tablas enteras.
@@ -30,6 +31,21 @@ abstract class RecolectorBase
     const MONEDA_PESOS = 1;
 
     /**
+     * 🔴 Los tres valores de `moneda_id` que son PESOS en toda la base, y el criterio sale de
+     * Contabilidad: ContabilidadRepository dice textual "solo `moneda_id = 2` es USD; `0`, `null`
+     * y `1` son pesos" y FlujoCajaHelper filtra las cajas con `whereNull OR whereIn [0, 1]`. El
+     * `0` no es basura: lo deja un alta donde el select de moneda no se eligió, y hay filas así
+     * en producción. Contando solo null y 1, una caja de pesos con `moneda_id = 0` quedaba como
+     * moneda "otra" (su disponible afuera de `disponible_pesos`, pero sus liquidaciones adentro
+     * de `liquidaciones_pendientes_pesos`, que sí usa el criterio de Contabilidad) y una cuenta
+     * corriente con `moneda_id = 0` desaparecía de la deuda de clientes.
+     */
+    const MONEDAS_PESOS = [0, 1];
+
+    /** Nombres de los días de la semana, por Carbon::dayOfWeek (0 = domingo). */
+    const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+    /**
      * Calcula los hechos del tipo para el dueño y la fecha pedidos.
      *
      * @param User $owner Dueño de la cuenta (owner_id null)
@@ -42,7 +58,7 @@ abstract class RecolectorBase
      * Cuántos artículos tendría que recorrer el cálculo de este tipo para este dueño.
      * Es lo que el controlador admin-sync compara contra config('mostrador.umbral_async')
      * para decidir si calcula en el request o despacha CalcularHechosMostradorJob: los
-     * tipos que no recorren catálogo (dia, tienda) devuelven 0 y siempre van en el
+     * tipos que no recorren catálogo (dia, caja, tienda) devuelven 0 y siempre van en el
      * request; compras y stock lo sobreescriben con sus candidatos.
      *
      * @param User $owner
@@ -178,11 +194,10 @@ abstract class RecolectorBase
      * positivo = deuda): nunca los espejos clients.saldo / providers.saldo (columna muerta
      * que CurrentAcountHelper ya no escribe) ni saldo_pesos (nullable).
      *
-     * 🔴 UN SOLO CRITERIO DE MONEDA para todo el mostrador: credit_accounts.moneda_id es
-     * NOT NULL en el esquema, pero por si una base vieja trajera un null, se trata como
-     * pesos (igual que cajas y cuentas viejas en el resto del sistema). Toda deuda que
-     * viaja en un informe —por cliente, por proveedor o total— sale de acá, así que no
-     * puede haber dos números distintos para la misma deuda según el bloque.
+     * 🔴 UN SOLO CRITERIO DE MONEDA para todo el mostrador, y es el de Contabilidad (ver
+     * MONEDAS_PESOS): null, 0 y 1 son pesos. Toda deuda que viaja en un informe —por cliente,
+     * por proveedor o total— sale de acá, así que no puede haber dos números distintos para la
+     * misma deuda según el bloque.
      *
      * @param User $owner
      * @param string $model_name 'client' | 'provider'
@@ -190,12 +205,39 @@ abstract class RecolectorBase
      */
     protected function consulta_deudas_en_pesos(User $owner, string $model_name)
     {
-        return DB::table('credit_accounts')
+        $consulta = DB::table('credit_accounts')
             ->where('user_id', $owner->id)
-            ->where('model_name', $model_name)
-            ->where(function ($q) {
-                $q->whereNull('moneda_id')->orWhere('moneda_id', self::MONEDA_PESOS);
-            });
+            ->where('model_name', $model_name);
+
+        return $this->solo_pesos($consulta, 'moneda_id');
+    }
+
+    /**
+     * Acota una consulta a las filas EN PESOS por su columna de moneda: null, 0 o 1 (ver
+     * MONEDAS_PESOS, que dice de dónde sale el criterio). Es el único lugar del mostrador donde
+     * se escribe esa condición.
+     *
+     * @param \Illuminate\Database\Query\Builder $consulta
+     * @param string $columna Columna calificada o no (credit_accounts.moneda_id, moneda_id)
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function solo_pesos($consulta, string $columna)
+    {
+        return $consulta->where(function ($q) use ($columna) {
+            $q->whereNull($columna)->orWhereIn($columna, self::MONEDAS_PESOS);
+        });
+    }
+
+    /**
+     * true si un `moneda_id` leído de la base es pesos (ver MONEDAS_PESOS). Para los casos que
+     * no son una consulta, como resolver la moneda de una caja ya traída.
+     *
+     * @param mixed $moneda_id
+     * @return bool
+     */
+    protected function es_pesos($moneda_id): bool
+    {
+        return is_null($moneda_id) || in_array((int) $moneda_id, self::MONEDAS_PESOS, true);
     }
 
     /**
@@ -247,6 +289,76 @@ abstract class RecolectorBase
         $total = $this->consulta_deudas_en_pesos($owner, $model_name)->sum('saldo');
 
         return (float) $this->monto($total);
+    }
+
+    /**
+     * Los clientes con más deuda en pesos, con los días desde su último pago (null si
+     * nunca pagaron).
+     *
+     * Vive en la base porque lo usan dos informes con la misma regla: `dia` (en
+     * cobranzas) y `caja` (los clientes para cobrar). Se subió tal cual estaba en
+     * RecolectorDia.
+     *
+     * @param User $owner
+     * @param Carbon $fecha
+     * @return array
+     */
+    protected function clientes_con_mas_deuda(User $owner, Carbon $fecha): array
+    {
+        $consulta = DB::table('credit_accounts')
+            ->leftJoin('clients', function ($join) use ($owner) {
+                $join->on('clients.id', '=', 'credit_accounts.model_id')->where('clients.user_id', $owner->id);
+            })
+            ->where('credit_accounts.user_id', $owner->id)
+            ->where('credit_accounts.model_name', 'client');
+
+        // El mismo criterio de consulta_deudas_en_pesos (no se puede reusar tal cual: con el join
+        // a clients, un `user_id` sin calificar sería ambiguo).
+        $cuentas = $this->solo_pesos($consulta, 'credit_accounts.moneda_id')
+            ->where('credit_accounts.saldo', '>', 0)
+            ->orderByDesc('credit_accounts.saldo')
+            ->orderBy('credit_accounts.model_id')
+            ->limit(self::TOPE_LISTA)
+            ->get(['credit_accounts.model_id', 'clients.name', 'credit_accounts.saldo']);
+
+        if ($cuentas->isEmpty()) {
+            return [];
+        }
+
+        $client_ids = $cuentas->pluck('model_id')->map(function ($id) {
+            return (int) $id;
+        })->all();
+
+        $ultimos_pagos = DB::table('current_acounts')
+            ->where('user_id', $owner->id)
+            ->where('status', 'pago_from_client')
+            ->whereIn('client_id', $client_ids)
+            ->groupBy('client_id')
+            ->selectRaw('client_id, MAX(created_at) as ultimo')
+            ->get();
+
+        $ultimo_por_cliente = [];
+
+        foreach ($ultimos_pagos as $fila) {
+            $ultimo_por_cliente[(int) $fila->client_id] = $fila->ultimo;
+        }
+
+        $lista = [];
+
+        foreach ($cuentas as $cuenta) {
+            $client_id = (int) $cuenta->model_id;
+
+            $lista[] = [
+                'client_id'      => $client_id,
+                'nombre'         => (string) ($cuenta->name ?: 'Cliente #' . $client_id),
+                'saldo'          => $this->monto($cuenta->saldo),
+                'dias_sin_pagar' => isset($ultimo_por_cliente[$client_id])
+                    ? Carbon::parse($ultimo_por_cliente[$client_id])->startOfDay()->diffInDays($fecha->copy()->startOfDay())
+                    : null,
+            ];
+        }
+
+        return $lista;
     }
 
     /**

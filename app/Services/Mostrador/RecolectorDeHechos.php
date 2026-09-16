@@ -7,27 +7,28 @@ use App\Models\User;
 use Carbon\Carbon;
 
 /**
- * Fachada de los recolectores de hechos del mostrador (misión modulo-ia-mostrador):
- * dado un dueño, un tipo y una fecha, devuelve el JSON determinista que después
- * redacta la skill /mostrador. Un recolector por tipo (RecolectorDia,
- * RecolectorTienda, RecolectorCompras, RecolectorStock), todos con la misma firma
- * y las mismas reglas (ver RecolectorBase).
+ * Fachada de los recolectores de hechos del mostrador (misiones modulo-ia-mostrador y
+ * mostrador-caja-vencimientos): dado un dueño, un tipo y una fecha, devuelve el JSON
+ * determinista que después redacta la skill /mostrador. Un recolector por tipo
+ * (RecolectorDia, RecolectorCaja, RecolectorTienda, RecolectorCompras, RecolectorStock), todos
+ * con la misma firma y las mismas reglas (ver RecolectorBase).
  *
- * La fecha por defecto de cada tipo: 'dia' y 'tienda' hablan de AYER; 'compras' y
- * 'stock' hablan de HOY (la reposición y los traslados se deciden con el stock de
- * esta mañana).
+ * La fecha por defecto de cada tipo: 'dia' y 'tienda' hablan de AYER; 'caja', 'compras' y
+ * 'stock' hablan de HOY (la plata y los vencimientos se miran con el saldo de esta mañana; la
+ * reposición y los traslados, con el stock de esta mañana).
  */
 class RecolectorDeHechos
 {
     /**
-     * Los tipos que hablan SIEMPRE de hoy: la reposición y los traslados se deciden con el
-     * stock de esta mañana, y no tiene sentido pedirlos para otra fecha (el stock de ayer
-     * ya no existe). POST hechos ignora la fecha del body para estos dos.
+     * Los tipos que hablan SIEMPRE de hoy: la caja y los vencimientos se miran con el saldo de
+     * esta mañana, y la reposición y los traslados con el stock de esta mañana. No tiene sentido
+     * pedirlos para otra fecha (el saldo y el stock de ayer ya no existen): POST hechos ignora la
+     * fecha del body para estos tres.
      */
-    const TIPOS_DE_HOY = ['compras', 'stock'];
+    const TIPOS_DE_HOY = ['caja', 'compras', 'stock'];
 
     /**
-     * true si el tipo habla siempre de hoy (compras, stock); false si habla de un día
+     * true si el tipo habla siempre de hoy (caja, compras, stock); false si habla de un día
      * cerrado (dia, tienda).
      *
      * @param string $tipo
@@ -39,7 +40,7 @@ class RecolectorDeHechos
     }
 
     /**
-     * Fecha por defecto del tipo: ayer para dia/tienda, hoy para compras/stock.
+     * Fecha por defecto del tipo: ayer para dia/tienda, hoy para caja/compras/stock.
      *
      * @param string $tipo
      * @param Carbon|null $hoy Para los tests; null = ahora
@@ -57,11 +58,11 @@ class RecolectorDeHechos
     }
 
     /**
-     * Calcula los hechos del tipo pedido. Lanza InvalidArgumentException si el tipo
-     * no es uno de los cuatro.
+     * Calcula los hechos del tipo pedido. Lanza InvalidArgumentException si el tipo no es uno
+     * de MostradorReporte::TIPOS.
      *
      * @param User $owner Dueño de la cuenta (owner_id null)
-     * @param string $tipo 'dia' | 'tienda' | 'compras' | 'stock'
+     * @param string $tipo 'dia' | 'caja' | 'tienda' | 'compras' | 'stock'
      * @param Carbon $fecha Día del que habla el informe
      * @return array
      */
@@ -85,12 +86,21 @@ class RecolectorDeHechos
         switch ($tipo) {
             case 'dia':
                 return new RecolectorDia();
+            case 'caja':
+                return new RecolectorCaja();
             case 'tienda':
                 return new RecolectorTienda();
             case 'compras':
                 return new RecolectorCompras();
-            default:
+            case 'stock':
                 return new RecolectorStock();
+            default:
+                // 🔴 Un tipo válido sin su case NO puede caer en el recolector de otro. Hasta el
+                // 15/9/2026 el default devolvía RecolectorStock: el día que se sumara un tipo a
+                // MostradorReporte::TIPOS sin sumarlo acá, ese informe se iba a calcular como
+                // stock sin que nada lo avisara (clase de error "switch con default que absorbe
+                // un valor nuevo"). Mejor que reviente nombrando el tipo que falta.
+                throw new \InvalidArgumentException('El tipo de informe "' . $tipo . '" no tiene recolector.');
         }
     }
 }

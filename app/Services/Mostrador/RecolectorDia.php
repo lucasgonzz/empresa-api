@@ -44,9 +44,6 @@ class RecolectorDia extends RecolectorBase
     /** Id del método de pago "Efectivo", el default histórico de una venta sin método cargado. */
     const METODO_PAGO_DEFAULT_ID = 3;
 
-    /** Nombres de los días de la semana, por Carbon::dayOfWeek (0 = domingo). */
-    const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
-
     /**
      * @param User $owner
      * @param Carbon $fecha El día del que habla el informe (ayer, por defecto)
@@ -813,71 +810,6 @@ class RecolectorDia extends RecolectorBase
         }
 
         return $this->monto($por_fecha[$hoy] - $por_fecha[$ayer]);
-    }
-
-    /**
-     * Los clientes con más deuda en pesos, con los días desde su último pago (null si
-     * nunca pagaron).
-     *
-     * @param User $owner
-     * @param Carbon $fecha
-     * @return array
-     */
-    protected function clientes_con_mas_deuda(User $owner, Carbon $fecha): array
-    {
-        $cuentas = DB::table('credit_accounts')
-            ->leftJoin('clients', function ($join) use ($owner) {
-                $join->on('clients.id', '=', 'credit_accounts.model_id')->where('clients.user_id', $owner->id);
-            })
-            ->where('credit_accounts.user_id', $owner->id)
-            ->where('credit_accounts.model_name', 'client')
-            ->where(function ($q) {
-                $q->whereNull('credit_accounts.moneda_id')->orWhere('credit_accounts.moneda_id', self::MONEDA_PESOS);
-            })
-            ->where('credit_accounts.saldo', '>', 0)
-            ->orderByDesc('credit_accounts.saldo')
-            ->orderBy('credit_accounts.model_id')
-            ->limit(self::TOPE_LISTA)
-            ->get(['credit_accounts.model_id', 'clients.name', 'credit_accounts.saldo']);
-
-        if ($cuentas->isEmpty()) {
-            return [];
-        }
-
-        $client_ids = $cuentas->pluck('model_id')->map(function ($id) {
-            return (int) $id;
-        })->all();
-
-        $ultimos_pagos = DB::table('current_acounts')
-            ->where('user_id', $owner->id)
-            ->where('status', 'pago_from_client')
-            ->whereIn('client_id', $client_ids)
-            ->groupBy('client_id')
-            ->selectRaw('client_id, MAX(created_at) as ultimo')
-            ->get();
-
-        $ultimo_por_cliente = [];
-
-        foreach ($ultimos_pagos as $fila) {
-            $ultimo_por_cliente[(int) $fila->client_id] = $fila->ultimo;
-        }
-
-        $lista = [];
-
-        foreach ($cuentas as $cuenta) {
-            $client_id = (int) $cuenta->model_id;
-
-            $lista[] = [
-                'client_id'      => $client_id,
-                'nombre'         => (string) ($cuenta->name ?: 'Cliente #' . $client_id),
-                'saldo'          => $this->monto($cuenta->saldo),
-                'dias_sin_pagar' => isset($ultimo_por_cliente[$client_id])
-                    ? Carbon::parse($ultimo_por_cliente[$client_id])->startOfDay()->diffInDays($fecha->copy()->startOfDay())
-                    : null,
-            ];
-        }
-
-        return $lista;
     }
 
     /**

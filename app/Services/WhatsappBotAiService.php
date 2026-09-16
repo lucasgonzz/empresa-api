@@ -219,9 +219,12 @@ SUMMARY;
      * @param int|null          $auth_user_id Persona que disparó la llamada, o null si la
      *                                        disparó un job automático.
      *
-     * @return array{body: string, bar_code: string} `body` es el texto ya sin marcador;
-     *                                               `bar_code` es el código que marcó el agente,
-     *                                               o cadena vacía si no marcó ninguno.
+     * @return array{body: string, bar_code: string, motivo: string} `body` es el texto ya sin
+     *                                               marcador; `bar_code` es el código que marcó
+     *                                               el agente, o cadena vacía si no marcó
+     *                                               ninguno; `motivo` viene vacío cuando `body`
+     *                                               trae contenido real, y explica por qué
+     *                                               cuando no (ver `empty_response()`).
      */
     public function generate_response_with_photo(WhatsappChat $chat, WhatsappBotConfig $config, $proceso = 'whatsapp_respuesta', $auth_user_id = null): array
     {
@@ -229,13 +232,13 @@ SUMMARY;
             $api_key = (string) config('services.anthropic.api_key');
             if ($api_key === '') {
                 Log::channel('daily')->warning('WhatsappBotAiService: ANTHROPIC_API_KEY no configurada.');
-                return $this->empty_response();
+                return $this->empty_response('sin_configurar');
             }
 
             // Últimos N mensajes del chat, en orden cronológico (el más viejo primero).
             $history = $this->fetch_recent_messages($chat, self::HISTORY_LIMIT);
             if ($history->isEmpty()) {
-                return $this->empty_response();
+                return $this->empty_response('sin_historial');
             }
 
             // El RAG se dispara sobre TODOS los mensajes del cliente que quedaron sin
@@ -273,7 +276,7 @@ SUMMARY;
                     'body'   => substr($response->body(), 0, 500),
                 ]);
                 // Sin respuesta válida no hay consumo que imputar: se sale antes de registrar.
-                return $this->empty_response();
+                return $this->empty_response('error_api');
             }
 
             $body = $response->json();
@@ -290,13 +293,26 @@ SUMMARY;
                 'referencia_id' => (int) $chat->id,
             ]);
 
-            return $this->split_photo_marker($this->extract_text($body));
+            $resultado = $this->split_photo_marker($this->extract_text($body));
+            if ($resultado['body'] === '') {
+                // El modelo contestó, pero la respuesta entera era el marcador [FOTO:...]: no
+                // queda texto para un consumidor que espera un cuerpo (el botón "Sugerir
+                // respuesta"). El bar_code se preserva con el `+`: GenerateWhatsappAiReplyJob
+                // sigue pudiendo mandar la foto sola, que para ESE consumidor es un resultado
+                // válido y no un error.
+                Log::channel('daily')->warning('WhatsappBotAiService: la respuesta del modelo era solo el marcador de foto, sin texto.', [
+                    'chat_id' => $chat->id,
+                ]);
+                return $resultado + ['motivo' => 'solo_foto'];
+            }
+
+            return $resultado + ['motivo' => ''];
         } catch (\Throwable $exception) {
             Log::channel('daily')->error('WhatsappBotAiService: excepción al generar respuesta.', [
                 'chat_id' => $chat->id,
                 'error'   => $exception->getMessage(),
             ]);
-            return $this->empty_response();
+            return $this->empty_response('excepcion');
         }
     }
 
@@ -341,15 +357,26 @@ SUMMARY;
     /**
      * "No hay respuesta", con la forma que devuelve `generate_response_with_photo()`.
      *
-     * Existe para que los seis cortes tempranos de ese método (sin API key, historial vacío,
-     * error HTTP, excepción) no tengan que repetir el literal: si mañana el par gana un tercer
-     * campo, se agrega en un solo lugar y ninguna rama se queda sin él.
+     * Existe para que los cortes tempranos de ese método (sin API key, historial vacío, error
+     * HTTP, excepción) no tengan que repetir el literal.
      *
-     * @return array{body: string, bar_code: string}
+     * 🔴 `motivo` es el tercer campo que este docblock ya anticipaba ("si mañana el par gana un
+     * tercer campo, se agrega en un solo lugar"): lo usa `WhatsappChatController::suggest()`
+     * para distinguir un problema real (sin configurar, error de la API, excepción) de un
+     * `''` legítimo (sin historial todavía) y devolverle al operador un mensaje que diga cuál
+     * es, en vez de los dos casos indistinguibles que había antes. `generate_response()` (la
+     * firma corta) y `GenerateWhatsappAiReplyJob` —el otro consumidor— siguen leyendo solo
+     * `body`/`bar_code` y no se enteran de este campo: es aditivo para los dos.
+     *
+     * @param string $motivo Vacío en las cinco ramas fuera del array de abajo (no debería
+     *                        pasar, pero un string vacío es un motivo inocuo). Valores usados:
+     *                        'sin_configurar', 'sin_historial', 'error_api', 'excepcion',
+     *                        'solo_foto'.
+     * @return array{body: string, bar_code: string, motivo: string}
      */
-    private function empty_response(): array
+    private function empty_response(string $motivo = ''): array
     {
-        return ['body' => '', 'bar_code' => ''];
+        return ['body' => '', 'bar_code' => '', 'motivo' => $motivo];
     }
 
     /**

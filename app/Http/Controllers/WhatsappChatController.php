@@ -607,7 +607,14 @@ class WhatsappChatController extends Controller
      *
      * Lo que sí se garantiza es que el `[FOTO:...]` con el que el agente pide esa foto no le
      * llegue nunca al operador ni, a través suyo, al cliente: el marcador lo saca
-     * `WhatsappBotAiService::generate_response()`, o sea el productor del texto, no este caller.
+     * `WhatsappBotAiService::generate_response_with_photo()`, o sea el productor del texto, no
+     * este caller.
+     *
+     * 🔴 SIN SUGERENCIA ES UN 422 CON MENSAJE, NO UN 200 CON `suggestion: ''`. Antes del
+     * 15/9/2026 cualquier falla interna del service (sin conexión configurada, la API de
+     * Anthropic caída, una excepción) volvía como 200 silencioso: el botón dejaba de decir
+     * "Sugiriendo..." y no pasaba nada más, sin ningún error a la vista. Ver
+     * `WhatsappBotAiService::empty_response()` para los motivos posibles.
      *
      * @param  int  $id
      * @return JsonResponse
@@ -628,10 +635,34 @@ class WhatsappChatController extends Controller
         // aunque sea la misma llamada HTTP: el gasto tiene otro dueño (lo pidió una persona a
         // mano) y hay que poder distinguirlos al mirar los números. `userId(false)` es el
         // empleado autenticado, sin resolver al dueño.
+        //
+        // 🔴 Se llama a generate_response_with_photo() y no al atajo generate_response(): acá
+        // hace falta leer 'motivo', que el atajo descarta junto con 'bar_code'.
         $ai_service = new WhatsappBotAiService();
-        $suggestion = $ai_service->generate_response($chat, $config, 'whatsapp_sugerencia', $this->userId(false));
+        $resultado  = $ai_service->generate_response_with_photo($chat, $config, 'whatsapp_sugerencia', $this->userId(false));
 
-        return response()->json(['suggestion' => $suggestion], 200);
+        // 🔴 `generate_response_with_photo()` nunca lanza: cualquier problema (sin conexión con
+        // Anthropic, sin historial todavía, la API caída, una excepción interna) vuelve como
+        // body vacío con este mismo array — es el contrato correcto para el agente automático,
+        // que no tiene a nadie esperando una respuesta. Acá SÍ hay un operador mirando el botón
+        // "Sugiriendo...", así que un body vacío deja de ser un 200 silencioso y pasa a explicar
+        // qué pasó, con el mensaje que corresponde a `motivo`.
+        if ($resultado['body'] === '') {
+            $mensajes_por_motivo = [
+                'sin_configurar' => 'No hay una conexión con la IA configurada para esta empresa.',
+                'sin_historial'  => 'Todavía no hay mensajes en la conversación para sugerir una respuesta.',
+                'error_api'      => 'No se pudo generar la sugerencia: falló la conexión con la IA.',
+                'excepcion'      => 'No se pudo generar la sugerencia: ocurrió un error inesperado.',
+                'solo_foto'      => 'La IA solo generó el envío de una foto de producto, sin texto para sugerir. Usá el clip para mandarla.',
+            ];
+            $motivo = $resultado['motivo'];
+            return response()->json([
+                'suggestion' => '',
+                'message'    => $mensajes_por_motivo[$motivo] ?? 'No se pudo generar la sugerencia.',
+            ], 422);
+        }
+
+        return response()->json(['suggestion' => $resultado['body']], 200);
     }
 
     /**

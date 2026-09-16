@@ -18,15 +18,16 @@ use Illuminate\Database\Eloquent\Model;
  * job deja 'listo' si la fila ya tenía contenido depositado (un recálculo forzado sobre
  * un informe visible) y 'hechos' si no.
  *
- * tipo: 'dia' (rendimiento de ayer) | 'tienda' | 'compras' | 'stock'.
+ * tipo: 'dia' (rendimiento de ayer) | 'caja' (caja y vencimientos, de hoy) | 'tienda' |
+ * 'compras' | 'stock'.
  *
  * La conversación del dueño sobre un informe es una AiConversation con
  * origen = 'mostrador_reporte' y referencia_id = este id (una por persona).
  */
 class MostradorReporte extends Model
 {
-    /** Los cuatro tipos de informe, en el orden fijo del escritorio. */
-    const TIPOS = ['dia', 'tienda', 'compras', 'stock'];
+    /** Los cinco tipos de informe, en el orden fijo del escritorio. */
+    const TIPOS = ['dia', 'caja', 'tienda', 'compras', 'stock'];
 
     /** Estado de un informe con hechos calculados y sin texto todavía. */
     const ESTADO_HECHOS = 'hechos';
@@ -111,7 +112,7 @@ class MostradorReporte extends Model
     }
 
     /**
-     * true si el tipo es uno de los cuatro del mostrador.
+     * true si el tipo es uno de los del mostrador (TIPOS).
      *
      * @param mixed $tipo
      * @return bool
