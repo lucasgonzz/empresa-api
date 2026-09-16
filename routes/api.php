@@ -1073,19 +1073,42 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_intelige
 // del mensaje guarda y despacha el job de respuesta; el evento del canal privado avisa con
 // ids y la SPA busca el texto acá (show_message, también usado por el polling de respaldo).
 Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->group(function () {
-    Route::get('ai-conversations', 'AiConversationController@index');
-    Route::post('ai-conversations', 'AiConversationController@store');
-    Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
-    Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
-    Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
-    Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+    // Encima del gate de extensión, SOLO EL DUEÑO (o admin_access / acceso maestro) usa el chat:
+    // decisión de Lucas del 16/9/2026. Es el mismo criterio y el mismo MostradorHelper::puede_ver()
+    // que ya gateaba el mostrador, porque es el mismo módulo y el chat contesta lo mismo que traen
+    // los informes: cobranzas, deudas y compras. La tenencia doble del controller no se va a ningún
+    // lado — un empleado ya no llega, pero la defensa en profundidad se queda.
+    Route::middleware('solo_el_dueno_ia')->group(function () {
+        Route::get('ai-conversations', 'AiConversationController@index');
+        Route::post('ai-conversations', 'AiConversationController@store');
+        Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+        Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
+        Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
+        Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
 
-    // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
-    // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
-    // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que
-    // el resto del chat (AiConversationController::conversacion_de_la_persona()).
-    Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
-    Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+        // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
+        // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
+        // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que
+        // el resto del chat (AiConversationController::conversacion_de_la_persona()).
+        Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
+        Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+
+        /*
+         * Lo que abren las menciones del chat (misión agente-ia-mano-derecha, §2 y §3 del
+         * contrato): la ficha del artículo al pasar el mouse por encima de su nombre, y el cliente
+         * con sus cuentas para abrir el modal de cuenta corriente al hacerle clic.
+         *
+         * 🔴 Van EN PLURAL (`articles/`, `clients/`) y no pegadas a los resources `article` y
+         * `client`, que están en singular: así no las captura el `show` de ningún resource y no
+         * dependen de dónde se declare cada una.
+         *
+         * Mismo gate que el resto del chat —extensión + solo el dueño— porque son parte del mismo:
+         * las dos existen para lo que el chat nombró y no se usan desde ninguna otra pantalla. La
+         * tenencia por `user_id` la resuelve igual cada controller, que es la que de verdad corta.
+         */
+        Route::get('articles/{id}/ficha-asistente', 'ArticleController@ficha_asistente');
+        Route::get('clients/{id}/para-cuenta-corriente', 'ClientController@para_cuenta_corriente');
+    });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
     // del dueño, un informe abierto y su conversación. Mismo gate que el chat; encima, el

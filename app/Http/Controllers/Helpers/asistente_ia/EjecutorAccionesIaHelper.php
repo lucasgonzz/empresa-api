@@ -249,6 +249,12 @@ class EjecutorAccionesIaHelper {
             case AiMessageAction::TIPO_TAREA_COMPLETAR:
                 return PropuestaTareaIaHelper::ejecutar_marcar_hecha($contexto, $accion, $num_expense_resolver);
 
+            case AiMessageAction::TIPO_COMBO:
+                return PropuestaComboIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_OFERTA:
+                return PropuestaOfertaIaHelper::ejecutar($contexto, $accion);
+
             case AiMessageAction::TIPO_COMPRA_CON_FACTURA:
                 return PropuestaCompraConFacturaIaHelper::ejecutar($contexto, $accion);
         }

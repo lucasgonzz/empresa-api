@@ -2,11 +2,14 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -47,8 +50,11 @@ class AsistenteIaService
     /**
      * Techo de iteraciones cuando el mensaje tiene las herramientas de carga. Armar una carga
      * encadena más llamadas que una consulta (buscar el cliente → sus cuentas → las opciones de
-     * carga → proponer), y con 5 una carga completa quedaba al borde del corte. PRESUPUESTO_SEGUNDOS
-     * y el $timeout del job NO cambian: el techo de tiempo del loop sigue siendo el mismo.
+     * carga → proponer), y con 5 una carga completa quedaba al borde del corte.
+     *
+     * Cuando se subió a 8 (misión asistente-ia-acciones) NO se subió el presupuesto, y así el techo
+     * de vueltas quedó más alto que el tiempo para gastarlas: el que cortaba era el reloj, no las
+     * iteraciones. PRESUPUESTO_SEGUNDOS lo alinea (ver la cuenta ahí).
      */
     const MAX_TOOL_ITERATIONS_CON_ACCIONES = 8;
 
@@ -68,7 +74,8 @@ class AsistenteIaService
     /**
      * Timeout de cada llamada HTTP a Anthropic, en segundos (alineado con el
      * timeout(60) de WhatsappBotAiService: una respuesta de chat que tarda
-     * más que eso ya está perdida para el usuario).
+     * más que eso ya está perdida para el usuario). Es el primer escalón de la
+     * cadena de techos: la cuenta completa está en PRESUPUESTO_SEGUNDOS.
      */
     const TIMEOUT_SEGUNDOS = 60;
 
@@ -80,12 +87,63 @@ class AsistenteIaService
      * Existe porque en WAMP/Windows sin pcntl el $timeout del job NO se
      * aplica (Laravel lo implementa con pcntl_alarm): sin este techo, un
      * Anthropic colgado que responde lento —sin vencer el timeout HTTP— puede
-     * retener el worker compartido con las importaciones hasta 5 llamadas
-     * enteras. Peor caso real con presupuesto: ~150s + una llamada de 60s en
-     * vuelo ≈ 210s, por debajo del $timeout = 240 del job (que sí rige donde
-     * hay pcntl).
+     * retener el worker compartido con las importaciones tantas llamadas
+     * enteras como iteraciones tenga el techo. 🔴 ES EL ÚNICO TECHO DE TIEMPO
+     * QUE RIGE DE VERDAD EN ESTA MÁQUINA.
+     *
+     * LA CUENTA DE LOS 210 (misión agente-ia-mano-derecha). El chequeo va ANTES de cada llamada,
+     * así que el presupuesto tiene que alcanzar para las 7 vueltas previas a la última:
+     *
+     *   210 / (MAX_TOOL_ITERATIONS_CON_ACCIONES - 1) = 30s por vuelta (llamada + tools)
+     *
+     * Una vuelta del chat son 5-20s, así que las 8 entran cómodas y el corte por presupuesto queda
+     * para el caso patológico, que es para lo que se escribió. Con 150 daban 21s por vuelta: el
+     * reloj cortaba antes que el techo de iteraciones que se había subido a 8.
+     *
+     * Y LA CADENA COMPLETA, que tiene que quedar coherente en los cinco escalones:
+     *
+     *   1. TIMEOUT_SEGUNDOS = 60      una llamada HTTP, lo único que corta a Anthropic
+     *   2. PRESUPUESTO_SEGUNDOS = 210 el loop no arranca una vuelta nueva pasado esto
+     *   3. peor caso = 210 + 60 = 270 el presupuesto más la llamada en vuelo, que no se corta
+     *   4. $timeout del job = 300     tiene que ser MAYOR que 270 (donde hay pcntl, si no mataría
+     *                                 al worker antes del corte prolijo) más el margen de las
+     *                                 tools, los saves y el broadcast
+     *   5. corte del polling de la SPA = 360 (ai_chat.js) — el ÚLTIMO de la cadena, por encima de
+     *                                 los 270 y también del timeout del job. Empatar en 300 no
+     *                                 alcanzaba: el reloj de la SPA arranca AL DESPACHAR y el del
+     *                                 job cuando el worker lo levanta, así que la espera en la
+     *                                 cola corre solo del lado de la SPA y ésta se rendía antes
+     *                                 de que el job muriera.
+     *
+     * Si alguien toca uno de los cinco números, tiene que tocar los cinco.
      */
-    const PRESUPUESTO_SEGUNDOS = 150;
+    const PRESUPUESTO_SEGUNDOS = 210;
+
+    /**
+     * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
+     * cruzar todavía contra el texto (misión agente-ia-mano-derecha, §1 del contrato).
+     *
+     * 🔴 SE JUNTAN EN execute_tool_calls() Y NO RELEYENDO LOS tool_result DE $messages. Los dos
+     * caminos llegan a lo mismo, pero acá el dato está crudo y con el nombre de la tool al lado:
+     * releyendo $messages habría que json_decode cada content y reconstruir a qué tool pertenece
+     * cruzando `tool_use_id` contra los bloques del assistant, que es el mismo trabajo hecho al
+     * revés y con una forma más de romperse.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    protected $candidatos_a_mencion = [];
+
+    /**
+     * Las menciones de la ÚLTIMA respuesta que generó responder(), ya cruzadas contra su texto.
+     *
+     * 🔴 POR QUÉ NO SE DEVUELVEN EN responder(). responder() devuelve `string` y lo usa el job, los
+     * tests y el resto del sistema: cambiarle el tipo de retorno a un array obligaría a tocar cada
+     * llamador para ganar nada. El texto sigue siendo el valor de la función y las menciones se
+     * piden al lado, como `hay_credenciales()`.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    protected $menciones = [];
 
     /**
      * true si hay clave de Anthropic configurada. No tener IA contratada no
@@ -106,12 +164,22 @@ class AsistenteIaService
      * @param AiConversation $conversation Conversación con historial en la base.
      * @param AiMessage $assistant_message El mensaje 'pendiente' que se está generando
      *                                     (queda afuera del historial por su estado).
-     * @return string Texto final de la respuesta.
+     * @return string Texto final de la respuesta. Las menciones de esa misma respuesta quedan en
+     *                menciones(), que se pide al lado (ver la propiedad $menciones).
      *
-     * @throws \RuntimeException Si la API falla o el loop termina sin texto.
+     * @throws AsistenteIaException Si la API falla o el loop termina sin texto. Extiende
+     *                              RuntimeException, y lleva el motivo para que el job elija qué
+     *                              texto ve la persona.
      */
     public function responder(AiConversation $conversation, AiMessage $assistant_message): string
     {
+        /*
+         * Se limpian las dos por si el servicio se reusa para más de un mensaje: los candidatos de
+         * una respuesta anterior en el texto de esta serían menciones de otra conversación.
+         */
+        $this->candidatos_a_mencion = [];
+        $this->menciones = [];
+
         $owner = User::find($conversation->user_id);
 
         /*
@@ -156,8 +224,8 @@ class AsistenteIaService
                     'iterations'         => $iterations,
                 ]);
 
-                throw new \RuntimeException(
-                    'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
+                throw AsistenteIaException::tiempo_agotado(
+                    'presupuesto de tiempo del loop agotado (' . self::PRESUPUESTO_SEGUNDOS . 's) tras ' . $iterations . ' iteraciones'
                 );
             }
 
@@ -182,12 +250,16 @@ class AsistenteIaService
                 $transient_error_types = ['overloaded_error', 'api_error'];
 
                 if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
-                    throw new \RuntimeException(
-                        'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
+                    throw AsistenteIaException::sobrecargado(
+                        '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
                     );
                 }
 
-                throw new \RuntimeException(
+                /*
+                 * 🔴 El body crudo va al detalle técnico y NO a la pantalla: es justo lo que
+                 * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
+                 */
+                throw AsistenteIaException::falla_tecnica(
                     'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
                 );
             }
@@ -239,12 +311,62 @@ class AsistenteIaService
                 'iterations'         => $iterations,
             ]);
 
-            throw new \RuntimeException(
-                'La IA no llegó a generar una respuesta. Probá mandar el mensaje de nuevo.'
+            /*
+             * Dos finales distintos con el mismo síntoma: el loop se comió TODAS las vueltas
+             * encadenando tools y nunca llegó a contestar (a la persona hay que decirle que acote
+             * la consulta: repetirla tal cual va a volver a chocar con el mismo techo), o cerró
+             * antes sin texto, que es otra cosa y se reintenta igual.
+             */
+            if ($iterations >= $max_iterations) {
+
+                throw AsistenteIaException::tiempo_agotado(
+                    'el loop llegó al techo de ' . $max_iterations . ' iteraciones sin texto final'
+                );
+            }
+
+            throw AsistenteIaException::sin_respuesta(
+                'el loop terminó sin texto final en la iteración ' . $iterations
             );
         }
 
+        /*
+         * §1 del contrato: las menciones salen de cruzar lo que devolvieron las tools de ESTA
+         * respuesta contra el texto que escribió el modelo. Va acá y no adentro del loop porque
+         * recién con el texto final se sabe a quién nombró.
+         *
+         * Protegido: una mención es un adorno clickeable. Si el cruce falla por lo que sea, la
+         * respuesta ya está escrita y tiene que llegar igual — sin menciones, como la de una SPA
+         * vieja.
+         */
+        try {
+            $this->menciones = MencionesIaHelper::cruzar(
+                $this->candidatos_a_mencion,
+                $final_text,
+                (int) $conversation->user_id
+            );
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudieron armar las menciones de la respuesta.', [
+                'ai_conversation_id' => $conversation->id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            $this->menciones = [];
+        }
+
         return $final_text;
+    }
+
+    /**
+     * Las menciones de la última respuesta generada por responder(): `[{ tipo, id, texto }]` con
+     * `tipo` ∈ cliente|articulo y `texto` el literal exacto tal como aparece en el texto.
+     *
+     * Vacío si no hubo ninguna, si el loop falló o si todavía no se llamó a responder().
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function menciones(): array
+    {
+        return $this->menciones;
     }
 
     /**
@@ -326,8 +448,13 @@ Qué podés afirmar:
 - SOLO lo que salga de las herramientas de consulta o del contexto de esta
   conversación. Nunca inventes números, precios, saldos, stock ni fechas.
 - Si no tenés el dato, decilo en una oración y ofrecé qué sí podés consultar.
-- Las herramientas devuelven como máximo 20 registros. Si el resultado llega a 20,
-  aclará que puede haber más y que eso es un tope de la consulta, no del negocio.
+- Las herramientas devuelven 20 registros por vez. Varias te dicen además cuántos hay EN
+  TOTAL (encontrados) y cuántos te mandaron (en_esta_lista): cuando difieren, el número del
+  negocio es el total, nunca la cantidad de filas que tenés a la vista.
+- Si necesitás más filas de las que entraron, pedí la página siguiente o subí el límite en
+  la misma herramienta, hasta 100. Recién cuando ya no podés traer más, aclará que hay más
+  y que es un tope de la consulta, no del negocio: no te disculpes por un límite que podés
+  correr vos.
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
@@ -373,10 +500,12 @@ REGLA;
         return <<<CARGA
 Qué podés cargar, siempre con una tarjeta que la persona confirma:
 - Gastos, pagos de clientes, pagos a proveedores, tareas nuevas de la agenda, cambios en
-  una tarea y marcar una tarea como hecha. Nada más: no anulás ni editás gastos o pagos,
-  no creás clientes, proveedores ni subcategorías, no mandás mensajes, y los cheques, los
-  cobros con tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan
-  desde la pantalla.
+  una tarea, marcar una tarea como hecha, armar un combo y armar una oferta para un
+  cliente. Nada más: no anulás ni editás gastos o pagos, no creás clientes, proveedores ni
+  subcategorías, no mandás mensajes, y los cheques, los cobros con tarjeta de crédito y los
+  cobros en otra moneda que la de la cuenta se cargan desde la pantalla.
+- Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
+  ni WhatsApp, y eso decíselo a la persona.
 - Vos nunca registrás nada: llamás a la herramienta proponer_ que corresponde y el sistema
   le muestra a la persona una tarjeta con Confirmar y Cancelar. Nunca digas "ya lo cargué",
   "listo" ni "registrado": decí que dejaste la tarjeta para confirmar y resumila en una línea.
@@ -784,6 +913,16 @@ CONFIRMACION;
      * acciones se suman las de HerramientasDeCarga, que declaran y despachan
      * sus herramientas juntas en su propio archivo.
      *
+     * 🔴 EL ORDEN TIENE QUE SER ESTABLE ENTRE LLAMADAS, y no es cosmética: el caché de prompt de
+     * Anthropic es por PREFIJO de bytes y el request se renderiza tools → system → messages, así
+     * que las tools son el prefijo de todo. Mover una sola tool de lugar entre dos llamadas cambia
+     * esos bytes y tira el caché entero, el de las tools y el del system que viene atrás. Por eso
+     * las dos fuentes son arrays literales —registro_de_lectura() y HerramientasDeCarga::
+     * definiciones()— recorridos en orden: sin sort, sin claves que vengan de la base y sin nada
+     * que dependa del usuario, de la fecha o de la conversación. Lo único que cambia el juego de
+     * tools es el flag `acciones`, que es por mensaje y da dos prefijos distintos, cada uno con su
+     * propio caché.
+ *
      * Misión asistente-por-whatsapp: con el canal de WhatsApp se suman además
      * confirmar_carga_pendiente y cancelar_carga_pendiente, que son el
      * equivalente de los botones Confirmar y Cancelar de la tarjeta. En el
@@ -805,21 +944,70 @@ CONFIRMACION;
             }
         }
 
+        return $this->con_cache_control($tools);
+    }
+
+    /**
+     * Le pone el marcador de caché a la ÚLTIMA tool del array, que es como la API de Anthropic
+     * cachea el bloque `tools` COMPLETO: el marcador no cachea "esa tool", cierra el prefijo que
+     * viene hasta ahí.
+     *
+     * POR QUÉ HACE FALTA SI EL BLOQUE 1 DEL SYSTEM YA TIENE UNO (build_system_payload): el system se
+     * renderiza DESPUÉS de las tools, así que su marcador cachea tools+system juntos — pero ese
+     * prefijo se rompe cada vez que el system cambia, y el system cambia siempre: lleva la fecha de
+     * hoy, el nombre del negocio y el prompt de carga o el de solo lectura. Un marcador propio al
+     * final de las tools deja el bloque de definiciones cacheado POR SÍ SOLO: sobrevive al cambio
+     * de system, al cambio de día y al cambio de dueño, y lo comparten todas las conversaciones que
+     * van con el mismo juego de tools.
+     *
+     * Lo que se ahorra, medido el 16/9/2026 sobre el JSON que se manda: 5.534 bytes de definiciones
+     * de lectura (≈1,6k tokens) y 15.956 con las de carga (≈4,5k), en CADA iteración del loop —
+     * hasta 8 por mensaje. El mínimo cacheable de un Sonnet es 1024 tokens, así que los dos casos
+     * entran; abajo de ese piso la API no avisa nada, simplemente no cachea.
+     *
+     * Dos marcadores no cuestan dos escrituras: el tramo entre uno y otro se escribe una sola vez.
+     * El techo de la API son 4 breakpoints por request y acá van 2 (tools y bloque 1 del system).
+     *
+     * @param array<int, array<string, mixed>> $tools
+     * @return array<int, array<string, mixed>>
+     */
+    protected function con_cache_control(array $tools): array
+    {
+        if (empty($tools)) {
+
+            return $tools;
+        }
+
+        $ultima = count($tools) - 1;
+
+        $tools[$ultima]['cache_control'] = ['type' => 'ephemeral'];
+
         return $tools;
     }
 
     /**
-     * Las tools de LECTURA del asistente, con su input_schema para la API de
-     * Anthropic. Ninguna crea, modifica ni borra nada.
+     * El registro ÚNICO de las tools de LECTURA del asistente: cada entrada lleva JUNTAS su
+     * definición para la API de Anthropic (name / description / input_schema) y el `handler` que la
+     * resuelve cuando Claude la llama. Ninguna crea, modifica ni borra nada.
      *
-     * 🔴 Toda tool se declara en DOS lugares de este archivo: acá (para que
-     * Claude sepa que existe) y en el if/elseif de execute_tool_calls() (para
-     * que al usarla se resuelva). Con una sola de las dos, la IA "tiene" la
-     * tool y al llamarla recibe "Tool desconocida". Se agregan juntas.
+     * 🔴 POR QUÉ UN REGISTRO Y NO DOS LISTAS: hasta esta misión toda tool se declaraba en DOS
+     * lugares de este archivo —el array de definiciones y su rama del if/elseif de
+     * execute_tool_calls()—, y con una sola de las dos la IA "tenía" la tool y al usarla recibía
+     * "Tool desconocida". Acá las dos puntas son la MISMA entrada: agregar una tool es agregar un
+     * elemento a este array, y olvidarse una punta dejó de ser posible. Es el mismo movimiento que
+     * ya había hecho HerramientasDeCarga con sus definiciones y su despacho.
+     *
+     * El `handler` recibe (array $input, int $owner_id) y devuelve los DATOS crudos: el json_encode
+     * con su fallback vive centralizado en contenido_de_tool_result() y la defensa del enum `dias`
+     * en dias_del_enum(), en vez de repetidos ocho y tres veces. La clave `handler` va siempre
+     * ÚLTIMA: herramientas_de_lectura() la saca, y lo que viaja a la API queda con el mismo orden
+     * de claves de siempre.
+     *
+     * 🔴 EL ORDEN DE ESTE ARRAY ES PARTE DEL CACHÉ DE PROMPT (ver build_tools): no se reordena.
      *
      * @return array<int, array<string, mixed>>
      */
-    public function herramientas_de_lectura(): array
+    protected function registro_de_lectura(): array
     {
         return [
             [
@@ -835,6 +1023,9 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_clientes',
@@ -849,10 +1040,13 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::clientes($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_movimientos_de_cuenta_corriente',
-                'description' => 'Devuelve los últimos movimientos de cuenta corriente de UN cliente: fecha, detalle, debe, haber y saldo. Primero conseguí el id del cliente con consultar_clientes.',
+                'description' => 'Devuelve los movimientos de cuenta corriente de UN cliente del ERP: fecha, detalle, debe, haber y saldo acumulado. Podés filtrar por tipo (solo deudas o solo pagos), acotar por rango de fechas, elegir el orden y pedir la página siguiente. Por defecto contesta la cuenta EN PESOS: si el cliente además tiene cuenta en dólares, viene en "cuentas" y podés volver a llamar con su credit_account_id — no mezcles las dos, el saldo de cada fila es el acumulado de SU cuenta. La respuesta trae movimientos_encontrados (cuántos hay en total) y movimientos_en_esta_lista (cuántos viajan): si difieren, pedí la página siguiente en vez de contestar con los que tenés. Para saber QUÉ VENTAS quedaron sin cobrar, que es la pregunta de "qué me debe" y "desde cuándo", usá consultar_ventas_impagas_de_un_cliente. Primero conseguí el id del cliente con consultar_clientes.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -860,13 +1054,68 @@ CONFIRMACION;
                             'type' => 'integer',
                             'description' => 'Id del cliente, tal como lo devolvió consultar_clientes.',
                         ],
+                        'tipo' => [
+                            'type' => 'string',
+                            'description' => 'Qué movimientos traer: "debe" son las deudas (ventas), "haber" son los pagos, "todos" es el default.',
+                            'enum' => ['todos', 'debe', 'haber'],
+                        ],
+                        'desde' => [
+                            'type' => 'string',
+                            'description' => 'Fecha desde la cual mirar, en formato AAAA-MM-DD. Sin ella no hay piso.',
+                        ],
+                        'hasta' => [
+                            'type' => 'string',
+                            'description' => 'Fecha hasta la cual mirar, en formato AAAA-MM-DD. Sin ella no hay techo.',
+                        ],
+                        'orden' => [
+                            'type' => 'string',
+                            'description' => 'Del más nuevo al más viejo ("mas_nuevos", el default) o al revés ("mas_viejos"), que es lo que sirve para encontrar lo más antiguo.',
+                            'enum' => ['mas_nuevos', 'mas_viejos'],
+                        ],
+                        'pagina' => [
+                            'type' => 'integer',
+                            'description' => 'Número de página, arrancando en 1.',
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos movimientos por página. El default son 20 y el máximo 100.',
+                        ],
+                        'credit_account_id' => [
+                            'type' => 'integer',
+                            'description' => 'Cuenta puntual del cliente, tal como vino en "cuentas". Sin esto se contestan los movimientos en pesos.',
+                        ],
                     ],
                     'required' => ['client_id'],
                 ],
+                /*
+                 * 🔴 La tool apunta a movimientos_de_cuenta_corriente_detalle() y NO al método
+                 * viejo del mismo nombre (misión agente-ia-mano-derecha, bloque B2). El viejo se
+                 * conserva porque su shape es el contrato del canal "sistema:" de admin-api, pero
+                 * traía los 20 movimientos más nuevos sin ventana ni filtro de cuenta: en un
+                 * cliente con veinte pagos recientes la venta vieja que todavía debe quedaba fuera
+                 * de la ventana y el asistente contestaba que no había ninguna.
+                 *
+                 * Y va con el MISMO nombre de tool en vez de sumar una segunda: dos tools con la
+                 * misma forma para la misma pregunta es cómo el modelo termina eligiendo la peor,
+                 * que es exactamente lo que pasó con los interesados de la tienda.
+                 */
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente_detalle(
+                        $owner_id,
+                        (int) ($input['client_id'] ?? 0),
+                        (string) ($input['tipo'] ?? 'todos'),
+                        isset($input['desde']) ? $input['desde'] : null,
+                        isset($input['hasta']) ? $input['hasta'] : null,
+                        (string) ($input['orden'] ?? 'mas_nuevos'),
+                        (int) ($input['pagina'] ?? 1),
+                        (int) ($input['limite'] ?? 0),
+                        isset($input['credit_account_id']) ? (int) $input['credit_account_id'] : null
+                    );
+                },
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en los últimos días, con las unidades vendidas. Usala para preguntas sobre qué se vende más o cómo vienen las ventas.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en los últimos días, con las unidades vendidas, según las VENTAS DEL ERP. Usala para preguntas sobre qué se vende más o cómo vienen las ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -878,10 +1127,13 @@ CONFIRMACION;
                     ],
                     'required' => [],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::mas_vendidos($owner_id, self::dias_del_enum($input));
+                },
             ],
             [
                 'name' => 'consultar_precios_de_proveedores',
-                'description' => 'Devuelve la última oferta vigente de precio por artículo y proveedor: a cuánto ofreció cada proveedor cada artículo, y cuándo. Filtrá por nombre de artículo o de proveedor. Usala cuando te pregunten a cuánto compra o compró el negocio algo, o qué proveedor ofrece mejor precio.',
+                'description' => 'Devuelve la última oferta vigente de precio por artículo y proveedor: a cuánto OFRECIÓ cada proveedor cada artículo, y cuándo. Filtrá por nombre de artículo o de proveedor. Usala cuando te pregunten qué proveedor ofrece mejor precio, o a cuánto le están ofreciendo algo hoy. 🔴 Un precio ofertado NO es una compra hecha: si te preguntan cuándo fue la última compra de un artículo, a quién se la compró o a cuánto la pagó, va consultar_compras_de_un_articulo, que lee las compras reales.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -892,6 +1144,9 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::precios_de_proveedores($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_ofertas_activas',
@@ -906,10 +1161,13 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::ofertas_activas($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
             ],
             [
                 'name' => 'consultar_actividad_de_un_cliente',
-                'description' => 'Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró. La respuesta trae "totales" con los números completos del periodo y "movimientos" con el detalle, que puede venir recortado: si movimientos_en_esta_lista es menor que movimientos_encontrados, contá con los totales y no con la cantidad de filas. En totales, compras_sin_articulo son compras que la tienda no informó de qué artículo eran: si es mayor a cero, no afirmes que el cliente no compró un artículo determinado. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
+                'description' => '🔴 ESTA HERRAMIENTA MIRA LA TIENDA ONLINE, NO EL ERP. Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró EN LA TIENDA. Si la pregunta es qué le vendió el negocio —lo que se cargó como venta, con o sin tienda de por medio— no es esta: es consultar_quien_compro_un_articulo para un artículo, consultar_ventas_impagas_de_un_cliente para lo que quedó sin cobrar y consultar_movimientos_de_cuenta_corriente para su cuenta. La respuesta trae "totales" con los números completos del periodo y "movimientos" con el detalle, que puede venir recortado: si movimientos_en_esta_lista es menor que movimientos_encontrados, contá con los totales y no con la cantidad de filas. En totales, compras_sin_articulo son compras que la tienda no informó de qué artículo eran: si es mayor a cero, no afirmes que el cliente no compró un artículo determinado. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -925,10 +1183,13 @@ CONFIRMACION;
                     ],
                     'required' => ['client_id'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::actividad_de_un_cliente($owner_id, (int) ($input['client_id'] ?? 0), self::dias_del_enum($input));
+                },
             ],
             [
                 'name' => 'consultar_interesados_en_un_articulo',
-                'description' => 'Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y, hasta donde el sistema puede saber, todavía no lo compraron: se descartan los que tienen una venta confirmada de ese artículo y los que lo compraron en la tienda. No es una certeza — una compra por mostrador todavía sin facturar, o un checkout que llegó sin el artículo, no se pueden descontar —, así que decilo como "no figura que lo haya comprado" y no como un hecho. Una fila con lo_compro_antes_y_lo_volvio_a_mirar en una fecha SÍ lo compró: quedó en la lista porque volvió a mirarlo después, así que hablá de recompra y nunca digas que no lo compró. Filtrá por nombre o código del artículo. La lista solo trae compradores vinculados a un cliente del sistema, porque a un visitante anónimo no se lo puede nombrar ni llamar; cuántos anónimos anduvieron sobre el mismo artículo viene aparte, en visitantes_anonimos, y con la lista vacía ese número puede ser lo único que haya para contestar.',
+                'description' => '🔴 ESTA HERRAMIENTA MIRA LA TIENDA ONLINE, NO EL ERP: contesta quién MIRÓ un artículo, no quién lo compró. Para "qué cliente me compró más X", "a quién le vendí X" o "cuándo le vendí X a alguien" va consultar_quien_compro_un_articulo, que lee las ventas del ERP. Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y, hasta donde el sistema puede saber, todavía no lo compraron: se descartan los que tienen una venta confirmada de ese artículo y los que lo compraron en la tienda. No es una certeza — una compra por mostrador todavía sin facturar, o un checkout que llegó sin el artículo, no se pueden descontar —, así que decilo como "no figura que lo haya comprado" y no como un hecho. Una fila con lo_compro_antes_y_lo_volvio_a_mirar en una fecha SÍ lo compró: quedó en la lista porque volvió a mirarlo después, así que hablá de recompra y nunca digas que no lo compró. Filtrá por nombre o código del artículo. La lista solo trae compradores vinculados a un cliente del sistema, porque a un visitante anónimo no se lo puede nombrar ni llamar; cuántos anónimos anduvieron sobre el mismo artículo viene aparte, en visitantes_anonimos, y con la lista vacía ese número puede ser lo único que haya para contestar.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -944,8 +1205,339 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input));
+                },
+            ],
+            /*
+             * 🔴 DE ACÁ PARA ABAJO VAN LAS DE LA MISIÓN agente-ia-mano-derecha (bloque B), Y VAN AL
+             * FINAL A PROPÓSITO: el orden de este array es el prefijo que cachea con_cache_control(),
+             * así que lo nuevo se agrega atrás y lo de arriba no se mueve.
+             */
+            [
+                'name' => 'consultar_ventas_impagas_de_un_cliente',
+                'description' => 'Devuelve las VENTAS DEL ERP que un cliente todavía no pagó, de la más vieja a la más nueva, con la fecha, hace cuántos días están sin cobrar, el total y lo que queda pendiente. Es la herramienta de "qué me debe", "cuál es la venta más vieja que me debe" y "desde cuándo me debe". 🔴 venta_impaga_mas_vieja viene calculada sobre TODAS las ventas impagas y no sobre las que entran en la lista, así que podés contestar cuál es la más vieja aunque la lista venga recortada. 🔴 CADA VENTA DICE SU MONEDA en "en_pesos": cuando es false ese importe está en DÓLARES y tenés que escribirlo con US$, nunca en pesos. total_pendiente_en_pesos_en_esta_lista suma solo las que están en pesos, y ventas_en_otra_moneda_en_esta_lista dice cuántas quedaron afuera de ese total. saldo_en_cuenta_corriente_en_pesos es la deuda total del cliente en pesos e incluye lo que no está en ninguna venta (saldos iniciales, notas de crédito, ajustes): puede no coincidir con la suma de las ventas listadas, y eso no es un error, son dos cosas distintas. Si el cliente no existe o no es de este negocio la respuesta trae "error": NO contestes que no debe nada, porque no se pudo mirar. Primero conseguí el id del cliente con consultar_clientes.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'client_id' => [
+                            'type' => 'integer',
+                            'description' => 'Id del cliente, tal como lo devolvió consultar_clientes.',
+                        ],
+                        'orden' => [
+                            'type' => 'string',
+                            'description' => 'De la más vieja a la más nueva ("mas_viejas", el default) o al revés.',
+                            'enum' => ['mas_viejas', 'mas_nuevas'],
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántas ventas traer. El default son 20 y el máximo 100.',
+                        ],
+                    ],
+                    'required' => ['client_id'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente(
+                        $owner_id,
+                        (int) ($input['client_id'] ?? 0),
+                        (string) ($input['orden'] ?? 'mas_viejas'),
+                        (int) ($input['limite'] ?? 0)
+                    );
+                },
+            ],
+            [
+                'name' => 'consultar_quien_compro_un_articulo',
+                'description' => 'Devuelve qué CLIENTES le compraron un artículo al negocio y cuántas unidades, según las VENTAS DEL ERP (no la tienda online). Es la herramienta de "qué cliente me compró más X", "a quién le vendí X" y "cuándo fue la última vez que le vendí X a alguien". Viene ordenada por unidades, de mayor a menor. unidades_sin_cliente son las que se vendieron por mostrador sin cliente cargado: si la lista viene vacía y ese número es mayor a cero, el artículo SÍ se vendió y no se sabe a quién — no contestes que no lo compró nadie. 🔴 LAS UNIDADES SON EXACTAS, EL MONTO PUEDE NO SERLO: monto_en_pesos suma únicamente las unidades que tienen precio en pesos guardado, y unidades_sin_precio_en_pesos dice cuántas quedaron afuera (ventas en dólares y ventas viejas, anteriores a que el sistema guardara la moneda). Si ese número es mayor a cero, decí el monto como incompleto y aclará sobre cuántas unidades está calculado: NUNCA lo presentes como todo lo que compró, porque un monto bajo sobre muchas unidades se lee como un artículo barato. No la confundas con consultar_interesados_en_un_articulo, que es quién lo MIRÓ en la tienda.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia, que es lo que la persona suele querer decir con "quién me compró más".',
+                            'enum' => [0, 7, 30, 90, 365],
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                },
+            ],
+            [
+                'name' => 'consultar_compras_de_un_articulo',
+                'description' => 'Devuelve las COMPRAS REALES que el negocio le hizo a sus proveedores de un artículo: cuándo, a qué proveedor, cuántas unidades pidió y recibió, a qué costo y con qué comprobante. Vienen de la más nueva a la más vieja, así que la PRIMERA FILA es la última compra. Es la herramienta de "cuándo fue la última compra de X", "a quién se la compré" y "a cuánto la pagué". ⚠️ costo_en_dolares dice si ese costo está en dólares: cuando es true no lo informes como pesos. No la confundas con consultar_precios_de_proveedores, que son precios ofertados y no compras hechas.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
+            ],
+            [
+                'name' => 'consultar_compras_a_un_proveedor',
+                'description' => 'Devuelve las compras que el negocio le hizo a un proveedor: número, fecha, comprobante, estado, total y cuántos artículos distintos y cuántas unidades tiene cada una, de la más nueva a la más vieja. Los estados son solo dos: "En proceso" y "Recibido". ⚠️ total_comprado_en_pesos suma SOLO las compras en pesos; las que están en otra moneda se cuentan aparte en compras_en_otra_moneda y no entran en ese total, así que no lo presentes como todo lo que le compró. Buscá el proveedor por nombre, razón social o CUIT.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre, razón social o CUIT del proveedor.',
+                        ],
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia.',
+                            'enum' => [0, 7, 30, 90, 365],
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::compras_a_un_proveedor($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                },
+            ],
+            [
+                'name' => 'consultar_stock_por_deposito',
+                'description' => 'Devuelve cómo está repartido el stock de un artículo entre las sucursales o depósitos del negocio, incluidas las que están en cero (que suele ser justo el dato que se busca). Si trabaja_con_depositos es false, el negocio tiene una sola sucursal y no hay reparto que contar. 🔴 Vienen DOS totales: stock_total_del_articulo, que es el de la ficha y el que muestra el listado, y stock_sumado_por_deposito, que es la suma del reparto. Si no coinciden, decilo: es un dato roto que el comerciante tiene que saber, y no elijas uno de los dos por tu cuenta.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
+            ],
+            [
+                'name' => 'que_puedo_consultar',
+                'description' => 'Te dice qué datos del sistema podés pedir con consultar_datos y cómo filtrarlos. Llamala SIN entidad para ver la lista de lo que hay, y de nuevo CON una entidad para ver sus campos, el tipo de cada uno y qué operadores acepta. Usala antes de consultar_datos cuando la pregunta no encaja en ninguna de las otras herramientas: no adivines nombres de campos, un campo que no existe devuelve error y te gasta una vuelta.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'entidad' => [
+                            'type' => 'string',
+                            'description' => 'Sobre cuál querés el detalle. Sin esto devuelve la lista de todas.',
+                            // La lista sale del propio catálogo: una entidad nueva aparece acá sola.
+                            'enum' => CatalogoDeDatosIaHelper::entidades(),
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return CatalogoDeDatosIaHelper::que_puedo_consultar(isset($input['entidad']) ? (string) $input['entidad'] : null);
+                },
+            ],
+            [
+                'name' => 'consultar_datos',
+                'description' => 'Consulta genérica sobre los datos del negocio: artículos, clientes, proveedores, ventas, compras a proveedores, gastos, tareas y vencimientos, presupuestos, cheques, cajas, pedidos y compradores de la tienda, vendedores, combos, rubros, sub rubros y marcas. Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato. 🔴 Pedí primero que_puedo_consultar con la entidad para saber qué campos tiene y qué operadores acepta cada uno: un campo o un operador que no existe devuelve error, no resultados. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'entidad' => [
+                            'type' => 'string',
+                            'description' => 'Qué se consulta.',
+                            'enum' => CatalogoDeDatosIaHelper::entidades(),
+                        ],
+                        'filtros' => [
+                            'type' => 'array',
+                            'description' => 'Condiciones que tienen que cumplir los registros. Sin filtros trae los últimos cargados.',
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => [
+                                    'campo' => [
+                                        'type' => 'string',
+                                        'description' => 'Nombre del campo, tal como lo devolvió que_puedo_consultar. Para filtrar por una relación va su campo con _id (por ejemplo category_id), no el nombre.',
+                                    ],
+                                    'operador' => [
+                                        'type' => 'string',
+                                        'description' => 'Qué comparación hacer. "contiene" es solo para texto; "mayor" y "menor" para números y fechas.',
+                                        'enum' => ['contiene', 'igual', 'mayor', 'menor', 'vacio', 'no_vacio'],
+                                    ],
+                                    'valor' => [
+                                        'type' => 'string',
+                                        'description' => 'Contra qué comparar. Las fechas van en formato AAAA-MM-DD. No va con "vacio" ni con "no_vacio".',
+                                    ],
+                                ],
+                                'required' => ['campo', 'operador'],
+                            ],
+                        ],
+                        'orden' => [
+                            'type' => 'object',
+                            'description' => 'Por qué campo ordenar. Sin esto vienen los más nuevos primero.',
+                            'properties' => [
+                                'campo' => [
+                                    'type' => 'string',
+                                    'description' => 'Campo por el que ordenar, de los que declaró que_puedo_consultar.',
+                                ],
+                                'direccion' => [
+                                    'type' => 'string',
+                                    'description' => 'ASC de menor a mayor, DESC de mayor a menor.',
+                                    'enum' => ['ASC', 'DESC'],
+                                ],
+                            ],
+                            'required' => ['campo'],
+                        ],
+                        'pagina' => [
+                            'type' => 'integer',
+                            'description' => 'Número de página, arrancando en 1.',
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos registros por página. El default son 20 y el máximo 100.',
+                        ],
+                    ],
+                    'required' => ['entidad'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return CatalogoDeDatosIaHelper::consultar_datos(
+                        $owner_id,
+                        (string) ($input['entidad'] ?? ''),
+                        is_array($input['filtros'] ?? null) ? $input['filtros'] : [],
+                        is_array($input['orden'] ?? null) ? $input['orden'] : null,
+                        (int) ($input['pagina'] ?? 1),
+                        (int) ($input['limite'] ?? 0)
+                    );
+                },
             ],
         ];
+    }
+
+    /**
+     * Las tools de lectura tal como viajan a la API: el registro sin la clave `handler`, que es
+     * interna (y además es un Closure, que no se serializa a JSON).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function herramientas_de_lectura(): array
+    {
+        $definiciones = [];
+
+        foreach ($this->registro_de_lectura() as $herramienta) {
+            unset($herramienta['handler']);
+            $definiciones[] = $herramienta;
+        }
+
+        return $definiciones;
+    }
+
+    /**
+     * Nombres de todas las tools de lectura, derivados del registro (mismo patrón que
+     * HerramientasDeCarga::nombres()).
+     *
+     * @return array<int, string>
+     */
+    public function nombres_de_lectura(): array
+    {
+        return array_column($this->registro_de_lectura(), 'name');
+    }
+
+    /**
+     * true si la tool es de lectura (mismo patrón que HerramientasDeCarga::maneja()).
+     *
+     * @param string $tool_name
+     * @return bool
+     */
+    public function maneja_lectura($tool_name): bool
+    {
+        return in_array((string) $tool_name, $this->nombres_de_lectura(), true);
+    }
+
+    /**
+     * El handler de una tool de lectura, o null si el nombre no está en el registro.
+     *
+     * @param string $tool_name
+     * @return callable|null
+     */
+    protected function handler_de_lectura($tool_name)
+    {
+        foreach ($this->registro_de_lectura() as $herramienta) {
+            if ($herramienta['name'] === (string) $tool_name) {
+
+                return $herramienta['handler'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * El contenido JSON de un tool_result.
+     *
+     * El fallback `?: '[]'` estaba repetido en las ocho ramas del despacho y es el mismo que usa
+     * HerramientasDeCarga::resultado(): con UTF-8 inválido en la base (nombres importados de un
+     * Excel roto) json_encode devuelve false, y un content false rompería el request siguiente del
+     * loop con un 400 críptico.
+     *
+     * @param mixed $datos
+     * @return string
+     */
+    protected function contenido_de_tool_result($datos): string
+    {
+        return json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]';
+    }
+
+    /**
+     * La ventana de días de un input, defendida contra un valor fuera del enum: cualquier cosa que
+     * no sea 7, 30 o 90 se cae al default de 30. Lo usan las tres tools que aceptan `dias`, que
+     * repetían el mismo bloque.
+     *
+     * @param array $input
+     * @return int
+     */
+    protected static function dias_del_enum(array $input): int
+    {
+        $dias = (int) ($input['dias'] ?? 30);
+
+        if (! in_array($dias, [7, 30, 90], true)) {
+
+            return 30;
+        }
+
+        return $dias;
+    }
+
+    /**
+     * La misma defensa que dias_del_enum(), pero para las consultas que SÍ pueden mirar toda la
+     * historia (misión agente-ia-mano-derecha, bloque B).
+     *
+     * 🔴 Son dos escalas distintas y por eso son dos métodos. Las tools de la tienda leen de
+     * `buyer_tracking_events` a través de ActividadDeClientesService, que CAMBIA DE TABLA según la
+     * antigüedad pedida: ahí una ventana libre no es un filtro más amplio, es leer de otro lado. Las
+     * del ERP corren sobre `sales` y `provider_orders`, donde "toda la historia" es un pedido
+     * legítimo y además el más frecuente: "quién me compró más la lámpara" casi nunca quiere decir
+     * "en los últimos 30 días".
+     *
+     * Por eso el default acá es 0 (sin ventana) y no 30: con 30, la respuesta se recortaría sola a
+     * un mes sin que la persona lo haya pedido ni pueda darse cuenta.
+     *
+     * @param array $input
+     * @return int
+     */
+    protected static function dias_de_historia(array $input): int
+    {
+        $dias = (int) ($input['dias'] ?? 0);
+
+        if (! in_array($dias, [0, 7, 30, 90, 365], true)) {
+
+            return 0;
+        }
+
+        return $dias;
     }
 
     /**
@@ -980,12 +1572,6 @@ CONFIRMACION;
             $tool_name  = (string) ($block['name'] ?? '');
             $tool_input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
 
-            /*
-             * A los cuatro json_encode se les pone el fallback `?: '[]'`:
-             * con UTF-8 inválido en la base (nombres importados de un Excel
-             * roto) json_encode devuelve false, y un content false rompería
-             * el request siguiente del loop con un 400 críptico.
-             */
             try {
                 // true cuando la tool pedida no está en la whitelist: el
                 // tool_result viaja con is_error para que Claude no lo lea
@@ -997,58 +1583,22 @@ CONFIRMACION;
                 // la tarjeta): también viaja con is_error.
                 $error_de_la_herramienta = false;
 
-                if ($tool_name === 'consultar_stock_de_articulos') {
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_clientes') {
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::clientes($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_movimientos_de_cuenta_corriente') {
-                    $client_id = (int) ($tool_input['client_id'] ?? 0);
-                    $data = ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente($owner_id, $client_id);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_articulos_mas_vendidos') {
-                    $dias = (int) ($tool_input['dias'] ?? 30);
-                    // Defensa contra un valor fuera del enum: se cae al default.
-                    if (! in_array($dias, [7, 30, 90], true)) {
-                        $dias = 30;
-                    }
-                    $data = ConsultasSistemaIaHelper::mas_vendidos($owner_id, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_precios_de_proveedores') {
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::precios_de_proveedores($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_ofertas_activas') {
-                    // La otra punta de esta tool está en build_tools(): las dos
-                    // se agregan juntas o la IA la llama y recibe un error.
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $data = ConsultasSistemaIaHelper::ofertas_activas($owner_id, $busqueda);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_actividad_de_un_cliente') {
-                    // La otra punta de esta tool está en build_tools(): las dos
-                    // se agregan juntas o la IA la llama y recibe un error.
-                    $client_id = (int) ($tool_input['client_id'] ?? 0);
-                    $dias = (int) ($tool_input['dias'] ?? 30);
-                    // Defensa contra un valor fuera del enum: se cae al default.
-                    if (! in_array($dias, [7, 30, 90], true)) {
-                        $dias = 30;
-                    }
-                    $data = ConsultasSistemaIaHelper::actividad_de_un_cliente($owner_id, $client_id, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
-                } elseif ($tool_name === 'consultar_interesados_en_un_articulo') {
-                    // La otra punta de esta tool está en build_tools(): las dos
-                    // se agregan juntas o la IA la llama y recibe un error.
-                    $busqueda = (string) ($tool_input['busqueda'] ?? '');
-                    $dias = (int) ($tool_input['dias'] ?? 30);
-                    // Defensa contra un valor fuera del enum: se cae al default.
-                    if (! in_array($dias, [7, 30, 90], true)) {
-                        $dias = 30;
-                    }
-                    $data = ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, $busqueda, $dias);
-                    $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                $handler = $this->handler_de_lectura($tool_name);
+
+                if (! is_null($handler)) {
+                    // Las dos puntas de una tool de lectura (su definición y su handler) son la
+                    // misma entrada de registro_de_lectura(): acá solo se la invoca.
+                    $datos = call_user_func($handler, $tool_input, $owner_id);
+
+                    /*
+                     * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del
+                     * json_encode— salen los pares (tipo, id, texto) que después se cruzan contra
+                     * el texto final. Acá no se decide ninguna mención: se junta la materia prima,
+                     * que es lo único que existe solo en este punto del loop.
+                     */
+                    $this->juntar_candidatos_a_mencion($tool_name, $datos);
+
+                    $content = $this->contenido_de_tool_result($datos);
                 } elseif (! is_null($assistant_message) && $assistant_message->acciones_habilitadas && HerramientasDeCarga::maneja($tool_name)) {
                     // Las dos puntas de las herramientas de carga (definición y
                     // despacho) viven juntas en HerramientasDeCarga: acá solo se
@@ -1090,6 +1640,32 @@ CONFIRMACION;
         }
 
         return $tool_results;
+    }
+
+    /**
+     * Suma a la bolsa de candidatos lo que dejó una tool de lectura.
+     *
+     * Protegido y sin tocar nada del resultado: si la extracción falla, la tool ya respondió bien y
+     * el loop tiene que seguir. Lo único que se pierde son las menciones de esa consulta.
+     *
+     * @param  string  $tool_name
+     * @param  mixed   $datos  Lo crudo que devolvió el handler.
+     * @return void
+     */
+    protected function juntar_candidatos_a_mencion($tool_name, $datos)
+    {
+        try {
+            $candidatos = MencionesIaHelper::candidatos_de_tool($tool_name, $datos);
+
+            if (!empty($candidatos)) {
+                $this->candidatos_a_mencion = array_merge($this->candidatos_a_mencion, $candidatos);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudieron leer los candidatos a mención de una tool.', [
+                'tool'  => $tool_name,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

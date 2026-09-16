@@ -747,12 +747,23 @@ class Acciones_gasto_Test extends EmpresaTestCase
     }
 
     /**
-     * El permiso se revoca entre la propuesta y el clic: el ejecutor lo revalida con la persona
-     * autenticada de ESE request, no con la que propuso.
+     * El acceso se revoca entre la propuesta y el clic: la tarjeta NO se ejecuta, y eso se
+     * revalida con la persona autenticada de ESE request, no con la que propuso.
+     *
+     * 🔴 QUÉ CAMBIÓ ACÁ Y POR QUÉ. Hasta la misión agente-ia-mano-derecha el corte lo daba
+     * PermisosIaHelper adentro del ejecutor y salía como 422 con el motivo guardado en la tarjeta.
+     * Desde que el chat es SOLO del dueño (decisión de Lucas del 16/9/2026), sacarle admin_access
+     * al encargado lo deja afuera una puerta ANTES: el middleware solo_el_dueno_ia le contesta 403
+     * y el request no llega al ejecutor. Es el mismo defecto atajado antes y más arriba.
+     *
+     * Lo que este test siempre quiso probar —que el permiso se revalida en el clic y que el gasto
+     * NO se carga— se sigue probando igual, y esa última aserción es la que importa. PermisosIaHelper
+     * no se borró: queda de segunda defensa para el día que el gate se afloje, y sus caminos propios
+     * los mide 13_Acciones_pago_Test por el servicio, sin pasar por HTTP.
      *
      * @test
      */
-    public function un_permiso_revocado_entre_la_propuesta_y_el_clic_da_422()
+    public function un_acceso_revocado_entre_la_propuesta_y_el_clic_no_ejecuta_la_tarjeta()
     {
         $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
         $this->asegurar_caja_abierta($caja);
@@ -791,10 +802,15 @@ class Acciones_gasto_Test extends EmpresaTestCase
 
         $confirmar = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar');
 
-        $confirmar->assertStatus(422);
-        $this->assertEquals('No tenés permiso para cargar gastos desde tu usuario.', $confirmar->json('model.error_mensaje'));
-        $this->assertEquals('propuesta', $confirmar->json('model.estado'));
+        $confirmar->assertStatus(403);
+        $this->assertEquals('Solo el dueño puede usar el asistente de IA.', $confirmar->json('message'));
+
+        // 🔴 La aserción que no se mueve pase lo que pase: sin acceso, el gasto NO se carga.
         $this->assertEquals($gastos_antes, Expense::where('user_id', $this->dueno->id)->count());
+
+        // Y la tarjeta queda intacta, esperando: nadie la ejecutó ni la cerró.
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+        $this->assertEquals('propuesta', $tarjeta->estado);
     }
 
     /**

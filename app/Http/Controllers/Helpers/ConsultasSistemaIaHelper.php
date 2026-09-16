@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\Article;
 use App\Models\Client;
 use App\Models\CurrentAcount;
+use App\Models\Provider;
+use App\Models\Sale;
 use App\Services\Mostrador\RecolectorBase;
 use App\Services\ActividadDeClientes\ActividadDeClientesService;
 use Illuminate\Support\Facades\DB;
@@ -36,6 +39,19 @@ class ConsultasSistemaIaHelper
      * @var int
      */
     const MAX_RESULTS = 20;
+
+    /**
+     * Techo duro de registros por consulta, para las tools que aceptan un límite por parámetro
+     * (misión agente-ia-mano-derecha, bloque B).
+     *
+     * MAX_RESULTS sigue siendo el default de todas; esto es hasta dónde se puede estirar cuando el
+     * modelo pide más porque la pregunta lo necesita. Existe porque el bloque de tools y sus
+     * respuestas viajan enteros en cada vuelta del loop: sin un techo que no dependa de lo que pida
+     * el modelo, una sola consulta se come el presupuesto de tiempo del asistente.
+     *
+     * @var int
+     */
+    const TOPE_DURO_DE_RESULTADOS = 100;
 
     /**
      * Artículos activos del dueño con precio y stock, filtrados por nombre,
@@ -232,6 +248,242 @@ class ConsultasSistemaIaHelper
         }
 
         return $result;
+    }
+
+    /**
+     * LOS MOVIMIENTOS DE CUENTA CORRIENTE DE UN CLIENTE, CON VENTANA, TIPO, ORDEN Y PÁGINA.
+     *
+     * Es la versión que usa el asistente desde la misión agente-ia-mano-derecha. La de arriba
+     * —`movimientos_de_cuenta_corriente()`— queda TAL CUAL estaba: es la forma que ya consumen los
+     * tests del helper y el canal "sistema:", y un shape que cambia por abajo es una regresión que
+     * no avisa. Acá abajo pasa todo lo que aquélla no podía hacer.
+     *
+     * 🔴 POR QUÉ EXISTE. Aquélla recibía sólo `client_id` y corría
+     * `orderBy('created_at','DESC')->limit(20)`: del más NUEVO al más viejo y sin ventana. En un
+     * cliente con veinte pagos recientes, la venta vieja que todavía debe queda afuera de la
+     * ventana y el asistente contesta —con total seguridad— que no hay ninguna. Es el caso que
+     * originó la misión.
+     *
+     * 🔴 Y NO FILTRABA POR CUENTA. Un cliente con cuenta en pesos y cuenta en dólares tiene las dos
+     * en la misma tabla: sin filtro, las filas se intercalan por fecha y la columna `saldo` —que es
+     * el acumulado DE SU CUENTA— salta entre dos cuentas distintas. El resultado no está de más:
+     * está mal, y se lee perfectamente bien.
+     *
+     * ⚠️ `moneda_id = 0` ES PESOS, igual que el 1: el criterio sale de RecolectorBase::MONEDAS_PESOS
+     * y no de un `== 1` escrito acá. Hay cuentas en 0 en producción (las deja un alta donde el
+     * select de moneda no se eligió) y compararlas contra 1 deja afuera a clientes reales — un
+     * defecto que ya costó caro el 15/9/2026.
+     *
+     * Por defecto, sin `credit_account_id`, se contestan los movimientos EN PESOS. Las cuentas del
+     * cliente viajan en `cuentas` para que la siguiente pregunta pueda apuntar a la de dólares.
+     *
+     * @param  int          $owner_id           Id del dueño (current_acounts.user_id). Nunca Auth.
+     * @param  int          $client_id          Id del cliente.
+     * @param  string       $tipo               'debe' | 'haber' | 'todos' (por defecto).
+     * @param  string|null  $desde              'AAAA-MM-DD' inclusive; null = sin piso.
+     * @param  string|null  $hasta              'AAAA-MM-DD' inclusive; null = sin techo.
+     * @param  string       $orden              'mas_viejos' | 'mas_nuevos' (por defecto).
+     * @param  int          $pagina             1 en adelante.
+     * @param  int          $limite             0 = MAX_RESULTS.
+     * @param  int|null     $credit_account_id  Cuenta puntual; null = las de pesos.
+     * @return array<string, mixed>  Vacío si el cliente no es del dueño o no existe
+     */
+    public static function movimientos_de_cuenta_corriente_detalle(
+        int $owner_id,
+        int $client_id,
+        string $tipo = 'todos',
+        $desde = null,
+        $hasta = null,
+        string $orden = 'mas_nuevos',
+        int $pagina = 1,
+        int $limite = 0,
+        $credit_account_id = null
+    ): array {
+        $limite = self::limite_pedido($limite);
+
+        if ($pagina < 1) {
+            $pagina = 1;
+        }
+
+        $cliente = Client::query()
+            ->where('user_id', $owner_id)
+            ->where('id', $client_id)
+            ->first(['id', 'name']);
+
+        // Mismo criterio que ventas_impagas_de_un_cliente: "no lo encontré" nunca puede leerse
+        // como "no tiene movimientos".
+        if (is_null($cliente)) {
+            return self::no_encontrado(
+                'No encontré ningún cliente con el id ' . $client_id . ' en este negocio.',
+                'Buscá el cliente con consultar_clientes y volvé a llamar con el id que devuelva.'
+            );
+        }
+
+        $cuentas = self::cuentas_de_un_cliente($owner_id, (int) $cliente->id);
+
+        $credit_account_id = is_null($credit_account_id) ? null : (int) $credit_account_id;
+
+        $query = CurrentAcount::query()
+            ->where('user_id', $owner_id)
+            ->where('client_id', (int) $cliente->id);
+
+        if (! is_null($credit_account_id) && $credit_account_id > 0) {
+            $query = $query->where('credit_account_id', $credit_account_id);
+        } else {
+            /*
+             * Sin cuenta pedida, los movimientos EN PESOS. La condición va sobre la moneda de la
+             * propia fila y no sobre el credit_account_id: hay filas viejas sin cuenta asignada, y
+             * filtrar por cuenta las haría desaparecer de una historia que sí existió.
+             */
+            $query = $query->where(function ($sub) {
+                $sub->whereNull('moneda_id')->orWhereIn('moneda_id', RecolectorBase::MONEDAS_PESOS);
+            });
+        }
+
+        if ($tipo === 'debe') {
+            $query = $query->where('debe', '>', 0);
+        } elseif ($tipo === 'haber') {
+            $query = $query->where('haber', '>', 0);
+        } else {
+            $tipo = 'todos';
+        }
+
+        $desde = self::dia_del_input($desde);
+        $hasta = self::dia_del_input($hasta);
+
+        if (! is_null($desde)) {
+            $query = $query->whereDate('created_at', '>=', $desde);
+        }
+
+        if (! is_null($hasta)) {
+            $query = $query->whereDate('created_at', '<=', $hasta);
+        }
+
+        $encontrados = (clone $query)->count();
+
+        $direccion = ($orden === 'mas_viejos') ? 'ASC' : 'DESC';
+
+        $movimientos = (clone $query)
+            // Desempate por id: created_at se repite entre movimientos de una misma venta, y con
+            // LIMIT/OFFSET sobre una clave con empates MySQL puede repetir una fila en dos páginas.
+            ->orderBy('created_at', $direccion)
+            ->orderBy('id', $direccion)
+            ->skip(($pagina - 1) * $limite)
+            ->take($limite)
+            ->get(['id', 'detalle', 'description', 'debe', 'haber', 'saldo', 'status', 'sale_id', 'credit_account_id', 'moneda_id', 'created_at']);
+
+        $lista = [];
+
+        foreach ($movimientos as $movimiento) {
+            // detalle es el campo principal; description queda de respaldo para filas viejas.
+            $detalle = trim((string) ($movimiento->detalle ?? ''));
+            if ($detalle === '') {
+                $detalle = trim((string) ($movimiento->description ?? ''));
+            }
+
+            $lista[] = [
+                'movimiento_id'     => (int) $movimiento->id,
+                'fecha'             => $movimiento->created_at ? $movimiento->created_at->format('d/m/Y H:i') : '',
+                'detalle'           => $detalle,
+                'debe'              => $movimiento->debe !== null ? (float) $movimiento->debe : 0,
+                'haber'             => $movimiento->haber !== null ? (float) $movimiento->haber : 0,
+                // Acumulado DE SU CUENTA: sólo se puede leer como una serie si todas las filas son
+                // de la misma cuenta, que es lo que garantiza el filtro de arriba.
+                'saldo'             => $movimiento->saldo !== null ? (float) $movimiento->saldo : 0,
+                'estado'            => (string) $movimiento->status,
+                // Para encadenar con consultar_ventas_impagas_de_un_cliente sin adivinar.
+                'venta_id'          => is_null($movimiento->sale_id) ? null : (int) $movimiento->sale_id,
+                'credit_account_id' => is_null($movimiento->credit_account_id) ? null : (int) $movimiento->credit_account_id,
+            ];
+        }
+
+        $saldos = self::saldos_en_pesos_de_clientes($owner_id, [(int) $cliente->id]);
+
+        return [
+            'cliente'                   => (string) $cliente->name,
+            'cliente_id'                => (int) $cliente->id,
+            'filtro'                    => [
+                'tipo'              => $tipo,
+                'desde'             => $desde,
+                'hasta'             => $hasta,
+                'orden'             => $direccion === 'ASC' ? 'mas_viejos' : 'mas_nuevos',
+                'credit_account_id' => $credit_account_id,
+                // Qué se contestó cuando no se pidió cuenta: los pesos, no todo mezclado.
+                'solo_pesos'        => is_null($credit_account_id) || $credit_account_id <= 0,
+            ],
+            'cuentas'                   => $cuentas,
+            'saldo_en_pesos'            => isset($saldos[(int) $cliente->id]) ? $saldos[(int) $cliente->id] : 0,
+            'movimientos_encontrados'   => (int) $encontrados,
+            'movimientos_en_esta_lista' => count($lista),
+            'pagina'                    => $pagina,
+            // Nunca 0: "pagina 1 de 0" no se puede leer, y sin movimientos la unica pagina es la 1.
+            'paginas'                   => $limite > 0 ? (int) max(1, ceil($encontrados / $limite)) : 1,
+            'movimientos'               => $lista,
+        ];
+    }
+
+    /**
+     * Las cuentas corrientes de un cliente, con su moneda y su saldo.
+     *
+     * Viajan siempre en la respuesta de movimientos: son la forma de que el asistente sepa que el
+     * cliente TIENE una cuenta en dólares sin tener que mezclarla con la de pesos para enterarse.
+     *
+     * @param  int  $owner_id
+     * @param  int  $client_id
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function cuentas_de_un_cliente(int $owner_id, int $client_id): array
+    {
+        $filas = DB::table('credit_accounts')
+            ->where('user_id', $owner_id)
+            ->where('model_name', 'client')
+            ->where('model_id', $client_id)
+            ->orderBy('id')
+            ->get(['id', 'moneda_id', 'saldo', 'limite_credito']);
+
+        $resultado = [];
+
+        foreach ($filas as $fila) {
+            $es_pesos = is_null($fila->moneda_id) || in_array((int) $fila->moneda_id, RecolectorBase::MONEDAS_PESOS, true);
+
+            $resultado[] = [
+                'credit_account_id' => (int) $fila->id,
+                'moneda_id'         => is_null($fila->moneda_id) ? null : (int) $fila->moneda_id,
+                // moneda_id 0 y 1 son pesos (RecolectorBase::MONEDAS_PESOS); el resto no lo es, y
+                // el número viaja al lado para que nadie tenga que adivinar cuál.
+                'es_en_pesos'       => $es_pesos,
+                'saldo'             => is_null($fila->saldo) ? 0.0 : (float) $fila->saldo,
+                'limite_credito'    => is_null($fila->limite_credito) ? null : (float) $fila->limite_credito,
+            ];
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Normaliza una fecha que llegó por parámetro a 'AAAA-MM-DD', o null si no es usable.
+     *
+     * Un valor que no se puede interpretar devuelve null (= "no hay filtro") en vez de un
+     * 01/01/1970 que recortaría la consulta entera sin que nada lo denuncie.
+     *
+     * @param  mixed  $valor
+     * @return string|null
+     */
+    protected static function dia_del_input($valor)
+    {
+        if (is_null($valor)) {
+            return null;
+        }
+
+        $limpio = trim((string) $valor);
+
+        if ($limpio === '') {
+            return null;
+        }
+
+        $momento = strtotime($limpio);
+
+        return $momento === false ? null : date('Y-m-d', $momento);
     }
 
     /**
@@ -727,55 +979,10 @@ class ConsultasSistemaIaHelper
             $dias = 30;
         }
 
-        /*
-         * 🔴 EL MATCH EXACTO SE BUSCA CONTRA LA BASE Y NO ADENTRO DE LOS CANDIDATOS. Antes se traían
-         * 20 artículos ordenados por nombre y recién ahí se buscaba el nombre exacto: si el exacto
-         * era el 21º alfabéticamente, quedaba afuera del tope y ganaba otro — con el docblock
-         * prometiendo lo contrario. Y este método elige UN SOLO artículo para contestar, así que
-         * elegir mal no devuelve de menos: devuelve la lista de interesados de otra cosa, con total
-         * seguridad y sin nada que lo denuncie.
-         */
-        $elegido = Article::query()
-            ->where('user_id', $owner_id)
-            ->where('name', $busqueda)
-            ->orderBy('id')
-            ->first(['id', 'name']);
+        $elegido = self::resolver_articulo($owner_id, $busqueda);
 
         if (is_null($elegido)) {
-            /*
-             * 🔴 Los comodines del LIKE se escapan. Molde y porqué:
-             * CriteriosDeOfertaService::articulos_que_matchean(). Un término real como "50%" o
-             * "cable_2" los trae adentro, y sin escaparlos "50%" matchea todo lo que empieza con 50.
-             * Acá pesa más que en el motor de ofertas: allá un comodín trae artículos de más, acá
-             * CAMBIA SOBRE CUÁL ARTÍCULO se contesta.
-             */
-            $escapado = addcslashes($busqueda, '%_\\');
-
-            $candidatos = Article::query()
-                ->where('user_id', $owner_id)
-                ->where(function ($sub) use ($escapado) {
-                    $sub->where('name', 'LIKE', '%' . $escapado . '%')
-                        ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
-                        ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
-                })
-                ->orderBy('name')
-                ->limit(self::MAX_RESULTS)
-                ->get(['id', 'name']);
-
-            if ($candidatos->isEmpty()) {
-                return [];
-            }
-
-            // Sin match exacto en la base, el primero por nombre. Antes de eso, el mismo nombre
-            // ignorando mayúsculas y acentos, que es como lo escribe una persona en el chat.
-            $elegido = $candidatos->first();
-
-            foreach ($candidatos as $candidato) {
-                if (self::normalize_text((string) $candidato->name) === self::normalize_text($busqueda)) {
-                    $elegido = $candidato;
-                    break;
-                }
-            }
+            return [];
         }
 
         $service = new ActividadDeClientesService($owner_id);
@@ -822,6 +1029,916 @@ class ConsultasSistemaIaHelper
             // pero "lo están mirando 15 personas que no puedo nombrar" es un dato del negocio.
             'visitantes_anonimos'        => (int) $anonimos['visitantes'],
             'eventos_de_anonimos'        => (int) $anonimos['eventos'],
+        ];
+    }
+
+    /**
+     * Resuelve UN artículo del dueño a partir de lo que escribió la persona en el chat.
+     *
+     * Estaba escrito adentro de interesados_en_un_articulo() y se extrajo tal cual (misión
+     * agente-ia-mano-derecha, bloque B): tres consultas nuevas eligen artículo igual que aquélla, y
+     * una segunda forma de elegir es una segunda verdad — el día que una cambie, dos tools
+     * contestarían sobre artículos distintos con la misma pregunta y nada lo denunciaría.
+     *
+     * 🔴 EL MATCH EXACTO SE BUSCA CONTRA LA BASE Y NO ADENTRO DE LOS CANDIDATOS. Antes se traían
+     * 20 artículos ordenados por nombre y recién ahí se buscaba el nombre exacto: si el exacto
+     * era el 21º alfabéticamente, quedaba afuera del tope y ganaba otro — con el docblock
+     * prometiendo lo contrario. Y esto elige UN SOLO artículo para contestar, así que elegir mal
+     * no devuelve de menos: devuelve la respuesta de otra cosa, con total seguridad y sin nada
+     * que lo denuncie.
+     *
+     * @param  int     $owner_id  Id del dueño (articles.user_id).
+     * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @return Article|null  null cuando la búsqueda viene vacía o no matchea ningún artículo del dueño
+     */
+    protected static function resolver_articulo(int $owner_id, string $busqueda)
+    {
+        $busqueda = trim($busqueda);
+
+        /*
+         * Sin búsqueda no hay pregunta que contestar. Traer "el primer artículo del catálogo" y
+         * contestar sobre él sería una respuesta perfectamente plausible sobre algo que nadie
+         * preguntó, que es la peor forma de estar equivocado.
+         */
+        if ($busqueda === '') {
+            return null;
+        }
+
+        // Las columnas van fijas acá y no las elige el que llama: así ningún consumidor se lleva
+        // un artículo a medio hidratar y después lee null donde hay dato.
+        $columnas = ['id', 'name', 'bar_code', 'provider_code', 'stock', 'price', 'final_price'];
+
+        $elegido = Article::query()
+            ->where('user_id', $owner_id)
+            ->where('name', $busqueda)
+            ->orderBy('id')
+            ->first($columnas);
+
+        if (! is_null($elegido)) {
+            return $elegido;
+        }
+
+        /*
+         * 🔴 Los comodines del LIKE se escapan. Molde y porqué:
+         * CriteriosDeOfertaService::articulos_que_matchean(). Un término real como "50%" o
+         * "cable_2" los trae adentro, y sin escaparlos "50%" matchea todo lo que empieza con 50.
+         * Acá pesa más que en el motor de ofertas: allá un comodín trae artículos de más, acá
+         * CAMBIA SOBRE CUÁL ARTÍCULO se contesta.
+         */
+        $escapado = addcslashes($busqueda, '%_\\');
+
+        $candidatos = Article::query()
+            ->where('user_id', $owner_id)
+            ->where(function ($sub) use ($escapado) {
+                $sub->where('name', 'LIKE', '%' . $escapado . '%')
+                    ->orWhere('bar_code', 'LIKE', '%' . $escapado . '%')
+                    ->orWhere('provider_code', 'LIKE', '%' . $escapado . '%');
+            })
+            ->orderBy('name')
+            ->limit(self::MAX_RESULTS)
+            ->get($columnas);
+
+        if ($candidatos->isEmpty()) {
+            return null;
+        }
+
+        // Sin match exacto en la base, el primero por nombre. Antes de eso, el mismo nombre
+        // ignorando mayúsculas y acentos, que es como lo escribe una persona en el chat.
+        foreach ($candidatos as $candidato) {
+            if (self::normalize_text((string) $candidato->name) === self::normalize_text($busqueda)) {
+                return $candidato;
+            }
+        }
+
+        return $candidatos->first();
+    }
+
+    /**
+     * Resuelve UN proveedor del dueño a partir de lo que escribió la persona. Mismo criterio que
+     * resolver_articulo(): exacto contra la base primero, después LIKE con los comodines escapados
+     * y desempate por nombre normalizado. Busca por nombre, razón social y CUIT, que es como la
+     * persona nombra a un proveedor.
+     *
+     * @param  int     $owner_id  Id del dueño (providers.user_id).
+     * @param  string  $busqueda
+     * @return Provider|null
+     */
+    protected static function resolver_proveedor(int $owner_id, string $busqueda)
+    {
+        $busqueda = trim($busqueda);
+
+        if ($busqueda === '') {
+            return null;
+        }
+
+        $columnas = ['id', 'name', 'razon_social', 'cuit', 'phone', 'email'];
+
+        $elegido = Provider::query()
+            ->where('user_id', $owner_id)
+            ->where('name', $busqueda)
+            ->orderBy('id')
+            ->first($columnas);
+
+        if (! is_null($elegido)) {
+            return $elegido;
+        }
+
+        $escapado = addcslashes($busqueda, '%_\\');
+
+        $candidatos = Provider::query()
+            ->where('user_id', $owner_id)
+            ->where(function ($sub) use ($escapado) {
+                $sub->where('name', 'LIKE', '%' . $escapado . '%')
+                    ->orWhere('razon_social', 'LIKE', '%' . $escapado . '%')
+                    ->orWhere('cuit', 'LIKE', '%' . $escapado . '%');
+            })
+            ->orderBy('name')
+            ->limit(self::MAX_RESULTS)
+            ->get($columnas);
+
+        if ($candidatos->isEmpty()) {
+            return null;
+        }
+
+        foreach ($candidatos as $candidato) {
+            if (self::normalize_text((string) $candidato->name) === self::normalize_text($busqueda)) {
+                return $candidato;
+            }
+        }
+
+        return $candidatos->first();
+    }
+
+    /**
+     * "No encontré sobre qué contestar", dicho de forma que no se pueda leer como una respuesta.
+     *
+     * 🔴 POR QUÉ NO ALCANZA CON DEVOLVER VACÍO. Una lista vacía es indistinguible de "no hay nada
+     * que informar", y las dos cosas se contestan MUY distinto: "Fulano no te debe nada" es una
+     * afirmación sobre la plata del comerciante, y decirla porque no encontramos a Fulano es una
+     * respuesta falsa dicha con total seguridad. Lo mismo con un artículo que nadie compró contra
+     * un artículo que no existe.
+     *
+     * Misma forma que los errores de CatalogoDeDatosIaHelper: `error` con el motivo y `como_sigo`
+     * con la salida, para que el modelo pueda corregir sin gastar una vuelta preguntando.
+     *
+     * @param  string  $motivo
+     * @param  string  $como_sigo
+     * @return array<string, string>
+     */
+    protected static function no_encontrado(string $motivo, string $como_sigo): array
+    {
+        return [
+            'error'     => $motivo,
+            'como_sigo' => $como_sigo,
+        ];
+    }
+
+    /**
+     * Normaliza el límite que pidió el que llama.
+     *
+     * 0 (o negativo) = "el de siempre", MAX_RESULTS. Un pedido más grande se acepta hasta
+     * TOPE_DURO_DE_RESULTADOS y ahí se corta: el tope existe para que el JSON de una tool no se
+     * coma el presupuesto de tiempo del asistente, así que no puede depender de lo que pida el
+     * modelo.
+     *
+     * Es público porque la consulta genérica (CatalogoDeDatosIaHelper) normaliza su límite con
+     * ESTE método y no con una copia: dos copias del mismo techo se desincronizan sin que nada lo
+     * denuncie, y la que quede alta es la que se come el presupuesto.
+     *
+     * @param  int  $limite
+     * @return int
+     */
+    public static function limite_pedido(int $limite): int
+    {
+        if ($limite <= 0) {
+            return self::MAX_RESULTS;
+        }
+
+        if ($limite > self::TOPE_DURO_DE_RESULTADOS) {
+            return self::TOPE_DURO_DE_RESULTADOS;
+        }
+
+        return $limite;
+    }
+
+    /**
+     * Fecha de un Carbon (o null) en el formato que lee la persona. Un null es "no hay fecha", no
+     * un 01/01/1970 con cara de fecha real.
+     *
+     * @param  mixed  $valor
+     * @param  string $formato
+     * @return string|null
+     */
+    protected static function fecha_legible($valor, string $formato = 'd/m/Y')
+    {
+        if (is_null($valor) || $valor === '') {
+            return null;
+        }
+
+        if ($valor instanceof \DateTimeInterface) {
+            return $valor->format($formato);
+        }
+
+        $momento = strtotime((string) $valor);
+
+        return $momento === false ? null : date($formato, $momento);
+    }
+
+    /**
+     * LAS VENTAS QUE UN CLIENTE TODAVÍA NO PAGÓ, DE LA MÁS VIEJA A LA MÁS NUEVA.
+     *
+     * Es el caso que originó la misión agente-ia-mano-derecha: "¿cuál es la venta más vieja que me
+     * debe Tucumana?". Hasta hoy el asistente lo intentaba con los movimientos de cuenta corriente,
+     * que venían del más NUEVO al más viejo y topeados en 20: en un cliente con muchos pagos, la
+     * venta vieja quedaba fuera de la ventana y el asistente contestaba que no había ninguna.
+     *
+     * 🔴 EL RECORTE NO SE REESCRIBE ACÁ: sale de VentasSinCobrarHelper::query_de_ventas(), que es
+     * la misma query del listado de ventas sin cobrar de la pantalla y del recordatorio de cobro
+     * por WhatsApp. Una segunda definición de "venta impaga" es el camino más corto a que la
+     * pantalla y el chat le den dos respuestas distintas al mismo comerciante.
+     *
+     * ⚠️ Qué implica reusarla, dicho con todas las letras: la query pide que la venta tenga
+     * `COALESCE(dias_alerta_venta_no_cobrada_personalizado, $dias)` días de antigüedad. Con el
+     * $dias = 0 por defecto eso es "todas", salvo para una venta que tenga SU PROPIO umbral
+     * cargado, que recién aparece cuando ese umbral se cumple. Es el criterio del sistema, no uno
+     * inventado acá.
+     *
+     * 🔴 El orden por defecto es de la MÁS VIEJA a la más nueva, y no es un detalle de gusto: la
+     * pregunta que hay que poder contestar en una sola vuelta es "la más vieja". Y por si el modelo
+     * pide otro orden, `venta_impaga_mas_vieja` viaja igual, calculada aparte contra la query
+     * entera y no contra la página.
+     *
+     * @param  int     $owner_id   Id del dueño (sales.user_id). Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  int     $client_id  Id del cliente, tal como lo devolvió consultar_clientes.
+     * @param  string  $orden      'mas_viejas' (por defecto) o 'mas_nuevas'.
+     * @param  int     $limite     0 = MAX_RESULTS.
+     * @param  int     $dias       Umbral general de antigüedad; 0 = sin umbral general.
+     * @return array<string, mixed>  Vacío si el cliente no es del dueño o no existe
+     */
+    public static function ventas_impagas_de_un_cliente(int $owner_id, int $client_id, string $orden = 'mas_viejas', int $limite = 0, int $dias = 0): array
+    {
+        $limite = self::limite_pedido($limite);
+
+        $cliente = Client::query()
+            ->where('user_id', $owner_id)
+            ->where('id', $client_id)
+            ->first(['id', 'name']);
+
+        /*
+         * La tenencia se controla acá y no adentro de la query: sin este first() un client_id de
+         * otro comercio devolvería lista vacía (que es correcto) pero indistinguible de "este
+         * cliente no te debe nada" (que es otra cosa muy distinta, y es plata).
+         */
+        if (is_null($cliente)) {
+            return self::no_encontrado(
+                'No encontré ningún cliente con el id ' . $client_id . ' en este negocio.',
+                'Buscá el cliente con consultar_clientes y volvé a llamar con el id que devuelva. No digas que no debe nada: no se pudo mirar.'
+            );
+        }
+
+        if ($dias < 0) {
+            $dias = 0;
+        }
+
+        $base = VentasSinCobrarHelper::query_de_ventas($owner_id, null, $dias)
+            ->where('sales.client_id', (int) $cliente->id);
+
+        $encontradas = (clone $base)->count();
+
+        $direccion = ($orden === 'mas_nuevas') ? 'DESC' : 'ASC';
+
+        $ventas = (clone $base)
+            ->with('current_acount')
+            ->orderBy('sales.created_at', $direccion)
+            ->orderBy('sales.id', $direccion)
+            ->limit($limite)
+            ->get();
+
+        $lista = [];
+        $pendiente_en_pesos = 0.0;
+        $en_otra_moneda = 0;
+
+        foreach ($ventas as $venta) {
+            $fila = self::fila_de_venta_impaga($venta);
+
+            /*
+             * 🔴 El total suma SOLO las ventas en pesos, y las otras se cuentan aparte. Es la misma
+             * regla de compras_a_un_proveedor y por el mismo motivo, escrito ahí: un total que
+             * mezcla monedas es un número falso que nadie puede detectar mirándolo.
+             */
+            if ($fila['en_pesos']) {
+                $pendiente_en_pesos += $fila['pendiente'];
+            } else {
+                $en_otra_moneda++;
+            }
+
+            $lista[] = $fila;
+        }
+
+        /*
+         * La más vieja de TODAS, no la más vieja de la página: es la pregunta del caso original y
+         * tiene que estar aunque el modelo haya pedido el orden inverso o un límite chico. Cuando
+         * la lista YA viene de la más vieja a la más nueva, la primera fila es esa misma y no se
+         * gasta una consulta de más: el presupuesto de tiempo del asistente es el recurso escaso
+         * de toda esta misión.
+         */
+        if ($direccion === 'ASC' && ! empty($lista)) {
+            $fila_mas_vieja = $lista[0];
+        } else {
+            $mas_vieja = (clone $base)
+                ->with('current_acount')
+                ->orderBy('sales.created_at', 'ASC')
+                ->orderBy('sales.id', 'ASC')
+                ->first();
+
+            $fila_mas_vieja = is_null($mas_vieja) ? null : self::fila_de_venta_impaga($mas_vieja);
+        }
+
+        $saldos = self::saldos_en_pesos_de_clientes($owner_id, [(int) $cliente->id]);
+
+        return [
+            'cliente'                       => (string) $cliente->name,
+            'cliente_id'                    => (int) $cliente->id,
+            'orden'                         => $direccion === 'ASC' ? 'mas_viejas' : 'mas_nuevas',
+            'ventas_impagas_encontradas'    => (int) $encontradas,
+            'ventas_en_esta_lista'          => count($lista),
+            /*
+             * 🔴 El nombre dice las DOS cosas que lo acotan: es la suma de lo que está EN ESTA
+             * LISTA (con la lista recortada no es la deuda del cliente) y solo de las ventas EN
+             * PESOS. Un total de la pantalla informado como total del negocio es el defecto que
+             * consultar_actividad_de_un_cliente vino a arreglar; un total que mezcla monedas es el
+             * que arregla compras_a_un_proveedor. Acá pasaban los dos.
+             */
+            'total_pendiente_en_pesos_en_esta_lista' => round($pendiente_en_pesos, 2),
+            // Cuántas de las ventas listadas NO están en ese total porque van en otra moneda.
+            'ventas_en_otra_moneda_en_esta_lista'    => $en_otra_moneda,
+            /*
+             * La deuda de verdad sale de credit_accounts, que es la única fuente de deuda que el
+             * sistema le cuenta a una IA (ver el docblock de clientes()). Incluye lo que no está en
+             * ninguna venta: saldos iniciales, notas de crédito, ajustes. Y es SOLO en pesos, que es
+             * la otra mitad de por qué las ventas en dólares tienen que declararse: si no, este
+             * número y el de arriba no cierran y no hay forma de saber por qué.
+             */
+            'saldo_en_cuenta_corriente_en_pesos' => isset($saldos[(int) $cliente->id]) ? $saldos[(int) $cliente->id] : 0,
+            'venta_impaga_mas_vieja'        => $fila_mas_vieja,
+            'ventas'                        => $lista,
+        ];
+    }
+
+    /**
+     * Una venta impaga, con las mismas claves siempre. Un JSON con filas de forma distinta obliga
+     * a Claude a adivinar el shape, y adivina mal.
+     *
+     * @param  Sale  $venta  Con current_acount ya cargada (o no: se resuelve igual).
+     * @return array<string, mixed>
+     */
+    protected static function fila_de_venta_impaga($venta): array
+    {
+        $cuenta = $venta->current_acount;
+
+        $debe      = (is_null($cuenta) || is_null($cuenta->debe)) ? 0.0 : (float) $cuenta->debe;
+        $pagandose = (is_null($cuenta) || is_null($cuenta->pagandose)) ? 0.0 : (float) $cuenta->pagandose;
+
+        /*
+         * 🔴 LA MONEDA DE LA VENTA VIAJA EN LA FILA. Sin esto, una venta en dólares de un comercio
+         * con la extensión `ventas_en_dolares` llega como un número pelado — y el prompt le dice al
+         * asistente que los importes son en pesos salvo aviso, así que la informa en pesos. Es el
+         * mismo criterio que ya aplican compras_a_un_proveedor (`en_pesos`) y compras_de_un_articulo
+         * (`costo_en_dolares`): esta consulta había quedado afuera de su propia regla.
+         *
+         * Manda la moneda de la CUENTA CORRIENTE, que es la fila donde vive la deuda, y la de la
+         * venta queda de respaldo para las filas viejas que no la tengan. null se lee como pesos,
+         * igual que en todo el resto (RecolectorBase::MONEDAS_PESOS incluye el 0 además del 1).
+         */
+        $moneda_id = null;
+
+        if (! is_null($cuenta) && ! is_null($cuenta->moneda_id)) {
+            $moneda_id = (int) $cuenta->moneda_id;
+        } elseif (! is_null($venta->moneda_id)) {
+            $moneda_id = (int) $venta->moneda_id;
+        }
+
+        return [
+            'venta_id'        => (int) $venta->id,
+            'numero'          => is_null($venta->num) ? null : (int) $venta->num,
+            'fecha'           => self::fecha_legible($venta->created_at),
+            // Días desde la venta: el "desde cuándo" de la pregunta, ya calculado para que el
+            // modelo no tenga que restar fechas (que es donde se equivoca).
+            'dias_sin_cobrar' => is_null($venta->created_at) ? null : (int) $venta->created_at->copy()->startOfDay()->diffInDays(now()->startOfDay()),
+            'total'           => is_null($venta->total) ? 0.0 : (float) $venta->total,
+            'debe'            => $debe,
+            // Lo que ya entregó a cuenta de ESTA venta; el sistema lo guarda aparte del haber.
+            'pagado_a_cuenta' => $pagandose,
+            'pendiente'       => round($debe - $pagandose, 2),
+            'estado'          => is_null($cuenta) ? null : (string) $cuenta->status,
+            'moneda_id'       => $moneda_id,
+            'en_pesos'        => is_null($moneda_id) || in_array($moneda_id, RecolectorBase::MONEDAS_PESOS, true),
+        ];
+    }
+
+    /**
+     * QUÉ CLIENTES COMPRARON UN ARTÍCULO Y CUÁNTAS UNIDADES, EN EL ERP.
+     *
+     * Es el caso 2 de las capturas: "¿qué cliente me compró más la lámpara?". Hasta hoy contestaba
+     * consultar_interesados_en_un_articulo, que corre sobre el tracking de la TIENDA ONLINE
+     * (`buyer_tracking_events`: quién la miró, quién la puso en el carrito) — otra pregunta, y el
+     * comerciante no tenía cómo darse cuenta.
+     *
+     * ⚠️ `article_purchases` es LO QUE EL CLIENTE COMPRÓ, no una compra a un proveedor. El nombre
+     * de la tabla engaña: las compras a proveedores son `provider_orders`.
+     *
+     * 🔴 Va con Sale::scopeSoloVentasReales(): sin ese scope, una venta contenedora de
+     * consolidación AFIP suma las mismas unidades que las ventas que agrupa, y el artículo aparece
+     * vendido el doble. Es el mismo scope que usan los reportes de rendimiento, y por eso se
+     * invoca y no se reescribe.
+     *
+     * 🔴 LAS UNIDADES SON EXACTAS; EL MONTO PUEDE ESTAR INCOMPLETO, Y CUÁNTO SE DICE.
+     * `ArticlePurchaseHelper::set_costo_y_price()` (`:50-67`) llena `article_purchases.price` SOLO
+     * cuando la venta tiene `moneda_id == 1`; con `== 2` llena `price_dolar`; y con null o 0 NO
+     * LLENA NINGUNO DE LOS DOS. Y `sales.moneda_id` es nullable sin default desde la migración
+     * `2025_08_29_162530`, que no hizo backfill: TODA venta anterior al 29/8/2025 lo tiene en null.
+     *
+     * Hasta el 16/9/2026 el monto se calculaba con `COALESCE(price, 0)`, así que esas unidades
+     * entraban como CERO PESOS. No daba un cero sospechoso: daba un total bajo y plausible, y el
+     * comerciante leía "Fulano te compró 500 unidades por $40.000" cuando fueron $300.000. Y la
+     * ventana por defecto de esta consulta es TODA LA HISTORIA, o sea que la pregunta apunta justo
+     * a las ventas viejas. Ahora esas unidades no entran al monto y viajan contadas en
+     * `unidades_sin_precio_en_pesos`, por cliente y en el total.
+     *
+     * @param  int     $owner_id  Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
+     * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @param  int     $dias      Ventana hacia atrás; 0 = toda la historia.
+     * @param  int     $limite    0 = MAX_RESULTS.
+     * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún artículo del dueño
+     */
+    public static function quien_compro_un_articulo(int $owner_id, string $busqueda, int $dias = 0, int $limite = 0): array
+    {
+        $limite = self::limite_pedido($limite);
+
+        $articulo = self::resolver_articulo($owner_id, $busqueda);
+
+        // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
+        // distintas, y vacio se lee como la segunda. Ver no_encontrado().
+        if (is_null($articulo)) {
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
+            );
+        }
+
+        $base = Sale::query()
+            ->soloVentasReales()
+            ->where('sales.user_id', $owner_id)
+            ->join('article_purchases', 'article_purchases.sale_id', '=', 'sales.id')
+            ->where('article_purchases.article_id', (int) $articulo->id);
+
+        if ($dias > 0) {
+            // La fecha que manda es la de la VENTA. article_purchases.created_at se copia de ahí
+            // (ArticlePurchaseHelper:33), así que da lo mismo — pero una sola fecha es una sola
+            // verdad el día que deje de copiarse.
+            $base = $base->where('sales.created_at', '>=', now()->subDays($dias));
+        }
+
+        $totales = (clone $base)->toBase()->selectRaw(
+            'COALESCE(SUM(article_purchases.amount), 0) as unidades, '
+            . 'COUNT(DISTINCT sales.id) as ventas, '
+            . 'COUNT(DISTINCT CASE WHEN article_purchases.client_id > 0 THEN article_purchases.client_id END) as clientes, '
+            . 'COALESCE(SUM(CASE WHEN article_purchases.client_id IS NULL OR article_purchases.client_id = 0 THEN article_purchases.amount ELSE 0 END), 0) as sin_cliente, '
+            . 'COALESCE(SUM(CASE WHEN article_purchases.price IS NULL THEN article_purchases.amount ELSE 0 END), 0) as sin_precio'
+        )->first();
+
+        $filas = (clone $base)
+            ->where('article_purchases.client_id', '>', 0)
+            ->leftJoin('clients', 'clients.id', '=', 'article_purchases.client_id')
+            ->groupBy('article_purchases.client_id')
+            ->toBase()
+            // MAX() sobre las columnas que no están en el GROUP BY: con ONLY_FULL_GROUP_BY prendido
+            // (el default de MySQL 8) un clients.name suelto acá es un error de SQL, no un warning.
+            ->selectRaw(
+                'article_purchases.client_id as client_id, '
+                . 'MAX(clients.name) as cliente, '
+                . 'COALESCE(SUM(article_purchases.amount), 0) as unidades, '
+                . 'COUNT(DISTINCT sales.id) as ventas, '
+                . 'MAX(sales.created_at) as ultima, '
+                /*
+                 * 🔴 UN RENGLÓN SIN PRECIO NO VALE CERO PESOS: NO ENTRA AL TOTAL Y SE CUENTA APARTE.
+                 * Acá había un COALESCE(price, 0) y era plata mal informada en silencio (ver el
+                 * docblock del método).
+                 *
+                 * ⚠️ La condición es `price IS NULL` y NO una sobre `sales.moneda_id`, y eso no es
+                 * un gusto: en SQL, `NULL NOT IN (0, 1)` no da TRUE, da NULL — así que un CASE
+                 * armado sobre la moneda deja afuera justamente las filas de las ventas viejas, que
+                 * son las que se quiere contar. `price IS NULL` es la condición sobre la MISMA
+                 * columna que lee el SUM, así que las dos ramas cubren todas las filas por
+                 * construcción, sin importar qué diga (o no diga) la moneda de la venta.
+                 */
+                . 'COALESCE(SUM(CASE WHEN article_purchases.price IS NOT NULL THEN article_purchases.amount * article_purchases.price ELSE 0 END), 0) as monto, '
+                . 'COALESCE(SUM(CASE WHEN article_purchases.price IS NULL THEN article_purchases.amount ELSE 0 END), 0) as sin_precio'
+            )
+            ->orderByDesc('unidades')
+            ->orderBy('article_purchases.client_id')
+            ->limit($limite)
+            ->get();
+
+        $lista = [];
+
+        foreach ($filas as $fila) {
+            $lista[] = [
+                'cliente_id'     => (int) $fila->client_id,
+                // El cliente pudo haberse borrado después de la venta: la compra sigue siendo real.
+                'cliente'        => is_null($fila->cliente) ? 'cliente borrado' : (string) $fila->cliente,
+                'unidades'       => (float) $fila->unidades,
+                'ventas'         => (int) $fila->ventas,
+                'ultima_compra'  => self::fecha_legible($fila->ultima),
+                /*
+                 * 🔴 EN PESOS Y SOLO DE LO QUE TIENE PRECIO, y por eso van las dos claves juntas.
+                 * `article_purchases.price` lo llena ArticlePurchaseHelper::set_costo_y_price()
+                 * SOLO cuando la venta tiene `moneda_id == 1`; con 2 llena `price_dolar`, y con
+                 * null o 0 NO LLENA NINGUNO. Y `sales.moneda_id` es nullable sin default desde la
+                 * migración del 29/8/2025, que no hizo backfill: toda venta anterior a esa fecha
+                 * cae en el último caso.
+                 */
+                'monto_en_pesos' => round((float) $fila->monto, 2),
+                /*
+                 * Cuántas de las unidades de arriba NO están representadas en ese monto. Va SIEMPRE,
+                 * aunque sea 0: sin este número, un total bajo sobre muchas unidades se lee como un
+                 * artículo barato y no como un dato incompleto, que es la diferencia entre
+                 * equivocarse y no saber que uno se equivocó.
+                 */
+                'unidades_sin_precio_en_pesos' => (float) $fila->sin_precio,
+            ];
+        }
+
+        return [
+            'articulo'                      => (string) $articulo->name,
+            'articulo_id'                   => (int) $articulo->id,
+            'ventana_dias'                  => $dias > 0 ? $dias : null,
+            'clientes_encontrados'          => (int) $totales->clientes,
+            'clientes_en_esta_lista'        => count($lista),
+            'unidades_vendidas_en_total'    => (float) $totales->unidades,
+            'ventas_en_total'               => (int) $totales->ventas,
+            // Mostrador: ventas sin cliente cargado. Sin esta clave, un artículo que se vende todo
+            // por mostrador llega como lista vacía y el asistente contesta "no lo compró nadie".
+            'unidades_sin_cliente'          => (float) $totales->sin_cliente,
+            /*
+             * 🔴 Cuántas unidades quedaron afuera de los montos en pesos. Reemplaza a una bandera
+             * anterior (`unidades_de_ventas_en_dolares`) que se calculaba con `sales.moneda_id = 2`
+             * y por eso NO contaba las ventas viejas sin moneda, que son la mayoría de las que
+             * faltan: prometía explicar el hueco del monto y explicaba una parte. Una bandera de
+             * escape que no cubre todo el hueco es peor que ninguna, porque viaja en un número bajo
+             * y se lee como "acá no hay nada raro".
+             */
+            'unidades_sin_precio_en_pesos'  => (float) $totales->sin_precio,
+            'clientes'                      => $lista,
+        ];
+    }
+
+    /**
+     * LAS COMPRAS REALES DE UN ARTÍCULO: cuándo lo compré, a quién, cuánto y a qué costo.
+     *
+     * Es el caso 3 de las capturas: "¿cuándo fue la última compra que cargué de la lámpara y a
+     * quién se la compré?". Hasta hoy contestaba consultar_precios_de_proveedores, que mira
+     * `provider_price_offers` — el histórico de precios OFERTADOS, que no es una compra. Ninguna
+     * tool tocaba `provider_orders`.
+     *
+     * 🔴 El orden es fijo, de la compra MÁS NUEVA a la más vieja: la pregunta es "la última", así
+     * que la primera fila de la lista es la respuesta aunque el tope corte el resto.
+     *
+     * ⚠️ `costo_unitario` sale del pivot `article_provider_order.cost`, que puede estar en dólares
+     * — la misma fila lo dice en `costo_en_dolares`. Informar ese número sin la bandera es cómo se
+     * le contesta a un comerciante que compró la lámpara a 12 pesos.
+     *
+     * @param  int     $owner_id  Id del dueño (provider_orders.user_id). Nunca Auth.
+     * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @param  int     $limite    0 = MAX_RESULTS.
+     * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún artículo del dueño
+     */
+    public static function compras_de_un_articulo(int $owner_id, string $busqueda, int $limite = 0): array
+    {
+        $limite = self::limite_pedido($limite);
+
+        $articulo = self::resolver_articulo($owner_id, $busqueda);
+
+        // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
+        // distintas, y vacio se lee como la segunda. Ver no_encontrado().
+        if (is_null($articulo)) {
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
+            );
+        }
+
+        $base = DB::table('article_provider_order')
+            ->join('provider_orders', 'provider_orders.id', '=', 'article_provider_order.provider_order_id')
+            ->where('provider_orders.user_id', $owner_id)
+            ->where('article_provider_order.article_id', (int) $articulo->id);
+
+        $totales = (clone $base)->selectRaw(
+            'COUNT(*) as compras, '
+            . 'COALESCE(SUM(article_provider_order.amount), 0) as pedidas, '
+            . 'COALESCE(SUM(article_provider_order.received), 0) as recibidas, '
+            . 'COUNT(DISTINCT provider_orders.provider_id) as proveedores'
+        )->first();
+
+        $filas = (clone $base)
+            // leftJoin y no join: un proveedor borrado no puede hacer desaparecer una compra que
+            // existió. El nombre viaja en null y la fila se lee igual.
+            ->leftJoin('providers', 'providers.id', '=', 'provider_orders.provider_id')
+            ->leftJoin('provider_order_statuses', 'provider_order_statuses.id', '=', 'provider_orders.provider_order_status_id')
+            ->orderByDesc('provider_orders.created_at')
+            ->orderByDesc('provider_orders.id')
+            ->limit($limite)
+            ->get([
+                'provider_orders.id as compra_id',
+                'provider_orders.num as numero',
+                'provider_orders.created_at as fecha',
+                'provider_orders.fecha_emision_comprobante as fecha_comprobante',
+                'provider_orders.numero_comprobante as comprobante',
+                'provider_orders.provider_id as proveedor_id',
+                'providers.name as proveedor',
+                'provider_order_statuses.name as estado',
+                'article_provider_order.amount as pedida',
+                'article_provider_order.received as recibida',
+                'article_provider_order.cost as costo',
+                'article_provider_order.received_cost as costo_recibido',
+                'article_provider_order.cost_in_dollars as costo_en_dolares',
+            ]);
+
+        $lista = [];
+
+        foreach ($filas as $fila) {
+            $lista[] = [
+                'compra_id'          => (int) $fila->compra_id,
+                'numero'             => is_null($fila->numero) ? null : (int) $fila->numero,
+                'fecha'              => self::fecha_legible($fila->fecha),
+                // La del comprobante del proveedor, que puede no ser la de carga. null = no se cargó.
+                'fecha_comprobante'  => self::fecha_legible($fila->fecha_comprobante),
+                'comprobante'        => is_null($fila->comprobante) ? null : (string) $fila->comprobante,
+                'proveedor_id'       => is_null($fila->proveedor_id) ? null : (int) $fila->proveedor_id,
+                'proveedor'          => is_null($fila->proveedor) ? 'proveedor borrado' : (string) $fila->proveedor,
+                // Sólo hay dos estados en el sistema: "En proceso" y "Recibido".
+                'estado'             => is_null($fila->estado) ? null : (string) $fila->estado,
+                'cantidad_pedida'    => is_null($fila->pedida) ? 0.0 : (float) $fila->pedida,
+                'cantidad_recibida'  => is_null($fila->recibida) ? 0.0 : (float) $fila->recibida,
+                'costo_unitario'     => is_null($fila->costo) ? null : (float) $fila->costo,
+                'costo_al_recibir'   => is_null($fila->costo_recibido) ? null : (float) $fila->costo_recibido,
+                'costo_en_dolares'   => (bool) $fila->costo_en_dolares,
+            ];
+        }
+
+        return [
+            'articulo'                     => (string) $articulo->name,
+            'articulo_id'                  => (int) $articulo->id,
+            'compras_encontradas'          => (int) $totales->compras,
+            'compras_en_esta_lista'        => count($lista),
+            'proveedores_distintos'        => (int) $totales->proveedores,
+            'unidades_pedidas_en_total'    => (float) $totales->pedidas,
+            'unidades_recibidas_en_total'  => (float) $totales->recibidas,
+            // De la más nueva a la más vieja: la primera fila de `compras` es la última compra.
+            'orden'                        => 'mas_nuevas_primero',
+            'compras'                      => $lista,
+        ];
+    }
+
+    /**
+     * QUÉ LE COMPRÉ A UN PROVEEDOR: cada compra con su fecha, su comprobante, su estado y su total.
+     *
+     * Corre sobre `provider_orders`, que es la compra de verdad (no confundir con
+     * `article_purchases`, que es lo que le compró un CLIENTE al comercio).
+     *
+     * 🔴 El total en pesos se suma sólo sobre las compras en pesos, con el mismo criterio de moneda
+     * que usa todo el resto (RecolectorBase::MONEDAS_PESOS = [0, 1]: el 0 también es pesos, lo
+     * deja un alta donde el select de moneda no se eligió). Las compras en otra moneda se cuentan
+     * aparte en vez de sumarse a los pesos: un total que mezcla monedas es un número falso que
+     * nadie puede detectar mirándolo.
+     *
+     * @param  int     $owner_id  Id del dueño (provider_orders.user_id). Nunca Auth.
+     * @param  string  $busqueda  Nombre, razón social o CUIT del proveedor.
+     * @param  int     $dias      Ventana hacia atrás; 0 = toda la historia.
+     * @param  int     $limite    0 = MAX_RESULTS.
+     * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún proveedor del dueño
+     */
+    public static function compras_a_un_proveedor(int $owner_id, string $busqueda, int $dias = 0, int $limite = 0): array
+    {
+        $limite = self::limite_pedido($limite);
+
+        $proveedor = self::resolver_proveedor($owner_id, $busqueda);
+
+        // Mismo criterio que con el articulo: vacio se leeria como "no le compraste nada".
+        if (is_null($proveedor)) {
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre, la razon social o el CUIT del proveedor para poder buscarlo.'
+                    : 'No encontre ningun proveedor de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Preguntale a la persona por el nombre exacto del proveedor, o proba con parte del nombre.'
+            );
+        }
+
+        $monedas_pesos = implode(',', RecolectorBase::MONEDAS_PESOS);
+
+        $base = DB::table('provider_orders')
+            ->where('provider_orders.user_id', $owner_id)
+            ->where('provider_orders.provider_id', (int) $proveedor->id);
+
+        if ($dias > 0) {
+            $base = $base->where('provider_orders.created_at', '>=', now()->subDays($dias));
+        }
+
+        $totales = (clone $base)->selectRaw(
+            'COUNT(*) as compras, '
+            . 'COALESCE(SUM(CASE WHEN provider_orders.moneda_id IN (' . $monedas_pesos . ') THEN provider_orders.total ELSE 0 END), 0) as total_pesos, '
+            . 'COUNT(CASE WHEN provider_orders.moneda_id NOT IN (' . $monedas_pesos . ') THEN 1 END) as otra_moneda'
+        )->first();
+
+        $filas = (clone $base)
+            ->leftJoin('provider_order_statuses', 'provider_order_statuses.id', '=', 'provider_orders.provider_order_status_id')
+            ->orderByDesc('provider_orders.created_at')
+            ->orderByDesc('provider_orders.id')
+            ->limit($limite)
+            ->get([
+                'provider_orders.id as compra_id',
+                'provider_orders.num as numero',
+                'provider_orders.created_at as fecha',
+                'provider_orders.fecha_emision_comprobante as fecha_comprobante',
+                'provider_orders.numero_comprobante as comprobante',
+                'provider_orders.total as total',
+                'provider_orders.moneda_id as moneda_id',
+                'provider_order_statuses.name as estado',
+            ]);
+
+        $ids = [];
+        foreach ($filas as $fila) {
+            $ids[] = (int) $fila->compra_id;
+        }
+
+        $renglones = self::renglones_por_compra($ids);
+
+        $lista = [];
+
+        foreach ($filas as $fila) {
+            $compra_id = (int) $fila->compra_id;
+
+            $lista[] = [
+                'compra_id'            => $compra_id,
+                'numero'               => is_null($fila->numero) ? null : (int) $fila->numero,
+                'fecha'                => self::fecha_legible($fila->fecha),
+                'fecha_comprobante'    => self::fecha_legible($fila->fecha_comprobante),
+                'comprobante'          => is_null($fila->comprobante) ? null : (string) $fila->comprobante,
+                'estado'               => is_null($fila->estado) ? null : (string) $fila->estado,
+                'total'                => is_null($fila->total) ? 0.0 : (float) $fila->total,
+                // En qué moneda está ese total. Sin esta clave, un total en dólares se lee como pesos.
+                'en_pesos'             => in_array((int) $fila->moneda_id, RecolectorBase::MONEDAS_PESOS, true),
+                'articulos_distintos'  => isset($renglones[$compra_id]) ? (int) $renglones[$compra_id]['articulos'] : 0,
+                'unidades'             => isset($renglones[$compra_id]) ? (float) $renglones[$compra_id]['unidades'] : 0.0,
+            ];
+        }
+
+        return [
+            'proveedor'                 => (string) $proveedor->name,
+            'proveedor_id'              => (int) $proveedor->id,
+            'ventana_dias'              => $dias > 0 ? $dias : null,
+            'compras_encontradas'       => (int) $totales->compras,
+            'compras_en_esta_lista'     => count($lista),
+            'total_comprado_en_pesos'   => round((float) $totales->total_pesos, 2),
+            // Cuántas de esas compras NO están en el total de arriba porque van en otra moneda.
+            'compras_en_otra_moneda'    => (int) $totales->otra_moneda,
+            'orden'                     => 'mas_nuevas_primero',
+            'compras'                   => $lista,
+        ];
+    }
+
+    /**
+     * Cuántos artículos distintos y cuántas unidades tiene cada compra de la lista.
+     *
+     * Va en una consulta aparte y no en un JOIN sobre la query principal: con el join, el GROUP BY
+     * multiplicaría las filas de provider_orders y el `total` de cada compra se contaría una vez
+     * por renglón.
+     *
+     * @param  array<int, int>  $provider_order_ids
+     * @return array<int, array<string, float>>  provider_order_id => ['articulos' => n, 'unidades' => n]
+     */
+    protected static function renglones_por_compra(array $provider_order_ids): array
+    {
+        $provider_order_ids = array_values(array_unique(array_filter(array_map('intval', $provider_order_ids))));
+
+        if (empty($provider_order_ids)) {
+            return [];
+        }
+
+        $filas = DB::table('article_provider_order')
+            ->whereIn('provider_order_id', $provider_order_ids)
+            ->groupBy('provider_order_id')
+            ->selectRaw('provider_order_id, COUNT(DISTINCT article_id) as articulos, COALESCE(SUM(amount), 0) as unidades')
+            ->get();
+
+        $resultado = [];
+
+        foreach ($filas as $fila) {
+            $resultado[(int) $fila->provider_order_id] = [
+                'articulos' => (float) $fila->articulos,
+                'unidades'  => (float) $fila->unidades,
+            ];
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * EL STOCK DE UN ARTÍCULO EN CADA SUCURSAL.
+     *
+     * Sale del pivot `address_article` (Article::addresses(), con `pivot.amount`), que es donde el
+     * sistema reparte el stock cuando el comercio tiene más de una sucursal.
+     *
+     * ⚠️ NO HAY EXTENSIÓN DE DEPÓSITOS: el criterio de "este comercio trabaja con depósitos" es
+     * tener DOS O MÁS sucursales, exactamente como lo resuelve RecolectorStock (que devuelve
+     * "no aplica" con una sola). Con una sola sucursal la respuesta viaja igual, con
+     * `trabaja_con_depositos` en false: el stock total sigue siendo la respuesta correcta a la
+     * pregunta, y el que pregunta tiene que poder distinguir "no hay reparto" de "no hay stock".
+     *
+     * 🔴 Van TODAS las sucursales, incluidas las que tienen 0. Un depósito sin stock es justamente
+     * lo que el comerciante está buscando cuando pregunta dónde está la mercadería.
+     *
+     * 🔴 Viajan los dos números: el `stock` de la ficha del artículo y la suma del reparto por
+     * sucursal. Cuando no coinciden hay un problema de datos real, y esconderlo detrás de un solo
+     * número elegido por nosotros es decidir por el comerciante cuál de los dos es el bueno.
+     *
+     * @param  int     $owner_id  Id del dueño (articles.user_id / addresses.user_id). Nunca Auth.
+     * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @param  int     $limite    0 = MAX_RESULTS.
+     * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún artículo del dueño
+     */
+    public static function stock_por_deposito(int $owner_id, string $busqueda, int $limite = 0): array
+    {
+        $limite = self::limite_pedido($limite);
+
+        $articulo = self::resolver_articulo($owner_id, $busqueda);
+
+        // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
+        // distintas, y vacio se lee como la segunda. Ver no_encontrado().
+        if (is_null($articulo)) {
+            return self::no_encontrado(
+                trim($busqueda) === ''
+                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
+            );
+        }
+
+        // Las sucursales del comercio son las addresses del dueño, igual que en AddressController
+        // y en RecolectorStock. (La tabla también guarda domicilios de compradores de la tienda,
+        // que llevan buyer_id y no son del dueño.)
+        $sucursales = DB::table('addresses')
+            ->leftJoin('address_article', function ($join) use ($articulo) {
+                $join->on('address_article.address_id', '=', 'addresses.id')
+                    ->where('address_article.article_id', '=', (int) $articulo->id);
+            })
+            ->where('addresses.user_id', $owner_id)
+            ->orderBy('addresses.id')
+            ->get([
+                'addresses.id as address_id',
+                'addresses.street as nombre',
+                'addresses.es_deposito_origen as es_deposito_origen',
+                'address_article.amount as cantidad',
+                'address_article.stock_min as stock_min',
+                'address_article.stock_max as stock_max',
+            ]);
+
+        $repartido = 0.0;
+        $todas = [];
+
+        foreach ($sucursales as $sucursal) {
+            $cantidad = is_null($sucursal->cantidad) ? 0.0 : (float) $sucursal->cantidad;
+
+            $repartido += $cantidad;
+
+            $todas[] = [
+                'address_id'         => (int) $sucursal->address_id,
+                'deposito'           => (string) ($sucursal->nombre === null ? '' : $sucursal->nombre),
+                'stock'              => $cantidad,
+                'stock_min'          => is_null($sucursal->stock_min) ? null : (float) $sucursal->stock_min,
+                'stock_max'          => is_null($sucursal->stock_max) ? null : (float) $sucursal->stock_max,
+                'es_deposito_origen' => (bool) $sucursal->es_deposito_origen,
+            ];
+        }
+
+        $mostradas = array_slice($todas, 0, $limite);
+
+        return [
+            'articulo'                  => (string) $articulo->name,
+            'articulo_id'               => (int) $articulo->id,
+            'trabaja_con_depositos'     => count($todas) >= 2,
+            'depositos_encontrados'     => count($todas),
+            'depositos_en_esta_lista'   => count($mostradas),
+            // El stock de la ficha del artículo: el número que muestra el listado.
+            'stock_total_del_articulo'  => is_null($articulo->stock) ? 0.0 : (float) $articulo->stock,
+            // La suma del reparto por sucursal. Si difiere del de arriba, el dato está roto y hay
+            // que decirlo, no elegir uno.
+            'stock_sumado_por_deposito' => round($repartido, 2),
+            'depositos'                 => $mostradas,
         ];
     }
 
