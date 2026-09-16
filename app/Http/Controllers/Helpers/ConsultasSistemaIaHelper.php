@@ -1288,13 +1288,24 @@ class ConsultasSistemaIaHelper
             $lista[] = $fila;
         }
 
-        // La más vieja de TODAS, no la más vieja de la página: es la pregunta del caso original y
-        // tiene que estar aunque el modelo haya pedido el orden inverso o un límite chico.
-        $mas_vieja = (clone $base)
-            ->with('current_acount')
-            ->orderBy('sales.created_at', 'ASC')
-            ->orderBy('sales.id', 'ASC')
-            ->first();
+        /*
+         * La más vieja de TODAS, no la más vieja de la página: es la pregunta del caso original y
+         * tiene que estar aunque el modelo haya pedido el orden inverso o un límite chico. Cuando
+         * la lista YA viene de la más vieja a la más nueva, la primera fila es esa misma y no se
+         * gasta una consulta de más: el presupuesto de tiempo del asistente es el recurso escaso
+         * de toda esta misión.
+         */
+        if ($direccion === 'ASC' && ! empty($lista)) {
+            $fila_mas_vieja = $lista[0];
+        } else {
+            $mas_vieja = (clone $base)
+                ->with('current_acount')
+                ->orderBy('sales.created_at', 'ASC')
+                ->orderBy('sales.id', 'ASC')
+                ->first();
+
+            $fila_mas_vieja = is_null($mas_vieja) ? null : self::fila_de_venta_impaga($mas_vieja);
+        }
 
         $saldos = self::saldos_en_pesos_de_clientes($owner_id, [(int) $cliente->id]);
 
@@ -1317,7 +1328,7 @@ class ConsultasSistemaIaHelper
              * ninguna venta: saldos iniciales, notas de crédito, ajustes.
              */
             'saldo_en_cuenta_corriente_en_pesos' => isset($saldos[(int) $cliente->id]) ? $saldos[(int) $cliente->id] : 0,
-            'venta_impaga_mas_vieja'        => is_null($mas_vieja) ? null : self::fila_de_venta_impaga($mas_vieja),
+            'venta_impaga_mas_vieja'        => $fila_mas_vieja,
             'ventas'                        => $lista,
         ];
     }

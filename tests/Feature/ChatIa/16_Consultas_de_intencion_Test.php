@@ -207,6 +207,27 @@ class Consultas_de_intencion_Test extends TestCase
     }
 
     /**
+     * Un cliente del dueño SIN ventas impagas contesta con la respuesta completa en cero, no con
+     * vacío: "no te debe nada" y "ese cliente no es tuyo" no se pueden leer igual.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_cliente_al_dia_contesta_en_cero_y_no_vacio()
+    {
+        $cliente = Client::create(['name' => 'Cliente B1 al dia', 'user_id' => $this->comercio->id]);
+
+        $resultado = ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente($this->comercio->id, $cliente->id);
+
+        $this->assertEquals('Cliente B1 al dia', $resultado['cliente']);
+        $this->assertEquals(0, $resultado['ventas_impagas_encontradas']);
+        $this->assertEquals(0, $resultado['ventas_en_esta_lista']);
+        $this->assertEquals([], $resultado['ventas']);
+        $this->assertNull($resultado['venta_impaga_mas_vieja'], 'Sin ventas impagas no hay una más vieja, y eso es null y no una fila inventada.');
+        $this->assertEquals(0, $resultado['total_pendiente_en_esta_lista']);
+    }
+
+    /**
      * 🔴 Caso 2 de las capturas: "¿qué cliente me compró más la lámpara?". Corre sobre el ERP
      * (article_purchases), no sobre el tracking de la tienda.
      *
