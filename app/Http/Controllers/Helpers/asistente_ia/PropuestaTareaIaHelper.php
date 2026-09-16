@@ -27,11 +27,17 @@ use Carbon\Carbon;
 class PropuestaTareaIaHelper {
 
     /**
-     * Clave de una tarea nueva escrita a mano: toda tarea nueva de la conversación reemplaza a la
-     * anterior sin confirmar (§3.5 del plan). Las que nacen de un gasto o un pago futuros llevan la
-     * clave de su carga (ver proponer_desde_carga_futura()).
+     * Prefijo de la clave de una tarea nueva escrita a mano. La clave completa la arma
+     * clave_de_tarea_nueva() con el detalle y la fecha, igual que las que nacen de un gasto o un
+     * pago futuros llevan el id de su concepto o de su cuenta (ver proponer_desde_carga_futura()).
      */
     const CLAVE_TAREA_NUEVA = 'tarea_nueva';
+
+    /**
+     * Cuánto del detalle entra en la clave. La columna es string(100) y la clave lleva además el
+     * prefijo y la fecha.
+     */
+    const LARGO_DETALLE_EN_CLAVE = 60;
 
     const AVISO_GASTO_FUTURO = 'Ese día, al marcarla como hecha, se registra el gasto con cómo se pagó.';
 
@@ -137,7 +143,33 @@ class PropuestaTareaIaHelper {
             );
         }
 
-        return self::armar_tarea_nueva($contexto, $mensaje, $datos, self::CLAVE_TAREA_NUEVA, null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
+        return self::armar_tarea_nueva($contexto, $mensaje, $datos, self::clave_de_tarea_nueva($detalle, $fecha), null, EntradaDeCargaIa::valor($input, 'reemplaza_a'), []);
+    }
+
+    /**
+     * Clave de reemplazo de una tarea nueva: prefijo + detalle + fecha.
+     *
+     * 🔴 CON LA CLAVE LITERAL `tarea_nueva`, DOS TAREAS DISTINTAS DEL MISMO TURNO SE PISABAN. "Agendame
+     * llamar al contador el jueves y pagar el alquiler el viernes" son dos proponer_tarea en el mismo
+     * mensaje: la segunda reemplazaba a la primera y la persona veía una sola tarjeta más un
+     * "Reemplazada por una versión corregida" sobre algo que nadie corrigió. Se perdía una tarea que
+     * había pedido.
+     *
+     * El detalle se normaliza (minúsculas y espacios colapsados) para que una corrección que solo
+     * cambia cómo está escrito el mismo pedido siga reemplazando; una corrección que cambia el texto
+     * de verdad viaja por `reemplaza_a`, que es el camino explícito y no depende de la clave.
+     *
+     * @param  string  $detalle
+     * @param  Carbon  $fecha
+     * @return string
+     */
+    protected static function clave_de_tarea_nueva($detalle, Carbon $fecha) {
+
+        $normalizado = mb_strtolower(trim((string) $detalle), 'UTF-8');
+        $normalizado = preg_replace('/\s+/u', ' ', $normalizado);
+        $normalizado = mb_substr($normalizado, 0, self::LARGO_DETALLE_EN_CLAVE, 'UTF-8');
+
+        return self::CLAVE_TAREA_NUEVA.':'.$normalizado.':'.$fecha->format('Y-m-d');
     }
 
     /**

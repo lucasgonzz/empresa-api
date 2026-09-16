@@ -176,7 +176,8 @@ class Acciones_tareas_Test extends AgendaTestCase
 
         $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
 
-        $this->assertEquals('tarea_nueva', $tarjeta->clave);
+        // La clave lleva detalle y fecha para que dos tareas distintas del mismo turno no se pisen.
+        $this->assertEquals('tarea_nueva:llamar al contador p14:' . $pasado_manana->format('Y-m-d'), $tarjeta->clave);
         $this->assertEquals('Tarea en la agenda', $tarjeta->presentacion['titulo']);
         $this->assertEquals('Llamar al contador P14', $this->renglon($tarjeta->presentacion, 'Qué'));
         $this->assertStringContainsString($pasado_manana->format('d/m/Y'), $this->renglon($tarjeta->presentacion, 'Cuándo'));
@@ -209,9 +210,13 @@ class Acciones_tareas_Test extends AgendaTestCase
      */
     public function una_tarea_que_se_repite_sin_unidades_cargadas_da_un_error_explicito()
     {
-        if (UnidadFrecuencia::count() > 0) {
-            $this->markTestSkipped('Esta base ya tiene unidad_frecuencias sembradas: el caso del cliente viejo no se puede reproducir.');
-        }
+        /*
+         * El caso es el de un cliente viejo sin `unidad_frecuencias` sembradas, así que la tabla se
+         * vacía acá adentro: la transacción del test la repone al terminar. Antes esto era un
+         * markTestSkipped() mirando si la tabla estaba vacía, y el día que la base del slot las tuvo
+         * sembradas el test dejó de correr sin que nada fallara (el 15/9/2026 pasó justamente eso).
+         */
+        UnidadFrecuencia::query()->delete();
 
         list($conversation, $assistant) = $this->conversacion();
 
@@ -589,5 +594,63 @@ class Acciones_tareas_Test extends AgendaTestCase
         $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
 
         Pending::where('id', $ajena->id)->delete();
+    }
+
+    /**
+     * 🔴 "Agendame llamar al contador el jueves y pagar el alquiler el viernes" son dos
+     * proponer_tarea en el MISMO mensaje. Con la clave literal `tarea_nueva`, la segunda reemplazaba
+     * a la primera: quedaba una sola tarjeta y un "Reemplazada por una versión corregida" sobre algo
+     * que nadie corrigió, y la tarea que la persona pidió se perdía. Las dos tienen que quedar
+     * confirmables, y una corrección del MISMO pedido (mismo detalle y fecha) sí tiene que reemplazar.
+     *
+     * @test
+     */
+    public function dos_tareas_distintas_del_mismo_mensaje_no_se_pisan_y_la_correccion_si_reemplaza()
+    {
+        list($conversation, $assistant) = $this->conversacion();
+
+        $jueves = Carbon::today()->addDays(2);
+        $viernes = Carbon::today()->addDays(3);
+
+        $contador = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => 'Llamar al contador P14 bis',
+            'fecha'   => $jueves->format('Y-m-d'),
+        ]);
+
+        $alquiler = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => 'Pagar el alquiler P14 bis',
+            'fecha'   => $viernes->format('Y-m-d'),
+        ]);
+
+        $this->assertTrue($contador['ok'], json_encode($contador));
+        $this->assertTrue($alquiler['ok'], json_encode($alquiler));
+
+        $this->assertEquals([], $contador['reemplazo']);
+        $this->assertEquals([], $alquiler['reemplazo'], 'La segunda tarea no reemplaza a la primera.');
+
+        $this->assertEquals('propuesta', AiMessageAction::find($contador['tarjeta_id'])->estado);
+        $this->assertEquals('propuesta', AiMessageAction::find($alquiler['tarjeta_id'])->estado);
+
+        // Mismo pedido escrito distinto (mayúsculas y espacios de más): es una corrección, reemplaza.
+        $corregida = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => '  LLAMAR   al Contador P14 bis ',
+            'fecha'   => $jueves->format('Y-m-d'),
+            'notas'   => 'A las 10',
+        ]);
+
+        $this->assertTrue($corregida['ok'], json_encode($corregida));
+        $this->assertEquals([$contador['tarjeta_id']], $corregida['reemplazo']);
+        $this->assertEquals('reemplazada', AiMessageAction::find($contador['tarjeta_id'])->estado);
+        $this->assertEquals('propuesta', AiMessageAction::find($alquiler['tarjeta_id'])->estado, 'La corrección del contador no toca el alquiler.');
+
+        // Y la misma tarea para OTRO día es otra tarea, no una corrección.
+        $otro_dia = $this->herramienta($conversation, $assistant, 'proponer_tarea', [
+            'detalle' => 'Llamar al contador P14 bis',
+            'fecha'   => $viernes->format('Y-m-d'),
+        ]);
+
+        $this->assertTrue($otro_dia['ok'], json_encode($otro_dia));
+        $this->assertEquals([], $otro_dia['reemplazo']);
+        $this->assertEquals('propuesta', AiMessageAction::find($corregida['tarjeta_id'])->estado);
     }
 }
