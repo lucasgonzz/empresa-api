@@ -18,19 +18,51 @@ use Illuminate\Support\Facades\Schema;
  */
 class AddEnvioZipcodeToBuyersTable extends Migration
 {
+    /**
+     * Agrega las columnas que falten. Guardas `hasColumn` una por una, no una sola por la tabla:
+     * mismo criterio que `2026_09_14_100200_add_envio_to_carts_and_orders_tables.php`, para
+     * tolerar que alguna ya se haya agregado a mano en producción antes de que llegue el release
+     * (pasó de verdad, ver `parche-manual-en-produccion-de-truvari` en el repo de conocimiento) —
+     * sin la guarda, esa migración corta con "Duplicate column name" y deja el upgrade a medias.
+     *
+     * @return void
+     */
     public function up()
     {
         Schema::table('buyers', function (Blueprint $table) {
-            $table->string('envio_zipcode', 20)->nullable();
-            $table->string('envio_city', 120)->nullable();
-            $table->string('envio_state', 120)->nullable();
+            if (!Schema::hasColumn('buyers', 'envio_zipcode')) {
+                $table->string('envio_zipcode', 20)->nullable();
+            }
+            if (!Schema::hasColumn('buyers', 'envio_city')) {
+                $table->string('envio_city', 120)->nullable();
+            }
+            if (!Schema::hasColumn('buyers', 'envio_state')) {
+                $table->string('envio_state', 120)->nullable();
+            }
         });
     }
 
+    /**
+     * Saca las columnas que estén. El comprador simplemente vuelve a escribir su código postal
+     * la próxima vez.
+     *
+     * @return void
+     */
     public function down()
     {
-        Schema::table('buyers', function (Blueprint $table) {
-            $table->dropColumn(['envio_zipcode', 'envio_city', 'envio_state']);
+        $presentes = array_values(array_filter(
+            ['envio_zipcode', 'envio_city', 'envio_state'],
+            function ($columna) {
+                return Schema::hasColumn('buyers', $columna);
+            }
+        ));
+
+        if (count($presentes) === 0) {
+            return;
+        }
+
+        Schema::table('buyers', function (Blueprint $table) use ($presentes) {
+            $table->dropColumn($presentes);
         });
     }
 }
