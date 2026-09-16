@@ -136,8 +136,14 @@ class RecolectorCaja extends RecolectorBase
     /**
      * false solo si el comercio no tiene NADA de lo que habla el informe: ni cajas, ni deuda de
      * clientes o con proveedores, ni cheques pendientes (recibidos o emitidos, de cualquier
-     * fecha), ni cuotas pendientes, ni tareas en la Agenda (con o sin gasto). Con cualquiera de
-     * esas cosas el informe aplica, aunque varias secciones vengan vacías.
+     * fecha), ni cuotas pendientes, ni tareas VIGENTES en la Agenda (con o sin gasto). Con
+     * cualquiera de esas cosas el informe aplica, aunque varias secciones vengan vacías.
+     *
+     * 🔴 "Tareas vigentes", no "alguna fila en pendings": con cualquier fila alcanzaba, así que
+     * un dueño sin cajas, sin deudas, sin cheques y sin cuotas, con una sola tarea puntual
+     * completada en 2024, recibía el informe entero con TODAS las secciones vacías. Es el mismo
+     * criterio de vigencia de agenda_con_vencimientos() —recurrente, o no completada— pero sin
+     * exigir concepto de gasto: la libreta también es motivo para que el informe exista.
      *
      * @param User $owner
      * @return bool
@@ -162,7 +168,26 @@ class RecolectorCaja extends RecolectorBase
             return true;
         }
 
-        return DB::table('pendings')->where('user_id', $owner->id)->exists();
+        return $this->consulta_tareas_vigentes($owner)->exists();
+    }
+
+    /**
+     * Tareas de la Agenda del dueño que todavía pueden vencer: recurrentes (una recurrente nunca
+     * se "termina": cada período vuelve) o puntuales sin hacer. Una puntual ya completada es
+     * historia y no aparece en ningún bloque del informe.
+     *
+     * @param User $owner
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function consulta_tareas_vigentes(User $owner)
+    {
+        return DB::table('pendings')
+            ->where('user_id', $owner->id)
+            ->where(function ($q) {
+                $q->where('es_recurrente', 1)
+                    ->orWhereNull('completado')
+                    ->orWhere('completado', 0);
+            });
     }
 
     /**
@@ -488,22 +513,17 @@ class RecolectorCaja extends RecolectorBase
     }
 
     /**
-     * true si el dueño tiene alguna tarea con gasto que todavía pueda vencer: recurrente, o
-     * puntual sin hacer.
+     * true si el dueño tiene alguna tarea con gasto que todavía pueda vencer: la vigencia de
+     * consulta_tareas_vigentes() más el concepto de gasto, que es lo que vuelve a una tarea un
+     * vencimiento y no un recordatorio de la libreta.
      *
      * @param User $owner
      * @return bool
      */
     protected function agenda_con_vencimientos(User $owner): bool
     {
-        return DB::table('pendings')
-            ->where('user_id', $owner->id)
+        return $this->consulta_tareas_vigentes($owner)
             ->where('expense_concept_id', '>', 0)
-            ->where(function ($q) {
-                $q->where('es_recurrente', 1)
-                    ->orWhereNull('completado')
-                    ->orWhere('completado', 0);
-            })
             ->exists();
     }
 
