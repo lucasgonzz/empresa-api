@@ -27,6 +27,15 @@ use Illuminate\Support\Str;
  * `services.mostrador.spa_url` (variable SPA_URL del `.env`), y si no está cargada se devuelve
  * `url: null` y el admin manda el resumen sin link: se elige fallar visible antes que mandar un
  * link roto.
+ *
+ * 🔴 PERO EL TOKEN SE EMITE SIEMPRE, TENGA O NO SPA_URL CARGADA, y ese es el punto entero de que
+ * `emitir()` devuelva las dos cosas y no solo la URL. `SPA_URL` no la escribe ningún seeder ni
+ * instalador, así que HOY NO LA TIENE NINGÚN CLIENTE: si el token viniera atado a la URL, no se
+ * emitiría nunca y el repliegue del admin —que arma el link con `client_apis.spa_url`, que sí está
+ * cargada en las 105 filas— quedaría siendo código muerto. Lo encontró el revisor de merge del
+ * 16/9/2026, con las dos suites en verde: la de este lado fijaba que sin `SPA_URL` no se emite
+ * token, y la del admin fabricaba la clave `token` en un `Http::fake`. Cada punta probaba su propia
+ * versión de un contrato que no existía.
  */
 class MostradorAccesoHelper
 {
@@ -37,14 +46,15 @@ class MostradorAccesoHelper
     const LARGO_TOKEN = 64;
 
     /**
-     * Emite un acceso nuevo para un informe y devuelve la URL con la que se abre, o null si la
-     * instancia no tiene cargada la URL del sistema.
+     * Emite un acceso nuevo para un informe y devuelve el token en claro y la URL con la que se
+     * abre. La URL es null si esta instancia no tiene cargada `SPA_URL`; **el token nunca lo es**,
+     * porque con él el admin arma el link desde su propio lado.
      *
      * Se emite uno por pedido y no se reusa el anterior a propósito: el token en claro no se puede
      * recuperar de la base, así que "reusar" sería imposible sin guardarlo en claro.
      *
      * @param  \App\Models\MostradorReporte  $reporte
-     * @return string|null
+     * @return array{token: string, url: string|null}
      */
     public static function emitir(MostradorReporte $reporte)
     {
@@ -52,11 +62,9 @@ class MostradorAccesoHelper
 
         if (is_null($base)) {
 
-            Log::warning('MostradorAccesoHelper: no hay SPA_URL cargada, el informe va sin link.', [
+            Log::warning('MostradorAccesoHelper: no hay SPA_URL cargada; el token igual se emite y el link lo arma el admin.', [
                 'mostrador_reporte_id' => (int) $reporte->id,
             ]);
-
-            return null;
         }
 
         $token = Str::random(self::LARGO_TOKEN);
@@ -68,7 +76,10 @@ class MostradorAccesoHelper
             'expira_at'            => Carbon::now()->addDays(self::DIAS_DE_VIGENCIA),
         ]);
 
-        return $base . '/informe/' . $token;
+        return [
+            'token' => $token,
+            'url'   => is_null($base) ? null : $base . '/informe/' . $token,
+        ];
     }
 
     /**

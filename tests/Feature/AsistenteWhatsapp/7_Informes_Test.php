@@ -106,12 +106,16 @@ class Informes_Test extends AsistenteWhatsappTestCase
     {
         $informe = $this->informe();
 
-        $url = $this->getJson('api/admin-sync/asistente/informes-pendientes', $this->headers())
-            ->json('informes.0.url');
+        $fila = $this->getJson('api/admin-sync/asistente/informes-pendientes', $this->headers())
+            ->json('informes.0');
 
-        $token = substr($url, strrpos($url, '/') + 1);
+        $token = $fila['token'];
 
         $this->assertEquals(MostradorAccesoHelper::LARGO_TOKEN, strlen($token));
+
+        // Con SPA_URL cargada las dos claves tienen que hablar del mismo token: el link que arma
+        // esta instancia y el que puede armar el admin no pueden abrir informes distintos.
+        $this->assertStringEndsWith('/informe/' . $token, (string) $fila['url']);
 
         $acceso = MostradorAcceso::where('mostrador_reporte_id', $informe->id)->first();
 
@@ -253,13 +257,20 @@ class Informes_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * 🔴 Sin SPA_URL se devuelve url null y el admin manda el resumen sin link: fallar visible
-     * antes que mandar un link roto. Y NO se cae a app.url, que es la URL de la API.
+     * 🔴 Sin SPA_URL se devuelve `url` null y NO se cae a app.url, que es la URL de la API — pero
+     * el TOKEN se emite igual, porque con él el admin arma el link desde su lado
+     * (`client_apis.spa_url`).
+     *
+     * Este test afirmaba lo contrario hasta el 16/9/2026 ("sin link no hay por qué emitir un
+     * token"), y estaba mal: `SPA_URL` no la escribe ningún seeder ni instalador, así que hoy no la
+     * tiene NINGÚN cliente. Con la conducta vieja, el informe de la mañana habría salido sin link
+     * para los 45, con las dos suites en verde — la del admin fabricaba la clave `token` en su
+     * `Http::fake` y la de acá fijaba que no existía. Lo encontró el revisor de merge.
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function sin_spa_url_el_informe_viaja_sin_link_y_no_se_inventa_ninguno()
+    public function sin_spa_url_el_informe_viaja_sin_url_pero_con_token_para_que_el_admin_arme_el_link()
     {
         config(['services.mostrador.spa_url' => null]);
         config(['app.url' => 'https://api-elcliente.comerciocity.com']);
@@ -272,12 +283,24 @@ class Informes_Test extends AsistenteWhatsappTestCase
 
         $this->assertCount(1, $informes, 'El informe se manda igual: lo que falta es el link, no el informe.');
 
-        $this->assertNull($informes[0]['url']);
+        $this->assertNull($informes[0]['url'], 'No se inventa un link con app.url, que es la URL de la API.');
+
+        $this->assertNotEmpty(
+            $informes[0]['token'],
+            'El token viaja siempre: es lo único con lo que el admin puede armar el link.'
+        );
 
         $this->assertEquals(
-            0,
+            1,
             MostradorAcceso::where('mostrador_reporte_id', $informe->id)->count(),
-            'Sin link no hay por qué emitir un token que nadie va a poder usar.'
+            'Y la fila del acceso existe, porque ese token tiene que poder abrir el informe después.'
+        );
+
+        $this->assertTrue(
+            MostradorAcceso::where('mostrador_reporte_id', $informe->id)
+                           ->where('token_hash', MostradorAcceso::hashear($informes[0]['token']))
+                           ->exists(),
+            'El token que viaja es el de esa fila, y la fila lo guarda hasheado.'
         );
     }
 
@@ -291,9 +314,7 @@ class Informes_Test extends AsistenteWhatsappTestCase
     {
         $informe = $this->informe();
 
-        $url = MostradorAccesoHelper::emitir($informe);
-
-        $token = substr($url, strrpos($url, '/') + 1);
+        $token = MostradorAccesoHelper::emitir($informe)['token'];
 
         $respuesta = $this->getJson('api/informe-compartido/' . $token)->assertStatus(200);
 
@@ -330,8 +351,7 @@ class Informes_Test extends AsistenteWhatsappTestCase
     {
         $informe = $this->informe();
 
-        $url = MostradorAccesoHelper::emitir($informe);
-        $token = substr($url, strrpos($url, '/') + 1);
+        $token = MostradorAccesoHelper::emitir($informe)['token'];
 
         $this->getJson('api/informe-compartido/' . $token)->assertStatus(200);
         $this->getJson('api/informe-compartido/' . $token)->assertStatus(200);
@@ -345,8 +365,7 @@ class Informes_Test extends AsistenteWhatsappTestCase
     {
         $informe = $this->informe();
 
-        $url = MostradorAccesoHelper::emitir($informe);
-        $token = substr($url, strrpos($url, '/') + 1);
+        $token = MostradorAccesoHelper::emitir($informe)['token'];
 
         $acceso = MostradorAcceso::where('mostrador_reporte_id', $informe->id)->first();
         $acceso->expira_at = Carbon::now()->subMinute();
@@ -367,8 +386,7 @@ class Informes_Test extends AsistenteWhatsappTestCase
     {
         $informe = $this->informe();
 
-        $url = MostradorAccesoHelper::emitir($informe);
-        $token = substr($url, strrpos($url, '/') + 1);
+        $token = MostradorAccesoHelper::emitir($informe)['token'];
 
         $informe->estado = MostradorReporte::ESTADO_HECHOS;
         $informe->save();

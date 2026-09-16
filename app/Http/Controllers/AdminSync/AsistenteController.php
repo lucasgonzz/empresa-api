@@ -96,7 +96,7 @@ class AsistenteController extends Controller
      * seguidos generan dos respuestas, que es exactamente lo que pasa en cualquier chat.
      *
      * @param  Request  $request
-     * @return JsonResponse  202 · 401 sin clave · 403 sin extensión · 404 sin dueño · 422 validación
+     * @return JsonResponse  202 · 401 sin clave · 403 sin extensión · 409 sin dueño resuelto · 422 validación
      */
     public function mensajes(Request $request): JsonResponse
     {
@@ -356,7 +356,7 @@ class AsistenteController extends Controller
      *
      * @param  Request  $request
      * @param  int  $id
-     * @return JsonResponse  200 · 401 · 403 · 404
+     * @return JsonResponse  200 · 401 · 403 · 404 · 409 sin dueño resuelto
      */
     public function mostrar_mensaje(Request $request, $id): JsonResponse
     {
@@ -415,7 +415,7 @@ class AsistenteController extends Controller
      * informe (para 'dia' y 'tienda' es ayer), y lo que hay que avisar es lo que se escribió.
      *
      * @param  Request  $request
-     * @return JsonResponse  200 {informes:[{id, tipo, titulo, resumen, url, ai_conversation_id}]} · 401 · 403 · 404
+     * @return JsonResponse  200 {informes:[{id, tipo, titulo, resumen, url, token, ai_conversation_id}]} · 401 · 403 · 409
      */
     public function informes_pendientes(Request $request): JsonResponse
     {
@@ -445,12 +445,23 @@ class AsistenteController extends Controller
 
             $conversacion = MostradorHelper::asegurar_conversacion($reporte, (int) $dueno->id, (int) $dueno->id);
 
+            /*
+             * El acceso viaja con las DOS claves. `url` es el link ya armado, que solo existe si
+             * esta instancia tiene `SPA_URL`; `token` va siempre, y es con lo que el admin arma el
+             * link desde su lado con `client_apis.spa_url`. Hoy ningún cliente tiene `SPA_URL`
+             * cargada (no la escribe ningún seeder ni instalador), así que el camino que de verdad
+             * se usa es el del token: si acá se mandara solo la URL, el informe saldría sin link
+             * para todos.
+             */
+            $acceso = MostradorAccesoHelper::emitir($reporte);
+
             $informes[] = [
                 'id'                 => (int) $reporte->id,
                 'tipo'               => (string) $reporte->tipo,
                 'titulo'             => (string) $reporte->titulo,
                 'resumen'            => (string) $reporte->resumen,
-                'url'                => MostradorAccesoHelper::emitir($reporte),
+                'url'                => $acceso['url'],
+                'token'              => $acceso['token'],
                 'ai_conversation_id' => (int) $conversacion['model']->id,
             ];
         }
@@ -473,7 +484,7 @@ class AsistenteController extends Controller
      *
      * @param  Request  $request
      * @param  int  $id
-     * @return JsonResponse  200 {ok:true} · 401 · 403 · 404
+     * @return JsonResponse  200 {ok:true} · 401 · 403 · 404 · 409 sin dueño resuelto
      */
     public function informe_avisado(Request $request, $id): JsonResponse
     {
@@ -508,9 +519,18 @@ class AsistenteController extends Controller
      * La clave y el gate, en un solo lugar: devuelve la respuesta de rechazo o null si puede pasar.
      *
      * El orden importa. Primero la CLAVE (401): sin ella no se le contesta nada a nadie, ni
-     * siquiera si existe el dueño. Después el dueño (404) y por último la extensión (403), para
+     * siquiera si existe el dueño. Después el dueño y por último la extensión (403), para
      * que el admin pueda distinguir "este cliente no tiene el módulo" de "no pude resolver a quién
      * le estás hablando" y avisar distinto.
+     *
+     * 🔴 El dueño no resuelto da **409, no 404**, y la diferencia importa de verdad. Para el admin,
+     * un 404 en estas rutas significa una sola cosa: "este cliente todavía no tiene el endpoint",
+     * o sea que está en una versión vieja — y con eso le dice al dueño que su sistema no tiene la
+     * función y deja de reintentar. Pero un cliente **ya actualizado** puede no poder decidir el
+     * dueño si está en una base compartida sin `app.USER_ID` en su `.env`, que es una configuración
+     * real de producción. Con 404 se le estaría diciendo a ese dueño que actualice un sistema que
+     * ya está actualizado, y el problema verdadero —una variable sin cargar— no lo vería nadie.
+     * Lo encontró el revisor de merge del 16/9/2026.
      *
      * @param  Request  $request
      * @return JsonResponse|null
@@ -526,7 +546,10 @@ class AsistenteController extends Controller
 
         if (is_null($dueno)) {
 
-            return response()->json(['message' => 'No se pudo resolver el dueño de esta instancia.'], 404);
+            return response()->json([
+                'message' => 'No se pudo resolver el dueño de esta instancia. '
+                           . 'Si la base la comparten varios comercios, falta USER_ID en el .env de este frente.',
+            ], 409);
         }
 
         if (!AsistenteCanalHelper::tiene_extension($dueno)) {
