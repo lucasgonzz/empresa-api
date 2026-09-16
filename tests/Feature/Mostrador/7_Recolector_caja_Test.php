@@ -14,6 +14,7 @@ use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Services\Mostrador\RecolectorCaja;
 use App\Services\Mostrador\RecolectorCompras;
+use App\Services\PurchaseSuggestion\ContextoFinancieroService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -189,6 +190,7 @@ class Recolector_caja_Test extends MostradorTestCase
                 ['caja_id' => $this->s['galicia'], 'nombre' => 'Banco Galicia', 'moneda' => 'pesos', 'disponible' => 350000.0, 'a_liquidar' => 180000.0, 'abierta' => false],
                 ['caja_id' => $this->s['dolares'], 'nombre' => 'Dólares', 'moneda' => 'dolares', 'disponible' => 2000.0, 'a_liquidar' => 300.0, 'abierta' => false],
             ],
+            'cajas_omitidas'   => 0,
         ], $h['cajas']);
 
         // Con hasta 10 cajas, el disponible en pesos es la suma de las cajas en pesos del detalle...
@@ -206,6 +208,11 @@ class Recolector_caja_Test extends MostradorTestCase
         $compras = (new RecolectorCompras())->recolectar($this->comercio, $this->hoy);
         $this->assertSame($compras['contexto_financiero']['saldo_cajas'], $h['cajas']['disponible_pesos']);
 
+        // 🔴 El recolector ya no llama a ContextoFinancieroService (calculaba el disponible dos
+        // veces por caja, sobre una tabla sin índice en caja_id): calcula la suma en la misma
+        // pasada que `por_caja`. Este assert es el que impide que los dos criterios se separen.
+        $this->assertSame($this->disponible_del_contexto_financiero(), $h['cajas']['disponible_pesos']);
+
         // La plata en tránsito es la de la caja en pesos: los 300 dólares a liquidar no entran.
         $this->assertSame(180000.0, $h['a_cobrar']['liquidaciones_pendientes_pesos']);
     }
@@ -220,12 +227,16 @@ class Recolector_caja_Test extends MostradorTestCase
 
         $p = $this->recolectar()['a_pagar'];
 
-        // Lo más viejo primero. La luz está hecha y no aparece.
+        // Una fila por TAREA y lo más RECIENTE primero (lo accionable arriba). Cada tarea tiene
+        // una sola ocurrencia vencida acá, así que `monto_acumulado` es su monto. La luz está
+        // hecha y no aparece.
         $this->assertSame([
-            ['origen' => 'agenda', 'pending_id' => $this->s['sueldo'], 'detalle' => 'Sueldo de Juan', 'concepto' => 'Sueldos', 'fecha' => $this->dia(-20), 'dias_vencido' => 20, 'monto' => 300000.0],
-            ['origen' => 'agenda', 'pending_id' => $this->s['seguro'], 'detalle' => 'Seguro del local', 'concepto' => 'Seguros', 'fecha' => $this->dia(-7), 'dias_vencido' => 7, 'monto' => 0.0],
-            ['origen' => 'agenda', 'pending_id' => $this->s['autonomo'], 'detalle' => 'Pagar autónomo', 'concepto' => 'Impuestos', 'fecha' => $this->dia(-5), 'dias_vencido' => 5, 'monto' => 85000.0],
+            $this->vencido_de_agenda('autonomo', 'Pagar autónomo', 'Impuestos', -5, 85000.0, 1, 85000.0),
+            $this->vencido_de_agenda('seguro', 'Seguro del local', 'Seguros', -7, 0.0, 1, 0.0),
+            $this->vencido_de_agenda('sueldo', 'Sueldo de Juan', 'Sueldos', -20, 300000.0, 1, 300000.0),
         ], $p['vencidos']);
+
+        $this->assertSame(0, $p['vencidos_omitidos']);
 
         // Por fecha y, el mismo día, el monto más grande primero: el IIBB antes que el cheque. Ni el
         // cheque "emitido" sin proveedor ni el cobrado.
@@ -252,6 +263,9 @@ class Recolector_caja_Test extends MostradorTestCase
 
         // 300.000 + 0 + 85.000.
         $this->assertSame(385000.0, $p['total_vencidos']);
+
+        // Las tres vencieron dentro de los últimos 30 días: es todo plata del mes corriente.
+        $this->assertSame(385000.0, $p['total_vencidos_recientes']);
 
         // IIBB 420.000 + cheque 300.000 + alquiler 1.500.000.
         $this->assertSame(2220000.0, $p['total_proximos']);
@@ -287,6 +301,262 @@ class Recolector_caja_Test extends MostradorTestCase
         $this->tarea_recurrente('Pagar el alquiler', 10, 'month', $this->gasto($impuestos, 90000));
 
         $this->assertTrue($this->recolectar()['a_pagar']['agenda_con_vencimientos']);
+    }
+
+    /**
+     * 🔴 El caso que hacía mentir al informe todos los días: un alquiler mensual cargado hace más
+     * de un año y pagado siempre por fuera del sistema (nunca marcado) acumula una ocurrencia
+     * vencida por período para siempre. Eso es UNA fila con su arrastre —no una por período— y la
+     * proyección mira lo vencido del último mes, no los catorce meses de arrastre: con el arrastre
+     * adentro, `estado` era `no_alcanza` siempre, en cualquier comercio con una recurrente sin
+     * marcar.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function una_recurrente_sin_marcar_es_una_sola_fila_y_no_hunde_la_proyeccion()
+    {
+        // El día 10 de cada mes desde hace catorce meses. Se ancla en el 10 (y no en el día de hoy)
+        // porque ningún mes tiene menos de 28 días: así addMonthsNoOverflow nunca recorta y las
+        // ocurrencias son exactamente "el 10 de cada mes", en cualquier fecha en que corra la suite.
+        $base = $this->hoy->copy()->subMonthsNoOverflow(14)->day(10);
+
+        $alquiler = $this->tarea_recurrente_desde('Pagar el alquiler', $base, 'month', $this->gasto($this->concepto('Alquiler'), 800000));
+
+        $fechas = $this->ocurrencias_mensuales_vencidas($base);
+        $recientes = $this->cuantas_de_los_ultimos_treinta_dias($fechas);
+
+        // Más de un año de arrastre, y el tope por tarea de AgendaHelper (30) todavía no aprieta.
+        $this->assertGreaterThan(12, count($fechas));
+        $this->assertLessThanOrEqual(30, count($fechas));
+
+        // Lo único que de verdad hay que poner este mes es el impuesto, y hay plata para pagarlo.
+        $this->caja('Efectivo', 1, true, [[3000000, null]]);
+        $this->tarea('Pagar IIBB', 2, $this->gasto($this->concepto('Impuestos'), 420000));
+
+        $h = $this->recolectar();
+        $p = $h['a_pagar'];
+
+        // Una sola fila, con la ocurrencia MÁS RECIENTE como representante y el arrastre aparte.
+        $this->assertCount(1, $p['vencidos']);
+        $this->assertSame([
+            'origen'               => 'agenda',
+            'pending_id'           => $alquiler,
+            'detalle'              => 'Pagar el alquiler',
+            'concepto'             => 'Alquiler',
+            'fecha'                => end($fechas),
+            'dias_vencido'         => Carbon::parse(end($fechas))->startOfDay()->diffInDays($this->hoy),
+            'monto'                => 800000.0,
+            'ocurrencias_vencidas' => count($fechas),
+            'monto_acumulado'      => 800000.0 * count($fechas),
+        ], $p['vencidos'][0]);
+
+        $this->assertSame(0, $p['vencidos_omitidos']);
+
+        // El arrastre histórico completo sigue viajando (la skill lo cuenta como lo que es)...
+        $this->assertSame(800000.0 * count($fechas), $p['total_vencidos']);
+
+        // ...pero lo reciente es solo lo del último mes.
+        $this->assertSame(800000.0 * $recientes, $p['total_vencidos_recientes']);
+        $this->assertSame(420000.0, $p['total_proximos']);
+
+        // Y la proyección alcanza: `sale` es lo reciente más lo próximo, no los catorce meses.
+        $this->assertSame(800000.0 * $recientes + 420000.0, $h['proyeccion']['sale']);
+        $this->assertSame('alcanza', $h['proyeccion']['estado']);
+    }
+
+    /**
+     * El otro defecto del tope por ocurrencia: cortado en los 10 MÁS VIEJOS, las diez filas eran
+     * el arrastre de una recurrente y el impuesto de anteayer no se veía.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function el_vencimiento_de_anteayer_va_antes_que_el_arrastre_viejo()
+    {
+        // El arrastre: una mensual de hace catorce meses. Se la ancla en un día del mes lejos del
+        // de hoy para que su ocurrencia más reciente no caiga sobre el impuesto de anteayer.
+        $base = $this->hoy->copy()->subMonthsNoOverflow(14)->day($this->hoy->day > 15 ? 3 : 25);
+
+        $alquiler = $this->tarea_recurrente_desde('Pagar el alquiler', $base, 'month', $this->gasto($this->concepto('Alquiler'), 800000));
+
+        // Lo accionable: el impuesto que venció anteayer.
+        $iibb = $this->tarea('Pagar IIBB', -2, $this->gasto($this->concepto('Impuestos'), 420000));
+
+        $vencidos = $this->recolectar()['a_pagar']['vencidos'];
+
+        $this->assertSame([$iibb, $alquiler], array_column($vencidos, 'pending_id'));
+        $this->assertSame($this->dia(-2), $vencidos[0]['fecha']);
+        $this->assertSame(1, $vencidos[0]['ocurrencias_vencidas']);
+        $this->assertSame(420000.0, $vencidos[0]['monto_acumulado']);
+        $this->assertGreaterThan(1, $vencidos[1]['ocurrencias_vencidas']);
+    }
+
+    /**
+     * @group mostrador
+     * @test
+     */
+    public function vencidos_omitidos_cuenta_las_tareas_que_no_entran_en_el_tope()
+    {
+        $impuestos = $this->concepto('Impuestos');
+
+        for ($i = 1; $i <= 13; $i++) {
+            $this->tarea('Vencimiento ' . $i, -$i, $this->gasto($impuestos, 1000 * $i));
+        }
+
+        $p = $this->recolectar()['a_pagar'];
+
+        // Diez TAREAS, lo más reciente primero, y las tres más viejas contadas.
+        $this->assertCount(10, $p['vencidos']);
+        $this->assertSame(3, $p['vencidos_omitidos']);
+        $this->assertSame($this->dia(-1), $p['vencidos'][0]['fecha']);
+        $this->assertSame($this->dia(-10), $p['vencidos'][9]['fecha']);
+
+        // Los totales suman las trece, no las diez listadas.
+        $this->assertSame(91000.0, $p['total_vencidos']);
+        $this->assertSame(91000.0, $p['total_vencidos_recientes']);
+    }
+
+    /**
+     * 🔴 `moneda_id = 0` es PESOS: el criterio sale de Contabilidad (ContabilidadRepository dice
+     * textual que solo el 2 es USD, y FlujoCajaHelper filtra las cajas con null/0/1). El 0 lo deja
+     * un alta donde el select de moneda no se eligió. Contando solo null y 1, la caja quedaba con
+     * moneda "otra" —su disponible afuera de `disponible_pesos` pero sus liquidaciones adentro de
+     * `liquidaciones_pendientes_pesos`— y la cuenta corriente desaparecía de la deuda de clientes.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function la_moneda_cero_es_pesos_en_las_cajas_y_en_las_cuentas_corrientes()
+    {
+        $sin_elegir = $this->caja('Caja del mostrador', 0, true, [[700000, null], [120000, null, 4]]);
+        $en_pesos   = $this->caja('Efectivo', 1, true, [[300000, null]]);
+
+        $cero = $this->cliente('Cliente con moneda 0');
+        $this->deuda('client', $cero->id, 250000, 0);
+        $cuota = $this->cuota($cero, -6, 40000);
+
+        $h = $this->recolectar();
+
+        $this->assertSame([
+            ['caja_id' => $sin_elegir, 'nombre' => 'Caja del mostrador', 'moneda' => 'pesos', 'disponible' => 700000.0, 'a_liquidar' => 120000.0, 'abierta' => true],
+            ['caja_id' => $en_pesos, 'nombre' => 'Efectivo', 'moneda' => 'pesos', 'disponible' => 300000.0, 'a_liquidar' => 0.0, 'abierta' => true],
+        ], $h['cajas']['por_caja']);
+
+        $this->assertSame(1000000.0, $h['cajas']['disponible_pesos']);
+        $this->assertSame(120000.0, $h['cajas']['a_liquidar_pesos']);
+
+        // El mismo criterio que ya usaba FlujoCajaHelper para la plata en tránsito: los dos números
+        // hablan de la misma caja.
+        $this->assertSame(120000.0, $h['a_cobrar']['liquidaciones_pendientes_pesos']);
+
+        // Y el mismo que ContextoFinancieroService, de donde sale el saldo de cajas de compras.
+        $this->assertSame($this->disponible_del_contexto_financiero(), $h['cajas']['disponible_pesos']);
+
+        // La cuenta corriente con moneda 0 es deuda en pesos: en el total, en los clientes para
+        // cobrar, y en el filtro de clientes con deuda que habilita las cuotas.
+        $this->assertSame(250000.0, $h['a_cobrar']['deuda_clientes_total']);
+        $this->assertSame([$cero->id], array_column($h['a_cobrar']['clientes_para_cobrar'], 'client_id'));
+        $this->assertSame(250000.0, $h['a_cobrar']['clientes_para_cobrar'][0]['deuda']);
+        $this->assertSame([$cuota], array_column($h['a_cobrar']['cuotas']['vencidas'], 'cuota_id'));
+    }
+
+    /**
+     * @group mostrador
+     * @test
+     */
+    public function cajas_omitidas_cuenta_las_cajas_que_no_entran_en_el_tope()
+    {
+        for ($i = 1; $i <= 12; $i++) {
+            $this->caja('Caja ' . $i, 1, true, [[1000 * $i, null]]);
+        }
+
+        $c = $this->recolectar()['cajas'];
+
+        $this->assertCount(10, $c['por_caja']);
+        $this->assertSame(2, $c['cajas_omitidas']);
+
+        // El total suma las doce (78.000), el detalle solo las diez más grandes (75.000): sin
+        // `cajas_omitidas`, sumar `por_caja` contradecía el total y nada lo avisaba.
+        $this->assertSame(78000.0, $c['disponible_pesos']);
+        $this->assertSame(75000.0, array_sum(array_column($c['por_caja'], 'disponible')));
+        $this->assertSame($this->disponible_del_contexto_financiero(), $c['disponible_pesos']);
+    }
+
+    /**
+     * `sin_monto` cuenta las tareas con gasto y sin monto de los 30 días, no solo las de la semana:
+     * es el mismo horizonte que `total_proximos_30_dias`, que es justamente el total al que esas
+     * tareas le faltan. Contándolas sobre los 7 días, una tarea sin monto que vence en 20 no le
+     * aparecía al dueño en ningún lado.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function sin_monto_cuenta_las_tareas_de_los_treinta_dias_no_solo_las_de_la_semana()
+    {
+        $impuestos = $this->concepto('Impuestos');
+
+        $this->tarea('Pagar IIBB', 3, $this->gasto($impuestos, 420000));
+        $this->tarea('Pagar el seguro', 20, $this->gasto($impuestos, null));
+
+        $p = $this->recolectar()['a_pagar'];
+
+        // La del día 20 no entra en el detalle de la semana ni suma en el total a 30 días.
+        $this->assertSame([3], array_column($p['proximos'], 'dias_para_vencer'));
+        $this->assertSame(420000.0, $p['total_proximos_30_dias']);
+        $this->assertSame(1, $p['sin_monto']);
+    }
+
+    /**
+     * `aplica` se decide por tareas VIGENTES, no por "existe alguna fila en pendings": con eso,
+     * una tarea puntual completada en 2024 le hacía llegar el informe entero, con todas las
+     * secciones vacías, a un dueño sin cajas, sin deudas, sin cheques y sin cuotas.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function una_tarea_completada_y_no_recurrente_no_alcanza_para_que_el_informe_aplique()
+    {
+        $this->tarea('Ordenar el depósito', -400, ['completado' => 1]);
+
+        $this->assertSame([
+            'aplica' => false,
+            'fecha'  => $this->dia(0),
+            'motivo' => 'Sin cajas, deudas, cheques ni tareas en la agenda',
+        ], $this->recolectar());
+
+        // Una recurrente sí, aunque tenga el flag `completado`: cada período vuelve.
+        $this->tarea_recurrente('Pagar el alquiler', -400, 'month', ['completado' => 1]);
+
+        $this->assertTrue($this->recolectar()['aplica']);
+    }
+
+    /**
+     * Un cliente borrado con SoftDeletes sigue teniendo su saldo en `credit_accounts`, así que
+     * aparece entre los clientes para cobrar — pero el preview del recordatorio le responde 404 y
+     * el botón no se puede ofrecer.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function un_cliente_borrado_con_saldo_no_tiene_recordatorio_posible()
+    {
+        $this->dar_extension(null, 'whatsapp');
+        $this->config_del_bot(true);
+
+        $perez = $this->cliente_con_telefono('Pérez');
+
+        $this->venta_sin_cobrar($perez, 10);
+        $this->deuda('client', $perez->id, 300000);
+        $this->chat_abierto($perez);
+
+        $perez->delete();
+
+        $filas = $this->recolectar()['a_cobrar']['clientes_para_cobrar'];
+
+        $this->assertSame([$perez->id], array_column($filas, 'client_id'));
+        $this->assertSame(300000.0, $filas[0]['deuda']);
+        $this->assertSame(['disponible' => false, 'motivo' => 'cliente_no_encontrado', 'canal' => null], $filas[0]['recordatorio']);
     }
 
     /**
@@ -366,8 +636,8 @@ class Recolector_caja_Test extends MostradorTestCase
         ], $h['proveedores']);
 
         // Entra: los cheques recibidos (210.000 para depositar + 150.000 de la semana), no las deudas
-        // ni las liquidaciones. Sale: vencidos (385.000) + próximos (2.220.000).
-        // Queda: 1.250.000 + 360.000 − 2.605.000.
+        // ni las liquidaciones. Sale: vencidos RECIENTES (385.000, que acá son todos) + próximos
+        // (2.220.000). Queda: 1.250.000 + 360.000 − 2.605.000.
         $this->assertSame([
             'disponible_hoy' => 1250000.0,
             'entra'          => 360000.0,
@@ -573,8 +843,10 @@ class Recolector_caja_Test extends MostradorTestCase
             $this->assertArrayHasKey($clave, $h);
         }
 
-        $this->assertSame(['disponible_pesos' => 0.0, 'a_liquidar_pesos' => 0.0, 'por_caja' => []], $h['cajas']);
+        $this->assertSame(['disponible_pesos' => 0.0, 'a_liquidar_pesos' => 0.0, 'por_caja' => [], 'cajas_omitidas' => 0], $h['cajas']);
         $this->assertSame([], $h['a_pagar']['vencidos']);
+        $this->assertSame(0, $h['a_pagar']['vencidos_omitidos']);
+        $this->assertSame(0.0, $h['a_pagar']['total_vencidos_recientes']);
         $this->assertSame([], $h['a_pagar']['proximos']);
         $this->assertSame(0, $h['a_pagar']['sin_monto']);
         $this->assertFalse($h['a_pagar']['agenda_con_vencimientos']);
@@ -823,6 +1095,85 @@ class Recolector_caja_Test extends MostradorTestCase
     }
 
     /**
+     * Lo mismo, con la fecha base dada como fecha y no como días relativos a hoy: las recurrentes
+     * mensuales se anclan a un día del mes, no a una cantidad de días.
+     *
+     * @param string $detalle
+     * @param Carbon $base
+     * @param string $slug
+     * @param array $extra
+     * @return int
+     */
+    protected function tarea_recurrente_desde($detalle, Carbon $base, $slug, array $extra = [])
+    {
+        return DB::table('pendings')->insertGetId(array_merge([
+            'detalle'              => $detalle,
+            'fecha_realizacion'    => $base->format('Y-m-d') . ' 00:00:00',
+            'es_recurrente'        => 1,
+            'unidad_frecuencia_id' => $this->unidad($slug)->id,
+            'cantidad_frecuencia'  => 1,
+            'user_id'              => $this->comercio->id,
+            'created_at'           => now(),
+            'updated_at'           => now(),
+        ], $extra));
+    }
+
+    /**
+     * Las fechas (Y-m-d) de las ocurrencias VENCIDAS de una tarea mensual cada 1 mes desde `base`:
+     * el mismo día de cada mes desde la base hasta ayer. Es la regla que se sembró, no un
+     * recálculo de lo que hace el recolector; con la base anclada a un día ≤ 28 nunca se recorta.
+     *
+     * @param Carbon $base
+     * @return array<int,string>
+     */
+    protected function ocurrencias_mensuales_vencidas(Carbon $base)
+    {
+        $fechas = [];
+        $fecha = $base->copy();
+
+        while ($fecha->lt($this->hoy)) {
+            $fechas[] = $fecha->format('Y-m-d');
+            $fecha->addMonthsNoOverflow(1);
+        }
+
+        return $fechas;
+    }
+
+    /**
+     * Cuántas de esas fechas caen en los últimos 30 días (la ventana de `total_vencidos_recientes`).
+     *
+     * @param array<int,string> $fechas
+     * @return int
+     */
+    protected function cuantas_de_los_ultimos_treinta_dias(array $fechas)
+    {
+        $desde = $this->hoy->copy()->subDays(RecolectorCaja::HORIZONTE_TOTAL_DIAS)->format('Y-m-d');
+        $cuantas = 0;
+
+        foreach ($fechas as $fecha) {
+            if ($fecha >= $desde) {
+                $cuantas++;
+            }
+        }
+
+        return $cuantas;
+    }
+
+    /**
+     * El disponible en pesos que calcula ContextoFinancieroService, que es de donde sale el saldo
+     * de cajas del informe de compras. El recolector ya no lo llama (calculaba el agregado dos
+     * veces por caja): este helper existe para que los dos criterios no se puedan separar.
+     *
+     * @return float
+     */
+    protected function disponible_del_contexto_financiero()
+    {
+        $contexto = ContextoFinancieroService::armar($this->comercio->id, [], []);
+
+        return round((float) $contexto['caja_disponible_pesos'], 2);
+    }
+
+    /**
      * Unidad de frecuencia por slug. El fixture no siembra unidad_frecuencias y el modelo no
      * declara $fillable: se crea atributo por atributo, como en AgendaTestCase.
      *
@@ -1002,6 +1353,34 @@ class Recolector_caja_Test extends MostradorTestCase
             'last_message_at' => now()->subHours(2),
             'last_inbound_at' => now()->subHours(2),
         ]);
+    }
+
+    /**
+     * Una fila de `a_pagar.vencidos`: una por TAREA, con la ocurrencia más reciente como
+     * representante y el arrastre en `ocurrencias_vencidas` / `monto_acumulado`.
+     *
+     * @param string $clave Clave de la tarea en $this->s
+     * @param string $detalle
+     * @param string $concepto
+     * @param int $dias Días relativos a hoy de la ocurrencia más reciente (negativo)
+     * @param float|null $monto
+     * @param int $ocurrencias
+     * @param float|null $acumulado
+     * @return array
+     */
+    protected function vencido_de_agenda($clave, $detalle, $concepto, $dias, $monto, $ocurrencias, $acumulado)
+    {
+        return [
+            'origen'               => 'agenda',
+            'pending_id'           => $this->s[$clave],
+            'detalle'              => $detalle,
+            'concepto'             => $concepto,
+            'fecha'                => $this->dia($dias),
+            'dias_vencido'         => -$dias,
+            'monto'                => $monto,
+            'ocurrencias_vencidas' => $ocurrencias,
+            'monto_acumulado'      => $acumulado,
+        ];
     }
 
     /**
