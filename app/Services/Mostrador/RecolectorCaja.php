@@ -10,7 +10,6 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Client;
 use App\Models\User;
 use App\Models\WhatsappBotConfig;
-use App\Services\PurchaseSuggestion\ContextoFinancieroService;
 use App\Services\RecordatorioCobroSenderService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -28,8 +27,10 @@ use Illuminate\Support\Facades\DB;
  * heredada a propósito, la de VentasSinCobrarHelper (ver ventas_sin_cobrar_por_cliente()).
  *
  * Cada número sale del lugar que ya lo calcula en el sistema, no de una regla reescrita:
- * - disponible en cajas: ContextoFinancieroService (el mismo `saldo_cajas` del informe de
- *   compras) y CajaLiquidacionHelper::calcular_saldos_liquidez() por caja (lo de Tesorería);
+ * - disponible en cajas: CajaLiquidacionHelper::calcular_saldos_liquidez() por caja (lo que
+ *   muestra Tesorería), en una sola pasada, con el mismo criterio de moneda y la misma suma que
+ *   ContextoFinancieroService, que es de donde sale `compras.contexto_financiero.saldo_cajas`
+ *   (ver cajas(): un test compara los dos números para que no se separen);
  * - plata en tránsito: FlujoCajaHelper::liquidaciones_pendientes_total();
  * - vencimientos y libreta: AgendaHelper::ocurrencias_entre() y AgendaHelper::vencidas();
  * - deudas: RecolectorBase (credit_accounts, un solo criterio de moneda);
@@ -167,13 +168,25 @@ class RecolectorCaja extends RecolectorBase
     /**
      * Bloque `cajas`: el disponible en pesos de esta mañana y el detalle por caja.
      *
-     * `disponible_pesos` es ContextoFinancieroService, el mismo número que viaja como
-     * `compras.contexto_financiero.saldo_cajas`: un solo criterio para "cuánta plata hay" en todo
-     * el mostrador. El detalle es CajaLiquidacionHelper::calcular_saldos_liquidez(), lo que
-     * muestra Tesorería. 🔴 Ese helper no filtra moneda: la moneda de cada caja se resuelve acá
-     * con el criterio del servicio (null o 1 son pesos) y solo las de pesos suman a
-     * `a_liquidar_pesos`. Así, con hasta 10 cajas, `disponible_pesos` es la suma del
-     * `disponible` de las cajas en pesos de `por_caja`.
+     * El detalle es CajaLiquidacionHelper::calcular_saldos_liquidez(), lo que muestra Tesorería.
+     * 🔴 Ese helper no filtra moneda: la moneda de cada caja se resuelve acá con el criterio de
+     * Contabilidad (null, 0 o 1 son pesos, ver moneda_de_caja) y solo las de pesos suman a
+     * `disponible_pesos` y a `a_liquidar_pesos`.
+     *
+     * 🔴 UNA SOLA PASADA POR CAJA, y no se vuelve a ContextoFinancieroService::armar() para
+     * `disponible_pesos` aunque sea "el mismo número": ese servicio hace exactamente este mismo
+     * loop, así que pedirle el total significaba llamar a calcular_saldos_liquidez() DOS VECES
+     * por cada caja de pesos. El helper hace un agregado sobre `movimiento_cajas` sin filtro de
+     * fecha, y esa tabla no tiene índice en `caja_id`: en un cliente con años de movimientos es
+     * el agregado más caro del informe. `caja` se calcula siempre adentro del request
+     * (cantidad_de_candidatos() = 0, nunca va a la cola), así que duplicarlo es riesgo de
+     * timeout del proxy. El criterio sigue siendo uno solo porque es la misma suma sobre las
+     * mismas cajas; hay un test que compara este número con el del servicio para que no se
+     * separen nunca.
+     *
+     * Con hasta TOPE_LISTA cajas, `disponible_pesos` es la suma del `disponible` de las cajas en
+     * pesos de `por_caja`; con más, `cajas_omitidas` dice cuántas no se listan (sin eso, sumar
+     * `por_caja` contradice el total y nada lo avisa).
      *
      * @param User $owner
      * @return array
@@ -186,6 +199,7 @@ class RecolectorCaja extends RecolectorBase
             ->get(['id', 'name', 'moneda_id', 'abierta']);
 
         $por_caja = [];
+        $disponible_pesos = 0.0;
         $a_liquidar_pesos = 0.0;
 
         // N consultas para N cajas: el helper no acepta una lista de ids (igual que el servicio).
@@ -194,6 +208,7 @@ class RecolectorCaja extends RecolectorBase
             $moneda = $this->moneda_de_caja($fila->moneda_id);
 
             if ($moneda === 'pesos') {
+                $disponible_pesos += (float) $saldos['saldo_disponible'];
                 $a_liquidar_pesos += (float) $saldos['saldo_a_liquidar'];
             }
 
@@ -215,12 +230,11 @@ class RecolectorCaja extends RecolectorBase
             return $a['caja_id'] <=> $b['caja_id'];
         });
 
-        $contexto = ContextoFinancieroService::armar($owner->id, [], []);
-
         return [
-            'disponible_pesos' => $this->monto($contexto['caja_disponible_pesos']),
+            'disponible_pesos' => $this->monto($disponible_pesos),
             'a_liquidar_pesos' => $this->monto($a_liquidar_pesos),
             'por_caja'         => array_slice($por_caja, 0, self::TOPE_LISTA),
+            'cajas_omitidas'   => max(0, count($por_caja) - self::TOPE_LISTA),
         ];
     }
 
