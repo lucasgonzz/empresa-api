@@ -637,6 +637,131 @@ class Admin_sync_Test extends MostradorTestCase
     }
 
     /**
+     * caja habla siempre de hoy, como compras y stock (misión mostrador-caja-vencimientos): la
+     * fecha del body se ignora y la respuesta lo avisa. Un tipo que no existe sigue siendo 422,
+     * con el mensaje que el motor de la skill reconoce contra un API sin el informe de caja.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function hechos_de_caja_hablan_de_hoy_aunque_el_body_traiga_otra_fecha()
+    {
+        $this->dar_extension();
+
+        $hoy = now()->format('Y-m-d');
+
+        \App\Models\Caja::create(['num' => 1, 'name' => 'Efectivo', 'user_id' => $this->comercio->id]);
+
+        $respuesta = $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'caja', 'fecha' => $this->ayer->format('Y-m-d')]);
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertJsonPath('tipo', 'caja');
+        $respuesta->assertJsonPath('fecha', $hoy);
+        $respuesta->assertJsonPath('fecha_ignorada', true);
+        $respuesta->assertJsonPath('estado', 'hechos');
+        $respuesta->assertJsonPath('hechos.aplica', true);
+        $respuesta->assertJsonPath('hechos.fecha', $hoy);
+        $respuesta->assertJsonPath('hechos.horizonte_dias', 7);
+
+        // Sin fecha: hoy, sin aviso, y la misma fila.
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'caja'])
+            ->assertStatus(200)
+            ->assertJsonPath('reporte_id', $respuesta->json('reporte_id'))
+            ->assertJsonPath('fecha', $hoy)
+            ->assertJsonPath('fecha_ignorada', false);
+
+        $this->assertSame(1, MostradorReporte::where('user_id', $this->comercio->id)->where('tipo', 'caja')->count());
+
+        $this->postJson(self::BASE . '/hechos', ['user_id' => $this->comercio->id, 'tipo' => 'ventas'])
+            ->assertStatus(422)
+            ->assertJsonFragment(['message' => 'El tipo tiene que ser uno de: dia, caja, tienda, compras, stock.']);
+    }
+
+    /**
+     * El client_id de una acción "cobrar" es el cliente al que el botón del informe le ofrece
+     * mandar el recordatorio de cobro: tiene que ser un cliente del dueño del informe. Uno de otro
+     * dueño o uno borrado es 422 nombrando el id; en una acción que no es de cobrar, o si no es un
+     * entero, 422 por el formato.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function depositar_acepta_el_client_id_de_un_cliente_del_dueno_y_rechaza_los_ajenos()
+    {
+        $reporte = $this->reporte_con_hechos('caja');
+
+        $perez = $this->cliente('Pérez');
+
+        $borrado = $this->cliente('Cliente borrado');
+        $borrado->delete();
+
+        $otro = User::create(['name' => 'Otro dueño', 'email' => 'otro-' . uniqid() . '@test.local', 'password' => Hash::make('secret')]);
+        $ajeno = \App\Models\Client::create(['name' => 'Cliente de otro', 'user_id' => $otro->id]);
+
+        // De otro dueño.
+        $respuesta = $this->depositar($reporte, $this->con_accion_de_cliente($ajeno->id));
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString(
+            'acciones.client_id: ' . $ajeno->id . ' no es un cliente de este negocio',
+            implode("\n", $respuesta->json('errores'))
+        );
+
+        // Del dueño, pero borrado.
+        $respuesta = $this->depositar($reporte, $this->con_accion_de_cliente($borrado->id));
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString(
+            'acciones.client_id: ' . $borrado->id . ' no es un cliente de este negocio',
+            implode("\n", $respuesta->json('errores'))
+        );
+
+        // Del dueño, en una acción que no es de cobrar.
+        $respuesta = $this->depositar($reporte, $this->con_accion_de_cliente($perez->id, 'revisar'));
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString(
+            'bloques[7].items[1].client_id: solo va en acciones de tipo "cobrar"',
+            implode("\n", $respuesta->json('errores'))
+        );
+
+        // Un id que no es un entero.
+        $respuesta = $this->depositar($reporte, $this->con_accion_de_cliente((string) $perez->id));
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString(
+            'bloques[7].items[1].client_id: tiene que ser un entero positivo',
+            implode("\n", $respuesta->json('errores'))
+        );
+
+        // Nada de eso dejó el informe listo.
+        $this->assertSame('hechos', $reporte->fresh()->estado);
+
+        // Del dueño y en una acción de cobrar: se guarda con el client_id tal cual.
+        $this->depositar($reporte, $this->con_accion_de_cliente($perez->id))->assertStatus(200);
+
+        $reporte->refresh();
+        $this->assertSame('listo', $reporte->estado);
+        $this->assertSame($perez->id, $reporte->contenido['bloques'][7]['items'][1]['client_id']);
+    }
+
+    /**
+     * El contenido válido con una acción más, que lleva client_id.
+     *
+     * @param mixed $client_id
+     * @param string $tipo
+     * @return array
+     */
+    protected function con_accion_de_cliente($client_id, $tipo = 'cobrar')
+    {
+        $contenido = $this->contenido_valido();
+
+        $contenido['bloques'][7]['items'][] = [
+            'texto'     => 'Mandarle el recordatorio de cobro',
+            'tipo'      => $tipo,
+            'client_id' => $client_id,
+        ];
+
+        return $contenido;
+    }
+
+    /**
      * Un informe con hechos (sin texto) del comercio del test.
      *
      * @param string $tipo

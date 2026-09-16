@@ -152,6 +152,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Reintento de conexión ante saturación transitoria (App\Database\Connectors\
+    | RetryingMySqlConnector, bindeado en AppServiceProvider)
+    |--------------------------------------------------------------------------
+    |
+    | Acá y no leído con env() directo desde el provider: con `config:cache` corrido (lo normal en
+    | producción, ver el resto de este mismo repo — Kernel.php, CotizacionDolarService.php,
+    | ArticleObserver.php, y una docena más ya lo documentan) Laravel salta la carga del .env en el
+    | bootstrap, así que un env() fuera de config/ cae siempre al default sin ningún aviso. Puesto
+    | acá, el valor real queda adentro del array que config:cache sí congela.
+    |
+    */
+
+    'retry' => [
+        'max_intentos'    => env('DB_RETRY_MAX_INTENTOS', 3),
+        'espera_base_ms'  => env('DB_RETRY_ESPERA_BASE_MS', 200),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Redis Databases
     |--------------------------------------------------------------------------
     |

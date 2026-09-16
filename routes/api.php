@@ -181,6 +181,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // (reemplaza el envío de todos los artículos dentro del JSON del reporte principal).
     Route::get('inventory-performance/articles-stock-minimo', 'InventoryPerformanceController@articles_stock_minimo');
 
+    // Contadores de estado de los embeddings del catálogo (whatsapp-dashboard, misión
+    // embeddings-estado-whatsapp-dashboard, 15/9/2026): sin generar, pendiente y generándose.
+    // Sólo lectura, nunca encola nada.
+    Route::get('article-embeddings/estado', 'ArticleEmbeddingsController@estado');
+
     // Inputs Size
     Route::resource('inputs-size', 'InputsSizeController');
 
