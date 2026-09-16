@@ -749,6 +749,57 @@ class Combos_en_presupuestos_Test extends TestCase
     }
 
     /**
+     * 🔴 El combo que entra por CONFIRMACION DE PRESUPUESTO queda fechado, igual que el que entra
+     * por VENDER.
+     *
+     * `Sale::combos()` no declara `withTimestamps()`, asi que Eloquent no escribe `created_at`
+     * solo: lo tiene que pasar cada `attach()`. `SaleHelper::attachCombos()` —el camino de
+     * VENDER— siempre lo pasa (SaleHelper.php:1304); `BudgetHelper::attachSaleCombos()` no lo
+     * pasaba, y los combos que entraban por esta puerta quedaban con `combo_sale.created_at` en
+     * NULL. Dos filas de la misma tabla, una fechada y la otra no, segun por donde entro la venta.
+     *
+     * Se compara contra el molde de VENDER en la MISMA asercion —los dos caminos tienen que
+     * escribir la columna—, que es lo unico que impide que manana se vuelvan a desalinear.
+     *
+     * @group presupuestos
+     * @group combos
+     * @test
+     */
+    public function el_combo_que_entra_por_presupuesto_queda_fechado_como_el_de_vender()
+    {
+        $this->autenticar();
+
+        $client = $this->cliente_de_testing();
+        $article = $this->articulo_de_testing();
+        $combo = $this->combo_de_testing($article);
+
+        $payload = $this->payload_crear(
+            $client,
+            [$this->renglon_combo($combo, Self::CANTIDAD_COMBO)],
+            Self::PRECIO_COMBO * Self::CANTIDAD_COMBO
+        );
+
+        $budget_id = $this->post('api/budget', $payload)
+                            ->assertStatus(201)
+                            ->json('model.id');
+
+        $this->post('api/budget/'.$budget_id.'/confirmar')->assertStatus(200);
+
+        $sale = Sale::where('budget_id', $budget_id)->first();
+
+        $this->assertNotNull($sale, 'Confirmar tiene que haber creado la venta.');
+
+        $fila = DB::table('combo_sale')->where('sale_id', $sale->id)->first();
+
+        $this->assertNotNull($fila, 'El combo tiene que haber viajado a combo_sale.');
+
+        $this->assertNotNull(
+            $fila->created_at,
+            'El combo que entra por confirmacion de presupuesto quedo sin created_at, y el que entra por VENDER si lo tiene.'
+        );
+    }
+
+    /**
      * No-regresion: un presupuesto SIN combos se sigue guardando exactamente como antes.
      *
      * Va con un articulo adentro a proposito. El caso sin nada no probaria gran cosa: lo que
