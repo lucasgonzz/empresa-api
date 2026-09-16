@@ -45,18 +45,21 @@ class ResponderMensajeChatIaJob implements ShouldQueue
     public $tries = 1;
 
     /**
-     * Coherente con el presupuesto del servicio (arreglo post-chequeo): el
-     * peor caso del loop es PRESUPUESTO_SEGUNDOS (150) más una llamada HTTP
-     * de 60s ya en vuelo ≈ 210s; 240 deja margen para las tools y los saves.
-     * En WAMP/Windows sin pcntl este timeout NO rige (por eso existe el
-     * presupuesto adentro del servicio); donde sí rige, tiene que ser MAYOR
-     * que el presupuesto o mataría al worker antes del corte prolijo. El
-     * polling de la SPA corta su espera a los 180s con el aviso de demora,
-     * pero una respuesta que llegue después la registra igual el evento.
+     * Coherente con el presupuesto del servicio: el peor caso del loop es
+     * PRESUPUESTO_SEGUNDOS (210) más una llamada HTTP de 60s ya en vuelo = 270s;
+     * 300 deja margen para las tools, los saves y el broadcast. En WAMP/Windows
+     * sin pcntl este timeout NO rige (por eso existe el presupuesto adentro del
+     * servicio); donde sí rige, tiene que ser MAYOR que ese peor caso o mataría
+     * al worker antes del corte prolijo. La cadena completa de los cuatro techos
+     * está comentada en AsistenteIaService::PRESUPUESTO_SEGUNDOS.
+     *
+     * ⚠️ El quinto escalón vive en la SPA: ai_chat.js deja de pollear a los 180s
+     * y muestra el aviso de demora. Con el peor caso en 270s ese número quedó
+     * abajo del techo del servidor — se sube a 300s del lado de la SPA.
      *
      * @var int
      */
-    public $timeout = 240;
+    public $timeout = 300;
 
     /**
      * Texto amigable que ve el usuario cuando la generación falla. El detalle

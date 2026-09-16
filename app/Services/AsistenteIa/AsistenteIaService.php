@@ -46,8 +46,11 @@ class AsistenteIaService
     /**
      * Techo de iteraciones cuando el mensaje tiene las herramientas de carga. Armar una carga
      * encadena más llamadas que una consulta (buscar el cliente → sus cuentas → las opciones de
-     * carga → proponer), y con 5 una carga completa quedaba al borde del corte. PRESUPUESTO_SEGUNDOS
-     * y el $timeout del job NO cambian: el techo de tiempo del loop sigue siendo el mismo.
+     * carga → proponer), y con 5 una carga completa quedaba al borde del corte.
+     *
+     * Cuando se subió a 8 (misión asistente-ia-acciones) NO se subió el presupuesto, y así el techo
+     * de vueltas quedó más alto que el tiempo para gastarlas: el que cortaba era el reloj, no las
+     * iteraciones. PRESUPUESTO_SEGUNDOS lo alinea (ver la cuenta ahí).
      */
     const MAX_TOOL_ITERATIONS_CON_ACCIONES = 8;
 
@@ -67,7 +70,8 @@ class AsistenteIaService
     /**
      * Timeout de cada llamada HTTP a Anthropic, en segundos (alineado con el
      * timeout(60) de WhatsappBotAiService: una respuesta de chat que tarda
-     * más que eso ya está perdida para el usuario).
+     * más que eso ya está perdida para el usuario). Es el primer escalón de la
+     * cadena de techos: la cuenta completa está en PRESUPUESTO_SEGUNDOS.
      */
     const TIMEOUT_SEGUNDOS = 60;
 
@@ -79,12 +83,33 @@ class AsistenteIaService
      * Existe porque en WAMP/Windows sin pcntl el $timeout del job NO se
      * aplica (Laravel lo implementa con pcntl_alarm): sin este techo, un
      * Anthropic colgado que responde lento —sin vencer el timeout HTTP— puede
-     * retener el worker compartido con las importaciones hasta 5 llamadas
-     * enteras. Peor caso real con presupuesto: ~150s + una llamada de 60s en
-     * vuelo ≈ 210s, por debajo del $timeout = 240 del job (que sí rige donde
-     * hay pcntl).
+     * retener el worker compartido con las importaciones tantas llamadas
+     * enteras como iteraciones tenga el techo. 🔴 ES EL ÚNICO TECHO DE TIEMPO
+     * QUE RIGE DE VERDAD EN ESTA MÁQUINA.
+     *
+     * LA CUENTA DE LOS 210 (misión agente-ia-mano-derecha). El chequeo va ANTES de cada llamada,
+     * así que el presupuesto tiene que alcanzar para las 7 vueltas previas a la última:
+     *
+     *   210 / (MAX_TOOL_ITERATIONS_CON_ACCIONES - 1) = 30s por vuelta (llamada + tools)
+     *
+     * Una vuelta del chat son 5-20s, así que las 8 entran cómodas y el corte por presupuesto queda
+     * para el caso patológico, que es para lo que se escribió. Con 150 daban 21s por vuelta: el
+     * reloj cortaba antes que el techo de iteraciones que se había subido a 8.
+     *
+     * Y LA CADENA COMPLETA, que tiene que quedar coherente en los cuatro escalones:
+     *
+     *   1. TIMEOUT_SEGUNDOS = 60      una llamada HTTP, lo único que corta a Anthropic
+     *   2. PRESUPUESTO_SEGUNDOS = 210 el loop no arranca una vuelta nueva pasado esto
+     *   3. peor caso = 210 + 60 = 270 el presupuesto más la llamada en vuelo, que no se corta
+     *   4. $timeout del job = 300     tiene que ser MAYOR que 270 (donde hay pcntl, si no mataría
+     *                                 al worker antes del corte prolijo) más el margen de las
+     *                                 tools, los saves y el broadcast
+     *
+     * El quinto escalón vive en la SPA (ai_chat.js): el aviso de demora tiene que estar por encima
+     * de 270, no de 210 — si no, la SPA dice "demorado" y deja de pollear mientras el servidor
+     * todavía está trabajando bien.
      */
-    const PRESUPUESTO_SEGUNDOS = 150;
+    const PRESUPUESTO_SEGUNDOS = 210;
 
     /**
      * true si hay clave de Anthropic configurada. No tener IA contratada no
