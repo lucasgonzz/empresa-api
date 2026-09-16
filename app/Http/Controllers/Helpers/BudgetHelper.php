@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\SaleController;
@@ -75,6 +76,8 @@ class BudgetHelper {
 	        Self::attachSaleServices($sale, $budget);
 
 	        Self::attachSalePromocionVinotecas($sale, $budget);
+
+	        Self::attachSaleCombos($sale, $budget);
 
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
 
@@ -174,6 +177,70 @@ class BudgetHelper {
 		}
 	}
 
+	/**
+	 * Pasa los combos del presupuesto a la venta que nace al confirmarlo
+	 * (mision combos-y-rangos-de-precio, 16/9/2026).
+	 *
+	 * 🔴 ACA ES DONDE EL MOLDE DE `promocion_vinoteca` NO SE COPIA, y no es un detalle de estilo.
+	 * `attachSalePromocionVinotecas()` descuenta el stock de la promo MISMA
+	 * (`promocion_vinotecas.stock`), porque una promo de vinoteca es un articulo virtual con stock
+	 * propio. Un combo no tiene stock: es una receta. Lo que se descuenta es el stock de CADA
+	 * articulo componente, multiplicado por la cantidad de combos.
+	 *
+	 * Ese descuento ya existe y es el mismo que usa VENDER: `sale\ComboHelper::discount_articles_stock()`,
+	 * llamado desde `SaleHelper::attachCombos()`. Se reusa tal cual —no se escribe un descuento
+	 * nuevo— justamente para que confirmar un presupuesto y guardar una venta muevan el stock de la
+	 * misma manera. Dos implementaciones del mismo descuento es la receta para que la auditoria de
+	 * stock no cierre por un lado y si por el otro.
+	 *
+	 * El helper espera el renglon del combo TAL COMO LLEGA DE VENDER, o sea un array con
+	 * `articles[].pivot.amount`, no un modelo Eloquent. Por eso se traduce acá: es el unico lugar
+	 * donde el combo viene de la base (relacion `combos.articles` del presupuesto) en vez de venir
+	 * del payload.
+	 *
+	 * El gate de `discount_stock` NO se repite acá: `discount_articles_stock()` ya mira
+	 * `!$sale->to_check && !$sale->checked && (bool)$sale->discount_stock`. Duplicarlo afuera es
+	 * pedir que un dia los dos chequeos se desincronicen.
+	 *
+	 * `$previus_combos` va en null a proposito: la venta se acaba de crear en `saveSale()`, asi que
+	 * no hay cantidad previa contra la cual calcular una diferencia.
+	 *
+	 * @param  \App\Models\Sale    $sale
+	 * @param  \App\Models\Budget  $budget
+	 * @return void
+	 */
+	static function attachSaleCombos($sale, $budget) {
+
+		foreach ($budget->combos as $combo) {
+
+			$sale->combos()->attach($combo->id, [
+				'amount'			=> $combo->pivot->amount,
+				'price'	    		=> $combo->pivot->price,
+			]);
+
+			$articles_array = [];
+
+			foreach ($combo->articles as $article) {
+
+				$articles_array[] = [
+					'id'		=> $article->id,
+					'pivot'		=> [
+						'amount'	=> $article->pivot->amount,
+					],
+				];
+			}
+
+			$combo_array = [
+				'id'		=> $combo->id,
+				'name'		=> $combo->name,
+				'amount'	=> $combo->pivot->amount,
+				'articles'	=> $articles_array,
+			];
+
+			ComboHelper::discount_articles_stock($sale, $combo_array, null);
+		}
+	}
+
 	static function attachSaleServices($sale, $budget) {
 		
 		foreach($budget->services as $service) {
@@ -261,6 +328,7 @@ class BudgetHelper {
 		$budget->load('articles');
 		$budget->load('promocion_vinotecas');
 		$budget->load('services');
+		$budget->load('combos');
 
 		/*
 			🔴 LA GUARDA QUE NO SE PUEDE SIMPLIFICAR: con `aplicar_recargos_directo_a_items`
@@ -309,6 +377,37 @@ class BudgetHelper {
 			}
 
 			$total += $total_article;
+		}
+
+		/*
+			Combos (mision combos-y-rangos-de-precio, 16/9/2026).
+
+			🔴 ESTE BUCLE ES EL QUE CIERRA EL 500. Hasta hoy un combo cargado en VENDER con "guardar
+			como presupuesto" tildado viajaba adentro del `total` del payload pero se descartaba de
+			las claves que el back leia: `getTotal()` no lo encontraba, la diferencia se pasaba del
+			margen de 3 de `BudgetController::store()` y el guardado moria con "El total del
+			presupuesto no corresponde con los productos ingresados". El vendedor no veia "el combo
+			no se guardo": veia un total descuadrado que no explicaba nada.
+
+			La regla que aplica es EXACTAMENTE la de los otros tres buckets, ni mas ni menos: los
+			descuentos siempre, los recargos solo si `$aplicar_surchages`. Con
+			`aplicar_recargos_directo_a_items` activo el precio del pivot YA TRAE el recargo adentro
+			y volver a sumarlo lo aplicaria dos veces —el mismo bug, en el mismo lugar, para otro
+			tipo de item—. Ver el comentario largo de arriba de `$aplicar_surchages`.
+		*/
+		foreach ($budget->combos as $combo) {
+			$total_combo = Self::totalArticle($combo);
+
+			foreach ($budget->discounts as $discount) {
+				$total_combo -= $discount->pivot->percentage * $total_combo / 100;
+			}
+			if ($aplicar_surchages) {
+				foreach ($budget->surchages as $surchage) {
+					$total_combo += $surchage->pivot->percentage * $total_combo / 100;
+				}
+			}
+
+			$total += $total_combo;
 		}
 
 		foreach ($budget->services as $service) {
@@ -460,7 +559,56 @@ class BudgetHelper {
 									'amount' 	=> $amount,
 									'price' 	=> $price,
 								]);
-		}		
+		}
+	}
+
+	/**
+	 * Adjunta los combos del payload al presupuesto
+	 * (mision combos-y-rangos-de-precio, 16/9/2026).
+	 *
+	 * Forma que espera, calcada de `get_promocion_vinotecas()` de la SPA:
+	 *
+	 *     combos: [ { id: <combo_id>, pivot: { amount: <cantidad>, price: <precio unitario> } } ]
+	 *
+	 * 🔴 LA CLAVE AUSENTE NO ES LO MISMO QUE LA CLAVE VACIA, y la diferencia es a proposito:
+	 *
+	 * - `combos: []` (presente y vacia) = el usuario saco todos los combos → se hace el detach.
+	 * - clave ausente (null) = el que manda el request NO SABE de combos → no se toca nada.
+	 *
+	 * Los otros tres helpers de este archivo detachan siempre y despues hacen `foreach` sin
+	 * chequear null, asi que con la clave ausente revientan (Laravel convierte el warning de
+	 * `foreach (null)` en ErrorException). Acá no se copia esa parte por dos motivos concretos:
+	 *
+	 * 1. Una empresa-spa vieja contra esta API nueva no manda `combos`. Tiene que poder guardar un
+	 *    presupuesto igual, no llevarse un 500.
+	 * 2. `BudgetController::update()` lo pegan DOS frentes: VENDER (`vender_presupuestos.js`) y el
+	 *    form generico del modulo Presupuestos. Si alguno de los dos no maneja combos, detachar por
+	 *    las dudas le borraria al vendedor los combos del presupuesto sin decirle nada. Es
+	 *    exactamente el criterio que este mismo archivo ya aplica con `name_vender_personalizado`
+	 *    en `attachArticles()`: lo que el payload no nombra, no se pisa.
+	 *
+	 * @param  \App\Models\Budget  $budget
+	 * @param  array|null          $combos
+	 * @return void
+	 */
+	static function attachCombos($budget, $combos) {
+
+		if (!is_array($combos)) {
+			return;
+		}
+
+		$budget->combos()->detach();
+
+		foreach ($combos as $combo) {
+
+			$amount = $combo['pivot']['amount'];
+			$price = $combo['pivot']['price'];
+
+			$budget->combos()->attach($combo['id'], [
+									'amount' 	=> $amount,
+									'price' 	=> $price,
+								]);
+		}
 	}
 
 }
