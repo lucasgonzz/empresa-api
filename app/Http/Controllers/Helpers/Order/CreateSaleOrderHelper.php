@@ -146,12 +146,76 @@ class CreateSaleOrderHelper {
                     'is_promocion_vinoteca'        => true
                 ];
             }
+
+            /*
+                🔴 EL COMBO DEL PEDIDO TAMBIEN VIAJA A LA VENTA (mision combos-y-rangos-de-precio,
+                16/9/2026). Hasta esta mision este archivo no nombraba la palabra "combo" ni una vez:
+                el comprador agregaba el combo al carrito, el servidor de la tienda se lo cobraba y
+                `order_combo` guardaba la linea, pero al confirmar el pedido en el ERP la venta nacia
+                SIN el combo. Dos consecuencias, las dos mudas: la venta quedaba corta por el importe
+                del combo, y el stock de los articulos componentes NO se descontaba.
+
+                Va en el mismo bloque que las promos —y no arriba con los articulos— porque
+                `$from_tienda_nube` y `$from_meli` traen un `TiendaNubeOrder` / `MeLiOrder`, que no
+                son `Order` y no tienen relacion `combos()`. Un combo solo existe en un pedido de la
+                tienda propia.
+
+                `is_combo` es la clave que `SaleHelper::attachCombos()` busca para quedarse con este
+                renglon, igual que `is_promocion_vinoteca` para el de arriba; y `articles` es lo que
+                `sale\ComboHelper::discount_articles_stock()` recorre para descontar. El combo no
+                tiene stock propio: es una receta, y lo que se descuenta es cada componente por
+                `pivot.amount` x cantidad de combos.
+            */
+            foreach (ComboEsquemaHelper::combos_del_pedido($order) as $combo) {
+                $request->items[] = [
+                    'id'                => $combo->id,
+                    'name'              => $combo->name,
+                    'cost'              => $combo->pivot->cost,
+                    'amount'            => $combo->pivot->amount,
+                    'price_vender'      => $combo->pivot->price,
+                    'articles'          => Self::componentes_del_combo($combo),
+                    'is_combo'          => true
+                ];
+            }
         }
 
         $request->discounts = [];
         $request->surchages = [];
 
         SaleHelper::attachProperies($sale, $request);
+    }
+
+    /**
+     * Los componentes de un combo, en la forma exacta en la que llegan desde VENDER.
+     *
+     * `sale\ComboHelper::discount_articles_stock()` NO recibe modelos de Eloquent: recibe el renglon
+     * del combo tal como lo manda la SPA, o sea arrays con `['id']` y `['pivot']['amount']`. Por eso
+     * se traduce acá, que es —junto con `BudgetHelper::attachSaleCombos()`— uno de los dos unicos
+     * lugares donde el combo viene de la base en vez de venir del payload.
+     *
+     * Se reusa ese helper en vez de escribir un descuento propio para que confirmar un pedido,
+     * confirmar un presupuesto y guardar una venta muevan el stock de la MISMA manera. Dos
+     * implementaciones del mismo descuento es la receta para que la auditoria de stock cierre por un
+     * lado y no por el otro.
+     *
+     * @param  \App\Models\Combo  $combo
+     * @return array<int,array<string,mixed>>
+     */
+    static function componentes_del_combo($combo) {
+
+        $articles = [];
+
+        foreach ($combo->articles as $article) {
+
+            $articles[] = [
+                'id'    => $article->id,
+                'pivot' => [
+                    'amount' => $article->pivot->amount,
+                ],
+            ];
+        }
+
+        return $articles;
     }
 
 

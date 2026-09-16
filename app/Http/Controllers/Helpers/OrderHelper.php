@@ -8,6 +8,7 @@ use App\Events\PaymentError as PaymentErrorEvent;
 use App\Events\PaymentSuccess as PaymentSuccessEvent;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
+use App\Http\Controllers\Helpers\Order\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\OrderNotificationHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -32,6 +33,21 @@ use Illuminate\Support\Facades\Log;
 
 class OrderHelper {
 
+    /**
+     * Total del pedido: lo que suman sus renglones.
+     *
+     * 🔴 LOS COMBOS CUENTAN (mision combos-y-rangos-de-precio, 16/9/2026). No es un agregado por
+     * simetria: `OrderController::update()` reescribe `orders.total` con esta cuenta cada vez que la
+     * request trae `articles`, y el formulario del pedido —que es por donde el dueño cambia el
+     * estado desde que se sacaron los botones del modal— los manda SIEMPRE. O sea que sin este
+     * bucle, confirmar un pedido con combos primero le borraba el importe del combo a `orders.total`
+     * y despues `CreateSaleOrderHelper::createSale()` copiaba ese total podado a la venta
+     * (`'total' => $order->total`). El renglon del combo aparecia en la venta y el total no lo
+     * incluia: la venta quedaba descuadrada contra sus propios renglones.
+     *
+     * @param  \App\Models\Order  $order
+     * @return float
+     */
     static function get_total($order) {
         $total = 0;
         foreach ($order->articles as $article) {
@@ -42,6 +58,11 @@ class OrderHelper {
         foreach ($order->promocion_vinotecas as $promo) {
             $total_promo = (float)$promo->pivot->price * (float)$promo->pivot->amount;
             $total += $total_promo;
+        }
+
+        foreach (ComboEsquemaHelper::combos_del_pedido($order) as $combo) {
+            $total_combo = (float)$combo->pivot->price * (float)$combo->pivot->amount;
+            $total += $total_combo;
         }
         return $total;
     }
