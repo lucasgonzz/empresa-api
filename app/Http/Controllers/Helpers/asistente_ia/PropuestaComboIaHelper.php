@@ -202,6 +202,12 @@ class PropuestaComboIaHelper {
          * su lockForUpdate se sostenga hasta el commit. Se le pasa el dueño explícito como
          * `$prop_value` para que num() NO resuelva el usuario por Auth: acá el dueño sale de la
          * conversación, no de la sesión.
+         *
+         * 🔴 `$datos` NO lleva `online`, y es una decisión, no un olvido (misión
+         * combos-y-rangos-de-precio, 16/9/2026): el combo que arma el asistente nace APAGADO y el
+         * dueño lo publica desde el ABM si quiere. Publicar en la tienda expone precio y receta a
+         * los compradores — es una decisión comercial, no la consecuencia de haber pedido un combo
+         * por chat. El motivo largo está en ComboAltaHelper::crear(), donde se normaliza la columna.
          */
         $combo = ComboAltaHelper::crear($datos, $owner_id, function () use ($owner_id) {
 

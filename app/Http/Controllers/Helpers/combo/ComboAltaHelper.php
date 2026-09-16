@@ -126,7 +126,8 @@ class ComboAltaHelper {
      * (Helpers\sale\ComboHelper::discount_articles_stock() recorre `$combo['articles']`).
      *
      * @param  array  $data  Claves: `name`, `cost`, `price`, `articles` (la lista tal como la manda
-     *                       la pantalla: cada ítem con `id` y `pivot.amount`; puede ser `[]`).
+     *                       la pantalla: cada ítem con `id` y `pivot.amount`; puede ser `[]`) y
+     *                       `online` (opcional; ver el comentario sobre la columna, más abajo).
      * @param  int  $user_id  Dueño de la cuenta (Controller::userId()).
      * @param  int|callable  $num  Correlativo del combo. Puede venir resuelto (int) o como callable
      *                             que se ejecuta ADENTRO de la transacción, por el mismo motivo que
@@ -148,11 +149,31 @@ class ComboAltaHelper {
 
         return DB::transaction(function () use ($valor, $user_id, $num, $articles) {
 
+            /*
+             * `online` — el interruptor que publica el combo en el ecommerce (misión
+             * combos-y-rangos-de-precio, 16/9/2026).
+             *
+             * 🔴 Se normaliza a 1/0 y NO se asigna pelado: `combos.online` es NOT NULL con default
+             * 0, y `$valor('online')` devuelve null cuando la clave no vino, lo que en MySQL
+             * estricto rompe el INSERT. Es EXACTAMENTE la misma truthiness de PHP que usa
+             * `ComboController::update()` (`$request->online ? 1 : 0`), y tiene que seguir siéndolo:
+             * si crear y editar interpretaran distinto el mismo valor, el combo diría una cosa al
+             * nacer y otra al guardarse.
+             *
+             * 🔴 DECISIÓN sobre el camino del asistente de IA: PropuestaComboIaHelper NO manda
+             * `online`, y eso es a propósito, no un olvido. Un combo que el asistente arma a partir
+             * de una frase dictada nace APAGADO y el dueño decide publicarlo desde el ABM. Publicar
+             * en la tienda es exponer precio y receta a los compradores: es una decisión comercial,
+             * no una consecuencia de haber pedido un combo por chat. Si algún día el asistente
+             * tiene que poder publicar, la clave se suma a `$datos` en PropuestaComboIaHelper y
+             * acá no cambia nada — pero que sea una decisión, igual que ésta.
+             */
             $model = Combo::create([
                 'num'     => is_callable($num) ? $num() : $num,
                 'name'    => $valor('name'),
                 'cost'    => $valor('cost'),
                 'price'   => $valor('price'),
+                'online'  => $valor('online') ? 1 : 0,
                 'user_id' => $user_id,
             ]);
 
