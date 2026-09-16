@@ -1402,20 +1402,28 @@ class DemoSetupHelper
     }
 
     /**
-     * Conecta Mercado Pago con las credenciales del `.env` de la instancia, cuando no hay ninguna
-     * conexión previa que restaurar — misión `mp-precio-servidor-y-credenciales-env`, 16/9/2026.
+     * Conecta Mercado Pago con las credenciales de demo de `config('services.mercadopago')`,
+     * cuando no hay ninguna conexión previa que restaurar — misión
+     * `mp-precio-servidor-y-credenciales-env`, 16/9/2026.
      *
      * Solo se llama cuando `foto_de_mercado_pago()` devolvió null: primer armado de la instancia,
-     * o una que nunca tuvo a nadie conectando a mano desde ABM -> Integraciones. Si YA hay una
-     * conexión (real o restaurada), esto no se ejecuta y no la pisa — el `.env` es el default para
-     * cuando no hay nada, no una fuente que gane siempre.
+     * o una que nunca tuvo una cuenta conectada. Si YA hay una conexión (restaurada, o conectada
+     * por OAuth desde ABM -> Integraciones, que es la única vía real hoy: la carga manual de
+     * Access Token/Public Key se sacó del SPA), esto no se ejecuta y no la pisa — la config es el
+     * default para cuando no hay nada, no una fuente que gane siempre.
      *
-     * Mismo mecanismo que "pegar el Access Token y la Public Key" a mano desde el ABM (la opción
-     * manual del conector, sin pasar por el OAuth): se escribe el conector y se espeja en
-     * `payment_methods` con el mismo método que usa el callback del OAuth, para que la tienda
-     * cobre igual lea del conector o del espejo.
+     * Escribe el conector y lo espeja en `payment_methods` con el mismo método que usa el
+     * callback del OAuth (`MercadoPagoOAuthService::espejar_en_payment_methods()`), para que la
+     * tienda cobre igual lea del conector o del espejo — misma forma que deja cualquier conexión
+     * real, aunque el origen del dato acá sea la config y no un intercambio OAuth.
      *
-     * Sin las dos variables no hace nada — es el estado de hoy, con ninguna instancia
+     * 🔴 Las credenciales se leen de `config()`, NUNCA de `env()` directo: con `config:cache`
+     * activo (lo normal en producción) `env()` fuera de `config/*.php` devuelve el default, y esta
+     * misma clase de bug ya rompió `DURACION_REPORTES` en producción (ver el comentario de
+     * `config/services.php` junto a `demo_access_token`). Sin esto, la conexión automática
+     * quedaría muerta en cualquier instancia con la config cacheada, sin ningún aviso.
+     *
+     * Sin las dos claves cargadas no hace nada — es el estado de hoy, con ninguna instancia
      * configurada. Un error nunca frena el setup: la demo se arma sin la conexión.
      *
      * @param User $user Dueño recién creado de la demo.
@@ -1423,8 +1431,8 @@ class DemoSetupHelper
      */
     private static function conectar_mercado_pago_desde_env(User $user)
     {
-        $access_token = env('MERCADOPAGO_DEMO_ACCESS_TOKEN');
-        $public_key   = env('MERCADOPAGO_DEMO_PUBLIC_KEY');
+        $access_token = config('services.mercadopago.demo_access_token');
+        $public_key   = config('services.mercadopago.demo_public_key');
 
         if (empty($access_token) || empty($public_key)) {
             return;

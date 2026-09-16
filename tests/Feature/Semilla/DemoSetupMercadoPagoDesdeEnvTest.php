@@ -15,18 +15,26 @@ use Tests\EmpresaTestCase;
 
 /**
  * Cuando no hay ninguna conexión de Mercado Pago que restaurar, la demo se conecta sola con las
- * credenciales del `.env` de la instancia (misión `mp-precio-servidor-y-credenciales-env`,
- * 16/9/2026).
+ * credenciales de demo de `config('services.mercadopago')` (misión
+ * `mp-precio-servidor-y-credenciales-env`, 16/9/2026).
  *
- * Es el mismo mecanismo que "pegar el Access Token y la Public Key" a mano desde ABM ->
- * Integraciones (la opción manual del conector), pero automático y con la credencial que ya está
- * cargada en la instancia — pensado para que una demo recién armada, sin nadie que haya conectado
- * nunca, pueda cobrar igual.
+ * La única vía real hoy para conectar Mercado Pago desde ABM -> Integraciones es el OAuth (la
+ * carga manual de Access Token/Public Key se sacó del SPA hace tiempo): esto no imita ninguna
+ * pantalla, es un camino nuevo, pensado para que una demo recién armada, sin nadie que haya
+ * conectado nunca, pueda cobrar igual — escribiendo el conector con la MISMA forma que deja el
+ * callback del OAuth, así que la tienda no nota la diferencia.
  *
  * 🔴 Es un DEFAULT, no una fuente que gane siempre: si ya hay algo que restaurar (alguien conectó
- * a mano, por OAuth o pegando otra credencial), `run()` no llama a este método — lo prueba
+ * por OAuth, o se restauró de un armado anterior), `run()` no llama a este método — lo prueba
  * `test_solo_se_llama_cuando_no_hay_nada_que_restaurar()` leyendo el fuente, igual que
  * `DemoSetupMercadoPagoTest` prueba el orden de la foto/restauración.
+ *
+ * 🔴 Las credenciales se leen de `config()`, no de `env()` directo (hallazgo del verificador
+ * independiente sobre la primera versión de esta misión): con `config:cache` activo — lo normal
+ * en producción — `env()` fuera de `config/*.php` devuelve el default, y esta misma clase de bug
+ * ya rompió `DURACION_REPORTES` en producción. Por eso los tests fuerzan el valor con
+ * `config(['services.mercadopago.demo_access_token' => ...])`, no con `putenv()`/`$_ENV`: eso
+ * último dejaría de ejercitar el camino real en cuanto alguien cachee la config.
  *
  * No se corre `run()` entero: se invoca `conectar_mercado_pago_desde_env()` directo por reflexión.
  *
@@ -49,8 +57,7 @@ class DemoSetupMercadoPagoDesdeEnvTest extends EmpresaTestCase
 
     protected function tearDown(): void
     {
-        $this->variable('MERCADOPAGO_DEMO_ACCESS_TOKEN', null);
-        $this->variable('MERCADOPAGO_DEMO_PUBLIC_KEY', null);
+        $this->configurar(null, null);
 
         parent::tearDown();
     }
@@ -62,24 +69,20 @@ class DemoSetupMercadoPagoDesdeEnvTest extends EmpresaTestCase
     */
 
     /**
-     * Fuerza (o borra, con null) una variable en las tres fuentes que lee `env()` de Laravel.
+     * Fuerza (o borra, con null) las dos claves de config que lee
+     * `conectar_mercado_pago_desde_env()` — el mismo repositorio que ve la aplicación, con o sin
+     * `config:cache`, a diferencia de tocar `$_ENV`/`putenv()`.
      *
-     * @param string $nombre
-     * @param string|null $valor
+     * @param string|null $access_token
+     * @param string|null $public_key
      * @return void
      */
-    private function variable($nombre, $valor)
+    private function configurar($access_token, $public_key)
     {
-        if ($valor === null) {
-            unset($_ENV[$nombre], $_SERVER[$nombre]);
-            putenv($nombre);
-
-            return;
-        }
-
-        $_ENV[$nombre] = $valor;
-        $_SERVER[$nombre] = $valor;
-        putenv($nombre.'='.$valor);
+        config([
+            'services.mercadopago.demo_access_token' => $access_token,
+            'services.mercadopago.demo_public_key'   => $public_key,
+        ]);
     }
 
     private function tipo_mp()
@@ -114,15 +117,14 @@ class DemoSetupMercadoPagoDesdeEnvTest extends EmpresaTestCase
     */
 
     /**
-     * 🔴 EL CASO QUE JUSTIFICA LA MISIÓN: con las dos variables cargadas y sin conector previo, la
+     * 🔴 EL CASO QUE JUSTIFICA LA MISIÓN: con las dos claves cargadas y sin conector previo, la
      * instancia queda conectada y cobrando, sin que nadie toque el ABM.
      *
      * @return void
      */
-    public function test_conecta_con_las_credenciales_del_env()
+    public function test_conecta_con_las_credenciales_de_la_config()
     {
-        $this->variable('MERCADOPAGO_DEMO_ACCESS_TOKEN', self::ACCESS_TOKEN);
-        $this->variable('MERCADOPAGO_DEMO_PUBLIC_KEY', self::PUBLIC_KEY);
+        $this->configurar(self::ACCESS_TOKEN, self::PUBLIC_KEY);
 
         $this->conectar();
 
@@ -147,8 +149,7 @@ class DemoSetupMercadoPagoDesdeEnvTest extends EmpresaTestCase
      */
     public function test_el_token_queda_cifrado_en_la_base()
     {
-        $this->variable('MERCADOPAGO_DEMO_ACCESS_TOKEN', self::ACCESS_TOKEN);
-        $this->variable('MERCADOPAGO_DEMO_PUBLIC_KEY', self::PUBLIC_KEY);
+        $this->configurar(self::ACCESS_TOKEN, self::PUBLIC_KEY);
 
         $this->conectar();
 
@@ -163,7 +164,7 @@ class DemoSetupMercadoPagoDesdeEnvTest extends EmpresaTestCase
     /**
      * @return void
      */
-    public function test_sin_ninguna_variable_no_hace_nada()
+    public function test_sin_ninguna_clave_no_hace_nada()
     {
         $this->conectar();
 
@@ -172,14 +173,14 @@ class DemoSetupMercadoPagoDesdeEnvTest extends EmpresaTestCase
     }
 
     /**
-     * Con una sola de las dos variables tampoco alcanza: sin public key no hay con qué cobrar del
+     * Con una sola de las dos claves tampoco alcanza: sin public key no hay con qué cobrar del
      * lado del browser (Checkout Pro la necesita), así que no tiene sentido conectar a medias.
      *
      * @return void
      */
-    public function test_con_una_sola_variable_no_hace_nada()
+    public function test_con_una_sola_clave_no_hace_nada()
     {
-        $this->variable('MERCADOPAGO_DEMO_ACCESS_TOKEN', self::ACCESS_TOKEN);
+        $this->configurar(self::ACCESS_TOKEN, null);
 
         $this->conectar();
 
