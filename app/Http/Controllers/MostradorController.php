@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
 use App\Models\AiConversation;
 use App\Models\MostradorReporte;
 use Illuminate\Http\JsonResponse;
@@ -136,6 +137,61 @@ class MostradorController extends Controller
         $conversation->refresh();
 
         return response()->json(['model' => $conversation], 201);
+    }
+
+    /**
+     * GET informe-compartido/{token}  — PÚBLICA, fuera de auth:sanctum.
+     *
+     * El informe que el dueño abre desde el link que le llegó por WhatsApp (misión
+     * asistente-por-whatsapp, §3.7 del plan). Sin usuario ni contraseña: el dueño está en la calle
+     * con el teléfono en la mano, y esa es justamente la decisión de Lucas.
+     *
+     * 🔴 SOLO LECTURA Y SOLO ESTE INFORME. Devuelve título, resumen, contenido y fecha — nada más.
+     * Ni los hechos crudos, ni la conversación, ni el escritorio, ni ninguna otra pantalla: el
+     * token abre UN informe, no una sesión. Quien tenga el link ve lo que ese informe dice y se
+     * acabó.
+     *
+     * 410 si el link venció (el dueño entiende "pedí otro"), 404 si nunca existió o si el informe
+     * dejó de estar 'listo'. Los dos se distinguen a propósito: un 404 sobre un link vencido
+     * mandaría al dueño a pensar que el informe se borró.
+     *
+     * @param string $token
+     * @return JsonResponse
+     */
+    public function compartido($token): JsonResponse
+    {
+        $acceso = MostradorAccesoHelper::resolver($token);
+
+        if (is_null($acceso)) {
+
+            if (MostradorAccesoHelper::vencido($token)) {
+
+                return response()->json([
+                    'message' => 'Este link venció. Pedile al asistente que te mande el informe de nuevo.',
+                ], 410);
+            }
+
+            return response()->json(['message' => 'Informe no encontrado.'], 404);
+        }
+
+        $reporte = MostradorReporte::where('id', $acceso->mostrador_reporte_id)
+            ->where('user_id', $acceso->user_id)
+            ->listos()
+            ->first();
+
+        if (is_null($reporte)) {
+            return response()->json(['message' => 'Informe no encontrado.'], 404);
+        }
+
+        return response()->json([
+            'model' => [
+                'titulo'    => $reporte->titulo,
+                'resumen'   => $reporte->resumen,
+                'contenido' => $reporte->contenido,
+                'fecha'     => $reporte->fecha->format('Y-m-d'),
+                'tipo'      => (string) $reporte->tipo,
+            ],
+        ], 200);
     }
 
     /**

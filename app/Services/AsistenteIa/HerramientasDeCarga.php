@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
@@ -316,14 +317,41 @@ class HerramientasDeCarga
     }
 
     /**
-     * Las dos herramientas que solo existen en el canal de WhatsApp: confirmar y cancelar una carga
-     * por texto, porque ahí no hay tarjeta que tocar.
+     * Las herramientas que solo existen en el canal de WhatsApp (misión asistente-por-whatsapp).
+     *
+     * - confirmar_carga_pendiente / cancelar_carga_pendiente: el equivalente de los botones
+     *   Confirmar y Cancelar, porque en WhatsApp no hay tarjeta que tocar.
+     * - proponer_compra_con_factura: va acá y no en la lista común porque SU MATERIA PRIMA ES
+     *   EXCLUSIVA DE ESTE CANAL. Las filas de `ai_message_imagenes` las escribe únicamente
+     *   AdminSync\AsistenteController: el panel del chat no tiene forma de adjuntar una foto, así
+     *   que declarada en el sistema la herramienta solo podría contestar "no tengo ninguna foto".
+     *   Y para la foto que el dueño ya tiene en la mano estando frente a la pantalla, el camino es
+     *   el escaneo de facturas, que además se la muestra.
      *
      * @return array<int, array<string, mixed>>
      */
     protected static function definiciones_de_whatsapp(): array
     {
         return [
+            [
+                'name'         => 'proponer_compra_con_factura',
+                'description'  => 'Arma la tarjeta para dar de alta la compra de un proveedor y cargarle la foto de la factura que la persona te mandó, para que el sistema la lea: NO registra nada. Las fotos las saco solas de las que te mandó en esta conversación y todavía no se usaron, así que no me las pases. Si ya hay una compra de ese proveedor vacía y reciente se usa esa, y si no se crea una nueva: la respuesta te dice cuál de las dos. Los artículos no se cargan acá, los revisa la persona desde Compras cuando la lectura termina. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'proveedor'   => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del proveedor de la factura, tal como lo dijo la persona. Nunca lo inventes: si no lo dijo, preguntalo.',
+                        ],
+                        'sucursal'    => [
+                            'type'        => 'string',
+                            'description' => 'Sucursal a la que entra la mercadería. Solo hace falta si el negocio tiene más de una.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['proveedor'],
+                ],
+            ],
             [
                 'name'         => 'confirmar_carga_pendiente',
                 'description'  => 'Registra de verdad una carga que propusiste en un mensaje ANTERIOR y que la persona ya te dijo que sí. Es el equivalente del botón Confirmar de la pantalla. 🔴 No la podés llamar en el mismo mensaje en el que proponés: tiene que haber una respuesta de la persona en el medio, y si lo intentás te la rechaza. Si la respuesta trae "error", contá ese motivo tal cual y no digas que quedó cargado.',
@@ -406,13 +434,13 @@ class HerramientasDeCarga
         }
 
         /*
-         * Misión asistente-por-whatsapp: las dos herramientas de confirmación solo existen en el
-         * canal de WhatsApp. maneja() las reconoce siempre (si no, execute_tool_calls no las
-         * despacharía nunca), así que el corte por canal va acá: en el sistema la confirmación es
-         * el botón, y una IA que pueda confirmar sola lo que propuso le saca la decisión a la
-         * persona.
+         * Misión asistente-por-whatsapp: las herramientas del canal solo existen en WhatsApp.
+         * maneja() las reconoce siempre (si no, execute_tool_calls no las despacharía nunca), así
+         * que el corte por canal va acá: en el sistema la confirmación es el botón —una IA que
+         * pueda confirmar sola lo que propuso le saca la decisión a la persona— y las fotos no
+         * existen. Ver el docblock de definiciones_de_whatsapp().
          */
-        if (in_array($tool_name, ['confirmar_carga_pendiente', 'cancelar_carga_pendiente'], true)) {
+        if (in_array($tool_name, array_column(self::definiciones_de_whatsapp(), 'name'), true)) {
 
             if (!($assistant_message instanceof AiMessage) || !$assistant_message->es_de_whatsapp()) {
 
@@ -457,6 +485,9 @@ class HerramientasDeCarga
 
             case 'proponer_marcar_tarea_hecha':
                 return self::resultado(PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input));
+
+            case 'proponer_compra_con_factura':
+                return self::resultado(PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));

@@ -5,9 +5,11 @@ namespace App\Http\Controllers\AdminSync;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiMessage;
+use App\Models\MostradorReporte;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -236,6 +238,103 @@ class AsistenteController extends Controller
             'error_mensaje'      => is_null($mensaje->error_mensaje) ? null : (string) $mensaje->error_mensaje,
             'ai_conversation_id' => (int) $mensaje->ai_conversation_id,
         ], 200);
+    }
+
+    /**
+     * GET admin-sync/asistente/informes-pendientes
+     *
+     * Los informes del mostrador que se depositaron HOY, están listos y todavía no se le avisaron
+     * al dueño. Cada uno viaja con su link ya emitido (§3.7): el admin arma un solo mensaje de
+     * WhatsApp con el título, el resumen y el link de cada uno.
+     *
+     * 🔴 `url` puede venir en null, y eso es correcto, no un bug: significa que esta instancia no
+     * tiene cargada la SPA_URL del cliente y el admin tiene que mandar el resumen SIN link. Un link
+     * armado con `app.url` (que es la URL de la API) daría 404 en el teléfono del dueño.
+     *
+     * "De hoy" se mide por `generado_at` y no por `fecha`: `fecha` es el día del que HABLA el
+     * informe (para 'dia' y 'tienda' es ayer), y lo que hay que avisar es lo que se escribió esta
+     * mañana.
+     *
+     * @param  Request  $request
+     * @return JsonResponse  200 {informes:[{id, tipo, titulo, resumen, url}]} · 401 · 403 · 404
+     */
+    public function informes_pendientes(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        $reportes = MostradorReporte::where('user_id', $dueno->id)
+                                    ->listos()
+                                    ->whereNull('avisado_at')
+                                    ->whereDate('generado_at', now()->toDateString())
+                                    ->orderBy('id')
+                                    ->get();
+
+        $informes = [];
+
+        foreach ($reportes as $reporte) {
+
+            $informes[] = [
+                'id'      => (int) $reporte->id,
+                'tipo'    => (string) $reporte->tipo,
+                'titulo'  => (string) $reporte->titulo,
+                'resumen' => (string) $reporte->resumen,
+                'url'     => MostradorAccesoHelper::emitir($reporte),
+            ];
+        }
+
+        return response()->json(['informes' => $informes], 200);
+    }
+
+    /**
+     * POST admin-sync/asistente/informes/{id}/avisado
+     *
+     * Sella el informe como avisado.
+     *
+     * 🔴 SON DOS PASOS A PROPÓSITO. El admin lo llama SOLO después de que el WhatsApp salió: si el
+     * envío falla (ventana de 24 h cerrada, plantilla no aprobada, Kapso caído), el informe queda
+     * sin marcar y el aviso sale en la próxima corrida. Marcar al pedir los informes dejaría al
+     * dueño sin su informe y sin forma de recuperarlo.
+     *
+     * Idempotente: un segundo aviso sobre el mismo informe no pisa la marca original.
+     *
+     * @param  Request  $request
+     * @param  int  $id
+     * @return JsonResponse  200 {ok:true} · 401 · 403 · 404
+     */
+    public function informe_avisado(Request $request, $id): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        $reporte = MostradorReporte::where('user_id', $dueno->id)
+                                    ->where('id', (int) $id)
+                                    ->first();
+
+        if (is_null($reporte)) {
+
+            return response()->json(['message' => 'Informe no encontrado.'], 404);
+        }
+
+        if (is_null($reporte->avisado_at)) {
+
+            $reporte->avisado_at = now();
+            $reporte->save();
+        }
+
+        return response()->json(['ok' => true], 200);
     }
 
     /**
