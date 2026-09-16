@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -114,6 +115,32 @@ class AsistenteIaService
     const PRESUPUESTO_SEGUNDOS = 210;
 
     /**
+     * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
+     * cruzar todavía contra el texto (misión agente-ia-mano-derecha, §1 del contrato).
+     *
+     * 🔴 SE JUNTAN EN execute_tool_calls() Y NO RELEYENDO LOS tool_result DE $messages. Los dos
+     * caminos llegan a lo mismo, pero acá el dato está crudo y con el nombre de la tool al lado:
+     * releyendo $messages habría que json_decode cada content y reconstruir a qué tool pertenece
+     * cruzando `tool_use_id` contra los bloques del assistant, que es el mismo trabajo hecho al
+     * revés y con una forma más de romperse.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    protected $candidatos_a_mencion = [];
+
+    /**
+     * Las menciones de la ÚLTIMA respuesta que generó responder(), ya cruzadas contra su texto.
+     *
+     * 🔴 POR QUÉ NO SE DEVUELVEN EN responder(). responder() devuelve `string` y lo usa el job, los
+     * tests y el resto del sistema: cambiarle el tipo de retorno a un array obligaría a tocar cada
+     * llamador para ganar nada. El texto sigue siendo el valor de la función y las menciones se
+     * piden al lado, como `hay_credenciales()`.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    protected $menciones = [];
+
+    /**
      * true si hay clave de Anthropic configurada. No tener IA contratada no
      * es un error: sin clave, el job deja el mensaje en error amigable sin
      * salir a la red.
@@ -132,7 +159,8 @@ class AsistenteIaService
      * @param AiConversation $conversation Conversación con historial en la base.
      * @param AiMessage $assistant_message El mensaje 'pendiente' que se está generando
      *                                     (queda afuera del historial por su estado).
-     * @return string Texto final de la respuesta.
+     * @return string Texto final de la respuesta. Las menciones de esa misma respuesta quedan en
+     *                menciones(), que se pide al lado (ver la propiedad $menciones).
      *
      * @throws AsistenteIaException Si la API falla o el loop termina sin texto. Extiende
      *                              RuntimeException, y lleva el motivo para que el job elija qué
@@ -140,6 +168,13 @@ class AsistenteIaService
      */
     public function responder(AiConversation $conversation, AiMessage $assistant_message): string
     {
+        /*
+         * Se limpian las dos por si el servicio se reusa para más de un mensaje: los candidatos de
+         * una respuesta anterior en el texto de esta serían menciones de otra conversación.
+         */
+        $this->candidatos_a_mencion = [];
+        $this->menciones = [];
+
         $owner = User::find($conversation->user_id);
 
         /*
@@ -278,7 +313,44 @@ class AsistenteIaService
             );
         }
 
+        /*
+         * §1 del contrato: las menciones salen de cruzar lo que devolvieron las tools de ESTA
+         * respuesta contra el texto que escribió el modelo. Va acá y no adentro del loop porque
+         * recién con el texto final se sabe a quién nombró.
+         *
+         * Protegido: una mención es un adorno clickeable. Si el cruce falla por lo que sea, la
+         * respuesta ya está escrita y tiene que llegar igual — sin menciones, como la de una SPA
+         * vieja.
+         */
+        try {
+            $this->menciones = MencionesIaHelper::cruzar(
+                $this->candidatos_a_mencion,
+                $final_text,
+                (int) $conversation->user_id
+            );
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudieron armar las menciones de la respuesta.', [
+                'ai_conversation_id' => $conversation->id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            $this->menciones = [];
+        }
+
         return $final_text;
+    }
+
+    /**
+     * Las menciones de la última respuesta generada por responder(): `[{ tipo, id, texto }]` con
+     * `tipo` ∈ cliente|articulo y `texto` el literal exacto tal como aparece en el texto.
+     *
+     * Vacío si no hubo ninguna, si el loop falló o si todavía no se llamó a responder().
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function menciones(): array
+    {
+        return $this->menciones;
     }
 
     /**
@@ -886,7 +958,7 @@ CARGA;
              */
             [
                 'name' => 'consultar_ventas_impagas_de_un_cliente',
-                'description' => 'Devuelve las VENTAS DEL ERP que un cliente todavía no pagó, de la más vieja a la más nueva, con la fecha, hace cuántos días están sin cobrar, el total y lo que queda pendiente. Es la herramienta de "qué me debe", "cuál es la venta más vieja que me debe" y "desde cuándo me debe". 🔴 venta_impaga_mas_vieja viene calculada sobre TODAS las ventas impagas y no sobre las que entran en la lista, así que podés contestar cuál es la más vieja aunque la lista venga recortada. saldo_en_cuenta_corriente_en_pesos es la deuda total del cliente e incluye lo que no está en ninguna venta (saldos iniciales, notas de crédito, ajustes): puede no coincidir con la suma de las ventas listadas, y eso no es un error, son dos cosas distintas. Primero conseguí el id del cliente con consultar_clientes.',
+                'description' => 'Devuelve las VENTAS DEL ERP que un cliente todavía no pagó, de la más vieja a la más nueva, con la fecha, hace cuántos días están sin cobrar, el total y lo que queda pendiente. Es la herramienta de "qué me debe", "cuál es la venta más vieja que me debe" y "desde cuándo me debe". 🔴 venta_impaga_mas_vieja viene calculada sobre TODAS las ventas impagas y no sobre las que entran en la lista, así que podés contestar cuál es la más vieja aunque la lista venga recortada. 🔴 CADA VENTA DICE SU MONEDA en "en_pesos": cuando es false ese importe está en DÓLARES y tenés que escribirlo con US$, nunca en pesos. total_pendiente_en_pesos_en_esta_lista suma solo las que están en pesos, y ventas_en_otra_moneda_en_esta_lista dice cuántas quedaron afuera de ese total. saldo_en_cuenta_corriente_en_pesos es la deuda total del cliente en pesos e incluye lo que no está en ninguna venta (saldos iniciales, notas de crédito, ajustes): puede no coincidir con la suma de las ventas listadas, y eso no es un error, son dos cosas distintas. Si el cliente no existe o no es de este negocio la respuesta trae "error": NO contestes que no debe nada, porque no se pudo mirar. Primero conseguí el id del cliente con consultar_clientes.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -917,7 +989,7 @@ CARGA;
             ],
             [
                 'name' => 'consultar_quien_compro_un_articulo',
-                'description' => 'Devuelve qué CLIENTES le compraron un artículo al negocio y cuántas unidades, según las VENTAS DEL ERP (no la tienda online). Es la herramienta de "qué cliente me compró más X", "a quién le vendí X" y "cuándo fue la última vez que le vendí X a alguien". Viene ordenada por unidades, de mayor a menor. unidades_sin_cliente son las que se vendieron por mostrador sin cliente cargado: si la lista viene vacía y ese número es mayor a cero, el artículo SÍ se vendió y no se sabe a quién — no contestes que no lo compró nadie. monto_en_pesos no cuenta las ventas en dólares, que van aparte en unidades_de_ventas_en_dolares. No la confundas con consultar_interesados_en_un_articulo, que es quién lo MIRÓ en la tienda.',
+                'description' => 'Devuelve qué CLIENTES le compraron un artículo al negocio y cuántas unidades, según las VENTAS DEL ERP (no la tienda online). Es la herramienta de "qué cliente me compró más X", "a quién le vendí X" y "cuándo fue la última vez que le vendí X a alguien". Viene ordenada por unidades, de mayor a menor. unidades_sin_cliente son las que se vendieron por mostrador sin cliente cargado: si la lista viene vacía y ese número es mayor a cero, el artículo SÍ se vendió y no se sabe a quién — no contestes que no lo compró nadie. 🔴 LAS UNIDADES SON EXACTAS, EL MONTO PUEDE NO SERLO: monto_en_pesos suma únicamente las unidades que tienen precio en pesos guardado, y unidades_sin_precio_en_pesos dice cuántas quedaron afuera (ventas en dólares y ventas viejas, anteriores a que el sistema guardara la moneda). Si ese número es mayor a cero, decí el monto como incompleto y aclará sobre cuántas unidades está calculado: NUNCA lo presentes como todo lo que compró, porque un monto bajo sobre muchas unidades se lee como un artículo barato. No la confundas con consultar_interesados_en_un_articulo, que es quién lo MIRÓ en la tienda.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -1258,7 +1330,17 @@ CARGA;
                 if (! is_null($handler)) {
                     // Las dos puntas de una tool de lectura (su definición y su handler) son la
                     // misma entrada de registro_de_lectura(): acá solo se la invoca.
-                    $content = $this->contenido_de_tool_result(call_user_func($handler, $tool_input, $owner_id));
+                    $datos = call_user_func($handler, $tool_input, $owner_id);
+
+                    /*
+                     * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del
+                     * json_encode— salen los pares (tipo, id, texto) que después se cruzan contra
+                     * el texto final. Acá no se decide ninguna mención: se junta la materia prima,
+                     * que es lo único que existe solo en este punto del loop.
+                     */
+                    $this->juntar_candidatos_a_mencion($tool_name, $datos);
+
+                    $content = $this->contenido_de_tool_result($datos);
                 } elseif (! is_null($assistant_message) && $assistant_message->acciones_habilitadas && HerramientasDeCarga::maneja($tool_name)) {
                     // Las dos puntas de las herramientas de carga (definición y
                     // despacho) viven juntas en HerramientasDeCarga: acá solo se
@@ -1300,6 +1382,32 @@ CARGA;
         }
 
         return $tool_results;
+    }
+
+    /**
+     * Suma a la bolsa de candidatos lo que dejó una tool de lectura.
+     *
+     * Protegido y sin tocar nada del resultado: si la extracción falla, la tool ya respondió bien y
+     * el loop tiene que seguir. Lo único que se pierde son las menciones de esa consulta.
+     *
+     * @param  string  $tool_name
+     * @param  mixed   $datos  Lo crudo que devolvió el handler.
+     * @return void
+     */
+    protected function juntar_candidatos_a_mencion($tool_name, $datos)
+    {
+        try {
+            $candidatos = MencionesIaHelper::candidatos_de_tool($tool_name, $datos);
+
+            if (!empty($candidatos)) {
+                $this->candidatos_a_mencion = array_merge($this->candidatos_a_mencion, $candidatos);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudieron leer los candidatos a mención de una tool.', [
+                'tool'  => $tool_name,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

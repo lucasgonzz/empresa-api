@@ -148,6 +148,13 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             $message->contenido = $texto;
             $message->estado = 'listo';
             $message->error_mensaje = null;
+            /*
+             * Misión agente-ia-mano-derecha (§1): las menciones se guardan CON el mensaje, en la
+             * misma pasada, porque se arman cruzando los resultados de las tools de esta respuesta
+             * contra este texto — y eso solo existe adentro del loop que acaba de terminar. Guardadas,
+             * el dueño recarga la pantalla y siguen ahí.
+             */
+            $message->menciones = $service->menciones();
             $message->save();
         } catch (\Throwable $e) {
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [

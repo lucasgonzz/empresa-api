@@ -9,6 +9,8 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ClienteDeMencionIaHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
@@ -87,6 +89,32 @@ class ClientController extends Controller
 
     public function show($id) {
         return response()->json(['model' => $this->fullModel('Client', $id)], 200);
+    }
+
+    /**
+     * El cliente que necesita el modal de cuenta corriente cuando se lo abre desde una mención del
+     * chat del asistente (misión agente-ia-mano-derecha, §3 del contrato, 16/9/2026): su nombre,
+     * cuántos movimientos tiene y sus `credit_accounts` con saldo y límite.
+     *
+     * 🔴 Es un camino aparte de `show()` y no un adorno: `show()` resuelve por id PELADO
+     * (Controller::fullModel()) y devuelve el cliente de cualquier comercio. Acá la consulta va
+     * scopeada por `user_id` y contesta 404 si el cliente no es del dueño. El detalle completo, y
+     * las otras dos diferencias, están en ClienteDeMencionIaHelper.
+     *
+     * Envuelto en `{ model: ... }` como el resto del API; la SPA acepta las dos formas.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse  200 {model} · 404 {message}
+     */
+    public function para_cuenta_corriente($id) {
+        $model = ClienteDeMencionIaHelper::cliente($id, $this->userId(), UserHelper::user(true));
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'Cliente no encontrado.'], 404);
+        }
+
+        return response()->json(['model' => $model], 200);
     }
 
     public function update(Request $request, $id) {

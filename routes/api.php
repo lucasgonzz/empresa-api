@@ -1092,6 +1092,22 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
         // el resto del chat (AiConversationController::conversacion_de_la_persona()).
         Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
         Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+
+        /*
+         * Lo que abren las menciones del chat (misión agente-ia-mano-derecha, §2 y §3 del
+         * contrato): la ficha del artículo al pasar el mouse por encima de su nombre, y el cliente
+         * con sus cuentas para abrir el modal de cuenta corriente al hacerle clic.
+         *
+         * 🔴 Van EN PLURAL (`articles/`, `clients/`) y no pegadas a los resources `article` y
+         * `client`, que están en singular: así no las captura el `show` de ningún resource y no
+         * dependen de dónde se declare cada una.
+         *
+         * Mismo gate que el resto del chat —extensión + solo el dueño— porque son parte del mismo:
+         * las dos existen para lo que el chat nombró y no se usan desde ninguna otra pantalla. La
+         * tenencia por `user_id` la resuelve igual cada controller, que es la que de verdad corta.
+         */
+        Route::get('articles/{id}/ficha-asistente', 'ArticleController@ficha_asistente');
+        Route::get('clients/{id}/para-cuenta-corriente', 'ClientController@para_cuenta_corriente');
     });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
