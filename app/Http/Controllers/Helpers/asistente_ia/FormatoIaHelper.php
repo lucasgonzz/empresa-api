@@ -78,6 +78,30 @@ class FormatoIaHelper {
     }
 
     /**
+     * Los días ANTERIORES a `$hoy`, con su nombre: "lunes 14/09, domingo 13/09, ...". Existe por el
+     * mismo motivo que proximos_dias(): el prompt manda convertir "ayer" o "el viernes pasado" contra
+     * fechas ya calculadas, y sin esta lista la IA volvía a hacer la aritmética a mano (que es el
+     * defecto que originó la misión: contestó "viernes 19/09" siendo el 15/09 martes).
+     *
+     * @param  \Carbon\Carbon  $hoy
+     * @param  int  $cantidad
+     * @return string
+     */
+    static function dias_anteriores(Carbon $hoy, $cantidad = 7) {
+
+        $dias = [];
+
+        for ($i = 1; $i <= $cantidad; $i++) {
+
+            $dia = $hoy->copy()->startOfDay()->subDays($i);
+
+            $dias[] = self::dia_de_la_semana($dia).' '.$dia->format('d/m');
+        }
+
+        return implode(', ', $dias);
+    }
+
+    /**
      * "$ 5.000" en pesos, "US$ 100" en dólares. El número sale de Numbers::price(), que es como lo
      * escribe el resto del sistema (sin decimales cuando son ,00).
      *
@@ -88,6 +112,17 @@ class FormatoIaHelper {
     static function monto($monto, $moneda_id = null) {
 
         $prefijo = (int) $moneda_id === self::MONEDA_DOLARES ? 'US$ ' : '$ ';
+
+        /*
+         * En dolares se muestran SIEMPRE los dos decimales, como en el resto del sistema. No se
+         * delega en Numbers::price($monto, false, $moneda_id) porque esa firma agrega su propio
+         * simbolo ('$1.200' / 'USD 100,00'), distinto del que usa la tarjeta, y quedaba el signo
+         * duplicado.
+         */
+        if ((int) $moneda_id === self::MONEDA_DOLARES) {
+
+            return $prefijo.number_format(round((float) $monto, 2), 2, ',', '.');
+        }
 
         return $prefijo.Numbers::price(round((float) $monto, 2));
     }

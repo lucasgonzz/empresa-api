@@ -116,7 +116,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_gasto',
-                'description'  => 'Arma la tarjeta de un gasto para que la persona la confirme: NO registra nada. Con fecha futura no arma un gasto sino una tarea en la agenda con el gasto asociado (la respuesta lo dice en convertido_desde). Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un gasto para que la persona la confirme: NO registra nada. Con fecha futura no arma un gasto sino una tarea en la agenda con el gasto asociado (la respuesta lo dice en convertido_desde): en ese caso NO mandes pagos ni preguntes cómo se paga, eso se pregunta el día que la tarea se marca como hecha. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [

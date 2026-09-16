@@ -269,6 +269,7 @@ class AsistenteIaService
          */
         $dia_de_hoy = FormatoIaHelper::dia_de_la_semana(now());
         $proximos_dias = FormatoIaHelper::proximos_dias(now());
+        $dias_anteriores = FormatoIaHelper::dias_anteriores(now());
 
         // El bloque de registro sale del trait compartido para que el chat y los tres
         // resumenes de sugerencias suenen igual: es la MISMA IA para el que la lee, y un
@@ -306,11 +307,13 @@ Qué podés afirmar:
 - Si no tenés el dato, decilo en una oración y ofrecé qué sí podés consultar.
 - Las herramientas devuelven como máximo 20 registros. Si el resultado llega a 20,
   aclará que puede haber más y que eso es un tope de la consulta, no del negocio.
-{$regla_de_solo_lectura}- Los importes son en pesos argentinos.
+{$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
+  dólares, que se escriben con US$.
 
 {$bloque_de_carga}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
+Los 7 días anteriores fueron: {$dias_anteriores}.
 SYSTEM;
     }
 
@@ -367,11 +370,13 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
 - Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
   asociado. Un pago futuro, como tarea para cobrar o pagar ese día. Para una tarea con gasto
   preguntá el monto una vez; si la persona no lo sabe, se agenda sin monto.
+- 🔴 Con fecha futura NO preguntes cómo se paga ni a qué caja va: eso se pregunta el día que
+  la tarea se marca como hecha. Pedí solo el monto si falta, y proponé la tarea.
 - Si la persona corrige una tarjeta, proponé una nueva: la anterior queda reemplazada sola.
   Si la corrección cambia la subcategoría, la cuenta o la tarea, pasá en reemplaza_a la
   tarjeta que corrige.
-- Convertí las fechas relativas ("este viernes", "ayer") con la lista de días de abajo y
-  escribí la fecha con el día de la semana.
+- Convertí las fechas relativas ("este viernes", "ayer") con las listas de días de abajo
+  —una hacia adelante y otra hacia atrás— y escribí la fecha con el día de la semana.
 - Si la persona no tiene permiso para algo, decile que no tiene permiso para cargarlo desde
   su usuario.
 - Nunca muestres ni pidas números internos (ids).

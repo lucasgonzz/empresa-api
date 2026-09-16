@@ -199,7 +199,7 @@ class PagosIaHelper {
 
                 if ($fila['caja_id'] > 0) {
 
-                    return RespuestaDeCargaIa::error('La cuenta no tiene ninguna caja creada: el pago se carga sin caja.');
+                    return RespuestaDeCargaIa::error('Esta cuenta no tiene ninguna caja creada: no me mandes caja.');
                 }
             }
         }

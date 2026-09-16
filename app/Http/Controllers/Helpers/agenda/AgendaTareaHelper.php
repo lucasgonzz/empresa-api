@@ -111,7 +111,7 @@ class AgendaTareaHelper {
         if (!is_null($expense_concept_id)
             && !ExpenseConcept::where('id', $expense_concept_id)->where('user_id', $owner_id)->exists()) {
 
-            return 'El concepto de gasto elegido no existe. Creá los conceptos en ABM → Gastos.';
+            return 'La subcategoría de gasto elegida no existe. Creá las subcategorías en ABM → Gastos.';
         }
 
         if (!is_null($expense_concept_id)) {

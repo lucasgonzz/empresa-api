@@ -76,7 +76,7 @@ class EntradaDeCargaIa {
 
             if (!$contexto->usa_dolares) {
 
-                return RespuestaDeCargaIa::error('La cuenta no trabaja con dólares: la carga va en pesos.');
+                return RespuestaDeCargaIa::error('Esta cuenta no trabaja con dólares: pedímelo en pesos.');
             }
 
             return FormatoIaHelper::MONEDA_DOLARES;
