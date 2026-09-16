@@ -8,6 +8,7 @@ use App\Models\BudgetStatus;
 use App\Models\Client;
 use App\Models\Combo;
 use App\Models\CreditAccount;
+use App\Models\ExtencionEmpresa;
 use App\Models\Sale;
 use App\Models\Surchage;
 use App\Models\User;
@@ -62,6 +63,9 @@ class Combos_en_presupuestos_Test extends TestCase
 
     /** Stock con el que arranca el articulo componente. */
     const STOCK_INICIAL = 20;
+
+    /** Slug de la extension que gatea `BudgetController::duplicate()`. */
+    const EXTENCION_DUPLICAR = 'duplicar_presupuestos';
 
     /**
      * ⚠️ `budget_statuses` puede venir vacia en la base del slot (medido el 21/8/2026). Se siembra
@@ -186,6 +190,34 @@ class Combos_en_presupuestos_Test extends TestCase
         $combo->articles()->attach($article->id, ['amount' => Self::UNIDADES_POR_COMBO]);
 
         return $combo;
+    }
+
+    /**
+     * Le da al usuario de testing la extension que gatea `duplicate()`, creando la fila del
+     * catalogo si la base del slot no la tiene sembrada.
+     *
+     * Sin la extension, `duplicate()` corta en 403 antes de tocar nada y el test no mediria nada.
+     * Mismo apaño que en `2_Presupuesto_Recargos_Directo_A_Items_Test`.
+     *
+     * @return void
+     */
+    protected function dar_extension_duplicar()
+    {
+        $extencion = ExtencionEmpresa::where('slug', Self::EXTENCION_DUPLICAR)->first();
+
+        if (is_null($extencion)) {
+
+            $extencion = ExtencionEmpresa::forceCreate([
+                'slug' => Self::EXTENCION_DUPLICAR,
+                'name' => 'Duplicar presupuestos',
+            ]);
+        }
+
+        $user = User::find(500);
+
+        if (!$user->extencions()->where('extencion_empresas.id', $extencion->id)->exists()) {
+            $user->extencions()->attach($extencion->id);
+        }
     }
 
     /**
@@ -662,6 +694,58 @@ class Combos_en_presupuestos_Test extends TestCase
             'La clave ausente no puede borrar el combo que el presupuesto ya tenia.'
         );
         $this->assertEquals(Self::CANTIDAD_COMBO, (float) $filas->first()->amount);
+    }
+
+    /**
+     * Duplicar un presupuesto con combo.
+     *
+     * Sin el attach en `BudgetDuplicarHelper`, el duplicado copia el `total` del origen (con el
+     * combo adentro) y `getTotal()` no lo encuentra: el 500 del alta, otra vez, en otro endpoint.
+     * Por eso el assert del 201 no es decorativo, es la mitad del test.
+     *
+     * @group presupuestos
+     * @group combos
+     * @test
+     */
+    public function duplicar_un_presupuesto_se_lleva_el_combo()
+    {
+        $this->autenticar();
+        $this->dar_extension_duplicar();
+
+        $client = $this->cliente_de_testing();
+        $article = $this->articulo_de_testing();
+        $combo = $this->combo_de_testing($article);
+
+        $total = Self::PRECIO_COMBO * Self::CANTIDAD_COMBO;
+
+        $payload = $this->payload_crear(
+            $client,
+            [$this->renglon_combo($combo, Self::CANTIDAD_COMBO)],
+            $total
+        );
+
+        $origen_id = $this->post('api/budget', $payload)
+                            ->assertStatus(201)
+                            ->json('model.id');
+
+        $duplicado_id = $this->post('api/budget/'.$origen_id.'/duplicate')
+                            ->assertStatus(201)
+                            ->json('model.id');
+
+        $this->assertNotEquals($origen_id, $duplicado_id, 'El duplicado tiene que ser otro presupuesto.');
+
+        $filas = $this->filas_del_pivote($duplicado_id);
+
+        $this->assertCount(1, $filas, 'El duplicado tiene que llevarse el combo.');
+        $this->assertEquals($combo->id, (int) $filas->first()->combo_id);
+        $this->assertEquals(Self::CANTIDAD_COMBO, (float) $filas->first()->amount);
+        $this->assertEquals(Self::PRECIO_COMBO, (float) $filas->first()->price);
+
+        $this->assertCount(
+            1,
+            $this->filas_del_pivote($origen_id),
+            'El origen no se tiene que haber tocado.'
+        );
     }
 
     /**
