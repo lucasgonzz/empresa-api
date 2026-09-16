@@ -63,29 +63,7 @@ class AccionesIaHelper {
 
         $clave = mb_substr((string) $clave, 0, 100);
 
-        $parecida = self::confirmada_parecida($contexto, $mensaje, $clave);
-
-        $confirmada_parecida = null;
-
-        if (!is_null($parecida)) {
-
-            $texto = is_object($parecida->resultado) && isset($parecida->resultado->texto)
-                ? (string) $parecida->resultado->texto
-                : 'ya quedó registrada';
-
-            $aviso = 'Ojo: hace un momento confirmaste una carga parecida ('.$texto.'). Confirmá esta solo si es otra carga.';
-
-            $aviso_previo = isset($presentacion['aviso']) ? trim((string) $presentacion['aviso']) : '';
-
-            $presentacion['aviso'] = $aviso_previo !== '' ? $aviso_previo.' '.$aviso : $aviso;
-
-            $confirmada_parecida = [
-                'tarjeta_id' => (int) $parecida->id,
-                'resultado'  => $texto,
-            ];
-        }
-
-        return DB::transaction(function () use ($contexto, $mensaje, $tipo, $clave, $datos, $presentacion, $reemplaza_a, $referencia_updated_at, $confirmada_parecida) {
+        return DB::transaction(function () use ($contexto, $mensaje, $tipo, $clave, $datos, $presentacion, $reemplaza_a, $referencia_updated_at) {
 
             $accion = AiMessageAction::create([
                 'ai_conversation_id'    => $contexto->conversation->id,
@@ -115,21 +93,90 @@ class AccionesIaHelper {
                                         ->orderBy('id')
                                         ->pluck('id');
 
-            $reemplazadas = [];
+            $candidatas = [];
 
             foreach ($anteriores as $id) {
 
-                $reemplazadas[] = (int) $id;
+                $candidatas[] = (int) $id;
             }
 
-            if (count($reemplazadas)) {
+            $reemplazadas = [];
 
-                AiMessageAction::whereIn('id', $reemplazadas)
-                                ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
-                                ->update([
-                                    'estado'      => AiMessageAction::ESTADO_REEMPLAZADA,
-                                    'resuelta_at' => Carbon::now(),
-                                ]);
+            /** La tarjeta de la misma carga que quedó confirmada (la carrera), o null. */
+            $confirmada = null;
+
+            if (count($candidatas)) {
+
+                /*
+                 * 🔴 LO QUE SE INFORMA ES EL RESULTADO DEL UPDATE, NO EL DEL SELECT DE ARRIBA.
+                 *
+                 * El WHERE del update exige `propuesta` a propósito, así que si alguien confirmó una
+                 * de esas tarjetas entre el SELECT y el UPDATE (dos pestañas, o el clic mientras el
+                 * job armaba la corrección), el update NO la toca. Informar el pluck sería decirle a
+                 * la IA que la reemplazó —y la IA le diría a la persona que la vieja quedó
+                 * cancelada— cuando en realidad ya está REGISTRADA: confirmar la nueva duplicaría la
+                 * carga. Por eso se guarda el entero que devuelve el update y, si no coincide, se
+                 * vuelve a leer cuáles quedaron reemplazadas de verdad y cuál se confirmó.
+                 */
+                $afectadas = AiMessageAction::whereIn('id', $candidatas)
+                                            ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                            ->update([
+                                                'estado'      => AiMessageAction::ESTADO_REEMPLAZADA,
+                                                'resuelta_at' => Carbon::now(),
+                                            ]);
+
+                if ((int) $afectadas === count($candidatas)) {
+
+                    $reemplazadas = $candidatas;
+
+                } else {
+
+                    foreach (AiMessageAction::whereIn('id', $candidatas)
+                                            ->where('estado', AiMessageAction::ESTADO_REEMPLAZADA)
+                                            ->orderBy('id')
+                                            ->pluck('id') as $id) {
+
+                        $reemplazadas[] = (int) $id;
+                    }
+
+                    $confirmada = AiMessageAction::whereIn('id', $candidatas)
+                                                ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                                                ->orderBy('id', 'DESC')
+                                                ->first();
+                }
+            }
+
+            /*
+             * La otra punta de la misma carrera: una tarjeta de esta clave que ya no estaba propuesta
+             * cuando se leyeron las candidatas, y que se confirmó después del pedido de la persona.
+             */
+            if (is_null($confirmada)) {
+
+                $confirmada = self::confirmada_parecida($contexto, $mensaje, $clave);
+            }
+
+            $confirmada_parecida = null;
+
+            if (!is_null($confirmada)) {
+
+                $texto = is_object($confirmada->resultado) && isset($confirmada->resultado->texto)
+                    ? (string) $confirmada->resultado->texto
+                    : 'ya quedó registrada';
+
+                $aviso = 'Ojo: hace un momento confirmaste una carga parecida ('.$texto.'). Confirmá esta solo si es otra carga.';
+
+                $aviso_previo = isset($presentacion['aviso']) ? trim((string) $presentacion['aviso']) : '';
+
+                $presentacion['aviso'] = $aviso_previo !== '' ? $aviso_previo.' '.$aviso : $aviso;
+
+                // El aviso se descubre después de crear la tarjeta, así que se le agrega acá mismo.
+                $accion->presentacion = $presentacion;
+                $accion->save();
+
+                $confirmada_parecida = [
+                    'tarjeta_id' => (int) $confirmada->id,
+                    'resultado'  => $texto,
+                ];
             }
 
             return [

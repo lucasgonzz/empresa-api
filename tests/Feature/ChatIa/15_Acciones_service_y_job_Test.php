@@ -15,6 +15,7 @@ use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -366,6 +367,69 @@ class Acciones_service_y_job_Test extends TestCase
             'Ojo: hace un momento confirmaste una carga parecida (Gasto N° 88 registrado). Confirmá esta solo si es otra carga.',
             AiMessageAction::find($con_aviso['tarjeta_id'])->presentacion['aviso']
         );
+    }
+
+    /**
+     * 🔴 La ventana fina de la misma carrera: la tarjeta vieja se confirma ENTRE el SELECT que la lee
+     * como candidata a reemplazo y el UPDATE que la reemplaza. El UPDATE exige `propuesta`, así que no
+     * la toca; informar el SELECT sería decirle a la IA que la reemplazó —y la IA le diría a la
+     * persona que la vieja quedó cancelada— cuando en realidad ya está REGISTRADA, y confirmar la
+     * nueva duplicaría la carga.
+     *
+     * La carrera se provoca con un listener de consultas que confirma la vieja justo después del
+     * pluck. No hay otra forma de meterse en esa ventana desde un test, y si mañana el reemplazo deja
+     * de leer las candidatas con ese SELECT, la aserción del listener avisa que el test dejó de medir.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function una_tarjeta_confirmada_entre_el_select_y_el_update_no_se_informa_como_reemplazada()
+    {
+        $flete = $this->subcategoria('Flete P15');
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente(true, 'no, era 6000');
+
+        $primera = json_decode($this->service->execute_tool_calls([$this->bloque_proponer_gasto($flete, 5000, 'toolu_1')], $conversation, $assistant)[0]['content'], true);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+
+        $confirmada_en_el_medio = false;
+
+        DB::listen(function ($query) use ($primera, &$confirmada_en_el_medio) {
+
+            if ($confirmada_en_el_medio) {
+                return;
+            }
+
+            // El pluck de las candidatas al reemplazo.
+            if (strpos($query->sql, 'select `id` from `ai_message_actions`') !== 0) {
+                return;
+            }
+
+            $confirmada_en_el_medio = true;
+
+            // update() de una query no pasa por los casts: el resultado va como JSON a mano.
+            AiMessageAction::where('id', $primera['tarjeta_id'])->update([
+                'estado'      => 'confirmada',
+                'resuelta_at' => now(),
+                'resultado'   => json_encode(['texto' => 'Gasto N° 91 registrado', 'ruta' => null]),
+            ]);
+        });
+
+        $corregida = json_decode($this->service->execute_tool_calls([$this->bloque_proponer_gasto($flete, 6000, 'toolu_2')], $conversation, $assistant)[0]['content'], true);
+
+        $this->assertTrue($confirmada_en_el_medio, 'El listener no corrió: el reemplazo ya no lee las candidatas con ese SELECT y este test dejó de medir la carrera.');
+
+        $this->assertTrue($corregida['ok'], json_encode($corregida));
+        $this->assertEquals([], $corregida['reemplazo'], 'Una tarjeta que quedó confirmada no se informa como reemplazada.');
+        $this->assertEquals('confirmada', AiMessageAction::find($primera['tarjeta_id'])->estado_guardado());
+
+        // Y la nueva nace con el aviso, que es lo único que evita el doble registro.
+        $this->assertEquals(
+            ['tarjeta_id' => (int) $primera['tarjeta_id'], 'resultado' => 'Gasto N° 91 registrado'],
+            $corregida['confirmada_parecida']
+        );
+        $this->assertStringContainsString('carga parecida', AiMessageAction::find($corregida['tarjeta_id'])->presentacion['aviso']);
     }
 
     /**
