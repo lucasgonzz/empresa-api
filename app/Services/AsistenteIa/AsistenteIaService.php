@@ -4,6 +4,8 @@ namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -22,6 +24,14 @@ use Illuminate\Support\Facades\Log;
  * user_id del DUEÑO resuelto desde la conversación (nunca desde Auth:
  * esto corre adentro de un job sin sesión).
  *
+ * Misión asistente-ia-acciones (15/9/2026): si el mensaje del assistant
+ * tiene `acciones_habilitadas` (la SPA nueva manda `acciones: true`), el
+ * loop suma las herramientas de carga de HerramientasDeCarga, que PROPONEN
+ * gastos, pagos y tareas como tarjetas que la persona confirma (nunca
+ * escriben en el sistema), con el prompt que las explica y otro techo de
+ * iteraciones. Sin el flag queda exactamente como antes: las mismas tools,
+ * el mismo prompt de solo lectura y el mismo techo.
+ *
  * El consumo de tokens se registra en CADA iteración del loop (cada
  * respuesta de la API trae su propio bloque usage); el registro nunca
  * lanza (AiTokenUsageHelper).
@@ -32,6 +42,14 @@ class AsistenteIaService
 
     /** Máximo de iteraciones del loop de tool use, para evitar bucles infinitos. */
     const MAX_TOOL_ITERATIONS = 5;
+
+    /**
+     * Techo de iteraciones cuando el mensaje tiene las herramientas de carga. Armar una carga
+     * encadena más llamadas que una consulta (buscar el cliente → sus cuentas → las opciones de
+     * carga → proponer), y con 5 una carga completa quedaba al borde del corte. PRESUPUESTO_SEGUNDOS
+     * y el $timeout del job NO cambian: el techo de tiempo del loop sigue siendo el mismo.
+     */
+    const MAX_TOOL_ITERATIONS_CON_ACCIONES = 8;
 
     /** Techo de mensajes del historial que viajan a la API. */
     const MAX_MENSAJES_HISTORIAL = 30;
@@ -95,17 +113,26 @@ class AsistenteIaService
     {
         $owner = User::find($conversation->user_id);
 
-        $system   = $this->build_system_payload($conversation, $owner);
+        /*
+         * Misión asistente-ia-acciones: con `acciones_habilitadas` el loop lleva
+         * las herramientas de carga, el prompt que las explica y el techo de
+         * iteraciones más alto. Sin el flag, lo de siempre.
+         */
+        $con_acciones = (bool) $assistant_message->acciones_habilitadas;
+
+        $system   = $this->build_system_payload($conversation, $owner, $con_acciones);
         $messages = $this->build_messages_payload($conversation);
-        $tools    = $this->build_tools();
+        $tools    = $this->build_tools($con_acciones);
         $model    = (string) config('services.anthropic.model');
         $http     = $this->build_http_client();
+
+        $max_iterations = $con_acciones ? self::MAX_TOOL_ITERATIONS_CON_ACCIONES : self::MAX_TOOL_ITERATIONS;
 
         $iterations = 0;
         $final_text = '';
         $inicio_del_loop = time();
 
-        while ($iterations < self::MAX_TOOL_ITERATIONS) {
+        while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
              * ANTES de cada llamada — la que ya está en vuelo no se puede
@@ -178,9 +205,10 @@ class AsistenteIaService
                 ];
 
                 // Ejecutar cada tool_use y devolver los tool_result como mensaje user.
+                // El mensaje viaja para que las herramientas de carga cuelguen de él sus tarjetas.
                 $messages[] = [
                     'role'    => 'user',
-                    'content' => $this->execute_tool_calls($content_blocks, $conversation),
+                    'content' => $this->execute_tool_calls($content_blocks, $conversation, $assistant_message),
                 ];
 
                 continue;
@@ -214,9 +242,10 @@ class AsistenteIaService
      *
      * @param AiConversation $conversation
      * @param User|null $owner Dueño de la cuenta, para el nombre del negocio.
+     * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @return string
      */
-    public function build_system_prompt(AiConversation $conversation, $owner): string
+    public function build_system_prompt(AiConversation $conversation, $owner, $con_acciones = false): string
     {
         // Mismo fallback que el resto del sistema cuando el negocio no cargó su nombre.
         $company_name = '';
@@ -229,10 +258,30 @@ class AsistenteIaService
 
         $fecha = now()->format('d/m/Y');
 
+        /*
+         * Misión asistente-ia-acciones: el día de la semana de hoy y los
+         * próximos 7 días con su nombre, escritos a mano (FormatoIaHelper, sin
+         * depender del locale). Sin esto la IA calculaba sola qué fecha es
+         * "este viernes" y se equivocaba: el 15/9/2026, martes, contestó
+         * "viernes 19/09", que es sábado. Va en las dos variantes, porque las
+         * consultas ("lo que vendí el lunes") hacen la misma cuenta. La oración
+         * "Hoy es {fecha}." queda literal adelante.
+         */
+        $dia_de_hoy = FormatoIaHelper::dia_de_la_semana(now());
+        $proximos_dias = FormatoIaHelper::proximos_dias(now());
+
         // El bloque de registro sale del trait compartido para que el chat y los tres
         // resumenes de sugerencias suenen igual: es la MISMA IA para el que la lee, y un
         // ajuste de tono aplicado en un solo lado deja los otros hablando distinto.
         $tono = $this->reglas_de_tono();
+
+        /*
+         * Sin acciones, el renglón de solo lectura de siempre, tal cual. Con
+         * acciones ese renglón no va (sería mentira) y en su lugar se suma el
+         * bloque "Qué podés cargar", con sus reglas.
+         */
+        $regla_de_solo_lectura = $con_acciones ? '' : $this->regla_de_solo_lectura();
+        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga() : '';
 
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
@@ -257,14 +306,79 @@ Qué podés afirmar:
 - Si no tenés el dato, decilo en una oración y ofrecé qué sí podés consultar.
 - Las herramientas devuelven como máximo 20 registros. Si el resultado llega a 20,
   aclará que puede haber más y que eso es un tope de la consulta, no del negocio.
+{$regla_de_solo_lectura}- Los importes son en pesos argentinos.
+
+{$bloque_de_carga}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+pasada" y similares.
+Los próximos 7 días son: {$proximos_dias}.
+SYSTEM;
+    }
+
+    /**
+     * El renglón de solo lectura del prompt, idéntico al de antes de la
+     * misión (con su salto de línea final). Solo va cuando el mensaje NO
+     * tiene las herramientas de carga.
+     *
+     * @return string
+     */
+    protected function regla_de_solo_lectura(): string
+    {
+        return <<<REGLA
 - Solo podés LEER. No podés crear, modificar ni borrar nada del sistema, ni mandar
   mensajes, ni prometer que vas a hacerlo. Si te lo piden, explicá adónde ir en el
   sistema para hacerlo a mano.
-- Los importes son en pesos argentinos.
 
-Hoy es {$fecha}. Usalo para interpretar "este mes", "la semana
-pasada" y similares.
-SYSTEM;
+REGLA;
+    }
+
+    /**
+     * Las reglas de carga del prompt (plan §3.7, con la redacción pulida y
+     * sin sacar ninguna regla), con una línea en blanco al final. Solo va
+     * cuando el mensaje tiene las herramientas de carga.
+     *
+     * 🔴 Cada regla tapa un error concreto: la IA que dice "listo, cargado"
+     * cuando solo dejó una tarjeta; la que supone el monto o la caja en vez
+     * de preguntar; la que inventa un motivo distinto del que devolvió la
+     * herramienta; la que vuelve a proponer lo que el historial ya dice que
+     * se confirmó. No se "simplifica" sacando renglones.
+     *
+     * @return string
+     */
+    protected function bloque_de_carga(): string
+    {
+        return <<<CARGA
+Qué podés cargar, siempre con una tarjeta que la persona confirma:
+- Gastos, pagos de clientes, pagos a proveedores, tareas nuevas de la agenda, cambios en
+  una tarea y marcar una tarea como hecha. Nada más: no anulás ni editás gastos o pagos,
+  no creás clientes, proveedores ni subcategorías, no mandás mensajes, y los cheques, los
+  cobros con tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan
+  desde la pantalla.
+- Vos nunca registrás nada: llamás a la herramienta proponer_ que corresponde y el sistema
+  le muestra a la persona una tarjeta con Confirmar y Cancelar. Nunca digas "ya lo cargué",
+  "listo" ni "registrado": decí que dejaste la tarjeta para confirmar y resumila en una línea.
+- Antes de proponer, juntá todos los datos. Si falta algo (cuánto, a quién, cómo se pagó, a
+  qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
+  nombre parecido, una cuenta en pesos y otra en dólares, varias subcategorías que encajan),
+  preguntá en UN solo mensaje corto todo lo que falta, ofreciendo las opciones por su nombre.
+  No supongas montos, personas, cajas ni fechas.
+- Si la herramienta devuelve "faltan", preguntá eso. Si devuelve "error", contá ese motivo
+  tal cual y no agregues otro. Si devuelve "confirmada_parecida", avisá que hace un momento
+  se confirmó una carga parecida y que confirme esta solo si es otra carga.
+- Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
+  asociado. Un pago futuro, como tarea para cobrar o pagar ese día. Para una tarea con gasto
+  preguntá el monto una vez; si la persona no lo sabe, se agenda sin monto.
+- Si la persona corrige una tarjeta, proponé una nueva: la anterior queda reemplazada sola.
+  Si la corrección cambia la subcategoría, la cuenta o la tarea, pasá en reemplaza_a la
+  tarjeta que corrige.
+- Convertí las fechas relativas ("este viernes", "ayer") con la lista de días de abajo y
+  escribí la fecha con el día de la semana.
+- Si la persona no tiene permiso para algo, decile que no tiene permiso para cargarlo desde
+  su usuario.
+- Nunca muestres ni pidas números internos (ids).
+- Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
+  pasó con cada tarjeta. No las repitas.
+
+CARGA;
     }
 
     /**
@@ -276,14 +390,15 @@ SYSTEM;
      *
      * @param AiConversation $conversation
      * @param User|null $owner
+     * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @return array<int, array<string, mixed>>
      */
-    public function build_system_payload(AiConversation $conversation, $owner): array
+    public function build_system_payload(AiConversation $conversation, $owner, $con_acciones = false): array
     {
         $system = [
             [
                 'type'          => 'text',
-                'text'          => $this->build_system_prompt($conversation, $owner),
+                'text'          => $this->build_system_prompt($conversation, $owner, $con_acciones),
                 'cache_control' => ['type' => 'ephemeral'],
             ],
         ];
@@ -311,6 +426,10 @@ SYSTEM;
      * 'pendiente' que se está generando y los mensajes en error quedan
      * afuera solos por el filtro de estado.
      *
+     * Misión asistente-ia-acciones: un mensaje del assistant con tarjetas de
+     * carga suma al final una línea por tarjeta (ver
+     * contenido_para_el_historial()). Un mensaje sin tarjetas viaja idéntico.
+     *
      * @param AiConversation $conversation
      * @return array<int, array{role: string, content: string}>
      */
@@ -323,13 +442,14 @@ SYSTEM;
             ->where('contenido', '!=', '')
             ->orderBy('id', 'DESC')
             ->limit(self::MAX_MENSAJES_HISTORIAL)
+            ->with('acciones')
             ->get();
 
         $seleccionados = [];
         $acumulado = 0;
 
         foreach ($recientes as $message) {
-            $largo = mb_strlen((string) $message->contenido);
+            $largo = mb_strlen($this->contenido_para_el_historial($message));
 
             /*
              * El mensaje que hace pasar el techo queda afuera, salvo que sea
@@ -349,7 +469,7 @@ SYSTEM;
         $turns = [];
 
         foreach ($seleccionados as $message) {
-            $body = trim((string) $message->contenido);
+            $body = trim($this->contenido_para_el_historial($message));
             if ($body === '') {
                 continue;
             }
@@ -378,6 +498,56 @@ SYSTEM;
     }
 
     /**
+     * Texto de un mensaje tal como viaja en el historial. Un mensaje del
+     * assistant con tarjetas suma al final una línea por tarjeta
+     * (`[Tarjeta #12 · Gasto · ... · estado: confirmada (Gasto N° 88 registrado)]`,
+     * ver AccionesIaHelper::linea_de_historial()): así la IA sabe qué se
+     * confirmó, qué se canceló y qué quedó reemplazado, y no vuelve a
+     * proponer lo que ya está cargado. Sin tarjetas, el contenido de siempre.
+     *
+     * @param AiMessage $message Con la relación `acciones` cargada.
+     * @return string
+     */
+    protected function contenido_para_el_historial(AiMessage $message): string
+    {
+        $contenido = (string) $message->contenido;
+
+        if ($message->rol === 'user' || ! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
+            return $contenido;
+        }
+
+        $lineas = [];
+
+        foreach ($message->acciones as $accion) {
+            $lineas[] = AccionesIaHelper::linea_de_historial($accion);
+        }
+
+        return rtrim($contenido) . "\n" . implode("\n", $lineas);
+    }
+
+    /**
+     * Las tools que viajan a la API para un mensaje. Sin acciones son
+     * EXACTAMENTE las de lectura de siempre (herramientas_de_lectura()); con
+     * acciones se suman las de HerramientasDeCarga, que declaran y despachan
+     * sus herramientas juntas en su propio archivo.
+     *
+     * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
+     * @return array<int, array<string, mixed>>
+     */
+    public function build_tools($con_acciones = false): array
+    {
+        $tools = $this->herramientas_de_lectura();
+
+        if ($con_acciones) {
+            foreach (HerramientasDeCarga::definiciones() as $definicion) {
+                $tools[] = $definicion;
+            }
+        }
+
+        return $tools;
+    }
+
+    /**
      * Las tools de LECTURA del asistente, con su input_schema para la API de
      * Anthropic. Ninguna crea, modifica ni borra nada.
      *
@@ -388,7 +558,7 @@ SYSTEM;
      *
      * @return array<int, array<string, mixed>>
      */
-    public function build_tools(): array
+    public function herramientas_de_lectura(): array
     {
         return [
             [
@@ -524,11 +694,18 @@ SYSTEM;
      *
      * Todas filtran por el user_id del DUEÑO resuelto desde la conversación.
      *
+     * Misión asistente-ia-acciones: las herramientas de carga se despachan en
+     * HerramientasDeCarga, y SOLO si el mensaje que se está generando tiene
+     * `acciones_habilitadas`. Sin mensaje (los llamadores viejos pasan dos
+     * argumentos) o sin el flag, una de esas tools cae en "Tool desconocida"
+     * con is_error, igual que antes de la misión.
+     *
      * @param array<int, mixed> $content_blocks Bloques content devueltos por Claude.
      * @param AiConversation $conversation
+     * @param AiMessage|null $assistant_message El assistant que se está generando (opcional).
      * @return array<int, array<string, mixed>>
      */
-    public function execute_tool_calls(array $content_blocks, AiConversation $conversation): array
+    public function execute_tool_calls(array $content_blocks, AiConversation $conversation, $assistant_message = null): array
     {
         $owner_id = (int) $conversation->user_id;
         $tool_results = [];
@@ -553,6 +730,11 @@ SYSTEM;
                 // tool_result viaja con is_error para que Claude no lo lea
                 // como un resultado válido de la consulta.
                 $tool_desconocida = false;
+
+                // true cuando una herramienta de carga devolvió una falla
+                // técnica (por ejemplo, una propuesta sin mensaje donde colgar
+                // la tarjeta): también viaja con is_error.
+                $error_de_la_herramienta = false;
 
                 if ($tool_name === 'consultar_stock_de_articulos') {
                     $busqueda = (string) ($tool_input['busqueda'] ?? '');
@@ -606,6 +788,13 @@ SYSTEM;
                     }
                     $data = ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, $busqueda, $dias);
                     $content = json_encode($data, JSON_UNESCAPED_UNICODE) ?: '[]';
+                } elseif (! is_null($assistant_message) && $assistant_message->acciones_habilitadas && HerramientasDeCarga::maneja($tool_name)) {
+                    // Las dos puntas de las herramientas de carga (definición y
+                    // despacho) viven juntas en HerramientasDeCarga: acá solo se
+                    // les delega, y solo con el flag del mensaje.
+                    $resultado_de_carga = HerramientasDeCarga::ejecutar($tool_name, $tool_input, $conversation, $assistant_message);
+                    $content = $resultado_de_carga['content'];
+                    $error_de_la_herramienta = (bool) $resultado_de_carga['is_error'];
                 } else {
                     $tool_desconocida = true;
                     $content = 'Tool desconocida: ' . $tool_name;
@@ -617,7 +806,7 @@ SYSTEM;
                     'content'     => $content,
                 ];
 
-                if ($tool_desconocida) {
+                if ($tool_desconocida || $error_de_la_herramienta) {
                     $tool_result['is_error'] = true;
                 }
 

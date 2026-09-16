@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ChatIaMensajeActualizado;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -190,6 +191,10 @@ class ResponderMensajeChatIaJob implements ShouldQueue
      * Deja el mensaje en 'error' con el texto amigable como contenido (el
      * usuario lo ve en la conversación) y el detalle técnico en su columna.
      *
+     * Misión asistente-ia-acciones: las tarjetas de carga que el mensaje
+     * alcanzó a proponer antes de fallar quedan 'descartadas' (handle() y
+     * failed() pasan los dos por acá).
+     *
      * @param AiMessage $message
      * @param string $contenido_amigable
      * @param string $detalle_tecnico
@@ -202,6 +207,21 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         // Recorte defensivo: la columna es text, pero un body de error HTTP puede ser enorme.
         $message->error_mensaje = mb_substr((string) $detalle_tecnico, 0, 5000);
         $message->save();
+
+        /*
+         * Una tarjeta de una respuesta que falló no se puede confirmar: nació
+         * de un texto que la persona nunca va a leer (la SPA no la pinta).
+         * Protegido: si el descarte falla, el mensaje ya quedó en error y el
+         * aviso a la SPA tiene que salir igual.
+         */
+        try {
+            AccionesIaHelper::descartar_de_mensaje($message->id);
+        } catch (\Throwable $e) {
+            Log::warning('ResponderMensajeChatIaJob: no se pudieron descartar las tarjetas del mensaje en error', [
+                'ai_message_id' => $message->id,
+                'error'         => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

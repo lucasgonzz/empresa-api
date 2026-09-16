@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
@@ -25,6 +26,11 @@ use Illuminate\Support\Facades\Log;
  * (UserHelper::userId(false)) **y** `user_id` = la cuenta. Las conversaciones
  * pueden traer saldos de clientes: un empleado no lee las del dueño ni al
  * revés, y el gate de extensión solo no alcanza para eso.
+ *
+ * Misión asistente-ia-acciones (15/9/2026): el POST del mensaje acepta
+ * `acciones` para que el asistente pueda proponer cargas, los mensajes viajan
+ * con sus tarjetas en `acciones`, y confirmar_accion/cancelar_accion resuelven
+ * una tarjeta. La lógica de las tarjetas vive en los helpers de asistente_ia.
  */
 class AiConversationController extends Controller
 {
@@ -101,6 +107,8 @@ class AiConversationController extends Controller
             return response()->json(['message' => 'Conversación no encontrada.'], 404);
         }
 
+        // Las tarjetas de carga se van con la conversación (misión asistente-ia-acciones).
+        AccionesIaHelper::borrar_de_conversacion($conversation->id);
         AiMessage::where('ai_conversation_id', $conversation->id)->delete();
         $conversation->delete();
 
@@ -112,6 +120,9 @@ class AiConversationController extends Controller
      * más viejo (molde WhatsappChatController@messages: page/per_page con
      * default 30 y techo 200, paginador entero en `models`). La SPA invierte
      * para render y hace scroll infinito hacia arriba.
+     *
+     * Misión asistente-ia-acciones: cada mensaje suma `acciones` (sus tarjetas
+     * en orden de id; vacío si no tiene o si no está 'listo').
      *
      * @param  Request  $request
      * @param  int  $id
@@ -138,6 +149,8 @@ class AiConversationController extends Controller
             ->orderBy('id', 'DESC')
             ->paginate($per_page, ['*'], 'page', $page);
 
+        AccionesIaHelper::cargar_en_mensajes($paginator->getCollection());
+
         return response()->json(['models' => $paginator], 200);
     }
 
@@ -151,7 +164,9 @@ class AiConversationController extends Controller
      * dos mensajes seguidos (R2) — una pestaña vieja o un doble clic pasan
      * por encima del bloqueo del composer de la SPA.
      *
-     * @param  Request  $request  Espera `contenido` (obligatorio, hasta 4000 caracteres).
+     * @param  Request  $request  Espera `contenido` (obligatorio, hasta 4000 caracteres) y
+     *                            `acciones` (opcional, default false: con true el asistente
+     *                            puede proponer cargas; misión asistente-ia-acciones).
      * @param  int  $id
      * @return JsonResponse
      */
@@ -176,6 +191,12 @@ class AiConversationController extends Controller
          * quedaría eterno en la conversación y cada recarga de la SPA
          * re-armaría el polling sobre un mensaje que ya no tiene job.
          */
+        $pendientes_vencidos = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'assistant')
+            ->where('estado', 'pendiente')
+            ->where('created_at', '<', $limite_pendiente_vigente)
+            ->pluck('id');
+
         AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'assistant')
             ->where('estado', 'pendiente')
@@ -185,6 +206,23 @@ class AiConversationController extends Controller
                 'estado'        => 'error',
                 'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
             ]);
+
+        /*
+         * Misión asistente-ia-acciones: las tarjetas que un pendiente vencido
+         * alcanzó a proponer quedan 'descartadas', igual que las de un mensaje
+         * que el job dejó en error. Solo las de los que efectivamente quedaron
+         * en error recién: si en el medio el job llegó a terminar uno, sus
+         * tarjetas siguen vivas.
+         */
+        if ($pendientes_vencidos->isNotEmpty()) {
+            $cerrados = AiMessage::whereIn('id', $pendientes_vencidos->all())
+                ->where('estado', 'error')
+                ->pluck('id');
+
+            foreach ($cerrados as $cerrado_id) {
+                AccionesIaHelper::descartar_de_mensaje($cerrado_id);
+            }
+        }
 
         $hay_respuesta_en_curso = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'assistant')
@@ -217,9 +255,16 @@ class AiConversationController extends Controller
         ]);
 
         $assistant_message = AiMessage::create([
-            'ai_conversation_id' => $conversation->id,
-            'rol'                => 'assistant',
-            'estado'             => 'pendiente',
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            /*
+             * Misión asistente-ia-acciones: el flag va en el assistant que se
+             * va a generar, no en la conversación. Una pestaña vieja manda el
+             * POST sin `acciones` y esa respuesta sale de solo lectura como
+             * siempre, aunque la misma conversación tenga mensajes con tarjetas.
+             */
+            'acciones_habilitadas' => $request->boolean('acciones'),
         ]);
 
         $conversation->last_message_at = now();
@@ -271,6 +316,9 @@ class AiConversationController extends Controller
      * que la SPA pega cuando el evento del canal privado avisa (el payload
      * lleva ids, nunca el texto) y el que consulta el polling de respaldo.
      *
+     * Misión asistente-ia-acciones: el mensaje suma `acciones`, igual que en
+     * messages().
+     *
      * @param  int  $id
      * @param  int  $message_id
      * @return JsonResponse
@@ -290,6 +338,8 @@ class AiConversationController extends Controller
         if (is_null($message)) {
             return response()->json(['message' => 'Mensaje no encontrado.'], 404);
         }
+
+        AccionesIaHelper::cargar_en_mensajes([$message]);
 
         return response()->json(['model' => $message], 200);
     }
