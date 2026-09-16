@@ -31,6 +31,11 @@ use Tests\TestCase;
  * Las tarjetas se ejecutan sobre una tarea de la agenda (tarea_nueva): es la carga que no depende
  * de cajas ni del fixture de plata. Los caminos de plata tienen sus propios archivos (12, 13, 14).
  *
+ * 🔴 LA SEGUNDA PERSONA ES UN ENCARGADO (admin_access), NO UN EMPLEADO RASO: desde la misión
+ * agente-ia-mano-derecha el chat es solo del dueño, así que un empleado raso queda afuera en la
+ * puerta con 403 y no llega a ninguna tarjeta. La tenencia doble que mide este archivo sigue
+ * exigiendo lo mismo, y ahora contra alguien que sí puede entrar.
+ *
  * 🔴 La clave de Anthropic queda null: nada de este archivo sale a la red.
  */
 class Acciones_esquema_y_endpoints_Test extends TestCase
@@ -44,7 +49,7 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
     protected $comercio;
 
     /** @var User */
-    protected $empleado;
+    protected $encargado;
 
     protected function setUp(): void
     {
@@ -60,11 +65,15 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
             'password'     => Hash::make('secret'),
         ]);
 
-        $this->empleado = User::create([
-            'name'     => 'Empleado acciones P11',
-            'email'    => 'acciones-p11-empleado-' . uniqid() . '@test.local',
+        $this->encargado = User::create([
+            'name'     => 'Encargado acciones P11',
+            'email'    => 'acciones-p11-encargado-' . uniqid() . '@test.local',
             'password' => Hash::make('secret'),
             'owner_id' => $this->comercio->id,
+            // 🔴 Con admin_access porque desde la misión agente-ia-mano-derecha el chat es SOLO del
+            // dueño: un empleado raso ya no pasa la puerta, y lo que este archivo mide es lo que
+            // pasa ADENTRO. Que el empleado raso quede afuera lo mide 18_Gate_solo_el_dueno_Test.
+            'admin_access' => 1,
         ]);
     }
 
@@ -209,9 +218,9 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
     public function messages_y_show_message_traen_las_tarjetas_sin_el_payload_interno()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         $this->mensaje($conversation, 'user');
         $listo = $this->mensaje($conversation);
@@ -265,7 +274,7 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
         $del_dueno = $this->conversacion($this->comercio);
         $tarjeta = $this->tarjeta($del_dueno, $this->mensaje($del_dueno));
 
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
         $this->resolver($del_dueno, $tarjeta, 'confirmar')->assertStatus(404);
         $this->resolver($del_dueno, $tarjeta, 'cancelar')->assertStatus(404);
@@ -281,10 +290,10 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
     public function una_tarjeta_de_otra_conversacion_de_la_misma_persona_da_404()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
-        $una = $this->conversacion($this->empleado);
-        $otra = $this->conversacion($this->empleado);
+        $una = $this->conversacion($this->encargado);
+        $otra = $this->conversacion($this->encargado);
         $tarjeta_de_la_otra = $this->tarjeta($otra, $this->mensaje($otra));
 
         $this->resolver($una, $tarjeta_de_la_otra, 'confirmar')->assertStatus(404);
@@ -445,9 +454,9 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
     public function destroy_borra_las_tarjetas_de_la_conversacion()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
         $this->tarjeta($conversation, $this->mensaje($conversation));
         $this->tarjeta($conversation, $this->mensaje($conversation));
 
@@ -483,17 +492,17 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
     public function send_message_guarda_el_flag_de_acciones_solo_cuando_viene()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $con_flag = $this->conversacion($this->empleado);
+        $con_flag = $this->conversacion($this->encargado);
 
         $this->postJson('api/ai-conversations/' . $con_flag->id . '/messages', [
             'contenido' => 'Cargame el flete',
             'acciones'  => true,
         ])->assertStatus(201);
 
-        $sin_flag = $this->conversacion($this->empleado);
+        $sin_flag = $this->conversacion($this->encargado);
 
         $this->postJson('api/ai-conversations/' . $sin_flag->id . '/messages', [
             'contenido' => '¿Cuánto stock tengo?',
@@ -515,10 +524,10 @@ class Acciones_esquema_y_endpoints_Test extends TestCase
     public function el_cierre_de_un_pendiente_vencido_descarta_sus_tarjetas()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         $huerfano = AiMessage::create([
             'ai_conversation_id' => $conversation->id,
