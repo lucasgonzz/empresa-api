@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
@@ -132,7 +133,9 @@ class AsistenteIaService
      *                                     (queda afuera del historial por su estado).
      * @return string Texto final de la respuesta.
      *
-     * @throws \RuntimeException Si la API falla o el loop termina sin texto.
+     * @throws AsistenteIaException Si la API falla o el loop termina sin texto. Extiende
+     *                              RuntimeException, y lleva el motivo para que el job elija qué
+     *                              texto ve la persona.
      */
     public function responder(AiConversation $conversation, AiMessage $assistant_message): string
     {
@@ -169,8 +172,8 @@ class AsistenteIaService
                     'iterations'         => $iterations,
                 ]);
 
-                throw new \RuntimeException(
-                    'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
+                throw AsistenteIaException::tiempo_agotado(
+                    'presupuesto de tiempo del loop agotado (' . self::PRESUPUESTO_SEGUNDOS . 's) tras ' . $iterations . ' iteraciones'
                 );
             }
 
@@ -195,12 +198,16 @@ class AsistenteIaService
                 $transient_error_types = ['overloaded_error', 'api_error'];
 
                 if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
-                    throw new \RuntimeException(
-                        'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.'
+                    throw AsistenteIaException::sobrecargado(
+                        '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
                     );
                 }
 
-                throw new \RuntimeException(
+                /*
+                 * 🔴 El body crudo va al detalle técnico y NO a la pantalla: es justo lo que
+                 * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
+                 */
+                throw AsistenteIaException::falla_tecnica(
                     'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
                 );
             }
@@ -252,8 +259,21 @@ class AsistenteIaService
                 'iterations'         => $iterations,
             ]);
 
-            throw new \RuntimeException(
-                'La IA no llegó a generar una respuesta. Probá mandar el mensaje de nuevo.'
+            /*
+             * Dos finales distintos con el mismo síntoma: el loop se comió TODAS las vueltas
+             * encadenando tools y nunca llegó a contestar (a la persona hay que decirle que acote
+             * la consulta: repetirla tal cual va a volver a chocar con el mismo techo), o cerró
+             * antes sin texto, que es otra cosa y se reintenta igual.
+             */
+            if ($iterations >= $max_iterations) {
+
+                throw AsistenteIaException::tiempo_agotado(
+                    'el loop llegó al techo de ' . $max_iterations . ' iteraciones sin texto final'
+                );
+            }
+
+            throw AsistenteIaException::sin_respuesta(
+                'el loop terminó sin texto final en la iteración ' . $iterations
             );
         }
 

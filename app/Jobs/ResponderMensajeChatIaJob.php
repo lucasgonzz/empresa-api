@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Events\ChatIaMensajeActualizado;
+use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Models\AiConversation;
@@ -62,8 +63,11 @@ class ResponderMensajeChatIaJob implements ShouldQueue
     public $timeout = 300;
 
     /**
-     * Texto amigable que ve el usuario cuando la generación falla. El detalle
-     * técnico va aparte, en la columna error_mensaje.
+     * Texto amigable que ve el usuario cuando la generación falla SIN un motivo más fino. El
+     * detalle técnico va aparte, en la columna error_mensaje.
+     *
+     * 🔴 Es el GENÉRICO, no "el" mensaje de error: cuando la falla trae un motivo
+     * (AsistenteIaException) gana el texto de ese motivo. Ver contenido_para_la_persona().
      *
      * @var string
      */
@@ -149,10 +153,11 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [
                 'ai_message_id'      => $this->ai_message_id,
                 'ai_conversation_id' => $conversation->id,
+                'motivo'             => $e instanceof AsistenteIaException ? $e->motivo() : 'sin_motivo',
                 'message'            => $e->getMessage(),
             ]);
 
-            $this->marcar_error($message, self::CONTENIDO_ERROR_AMIGABLE, $e->getMessage());
+            $this->marcar_error($message, $this->contenido_para_la_persona($e), $e->getMessage());
         }
 
         $this->avisar($conversation, $message);
@@ -181,13 +186,44 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             return;
         }
 
-        $this->marcar_error($message, self::CONTENIDO_ERROR_AMIGABLE, $exception->getMessage());
+        $this->marcar_error($message, $this->contenido_para_la_persona($exception), $exception->getMessage());
 
         $conversation = AiConversation::find($message->ai_conversation_id);
 
         if ($conversation) {
             $this->avisar($conversation, $message);
         }
+    }
+
+    /**
+     * El texto que ve el dueño para una falla.
+     *
+     * 🔴 POR QUÉ NO ES SIEMPRE EL MISMO. Hasta la misión agente-ia-mano-derecha este catch
+     * aplastaba CUATRO modos de falla distintos —presupuesto agotado, techo de iteraciones sin
+     * respuesta, 529 de Anthropic y cualquier otro \Throwable— contra el mismo texto rojo, pisando
+     * los mensajes finos que AsistenteIaService sí sabía producir. Y "probá de nuevo en unos
+     * segundos" es un consejo correcto para el 529 y uno inútil para una consulta que se hizo
+     * larga: repetirla igual vuelve a chocar con el mismo techo.
+     *
+     * 🔴 El texto sale del MAPA FIJO de AsistenteIaException, nunca de getMessage(): ese mensaje
+     * puede traer el body crudo de la respuesta de Anthropic y eso no llega a la pantalla. Va a la
+     * columna error_mensaje y al log, como siempre.
+     *
+     * @param \Throwable $exception
+     * @return string
+     */
+    protected function contenido_para_la_persona(\Throwable $exception)
+    {
+        if ($exception instanceof AsistenteIaException) {
+            $propio = $exception->mensaje_para_la_persona();
+
+            if (!is_null($propio)) {
+
+                return $propio;
+            }
+        }
+
+        return self::CONTENIDO_ERROR_AMIGABLE;
     }
 
     /**
