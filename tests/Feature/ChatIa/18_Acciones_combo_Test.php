@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\combo\ComboAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
@@ -11,6 +12,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
 
@@ -22,8 +24,11 @@ use Tests\EmpresaTestCase;
  * - Que la tarjeta se arme con lo que la persona va a leer antes de confirmar: el nombre, cada
  *   artículo con su cantidad y el precio.
  * - Que lo que falta se pregunte y NO deje tarjeta: un combo a medias no se puede confirmar.
- * - Que la validación que la pantalla no tiene (al menos un artículo, cantidades enteras mayores a
- *   0, artículos del dueño) la ponga este camino, que es el que recibe datos dictados en palabras.
+ * - Que la validación que la pantalla no tiene (nombre que entre en la columna, al menos un
+ *   artículo, cantidades enteras mayores a 0, artículos del dueño) la ponga este camino, que es el
+ *   que recibe datos dictados en palabras — y que la ponga al PROPONER, no al confirmar: una
+ *   tarjeta que solo falla en el clic queda inconfirmable para siempre y la persona no entiende
+ *   por qué.
  * - Que confirmar cree el combo por ComboAltaHelper::crear con sus artículos, sus cantidades y su
  *   correlativo — el MISMO camino que `POST api/combo`.
  * - Que el segundo clic avise que la tarjeta ya se resolvió y no cree un segundo combo.
@@ -346,6 +351,79 @@ class Acciones_combo_Test extends EmpresaTestCase
         $this->assertEquals('Las cantidades de un combo van en unidades enteras.', $media['error']);
 
         $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * 🔴 UN NOMBRE MÁS LARGO QUE LA COLUMNA SE FRENA AL PROPONER, NO AL CONFIRMAR. Antes pasaba la
+     * propuesta —la tarjeta quedaba creada— y reventaba en el clic con el error genérico del
+     * ejecutor: la persona se quedaba con una tarjeta inconfirmable para siempre, sin entender por
+     * qué. El patrón del 15/9 es al revés: proponer_* valida ANTES de dejar la tarjeta, para que un
+     * dato malo se pregunte en la conversación, que es donde se arregla.
+     *
+     * @test
+     */
+    public function un_nombre_mas_largo_que_la_columna_devuelve_error_y_no_crea_tarjeta()
+    {
+        $articulo = $this->articulo_nuevo();
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $pasado = $this->herramienta($conversation, $assistant, 'proponer_combo', [
+            'nombre'    => str_repeat('a', ComboAltaHelper::LARGO_MAXIMO_NOMBRE + 1),
+            'articulos' => [['articulo_id' => $articulo->id, 'cantidad' => 1]],
+            'precio'    => 5000,
+        ]);
+
+        $this->assertFalse($pasado['ok']);
+        $this->assertEquals(
+            'El nombre del combo no puede pasar de ' . ComboAltaHelper::LARGO_MAXIMO_NOMBRE . ' caracteres.',
+            $pasado['error'],
+            'el motivo tiene que decir qué pasa con el nombre, no ser un error genérico'
+        );
+        $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        // Y justo EN el largo de la columna sí entra: el error es del carácter de más, no del tope.
+        $justo = $this->herramienta($conversation, $assistant, 'proponer_combo', [
+            'nombre'    => str_repeat('b', ComboAltaHelper::LARGO_MAXIMO_NOMBRE),
+            'articulos' => [['articulo_id' => $articulo->id, 'cantidad' => 1]],
+            'precio'    => 5000,
+        ]);
+
+        $this->assertTrue($justo['ok'], json_encode($justo));
+
+        // 🔴 Y el nombre del tope entra DE VERDAD en la base, que es lo único que prueba que el
+        // número no quedó corto ni largo: se confirma la tarjeta y el combo se guarda entero.
+        $this->mensaje_listo($assistant);
+
+        $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $justo['tarjeta_id'] . '/confirmar')
+            ->assertStatus(200);
+
+        $combo = Combo::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+
+        $this->assertEquals(str_repeat('b', ComboAltaHelper::LARGO_MAXIMO_NOMBRE), $combo->name);
+    }
+
+    /**
+     * 🔴 El tope del nombre tiene que ser el de la COLUMNA, no un número elegido. `combos.name` es
+     * varchar(191) porque AppServiceProvider llama a Schema::defaultStringLength(191) y la migración
+     * declara el campo sin largo: si alguien mueve cualquiera de los dos, esto se pone rojo ANTES de
+     * que un combo vuelva a morir en el clic de Confirmar.
+     *
+     * @test
+     */
+    public function el_tope_del_nombre_es_el_largo_real_de_la_columna()
+    {
+        $columna = DB::selectOne(
+            'SELECT CHARACTER_MAXIMUM_LENGTH AS largo FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "combos" AND COLUMN_NAME = "name"'
+        );
+
+        $this->assertNotNull($columna, 'la base de testing tiene que tener la tabla combos');
+        $this->assertSame(
+            (int) $columna->largo,
+            ComboAltaHelper::LARGO_MAXIMO_NOMBRE,
+            'el tope que valida el asistente tiene que ser el de la columna: si no, un nombre que el helper acepta revienta al guardar'
+        );
     }
 
     /**

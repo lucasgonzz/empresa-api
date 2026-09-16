@@ -27,8 +27,17 @@ use Illuminate\Support\Facades\DB;
 class ComboAltaHelper {
 
     /**
-     * Valida un combo dictado al asistente: al menos un artículo, cantidades enteras mayores a 0 y
-     * todos los artículos del dueño.
+     * Largo máximo del nombre. 🔴 ES EL DE LA COLUMNA, no un número elegido: `combos.name` es
+     * `varchar(191)` porque AppServiceProvider.php:30 llama a `Schema::defaultStringLength(191)` y
+     * la migración lo declara con `$table->string('name')` sin largo. Medido el 16/9/2026 sobre
+     * empresa_testing_s8 con SHOW COLUMNS. Si alguien cambia la columna, esto tiene que cambiar en
+     * el mismo diff — hay un test que cruza los dos contra information_schema.
+     */
+    const LARGO_MAXIMO_NOMBRE = 191;
+
+    /**
+     * Valida un combo dictado al asistente: nombre que entre en la columna, al menos un artículo,
+     * cantidades enteras mayores a 0 y todos los artículos del dueño.
      *
      * 🔴 Las cantidades van en `article_combo.amount`, que es un INTEGER no nulo
      * (2022_06_13_100710_create_article_combo_table.php:20). Una cantidad fraccionaria se guardaría
@@ -40,6 +49,24 @@ class ComboAltaHelper {
      * @return string|null  El motivo, o null si está bien.
      */
     static function validar(array $data, $user_id) {
+
+        /*
+         * 🔴 EL LARGO DEL NOMBRE SE MIRA ACÁ Y NO AL GUARDAR, y ese es todo el punto del patrón:
+         * un nombre más largo que la columna pasaba la propuesta —la tarjeta quedaba creada— y
+         * recién reventaba en el clic de Confirmar, con el error genérico del ejecutor. La persona
+         * se quedaba con una tarjeta inconfirmable para siempre, sin entender por qué y sin forma
+         * de arreglarla salvo pedir el combo de nuevo, cosa que no tiene por qué deducir. Validado
+         * antes, el asistente lo pregunta en la conversación, que es donde se arregla.
+         *
+         * mb_strlen y no strlen: `varchar(191)` en utf8mb4 cuenta CARACTERES, no bytes. Con strlen,
+         * un nombre con acentos o con "ñ" se rechazaría antes de llegar al tope real de la columna.
+         */
+        $nombre = isset($data['name']) ? (string) $data['name'] : '';
+
+        if (mb_strlen($nombre) > self::LARGO_MAXIMO_NOMBRE) {
+
+            return 'El nombre del combo no puede pasar de '.self::LARGO_MAXIMO_NOMBRE.' caracteres.';
+        }
 
         $articles = isset($data['articles']) && is_array($data['articles']) ? $data['articles'] : [];
 
