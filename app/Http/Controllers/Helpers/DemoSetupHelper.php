@@ -146,6 +146,11 @@ class DemoSetupHelper
         // borra junto con todo lo demás. Se restaura al final (ver `restaurar_mercado_pago()`).
         $foto_mercado_pago = self::foto_de_mercado_pago(config('app.USER_ID'));
 
+        // Mismo mecanismo para Zipnova (misión demo-integraciones-zipnova-mp, 16/9/2026): sin
+        // esto, la conexión de envíos desaparece en el primer rearmado después de conectarla,
+        // igual que le pasaba a Mercado Pago hasta el 5/9.
+        $foto_zipnova = self::foto_de_zipnova(config('app.USER_ID'));
+
         // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
         Artisan::call('migrate:fresh', ['--force' => true]);
 
@@ -401,6 +406,9 @@ class DemoSetupHelper
 
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
         self::restaurar_mercado_pago($user, $foto_mercado_pago);
+
+        // Misma sobrevida para la cuenta de Zipnova con la que la tienda cotiza y despacha envíos.
+        self::restaurar_zipnova($user, $foto_zipnova);
 
         $etapas['tienda'] = self::cronometrar($t_etapa);
 
@@ -1383,6 +1391,121 @@ class DemoSetupHelper
                 : $e->getMessage();
 
             Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$detalle);
+        }
+    }
+
+    /**
+     * Fotografía la conexión de Zipnova del dueño antes del `migrate:fresh`, que la borra junto
+     * con todo lo demás. Mismo mecanismo que `foto_de_mercado_pago()` (ver ese docblock para el
+     * porqué) — misión `demo-integraciones-zipnova-mp`, 16/9/2026.
+     *
+     * Zipnova no tiene espejo en otra tabla (no es un medio de pago, es una integración de
+     * envíos): alcanza con guardar lo que vive en `platform_connectors` — la credencial, la
+     * cuenta y la configuración comercial (`extra_config`: depósito, bulto por defecto, envío
+     * gratis desde $, webhook registrado) — y devolvérselo tal cual a `restaurar_zipnova()`.
+     *
+     * Devuelve null —y no rompe el setup— si el dueño no tiene conector con token, si la tabla
+     * todavía no existe (primer armado de una instancia) o si el token no se puede descifrar
+     * (APP_KEY rotada): en cualquiera de esos casos no hay nada que restaurar.
+     *
+     * @param int $user_id Dueño de la demo (`config('app.USER_ID')`): es el mismo id antes y después del fresh.
+     * @return array<string, mixed>|null
+     */
+    private static function foto_de_zipnova($user_id)
+    {
+        if ((int) $user_id <= 0) {
+            // Sin USER_ID en el .env de la instancia no hay dueño que fotografiar. Se dice, porque
+            // el resultado es que la demo pierde la conexión en cada rearmado sin ninguna otra señal.
+            Log::warning('DemoSetupHelper: config(app.USER_ID) vacío, no se puede fotografiar la conexión de Zipnova.');
+
+            return null;
+        }
+
+        try {
+            $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_ZIPNOVA);
+
+            if (!$connector) {
+                return null;
+            }
+
+            $access_token = $connector->access_token;
+
+            if (empty($access_token)) {
+                return null;
+            }
+
+            $foto = [
+                'access_token'     => $access_token,
+                'platform_user_id' => $connector->platform_user_id,
+                'status'           => $connector->status,
+                'extra_config'     => $connector->extra_config,
+            ];
+
+            Log::info('DemoSetupHelper: foto de la conexión de Zipnova tomada antes del rearmado.', [
+                'user_id'          => $user_id,
+                'platform_user_id' => $foto['platform_user_id'],
+            ]);
+
+            return $foto;
+        } catch (\Throwable $e) {
+            // Nunca se loguea el token. Un fallo acá no frena el setup: la demo se arma sin la
+            // conexión, que es lo que pasaba siempre hasta esta misión.
+            Log::warning('DemoSetupHelper: no se pudo tomar la foto de la conexión de Zipnova: '.$e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Vuelve a dejar la conexión de Zipnova tal como estaba antes del `migrate:fresh`.
+     *
+     * A diferencia de Mercado Pago acá no hay espejo que reponer en otra tabla ni webhook que
+     * volver a registrar contra la API de Zipnova: el webhook ya está dado de alta del lado de
+     * Zipnova apuntando a esta misma instancia, así que alcanza con reponer la fila de
+     * `platform_connectors` tal cual estaba.
+     *
+     * Necesita que la fila `zipnova` de `platforms` ya exista (la asegura una migración, igual
+     * que la de Mercado Pago), así que esto se llama al final de `run()`, después de `tienda()`.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed>|null $foto Lo que devolvió `foto_de_zipnova()`.
+     * @return void
+     */
+    private static function restaurar_zipnova(User $user, $foto)
+    {
+        if (empty($foto) || empty($foto['access_token'])) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_ZIPNOVA);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "zipnova" en el catálogo, no se restauró la conexión de Zipnova.');
+
+                return;
+            }
+
+            $connector->access_token     = $foto['access_token'];
+            $connector->platform_user_id = $foto['platform_user_id'];
+            // El estado vuelve como estaba, igual que en Mercado Pago.
+            $connector->status        = !empty($foto['status']) ? $foto['status'] : PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message = null;
+            $connector->extra_config  = $foto['extra_config'];
+            $connector->save();
+
+            Log::info('DemoSetupHelper: conexión de Zipnova restaurada después del rearmado.', [
+                'user_id'          => $user->id,
+                'platform_user_id' => $foto['platform_user_id'],
+            ]);
+        } catch (\Throwable $e) {
+            // Una QueryException trae el SQL con los bindings, y el token va en claro. De esas
+            // se loguea solo la clase y el SQLSTATE, igual que en `restaurar_mercado_pago()`.
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Zipnova: '.$detalle);
         }
     }
 
