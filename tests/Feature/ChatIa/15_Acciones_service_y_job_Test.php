@@ -472,6 +472,76 @@ class Acciones_service_y_job_Test extends TestCase
     }
 
     /**
+     * 🔴 Si la respuesta que falló venía a CORREGIR una tarjeta anterior, la anterior tiene que volver
+     * a ser confirmable. Antes quedaba 'reemplazada' para siempre: la persona veía una sola tarjeta
+     * diciendo "Reemplazada por una versión corregida" —por una corrección que nunca existió, porque
+     * el mensaje falló— y no tenía nada que confirmar.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_job_que_falla_devuelve_a_propuesta_lo_que_su_tanda_habia_reemplazado()
+    {
+        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+        if (!$extencion) {
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+        }
+        $this->comercio->extencions()->attach($extencion->id);
+
+        Event::fake([ChatIaMensajeActualizado::class]);
+
+        $flete = $this->subcategoria('Flete P15');
+
+        // Primera respuesta, que sí llegó: deja la tarjeta del flete de 5000.
+        list($conversation, $primer_assistant) = $this->conversacion_con_pendiente(true);
+
+        $primera = json_decode($this->service->execute_tool_calls([$this->bloque_proponer_gasto($flete, 5000, 'toolu_ok')], $conversation, $primer_assistant)[0]['content'], true);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+
+        AiMessage::where('id', $primer_assistant->id)->update(['estado' => 'listo', 'contenido' => 'Te dejé la tarjeta.']);
+
+        // La persona corrige, y esa respuesta se cae después de proponer la corrección.
+        AiMessage::create([
+            'ai_conversation_id' => $conversation->id,
+            'rol'                => 'user',
+            'contenido'          => 'no, era 6000',
+        ]);
+
+        $segundo_assistant = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => true,
+        ]);
+
+        Http::fake([
+            'api.anthropic.com/*' => Http::sequence()
+                ->push([
+                    'model'       => 'claude-modelo-fake',
+                    'stop_reason' => 'tool_use',
+                    'content'     => [$this->bloque_proponer_gasto($flete, 6000, 'toolu_falla')],
+                    'usage'       => ['input_tokens' => 300, 'output_tokens' => 40],
+                ], 200)
+                ->push(['error' => ['type' => 'overloaded_error', 'message' => 'Overloaded']], 529),
+        ]);
+
+        (new ResponderMensajeChatIaJob($segundo_assistant->id))->handle();
+
+        $this->assertEquals('error', $segundo_assistant->fresh()->estado);
+
+        $correccion = AiMessageAction::where('ai_message_id', $segundo_assistant->id)->first();
+
+        $this->assertNotNull($correccion);
+        $this->assertEquals('descartada', $correccion->estado);
+
+        $vieja = AiMessageAction::find($primera['tarjeta_id']);
+
+        $this->assertEquals('propuesta', $vieja->estado_guardado(), 'La tarjeta que la tanda fallida reemplazó vuelve a ser confirmable.');
+        $this->assertNull($vieja->resuelta_at, 'Y deja de estar resuelta.');
+    }
+
+    /**
      * @group chat-ia
      * @test
      */

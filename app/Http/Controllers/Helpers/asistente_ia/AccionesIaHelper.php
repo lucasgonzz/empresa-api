@@ -253,6 +253,9 @@ class AccionesIaHelper {
      * Pasa a 'descartada' las propuestas de un mensaje que terminó en error. La SPA no las pinta y
      * ya no se pueden confirmar: nacieron de una respuesta que la persona nunca llegó a leer.
      *
+     * Y devuelve a 'propuesta' las tarjetas que esa misma tanda había reemplazado, para que el
+     * intento fallido no deje a la persona sin nada que confirmar (ver el comentario de abajo).
+     *
      * Lo usan los tres lugares donde un assistant termina en error: el catch de handle() y failed()
      * del job (los dos pasan por marcar_error()) y el cierre de pendientes vencidos de send_message.
      *
@@ -261,12 +264,65 @@ class AccionesIaHelper {
      */
     static function descartar_de_mensaje($ai_message_id) {
 
-        return AiMessageAction::where('ai_message_id', $ai_message_id)
-                                ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
-                                ->update([
-                                    'estado'      => AiMessageAction::ESTADO_DESCARTADA,
-                                    'resuelta_at' => Carbon::now(),
-                                ]);
+        $propuestas = AiMessageAction::where('ai_message_id', $ai_message_id)
+                                    ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                    ->orderBy('id')
+                                    ->get();
+
+        if (!count($propuestas)) {
+
+            return 0;
+        }
+
+        $ids = [];
+
+        foreach ($propuestas as $propuesta) {
+
+            $ids[] = (int) $propuesta->id;
+        }
+
+        /** Desde cuándo corrió esta tanda: lo que reemplazó, lo reemplazó después de este instante. */
+        $desde = $propuestas[0]->created_at;
+
+        $conversation_id = (int) $propuestas[0]->ai_conversation_id;
+
+        $descartadas = AiMessageAction::whereIn('id', $ids)
+                                    ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                    ->update([
+                                        'estado'      => AiMessageAction::ESTADO_DESCARTADA,
+                                        'resuelta_at' => Carbon::now(),
+                                    ]);
+
+        /*
+         * 🔴 LO QUE ESTA TANDA REEMPLAZÓ VUELVE A SER CONFIRMABLE.
+         *
+         * Si no, la persona queda sin nada que confirmar y sin entender por qué: la tarjeta nueva
+         * queda 'descartada' (la SPA no la pinta) y la vieja se queda 'reemplazada' para siempre,
+         * mostrando "Reemplazada por una versión corregida" sobre una corrección que nunca llegó a
+         * existir, porque el mensaje que la traía falló. Devolverla a 'propuesta' deja las cosas como
+         * estaban antes del intento fallido.
+         *
+         * Se devuelven las de ESTA conversación que pasaron a 'reemplazada' desde que arrancó la
+         * tanda y que NO son de este mismo mensaje: una corrección dentro del mensaje que falló se
+         * descarta entera, no se resucita a mitad. El filtro por instante es preciso porque no hay
+         * dos respuestas en curso a la vez en una conversación (send_message devuelve 409
+         * `respuesta_en_curso`).
+         *
+         * `resuelta_at` vuelve a null: es el campo que dice "esta tarjeta ya se resolvió".
+         */
+        if ($descartadas > 0 && !is_null($desde)) {
+
+            AiMessageAction::where('ai_conversation_id', $conversation_id)
+                            ->where('ai_message_id', '!=', $ai_message_id)
+                            ->where('estado', AiMessageAction::ESTADO_REEMPLAZADA)
+                            ->where('resuelta_at', '>=', $desde)
+                            ->update([
+                                'estado'      => AiMessageAction::ESTADO_PROPUESTA,
+                                'resuelta_at' => null,
+                            ]);
+        }
+
+        return $descartadas;
     }
 
     /**
