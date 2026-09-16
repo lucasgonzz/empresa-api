@@ -214,12 +214,30 @@ class ArticlePricesHelper {
 
 
     // Extencion de golo norte
-    static function aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user) {
+    /**
+     * @param $price_type_id_para_descripcion int|null Mismo contrato que el del camino principal
+     *        (aplicar_precios_segun_listas_de_precios()): con un id de lista se arma ademas el
+     *        desglose paso a paso de ESA lista y se devuelve. Con null devuelve un array vacio y el
+     *        comportamiento es identico al historico.
+     *
+     *        Antes esta funcion no lo aceptaba, asi que en una cuenta de margenes por categoria el
+     *        boton "?" de la tarjeta de una lista recibia el desglose del precio final UNICO -- que
+     *        es otro numero, y por eso no coincidia con el precio de la tarjeta (reportado por
+     *        golonorte el 16/9/2026: mayorista $1.644,50 en la tarjeta y $1.265 en el modal).
+     * @return array Lineas del desglose de la lista pedida. Vacio si no se pidio ninguna.
+     */
+    static function aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user, $price_type_id_para_descripcion = null) {
+
+        $des_lista = [];
 
         $price_types = null;
 
         $sub_category = $article->sub_category;
         $category = $article->category;
+
+        // De donde salieron los margenes, para poder decirlo en el desglose. Se arma acá y no al
+        // describir: abajo ya no se distingue cual de las dos ramas gano.
+        $origen_de_los_margenes = null;
 
         // Priorizar los tipos de precios de la subcategoría si existen y tienen porcentaje válido
         if (!is_null($sub_category)) {
@@ -227,6 +245,10 @@ class ArticlePricesHelper {
                 ->whereNotNull('price_type_sub_category.percentage') // Asegurar que el porcentaje no sea nulo
                 ->where('price_type_sub_category.percentage', '!=', '') // Asegurar que no sea un string vacío
                 ->get();
+
+            if (!$price_types->isEmpty()) {
+                $origen_de_los_margenes = 'de la subcategoría '.$sub_category->name;
+            }
         }
 
         // Si no hay tipos de precios válidos en la subcategoría, buscar en la categoría
@@ -235,7 +257,9 @@ class ArticlePricesHelper {
                 $price_types = $category->price_types()
                     // ->withPivot('percentage')
                     ->get();
-                
+
+                $origen_de_los_margenes = 'de la categoría '.$category->name;
+
                 // Log::info('price_types de '.$category->name);
                 // Log::info($price_types);
             }
@@ -252,16 +276,68 @@ class ArticlePricesHelper {
 
                 $percentage = $price_type->pivot->percentage; // Porcentaje de ganancia
 
+                // Solo se describe la lista que pidio el front. El resto del loop corre igual que
+                // siempre. Mismo criterio que el camino principal.
+                $describir = !is_null($price_type_id_para_descripcion)
+                            && $price_type->id == $price_type_id_para_descripcion;
+
+                if ($describir) {
+                    // El mb_strtoupper del `texto` es para que la clave `description` -- la que
+                    // siguen leyendo un bundle viejo de la PWA y los desgloses ya guardados -- salga
+                    // igual que la del camino principal, caracter por caracter. La `etiqueta`, que
+                    // es lo que se muestra, va con el nombre de la lista tal cual lo escribio la
+                    // persona.
+                    $des_lista[] = DesglosePrecioHelper::seccion(
+                        DesglosePrecioHelper::CLAVE_LISTA,
+                        'Precio de la lista '.$price_type->name,
+                        'CALCULO DEL PRECIO DE LA LISTA '.mb_strtoupper($price_type->name, 'UTF-8')
+                    );
+                    $des_lista[] = DesglosePrecioHelper::linea(
+                        DesglosePrecioHelper::COSTO,
+                        'Costo de partida',
+                        'el costo real ya calculado arriba',
+                        Numbers::price($cost, true),
+                        'Costo de partida (costo real ya calculado arriba) = '.Numbers::price($cost, true)
+                    );
+                }
+
                 if ($percentage) {
 
                     // Calcular el precio final
 
                     $price = $cost + ($cost * $percentage / 100);
 
+                    if ($describir) {
+                        // El margen sale de la categoria o de la subcategoria del articulo, no del
+                        // pivote del articulo con la lista: en estas cuentas el precio se define por
+                        // categoria y el renglon tiene que decir de donde salio, o el desglose no
+                        // explica nada.
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::MARGEN,
+                            'Margen',
+                            is_null($origen_de_los_margenes)
+                                ? 'en esta lista'
+                                : $origen_de_los_margenes.' en esta lista',
+                            $percentage.'%',
+                            'Margen de la categoria en esta lista: '.$percentage.'%'
+                        );
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::MARGEN,
+                            'Precio con el margen aplicado',
+                            null,
+                            Numbers::price($price, true),
+                            'Precio con el margen aplicado = '.Numbers::price($price, true)
+                        );
+                    }
+
                     // Capa 2 (Prompt 261): sale_taxes con formula de division, despues del margen
                     // y antes del IVA de venta.
                     $res = Self::aplicar_sale_taxes($article, $price, $user, []);
                     $price = $res['price'];
+
+                    if ($describir) {
+                        $des_lista = array_merge($des_lista, $res['des']);
+                    }
 
                     // Prompt 379/03: mismo criterio y mismo lugar que el camino principal
                     // (aplicar_precios_segun_listas_de_precios(), mas abajo en este archivo): el IVA
@@ -274,26 +350,65 @@ class ArticlePricesHelper {
 
                         $res = Self::aplicar_iva($article, $price, $user, []);
                         $price = $res['price'];
+
+                        if ($describir) {
+                            $des_lista = array_merge($des_lista, $res['des']);
+                        }
+
+                    } else if ($describir) {
+
+                        // Mismo renglon que el camino principal, y por el mismo motivo: el 5/8/2026
+                        // se diagnostico como bug ("el IVA se suma antes del margen") lo que era una
+                        // cuenta legacy con la tilde vieja prendida. Si el desglose no lo dice, el
+                        // diagnostico equivocado vuelve.
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::NOTA,
+                            'Acá no se suma IVA',
+                            'el IVA ya viene incluido dentro del costo real',
+                            null,
+                            'No se suma IVA aca: el IVA ya viene incluido dentro del costo real'
+                        );
                     }
 
                     $article->price_types()->syncWithoutDetaching($price_type->id);
 
-                    // Prompt 379/03: se saca el redondeo (antes ArticleHelper::redondear() aca). El
-                    // camino principal no redondea el precio de la lista en ningun punto -- el
-                    // redondeo es del precio FINAL del articulo y lo hace setFinalPrice() (llama a
-                    // Self::redondear() al final de su propio pipeline). Redondear aca ademas hacia
-                    // que dos cuentas con la misma configuracion de redondeo obtuvieran precios de
-                    // lista distintos segun por que camino (categorias o principal) pasara el articulo.
-                    $final_price = $price;
+                    /**
+                     * El cierre comun con el camino principal: redondeo del usuario, recargos de la
+                     * lista y ganancia. Ver cerrar_precio_de_lista().
+                     *
+                     * El prompt 379/03 habia SACADO el redondeo de aca para que los dos caminos
+                     * dieran el mismo precio. Daban el mismo, y los dos sin redondear: en una cuenta
+                     * con listas el precio que se cobra sale del pivote, asi que la configuracion de
+                     * redondeo no tenia efecto sobre ningun precio. Ahora los dos caminos redondean,
+                     * por el mismo helper, que es lo que mantiene en pie el invariante que ese
+                     * prompt queria (misma configuracion -> mismo precio).
+                     */
+                    $res = Self::cerrar_precio_de_lista($price_type, $price, $cost, $article, $user, $describir ? [] : null);
+
+                    $final_price = $res['final_price'];
+
+                    if ($describir) {
+                        $des_lista = array_merge($des_lista, $res['des']);
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::TOTAL,
+                            'Precio final de la lista',
+                            null,
+                            Numbers::price($res['precio_luego_de_recargos'], true),
+                            'Precio final de la lista = '.Numbers::price($res['precio_luego_de_recargos'], true)
+                        );
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::MARGEN,
+                            'Ganancia sobre el costo',
+                            'neta de IVA y de impuestos sobre ventas',
+                            Numbers::price($res['monto_ganancia'], true),
+                            'Ganancia sobre el costo = '.Numbers::price($res['monto_ganancia'], true)
+                        );
+                    }
 
                     // Prompt 379/03: mismas dos columnas que persiste el camino principal
                     // (precio_luego_de_recargos y monto_ganancia), para que el desglose del boton "?"
                     // de la tarjeta de esta lista en el modal del articulo (grupo 357) tambien
                     // funcione para las cuentas con esta extension -- antes quedaba incompleto.
-                    // $article y $user van para que monto_ganancia salga neto de IVA y de impuestos
-                    // sobre ventas, igual que en el camino principal (tarea 9).
-                    $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, null, $article, $user);
-
                     $article->price_types()->updateExistingPivot($price_type->id, [
                         'percentage'                => $percentage,
                         'price'                     => $price,
@@ -302,6 +417,17 @@ class ArticlePricesHelper {
                         'monto_ganancia'            => $res['monto_ganancia'],
                     ]);
                 } else {
+
+                    if ($describir) {
+                        $des_lista[] = DesglosePrecioHelper::linea(
+                            DesglosePrecioHelper::NOTA,
+                            'Sin margen',
+                            'esta lista no tiene margen cargado para la categoría del artículo',
+                            null,
+                            'Esta lista no tiene margen cargado para la categoria del articulo'
+                        );
+                    }
+
 
                     // Categoria/subcategoria sin porcentaje: las cinco columnas en null, sin restos
                     // de un calculo anterior (un precio_luego_de_recargos viejo junto a un final_price
@@ -317,7 +443,8 @@ class ArticlePricesHelper {
 
             }
         }
-        
+
+        return $des_lista;
     }
 
     /**
@@ -604,7 +731,11 @@ class ArticlePricesHelper {
 
             // $article y $user van para que monto_ganancia salga neto de IVA y de impuestos sobre
             // ventas: la ganancia es lo que queda para el negocio, no lo que se le debe a AFIP.
-            $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, $describir ? [] : null, $article, $user);
+            // El redondeo del usuario se aplica adentro de cerrar_precio_de_lista(), que es el
+            // cierre comun con el camino por categoria (ver su comentario).
+            $res = Self::cerrar_precio_de_lista($price_type, $final_price, $cost, $article, $user, $describir ? [] : null);
+
+            $final_price = $res['final_price'];
 
             if ($describir) {
                 $des_lista = array_merge($des_lista, $res['des']);
@@ -728,6 +859,86 @@ class ArticlePricesHelper {
      *        llamador que todavia no los pase.
      * @param $user mixed|null
      */
+    /**
+     * El cierre COMUN de los dos caminos que calculan precios de lista: redondeo + recargos de la
+     * lista + ganancia. 16/9/2026.
+     *
+     * 🔴 Existe para que los dos caminos no vuelvan a divergir. El prompt 379/03 se encontro con
+     * que el camino por categoria redondeaba y el principal no, y lo resolvio SACANDO el redondeo
+     * del de categoria -- dos cuentas con la misma configuracion tenian que dar el mismo precio, y
+     * asi fue. El efecto lateral, que nadie midio entonces, es que la configuracion de redondeo
+     * dejo de tener efecto sobre cualquier precio que el negocio cobre: en una cuenta con listas el
+     * precio de venta sale del pivote (ver resolver_precio_de_venta()), no de
+     * article->final_price, que es el unico que redondeaba. Reportado por golonorte el 16/9/2026:
+     * redondeo de centavos prendido y los tres precios de lista con centavos.
+     *
+     * Por que el redondeo va ACA y no adentro del calculo del margen: es el ultimo paso del precio
+     * de la lista, igual que en el pipeline del precio final unico (ArticleHelper::setFinalPrice()
+     * llama a redondear() al final). Redondear antes de los recargos dejaria el precio final con
+     * centavos otra vez.
+     *
+     * Y por que se redondea DOS veces -- el precio y despues el precio_luego_de_recargos --: es el
+     * segundo el que se muestra y el que cierra el desglose, asi que tambien tiene que quedar sin
+     * centavos. Las cinco reglas son idempotentes (round, round a -1/-2, ceil de a 50), asi que en
+     * una lista sin recargos el segundo redondeo no mueve nada ni agrega un renglon repetido.
+     *
+     * @param $des array|null Array de renglones si hay que describir el calculo, null si no. Mismo
+     *        criterio que aplicar_price_type_surchages().
+     * @return array{final_price:float|int,precio_luego_de_recargos:float|int,monto_ganancia:float|int,des:array}
+     */
+    static function cerrar_precio_de_lista($price_type, $final_price, $cost, $article = null, $user = null, $des = null) {
+
+        $describir = !is_null($des);
+
+        if (!$describir) {
+            $des = [];
+        }
+
+        if (!is_null($user) && !is_null($final_price)) {
+
+            $res = ArticleHelper::redondear($final_price, $user, $des);
+            $final_price = $res['price'];
+            $des = $res['des'];
+        }
+
+        $res = Self::aplicar_price_type_surchages($price_type, $final_price, $cost, $describir ? [] : null, $article, $user);
+
+        $precio_luego_de_recargos = $res['precio_luego_de_recargos'];
+        $monto_ganancia = $res['monto_ganancia'];
+
+        if ($describir) {
+            $des = array_merge($des, $res['des']);
+        }
+
+        /**
+         * Los recargos de la lista pueden volver a meter centavos (restan un porcentaje). Se
+         * redondea de nuevo y se recalcula la ganancia contra el precio redondeado, con el mismo
+         * par acoplado que usa aplicar_price_type_surchages(): la ganancia es neta de IVA y de
+         * impuestos sobre ventas, no el precio menos el costo.
+         */
+        if (!is_null($user) && !is_null($precio_luego_de_recargos) && $precio_luego_de_recargos != $final_price) {
+
+            $res = ArticleHelper::redondear($precio_luego_de_recargos, $user, $des);
+            $precio_luego_de_recargos = $res['price'];
+            $des = $res['des'];
+
+            $base_para_la_ganancia = $precio_luego_de_recargos;
+
+            if (!is_null($article)) {
+                $base_para_la_ganancia = Self::quitar_iva_y_sale_taxes($article, $precio_luego_de_recargos, $user);
+            }
+
+            $monto_ganancia = $base_para_la_ganancia - $cost;
+        }
+
+        return [
+            'final_price'               => $final_price,
+            'precio_luego_de_recargos'  => $precio_luego_de_recargos,
+            'monto_ganancia'            => $monto_ganancia,
+            'des'                       => $des,
+        ];
+    }
+
     static function aplicar_price_type_surchages($price_type, $final_price, $cost, $des = null, $article = null, $user = null) {
 
         $describir = !is_null($des);
