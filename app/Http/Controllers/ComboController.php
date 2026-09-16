@@ -24,6 +24,19 @@ class ComboController extends Controller
             'name'                  => $request->name,
             'cost'                  => $request->cost,
             'price'                 => $request->price,
+            /*
+                El interruptor que publica el combo en el ecommerce (mision
+                combos-y-rangos-de-precio, 16/9/2026).
+
+                🔴 Se normaliza a 1/0 y NO se asigna pelado, por dos motivos distintos:
+
+                1. `combos.online` es NOT NULL con default 0. Un `$request->online` ausente vale
+                   null, y una asignacion pelada de null a esa columna la rompe en MySQL estricto.
+                2. Compatibilidad hacia atras: una empresa-spa vieja, sin el check en el ABM, no
+                   manda la clave. Con esta forma el combo nace apagado, que es la direccion
+                   segura: nadie estrena combos en su tienda sin haberlo decidido.
+            */
+            'online'                => $request->online ? 1 : 0,
             'user_id'               => $this->userId(),
         ]);
 
@@ -41,6 +54,8 @@ class ComboController extends Controller
         $model->name                = $request->name;
         $model->cost                = $request->cost;
         $model->price               = $request->price;
+        /* Mismo criterio que en `store()`: 1/0 siempre, nunca null. */
+        $model->online              = $request->online ? 1 : 0;
         $model->save();
 
         GeneralHelper::attachModels($model, 'articles', $request->articles, ['amount']);
