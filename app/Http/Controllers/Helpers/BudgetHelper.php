@@ -213,9 +213,18 @@ class BudgetHelper {
 
 		foreach ($budget->combos as $combo) {
 
+			/*
+				`created_at` a mano, igual que su gemelo `SaleHelper::attachCombos()`
+				(SaleHelper.php:1304). `Sale::combos()` NO declara `withTimestamps()`, asi que
+				Eloquent no escribe la columna solo: los combos que entraban por confirmacion de
+				presupuesto quedaban con `combo_sale.created_at` en NULL y los que entraban por
+				VENDER no. Dos filas de la misma tabla, una fechada y la otra no, segun por que
+				puerta entro la venta.
+			*/
 			$sale->combos()->attach($combo->id, [
 				'amount'			=> $combo->pivot->amount,
 				'price'	    		=> $combo->pivot->price,
+				'created_at'		=> Carbon::now(),
 			]);
 
 			$articles_array = [];
