@@ -34,18 +34,29 @@ class AsistenteImagenHelper
     const MAX_IMAGENES = 3;
 
     /**
-     * Extensiones aceptadas. Es LA MISMA lista que ProviderOrderScanController::EXTENSIONES_PERMITIDAS,
-     * heic incluido en su ausencia: GD no lo decodifica, así que aceptarlo solo serviría para que
-     * el archivo pasara la validación y muriera al redimensionar.
+     * Formatos aceptados, nombrados para el mensaje de error. La validación NO los mira: mira los
+     * bytes (ver motivo_de_rechazo()).
      */
-    const EXTENSIONES_PERMITIDAS = ['jpg', 'jpeg', 'png', 'webp'];
+    const FORMATOS_ACEPTADOS = ['jpg', 'jpeg', 'png', 'webp'];
 
     /**
-     * Valida el lote antes de tocar nada: cuántas son, que cada una haya subido bien, la extensión
-     * y el peso. Devuelve el motivo del rechazo (texto para el 422) o null si está todo bien.
+     * Valida el lote antes de tocar nada: cuántas son, que cada una haya subido bien, el peso y que
+     * sea de verdad una imagen que Anthropic acepte. Devuelve el motivo del rechazo (texto para el
+     * 422) o null si está todo bien.
      *
      * Se valida ANTES de crear el mensaje a propósito: un 422 que llega con el AiMessage ya creado
      * dejaría en la conversación un mensaje del dueño que nadie va a contestar.
+     *
+     * 🔴 SE VALIDA POR LOS BYTES, NUNCA POR LA EXTENSIÓN DEL NOMBRE. Acá el que sube el archivo no
+     * es un navegador con un <input type="file">: es el admin reenviando lo que bajó de Kapso, y
+     * una descarga de media de WhatsApp normalmente llega SIN extensión en el nombre. Validando por
+     * `getClientOriginalExtension()`, un JPEG perfecto daba 422 y el dueño recibía el texto de
+     * disculpa por una foto que estaba impecable. `getimagesizefromstring` lee la firma del
+     * archivo, que es el mismo criterio con el que después se arma el bloque de Anthropic
+     * (media_type()): un solo criterio de punta a punta.
+     *
+     * El peso se chequea ANTES de leer el binario, para no traer a memoria un archivo enorme solo
+     * para descubrir que no entraba.
      *
      * @param  array  $imagenes  UploadedFile[]
      * @return string|null
@@ -66,21 +77,46 @@ class AsistenteImagenHelper
                 return 'Una de las fotos no llegó completa.';
             }
 
-            $extension = strtolower((string) $imagen->getClientOriginalExtension());
-
-            if (!in_array($extension, self::EXTENSIONES_PERMITIDAS)) {
-
-                return 'El archivo "' . $imagen->getClientOriginalName() . '" no es una imagen soportada. ' .
-                       'Se aceptan: ' . implode(', ', self::EXTENSIONES_PERMITIDAS) . '.';
-            }
+            $nombre = self::nombre_para_el_error($imagen);
 
             if ($imagen->getSize() > ($max_mb * 1024 * 1024)) {
 
-                return 'El archivo "' . $imagen->getClientOriginalName() . '" pesa más de ' . $max_mb . ' MB.';
+                return 'El archivo ' . $nombre . ' pesa más de ' . $max_mb . ' MB.';
+            }
+
+            try {
+
+                $binario = (string) file_get_contents($imagen->getRealPath());
+
+            } catch (\Throwable $e) {
+
+                Log::info('AsistenteImagenHelper: no se pudo leer el archivo subido -- ' . $e->getMessage());
+
+                return 'Una de las fotos no llegó completa.';
+            }
+
+            if (is_null(self::media_type($binario))) {
+
+                return 'El archivo ' . $nombre . ' no es una imagen que pueda leer. ' .
+                       'Se aceptan: ' . implode(', ', self::FORMATOS_ACEPTADOS) . '.';
             }
         }
 
         return null;
+    }
+
+    /**
+     * Cómo se nombra un archivo en un mensaje de error. Una descarga de Kapso puede llegar sin
+     * nombre, y decir 'El archivo "" pesa más de 12 MB' no le sirve a nadie.
+     *
+     * @param  mixed  $imagen
+     * @return string
+     */
+    protected static function nombre_para_el_error($imagen)
+    {
+        $nombre = trim((string) $imagen->getClientOriginalName());
+
+        return $nombre === '' ? 'que mandaste' : '"' . $nombre . '"';
     }
 
     /**

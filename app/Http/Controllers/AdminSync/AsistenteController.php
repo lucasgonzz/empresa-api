@@ -5,6 +5,7 @@ namespace App\Http\Controllers\AdminSync;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
@@ -48,6 +49,37 @@ class AsistenteController extends Controller
     const TIPOS = ['texto', 'audio', 'imagen'];
 
     /**
+     * Lo que el admin manda como texto cuando Kapso no pudo transcribir un audio
+     * (`WhatsappWebhookController::extract_audio_body()`).
+     *
+     * 🔴 Ese caso se resuelve ACÁ y de forma determinista, sin gastar una llamada a la IA. Antes el
+     * literal se guardaba como si el dueño lo hubiera escrito y quedaba en el historial para
+     * siempre, y lo único que lo manejaba era un renglón del prompt: o sea que dependía de que el
+     * modelo reconociera ese texto y se acordara de contestar bien. Un audio que no se entendió es
+     * un hecho, no una interpretación.
+     */
+    const AUDIO_SIN_TRANSCRIPCION = '[Audio sin transcripción]';
+
+    /** Lo que se le contesta al dueño cuando el audio llegó sin transcribir. */
+    const RESPUESTA_AUDIO_SIN_TRANSCRIPCION = 'No me llegó lo que dijiste en el audio. ¿Me lo escribís?';
+
+    /**
+     * Cuántos días hacia atrás, contando hoy, se buscan informes sin avisar.
+     *
+     * 🔴 No es "los de hoy", y el motivo es que el caso de fallo NO es exótico: es el esperado al
+     * arrancar. A las 8:30 la ventana de 24 h de WhatsApp está cerrada para casi todos los dueños,
+     * así que sin la plantilla de Meta aprobada no sale nada (riesgo §12.1 del plan) — y con la
+     * ventana en "hoy", ese informe ya es de ayer en la próxima corrida y no lo agarra nadie nunca.
+     * Pasa lo mismo con la skill /mostrador, que se corre A MANO: un informe depositado a las 09:00
+     * quedaba fuera de la corrida de esa mañana y de todas las siguientes.
+     *
+     * Tres días alcanzan para cubrir un fin de semana largo de plantilla trabada sin llegar a
+     * mandarle al dueño un informe tan viejo que ya no le sirve. La única marca que saca un informe
+     * de la lista sigue siendo `avisado_at`.
+     */
+    const DIAS_DE_INFORMES_PENDIENTES = 3;
+
+    /**
      * POST admin-sync/asistente/mensajes  (multipart/form-data)
      *
      * Campos: `texto` (obligatorio, hasta MAX_TEXTO), `tipo` (texto|audio|imagen),
@@ -79,11 +111,6 @@ class AsistenteController extends Controller
 
         $texto = trim((string) $request->input('texto'));
 
-        if ($texto === '') {
-
-            return response()->json(['message' => 'El mensaje no puede venir vacío.'], 422);
-        }
-
         if (mb_strlen($texto) > self::MAX_TEXTO) {
 
             return response()->json(['message' => 'El mensaje supera los ' . self::MAX_TEXTO . ' caracteres.'], 422);
@@ -105,6 +132,34 @@ class AsistenteController extends Controller
             return response()->json(['message' => $motivo], 422);
         }
 
+        $sin_transcribir = $this->es_audio_sin_transcribir($tipo, $texto, $imagenes);
+
+        /*
+         * 🔴 UNA FOTO SIN EPÍGRAFE ES UN MENSAJE VÁLIDO, y de hecho es el caso normal: el dueño saca
+         * la foto de la factura, la manda sin escribir nada, y recién en el mensaje siguiente dice
+         * de qué proveedor es. Rechazarlo con 422 le devolvía el texto de disculpa por un mensaje
+         * perfecto. Sin fotos y sin texto sí es un 422: no hay nada que contestar.
+         */
+        if ($texto === '' && !count($imagenes) && !$sin_transcribir) {
+
+            return response()->json(['message' => 'El mensaje no puede venir vacío.'], 422);
+        }
+
+        $whatsapp_message_id = $this->wamid_del_request($request);
+
+        /*
+         * 🔴 IDEMPOTENCIA POR wamid. El admin reintenta el mismo POST ante un timeout o un 5xx, con
+         * el mismo wamid de Kapso. Sin esto, ese reintento creaba un segundo AiMessage del dueño, un
+         * segundo job y un SEGUNDO WhatsApp con la misma respuesta. Se devuelven los ids de la
+         * primera vez, que es lo que el admin necesita para seguir con su polling.
+         */
+        $ya_estaba = $this->mensaje_ya_recibido($dueno, $whatsapp_message_id);
+
+        if (!is_null($ya_estaba)) {
+
+            return $this->respuesta_del_turno($ya_estaba);
+        }
+
         $conversation = AsistenteCanalHelper::conversacion($dueno, $request->input('ai_conversation_id'));
 
         /*
@@ -117,15 +172,19 @@ class AsistenteController extends Controller
                 ->where('rol', 'user')
                 ->exists();
 
-        $whatsapp_message_id = trim((string) $request->input('whatsapp_message_id'));
-
         $user_message = AiMessage::create([
             'ai_conversation_id'  => $conversation->id,
             'rol'                 => 'user',
+            /*
+             * Una foto sin epígrafe deja el contenido vacío, no un texto inventado. Lo que hace que
+             * ese mensaje igual llegue al modelo es que AsistenteIaService::build_messages_payload()
+             * incluye los mensajes que tienen fotos aunque no tengan texto.
+             */
             'contenido'           => $texto,
             'estado'              => 'listo',
             'canal'               => AiMessage::CANAL_WHATSAPP,
-            'whatsapp_message_id' => $whatsapp_message_id === '' ? null : mb_substr($whatsapp_message_id, 0, 128),
+            'tipo'                => $tipo,
+            'whatsapp_message_id' => $whatsapp_message_id,
         ]);
 
         if (count($imagenes)) {
@@ -139,6 +198,8 @@ class AsistenteController extends Controller
             'rol'                  => 'assistant',
             'estado'               => 'pendiente',
             'canal'                => AiMessage::CANAL_WHATSAPP,
+            /* El mismo wamid en las dos filas del turno: es lo que hace idempotente el reintento. */
+            'whatsapp_message_id'  => $whatsapp_message_id,
             /*
              * Siempre con las herramientas de carga. En la pantalla el flag existe porque una
              * pestaña vieja no sabe pintar tarjetas; acá el canal es nuevo entero y la
@@ -150,6 +211,20 @@ class AsistenteController extends Controller
 
         $conversation->last_message_at = now();
         $conversation->save();
+
+        /*
+         * 🔴 Un audio que llegó sin transcribir no sale a la IA: se contesta acá, con un texto fijo.
+         * Ver AUDIO_SIN_TRANSCRIPCION. El mensaje del dueño queda igual en el historial (con su
+         * `tipo`), así que la conversación no tiene un hueco.
+         */
+        if ($sin_transcribir) {
+
+            $assistant_message->contenido = self::RESPUESTA_AUDIO_SIN_TRANSCRIPCION;
+            $assistant_message->estado = 'listo';
+            $assistant_message->save();
+
+            return $this->respuesta_del_turno($assistant_message);
+        }
 
         /*
          * Misma red de seguridad que el chat de la pantalla: si dispatch() lanza, el assistant no
@@ -170,7 +245,7 @@ class AsistenteController extends Controller
             throw $e;
         }
 
-        if ($inferir_titulo) {
+        if ($inferir_titulo && $texto !== '') {
 
             /* El título es cosmético: si no se puede encolar, no voltea un mensaje ya despachado. */
             try {
@@ -186,11 +261,88 @@ class AsistenteController extends Controller
             }
         }
 
+        return $this->respuesta_del_turno($assistant_message);
+    }
+
+    /**
+     * El 202 del contrato para un turno.
+     *
+     * `estado` viaja con el valor REAL del mensaje y no con el literal 'pendiente' del §7: en el
+     * camino normal es 'pendiente' igual, pero en los dos caminos que contestan de una —el
+     * reintento con el mismo wamid y el audio sin transcribir— decir 'pendiente' sobre un mensaje
+     * que ya está 'listo' sería lo único de los dos que puede ser falso. El admin hace polling en
+     * todos los casos, así que informar de más nunca lo rompe.
+     *
+     * @param  \App\Models\AiMessage  $assistant
+     * @return JsonResponse
+     */
+    protected function respuesta_del_turno(AiMessage $assistant): JsonResponse
+    {
         return response()->json([
-            'ai_conversation_id' => (int) $conversation->id,
-            'ai_message_id'      => (int) $assistant_message->id,
-            'estado'             => 'pendiente',
+            'ai_conversation_id' => (int) $assistant->ai_conversation_id,
+            'ai_message_id'      => (int) $assistant->id,
+            'estado'             => (string) $assistant->estado,
         ], 202);
+    }
+
+    /**
+     * El wamid del request, recortado, o null si no vino.
+     *
+     * @param  Request  $request
+     * @return string|null
+     */
+    protected function wamid_del_request(Request $request)
+    {
+        $wamid = trim((string) $request->input('whatsapp_message_id'));
+
+        return $wamid === '' ? null : mb_substr($wamid, 0, 128);
+    }
+
+    /**
+     * El assistant del turno que ya atendió este wamid para este dueño, o null.
+     *
+     * Sin wamid no hay nada que deduplicar: el admin siempre lo manda, pero un llamador sin él
+     * simplemente no tiene idempotencia (mejor eso que colapsar dos mensajes distintos en uno).
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  string|null  $whatsapp_message_id
+     * @return \App\Models\AiMessage|null
+     */
+    protected function mensaje_ya_recibido($dueno, $whatsapp_message_id)
+    {
+        if (is_null($whatsapp_message_id)) {
+
+            return null;
+        }
+
+        return AiMessage::where('ai_messages.whatsapp_message_id', $whatsapp_message_id)
+                        ->where('ai_messages.rol', 'assistant')
+                        ->whereIn('ai_messages.ai_conversation_id', function ($query) use ($dueno) {
+                            $query->select('id')
+                                    ->from('ai_conversations')
+                                    ->where('user_id', $dueno->id)
+                                    ->where('auth_user_id', $dueno->id);
+                        })
+                        ->orderBy('ai_messages.id')
+                        ->first();
+    }
+
+    /**
+     * true si esto es un audio que llegó sin transcripción y no trae nada más con qué contestar.
+     *
+     * @param  string  $tipo
+     * @param  string  $texto
+     * @param  array  $imagenes
+     * @return bool
+     */
+    protected function es_audio_sin_transcribir($tipo, $texto, array $imagenes)
+    {
+        if ($tipo !== 'audio' || count($imagenes)) {
+
+            return false;
+        }
+
+        return $texto === '' || $texto === self::AUDIO_SIN_TRANSCRIPCION;
     }
 
     /**
@@ -243,20 +395,27 @@ class AsistenteController extends Controller
     /**
      * GET admin-sync/asistente/informes-pendientes
      *
-     * Los informes del mostrador que se depositaron HOY, están listos y todavía no se le avisaron
-     * al dueño. Cada uno viaja con su link ya emitido (§3.7): el admin arma un solo mensaje de
-     * WhatsApp con el título, el resumen y el link de cada uno.
+     * Los informes del mostrador listos de los últimos DIAS_DE_INFORMES_PENDIENTES días que
+     * todavía no se le avisaron al dueño, del más viejo al más nuevo. Cada uno viaja con su link ya
+     * emitido (§3.7) y con el id de SU conversación: el admin arma un solo mensaje de WhatsApp con
+     * el título, el resumen y el link de cada uno.
+     *
+     * 🔴 `ai_conversation_id` es lo que hace que preguntar sobre el informe funcione, que es un
+     * pedido textual de Lucas ("que pueda abrirlos desde el celular y también les pueda hacer
+     * preguntas acerca de esos informes"). El admin guarda ese id contra el wamid del mensaje que
+     * manda; cuando el dueño contesta "¿por qué bajó la caja?", la cita lo resuelve y el mensaje
+     * entra en la conversación DEL INFORME — la única que tiene el informe entero como `contexto`
+     * de fondo. Sin esto, el asistente contestaba sin saber de qué informe le hablaban.
      *
      * 🔴 `url` puede venir en null, y eso es correcto, no un bug: significa que esta instancia no
      * tiene cargada la SPA_URL del cliente y el admin tiene que mandar el resumen SIN link. Un link
      * armado con `app.url` (que es la URL de la API) daría 404 en el teléfono del dueño.
      *
-     * "De hoy" se mide por `generado_at` y no por `fecha`: `fecha` es el día del que HABLA el
-     * informe (para 'dia' y 'tienda' es ayer), y lo que hay que avisar es lo que se escribió esta
-     * mañana.
+     * La ventana se mide por `generado_at` y no por `fecha`: `fecha` es el día del que HABLA el
+     * informe (para 'dia' y 'tienda' es ayer), y lo que hay que avisar es lo que se escribió.
      *
      * @param  Request  $request
-     * @return JsonResponse  200 {informes:[{id, tipo, titulo, resumen, url}]} · 401 · 403 · 404
+     * @return JsonResponse  200 {informes:[{id, tipo, titulo, resumen, url, ai_conversation_id}]} · 401 · 403 · 404
      */
     public function informes_pendientes(Request $request): JsonResponse
     {
@@ -269,10 +428,14 @@ class AsistenteController extends Controller
 
         $dueno = AsistenteCanalHelper::dueno();
 
+        $desde = now()->startOfDay()->subDays(self::DIAS_DE_INFORMES_PENDIENTES - 1);
+
         $reportes = MostradorReporte::where('user_id', $dueno->id)
                                     ->listos()
                                     ->whereNull('avisado_at')
-                                    ->whereDate('generado_at', now()->toDateString())
+                                    ->where('generado_at', '>=', $desde)
+                                    /* Del más viejo al más nuevo: el que más esperó sale primero. */
+                                    ->orderBy('generado_at')
                                     ->orderBy('id')
                                     ->get();
 
@@ -280,12 +443,15 @@ class AsistenteController extends Controller
 
         foreach ($reportes as $reporte) {
 
+            $conversacion = MostradorHelper::asegurar_conversacion($reporte, (int) $dueno->id, (int) $dueno->id);
+
             $informes[] = [
-                'id'      => (int) $reporte->id,
-                'tipo'    => (string) $reporte->tipo,
-                'titulo'  => (string) $reporte->titulo,
-                'resumen' => (string) $reporte->resumen,
-                'url'     => MostradorAccesoHelper::emitir($reporte),
+                'id'                 => (int) $reporte->id,
+                'tipo'               => (string) $reporte->tipo,
+                'titulo'             => (string) $reporte->titulo,
+                'resumen'            => (string) $reporte->resumen,
+                'url'                => MostradorAccesoHelper::emitir($reporte),
+                'ai_conversation_id' => (int) $conversacion['model']->id,
             ];
         }
 
@@ -299,8 +465,9 @@ class AsistenteController extends Controller
      *
      * 🔴 SON DOS PASOS A PROPÓSITO. El admin lo llama SOLO después de que el WhatsApp salió: si el
      * envío falla (ventana de 24 h cerrada, plantilla no aprobada, Kapso caído), el informe queda
-     * sin marcar y el aviso sale en la próxima corrida. Marcar al pedir los informes dejaría al
-     * dueño sin su informe y sin forma de recuperarlo.
+     * sin marcar y el aviso vuelve a salir mientras siga adentro de la ventana de
+     * DIAS_DE_INFORMES_PENDIENTES. Marcar al pedir los informes dejaría al dueño sin su informe y
+     * sin forma de recuperarlo.
      *
      * Idempotente: un segundo aviso sobre el mismo informe no pisa la marca original.
      *

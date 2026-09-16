@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AsistenteWhatsapp;
 
+use App\Http\Controllers\AdminSync\AsistenteController;
 use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
 use App\Models\MostradorAcceso;
 use App\Models\MostradorReporte;
@@ -125,14 +126,27 @@ class Informes_Test extends AsistenteWhatsappTestCase
     }
 
     /**
+     * Lo que NO vuelve a salir: el que ya se avisó, el que todavía no está listo, y el que quedó
+     * fuera de la ventana.
+     *
+     * 🔴 Este test fijaba antes la conducta equivocada: pedía que un informe de hace dos días NO
+     * saliera. Lo corrigió el chequeo independiente del 16/9/2026, y con razón — el caso de fallo
+     * del envío es el ESPERADO al arrancar (sin la plantilla de Meta aprobada, a las 8:30 no sale
+     * nada), así que un informe que no se pudo avisar ayer tiene que seguir saliendo hoy. Lo que
+     * saca un informe de la lista es `avisado_at`, no el calendario. Ver
+     * `un_informe_de_ayer_sin_avisar_sigue_saliendo_hoy` en 8_Correcciones_del_chequeo_Test.
+     *
      * @group asistente-whatsapp
      * @test
      */
-    public function un_informe_ya_avisado_y_uno_de_otro_dia_no_vuelven_a_salir()
+    public function un_informe_ya_avisado_sin_contenido_o_fuera_de_la_ventana_no_sale()
     {
         $this->informe(['tipo' => 'caja', 'avisado_at' => Carbon::now()]);
 
-        $this->informe(['tipo' => 'tienda', 'generado_at' => Carbon::now()->subDays(2)]);
+        $this->informe([
+            'tipo'        => 'tienda',
+            'generado_at' => Carbon::now()->startOfDay()->subDays(AsistenteController::DIAS_DE_INFORMES_PENDIENTES),
+        ]);
 
         $this->informe(['tipo' => 'compras', 'estado' => MostradorReporte::ESTADO_HECHOS, 'contenido' => null]);
 
@@ -140,7 +154,26 @@ class Informes_Test extends AsistenteWhatsappTestCase
             ->assertStatus(200)
             ->json('informes');
 
-        $this->assertCount(0, $informes, 'Solo los listos de hoy sin avisar.');
+        $this->assertCount(0, $informes);
+    }
+
+    /**
+     * Y lo que SÍ sale: un informe de ayer que no se pudo avisar. Es el contrapunto del test de
+     * arriba y la razón por la que la ventana existe.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function un_informe_de_ayer_sin_avisar_sigue_estando()
+    {
+        $de_ayer = $this->informe(['generado_at' => Carbon::now()->subDay()]);
+
+        $informes = $this->getJson('api/admin-sync/asistente/informes-pendientes', $this->headers())
+            ->assertStatus(200)
+            ->json('informes');
+
+        $this->assertCount(1, $informes);
+        $this->assertEquals((int) $de_ayer->id, (int) $informes[0]['id']);
     }
 
     /**

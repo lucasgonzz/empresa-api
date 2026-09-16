@@ -39,9 +39,12 @@ class ConfirmacionPorTextoIaHelper
     /** Lo que se le contesta a la IA cuando el id de tarjeta no corresponde a esta conversación. */
     const MENSAJE_NO_ENCONTRADA = 'No encuentro esa carga en esta conversación. Volvé a proponerla.';
 
-    /** Lo que se le contesta a la IA cuando intenta confirmar algo que propuso en este mismo turno. */
-    const MENSAJE_MISMO_TURNO = 'No podés confirmar una carga que acabás de proponer en este mismo mensaje. '
-        . 'Decile los datos a la persona, preguntale si lo registrás, y confirmá recién cuando te conteste.';
+    /** Lo que se le contesta a la IA cuando intenta confirmar algo que la persona todavía no vio. */
+    const MENSAJE_MISMO_TURNO = 'No podés confirmar una carga que la persona todavía no vio. '
+        . 'Decile los datos, preguntale si lo registrás, y confirmá recién cuando te conteste que sí.';
+
+    /** Lo que se le contesta a la IA cuando la tarjeta se propuso en la pantalla, no por WhatsApp. */
+    const MENSAJE_OTRO_CANAL = 'Esa carga la propusiste en el sistema, así que se confirma desde ahí con el botón.';
 
     /**
      * Confirma una carga propuesta en un turno anterior y devuelve el resultado para el tool_result.
@@ -137,7 +140,74 @@ class ConfirmacionPorTextoIaHelper
             return RespuestaDeCargaIa::error(self::MENSAJE_MISMO_TURNO);
         }
 
+        $propuso = AiMessage::find($accion->ai_message_id);
+
+        if (is_null($propuso)) {
+
+            return RespuestaDeCargaIa::error(self::MENSAJE_NO_ENCONTRADA);
+        }
+
+        /*
+         * 🔴 POR TEXTO SOLO SE CONFIRMA LO QUE SE PROPUSO POR TEXTO.
+         *
+         * Una conversación de WhatsApp se sigue desde el panel del chat (§4 del plan), así que en
+         * la misma conversación conviven tarjetas de los dos canales. Sin este corte, una tarjeta
+         * propuesta en la pantalla y DELIBERADAMENTE no confirmada —la persona la miró y no la
+         * tocó— se podía confirmar después desde WhatsApp, que es justo lo contrario de lo que esa
+         * persona decidió.
+         */
+        if (!$propuso->es_de_whatsapp()) {
+
+            return RespuestaDeCargaIa::error(self::MENSAJE_OTRO_CANAL);
+        }
+
+        /*
+         * 🔴 LA TARJETA TIENE QUE HABER LLEGADO A LA PERSONA, y eso son dos cosas medibles.
+         *
+         * La guarda del mismo `ai_message_id` no alcanza, porque en este canal NO hay 409
+         * `respuesta_en_curso` (a propósito: rebotar un mensaje de WhatsApp lo pierde) y el admin
+         * despacha un job por cada mensaje entrante sin serializar por cliente. O sea que dos
+         * mensajes seguidos del dueño —lo más normal del mundo: "anotá la nafta, 5000" y un segundo
+         * después "gracias!"— generan DOS turnos en paralelo. El segundo ve la tarjeta en el
+         * historial, tiene otro `ai_message_id`, y hasta acá podía confirmarla antes de que la
+         * pregunta le hubiera llegado al dueño.
+         *
+         * 1. El mensaje que la propuso tiene que estar 'listo': mientras sigue 'pendiente' su texto
+         *    todavía se está escribiendo y no salió por WhatsApp, así que la persona no pudo leer
+         *    nada.
+         * 2. El mensaje del dueño que dispara esta confirmación tiene que ser POSTERIOR a esa
+         *    propuesta. Si es anterior, este turno arrancó antes de que la tarjeta existiera y su
+         *    "sí" no puede estar contestándola.
+         */
+        if ($propuso->estado !== 'listo') {
+
+            return RespuestaDeCargaIa::error(self::MENSAJE_MISMO_TURNO);
+        }
+
+        $pedido = self::mensaje_que_dispara($conversation, $assistant_message);
+
+        if (is_null($pedido) || (int) $pedido->id < (int) $propuso->id) {
+
+            return RespuestaDeCargaIa::error(self::MENSAJE_MISMO_TURNO);
+        }
+
         return null;
+    }
+
+    /**
+     * El mensaje del dueño que este assistant está contestando: el último 'user' anterior a él.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $assistant_message
+     * @return \App\Models\AiMessage|null
+     */
+    protected static function mensaje_que_dispara(AiConversation $conversation, AiMessage $assistant_message)
+    {
+        return AiMessage::where('ai_conversation_id', $conversation->id)
+                        ->where('rol', 'user')
+                        ->where('id', '<', $assistant_message->id)
+                        ->orderBy('id', 'DESC')
+                        ->first();
     }
 
     /**

@@ -13,6 +13,7 @@ use App\Models\AiMessageImagen;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderScan;
+use App\Models\ProviderOrderStatus;
 use Carbon\Carbon;
 
 /**
@@ -51,8 +52,23 @@ class PropuestaCompraConFacturaIaHelper
     /** Cuántos proveedores se ofrecen como candidatos cuando el nombre no resuelve. */
     const TOPE_CANDIDATOS = 10;
 
-    /** Estado con el que nace una compra desde acá: "En proceso" (ProviderOrderStatusSeeder). */
-    const ESTADO_EN_PROCESO = 1;
+    /**
+     * Cuántos mensajes hacia atrás se miran para juntar las fotos de la factura.
+     *
+     * El caso real son cuatro: la foto, el "¿de qué proveedor es?", la respuesta del dueño y la
+     * propuesta. Seis deja lugar para un ida y vuelta más (por ejemplo, la sucursal) sin llegar a
+     * agarrar una foto de otro momento de la charla.
+     */
+    const MENSAJES_PARA_LAS_FOTOS = 6;
+
+    /**
+     * Nombre del estado con el que nace una compra desde acá, tal como lo siembra
+     * ProviderOrderStatusSeeder. Se resuelve POR NOMBRE y no con el id 1 hardcodeado: el id
+     * depende del orden en que corrió un seeder hace años, y en un cliente cuyo listado se
+     * reordenó alguna vez, "1" puede ser "Recibido" — que marcaría como recibida una compra que
+     * todavía no llegó.
+     */
+    const ESTADO_EN_PROCESO = 'En proceso';
 
     /**
      * Herramienta proponer_compra_con_factura.
@@ -84,12 +100,12 @@ class PropuestaCompraConFacturaIaHelper
             return $proveedor;
         }
 
-        $imagenes = self::imagenes_sin_gestionar($contexto, $mensaje);
+        $fotos = self::imagenes_sin_gestionar($contexto, $mensaje);
 
-        if (!count($imagenes)) {
+        if (!count($fotos['paginas'])) {
 
             return RespuestaDeCargaIa::error(
-                'No tengo ninguna foto de factura sin usar en esta conversación. Mandámela y te la cargo.'
+                'No tengo ninguna foto de factura sin usar en los últimos mensajes. Mandámela y te la cargo.'
             );
         }
 
@@ -102,12 +118,9 @@ class PropuestaCompraConFacturaIaHelper
 
         $a_reusar = self::compra_reusable($contexto, $proveedor);
 
-        $imagen_ids = [];
+        $imagen_ids = self::ids_de($fotos['paginas']);
 
-        foreach ($imagenes as $imagen) {
-
-            $imagen_ids[] = (int) $imagen->id;
-        }
+        $consideradas_ids = self::ids_de($fotos['consideradas']);
 
         $renglones = [
             ['etiqueta' => 'Proveedor', 'valor' => (string) $proveedor->name],
@@ -118,9 +131,19 @@ class PropuestaCompraConFacturaIaHelper
             $renglones[] = ['etiqueta' => 'Sucursal', 'valor' => self::nombre_de_sucursal($sucursal)];
         }
 
-        $fotos = count($imagen_ids) === 1 ? '1 foto' : count($imagen_ids) . ' fotos';
+        $cuantas = count($imagen_ids) === 1 ? '1 foto' : count($imagen_ids) . ' fotos';
 
-        $renglones[] = ['etiqueta' => 'Fotos de la factura', 'valor' => $fotos];
+        /*
+         * Si quedaron fotos afuera del escaneo, la tarjeta lo dice ANTES de que el dueño confirme:
+         * al confirmar se sellan todas (si no, las que sobran se colarían en la próxima compra),
+         * así que tiene que poder decir "pará, esa no es de esta factura".
+         */
+        if (count($consideradas_ids) > count($imagen_ids)) {
+
+            $cuantas .= ' (de ' . count($consideradas_ids) . ' sin usar; van las más nuevas)';
+        }
+
+        $renglones[] = ['etiqueta' => 'Fotos de la factura', 'valor' => $cuantas];
 
         $que_pasa = is_null($a_reusar)
             ? 'Se crea una compra nueva'
@@ -134,6 +157,8 @@ class PropuestaCompraConFacturaIaHelper
             'address_id'            => is_null($sucursal) ? null : (int) $sucursal->id,
             'sucursal'              => is_null($sucursal) ? null : self::nombre_de_sucursal($sucursal),
             'imagen_ids'            => $imagen_ids,
+            /* Las que se sellan al confirmar: superset de imagen_ids (ver imagenes_sin_gestionar). */
+            'imagen_ids_miradas'    => $consideradas_ids,
             'reusar_provider_order' => is_null($a_reusar) ? null : (int) $a_reusar->id,
             /*
              * Espejo de `prefill_prop_on_select` del formulario de la SPA (src/models/provider_order.js):
@@ -155,7 +180,7 @@ class PropuestaCompraConFacturaIaHelper
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
-        $resumen = 'Compra de ' . $proveedor->name . ' · ' . $fotos . ' · ' . $que_pasa;
+        $resumen = 'Compra de ' . $proveedor->name . ' · ' . $cuantas . ' · ' . $que_pasa;
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
     }
@@ -213,7 +238,27 @@ class PropuestaCompraConFacturaIaHelper
             throw new AccionIaException(422, 'Ese proveedor ya no existe entre los tuyos. Pedímelo de nuevo.');
         }
 
-        $imagenes = self::imagenes_por_id($contexto, isset($datos['imagen_ids']) ? $datos['imagen_ids'] : []);
+        /*
+         * 🔴 Se bloquean TODAS las que la propuesta miró, no solo las que van al escaneo: son las
+         * que se van a sellar, y sellarlas sin haberlas bloqueado deja la misma carrera que el
+         * candado vino a cerrar.
+         */
+        $miradas = self::imagenes_por_id(
+            $contexto,
+            isset($datos['imagen_ids_miradas']) ? $datos['imagen_ids_miradas'] : (isset($datos['imagen_ids']) ? $datos['imagen_ids'] : [])
+        );
+
+        $paginas_pedidas = self::ids_limpios(isset($datos['imagen_ids']) ? $datos['imagen_ids'] : []);
+
+        $imagenes = [];
+
+        foreach ($miradas as $mirada) {
+
+            if (in_array((int) $mirada->id, $paginas_pedidas, true)) {
+
+                $imagenes[] = $mirada;
+            }
+        }
 
         if (!count($imagenes)) {
 
@@ -255,14 +300,12 @@ class PropuestaCompraConFacturaIaHelper
             throw new AccionIaException(422, $mensaje);
         }
 
-        $ids = [];
-
-        foreach ($imagenes as $imagen) {
-
-            $ids[] = (int) $imagen->id;
-        }
-
-        AsistenteImagenHelper::marcar_gestionadas($ids);
+        /*
+         * Se sellan TODAS las miradas, no solo las que subieron. Una foto que la propuesta
+         * consideró y dejó afuera por el tope no puede quedar libre: sin esto se engancharía sola
+         * a la próxima compra, que puede ser de otro proveedor.
+         */
+        AsistenteImagenHelper::marcar_gestionadas(self::ids_de($miradas));
 
         return [
             'texto' => 'Compra N° ' . $orden->num . ' creada, estoy leyendo la factura. Cuando termine la revisás desde Compras',
@@ -320,7 +363,7 @@ class PropuestaCompraConFacturaIaHelper
         $model = ProviderOrderAltaHelper::crear([
             'user_id'                  => $contexto->owner_id,
             'provider_id'              => (int) $proveedor->id,
-            'provider_order_status_id' => self::ESTADO_EN_PROCESO,
+            'provider_order_status_id' => self::estado_en_proceso_id(),
             'address_id'               => isset($datos['address_id']) ? $datos['address_id'] : null,
             /*
              * Los tres interruptores irreversibles nacen como en el formulario: sin actualizar
@@ -445,35 +488,104 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
-     * Las fotos de esta conversación que todavía no usó ninguna carga, de la más vieja a la más
-     * nueva y topeadas en lo que acepta un escaneo.
+     * Las fotos que se van a enganchar a esta factura, y TODAS las que se miraron para elegirlas.
+     *
+     * 🔴 SE ACOTA POR LOS ÚLTIMOS MENSAJES, NO POR LA CONVERSACIÓN ENTERA. Sin ese corte, una foto
+     * vieja que quedó sin gestionar —el dueño mandó la foto de una góndola preguntando un precio a
+     * la mañana, nadie la "usó" para nada— entraba como una página más de la factura que manda a la
+     * tarde. Nadie se entera hasta que el escaneo devuelve renglones que no existen. La ventana de
+     * MENSAJES_PARA_LAS_FOTOS alcanza de sobra para el caso real —foto, "¿de qué proveedor es?",
+     * "de Distribuidora Sur", la propuesta— y deja afuera cualquier cosa de más atrás.
+     *
+     * 🔴 Y SE DEVUELVEN TAMBIÉN LAS QUE NO ENTRAN. Si en la ventana hay más fotos sin gestionar que
+     * las que acepta un escaneo, las que sobran NO se pueden dejar libres: quedarían esperando a la
+     * próxima compra, que puede ser de otro proveedor, y se colarían ahí. Al confirmar se sellan
+     * TODAS las consideradas y solo se suben las elegidas (ver ejecutar()).
      *
      * @param  ContextoDeCargaIa  $contexto
-     * @param  \App\Models\AiMessage  $mensaje
-     * @return array<int, \App\Models\AiMessageImagen>
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que está proponiendo.
+     * @return array  ['paginas' => AiMessageImagen[], 'consideradas' => AiMessageImagen[]]
      */
     protected static function imagenes_sin_gestionar(ContextoDeCargaIa $contexto, AiMessage $mensaje)
     {
-        $max = (int) config('services.escaneo_factura_compra.max_imagenes', 6);
-        $max = $max > 0 ? $max : 6;
+        $max = self::max_paginas();
 
-        $recientes = AiMessageImagen::where('ai_message_imagenes.user_id', $contexto->owner_id)
-                                    ->sinGestionar()
-                                    ->whereIn('ai_message_imagenes.ai_message_id', function ($query) use ($contexto) {
-                                        $query->select('id')
-                                                ->from('ai_messages')
-                                                ->where('ai_conversation_id', $contexto->conversation->id);
-                                    })
-                                    ->orderBy('ai_message_imagenes.id', 'DESC')
-                                    ->limit($max)
-                                    ->get();
+        /* Los ids de los últimos mensajes de la conversación, hasta el que está proponiendo. */
+        $mensajes_recientes = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
+                                        ->where('id', '<=', $mensaje->id)
+                                        ->orderBy('id', 'DESC')
+                                        ->limit(self::MENSAJES_PARA_LAS_FOTOS)
+                                        ->pluck('id');
 
-        /* Se leen de la más nueva para topear, y se devuelven en el orden en que llegaron. */
-        return array_reverse($recientes->all());
+        if (!count($mensajes_recientes)) {
+
+            return ['paginas' => [], 'consideradas' => []];
+        }
+
+        $consideradas = AiMessageImagen::where('user_id', $contexto->owner_id)
+                                        ->sinGestionar()
+                                        ->whereIn('ai_message_id', $mensajes_recientes->all())
+                                        ->orderBy('id')
+                                        ->get()
+                                        ->all();
+
+        /*
+         * Si sobran, se quedan las MÁS NUEVAS: son las páginas de la factura que el dueño acaba de
+         * mandar. Las anteriores se sellan igual al confirmar, pero no viajan al escaneo.
+         */
+        $paginas = count($consideradas) > $max
+            ? array_slice($consideradas, count($consideradas) - $max)
+            : $consideradas;
+
+        return ['paginas' => $paginas, 'consideradas' => $consideradas];
     }
 
     /**
-     * Las fotos de la tarjeta que siguen sin gestionar, en orden.
+     * Id del estado "En proceso", resuelto por nombre. Null si el cliente le cambió el nombre a
+     * sus estados: ahí la compra nace SIN estado, que es lo mismo que deja el formulario de la SPA
+     * cuando el select viene vacío, y no un estado adivinado.
+     *
+     * Ver el comentario de ESTADO_EN_PROCESO: el id fijo dependía del orden de un seeder.
+     *
+     * @return int|null
+     */
+    protected static function estado_en_proceso_id()
+    {
+        $estado = ProviderOrderStatus::where('name', self::ESTADO_EN_PROCESO)->orderBy('id')->first();
+
+        return is_null($estado) ? null : (int) $estado->id;
+    }
+
+    /**
+     * Cuántas páginas acepta un escaneo. Misma config que el escaneo de facturas.
+     *
+     * @return int
+     */
+    protected static function max_paginas()
+    {
+        $max = (int) config('services.escaneo_factura_compra.max_imagenes', 6);
+
+        return $max > 0 ? $max : 6;
+    }
+
+    /**
+     * Las fotos de la tarjeta que siguen sin gestionar, en orden y CON LA FILA BLOQUEADA.
+     *
+     * 🔴 `lockForUpdate()` ES LO QUE EVITA QUE DOS TARJETAS SE LLEVEN LA MISMA FACTURA. El candado
+     * del ejecutor bloquea la fila de `ai_message_actions`, así que dos tarjetas DISTINTAS —dos
+     * proveedores, dos claves, ninguna reemplaza a la otra— confirmadas casi juntas no se
+     * serializan entre sí: las dos llegarían hasta acá y las dos crearían compra + escaneo con las
+     * mismas fotos. Eso toca stock y cuenta corriente de dos proveedores.
+     *
+     * Con el candado, la segunda espera a que la primera commitee y entonces su lectura —que es una
+     * lectura bloqueante, o sea que ve lo último commiteado y no el snapshot— ya encuentra las
+     * fotos con `gestionada_at` puesto: devuelve vacío y `ejecutar()` corta con el 422 de "esas
+     * fotos ya se usaron". Que es exactamente lo que hay que decirle al dueño.
+     *
+     * El candado va SOLO acá y no en la lectura de `proponer()`: aquélla corre en el job, fuera de
+     * toda transacción y sin crear nada (una propuesta es una tarjeta, no una compra), así que un
+     * candado ahí no tendría dónde sostenerse ni qué proteger. Lo que hay que serializar es la
+     * ESCRITURA, y la escritura es ésta.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  mixed  $ids
@@ -481,7 +593,49 @@ class PropuestaCompraConFacturaIaHelper
      */
     protected static function imagenes_por_id(ContextoDeCargaIa $contexto, $ids)
     {
-        if (!is_array($ids) || !count($ids)) {
+        $limpios = self::ids_limpios($ids);
+
+        if (!count($limpios)) {
+
+            return [];
+        }
+
+        return AiMessageImagen::where('user_id', $contexto->owner_id)
+                                ->sinGestionar()
+                                ->whereIn('id', $limpios)
+                                ->orderBy('id')
+                                ->lockForUpdate()
+                                ->get()
+                                ->all();
+    }
+
+    /**
+     * Los ids de una lista de fotos.
+     *
+     * @param  array<int, \App\Models\AiMessageImagen>  $imagenes
+     * @return array<int, int>
+     */
+    protected static function ids_de(array $imagenes)
+    {
+        $ids = [];
+
+        foreach ($imagenes as $imagen) {
+
+            $ids[] = (int) $imagen->id;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Lista de ids enteros, sin repetidos ni basura.
+     *
+     * @param  mixed  $ids
+     * @return array<int, int>
+     */
+    protected static function ids_limpios($ids)
+    {
+        if (!is_array($ids)) {
 
             return [];
         }
@@ -490,15 +644,15 @@ class PropuestaCompraConFacturaIaHelper
 
         foreach ($ids as $id) {
 
-            $limpios[] = (int) $id;
+            $id = (int) $id;
+
+            if ($id > 0 && !in_array($id, $limpios, true)) {
+
+                $limpios[] = $id;
+            }
         }
 
-        return AiMessageImagen::where('user_id', $contexto->owner_id)
-                                ->sinGestionar()
-                                ->whereIn('id', $limpios)
-                                ->orderBy('id')
-                                ->get()
-                                ->all();
+        return $limpios;
     }
 
     /**

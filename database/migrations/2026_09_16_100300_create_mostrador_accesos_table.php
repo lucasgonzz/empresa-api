@@ -24,6 +24,23 @@ use Illuminate\Support\Facades\Schema;
  * de un solo uso): el dueño abre el informe, lo cierra y lo vuelve a abrir desde el mismo WhatsApp
  * un rato después. Sirve para saber si el link se usó.
  *
+ * ⚠️ POR QUÉ `timestamp` Y NO `dateTime` EN `expira_at`, que es un NOT NULL. Con
+ * `explicit_defaults_for_timestamp` en OFF, MySQL le agrega solo `DEFAULT CURRENT_TIMESTAMP ON
+ * UPDATE CURRENT_TIMESTAMP` a la PRIMERA columna TIMESTAMP NOT NULL de una tabla. Acá eso sería
+ * grave y mudo: `MostradorAccesoHelper::resolver()` hace un `save()` para sellar `usado_at`, así
+ * que el `ON UPDATE` le correría el vencimiento en cada apertura.
+ *
+ * Se deja `timestamp` igual, y no por comodidad: `demo_ingreso_tokens` tiene EXACTAMENTE el mismo
+ * patrón —`expires_at` TIMESTAMP NOT NULL como primer timestamp de la tabla, con `revoked_at` que
+ * se escribe después— y ya vive en producción en los 40+ clientes desde el 27/7/2026. Medido el
+ * 16/9/2026 en el MySQL 8 local: `explicit_defaults_for_timestamp = 1` y las dos tablas quedan con
+ * `EXTRA` vacío, sin ningún `ON UPDATE`. Cambiar solo esta tabla a `dateTime` la dejaría distinta
+ * de la que ya está probada en producción sin ninguna evidencia de que haga falta.
+ *
+ * 🔴 Si algún día aparece un cliente con esa variable en OFF, el síntoma es "el link del informe
+ * se vence apenas lo abro" y hay que mirar `SHOW CREATE TABLE` de ESTA tabla Y de
+ * `demo_ingreso_tokens`: las dos tendrían el mismo problema y se arreglan juntas.
+ *
  * Sin foreign keys físicas, siguiendo el estilo del resto del schema.
  */
 class CreateMostradorAccesosTable extends Migration

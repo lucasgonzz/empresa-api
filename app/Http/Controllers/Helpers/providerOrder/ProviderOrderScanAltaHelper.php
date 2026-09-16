@@ -154,8 +154,25 @@ class ProviderOrderScanAltaHelper
                 ]);
             }
 
-            /* Solo el id, no el modelo (mismo criterio que RunExcelAnalysisJob). */
-            RunProviderOrderScanJob::dispatch($scan->id);
+            /*
+             * Solo el id, no el modelo (mismo criterio que RunExcelAnalysisJob).
+             *
+             * 🔴 `afterCommit()` EXPLÍCITO, Y NO SE SACA. Por la pantalla este alta corre sin
+             * ninguna transacción abierta, pero desde el asistente la cadena es
+             * ConfirmacionPorTextoIaHelper::confirmar → EjecutorAccionesIaHelper::confirmar →
+             * DB::transaction → acá adentro. Sin esto, un worker libre puede tomar el job ANTES
+             * del commit, no encontrar el scan y volver con un warning
+             * (RunProviderOrderScanJob:47-53): la compra queda creada, el dueño lee "estoy leyendo
+             * la factura" y la factura no se lee nunca. Falla muda.
+             *
+             * Va acá en el código y no confiado al default de config porque el default DEPENDE DE
+             * LA CONEXIÓN que tenga cada cliente: `config/queue.php` tiene `after_commit => true`
+             * solo en `database` (:70); en `redis` (:105), que es lo que corren los clientes del
+             * VPS, está en `false`. Un arreglo que ande en una conexión y no en la otra no es un
+             * arreglo. Sin transacción abierta, `afterCommit()` despacha igual, de inmediato: la
+             * pantalla no cambia de comportamiento.
+             */
+            RunProviderOrderScanJob::dispatch($scan->id)->afterCommit();
 
             return self::respuesta(202, [
                 'uuid'              => $scan->uuid,

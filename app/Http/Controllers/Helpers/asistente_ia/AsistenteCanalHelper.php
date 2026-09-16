@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\AiConversation;
+use App\Models\MostradorReporte;
 use App\Models\User;
 use Carbon\Carbon;
 
@@ -48,6 +49,23 @@ class AsistenteCanalHelper
 
     /** Slug de la extensión que gatea el módulo IA, igual que el resto del asistente. */
     const EXTENSION = 'asistente_ia';
+
+    /**
+     * Orígenes de conversación que este canal puede CONTINUAR cuando el admin manda un
+     * `ai_conversation_id` explícito.
+     *
+     * 🔴 `mostrador_reporte` está acá por un pedido textual de Lucas: "que pueda abrirlos desde el
+     * celular y también les pueda hacer preguntas acerca de esos informes". El informe de la mañana
+     * se manda con el id de SU conversación, y cuando el dueño contesta "¿por qué bajó la caja?",
+     * el admin cita ese mensaje y el mensaje entra en la conversación del informe — que es la única
+     * que tiene el informe entero como `contexto` de fondo. Sin esto, el asistente contestaba sin la
+     * menor idea de qué informe le estaban hablando.
+     *
+     * Lo que NO se toca: el corte de 6 h y la creación automática siguen siendo solo de
+     * 'whatsapp'. Este canal continúa una conversación de mostrador cuando se la nombran, pero
+     * nunca la elige por su cuenta ni abre una.
+     */
+    const ORIGENES_QUE_CONTINUA = [AiConversation::ORIGEN_WHATSAPP, MostradorReporte::ORIGEN_CONVERSACION];
 
     /**
      * El dueño de esta instancia: users con `owner_id` null, acotado por `config('app.USER_ID')`
@@ -107,17 +125,18 @@ class AsistenteCanalHelper
      *
      * El orden del §3.3 del plan, que es el que sostiene la política repartida con el admin:
      *
-     *   1. si vino `ai_conversation_id` y es una conversación de WhatsApp de este dueño → esa.
-     *      (El admin solo lo manda cuando lo dedujo de una CITA, así que esto es "el dueño
-     *      respondió citando un mensaje viejo": reabre ese hilo aunque hayan pasado días.)
+     *   1. si vino `ai_conversation_id` y es una conversación de este dueño de un origen que este
+     *      canal puede continuar → esa. (El admin solo lo manda cuando lo dedujo de una CITA o de
+     *      un informe que él mismo mandó, así que esto es "el dueño respondió citando": reabre ese
+     *      hilo aunque hayan pasado días.)
      *   2. si no, la última conversación de WhatsApp del dueño que habló hace menos de
      *      HORAS_CORTE → esa.
      *   3. si no → una nueva.
      *
-     * Un `ai_conversation_id` que no existe, que es de otro dueño o que no es de WhatsApp NO es un
-     * error: se ignora y se sigue por el camino 2. El admin puede tener una fila vieja apuntando a
-     * una conversación que el dueño borró desde el sistema, y un 422 por eso dejaría al dueño sin
-     * respuesta a un mensaje perfectamente válido.
+     * Un `ai_conversation_id` que no existe, que es de otro dueño o que es de un origen que este
+     * canal no continúa NO es un error: se ignora y se sigue por el camino 2. El admin puede tener
+     * una fila vieja apuntando a una conversación que el dueño borró desde el sistema, y un 422 por
+     * eso dejaría al dueño sin respuesta a un mensaje perfectamente válido.
      *
      * 🔴 El corte se calcula con Carbon::now() de ESTE API, que corre en
      * America/Argentina/Buenos_Aires. No con la hora de la máquina que despachó el mensaje.
@@ -163,8 +182,9 @@ class AsistenteCanalHelper
     }
 
     /**
-     * La conversación que pidió el admin, si existe, es de este dueño y es de WhatsApp. Null en
-     * cualquier otro caso (ver por qué no es un error en el docblock de conversacion()).
+     * La conversación que pidió el admin, si existe, es de este dueño y es de un origen que este
+     * canal continúa (ORIGENES_QUE_CONTINUA). Null en cualquier otro caso (ver por qué no es un
+     * error en el docblock de conversacion()).
      *
      * @param  \App\Models\User  $dueno
      * @param  mixed  $ai_conversation_id
@@ -182,7 +202,7 @@ class AsistenteCanalHelper
         return AiConversation::where('id', $id)
                                 ->where('user_id', $dueno->id)
                                 ->where('auth_user_id', $dueno->id)
-                                ->where('origen', AiConversation::ORIGEN_WHATSAPP)
+                                ->whereIn('origen', self::ORIGENES_QUE_CONTINUA)
                                 ->first();
     }
 }

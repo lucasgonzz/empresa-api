@@ -99,44 +99,20 @@ class MostradorController extends Controller
             return response()->json(['message' => 'Informe no encontrado.'], 404);
         }
 
-        $auth_user_id = UserHelper::userId(false);
+        /*
+         * El cuerpo vive en MostradorHelper::asegurar_conversacion() desde la misión
+         * asistente-por-whatsapp (16/9/2026): el informe que sale por WhatsApp manda el
+         * `ai_conversation_id` de ESTE mismo hilo, para que la pregunta del dueño caiga en la
+         * conversación del informe. Dos copias de este alta serían dos `contexto` de fondo que se
+         * separan solos.
+         */
+        $resultado = MostradorHelper::asegurar_conversacion(
+            $reporte,
+            UserHelper::userId(true),
+            UserHelper::userId(false)
+        );
 
-        $conversation = MostradorHelper::conversacion_de($reporte, $auth_user_id);
-
-        if ($conversation) {
-            return response()->json(['model' => $conversation], 200);
-        }
-
-        $conversation = AiConversation::create([
-            'user_id'         => UserHelper::userId(true),
-            'auth_user_id'    => $auth_user_id,
-            // Título fijo y no null: null significa "se está infiriendo" (la SPA muestra
-            // "Nueva conversación") y acá la conversación nace con nombre propio.
-            'titulo'          => MostradorHelper::titulo_de_conversacion($reporte),
-            'origen'          => MostradorReporte::ORIGEN_CONVERSACION,
-            'referencia_id'   => $reporte->id,
-            'contexto'        => MostradorHelper::contexto_de_conversacion($reporte),
-            'last_message_at' => now(),
-        ]);
-
-        // Dos pestañas que preguntan a la vez crean dos conversaciones (no hay unique
-        // sobre origen + referencia_id + auth_user_id): después de crear se relee la
-        // más vieja y, si no es la recién creada, la nuestra sobra —nace sin mensajes—
-        // y gana la anterior, que es la que el escritorio ya resuelve.
-        $anterior = MostradorHelper::conversacion_de($reporte, $auth_user_id);
-
-        if ($anterior && (int) $anterior->id !== (int) $conversation->id) {
-            $conversation->messages()->delete();
-            $conversation->delete();
-
-            return response()->json(['model' => $anterior], 200);
-        }
-
-        // Mismo refresh que AiConversationController@store: la SPA necesita la fila
-        // completa, con los defaults de la base.
-        $conversation->refresh();
-
-        return response()->json(['model' => $conversation], 201);
+        return response()->json(['model' => $resultado['model']], $resultado['creada'] ? 201 : 200);
     }
 
     /**

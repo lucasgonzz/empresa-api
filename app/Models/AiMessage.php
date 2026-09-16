@@ -27,9 +27,15 @@ use Illuminate\Database\Eloquent\Model;
  * escribiendo al número de ComercioCity, empujado por el admin). El canal
  * cambia el prompt y qué herramientas se declaran: en WhatsApp no hay tarjeta
  * que tocar, así que la confirmación es por texto (confirmar_carga_pendiente).
- * `whatsapp_message_id` guarda el wamid del entrante que lo originó, para poder
- * rastrear un mensaje puntual; la conversación NO se resuelve por ahí (la cita
- * la resuelve el admin, que es el único que conoce los wamid).
+ * `whatsapp_message_id` guarda el wamid del entrante que originó el turno. Va en
+ * las DOS filas del turno (el 'user' y el 'assistant') y es lo que vuelve
+ * idempotente el reintento del admin: si ese wamid ya entró, se devuelven los
+ * ids de la primera vez en vez de crear un segundo turno y mandarle al dueño dos
+ * veces la misma respuesta.
+ *
+ * `tipo`: 'texto' | 'audio' | 'imagen' — con qué lo mandó la persona. Un audio
+ * llega ya transcripto por Kapso; el que llega SIN transcribir se contesta de
+ * forma determinista y sin salir a la IA (ver AdminSync\AsistenteController).
  */
 class AiMessage extends Model
 {
@@ -38,6 +44,13 @@ class AiMessage extends Model
 
     /** Canal de un mensaje que entró por WhatsApp, empujado por el admin. */
     const CANAL_WHATSAPP = 'whatsapp';
+
+    /** Con qué lo mandó la persona. 'texto' es el default de la columna y lo único que hay en la pantalla. */
+    const TIPO_TEXTO = 'texto';
+
+    const TIPO_AUDIO = 'audio';
+
+    const TIPO_IMAGEN = 'imagen';
 
     protected $guarded = [];
 

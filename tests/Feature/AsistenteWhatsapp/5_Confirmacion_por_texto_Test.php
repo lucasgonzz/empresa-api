@@ -270,6 +270,12 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
         $propuso = $this->mensaje($conversation, 'assistant', 'listo');
         $tarjeta = $this->tarjeta($conversation, $propuso);
 
+        /*
+         * El mensaje del dueño va SIEMPRE entre la propuesta y la confirmación: sin él, la guarda
+         * reforzada (hallazgo C del chequeo del 16/9) rechaza con razón, porque un turno cuyo
+         * disparador es anterior a la tarjeta arrancó antes de que la tarjeta existiera.
+         */
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Sí, dale']);
         $contestando = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
 
         $this->assertNull(auth()->user(), 'El test arranca sin sesión, como el worker.');
@@ -295,6 +301,12 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
         $propuso = $this->mensaje($conversation, 'assistant', 'listo');
         $tarjeta = $this->tarjeta($conversation, $propuso);
 
+        /*
+         * El mensaje del dueño va SIEMPRE entre la propuesta y la confirmación: sin él, la guarda
+         * reforzada (hallazgo C del chequeo del 16/9) rechaza con razón, porque un turno cuyo
+         * disparador es anterior a la tarjeta arrancó antes de que la tarjeta existiera.
+         */
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Sí, dale']);
         $contestando = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
 
         ConfirmacionPorTextoIaHelper::confirmar($conversation, $contestando, $tarjeta->id);
@@ -363,6 +375,12 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
         $propuso = $this->mensaje($conversation, 'assistant', 'listo');
         $tarjeta = $this->tarjeta($conversation, $propuso);
 
+        /*
+         * El mensaje del dueño va SIEMPRE entre la propuesta y la confirmación: sin él, la guarda
+         * reforzada (hallazgo C del chequeo del 16/9) rechaza con razón, porque un turno cuyo
+         * disparador es anterior a la tarjeta arrancó antes de que la tarjeta existiera.
+         */
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Sí, dale']);
         $contestando = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
 
         $antes = Pending::where('user_id', $this->comercio->id)->count();

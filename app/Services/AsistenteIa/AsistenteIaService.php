@@ -543,11 +543,27 @@ CONFIRMACION;
      */
     public function build_messages_payload(AiConversation $conversation): array
     {
-        // Los últimos N en orden inverso: el recorte por caracteres protege lo más nuevo.
+        /*
+         * Los últimos N en orden inverso: el recorte por caracteres protege lo más nuevo.
+         *
+         * 🔴 UN MENSAJE CON FOTOS VIAJA AUNQUE NO TENGA TEXTO. Mandar la foto de la factura sin
+         * escribir nada es el caso normal de WhatsApp, y con el filtro de siempre
+         * (`contenido != ''`) ese mensaje quedaba afuera del historial: el modelo nunca veía la
+         * foto, y la conversación tenía un hueco justo donde estaba lo importante. Para todo lo que
+         * no tiene fotos —o sea, todo el chat de la pantalla— la condición es exactamente la de
+         * antes.
+         */
         $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('estado', 'listo')
-            ->whereNotNull('contenido')
-            ->where('contenido', '!=', '')
+            ->where(function ($query) {
+                $query->where(function ($con_texto) {
+                    $con_texto->whereNotNull('contenido')->where('contenido', '!=', '');
+                })->orWhereExists(function ($con_fotos) {
+                    $con_fotos->selectRaw('1')
+                        ->from('ai_message_imagenes')
+                        ->whereColumn('ai_message_imagenes.ai_message_id', 'ai_messages.id');
+                });
+            })
             ->orderBy('id', 'DESC')
             ->limit(self::MAX_MENSAJES_HISTORIAL)
             ->with(['acciones', 'imagenes'])
