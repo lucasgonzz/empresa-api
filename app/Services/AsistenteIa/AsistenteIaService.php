@@ -4,6 +4,7 @@ namespace App\Services\AsistenteIa;
 
 use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
@@ -350,8 +351,13 @@ Qué podés afirmar:
 - SOLO lo que salga de las herramientas de consulta o del contexto de esta
   conversación. Nunca inventes números, precios, saldos, stock ni fechas.
 - Si no tenés el dato, decilo en una oración y ofrecé qué sí podés consultar.
-- Las herramientas devuelven como máximo 20 registros. Si el resultado llega a 20,
-  aclará que puede haber más y que eso es un tope de la consulta, no del negocio.
+- Las herramientas devuelven 20 registros por vez. Varias te dicen además cuántos hay EN
+  TOTAL (encontrados) y cuántos te mandaron (en_esta_lista): cuando difieren, el número del
+  negocio es el total, nunca la cantidad de filas que tenés a la vista.
+- Si necesitás más filas de las que entraron, pedí la página siguiente o subí el límite en
+  la misma herramienta, hasta 100. Recién cuando ya no podés traer más, aclará que hay más
+  y que es un tope de la consulta, no del negocio: no te disculpes por un límite que podés
+  correr vos.
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
@@ -710,7 +716,7 @@ CARGA;
             ],
             [
                 'name' => 'consultar_movimientos_de_cuenta_corriente',
-                'description' => 'Devuelve los últimos movimientos de cuenta corriente de UN cliente: fecha, detalle, debe, haber y saldo. Primero conseguí el id del cliente con consultar_clientes.',
+                'description' => 'Devuelve los movimientos de cuenta corriente de UN cliente del ERP: fecha, detalle, debe, haber y saldo acumulado. Podés filtrar por tipo (solo deudas o solo pagos), acotar por rango de fechas, elegir el orden y pedir la página siguiente. Por defecto contesta la cuenta EN PESOS: si el cliente además tiene cuenta en dólares, viene en "cuentas" y podés volver a llamar con su credit_account_id — no mezcles las dos, el saldo de cada fila es el acumulado de SU cuenta. La respuesta trae movimientos_encontrados (cuántos hay en total) y movimientos_en_esta_lista (cuántos viajan): si difieren, pedí la página siguiente en vez de contestar con los que tenés. Para saber QUÉ VENTAS quedaron sin cobrar, que es la pregunta de "qué me debe" y "desde cuándo", usá consultar_ventas_impagas_de_un_cliente. Primero conseguí el id del cliente con consultar_clientes.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -718,16 +724,68 @@ CARGA;
                             'type' => 'integer',
                             'description' => 'Id del cliente, tal como lo devolvió consultar_clientes.',
                         ],
+                        'tipo' => [
+                            'type' => 'string',
+                            'description' => 'Qué movimientos traer: "debe" son las deudas (ventas), "haber" son los pagos, "todos" es el default.',
+                            'enum' => ['todos', 'debe', 'haber'],
+                        ],
+                        'desde' => [
+                            'type' => 'string',
+                            'description' => 'Fecha desde la cual mirar, en formato AAAA-MM-DD. Sin ella no hay piso.',
+                        ],
+                        'hasta' => [
+                            'type' => 'string',
+                            'description' => 'Fecha hasta la cual mirar, en formato AAAA-MM-DD. Sin ella no hay techo.',
+                        ],
+                        'orden' => [
+                            'type' => 'string',
+                            'description' => 'Del más nuevo al más viejo ("mas_nuevos", el default) o al revés ("mas_viejos"), que es lo que sirve para encontrar lo más antiguo.',
+                            'enum' => ['mas_nuevos', 'mas_viejos'],
+                        ],
+                        'pagina' => [
+                            'type' => 'integer',
+                            'description' => 'Número de página, arrancando en 1.',
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos movimientos por página. El default son 20 y el máximo 100.',
+                        ],
+                        'credit_account_id' => [
+                            'type' => 'integer',
+                            'description' => 'Cuenta puntual del cliente, tal como vino en "cuentas". Sin esto se contestan los movimientos en pesos.',
+                        ],
                     ],
                     'required' => ['client_id'],
                 ],
+                /*
+                 * 🔴 La tool apunta a movimientos_de_cuenta_corriente_detalle() y NO al método
+                 * viejo del mismo nombre (misión agente-ia-mano-derecha, bloque B2). El viejo se
+                 * conserva porque su shape es el contrato del canal "sistema:" de admin-api, pero
+                 * traía los 20 movimientos más nuevos sin ventana ni filtro de cuenta: en un
+                 * cliente con veinte pagos recientes la venta vieja que todavía debe quedaba fuera
+                 * de la ventana y el asistente contestaba que no había ninguna.
+                 *
+                 * Y va con el MISMO nombre de tool en vez de sumar una segunda: dos tools con la
+                 * misma forma para la misma pregunta es cómo el modelo termina eligiendo la peor,
+                 * que es exactamente lo que pasó con los interesados de la tienda.
+                 */
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente($owner_id, (int) ($input['client_id'] ?? 0));
+                    return ConsultasSistemaIaHelper::movimientos_de_cuenta_corriente_detalle(
+                        $owner_id,
+                        (int) ($input['client_id'] ?? 0),
+                        (string) ($input['tipo'] ?? 'todos'),
+                        isset($input['desde']) ? $input['desde'] : null,
+                        isset($input['hasta']) ? $input['hasta'] : null,
+                        (string) ($input['orden'] ?? 'mas_nuevos'),
+                        (int) ($input['pagina'] ?? 1),
+                        (int) ($input['limite'] ?? 0),
+                        isset($input['credit_account_id']) ? (int) $input['credit_account_id'] : null
+                    );
                 },
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en los últimos días, con las unidades vendidas. Usala para preguntas sobre qué se vende más o cómo vienen las ventas.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en los últimos días, con las unidades vendidas, según las VENTAS DEL ERP. Usala para preguntas sobre qué se vende más o cómo vienen las ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -745,7 +803,7 @@ CARGA;
             ],
             [
                 'name' => 'consultar_precios_de_proveedores',
-                'description' => 'Devuelve la última oferta vigente de precio por artículo y proveedor: a cuánto ofreció cada proveedor cada artículo, y cuándo. Filtrá por nombre de artículo o de proveedor. Usala cuando te pregunten a cuánto compra o compró el negocio algo, o qué proveedor ofrece mejor precio.',
+                'description' => 'Devuelve la última oferta vigente de precio por artículo y proveedor: a cuánto OFRECIÓ cada proveedor cada artículo, y cuándo. Filtrá por nombre de artículo o de proveedor. Usala cuando te pregunten qué proveedor ofrece mejor precio, o a cuánto le están ofreciendo algo hoy. 🔴 Un precio ofertado NO es una compra hecha: si te preguntan cuándo fue la última compra de un artículo, a quién se la compró o a cuánto la pagó, va consultar_compras_de_un_articulo, que lee las compras reales.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -779,7 +837,7 @@ CARGA;
             ],
             [
                 'name' => 'consultar_actividad_de_un_cliente',
-                'description' => 'Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró. La respuesta trae "totales" con los números completos del periodo y "movimientos" con el detalle, que puede venir recortado: si movimientos_en_esta_lista es menor que movimientos_encontrados, contá con los totales y no con la cantidad de filas. En totales, compras_sin_articulo son compras que la tienda no informó de qué artículo eran: si es mayor a cero, no afirmes que el cliente no compró un artículo determinado. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
+                'description' => '🔴 ESTA HERRAMIENTA MIRA LA TIENDA ONLINE, NO EL ERP. Devuelve qué hizo un cliente en la tienda online: qué artículos miró y cuántos minutos, qué buscó (y si esa búsqueda no devolvió resultados), qué puso en el carrito y qué compró EN LA TIENDA. Si la pregunta es qué le vendió el negocio —lo que se cargó como venta, con o sin tienda de por medio— no es esta: es consultar_quien_compro_un_articulo para un artículo, consultar_ventas_impagas_de_un_cliente para lo que quedó sin cobrar y consultar_movimientos_de_cuenta_corriente para su cuenta. La respuesta trae "totales" con los números completos del periodo y "movimientos" con el detalle, que puede venir recortado: si movimientos_en_esta_lista es menor que movimientos_encontrados, contá con los totales y no con la cantidad de filas. En totales, compras_sin_articulo son compras que la tienda no informó de qué artículo eran: si es mayor a cero, no afirmes que el cliente no compró un artículo determinado. Primero conseguí el id del cliente con consultar_clientes. Usala cuando te pregunten qué estuvo mirando o qué le interesa a un cliente.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -801,7 +859,7 @@ CARGA;
             ],
             [
                 'name' => 'consultar_interesados_en_un_articulo',
-                'description' => 'Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y, hasta donde el sistema puede saber, todavía no lo compraron: se descartan los que tienen una venta confirmada de ese artículo y los que lo compraron en la tienda. No es una certeza — una compra por mostrador todavía sin facturar, o un checkout que llegó sin el artículo, no se pueden descontar —, así que decilo como "no figura que lo haya comprado" y no como un hecho. Una fila con lo_compro_antes_y_lo_volvio_a_mirar en una fecha SÍ lo compró: quedó en la lista porque volvió a mirarlo después, así que hablá de recompra y nunca digas que no lo compró. Filtrá por nombre o código del artículo. La lista solo trae compradores vinculados a un cliente del sistema, porque a un visitante anónimo no se lo puede nombrar ni llamar; cuántos anónimos anduvieron sobre el mismo artículo viene aparte, en visitantes_anonimos, y con la lista vacía ese número puede ser lo único que haya para contestar.',
+                'description' => '🔴 ESTA HERRAMIENTA MIRA LA TIENDA ONLINE, NO EL ERP: contesta quién MIRÓ un artículo, no quién lo compró. Para "qué cliente me compró más X", "a quién le vendí X" o "cuándo le vendí X a alguien" va consultar_quien_compro_un_articulo, que lee las ventas del ERP. Devuelve los clientes que miraron o pusieron en el carrito un artículo en la tienda online y, hasta donde el sistema puede saber, todavía no lo compraron: se descartan los que tienen una venta confirmada de ese artículo y los que lo compraron en la tienda. No es una certeza — una compra por mostrador todavía sin facturar, o un checkout que llegó sin el artículo, no se pueden descontar —, así que decilo como "no figura que lo haya comprado" y no como un hecho. Una fila con lo_compro_antes_y_lo_volvio_a_mirar en una fecha SÍ lo compró: quedó en la lista porque volvió a mirarlo después, así que hablá de recompra y nunca digas que no lo compró. Filtrá por nombre o código del artículo. La lista solo trae compradores vinculados a un cliente del sistema, porque a un visitante anónimo no se lo puede nombrar ni llamar; cuántos anónimos anduvieron sobre el mismo artículo viene aparte, en visitantes_anonimos, y con la lista vacía ese número puede ser lo único que haya para contestar.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -819,6 +877,211 @@ CARGA;
                 ],
                 'handler' => function (array $input, $owner_id) {
                     return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input));
+                },
+            ],
+            /*
+             * 🔴 DE ACÁ PARA ABAJO VAN LAS DE LA MISIÓN agente-ia-mano-derecha (bloque B), Y VAN AL
+             * FINAL A PROPÓSITO: el orden de este array es el prefijo que cachea con_cache_control(),
+             * así que lo nuevo se agrega atrás y lo de arriba no se mueve.
+             */
+            [
+                'name' => 'consultar_ventas_impagas_de_un_cliente',
+                'description' => 'Devuelve las VENTAS DEL ERP que un cliente todavía no pagó, de la más vieja a la más nueva, con la fecha, hace cuántos días están sin cobrar, el total y lo que queda pendiente. Es la herramienta de "qué me debe", "cuál es la venta más vieja que me debe" y "desde cuándo me debe". 🔴 venta_impaga_mas_vieja viene calculada sobre TODAS las ventas impagas y no sobre las que entran en la lista, así que podés contestar cuál es la más vieja aunque la lista venga recortada. saldo_en_cuenta_corriente_en_pesos es la deuda total del cliente e incluye lo que no está en ninguna venta (saldos iniciales, notas de crédito, ajustes): puede no coincidir con la suma de las ventas listadas, y eso no es un error, son dos cosas distintas. Primero conseguí el id del cliente con consultar_clientes.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'client_id' => [
+                            'type' => 'integer',
+                            'description' => 'Id del cliente, tal como lo devolvió consultar_clientes.',
+                        ],
+                        'orden' => [
+                            'type' => 'string',
+                            'description' => 'De la más vieja a la más nueva ("mas_viejas", el default) o al revés.',
+                            'enum' => ['mas_viejas', 'mas_nuevas'],
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántas ventas traer. El default son 20 y el máximo 100.',
+                        ],
+                    ],
+                    'required' => ['client_id'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::ventas_impagas_de_un_cliente(
+                        $owner_id,
+                        (int) ($input['client_id'] ?? 0),
+                        (string) ($input['orden'] ?? 'mas_viejas'),
+                        (int) ($input['limite'] ?? 0)
+                    );
+                },
+            ],
+            [
+                'name' => 'consultar_quien_compro_un_articulo',
+                'description' => 'Devuelve qué CLIENTES le compraron un artículo al negocio y cuántas unidades, según las VENTAS DEL ERP (no la tienda online). Es la herramienta de "qué cliente me compró más X", "a quién le vendí X" y "cuándo fue la última vez que le vendí X a alguien". Viene ordenada por unidades, de mayor a menor. unidades_sin_cliente son las que se vendieron por mostrador sin cliente cargado: si la lista viene vacía y ese número es mayor a cero, el artículo SÍ se vendió y no se sabe a quién — no contestes que no lo compró nadie. monto_en_pesos no cuenta las ventas en dólares, que van aparte en unidades_de_ventas_en_dolares. No la confundas con consultar_interesados_en_un_articulo, que es quién lo MIRÓ en la tienda.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia, que es lo que la persona suele querer decir con "quién me compró más".',
+                            'enum' => [0, 7, 30, 90, 365],
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                },
+            ],
+            [
+                'name' => 'consultar_compras_de_un_articulo',
+                'description' => 'Devuelve las COMPRAS REALES que el negocio le hizo a sus proveedores de un artículo: cuándo, a qué proveedor, cuántas unidades pidió y recibió, a qué costo y con qué comprobante. Vienen de la más nueva a la más vieja, así que la PRIMERA FILA es la última compra. Es la herramienta de "cuándo fue la última compra de X", "a quién se la compré" y "a cuánto la pagué". ⚠️ costo_en_dolares dice si ese costo está en dólares: cuando es true no lo informes como pesos. No la confundas con consultar_precios_de_proveedores, que son precios ofertados y no compras hechas.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
+            ],
+            [
+                'name' => 'consultar_compras_a_un_proveedor',
+                'description' => 'Devuelve las compras que el negocio le hizo a un proveedor: número, fecha, comprobante, estado, total y cuántos artículos distintos y cuántas unidades tiene cada una, de la más nueva a la más vieja. Los estados son solo dos: "En proceso" y "Recibido". ⚠️ total_comprado_en_pesos suma SOLO las compras en pesos; las que están en otra moneda se cuentan aparte en compras_en_otra_moneda y no entran en ese total, así que no lo presentes como todo lo que le compró. Buscá el proveedor por nombre, razón social o CUIT.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre, razón social o CUIT del proveedor.',
+                        ],
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia.',
+                            'enum' => [0, 7, 30, 90, 365],
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::compras_a_un_proveedor($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                },
+            ],
+            [
+                'name' => 'consultar_stock_por_deposito',
+                'description' => 'Devuelve cómo está repartido el stock de un artículo entre las sucursales o depósitos del negocio, incluidas las que están en cero (que suele ser justo el dato que se busca). Si trabaja_con_depositos es false, el negocio tiene una sola sucursal y no hay reparto que contar. 🔴 Vienen DOS totales: stock_total_del_articulo, que es el de la ficha y el que muestra el listado, y stock_sumado_por_deposito, que es la suma del reparto. Si no coinciden, decilo: es un dato roto que el comerciante tiene que saber, y no elijas uno de los dos por tu cuenta.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'busqueda' => [
+                            'type' => 'string',
+                            'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
+                        ],
+                    ],
+                    'required' => ['busqueda'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''));
+                },
+            ],
+            [
+                'name' => 'que_puedo_consultar',
+                'description' => 'Te dice qué datos del sistema podés pedir con consultar_datos y cómo filtrarlos. Llamala SIN entidad para ver la lista de lo que hay, y de nuevo CON una entidad para ver sus campos, el tipo de cada uno y qué operadores acepta. Usala antes de consultar_datos cuando la pregunta no encaja en ninguna de las otras herramientas: no adivines nombres de campos, un campo que no existe devuelve error y te gasta una vuelta.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'entidad' => [
+                            'type' => 'string',
+                            'description' => 'Sobre cuál querés el detalle. Sin esto devuelve la lista de todas.',
+                            // La lista sale del propio catálogo: una entidad nueva aparece acá sola.
+                            'enum' => CatalogoDeDatosIaHelper::entidades(),
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return CatalogoDeDatosIaHelper::que_puedo_consultar(isset($input['entidad']) ? (string) $input['entidad'] : null);
+                },
+            ],
+            [
+                'name' => 'consultar_datos',
+                'description' => 'Consulta genérica sobre los datos del negocio: artículos, clientes, proveedores, ventas, compras a proveedores, gastos, tareas y vencimientos, presupuestos, cheques, cajas, pedidos y compradores de la tienda, vendedores, combos, rubros, sub rubros y marcas. Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato. 🔴 Pedí primero que_puedo_consultar con la entidad para saber qué campos tiene y qué operadores acepta cada uno: un campo o un operador que no existe devuelve error, no resultados. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'entidad' => [
+                            'type' => 'string',
+                            'description' => 'Qué se consulta.',
+                            'enum' => CatalogoDeDatosIaHelper::entidades(),
+                        ],
+                        'filtros' => [
+                            'type' => 'array',
+                            'description' => 'Condiciones que tienen que cumplir los registros. Sin filtros trae los últimos cargados.',
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => [
+                                    'campo' => [
+                                        'type' => 'string',
+                                        'description' => 'Nombre del campo, tal como lo devolvió que_puedo_consultar. Para filtrar por una relación va su campo con _id (por ejemplo category_id), no el nombre.',
+                                    ],
+                                    'operador' => [
+                                        'type' => 'string',
+                                        'description' => 'Qué comparación hacer. "contiene" es solo para texto; "mayor" y "menor" para números y fechas.',
+                                        'enum' => ['contiene', 'igual', 'mayor', 'menor', 'vacio', 'no_vacio'],
+                                    ],
+                                    'valor' => [
+                                        'type' => 'string',
+                                        'description' => 'Contra qué comparar. Las fechas van en formato AAAA-MM-DD. No va con "vacio" ni con "no_vacio".',
+                                    ],
+                                ],
+                                'required' => ['campo', 'operador'],
+                            ],
+                        ],
+                        'orden' => [
+                            'type' => 'object',
+                            'description' => 'Por qué campo ordenar. Sin esto vienen los más nuevos primero.',
+                            'properties' => [
+                                'campo' => [
+                                    'type' => 'string',
+                                    'description' => 'Campo por el que ordenar, de los que declaró que_puedo_consultar.',
+                                ],
+                                'direccion' => [
+                                    'type' => 'string',
+                                    'description' => 'ASC de menor a mayor, DESC de mayor a menor.',
+                                    'enum' => ['ASC', 'DESC'],
+                                ],
+                            ],
+                            'required' => ['campo'],
+                        ],
+                        'pagina' => [
+                            'type' => 'integer',
+                            'description' => 'Número de página, arrancando en 1.',
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos registros por página. El default son 20 y el máximo 100.',
+                        ],
+                    ],
+                    'required' => ['entidad'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return CatalogoDeDatosIaHelper::consultar_datos(
+                        $owner_id,
+                        (string) ($input['entidad'] ?? ''),
+                        is_array($input['filtros'] ?? null) ? $input['filtros'] : [],
+                        is_array($input['orden'] ?? null) ? $input['orden'] : null,
+                        (int) ($input['pagina'] ?? 1),
+                        (int) ($input['limite'] ?? 0)
+                    );
                 },
             ],
         ];
@@ -913,6 +1176,35 @@ CARGA;
         if (! in_array($dias, [7, 30, 90], true)) {
 
             return 30;
+        }
+
+        return $dias;
+    }
+
+    /**
+     * La misma defensa que dias_del_enum(), pero para las consultas que SÍ pueden mirar toda la
+     * historia (misión agente-ia-mano-derecha, bloque B).
+     *
+     * 🔴 Son dos escalas distintas y por eso son dos métodos. Las tools de la tienda leen de
+     * `buyer_tracking_events` a través de ActividadDeClientesService, que CAMBIA DE TABLA según la
+     * antigüedad pedida: ahí una ventana libre no es un filtro más amplio, es leer de otro lado. Las
+     * del ERP corren sobre `sales` y `provider_orders`, donde "toda la historia" es un pedido
+     * legítimo y además el más frecuente: "quién me compró más la lámpara" casi nunca quiere decir
+     * "en los últimos 30 días".
+     *
+     * Por eso el default acá es 0 (sin ventana) y no 30: con 30, la respuesta se recortaría sola a
+     * un mes sin que la persona lo haya pedido ni pueda darse cuenta.
+     *
+     * @param array $input
+     * @return int
+     */
+    protected static function dias_de_historia(array $input): int
+    {
+        $dias = (int) ($input['dias'] ?? 0);
+
+        if (! in_array($dias, [0, 7, 30, 90, 365], true)) {
+
+            return 0;
         }
 
         return $dias;
