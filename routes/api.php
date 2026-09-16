@@ -1239,6 +1239,16 @@ Route::middleware('admin.api.key')
         Route::put('mostrador/reportes/{id}', 'AdminSync\\MostradorController@depositar');
         Route::get('mostrador/contexto/{user_id}', 'AdminSync\\MostradorController@contexto');
         Route::put('mostrador/memoria/{user_id}', 'AdminSync\\MostradorController@memoria');
+        // El asistente del negocio hablado desde WhatsApp (misión asistente-por-whatsapp): el
+        // admin recibe el mensaje del dueño en el número de ComercioCity y lo empuja acá, donde
+        // entra al MISMO asistente que el botón flotante. El POST deja el assistant 'pendiente' y
+        // despacha el job de siempre; el GET es el polling con el que el admin espera el texto.
+        // 🔴 Estas cuatro validan el header X-Admin-Api-Key ADENTRO del controlador, sin mirar
+        // services.admin_api.require_api_key (que en producción está apagado): es un canal que
+        // carga compras, gastos y pagos y no puede quedar abierto. Y el gate de la extensión
+        // asistente_ia va a mano, porque admin-sync no pasa por auth:sanctum.
+        Route::post('asistente/mensajes', 'AdminSync\\AsistenteController@mensajes');
+        Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
     });
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
