@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\AfipHelper;
 
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use Illuminate\Support\Facades\Log;
 
@@ -607,11 +608,16 @@ class AfipItemCalculator
     /**
      * Informa si el comprobante del ticket corresponde a exportación.
      *
+     * La lista de códigos vive en `AfipWsHelper::CBTE_TIPOS_EXPORTACION` desde la misión
+     * saneo-ganancia-ventas (17/9/2026), para que la comparta con `getTipoLetra()`, con el
+     * `importe_iva = 0` que escribe `AfipFexHelper` y con `IvaDeVentaHelper`. El valor devuelto es
+     * exactamente el mismo que antes.
+     *
      * @return bool
      */
     public function exportacion()
     {
-        return $this->afip_helper->afip_ticket->cbte_tipo == 19 || $this->afip_helper->afip_ticket->cbte_tipo == 21;
+        return AfipWsHelper::es_de_exportacion($this->afip_helper->afip_ticket->cbte_tipo);
     }
 
     /**

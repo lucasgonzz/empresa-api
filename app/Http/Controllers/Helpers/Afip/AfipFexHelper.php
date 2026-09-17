@@ -165,12 +165,36 @@ class AfipFexHelper
     }
 
 
+    /**
+     * Persiste en el `afip_ticket` lo que contesto ARCA por el webservice de exportacion.
+     *
+     * 🔴 `importe_iva => 0` no es un default de relleno: es el dato. Una exportacion no tiene IVA
+     * —WSFEX ni siquiera tiene campo para declararlo, a diferencia de WSFE— y el 0 es el valor
+     * correcto y definitivo de esa columna (ver `AfipWsHelper::CBTE_TIPOS_EXPORTACION`).
+     *
+     * Hasta esta mision este `update()` escribia `resultado` y NO `importe_iva`, que quedaba en
+     * NULL para siempre. Encadenado, eso dejaba la ganancia de la venta en NULL en el MISMO request
+     * que emitia la factura: `IvaDeVentaHelper` contaba el comprobante como `sin_medir`,
+     * `SaleHelper::calcular_ganancia()` devolvia null y `MakeAfipTicket::recalcular_ganancia_facturada()`
+     * —que corre inmediatamente despues— lo persistia. Y no habia salida, porque el comando que
+     * mediria ese IVA (`set_iva_debito`) esta roto en develop.
+     *
+     * El camino normal, `AfipWsfeHelper::update_afip_ticket()`, escribe `resultado` e `importe_iva`
+     * en el mismo `update()` y por eso no tiene esa ventana. Escribir el 0 aca restituye esa misma
+     * invariante para el camino de exportacion: **el resultado y el IVA se persisten juntos o no se
+     * persiste ninguno.**
+     *
+     * @param array $result Respuesta cruda de WSFEX.
+     * @param string $moneda Moneda del comprobante ('PES' o 'DOL').
+     * @param mixed $moneda_cotiz Cotizacion usada.
+     * @return void
+     */
     function update_afip_ticket($result, $moneda, $moneda_cotiz) {
 
         $result_afip = $result['result'];
 
         if (
-            isset($result_afip->FEXAuthorizeResult) 
+            isset($result_afip->FEXAuthorizeResult)
             && isset($result_afip->FEXAuthorizeResult->FEXResultAuth)
         ) {
 
@@ -180,6 +204,7 @@ class AfipFexHelper
                 'cae_expired_at'    => $result_afip->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
                 'resultado'         => $result_afip->FEXAuthorizeResult->FEXResultAuth->Resultado,
                 'importe_total'     => (float)$this->sale->total,
+                'importe_iva'       => 0,
                 'moneda'            => $moneda,
                 'moneda_cotizacion' => $moneda_cotiz,
             ]);
@@ -530,10 +555,16 @@ class AfipFexHelper
                         Log::info('FEXGetCMPResult: ' . print_r($data, true));
 
                         // Actualizo info local
+                        //
+                        // `importe_iva => 0` por el mismo motivo que en update_afip_ticket(): la
+                        // exportacion no tiene IVA, y este camino tambien escribe `resultado`. Es,
+                        // ademas, el que repara los comprobantes viejos que quedaron con la columna
+                        // en NULL, sin tocar nada mas que el ticket que se esta consultando.
                         $this->afip_ticket->update([
                             'consultado'      => 1,
                             'importe_total'   => $data->Imp_total,
                             'resultado'       => $data->Resultado,
+                            'importe_iva'     => 0,
                             'cae'             => $data->Resultado == 'A' ? $data->Cae : null,
                             'cae_expired_at'  => $data->Fch_venc_Cae ?? null,
                             'cbte_letra'        => AfipWsHelper::getTipoLetra($data->Cbte_tipo),

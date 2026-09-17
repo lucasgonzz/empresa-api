@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\sale;
 
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Models\Sale;
 use Illuminate\Support\Facades\DB;
 
@@ -31,9 +32,41 @@ use Illuminate\Support\Facades\DB;
  * | Venta facturada (RI) | el del comprobante | ese IVA va a ARCA, no es ganancia |
  * | Venta sin comprobante | 0 | no hay comprobante, no hay débito fiscal |
  * | Factura C (monotributista) | 0 | la C no discrimina IVA: `importe_iva` queda en 0 |
+ * | **Factura E (exportación)** | **0** | **una exportación no tiene IVA (ver abajo)** |
  * | Facturación parcial | el de la parte facturada | es lo que dice el comprobante emitido |
  * | Alícuotas mixtas 21/10,5 | el total real del comprobante | no hay que reconstruir nada |
  * | Comprobante rechazado | 0 | `resultado != 'A'` no entra |
+ *
+ * ---------------------------------------------------------------------------------------------
+ * 🔴 LA EXPORTACIÓN ES IVA 0, NO "SIN MEDIR" — y por qué se arregla en los DOS lados
+ * ---------------------------------------------------------------------------------------------
+ *
+ * `AfipFexHelper::update_afip_ticket()` escribía `resultado` y no `importe_iva`, que quedaba en
+ * NULL. Con la regla de más abajo (un autorizado sin `importe_iva` es un dato que falta), eso
+ * dejaba la ganancia de toda venta exportada en NULL **en el mismo request que emitía la
+ * factura**: `MakeAfipTicket::recalcular_ganancia_facturada()` corre inmediatamente después de
+ * `AfipWsController::init()`. Y sin salida, porque el comando que mediría ese IVA
+ * (`set_iva_debito`) está roto en `develop`.
+ *
+ * Pero una exportación **no tiene IVA: es 0, no un dato que falta**. WSFEX ni siquiera tiene campo
+ * para declararlo, a diferencia de WSFE. El sistema ya lo sabía del otro lado —
+ * `AfipNotaCreditoHelper` escribe `importe_iva => 0` para la NC de exportación y `SetIvaNotasCredito`
+ * lo dice en su PHPDoc— y faltaba la misma regla del lado de las ventas.
+ *
+ * **La decisión fue arreglarlo en los dos lugares, y no son dos criterios:**
+ *
+ *   1. **Acá**, en el `CASE` de `subquery_por_venta()`: es la única capa que responde "cuánto IVA
+ *      declaró esta venta", y es la que arregla los comprobantes **ya emitidos**, que son los que
+ *      hoy tienen la ganancia en NULL. Si se arreglara sólo en la emisión, esas ventas quedarían
+ *      rotas para siempre — no hay backfill que las salve.
+ *   2. **En `AfipFexHelper`**, escribiendo el 0 al emitir: restituye la invariante que el camino
+ *      normal (`AfipWsfeHelper::update_afip_ticket()`) sí cumple —`resultado` e `importe_iva` se
+ *      persisten en el MISMO `update()`—, y deja la columna con el dato correcto para cualquier
+ *      otro lector directo de `afip_tickets.importe_iva` (por ejemplo
+ *      `ContabilidadRepository::ventas_con_iva_sin_medir()`, que lee la columna y no pasa por acá).
+ *
+ * Lo que NO se duplica es el criterio: qué códigos son de exportación se escribe una sola vez, en
+ * `AfipWsHelper::CBTE_TIPOS_EXPORTACION`, y los cuatro call sites lo leen de ahí.
  *
  * El criterio de fondo (`resultado = 'A'` + `importe_iva`) es el mismo que ya usa
  * `ContabilidadRepository::query_iva_debito()` para el renglón fiscal; acá se agrega lo que aquel
@@ -47,7 +80,9 @@ use Illuminate\Support\Facades\DB;
  * 🔴 Un comprobante autorizado SIN `importe_iva` medido NO es un cero. Es un dato que falta, y se
  * devuelve aparte (`sin_medir`) para que cada consumidor decida: la ganancia se persiste en null y
  * el backfill lo cuenta y lo denuncia. Tratarlo como 0 sería contar una venta facturada como si
- * hubiera sido en negro, que es exactamente el error que esta clase existe para no cometer.
+ * hubiera sido en negro, que es exactamente el error que esta clase existe para no cometer. La
+ * única excepción es la exportación, y no es una excepción a la regla sino a la premisa: ahí el 0
+ * no se asume, se sabe.
  *
  * ⚠️ Recuperar ese `importe_iva` es una tarea aparte y HOY NO HAY COMANDO QUE LA HAGA. El que
  * existe, `php artisan set_iva_debito <company_name>`, está roto en `develop`: muere con
@@ -77,11 +112,20 @@ class IvaDeVentaHelper
      */
     public static function subquery_por_venta()
     {
+        /** Codigos de exportacion, tipados a int para poder interpolarlos sin riesgo en el SQL. */
+        $exportacion = implode(',', array_map('intval', AfipWsHelper::codigos_de_exportacion()));
+
         return DB::table('afip_tickets')
             ->select([
                 'afip_tickets.sale_id',
-                DB::raw('SUM(COALESCE(afip_tickets.importe_iva, 0)) as iva_declarado'),
-                DB::raw('SUM(CASE WHEN afip_tickets.importe_iva IS NULL THEN 1 ELSE 0 END) as comprobantes_sin_medir'),
+                DB::raw(
+                    'SUM(CASE WHEN afip_tickets.cbte_tipo IN ('.$exportacion.') THEN 0'
+                    .' ELSE COALESCE(afip_tickets.importe_iva, 0) END) as iva_declarado'
+                ),
+                DB::raw(
+                    'SUM(CASE WHEN afip_tickets.cbte_tipo IN ('.$exportacion.') THEN 0'
+                    .' WHEN afip_tickets.importe_iva IS NULL THEN 1 ELSE 0 END) as comprobantes_sin_medir'
+                ),
             ])
             ->whereNotNull('afip_tickets.sale_id')
             ->whereNull('afip_tickets.deleted_at')

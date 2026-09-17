@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\contabilidad;
 
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Models\AfipTicket;
 use App\Models\CurrentAcount;
@@ -228,6 +229,11 @@ class ContabilidadRepository
      * así en ferretotal y 8 en golonorte. Mientras tanto la venta suma con IVA adentro y el margen
      * bruto de ese período queda un poco alto.
      *
+     * 🔴 La EXPORTACIÓN queda afuera, con el mismo criterio que `IvaDeVentaHelper`: una Factura E no
+     * tiene IVA (WSFEX ni siquiera tiene campo para declararlo), así que su `importe_iva` en null no
+     * es un dato que falte — es un cero que hasta el 17/9/2026 nadie escribía. Sin esta exclusión,
+     * cada exportación aparecería acá como un renglón "sin medir" que nunca se puede saldar.
+     *
      * No se filtra por moneda ni por sucursal: es un aviso de integridad del dato, no un renglón
      * del reporte.
      *
@@ -252,6 +258,7 @@ class ContabilidadRepository
                     ->whereNull('afip_tickets.deleted_at')
                     ->where('afip_tickets.resultado', 'A')
                     ->whereNull('afip_tickets.importe_iva')
+                    ->whereNotIn('afip_tickets.cbte_tipo', AfipWsHelper::codigos_de_exportacion())
                     ->whereRaw('(afip_tickets.sale_id = sales.id OR afip_tickets.sale_id = sales.consolidacion_facturacion_id)');
             })
             ->count();
