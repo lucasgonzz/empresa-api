@@ -30,22 +30,45 @@ use Illuminate\Support\Facades\Schema;
  *  QUE HACE CUANDO LA COLUMNA NO ESTA
  * ─────────────────────────────────────────────────────────────────────────────
  *
- *  Los cuatro puntos de escritura —`SaleController` alta y actualizacion, `BudgetController` alta y
- *  actualizacion— OMITEN la clave del payload. La venta se guarda sin el forzado, que es
- *  exactamente lo correcto: en esa ventana la SPA vieja ni siquiera lo manda, y la nueva todavia no
- *  esta desplegada. Nunca una excepcion. Mismo criterio que las guardas de `budget_combo`,
- *  `order_combo` y `buyer_tracking_events`: lo que puede no estar se chequea, y si no esta el
- *  camino sigue con el equivalente de "no hay nada".
+ *  🔴 SON SIETE PUNTOS DE ESCRITURA, NO CUATRO. Medidos el 17/9/2026 con
+ *  `grep -rnE "'forzar_total_monto'\s*=>|->forzar_total_monto\s*=" app/`, que es el barrido que hay
+ *  que rehacer si alguien agrega un camino nuevo:
+ *
+ *    1. `SaleController::store()`                      — alta de venta
+ *    2. `SaleController::update()`                     — actualizacion de venta
+ *    3. `BudgetController::store()`                    — alta de presupuesto
+ *    4. `BudgetController::update()`                   — actualizacion de presupuesto
+ *    5. `BudgetHelper::saveSale()`                     — CONFIRMAR un presupuesto
+ *    6. `BudgetDuplicarHelper::duplicate()`            — duplicar un presupuesto
+ *    7. `ConsolidarFacturacionHelper::consolidar()`    — la venta consolidada
+ *
+ *  Los tres ultimos se escribieron primero SIN guarda, con el inventario contado a ojo en vez de
+ *  medido. Confirmar un presupuesto no es un caso borde: es mostrador normal, y es el mismo
+ *  circuito que `develop` tapo el 16/9 con `budget_combo`.
+ *
+ *  Los siete OMITEN la clave del payload si la columna no esta. La venta se guarda sin el forzado,
+ *  que es exactamente lo correcto: en esa ventana la SPA nueva todavia no esta desplegada. Nunca
+ *  una excepcion. Mismo criterio que las guardas de `budget_combo`, `order_combo` y
+ *  `buyer_tracking_events`: lo que puede no estar se chequea, y si no esta el camino sigue con el
+ *  equivalente de "no hay nada".
  *
  *  La LECTURA no necesita esta guarda: `SaleHelper::get_forzar_total_monto()` usa `isset()`, que
  *  sobre un modelo sin el atributo devuelve false y corta en 0.
  *
- * ⚠️ MEMOIZADA, y por columna. `Schema::hasColumn()` son dos consultas a `information_schema` y los
- * caminos que la necesitan la preguntarian en cada alta y en cada actualizacion. Se pregunta una
- * sola vez por proceso y por tabla. Dos memos y no uno: las dos migraciones son la misma, pero una
- * base a medio migrar puede tener una columna y no la otra, y un memo compartido responderia por la
- * tabla equivocada — es el mismo motivo por el que `budget_combo` y `order_combo` son dos clases y
- * no una parametrizada.
+ * ⚠️ MEMOIZADA, y por tabla. `Schema::hasColumn()` es UNA consulta por tabla —Laravel 8.75 hace
+ * `in_array()` sobre `getColumnListing()`—, pero los caminos que la necesitan la preguntarian en
+ * cada alta y en cada actualizacion. Se pregunta una sola vez por proceso y por tabla. Dos memos y
+ * no uno: las dos migraciones son la misma, pero una base a medio migrar puede tener una columna y
+ * no la otra, y un memo compartido responderia por la tabla equivocada — es el mismo motivo por el
+ * que `budget_combo` y `order_combo` son dos clases y no una parametrizada.
+ *
+ * ⚠️ Y EL MEMO NO SOBREVIVE A LA MIGRACION, PERO NO PORQUE SI. En PHP-FPM los statics mueren con el
+ * request, asi que un memo en `false` dura lo que dura ese alta. El caso que si podria quedar
+ * clavado es un proceso de vida larga —un `queue:work` booteado DENTRO de la ventana— que cachearia
+ * `false` para siempre y seguiria guardando ventas sin el forzado despues de migrar. Lo cubre
+ * `DeploymentService::step_restart_queue_workers()`, que corre DESPUES de `run_migrations`. La
+ * guarda depende de ese orden tanto como del otro: si algun dia los pasos se reordenan, esto hay
+ * que volver a mirarlo.
  */
 class ForzarTotalEsquemaHelper {
 
@@ -113,8 +136,8 @@ class ForzarTotalEsquemaHelper {
     /**
      * Mete `forzar_total_monto` en un payload de `create()` SOLO si la columna existe.
      *
-     * Es el accesor que usan los cuatro puntos de escritura, para que la condicion viva en un solo
-     * lugar y no se pueda olvidar en uno de ellos.
+     * Es el accesor que usan los SIETE puntos de escritura (ver la lista completa en el encabezado
+     * de la clase), para que la condicion viva en un solo lugar y no se pueda olvidar en uno.
      *
      * @param  array       $payload  El array que va a `Sale::create()` / `Budget::create()`.
      * @param  float|null  $monto    Monto ya normalizado.
@@ -133,15 +156,33 @@ class ForzarTotalEsquemaHelper {
     /**
      * ¿La tabla pedida tiene la columna?
      *
+     * 🔴 CORTA CON UNA EXCEPCION SI LA TABLA NO ES UNA DE LAS DOS, Y NO CAE A `sales` POR DEFECTO.
+     * Un default silencioso acá responderia por la tabla EQUIVOCADA: un llamador que escribiera
+     * 'budget' o 'Sales' recibiria la respuesta de `sales`, y en una base a medio migrar —que es
+     * justamente el escenario para el que existe esta clase— una tabla puede tener la columna y la
+     * otra no. El resultado seria el `Unknown column` que la guarda viene a evitar, pero ahora
+     * escondido detras de la guarda misma.
+     *
+     * Es un error de programacion, no un estado posible de la base: revienta en el primer test que
+     * lo toque y nunca llega a produccion.
+     *
      * @param  string  $tabla  'sales' o 'budgets'.
      * @return bool
+     *
+     * @throws \InvalidArgumentException si la tabla no es una de las dos.
      */
     static function hay_columna($tabla) {
+
+        if ($tabla === 'sales') {
+            return Self::hay_columna_en_sales();
+        }
 
         if ($tabla === 'budgets') {
             return Self::hay_columna_en_budgets();
         }
 
-        return Self::hay_columna_en_sales();
+        throw new \InvalidArgumentException(
+            'ForzarTotalEsquemaHelper: tabla desconocida "'.$tabla.'". Las unicas validas son "sales" y "budgets".'
+        );
     }
 }

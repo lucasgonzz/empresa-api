@@ -375,8 +375,142 @@ class Guarda_de_esquema_de_la_columna_Test extends ForzarTotalTestCase
     }
 
     /**
-     * Test 5 — CON la columna, el campo se sigue guardando. Es la no-regresion de la guarda: una
-     * guarda que apagara el campo siempre tambien pasaria los cuatro tests de arriba.
+     * Test 5 — sin la columna se puede CONFIRMAR un presupuesto.
+     *
+     * 🔴 Es el quinto punto de escritura (`BudgetHelper::saveSale()`), y NO es un caso borde: es
+     * mostrador normal. Es exactamente el mismo circuito que `develop` tapo el 16/9 con la guarda
+     * de `budget_combo`.
+     *
+     * El detalle que lo hace facil de pasar por alto: en la ventana, `$budget->forzar_total_monto`
+     * devuelve null SIN ERROR —el atributo no existe en el modelo— y ese null viaja igual al
+     * INSERT. O sea que el camino "se ve" inofensivo justo donde revienta.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function sin_la_columna_se_puede_confirmar_un_presupuesto()
+    {
+        $self = $this;
+
+        $this->sin_la_columna(function () use ($self) {
+
+            if (is_null(BudgetStatus::find(2))) {
+                $estado = new BudgetStatus();
+                $estado->id = 2;
+                $estado->name = 'Confirmado';
+                $estado->save();
+            }
+
+            $budget = Budget::create([
+                'num'                   => 9600,
+                'user_id'               => $self->comercio()->id,
+                'client_id'             => $self->cliente(TestingFerreteriaSeeder::CLIENTE_CC)->id,
+                'budget_status_id'      => self::ESTADO_SIN_CONFIRMAR,
+                'total'                 => 100,
+                'discount_stock'        => 0,
+                'discounts_in_services' => 1,
+                'surchages_in_services' => 1,
+            ]);
+
+            $self->postJson('api/budget/'.$budget->id.'/confirmar')->assertStatus(200);
+        });
+    }
+
+    /**
+     * Test 6 — sin la columna se puede DUPLICAR un presupuesto.
+     *
+     * Sexto punto de escritura (`BudgetDuplicarHelper::duplicate()`).
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function sin_la_columna_se_puede_duplicar_un_presupuesto()
+    {
+        $self = $this;
+
+        $this->sin_la_columna(function () use ($self) {
+
+            $extencion = \App\Models\ExtencionEmpresa::where('slug', 'duplicar_presupuestos')->first();
+
+            if (is_null($extencion)) {
+                $extencion = \App\Models\ExtencionEmpresa::forceCreate([
+                    'slug' => 'duplicar_presupuestos',
+                    'name' => 'Duplicar presupuestos',
+                ]);
+            }
+
+            $user = $self->comercio();
+            $user->extencions()->syncWithoutDetaching([$extencion->id]);
+            $user->load('extencions');
+
+            $budget = Budget::create([
+                'num'                              => 9700,
+                'user_id'                          => $user->id,
+                'client_id'                        => $self->cliente(TestingFerreteriaSeeder::CLIENTE_CC)->id,
+                'budget_status_id'                 => self::ESTADO_SIN_CONFIRMAR,
+                'total'                            => 0,
+                'discount_stock'                   => 0,
+                'discounts_in_services'            => 1,
+                'surchages_in_services'            => 1,
+                'aplicar_recargos_directo_a_items' => 0,
+            ]);
+
+            $self->postJson('api/budget/'.$budget->id.'/duplicate')->assertStatus(201);
+        });
+    }
+
+    /**
+     * Test 7 — sin la columna se puede CONSOLIDAR facturacion.
+     *
+     * Septimo y ultimo punto de escritura (`ConsolidarFacturacionHelper::consolidar()`).
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function sin_la_columna_se_puede_consolidar_facturacion()
+    {
+        $self = $this;
+
+        $this->sin_la_columna(function () use ($self) {
+
+            $cliente = $self->cliente(TestingFerreteriaSeeder::CLIENTE_CC);
+
+            $afip_information = \App\Models\AfipInformation::where('user_id', $self->comercio()->id)->first();
+
+            $self->assertNotNull($afip_information, 'Falta la configuracion de AFIP del fixture.');
+
+            $venta = \App\Models\Sale::create([
+                'user_id'                    => $self->comercio()->id,
+                'client_id'                  => $cliente->id,
+                'omitir_en_cuenta_corriente' => 1,
+                'save_current_acount'        => 0,
+                'terminada'                  => 1,
+                'is_cerrada'                 => 0,
+                'sub_total'                  => 1000,
+                'total'                      => 1000,
+                'moneda_id'                  => 1,
+                'descuento'                  => 0,
+            ]);
+
+            /* Si esto no explota, la guarda del septimo punto esta puesta. */
+            $consolidada = \App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper::consolidar(
+                [$venta->id],
+                $cliente->id,
+                $self->comercio()->id,
+                $afip_information->id,
+                1,
+                false,
+                [],
+                false
+            );
+
+            $self->assertNotNull($consolidada->id, 'La venta consolidada tiene que haberse creado.');
+        });
+    }
+
+    /**
+     * Test 8 — CON la columna, el campo se sigue guardando. Es la no-regresion de la guarda: una
+     * guarda que apagara el campo siempre tambien pasaria los siete tests de arriba.
      *
      * @group forzar_total
      * @test

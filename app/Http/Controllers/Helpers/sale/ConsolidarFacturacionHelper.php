@@ -161,7 +161,7 @@ class ConsolidarFacturacionHelper extends Controller
             $num = (new self())->num('sales', $user_id);
 
             /** Crea la venta contenedora marcada para excluirla de reportes y cuentas. */
-            $venta_consolidada = Sale::create([
+            $venta_consolidada = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                           => $num,
                 'client_id'                     => $client_id,
                 'user_id'                       => $user_id,
@@ -170,8 +170,6 @@ class ConsolidarFacturacionHelper extends Controller
                 'afip_tipo_comprobante_id'      => $afip_tipo_comprobante_id,
                 'total'                         => $total_consolidado,
                 'sub_total'                     => $sub_total_consolid,
-                /** Ver el bloque de arriba: va junto con `total`, o la factura sale por el bruto. */
-                'forzar_total_monto'            => $forzado_consolidado,
                 'moneda_id'                     => $moneda_id,
                 'valor_dolar'                   => $valor_dolar,
                 'iva_aplicado'                  => $iva_aplicado,
@@ -186,7 +184,15 @@ class ConsolidarFacturacionHelper extends Controller
                 'terminada'                     => 1,
                 'terminada_at'                  => Carbon::now(),
                 'descuento'                     => 0,
-            ]);
+            /**
+             * Ver el bloque de arriba: va junto con `total`, o la factura sale por el bruto.
+             *
+             * ⚠️ Entra por la guarda de esquema, como los otros seis puntos de escritura: en la
+             * ventana entre que el deploy sube los archivos y corre las migraciones, la clave
+             * viajaria igual al INSERT —con `$guarded = []` Eloquent la manda aunque valga null— y
+             * la consolidacion moriria con `Unknown column`. Ver `ForzarTotalEsquemaHelper`.
+             */
+            ], $forzado_consolidado, 'sales'));
 
             /** Copia los ítems de todas las ventas originales a la consolidada. */
             self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items);

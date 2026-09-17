@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
@@ -46,25 +47,13 @@ class BudgetHelper {
 	static function saveSale($budget, $previus_articles) {
 		if (is_null($budget->sale)) {
 	        $ct = new Controller();
-	        $sale = Sale::create([
+	        $sale = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
 	            'num' 					=> $ct->num('sales'),
 	            'user_id' 				=> UserHelper::userId(),
 	            'client_id' 			=> $budget->client_id,
 	            'budget_id' 			=> $budget->id,
 	            'observations' 			=> $budget->observations,
 	            'total' 				=> $budget->total,
-	            /*
-	             * El monto del total forzado viaja del presupuesto a la venta (mision
-	             * forzar-total-por-monto, 17/9/2026).
-	             *
-	             * 🔴 VA JUNTO CON `total`, EN LA MISMA LINEA CONCEPTUAL. El total del presupuesto ya
-	             * es el forzado; si la venta se llevara el total pero no el monto, nadie podria
-	             * volver a explicar de donde sale ese numero: el comprobante no tendria renglon de
-	             * ajuste, el prorrateo de AFIP facturaria el total sin forzar y cualquier
-	             * recalculo del back (`getTotalSale()` al confirmar una venta chequeada) pisaria el
-	             * total con la suma pelada de los renglones.
-	             */
-	            'forzar_total_monto'	=> $budget->forzar_total_monto,
 	            'address_id' 			=> $budget->address_id,
 	            'moneda_id' 			=> $budget->moneda_id,
 	            'discounts_in_services'	=> $budget->discounts_in_services,
@@ -83,7 +72,25 @@ class BudgetHelper {
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
                 'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
-	        ]);
+	        /*
+	         * El monto del total forzado viaja del presupuesto a la venta (mision
+	         * forzar-total-por-monto, 17/9/2026).
+	         *
+	         * 🔴 VA JUNTO CON `total`, EN LA MISMA LINEA CONCEPTUAL. El total del presupuesto ya es
+	         * el forzado; si la venta se llevara el total pero no el monto, nadie podria volver a
+	         * explicar de donde sale ese numero: el comprobante no tendria renglon de ajuste, el
+	         * prorrateo de AFIP facturaria el total sin forzar y cualquier recalculo del back
+	         * (`getTotalSale()` al confirmar una venta chequeada) pisaria el total con la suma
+	         * pelada de los renglones.
+	         *
+	         * ⚠️ Y ENTRA POR LA GUARDA DE ESQUEMA. Confirmar un presupuesto no es un caso borde: es
+	         * mostrador normal, y es el MISMO circuito que `develop` tapo el 16/9 con la guarda de
+	         * `budget_combo`. En la ventana en la que el codigo esta y la columna no, este
+	         * `$budget->forzar_total_monto` devuelve null sin error —el atributo no existe— y ese
+	         * null viaja igual al INSERT, que revienta con `Unknown column`. Ver
+	         * `ForzarTotalEsquemaHelper`.
+	         */
+	        ], $budget->forzar_total_monto, 'sales'));
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 
 	        Self::attachSaleServices($sale, $budget);
