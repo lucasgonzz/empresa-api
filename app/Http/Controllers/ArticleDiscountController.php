@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\DescuentoRecargoExcluyenteHelper;
 use App\Models\ArticleDiscount;
 use Illuminate\Http\Request;
 
@@ -20,6 +21,11 @@ class ArticleDiscountController extends Controller
     }
 
     public function store(Request $request) {
+        // Un descuento lleva SOLO porcentaje o SOLO monto: el monto de mas queda inerte en el
+        // calculo de precios. Ver DescuentoRecargoExcluyenteHelper.
+        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+            return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
+        }
         $model = ArticleDiscount::create([
             'article_id'            => $request->model_id,
             'temporal_id'           => $this->getTemporalId($request),
@@ -44,6 +50,12 @@ class ArticleDiscountController extends Controller
     }
 
     public function update(Request $request, $id) {
+        // Misma guarda que en store(), y va ANTES de todo lo demas: si el request es invalido no se
+        // toca nada, ni siquiera la marca de `editado_a_mano` de abajo.
+        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+            return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
+        }
+
         $model = ArticleDiscount::find($id);
 
         /**

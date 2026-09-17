@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\article\DescuentoRecargoExcluyenteHelper;
 use App\Models\ArticleSurchage;
 use Illuminate\Http\Request;
 
@@ -19,6 +20,11 @@ class ArticleSurchageController extends Controller
     }
 
     public function store(Request $request) {
+        // Un recargo lleva SOLO porcentaje o SOLO monto: el monto de mas queda inerte en el
+        // calculo de precios. Ver DescuentoRecargoExcluyenteHelper.
+        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+            return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
+        }
         $model = ArticleSurchage::create([
             'article_id'            => $request->model_id,
             'temporal_id'           => $this->getTemporalId($request),
@@ -40,6 +46,11 @@ class ArticleSurchageController extends Controller
     }
 
     public function update(Request $request, $id) {
+        // Misma guarda que en store(). Se mira el contenido del request, no el estado de la fila:
+        // las filas viejas que quedaron con los dos campos cargados siguen siendo editables.
+        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+            return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
+        }
         $model = ArticleSurchage::find($id);
         $model->percentage                = $request->percentage;
         $model->amount                    = $request->amount;
