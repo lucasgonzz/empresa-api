@@ -62,12 +62,13 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
     /* ------------------------------------------------------------------ */
 
     /**
-     * Crea una compra por el endpoint real y la registra para la limpieza.
+     * Payload de compra del escenario de esta suite: proveedor Rosario (sin bonificaciones de
+     * catálogo), sin tocar precios ni stock, y un solo artículo de alícuota 21%.
      *
-     * @param  array<string,mixed> $overrides Overrides del payload (ver `payload_compra`).
-     * @return \App\Models\ProviderOrder
+     * @param  array<string,mixed> $overrides
+     * @return array<string,mixed>
      */
-    protected function crear_compra($overrides = [])
+    protected function payload_del_escenario($overrides = [])
     {
         $defaults = [
             'provider_id'             => $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO)->id,
@@ -77,11 +78,22 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
             'total_with_iva'          => 0,
             'generate_current_acount' => 0,
             'articles'                => [
-                $this->item('Marco para cama', 100, 1),
+                $this->item('Marco para cama', 1000, 1),
             ],
         ];
 
-        $response = $this->postJson('api/provider-order', $this->payload_compra(array_merge($defaults, $overrides)));
+        return $this->payload_compra(array_merge($defaults, $overrides));
+    }
+
+    /**
+     * Crea una compra por el endpoint real y la registra para la limpieza.
+     *
+     * @param  array<string,mixed> $overrides Overrides del payload (ver `payload_compra`).
+     * @return \App\Models\ProviderOrder
+     */
+    protected function crear_compra($overrides = [])
+    {
+        $response = $this->postJson('api/provider-order', $this->payload_del_escenario($overrides));
 
         $response->assertStatus(201);
 
@@ -90,6 +102,35 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
         $this->compras_creadas[] = $compra_id;
 
         return ProviderOrder::find($compra_id);
+    }
+
+    /**
+     * Vuelve a guardar una compra ya creada con el mismo payload, por el endpoint real.
+     *
+     * El controller de compras no es un PATCH parcial: hay que remandar el payload entero (mismo
+     * criterio que `Persistencia_Iva_Y_Costos_Extra_Test::actualizar_precios_incluyen_iva()`).
+     *
+     * @param  \App\Models\ProviderOrder  $compra
+     * @param  array<string,mixed>        $overrides
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function volver_a_guardar_la_compra($compra, $overrides = [])
+    {
+        return $this->putJson('api/provider-order/'.$compra->id, $this->payload_del_escenario($overrides));
+    }
+
+    /**
+     * La factura principal que el modo automático le calculó a la compra (nunca un comprobante
+     * "aparte" de un costo extra, que tiene su propio ciclo de vida).
+     *
+     * @param  \App\Models\ProviderOrder  $compra
+     * @return \App\Models\ProviderOrderAfipTicket|null
+     */
+    protected function factura_automatica_de($compra)
+    {
+        return ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
+                                        ->whereNull('provider_order_extra_cost_id')
+                                        ->first();
     }
 
     /**
@@ -601,9 +642,7 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
     {
         $compra = $this->crear_compra(['modo_facturacion' => 'automatico']);
 
-        $factura = ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
-                                            ->whereNull('provider_order_extra_cost_id')
-                                            ->first();
+        $factura = $this->factura_automatica_de($compra);
 
         $this->assertNotNull($factura, 'El modo automático tiene que haber creado la factura de la compra.');
 
@@ -637,9 +676,7 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
     {
         $compra = $this->crear_compra(['modo_facturacion' => 'automatico']);
 
-        $factura = ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
-                                            ->whereNull('provider_order_extra_cost_id')
-                                            ->first();
+        $factura = $this->factura_automatica_de($compra);
 
         $this->assertNotNull($factura, 'El modo automático tiene que haber creado la factura de la compra.');
 
@@ -701,12 +738,169 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
         );
     }
 
+    /**
+     * Test 10 — 🔴 En modo automático la percepción sobrevive a volver a guardar la compra.
+     *
+     * Es el caso que más se usa y el que se rompía en silencio. En modo automático la percepción
+     * ES editable (junto con la fecha y el número es lo único que queda a mano), pero
+     * `ModoFacturacionHelper` rehace la factura desde los artículos en cada guardado de la compra
+     * y escribía `total = neto + IVA` sin las percepciones. O sea: la cargabas, el total subía
+     * bien, y al guardar la compra por cualquier otro motivo volvía a bajar — llevándose puestos
+     * también `provider_orders.total` y `current_acounts.debe`, sin un solo error ni aviso.
+     *
+     * @group compras
+     * @test
+     */
+    public function en_modo_automatico_la_percepcion_sobrevive_a_volver_a_guardar_la_compra()
+    {
+        $overrides = [
+            'modo_facturacion'                       => 'automatico',
+            'total_from_provider_order_afip_tickets' => 1,
+            'generate_current_acount'                => 1,
+        ];
+
+        $compra = $this->crear_compra($overrides);
+
+        $factura = $this->factura_automatica_de($compra);
+
+        $this->assertNotNull($factura, 'El modo automático tiene que haber creado la factura de la compra.');
+
+        // Un artículo de 1000 al 21%: neto 1000 + IVA 210.
+        $this->assertEqualsWithDelta(
+            1210,
+            (float) $factura->total,
+            self::DELTA,
+            'Punto de partida: la factura automática vale neto + IVA del único artículo.'
+        );
+
+        // El usuario carga la percepción que le vino en el papel.
+        $this->putJson('api/provider-order-afip-ticket/'.$factura->id, [
+            'code'            => 'A 0001-00000123',
+            'issued_at'       => '2026-09-17',
+            'percepcion_iibb' => 500,
+            'percepcion_iva'  => null,
+            'total'           => 999999,
+            'model_id'        => $compra->id,
+        ])->assertStatus(200);
+
+        $factura->refresh();
+        $compra->refresh();
+
+        $this->assertEqualsWithDelta(1710, (float) $factura->total, self::DELTA, 'La factura suma la percepción: 1210 + 500.');
+        $this->assertEqualsWithDelta(1710, (float) $compra->total, self::DELTA, 'Y la compra también.');
+
+        // 🔴 Y acá estaba el agujero: se vuelve a guardar la compra, por cualquier motivo.
+        $this->volver_a_guardar_la_compra($compra, $overrides)->assertStatus(200);
+
+        $factura->refresh();
+        $compra->refresh();
+
+        $this->assertEqualsWithDelta(
+            1710,
+            (float) $factura->total,
+            self::DELTA,
+            '🔴 Volver a guardar la compra no puede borrar la percepción del total de la factura.'
+        );
+
+        $this->assertEqualsWithDelta(
+            210,
+            (float) $factura->total_iva,
+            self::DELTA,
+            'El IVA de la factura no incluye la percepción: sigue siendo solo el de la alícuota.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1710,
+            (float) $compra->total,
+            self::DELTA,
+            '🔴 Ni el total de la compra.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1710,
+            (float) $this->current_acount_de($compra->id)->debe,
+            self::DELTA,
+            '🔴 Ni la deuda con el proveedor.'
+        );
+    }
+
+    /**
+     * Test 11 — Lo mismo para una cuenta Monotributista, que no discrimina IVA.
+     *
+     * Ahí la factura automática no tiene desglose de alícuotas y `total_iva` queda en `null` a
+     * propósito (para un MT el IVA "no aplica", que es distinto de "el IVA da 0"). Eso no cambia:
+     * lo único que se agrega es que la percepción sume al total, que es plata que igual le paga al
+     * proveedor.
+     *
+     * @group compras
+     * @test
+     */
+    public function en_modo_automatico_monotributista_la_percepcion_tambien_sobrevive()
+    {
+        $this->set_condicion_iva('MT');
+
+        try {
+
+            $overrides = [
+                'modo_facturacion'                       => 'automatico',
+                'total_from_provider_order_afip_tickets' => 1,
+                'generate_current_acount'                => 1,
+            ];
+
+            $compra = $this->crear_compra($overrides);
+
+            $factura = $this->factura_automatica_de($compra);
+
+            $this->assertNotNull($factura, 'El modo automático tiene que haber creado la factura de la compra.');
+
+            // Un MT no le saca IVA a nada: la factura vale lo que costaron las líneas.
+            $this->assertEqualsWithDelta(
+                1000,
+                (float) $factura->total,
+                self::DELTA,
+                'Punto de partida: en MT la factura automática vale el total de las líneas, sin IVA por encima.'
+            );
+
+            $this->putJson('api/provider-order-afip-ticket/'.$factura->id, [
+                'code'            => 'C 0001-00000123',
+                'issued_at'       => '2026-09-17',
+                'percepcion_iibb' => 500,
+                'percepcion_iva'  => null,
+                'total'           => 999999,
+                'model_id'        => $compra->id,
+            ])->assertStatus(200);
+
+            $this->volver_a_guardar_la_compra($compra, $overrides)->assertStatus(200);
+
+            $factura->refresh();
+            $compra->refresh();
+
+            $this->assertEqualsWithDelta(
+                1500,
+                (float) $factura->total,
+                self::DELTA,
+                '🔴 En MT la percepción también tiene que sobrevivir al re-guardado: 1000 + 500.'
+            );
+
+            $this->assertNull(
+                $factura->total_iva,
+                'Lo que NO cambia: para un MT el IVA no aplica, y total_iva queda en null (no en 0).'
+            );
+
+            $this->assertEqualsWithDelta(1500, (float) $compra->total, self::DELTA, 'Y el total de la compra acompaña.');
+
+        } finally {
+            // El fixture es compartido: la condición vuelve a RRII pase lo que pase.
+            $this->set_condicion_iva('RRII');
+        }
+    }
+
     /* ------------------------------------------------------------------ */
     /* C5 — Las retenciones se fueron de la factura de compra              */
     /* ------------------------------------------------------------------ */
 
     /**
-     * Test 10 — El controller ya no guarda retenciones en la factura de compra: aunque el request
+     * Test 12 — El controller ya no guarda retenciones en la factura de compra: aunque el request
      * las mande (un cliente viejo), las columnas quedan sin tocar.
      *
      * Las columnas siguen existiendo en la tabla a propósito (hay datos cargados que se migran

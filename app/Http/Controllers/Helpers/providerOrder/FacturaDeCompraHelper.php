@@ -56,13 +56,37 @@ class FacturaDeCompraHelper
             $total     += (float) $iva->neto + (float) $iva->iva_importe;
         }
 
-        $total += (float) $ticket->percepcion_iibb + (float) $ticket->percepcion_iva;
+        $total += self::percepciones($ticket);
 
-        $ticket->total_iva = $total_iva;
-        $ticket->total     = $total;
+        // Redondeo a 2 decimales, que es la precisión real de las columnas (`decimal(x,2)`): sin
+        // esto el modelo en memoria puede quedar con más decimales que la fila, y el que compara
+        // los dos números ve una diferencia que no existe.
+        $ticket->total_iva = round($total_iva, 2);
+        $ticket->total     = round($total, 2);
         $ticket->save();
 
         return $ticket;
+    }
+
+    /**
+     * Lo que el proveedor te percibió en esta factura: IIBB + IVA.
+     *
+     * Vive en un método propio porque son DOS los caminos que arman el total de una factura y los
+     * dos tienen que sumar exactamente esto: el manual (`guardar_totales()`, acá arriba) y el
+     * automático (`ModoFacturacionHelper`, que calcula el comprobante desde los artículos de la
+     * compra). Que cada uno hiciera su propia cuenta es lo que dejaba a la factura automática
+     * perdiendo la percepción en cada guardado de la compra.
+     *
+     * Una percepción es plata que el proveedor te cobra a cuenta de un impuesto tuyo y que le
+     * tenés que pagar a él: suma al total de la factura y a la deuda. No es crédito fiscal de IVA,
+     * así que nunca entra en `total_iva`.
+     *
+     * @param  \App\Models\ProviderOrderAfipTicket  $ticket
+     * @return float
+     */
+    public static function percepciones($ticket)
+    {
+        return (float) $ticket->percepcion_iibb + (float) $ticket->percepcion_iva;
     }
 
     /**
