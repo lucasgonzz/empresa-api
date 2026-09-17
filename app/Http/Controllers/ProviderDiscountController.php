@@ -33,7 +33,36 @@ class ProviderDiscountController extends Controller
         $nombre_anterior = $model->nombre;
 
         $model->percentage                = $request->percentage;
-        $model->nombre                    = $this->nombre_normalizado($request);
+
+        /*
+         * 🔴 EL NOMBRE SOLO SE TOCA SI EL REQUEST LO TRAE. Un update parcial que no lo menciona
+         * pasa derecho y lo deja como estaba.
+         *
+         * Sin esta guarda, `nombre_normalizado()` devuelve null cuando la clave no viene, y el
+         * update lo borra de la ficha — y peor, dispara el UPDATE masivo de abajo poniendo
+         * `nombre = NULL` en TODOS los articulos sincronizados de ese descuento.
+         *
+         * Y el escenario no es hipotetico, es el del despliegue normal: `empresa-api` y
+         * `empresa-spa` nunca llegan juntas a produccion, asi que hay horas o dias con la API nueva
+         * y la SPA vieja, que no conoce este campo. Todos sus updates de descuento de proveedor son
+         * updates parciales. El comercio cargaria los nombres y los perderia —en la ficha y en el
+         * catalogo entero— la primera vez que alguien editara un porcentaje desde la version vieja.
+         *
+         * ⚠️ El predicado es `has()` y NO `!is_null()`, y la diferencia importa: el middleware
+         * global `ConvertEmptyStringsToNull` (Kernel.php:23) convierte la cadena vacia en null antes
+         * de que el request llegue aca. O sea que un usuario que BORRA el nombre a proposito manda
+         * la clave con null, exactamente igual que como se ve un campo que el servidor no puede
+         * distinguir de otra forma. Con `!is_null()` ese borrado legitimo se ignoraria en silencio;
+         * con `has()` se aplica, porque la clave esta presente. `filled()` tampoco sirve: da false
+         * con null (verificado con el binario 7.4).
+         *
+         * Es el mismo criterio que `DescuentoRecargoExcluyenteHelper::hay_conflicto()` aplica a
+         * porcentaje y monto, y el que `ArticleDiscountController` aplica a `tipo`.
+         */
+        if ($request->has('nombre')) {
+            $model->nombre = $this->nombre_normalizado($request);
+        }
+
         $model->save();
 
         $this->propagar_nombre_a_los_articulos($model, $nombre_anterior);

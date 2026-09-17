@@ -281,11 +281,18 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
             return;
         }
 
+        /*
+         * El motivo tecnico vive ACA y no en la notificacion. Cuando viene vacio es porque lo
+         * disparo `failed()` sin excepcion capturable, que es el escenario tipico de la muerte
+         * silenciosa: se deja escrito para que el que lea el log no crea que se perdio el dato.
+         */
         Log::warning('ProcessSincronizarDescuentosProveedorJob: sincronizacion marcada como fallida', [
             'provider_id'   => $this->provider_id,
             'owner_user_id' => $this->owner_user_id,
             'operacion_id'  => $this->operacion_id,
-            'motivo'        => $motivo,
+            'motivo'        => is_null($motivo) || $motivo === ''
+                ? 'El proceso se interrumpio sin dejar traza (probable falta de memoria, timeout del proceso o worker reiniciado).'
+                : $motivo,
         ]);
 
         $owner_user = User::find($this->owner_user_id);
@@ -294,10 +301,21 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
             return;
         }
 
-        $detalle = is_null($motivo) || $motivo === ''
-            ? 'El proceso se interrumpio sin dejar traza (probable falta de memoria, timeout del proceso o worker reiniciado).'
-            : $motivo;
-
+        /*
+         * 🔴 AL USUARIO NO LE VA EL MENSAJE CRUDO DE LA EXCEPCION. De `$e->getMessage()` sale un
+         * fragmento de SQL, un nombre de tabla o una ruta del servidor, y eso no le dice nada al
+         * comerciante mientras le cuenta al que este mirando la pantalla como esta hecho el sistema
+         * por dentro. El detalle tecnico ya quedo arriba, en el `Log::error` del handle() y en el
+         * `Log::warning` de unas lineas mas arriba, que es donde se lo busca cuando hace falta.
+         *
+         * Mismo criterio que `BackgroundJobFailureHandler::marcar_export_fallido()`, que es el punto
+         * unico de los exports: al usuario un texto fijo en español, el motivo tecnico al registro
+         * interno.
+         *
+         * Lo que si le sirve saber, y por eso va: que puede reintentar, y que lo que ya se proceso
+         * quedo bien. Sin esa segunda frase, lo razonable seria pensar que quedo todo a medias y
+         * que hay que revisar el catalogo a mano.
+         */
         $owner_user->notify(new GlobalNotification([
             'message_text'          => 'No se pudieron sincronizar los descuentos del proveedor',
             'color_variant'         => 'danger',
@@ -309,10 +327,11 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
             ],
             'info_to_show'          => [
                 [
-                    'title'    => 'Detalle',
+                    'title'    => 'Que paso',
                     'parrafos' => [
-                        $detalle,
-                        'Los articulos que ya se habian sincronizado quedaron con los descuentos nuevos.',
+                        'La sincronizacion se interrumpio antes de terminar y no se completo.',
+                        'Los articulos que alcanzo a procesar quedaron con los descuentos nuevos de la ficha del proveedor; el resto quedo como estaba.',
+                        'Podes volver a intentarlo desde el boton "Sincronizar articulos" de la ficha del proveedor. Si vuelve a pasar, avisanos.',
                     ],
                 ],
             ],
