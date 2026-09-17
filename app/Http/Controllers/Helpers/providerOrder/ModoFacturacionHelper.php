@@ -125,14 +125,11 @@ class ModoFacturacionHelper
         // descomponer el bruto línea por línea con su propia alícuota).
         $ivas = self::redondear_ivas_sin_diferencia($ivas);
 
-        $total_neto = 0;
-        $total_iva  = 0;
-
         foreach ($ivas as $iva_id => $value) {
-            $total_neto += $value['neto'];
-            $total_iva  += $value['importe_iva'];
 
-            Log::info('Sumando neto de:');
+            // El texto decía 'Sumando neto de' cuando este mismo loop acumulaba los totales; ya no
+            // suma nada, solo escribe la fila del desglose.
+            Log::info('Alicuota de la factura automatica:');
             Log::info($value);
 
             ProviderOrderAfipTicketIva::create([
@@ -143,9 +140,40 @@ class ModoFacturacionHelper
             ]);
         }
 
-        $ticket->total_iva = round($total_iva, 2);
-        $ticket->total     = round($total_neto + $total_iva, 2);
-        $ticket->save();
+        /*
+         * 🔴 Misión `compras-factura-manual-alicuotas` (17/9/2026). Los dos totales salen de
+         * `FacturaDeCompraHelper`, la misma cuenta que usa la factura cargada a mano:
+         *
+         *     total_iva = Σ(iva_importe)                        (igual que siempre)
+         *     total     = Σ(neto + iva_importe) + percepciones   ← LAS PERCEPCIONES SON LO NUEVO
+         *
+         * Antes acá se sumaba `$total_neto + $total_iva` y nada más. En modo automático las
+         * percepciones SON editables (junto con la fecha y el número son lo único que queda a mano),
+         * así que el usuario las cargaba, el total de la factura subía bien... y al guardar la
+         * compra por cualquier otro motivo este método volvía a pisar el total sin ellas. La
+         * percepción se perdía en silencio, y con `total_from_provider_order_afip_tickets` prendido
+         * se llevaba puestos también el total de la compra y la deuda con el proveedor.
+         *
+         * Las filas de IVA acaban de escribirse arriba con los mismos números redondeados que
+         * calculó `redondear_ivas_sin_diferencia()`, y la columna es `decimal(20,2)`: releerlas da
+         * exactamente lo mismo que sumar `$ivas` a mano. Se relee igual para no tener dos cuentas
+         * que se puedan ir separando.
+         *
+         * 🔴 SIN ALICUOTAS SE PASA `0` EXPLICITO, Y ACA ESO ES DISTINTO QUE EN UNA FACTURA MANUAL.
+         *
+         * `guardar_totales()` tiene una rama para el comprobante SIN desglose, donde el total no es
+         * derivable de nada y por eso se conserva — es lo que salva al Monotributista y a la Factura
+         * C de quedar en cero. Pero en modo AUTOMATICO el desglose SI es autoritativo: lo calcula el
+         * sistema desde los articulos de la compra, asi que cero filas quiere decir cero de verdad.
+         *
+         * `get_ivas()` devuelve `[]` cuando ninguna linea tiene `iva_id > 0` — le sacaron los
+         * articulos a la compra, o todos perdieron la alicuota. Sin este `0`, una factura de $1.210
+         * a la que se le vacian los articulos se queda en $1.210 para siempre, y con
+         * `total_from_provider_order_afip_tickets` prendido arrastra el total de la compra y la
+         * deuda con el proveedor. Es el mismo silencio que esta mision vino a tapar, pero al reves:
+         * plata vieja que no baja.
+         */
+        FacturaDeCompraHelper::guardar_totales($ticket, count($ivas) === 0 ? 0 : null);
     }
 
     /**
@@ -186,8 +214,19 @@ class ModoFacturacionHelper
             }
         }
 
+        /*
+         * 🔴 Misión `compras-factura-manual-alicuotas` (17/9/2026): las percepciones suman también
+         * acá, por el mismo motivo que en la factura de un Responsable Inscripto — son editables en
+         * modo automático y este método las pisaba en cada guardado de la compra. La cuenta sale de
+         * `FacturaDeCompraHelper::percepciones()`, el mismo lugar que usan los otros dos caminos.
+         *
+         * Lo que NO cambia es `total_iva`: sigue en `null` a propósito (para un MT el IVA no
+         * aplica, que es distinto de "el IVA da 0"). Por eso este método no puede delegar en
+         * `guardar_totales()`: un MT no tiene filas de desglose de IVA, así que esa suma daría 0 y
+         * se comería `$total_lineas`.
+         */
         $ticket->total_iva = null;
-        $ticket->total      = round($total_lineas + $total_extra_en_factura, 2);
+        $ticket->total      = round($total_lineas + $total_extra_en_factura + FacturaDeCompraHelper::percepciones($ticket), 2);
         $ticket->save();
     }
 

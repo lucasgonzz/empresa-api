@@ -825,7 +825,254 @@ class Endpoints_y_confirmacion_Test extends EmpresaTestCase
         $this->assertEquals(
             21000,
             (float) $ticket->total_iva,
-            'total_iva se recalcula sumando el iva_importe de las filas, igual que set_total_iva().'
+            'total_iva se recalcula sumando el iva_importe de las filas, en FacturaDeCompraHelper::guardar_totales().'
+        );
+    }
+
+    /**
+     * 🔴 El total del comprobante lo calcula el SERVIDOR: el que manda el request se ignora
+     * (misión `compras-factura-manual-alicuotas`, 17/9/2026).
+     *
+     * Confirmar un escaneo era la otra puerta por la que un total cargado por el cliente entraba
+     * tal cual a `provider_order_afip_tickets.total`. Acá se manda un total imposible junto con el
+     * desglose y las percepciones reales, y el comprobante tiene que quedar con la cuenta:
+     * Σ(neto + iva_importe) + percepcion_iibb + percepcion_iva.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function confirmar_calcula_el_total_de_la_factura_e_ignora_el_del_request()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra(['modo_facturacion' => 'manual']);
+        $articulo = $this->crear_articulo('ART TOTAL SERVIDOR ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $iva = Iva::first();
+
+        $this->assertNotNull($iva, 'La base de testing tiene que tener alícuotas de IVA sembradas.');
+
+        $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 3, 1000)],
+            'factura'   => [
+                'guardar'         => true,
+                'pasar_a_manual'  => false,
+                'code'            => '0003-00099001',
+                'issued_at'       => '2026-08-14',
+                /* Un total que no tiene nada que ver con el desglose: tiene que ser ignorado. */
+                'total'           => 999999,
+                'percepcion_iibb' => 2500,
+                'percepcion_iva'  => 800,
+                'ivas'            => [
+                    ['iva_id' => $iva->id, 'neto' => 100000, 'iva_importe' => 21000],
+                ],
+            ],
+        ])->assertStatus(200);
+
+        $ticket = ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
+                                            ->whereNull('provider_order_extra_cost_id')
+                                            ->first();
+
+        $this->assertNotNull($ticket, 'La factura tiene que quedar guardada en la compra.');
+
+        $this->assertEquals(
+            124300,
+            (float) $ticket->total,
+            '🔴 El total sale del servidor: 100000 + 21000 + 2500 + 800, no los 999999 del request.'
+        );
+
+        $this->assertEquals(
+            21000,
+            (float) $ticket->total_iva,
+            'Las percepciones no entran en total_iva: no son crédito fiscal de IVA.'
+        );
+    }
+
+    /**
+     * 🔴 Confirmar un escaneo no escribe retenciones, y sobre todo no borra las que ya estaban
+     * (misión `compras-factura-manual-alicuotas`, 17/9/2026).
+     *
+     * Una factura de compra no trae retenciones, así que el escaneo dejó de pedírselas a la IA. El
+     * riesgo real no era ese: este flujo REUSA el comprobante que ya existe, y las tres líneas de
+     * asignación le escribían `null` encima. Re-escanear una factura vieja le borraba las
+     * retenciones cargadas a mano — justo las que se migran a la tabla nueva.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function confirmar_no_escribe_retenciones_ni_borra_las_que_ya_estaban()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra(['modo_facturacion' => 'manual']);
+        $articulo = $this->crear_articulo('ART RETENCIONES ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $iva = Iva::first();
+
+        $this->assertNotNull($iva, 'La base de testing tiene que tener alícuotas de IVA sembradas.');
+
+        /* Una factura ya cargada, con retenciones viejas en sus columnas (las que se van a migrar). */
+        $ticket_previo = ProviderOrderAfipTicket::create([
+            'provider_order_id'   => $compra->id,
+            'user_id'             => $this->comercio()->id,
+            'code'                => '0003-00099002',
+            'issued_at'           => '2026-08-01',
+            'total'               => 0,
+            'total_iva'           => 0,
+            'retencion_iibb'      => 1111,
+            'retencion_iva'       => 2222,
+            'retencion_ganancias' => 3333,
+        ]);
+
+        $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 1, 1000)],
+            'factura'   => [
+                'guardar'             => true,
+                'pasar_a_manual'      => false,
+                'code'                => '0003-00099002',
+                'issued_at'           => '2026-08-14',
+                'total'               => 121000,
+                /* Un cliente viejo todavía las manda: el backend no las tiene que mirar. */
+                'retencion_iibb'      => 9999,
+                'retencion_iva'       => 9999,
+                'retencion_ganancias' => 9999,
+                'ivas'                => [
+                    ['iva_id' => $iva->id, 'neto' => 100000, 'iva_importe' => 21000],
+                ],
+            ],
+        ])->assertStatus(200);
+
+        $ticket_previo->refresh();
+
+        /*
+         * Ancla del escenario: sin esto el test pasaría en verde aunque el escaneo hubiera creado
+         * un comprobante NUEVO en vez de reusar éste — y entonces no estaría midiendo nada. El
+         * total pasó de 0 a 100000 + 21000, o sea que la confirmación escribió sobre esta misma
+         * fila, que es justo donde vivía el riesgo.
+         */
+        $this->assertEquals(
+            121000,
+            (float) $ticket_previo->total,
+            'El escaneo tiene que haber REUSADO este comprobante (mismo code), no creado otro.'
+        );
+
+        $this->assertEquals(
+            1111,
+            (float) $ticket_previo->retencion_iibb,
+            '🔴 La retención de IIBB que ya estaba cargada no se toca: ni se pisa con la del request ni se borra.'
+        );
+
+        $this->assertEquals(2222, (float) $ticket_previo->retencion_iva, '🔴 Ni la de IVA.');
+        $this->assertEquals(3333, (float) $ticket_previo->retencion_ganancias, '🔴 Ni la de Ganancias.');
+    }
+
+    /**
+     * 🔴 Un comprobante SIN desglose de IVA conserva el total impreso: no queda en 0.
+     *
+     * Es el caso de una **Factura C** (no discrimina IVA) o de un comprobante donde la IA no llegó
+     * a leer el detalle. Ahí el total no es derivable —no hay filas que sumar— y el único dato que
+     * existe es el número del papel, que el usuario ya revisó en el modal. Derivarlo igual dejaría
+     * la factura en 0 y `procesar_pedido()` bajaría detrás el total de la compra y la deuda con el
+     * proveedor, sin un error ni una línea de log.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function confirmar_sin_desglose_de_iva_conserva_el_total_impreso()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra(['modo_facturacion' => 'manual']);
+        $articulo = $this->crear_articulo('ART FACTURA C ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 2, 45000)],
+            'factura'   => [
+                'guardar'         => true,
+                'pasar_a_manual'  => false,
+                'code'            => '0003-00099003',
+                'issued_at'       => '2026-08-14',
+                'total'           => 90000,
+                'percepcion_iibb' => null,
+                'percepcion_iva'  => null,
+                /* Una Factura C no discrimina IVA: no hay desglose que mandar. */
+                'ivas'            => [],
+            ],
+        ])->assertStatus(200);
+
+        $ticket = ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
+                                            ->whereNull('provider_order_extra_cost_id')
+                                            ->first();
+
+        $this->assertNotNull($ticket, 'La factura tiene que quedar guardada en la compra.');
+
+        $this->assertEquals(
+            90000,
+            (float) $ticket->total,
+            '🔴 Sin desglose el total no se deriva: se conserva el impreso, nunca 0.'
+        );
+
+        $this->assertNull(
+            $ticket->total_iva,
+            'Sin filas de desglose, total_iva no se toca: queda como estaba (null), que es lo que deja '.
+            'distinguir "el IVA no aplica" de "el IVA dio 0".'
+        );
+
+        $this->assertEquals(
+            90000,
+            (float) $compra->fresh()->total,
+            'Y el total de la compra sigue al de su factura, no a 0.'
+        );
+    }
+
+    /**
+     * Sin desglose pero CON percepciones: el total impreso ya las trae adentro, así que no se
+     * suman de nuevo.
+     *
+     * El TOTAL de una factura real es neto + IVA + percepciones. Tomar el impreso como base y
+     * volver a sumarle las percepciones las contaría dos veces.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function confirmar_sin_desglose_no_suma_dos_veces_las_percepciones()
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra(['modo_facturacion' => 'manual']);
+        $articulo = $this->crear_articulo('ART FACTURA C PERCEPCION');
+        $scan     = $this->crear_escaneo($compra);
+
+        $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 1, 90000)],
+            'factura'   => [
+                'guardar'         => true,
+                'pasar_a_manual'  => false,
+                'code'            => '0003-00099004',
+                'issued_at'       => '2026-08-14',
+                /* 90000 del comprobante, con los 2500 de percepción ya adentro. */
+                'total'           => 92500,
+                'percepcion_iibb' => 2500,
+                'percepcion_iva'  => null,
+                'ivas'            => [],
+            ],
+        ])->assertStatus(200);
+
+        $ticket = ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
+                                            ->whereNull('provider_order_extra_cost_id')
+                                            ->first();
+
+        $this->assertEquals(
+            92500,
+            (float) $ticket->total,
+            'El total impreso ya incluye la percepción: el resultado es 92500, no 95000.'
         );
     }
 
