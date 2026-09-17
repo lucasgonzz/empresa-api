@@ -41,15 +41,38 @@ use Illuminate\Support\Facades\Schema;
  * entera (su unico contacto con la tabla es el `belongsTo(Sale::class)` de `app/CurrentAcount.php`),
  * y un `empresa` viejo contra una base con la columna tampoco: la ignora y sigue leyendo `total`,
  * que NO cambia de significado — sigue siendo el total final de la venta.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ *  🔴 LA DIRECCION CONTRARIA NO ES COMPATIBLE, Y HAY QUE DECIRLO
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ *  Codigo nuevo contra base SIN migrar NO anda, y no falla suave: `SaleController` manda
+ *  `forzar_total_monto` en el `Sale::create()` y en las dos asignaciones de la actualizacion, y
+ *  `BudgetController` hace lo mismo, todos sin guarda. Con `$guarded = []`, Eloquent incluye la
+ *  columna en el INSERT aunque el valor sea null, asi que si esta migracion no corrio **se cae el
+ *  alta de TODAS las ventas y de TODOS los presupuestos** con `Unknown column`, esten forzados o
+ *  no.
+ *
+ *  No se le ponen guardas de esquema a la escritura a proposito: un `Schema::hasColumn` por request
+ *  cuesta una consulta y ademas seria incoherente con TODAS las columnas que se le agregaron a
+ *  `sales` en siete años, que tienen exactamente la misma exposicion. `DeploymentService` corre las
+ *  migraciones solo, antes de servir la version nueva.
+ *
+ *  Pero en este parque el gap entre los archivos de migracion y la tabla `migrations` NO es
+ *  teorico: hay clientes migrados con ese desfasaje. Por eso queda escrito acá — para que se
+ *  chequee antes de un upgrade, en vez de descubrirse con el mostrador parado.
  */
 class AddForzarTotalMontoToSalesAndBudgetsTables extends Migration
 {
     /**
      * Agrega las dos columnas, con guard `hasColumn` para que sea segura de re-ejecutar.
      *
-     * decimal(22,2): mismo largo que `sales.total` y `budgets.total`, porque es un monto de la
-     * misma escala y en la misma moneda de la venta. Dos decimales, no cuatro: es plata, no un
-     * porcentaje.
+     * decimal(22,2): el mismo largo que `sales.total` y `sales.sub_total`, que son los dos numeros
+     * contra los que este monto se lee. Dos decimales, no cuatro: es plata, no un porcentaje.
+     *
+     * ⚠️ `budgets.total` es decimal(30,2), no 22: la columna del presupuesto se deja igual que la
+     * de la venta a proposito, porque el monto viaja de una a la otra en `BudgetHelper::saveSale()`
+     * y tiene que entrar sin truncarse en el destino. Los 22 digitos son el limite real.
      *
      * @return void
      */

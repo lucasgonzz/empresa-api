@@ -216,6 +216,19 @@ class PuntosBaseHelper {
      *  escrito acá porque el chequeo independiente lo marcó como "decisión de negocio que no
      *  está en ningún lado". Si algún día se quiere al revés, se cambia ACÁ y en un solo lugar.
      *
+     *  🔴 EL TOTAL FORZADO (`sales.forzar_total_monto`) TAMPOCO ENTRA, POR EL MISMO CRITERIO Y
+     *  TAMBIÉN A PROPÓSITO (misión forzar-total-por-monto, 17/9/2026). Es la capa que agrega el
+     *  lápiz del total en VENDER: el vendedor redondea $4.012 a $4.000 para no dar cambio, y el
+     *  comercio otorga puntos sobre los 4.012 habiendo cobrado 4.000. Es la misma asimetría que
+     *  el canje y se resuelve igual: los puntos se ganan sobre LO QUE SE COMPRÓ. Los doce pesos
+     *  son una cortesía del mostrador, no una compra más chica, y hacer que además recorten los
+     *  puntos convertiría un gesto comercial en un castigo al cliente.
+     *
+     *  Se anota acá, y no se implementa nada, porque el comportamiento de hoy YA ES ÉSE: este
+     *  helper no mira `forzar_total_monto` y no tiene que empezar a mirarlo. Queda escrito para
+     *  que el próximo que lo lea no lo tome por un olvido de la misión que agregó el campo — que
+     *  es exactamente lo que le pasó al chequeo independiente que lo reportó.
+     *
      *  ⚠️ DIVERGENCIA CONOCIDA CON `AfipItemCalculator`, ANOTADA Y NO TOCADA (`AfipHelper/` está
      *  fuera del alcance de este arreglo): allá `sales.descuento` se aplica con la guarda
      *  `> 0`, o sea que un `descuento` NEGATIVO —que es como el sistema representa un recargo

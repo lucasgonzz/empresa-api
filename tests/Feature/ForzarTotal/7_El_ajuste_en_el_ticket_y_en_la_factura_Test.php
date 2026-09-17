@@ -3,8 +3,10 @@
 namespace Tests\Feature\ForzarTotal;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
+use App\Models\Budget;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 
 /**
@@ -207,6 +209,53 @@ class El_ajuste_en_el_ticket_y_en_la_factura_Test extends ForzarTotalTestCase
         return $espia->renglones;
     }
 
+    /**
+     * Imprime el bloque de descuentos y recargos del PDF del PRESUPUESTO y devuelve los renglones.
+     *
+     * Mismo criterio que los otros dos espias. `BudgetPdf` es la tercera clase de PDF de esta
+     * suite, asi que tambien se declara adentro del metodo: ver el bloque del encabezado.
+     *
+     * @param  \App\Models\Budget  $budget
+     * @return array
+     */
+    protected function renglones_del_pdf_del_presupuesto($budget)
+    {
+        $espia = new class($budget) extends BudgetPdf {
+
+            /** Cada texto que el bloque mando a imprimir, en orden. */
+            public $renglones = [];
+
+            public function __construct($budget)
+            {
+                $this->budget = $budget;
+                $this->with_prices = true;
+                $this->with_images = false;
+                $this->b = 0;
+                $this->line_height = 7;
+                $this->x = 0;
+                $this->y = 0;
+
+                /*
+                 * `total_original` lo acumula el recorrido de los renglones del PDF, uno por uno.
+                 * Acá se setea a mano con el bruto porque lo que se mide es el BLOQUE DE TOTALES,
+                 * no el dibujo de la tabla de items.
+                 */
+                $this->total_original = ForzarTotalTestCase::BRUTO;
+            }
+
+            public function Cell($w, $h = 0, $txt = '', $border = 0, $ln = 0, $align = '', $fill = false, $link = '')
+            {
+                $this->renglones[] = $txt;
+            }
+
+            public function SetFont($family, $style = '', $size = 0) {}
+        };
+
+        $espia->discountsSurchages();
+
+        return $espia->renglones;
+    }
+
     /*
      * ---------------------------------------------------------------------------------------
      *  El ticket de 80mm
@@ -386,6 +435,67 @@ class El_ajuste_en_el_ticket_y_en_la_factura_Test extends ForzarTotalTestCase
         $this->assertEmpty(
             $renglones,
             'sin descuentos ni forzado, el cuadro no tiene que imprimir nada: es el comportamiento de siempre'
+        );
+    }
+
+    /*
+     * ---------------------------------------------------------------------------------------
+     *  El PDF del presupuesto
+     * ---------------------------------------------------------------------------------------
+     */
+
+    /**
+     * Test 7 — el PDF del presupuesto explica el ajuste.
+     *
+     * Imprimia "Sub Total sin descuentos: $4.012" y abajo "Total: $4.000" —porque
+     * `BudgetHelper::getTotal()` si contempla el forzado— y NINGUNA fila explicaba los doce pesos.
+     * Los presupuestos estan adentro del alcance que fijo Lucas, y el eligio el desglose.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function el_pdf_del_presupuesto_muestra_el_ajuste()
+    {
+        $budget = new Budget();
+        $budget->total = self::FORZADO;
+        $budget->forzar_total_monto = self::MONTO;
+        $budget->aplicar_recargos_directo_a_items = 0;
+        $budget->setRelation('discounts', collect([]));
+        $budget->setRelation('surchages', collect([]));
+
+        $renglones = $this->renglones_del_pdf_del_presupuesto($budget);
+
+        $this->assertNotNull(
+            $this->renglon_con($renglones, 'Sub Total sin descuentos: $4.012'),
+            'el PDF tiene que decir de cuanto se partia. Renglones: '.json_encode($renglones)
+        );
+
+        $this->assertNotNull(
+            $this->renglon_con($renglones, '- $12 Ajuste del total'),
+            'el PDF tiene que tener la fila del ajuste. Renglones: '.json_encode($renglones)
+        );
+    }
+
+    /**
+     * Test 8 — NO REGRESION del PDF del presupuesto: sin forzado y sin descuentos no imprime nada.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function el_pdf_de_un_presupuesto_sin_forzar_no_cambia()
+    {
+        $budget = new Budget();
+        $budget->total = self::BRUTO;
+        $budget->forzar_total_monto = null;
+        $budget->aplicar_recargos_directo_a_items = 0;
+        $budget->setRelation('discounts', collect([]));
+        $budget->setRelation('surchages', collect([]));
+
+        $renglones = $this->renglones_del_pdf_del_presupuesto($budget);
+
+        $this->assertEmpty(
+            $renglones,
+            'sin forzado ni descuentos, el bloque de totales del presupuesto no imprime nada'
         );
     }
 }
