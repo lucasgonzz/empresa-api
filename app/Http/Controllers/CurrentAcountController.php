@@ -264,12 +264,53 @@ class CurrentAcountController extends Controller
 
         $valor = $this->dato_de_retencion($payment_method, $campo);
 
-        if (is_null($valor) || !is_numeric($valor)) {
+        if (is_null($valor)) {
+
+            return null;
+        }
+
+        $valor = self::normalizar_numero_escrito_a_mano($valor);
+
+        if (!is_numeric($valor)) {
 
             return null;
         }
 
         return (float) $valor;
+    }
+
+    /**
+     * Pasa un numero escrito a mano al formato que entiende PHP.
+     *
+     * El comercio copia estos dos campos del certificado de papel, y en Argentina eso se escribe
+     * "2.500,50": punto de miles y coma decimal. `is_numeric('2.500,50')` da false, asi que sin
+     * esto el dato se descartaba en silencio — el comercio escribia la base imponible, la veia en
+     * pantalla, y se guardaba NULL.
+     *
+     * Solo se toca el separador: lo que despues de esto sigue sin ser un numero (un "n/a", un
+     * "-") lo descarta igual el `is_numeric` de arriba, que es lo correcto.
+     *
+     * @param  string $valor
+     * @return string
+     */
+    private static function normalizar_numero_escrito_a_mano($valor) {
+
+        $valor = trim((string) $valor);
+
+        // Con coma Y punto, el ultimo es el decimal y el otro es separador de miles ("2.500,50" o
+        // "2,500.50"). Con una sola coma, es el decimal ("2500,50").
+        if (strpos($valor, ',') !== false && strpos($valor, '.') !== false) {
+
+            $valor = (strrpos($valor, ',') > strrpos($valor, '.'))
+                        ? str_replace(['.', ','], ['', '.'], $valor)
+                        : str_replace(',', '', $valor);
+
+        } else if (strpos($valor, ',') !== false) {
+
+            $valor = str_replace(',', '.', $valor);
+        }
+
+        return $valor;
     }
 
     /**

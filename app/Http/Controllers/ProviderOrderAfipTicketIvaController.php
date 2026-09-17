@@ -66,6 +66,19 @@ class ProviderOrderAfipTicketIvaController extends Controller
             return response()->json(['message' => self::MENSAJE_MODO_AUTOMATICO], 422);
         }
 
+        /*
+         * Se guarda la factura ANTERIOR antes de pisarla, por el mismo motivo que en `destroy()`:
+         * si la alícuota cambia de comprobante, la que la pierde también cambió de total y hay que
+         * recalcularla. Recalcular solo la nueva deja a la vieja sumando un renglón que ya no
+         * tiene — el mismo agujero que `ProviderOrderAfipTicketController::update()` resuelve por
+         * la puerta de al lado.
+         *
+         * Hoy el formulario no ofrece mover una alícuota entre facturas, así que no hay caso
+         * alcanzable. Se hace igual porque la asimetría entre los dos controllers es justamente lo
+         * que hace que dentro de seis meses alguien dé esto por cubierto.
+         */
+        $ticket_id_anterior = $model->provider_order_afip_ticket_id;
+
         $model->provider_order_afip_ticket_id       = $request->provider_order_afip_ticket_id;
         $model->iva_id                              = $request->iva_id;
         $model->neto                                = $request->neto;
@@ -74,6 +87,11 @@ class ProviderOrderAfipTicketIvaController extends Controller
         $this->sendAddModelNotification('ProviderOrderAfipTicketIva', $model->id);
 
         $this->recalcular_factura_y_compra($model->provider_order_afip_ticket_id);
+
+        if ($ticket_id_anterior != $model->provider_order_afip_ticket_id) {
+
+            $this->recalcular_factura_y_compra($ticket_id_anterior);
+        }
 
         return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicketIva', $model->id)], 200);
     }

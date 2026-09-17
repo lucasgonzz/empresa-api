@@ -158,8 +158,22 @@ class ModoFacturacionHelper
          * calculó `redondear_ivas_sin_diferencia()`, y la columna es `decimal(20,2)`: releerlas da
          * exactamente lo mismo que sumar `$ivas` a mano. Se relee igual para no tener dos cuentas
          * que se puedan ir separando.
+         *
+         * 🔴 SIN ALICUOTAS SE PASA `0` EXPLICITO, Y ACA ESO ES DISTINTO QUE EN UNA FACTURA MANUAL.
+         *
+         * `guardar_totales()` tiene una rama para el comprobante SIN desglose, donde el total no es
+         * derivable de nada y por eso se conserva — es lo que salva al Monotributista y a la Factura
+         * C de quedar en cero. Pero en modo AUTOMATICO el desglose SI es autoritativo: lo calcula el
+         * sistema desde los articulos de la compra, asi que cero filas quiere decir cero de verdad.
+         *
+         * `get_ivas()` devuelve `[]` cuando ninguna linea tiene `iva_id > 0` — le sacaron los
+         * articulos a la compra, o todos perdieron la alicuota. Sin este `0`, una factura de $1.210
+         * a la que se le vacian los articulos se queda en $1.210 para siempre, y con
+         * `total_from_provider_order_afip_tickets` prendido arrastra el total de la compra y la
+         * deuda con el proveedor. Es el mismo silencio que esta mision vino a tapar, pero al reves:
+         * plata vieja que no baja.
          */
-        FacturaDeCompraHelper::guardar_totales($ticket);
+        FacturaDeCompraHelper::guardar_totales($ticket, count($ivas) === 0 ? 0 : null);
     }
 
     /**

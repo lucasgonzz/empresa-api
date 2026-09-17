@@ -1211,4 +1211,120 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
             'Y la deuda con el proveedor tampoco se mueve.'
         );
     }
+
+    /**
+     * 🔴 En modo AUTOMATICO, quedarse sin alícuotas SI baja el total a cero — y es lo contrario del
+     * caso manual.
+     *
+     * El invariante "sin desglose el total se conserva" existe para el comprobante cuyo total NO es
+     * derivable: el del Monotributista, el comprobante aparte de un costo extra, la Factura C. Ahí
+     * cero filas no quiere decir cero pesos, quiere decir "este comprobante no discrimina IVA".
+     *
+     * En modo automático es al revés: el desglose lo calcula el sistema desde los artículos de la
+     * compra, así que es autoritativo. Si `get_ivas()` devuelve `[]` —le sacaron los artículos, o
+     * todos perdieron la alícuota— la factura vale cero de verdad.
+     *
+     * Sin la distinción, una factura de $1.210 a la que se le vacían los artículos se queda en
+     * $1.210 para siempre, y con `total_from_provider_order_afip_tickets` prendido arrastra el
+     * total de la compra y la deuda con el proveedor. Es el mismo silencio que esta misión vino a
+     * tapar, pero al revés: plata vieja que no baja.
+     *
+     * Lo encontró el revisor de merge.
+     *
+     * @group compras
+     * @test
+     */
+    public function en_modo_automatico_quedarse_sin_articulos_baja_el_total_de_la_factura_a_cero()
+    {
+        $overrides = [
+            'modo_facturacion'                       => 'automatico',
+            'total_from_provider_order_afip_tickets' => 1,
+            'generate_current_acount'                => 1,
+        ];
+
+        $compra = $this->crear_compra($overrides);
+
+        $factura = $this->factura_automatica_de($compra);
+
+        $this->assertNotNull($factura, 'El modo automático tiene que haber creado la factura de la compra.');
+
+        $this->assertEqualsWithDelta(
+            1210,
+            (float) $factura->total,
+            self::DELTA,
+            'Punto de partida: un artículo de 1000 al 21%.'
+        );
+
+        // Se vuelve a guardar la compra SIN artículos. `get_ivas()` devuelve [] y el desglose queda
+        // vacío.
+        $sin_articulos = array_merge($overrides, ['articles' => []]);
+
+        $this->volver_a_guardar_la_compra($compra, $sin_articulos)->assertStatus(200);
+
+        $factura->refresh();
+        $compra->refresh();
+
+        $this->assertCount(
+            0,
+            $factura->provider_order_afip_ticket_ivas()->get(),
+            'Sin artículos con alícuota no queda ninguna fila de desglose.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $factura->total,
+            self::DELTA,
+            '🔴 En modo automático el desglose manda: sin alícuotas la factura vale cero, no el total viejo.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $compra->total,
+            self::DELTA,
+            '🔴 Y el total de la compra baja con ella.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $this->current_acount_de($compra->id)->debe,
+            self::DELTA,
+            '🔴 Y la deuda con el proveedor también: no le quedan debiendo $1.210 de una compra vacía.'
+        );
+    }
+
+    /**
+     * La contracara del test de arriba, para que la distinción quede fijada por los dos lados: en
+     * modo MANUAL, una factura que se queda sin su última alícuota CONSERVA su total.
+     *
+     * Es el comportamiento que salva al Monotributista y a la Factura C. Si alguien "arregla" el
+     * caso automático generalizándolo a los dos, este test se pone rojo.
+     *
+     * @group compras
+     * @test
+     */
+    public function en_modo_manual_quedarse_sin_alicuotas_conserva_el_total_de_la_factura()
+    {
+        $compra = $this->crear_compra(['modo_facturacion' => 'manual']);
+
+        $factura = $this->crear_factura($compra->id);
+
+        $alicuota = $this->agregar_alicuota($factura->id, 1000, 210);
+
+        $alicuota->assertStatus(201);
+
+        $factura->refresh();
+
+        $this->assertEqualsWithDelta(1210, (float) $factura->total, self::DELTA, 'Punto de partida.');
+
+        $this->deleteJson('api/provider-order-afip-ticket-iva/'.$alicuota->json('model.id'))->assertStatus(200);
+
+        $factura->refresh();
+
+        $this->assertEqualsWithDelta(
+            1210,
+            (float) $factura->total,
+            self::DELTA,
+            '🔴 Sin desglose el total no es derivable de nada, así que se conserva. Bajarlo a 0 es la pérdida silenciosa que el invariante evita.'
+        );
+    }
 }
