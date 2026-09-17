@@ -198,7 +198,7 @@ class Ganancia_de_venta_nacida_de_presupuesto_Test extends TestCase
 
         $this->assertNotNull(
             $sale->ganancia,
-            'sales.ganancia quedo en NULL: saveSate() llamaba a set_total_cost() y nunca a set_sale_ganancia()'
+            'sales.ganancia quedo en NULL: saveSale() llamaba a set_total_cost() y nunca a set_sale_ganancia()'
         );
 
         /** Sin comprobante de AFIP el IVA declarado es 0, asi que la ganancia es total − costo. */
