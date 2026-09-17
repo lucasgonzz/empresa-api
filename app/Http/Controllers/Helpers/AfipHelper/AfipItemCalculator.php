@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\AfipHelper;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
 use Illuminate\Support\Facades\Log;
 
 class AfipItemCalculator
@@ -277,9 +278,111 @@ class AfipItemCalculator
             if ($porcentaje_puntos > 0) {
                 $price -= $price * $porcentaje_puntos / 100;
             }
+
+            /**
+             * El total forzado (misión forzar-total-por-monto, 17/9/2026), último de todo.
+             *
+             * ─────────────────────────────────────────────────────────────────────────────
+             *  🔴 POR QUÉ UN FACTOR SOBRE CADA RENGLÓN Y NO UNA RESTA AL FINAL DE LA FACTURA
+             * ─────────────────────────────────────────────────────────────────────────────
+             *
+             *  Es el mismo motivo que ya está escrito largo para el canje por puntos, unas
+             *  líneas más abajo, y vale igual acá: este calculador arma el total del comprobante
+             *  SUMANDO LOS RENGLONES, no leyendo `sale->total`. Restar los pesos del forzado al
+             *  final obligaría a decidir a mano de qué alícuota salen, y ahí el desglose que ARCA
+             *  valida (neto gravado por alícuota + IVA por alícuota = Importe Total) deja de
+             *  cerrar y el comprobante se rechaza. Escalando cada renglón por el mismo factor, el
+             *  IVA se reparte en la misma proporción que el resto de la factura y las cuentas
+             *  cierran solas — y una nota de crédito parcial devuelve la parte que le toca del
+             *  forzado sin una línea extra.
+             *
+             *  Escalar es correcto tanto si el precio viene con IVA como si viene neto: el factor
+             *  es adimensional y se aplica antes de que `get_price_sin_iva()` separe la base.
+             */
+            $factor_forzado = $this->get_factor_total_forzado();
+
+            if ($factor_forzado != 1.0) {
+                $price *= $factor_forzado;
+            }
         // }
 
         return $price;
+    }
+
+    /**
+     * El factor por el que hay que escalar cada renglón para que la factura dé el total forzado.
+     *
+     *     base   = sale->total - sale->forzar_total_monto   (el total ANTES del forzado)
+     *     factor = sale->total / base
+     *
+     * Con ese factor, la suma de los renglones —que sin él daría `base`— da `sale->total`, que es
+     * el número que el vendedor le cobró al cliente y el único que puede ir en la factura.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 LA GUARDA DE REENTRADA NO SE PUEDE SACAR: DEVUELVE 1 MIENTRAS SE ARMA EL BRUTO
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  `get_bruto_facturable_de_la_venta()` suma los renglones llamando a
+     *  `get_article_price_with_discounts()`, que es justamente donde se aplica este factor. Ese
+     *  bruto es el denominador del porcentaje del canje por puntos. Si el factor entrara también
+     *  ahí, el bruto quedaría escalado y la cuenta del canje se desarmaría:
+     *
+     *      con el factor adentro del bruto:  (bruto·f)·(1 − canje/(bruto·f)) = bruto·f − canje
+     *      lo que tiene que dar:             (bruto − canje)·f               = bruto·f − canje·f
+     *
+     *  O sea que el canje quedaría sin escalar y el total de la factura se pasaría del forzado en
+     *  exactamente `canje · (f − 1)`. Con la guarda, el bruto es el total SIN forzar, el
+     *  porcentaje del canje sale correcto y la suma final da `(bruto − canje) · f = sale->total`.
+     *
+     *  Es la misma guarda, por el mismo motivo, que ya usa `get_porcentaje_descuento_puntos()`.
+     *
+     * ⚠️ Y NO SE DIVIDE SI LA BASE ES CERO O NEGATIVA. Pasa con un forzado que se come la venta
+     * entera (el vendedor bajó el total a 0) o con una venta cuyos renglones cambiaron después de
+     * forzar. Dividir ahí daría una división por cero o un factor negativo que mandaría importes
+     * negativos a ARCA — que los rechaza. Se factura sin escalar y se deja dicho en el log, que es
+     * el mismo criterio que toma el canje cuando su bruto no da.
+     *
+     * @return float  1.0 si no hay nada que escalar.
+     */
+    public function get_factor_total_forzado()
+    {
+        /**
+         * Mientras se arma el bruto facturable, el forzado no existe. Ver el bloque de arriba.
+         */
+        if ($this->calculando_bruto_de_la_venta) {
+            return 1.0;
+        }
+
+        /** @var \App\Models\Sale|null $sale Venta sobre la que se está facturando. */
+        $sale = $this->afip_helper->sale;
+
+        if (is_null($sale)) {
+            return 1.0;
+        }
+
+        /** @var float $monto Monto con signo del forzado. 0 = la venta no se forzó. */
+        $monto = SaleHelper::get_forzar_total_monto($sale);
+
+        if ($monto == 0) {
+            return 1.0;
+        }
+
+        /** @var float $total El total final de la venta, que ya tiene el forzado adentro. */
+        $total = (float) $sale->total;
+
+        /** @var float $base El total antes del forzado: lo que suman los renglones por su cuenta. */
+        $base = $total - $monto;
+
+        if ($base <= 0) {
+            Log::warning(
+                'AfipItemCalculator: la venta '.$sale->id.' tiene forzar_total_monto ('.$monto.
+                ') pero su total antes del forzado es '.$base.'. No se puede prorratear: se factura sin escalar.'
+            );
+
+            return 1.0;
+        }
+
+        return $total / $base;
     }
 
     /**
