@@ -11,13 +11,14 @@ use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Imports\ProviderOrderArticleImport;
 use App\Jobs\ProcessProviderOrderArticleImport;
+use App\Models\ImportHistory;
+use App\Models\ImportStatus;
 use App\Models\ProviderOrder;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Maatwebsite\Excel\Facades\Excel;
 
 class ProviderOrderController extends Controller
 {
@@ -187,29 +188,62 @@ class ProviderOrderController extends Controller
         return response(null);
     }
 
+    /**
+     * Recibe el Excel de artículos de una compra y despacha su procesamiento a la cola: hasta la
+     * misión `import-excel-compras-chunks` (14/9/2026) esto corría síncrono dentro del request
+     * (Excel::import de un solo tiro), lo que hacía que un archivo de 500-700 filas arriesgara el
+     * max_execution_time del servidor. Ahora el request solo prepara el tracking y responde; el
+     * trabajo real lo hace ProcessProviderOrderArticleImport, y el frontend se entera del avance
+     * por el mismo mecanismo (ImportStatus + WebSocket) que ya usa la importación de artículos.
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     */
     function import_excel_articles(Request $request) {
+
+        $user = $this->user();
+
+        /*
+         * 🔴 Mismo guard que InitExcelImport::tiene_importacion_en_curso() (import de artículos):
+         * sin esto, dos imports concurrentes del mismo usuario (doble click, o reabrir el modal
+         * para otra compra mientras la anterior todavía procesa) pueden correr
+         * attach_articles()/procesar_pedido() en paralelo sobre la MISMA compra si
+         * update_stock=1 (el default), duplicando el StockMovement generado. Antes de esta
+         * misión el import era síncrono y el botón quedaba deshabilitado durante todo el
+         * proceso; ahora el modal se cierra apenas se despacha el job, así que la ventana para
+         * disparar esto por accidente es mucho más ancha. Chequeo temprano, antes de guardar el
+         * archivo, para no gastar esa escritura si de entrada no va a procesarse.
+         */
+        if (ImportHistory::where('user_id', $user->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->exists()) {
+            return response()->json([
+                'message' => 'Ya tenés una importación en curso. Esperá a que termine antes de iniciar otra.',
+            ], 409);
+        }
 
         $columns = GeneralHelper::getImportColumns($request);
 
-        Log::info('columns provider_order:');
-        Log::info($columns);
-
         if ($request->has('models') && $request->file('models')->isValid()) {
 
-            Log::info('se va a guardar archivo');
-            Log::info($request->file('models'));
-
             $original_extension = 'xlsx';
-            // $original_extension = $request->file('models')->getClientOriginalExtension();
-            
-            $filename = 'import_' . time() . '.' . $original_extension;
-            $archivo_excel_path = $request->file('models')->storeAs('imported_files', $filename);
 
-            Log::info($archivo_excel_path);
+            /*
+             * 'import_' . time() (sin más entropía) es el patrón que usan también el import de
+             * artículos/clientes/proveedores. Con un procesamiento SÍNCRONO eso nunca importó: el
+             * archivo se leía en el mismo request, milisegundos después de guardarse. Desde esta
+             * misión (14/9/2026) el de compras quedó asíncrono, con una ventana real entre
+             * guardar y leer (hasta que el worker levanta el job) — y dos imports de CUALQUIER
+             * modelo en el mismo segundo pueden pisarse el archivo en `imported_files/`.
+             * Medido de verdad: corriendo esta suite en paralelo con tests/Import, este job leyó
+             * el fixture de OTRO test ("Barcode repetido nuevo") porque compartían el mismo
+             * nombre. uniqid() (microtime con más precisión) saca a compras de esa colisión; los
+             * otros importadores siguen expuestos entre sí, pero eso es preexistente y está fuera
+             * de esta misión.
+             */
+            $filename = 'import_provider_order_' . time() . '_' . uniqid() . '.' . $original_extension;
+            $archivo_excel_path = $request->file('models')->storeAs('imported_files', $filename);
 
         } else if ($request->has('archivo_excel_path')) {
 
-            Log::info('ya viene la ruta del archivo');
             $archivo_excel_path = $request->archivo_excel_path;
 
         } else {
@@ -217,59 +251,119 @@ class ProviderOrderController extends Controller
             Log::info($request->file('models')->getError());
         }
 
-        Log::info('archivo_excel_path: '.$archivo_excel_path);
-        $archivo_excel = storage_path('app/' . $archivo_excel_path);
-
-        $user = $this->user();
-
         $provider_order = ProviderOrder::find($request->provider_order_id);
 
+        if (is_null($provider_order)) {
+            return response()->json(['message' => 'No se encontró la compra a importar'], 404);
+        }
 
         $import_type        = $request->input('import_type', 'pedido');
         $overwrite_articles = $request->boolean('overwrite_articles', false);
+        $start_row          = $request->start_row;
+        $finish_row         = $request->finish_row;
+
+        /*
+         * Hoja elegida por el usuario, 0-based. Las dos claves son OPCIONALES: ausentes => hoja
+         * 0, que es la primera y lo que veia un cliente viejo. El NOMBRE le gana al indice (ver
+         * ProviderOrderArticleImport::sheets()).
+         */
+        $hoja        = $request->input('hoja', 0);
+        $hoja_nombre = $request->input('hoja_nombre');
 
         try {
-            /*
-             * Hoja elegida por el usuario, 0-based. Las dos claves son OPCIONALES:
-             * ausentes => hoja 0, que es la primera y lo que veia un cliente viejo.
-             *
-             * ⚠️ Hasta esta mision Maatwebsite recorria TODAS las hojas del libro, y aca
-             * eso significaba procesar la compra una vez por hoja (ver
-             * ProviderOrderArticleImport::sheets()). Ahora se recorre una sola.
-             */
-            Excel::import(new ProviderOrderArticleImport(
+
+            $total_chunks = ProviderOrderArticleImport::calcular_total_chunks($start_row, $finish_row);
+
+            $import_status = ImportStatus::create([
+                'user_id'           => $user->id,
+                'provider_id'       => $provider_order->provider_id,
+                'provider_order_id' => $provider_order->id,
+                'total_chunks'      => $total_chunks,
+                'processed_chunks'  => 0,
+                'created_models'    => 0,
+                'updated_models'    => 0,
+                'articles_match'    => 0,
+                'filas_procesadas'  => 0,
+                'status'            => 'pendiente',
+            ]);
+
+            $import_history = ImportHistory::create([
+                'user_id'           => $user->id,
+                'model_name'        => 'provider_order',
+                'provider_id'       => $provider_order->provider_id,
+                'provider_order_id' => $provider_order->id,
+                'total_chunks'      => $total_chunks,
+                'processed_chunks'  => 0,
+                'created_models'    => 0,
+                'updated_models'    => 0,
+                'status'            => 'en_preparacion',
+                'observations'      => 'Importación de excel de la compra #' . $provider_order->id . ' (' . $import_type . ')',
+            ]);
+
+            ProcessProviderOrderArticleImport::dispatch(
                 $columns,
-                $request->start_row,
-                $request->finish_row,
+                $start_row,
+                $finish_row,
                 $user,
                 $provider_order,
                 $import_type,
                 $overwrite_articles,
-                $request->input('hoja', 0),
-                $request->input('hoja_nombre'),
-            ), $archivo_excel_path);
+                $hoja,
+                $hoja_nombre,
+                $archivo_excel_path,
+                $import_status->id,
+                $import_history->id
+            );
+
         } catch (\Throwable $exception) {
-            Log::error('Error al importar Excel de compra a proveedor', [
+            Log::error('Error al preparar la importación de Excel de compra a proveedor', [
                 'provider_order_id' => $request->provider_order_id,
                 'message' => $exception->getMessage(),
             ]);
 
             $error_payload = ImportHelper::buildImportErrorPayload(
                 $exception,
-                'Hubo un error durante la importación de artículos de la compra'
+                'Hubo un error al iniciar la importación de artículos de la compra'
             );
 
             return response()->json($error_payload, 422);
         }
 
-        // ProcessProviderOrderArticleImport::dispatch($columns, $request->start_row, $request->finish_row, $owner, $provider_order, $archivo_excel_path);
+        return response(null, 200);
+    }
 
-        if ($import_type === 'recibido') {
-            $diff = $this->calculate_received_diff($provider_order);
-            return response()->json(['diff' => $diff], 200);
+    /**
+     * Diff pedido/recibido de la última importación en modo 'recibido' de esta compra. El
+     * frontend lo pide cuando ve, por WebSocket, que el ImportStatus de esta compra llegó a
+     * 'completado' — antes de la misión `import-excel-compras-chunks` (14/9/2026) este dato viajaba
+     * en la respuesta HTTP directa del import, que ahora responde antes de que el procesamiento
+     * exista.
+     *
+     * @param int $id ID de la ProviderOrder.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function import_diff($id) {
+
+        /*
+         * 🔴 Escopado por user_id — sin esto, cualquier usuario autenticado podía pedir el diff
+         * de una ProviderOrder de OTRO comercio con solo cambiar el id en la URL. Grave en las
+         * bases compartidas por varios comercios (ver contexto del proyecto: u767360347_empresa
+         * tiene 51 comercios en una sola base, con ids de ProviderOrder correlativos entre
+         * todos). Mismo criterio que index()/pdf() de este controlador.
+         */
+        $import_history = ImportHistory::where('provider_order_id', $id)
+            ->where('model_name', 'provider_order')
+            ->where('user_id', $this->userId())
+            ->orderBy('id', 'desc')
+            ->first();
+
+        $diff = [];
+
+        if (!is_null($import_history) && !is_null($import_history->operaciones)) {
+            $diff = $import_history->operaciones['diff'] ?? [];
         }
 
-        return response(null, 200);
+        return response()->json(['diff' => $diff], 200);
     }
 
     /**
@@ -288,35 +382,5 @@ class ProviderOrderController extends Controller
         }
 
         new ProviderOrderPdf($model);
-    }
-
-    private function calculate_received_diff($provider_order) {
-
-        $provider_order->load('articles');
-
-        return $provider_order->articles->map(function ($article) {
-            $amount   = $article->pivot->amount;
-            $received = $article->pivot->received;
-            $diff     = $received - $amount;
-
-            if ($received == $amount) {
-                $status = 'completo';
-            } elseif ($received == 0) {
-                $status = 'no_recibido';
-            } elseif ($received > $amount) {
-                $status = 'exceso';
-            } else {
-                $status = 'parcial';
-            }
-
-            return [
-                'id'       => $article->id,
-                'name'     => $article->name,
-                'pedida'   => $amount,
-                'recibida' => $received,
-                'diff'     => $diff,
-                'status'   => $status,
-            ];
-        })->values();
     }
 }

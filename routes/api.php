@@ -483,6 +483,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('provider-order', 'ProviderOrderController');
     Route::post('provider-order/excel/import', 'ProviderOrderController@import_excel_articles');
+    Route::get('provider-order/{id}/import-diff', 'ProviderOrderController@import_diff');
     Route::get('provider-order/from-date/{from_date?}/{until_date?}', 'ProviderOrderController@index');
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');

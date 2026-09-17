@@ -16,6 +16,13 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
 {
 
     /**
+     * Cada cuántas filas se invoca $on_progress. Con 700 filas son 14 avisos: suficiente
+     * granularidad para la barra de progreso sin recargar de updates la base (misión
+     * `import-excel-compras-chunks`, 14/9/2026).
+     */
+    const FILAS_POR_AVISO_DE_PROGRESO = 50;
+
+    /**
      * Indice 0-based de la hoja a importar. Default 0 = primera hoja.
      *
      * @var int
@@ -41,6 +48,40 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
     public $current_pivot_by_article_id;
 
     /**
+     * Diff pedido/recibido de esta compra, calculado al final de collection() cuando
+     * import_type === 'recibido'. Queda en null hasta que collection() corre; en [] si el modo
+     * de importación no es 'recibido'.
+     *
+     * @var array|null
+     */
+    public $diff = null;
+
+    /** @var int Cuántas filas resolvieron en un Article::create() nuevo. */
+    public $creados = 0;
+
+    /** @var int Cuántas filas resolvieron en un artículo ya existente. */
+    public $actualizados = 0;
+
+    /**
+     * Callback opcional, invocado cada FILAS_POR_AVISO_DE_PROGRESO filas con
+     * (int $filas_de_este_lote, int $num_row_actual). Lo usa
+     * App\Jobs\ProcessProviderOrderArticleImport para reportar avance en ImportStatus/
+     * ImportHistory sin que este importador conozca esos modelos.
+     *
+     * @var callable|null
+     */
+    protected $on_progress;
+
+    /** @var array<string,\App\Models\Article> Indice precargado por bar_code. */
+    protected $articulos_por_bar_code = [];
+
+    /** @var array<string,\App\Models\Article> Indice precargado por provider_code. */
+    protected $articulos_por_provider_code = [];
+
+    /** @var array<string,\App\Models\Article> Indice precargado por name. */
+    protected $articulos_por_name = [];
+
+    /**
      * @param array       $columns
      * @param int         $start_row
      * @param int|null    $finish_row
@@ -50,13 +91,14 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
      * @param bool        $overwrite_articles
      * @param int         $hoja         Indice 0-based de hoja. OPCIONAL: default 0.
      * @param string|null $hoja_nombre  Nombre de la hoja elegida. OPCIONAL: default null.
+     * @param callable|null $on_progress OPCIONAL: ver arriba.
      */
-    public function __construct($columns, $start_row, $finish_row, $user, $provider_order, $import_type = 'pedido', $overwrite_articles = false, $hoja = 0, $hoja_nombre = null) {
+    public function __construct($columns, $start_row, $finish_row, $user, $provider_order, $import_type = 'pedido', $overwrite_articles = false, $hoja = 0, $hoja_nombre = null, $on_progress = null) {
 
         /*
-         * Los dos ultimos parametros son OPCIONALES y con default a proposito:
-         * app/Jobs/ProcessProviderOrderArticleImport.php construye esta clase con cinco
-         * argumentos y esta fuera del alcance de esta mision.
+         * Los dos anteultimos parametros son OPCIONALES y con default a proposito: el job que
+         * los despacha puede haber quedado desactualizado (paso a paso el historial del proyecto),
+         * y un job viejo serializado con menos argumentos tiene que poder seguir andando.
          */
         $this->hoja = (is_numeric($hoja) && (int) $hoja >= 0) ? (int) $hoja : 0;
         $this->hoja_nombre = (is_string($hoja_nombre) && trim($hoja_nombre) !== '')
@@ -70,6 +112,7 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         $this->provider_order     = $provider_order;
         $this->import_type        = $import_type;
         $this->overwrite_articles = $overwrite_articles;
+        $this->on_progress        = is_callable($on_progress) ? $on_progress : null;
 
         $this->articles           = [];
         $this->trabajo_terminado  = false;
@@ -109,9 +152,30 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         return [$this->hoja => $this];
     }
 
+    /**
+     * Cantidad de "chunks lógicos" (avisos de progreso) que va a emitir collection() para un
+     * rango de filas dado. La usa el controller para poblar total_chunks en ImportStatus/
+     * ImportHistory ANTES de despachar el job, con la misma fórmula que collection() usa para
+     * decidir cuándo avisar — si divergieran, la barra de progreso nunca llegaría a 100% o se
+     * pasaría de largo.
+     *
+     * @param int $start_row
+     * @param int $finish_row
+     * @return int Nunca menor a 1, para no dividir por cero en el cálculo de porcentaje del front.
+     */
+    public static function calcular_total_chunks($start_row, $finish_row)
+    {
+        $total_filas = max(0, (int) $finish_row - (int) $start_row + 1);
+
+        return (int) max(1, ceil($total_filas / self::FILAS_POR_AVISO_DE_PROGRESO));
+    }
+
     public function collection(Collection $rows)
     {
+        $this->precargar_indice_de_articulos($rows);
+
         $num_row = 1;
+        $filas_desde_ultimo_aviso = 0;
 
         foreach ($rows as $row) {
 
@@ -124,9 +188,21 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
                 if (!is_null($article)) {
                     $this->add_article($article, $row, $num_row);
                 }
+
+                $filas_desde_ultimo_aviso++;
+
+                if (!is_null($this->on_progress) && $filas_desde_ultimo_aviso >= self::FILAS_POR_AVISO_DE_PROGRESO) {
+                    call_user_func($this->on_progress, $filas_desde_ultimo_aviso, $num_row);
+                    $filas_desde_ultimo_aviso = 0;
+                }
             }
 
             $num_row++;
+        }
+
+        // Aviso final por lo que quedó sin cerrar un lote completo de FILAS_POR_AVISO_DE_PROGRESO.
+        if ($filas_desde_ultimo_aviso > 0 && !is_null($this->on_progress)) {
+            call_user_func($this->on_progress, $filas_desde_ultimo_aviso, $num_row - 1);
         }
 
         $ya_se_actualizo_stock = $this->provider_order->update_stock;
@@ -138,6 +214,77 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         ModoFacturacionHelper::check_modo_facturacion($this->provider_order, $helper);
 
         $helper->procesar_pedido();
+
+        // El diff pedido/recibido necesita los pivots YA actualizados por attach_articles() de
+        // arriba, por eso se calcula acá y no antes.
+        $this->diff = $this->import_type === 'recibido'
+            ? $this->calculate_received_diff()
+            : [];
+    }
+
+    /**
+     * Precarga en memoria los artículos candidatos de TODO el rango en hasta 3 queries (una por
+     * criterio de búsqueda), en vez de la query por fila que hacía get_article() antes de esta
+     * misión — con 700 filas eso eran hasta 700 roundtrips secuenciales a la base durante el
+     * mismo proceso. Sigue sin poder precargar lo que todavía no existe: crear un artículo nuevo
+     * sigue pasando fila por fila en get_article().
+     *
+     * @param Collection $rows
+     * @return void
+     */
+    protected function precargar_indice_de_articulos(Collection $rows)
+    {
+        $bar_codes      = [];
+        $provider_codes = [];
+        $names          = [];
+
+        $num_row = 1;
+
+        foreach ($rows as $row) {
+
+            if ($num_row >= $this->start_row && $num_row <= $this->finish_row) {
+
+                $bar_code      = ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns);
+                $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
+                $name          = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+
+                // Mismo orden de prioridad que get_article(): una fila consulta UN solo criterio,
+                // el primero de los tres que venga cargado.
+                if (!is_null($bar_code)) {
+                    $bar_codes[] = $bar_code;
+                } else if (!is_null($provider_code)) {
+                    $provider_codes[] = $provider_code;
+                } else if (!is_null($name)) {
+                    $names[] = $name;
+                }
+            }
+
+            $num_row++;
+        }
+
+        if (count($bar_codes) > 0) {
+            $this->articulos_por_bar_code = Article::where('user_id', $this->user->id)
+                ->whereIn('bar_code', array_unique($bar_codes))
+                ->get()
+                ->keyBy('bar_code')
+                ->all();
+        }
+
+        if (count($provider_codes) > 0) {
+            $this->articulos_por_provider_code = Article::where('user_id', $this->user->id)
+                ->whereIn('provider_code', array_unique($provider_codes))
+                ->get()
+                ->keyBy('provider_code')
+                ->all();
+        }
+
+        if (count($names) > 0) {
+            $this->articulos_por_name = Article::where('user_id', $this->user->id)
+                ->whereIn('name', array_unique($names))
+                ->get()
+                ->keyBy('name')
+                ->all();
+        }
     }
 
     function load_current_pivots() {
@@ -180,22 +327,6 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         $received = ImportHelper::parseNumericValue($received_raw, 'cantidad recibida', $row_number);
         $cost     = ImportHelper::parseNumericValue($cost_raw, 'costo', $row_number);
 
-        // $current = $this->get_current_pivot($article->id);
-        // $model_defaults = $this->get_model_defaults($article, $current);
-
-        // $final_amount = $this->import_type === 'recibido'
-        //     ? $current['amount']
-        //     : $amount;
-
-        // $final_received = $this->import_type === 'recibido'
-        //     ? $received
-        //     : $current['received'];
-
-        // // Solo se toma del excel: amount/received, cost y notes.
-        // // Si cost o notes vienen vacios en excel, se guardan vacios en pivot.
-        // $final_cost = $cost;
-        // $final_notes = $notes;
-
         $this->articles[] = [
             'id'           => $article->id,
             'status'       => $article->status,
@@ -209,7 +340,6 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
                 'price'           => $article->price,
                 'iva_id'          => $article->iva_id,
                 'cost_in_dollars' => $article->cost_in_dollars,
-                // 'amount_pedida'   => $current['amount_pedida'],
                 'update_provider' => 0,
             ],
         ];
@@ -250,35 +380,28 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
         $name         = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
 
-        $query = Article::where('user_id', $this->user->id);
+        $article = null;
 
         if (!is_null($bar_code)) {
-
-            Log::info('Buscando por bar_code: '.$bar_code);
-            $query->where('bar_code', $bar_code);
-
+            $article = $this->articulos_por_bar_code[$bar_code] ?? null;
         } else if (!is_null($provider_code)) {
-
-            Log::info('Buscando por provider_code: '.$provider_code);
-            $query->where('provider_code', $provider_code);
-
+            $article = $this->articulos_por_provider_code[$provider_code] ?? null;
         } else if (!is_null($name)) {
-
-            Log::info('Buscando por name: '.$name);
-            $query->where('name', $name);
-
+            $article = $this->articulos_por_name[$name] ?? null;
+        } else {
+            /*
+             * Fila sin ningún identificador: comportamiento preexistente (no introducido por esta
+             * misión), que esta query replica tal cual — Article::where('user_id', ...)->first()
+             * sin ningún otro filtro. No se precarga porque no hay con qué indexarlo.
+             */
+            $article = Article::where('user_id', $this->user->id)->first();
         }
-
-        $article = $query->first();
 
         if (is_null($article)) {
 
             if ($this->import_type === 'recibido') {
-                Log::info('No se encontro article para recibido (no se crea)');
                 return null;
             }
-
-            Log::info('No se encontro article, se crea inactivo');
 
             $article = Article::create([
                 'bar_code'     => $bar_code,
@@ -289,10 +412,62 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
                 'user_id'      => $this->user->id,
             ]);
 
+            $this->creados++;
+
+            // Un artículo recién creado por esta fila puede volver a matchear en una fila
+            // posterior del MISMO archivo (mismo identificador repetido): sin esto, el índice
+            // precargado no lo conoce y la fila siguiente crearía un duplicado.
+            if (!is_null($bar_code)) {
+                $this->articulos_por_bar_code[$bar_code] = $article;
+            } else if (!is_null($provider_code)) {
+                $this->articulos_por_provider_code[$provider_code] = $article;
+            } else if (!is_null($name)) {
+                $this->articulos_por_name[$name] = $article;
+            }
         } else {
-            Log::info('Se encontro article '.$article->id);
+            $this->actualizados++;
         }
 
         return $article;
+    }
+
+    /**
+     * Diff pedido/recibido de esta compra: cuánto se pidió de cada artículo contra cuánto se
+     * marcó como recibido, con los pivots YA actualizados por attach_articles(). Vivía en
+     * ProviderOrderController::calculate_received_diff() hasta la misión
+     * `import-excel-compras-chunks` (14/9/2026); se movió acá porque el job asíncrono ya no
+     * tiene una respuesta HTTP donde devolverlo — lo calcula acá y lo deja en $this->diff para
+     * que el job lo persista donde el frontend lo pueda pedir después.
+     *
+     * @return array
+     */
+    public function calculate_received_diff() {
+
+        $this->provider_order->load('articles');
+
+        return $this->provider_order->articles->map(function ($article) {
+            $amount   = $article->pivot->amount;
+            $received = $article->pivot->received;
+            $diff     = $received - $amount;
+
+            if ($received == $amount) {
+                $status = 'completo';
+            } elseif ($received == 0) {
+                $status = 'no_recibido';
+            } elseif ($received > $amount) {
+                $status = 'exceso';
+            } else {
+                $status = 'parcial';
+            }
+
+            return [
+                'id'       => $article->id,
+                'name'     => $article->name,
+                'pedida'   => $amount,
+                'recibida' => $received,
+                'diff'     => $diff,
+                'status'   => $status,
+            ];
+        })->values()->toArray();
     }
 }
