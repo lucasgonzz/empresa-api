@@ -330,9 +330,14 @@ class AfipItemCalculator
      *      con el factor adentro del bruto:  (bruto·f)·(1 − canje/(bruto·f)) = bruto·f − canje
      *      lo que tiene que dar:             (bruto − canje)·f               = bruto·f − canje·f
      *
-     *  O sea que el canje quedaría sin escalar y el total de la factura se pasaría del forzado en
-     *  exactamente `canje · (f − 1)`. Con la guarda, el bruto es el total SIN forzar, el
-     *  porcentaje del canje sale correcto y la suma final da `(bruto − canje) · f = sale->total`.
+     *  O sea que el canje quedaría sin escalar y el total de la factura se desviaría del forzado
+     *  en exactamente `canje · (f − 1)`. Medido el 17/9/2026 sacando esta guarda, con el escenario
+     *  de `tests/Feature/ForzarTotal/6` (bruto 100.000, canje 10.000, forzado a 89.000): la
+     *  factura daba **88.888,90** en vez de 89.000 — $111,10 de menos, que son
+     *  `10.000 · (89/90 − 1)`.
+     *
+     *  Con la guarda, el bruto es el total SIN forzar, el porcentaje del canje sale correcto y la
+     *  suma final da `(bruto − canje) · f = sale->total`.
      *
      *  Es la misma guarda, por el mismo motivo, que ya usa `get_porcentaje_descuento_puntos()`.
      *
