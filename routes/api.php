@@ -472,6 +472,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // arriba: el show del resource captura cualquier `provider/{algo}`.
     Route::get('provider/{id}/propagar-descuentos/preview', 'ProviderController@propagar_descuentos_preview');
     Route::put('provider/{id}/propagar-descuentos', 'ProviderController@propagar_descuentos');
+    // Boton "Sincronizar articulos" de la ficha del proveedor (mision
+    // sincronizar-descuentos-proveedor, 17/9/2026). ANTES del resource, por el mismo motivo que las
+    // de arriba: el show del resource captura cualquier `provider/{algo}`.
+    Route::get('provider/{id}/sincronizar-descuentos/preview', 'ProviderController@sincronizar_descuentos_preview');
+    Route::get('provider/{id}/sincronizar-descuentos/exportar-conflictos', 'ProviderController@sincronizar_descuentos_exportar_conflictos');
+    Route::put('provider/{id}/sincronizar-descuentos', 'ProviderController@sincronizar_descuentos');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\AfipHelper;
 
 use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
 use Illuminate\Support\Facades\Log;
 
 class AfipItemCalculator
@@ -17,6 +18,14 @@ class AfipItemCalculator
      * cálculo recorre TODOS los renglones de la venta y este método se llama una vez por ítem.
      */
     private $porcentaje_descuento_puntos = null;
+
+    /**
+     * @var float|null $factor_total_forzado Factor del total forzado ya resuelto. `null` = todavía
+     * no se calculó. Se cachea por el mismo motivo que el canje, y pesa más: el cálculo recorre
+     * TODOS los renglones de la venta (arma el bruto facturable) y este método se llama una vez
+     * por ítem, así que sin memoria la factura sería O(n²).
+     */
+    private $factor_total_forzado = null;
 
     /**
      * @var bool $calculando_bruto_de_la_venta Guard de reentrada. El bruto se arma llamando a
@@ -278,9 +287,221 @@ class AfipItemCalculator
             if ($porcentaje_puntos > 0) {
                 $price -= $price * $porcentaje_puntos / 100;
             }
+
+            /**
+             * El total forzado (misión forzar-total-por-monto, 17/9/2026), último de todo.
+             *
+             * ─────────────────────────────────────────────────────────────────────────────
+             *  🔴 POR QUÉ UN FACTOR SOBRE CADA RENGLÓN Y NO UNA RESTA AL FINAL DE LA FACTURA
+             * ─────────────────────────────────────────────────────────────────────────────
+             *
+             *  Es el mismo motivo que ya está escrito largo para el canje por puntos, unas
+             *  líneas más abajo, y vale igual acá: este calculador arma el total del comprobante
+             *  SUMANDO LOS RENGLONES, no leyendo `sale->total`. Restar los pesos del forzado al
+             *  final obligaría a decidir a mano de qué alícuota salen, y ahí el desglose que ARCA
+             *  valida (neto gravado por alícuota + IVA por alícuota = Importe Total) deja de
+             *  cerrar y el comprobante se rechaza. Escalando cada renglón por el mismo factor, el
+             *  IVA se reparte en la misma proporción que el resto de la factura y las cuentas
+             *  cierran solas — y una nota de crédito parcial devuelve la parte que le toca del
+             *  forzado sin una línea extra.
+             *
+             *  Escalar es correcto tanto si el precio viene con IVA como si viene neto: el factor
+             *  es adimensional y se aplica antes de que `get_price_sin_iva()` separe la base.
+             */
+            $factor_forzado = $this->get_factor_total_forzado();
+
+            if ($factor_forzado != 1.0) {
+                $price *= $factor_forzado;
+            }
         // }
 
         return $price;
+    }
+
+    /**
+     * El factor por el que hay que escalar cada renglón para que la factura dé el total forzado.
+     *
+     *     base   = bruto facturable de la venta − el canje por puntos, en pesos
+     *     factor = sale->total (cotizado) / base
+     *
+     * Con ese factor, la suma de los renglones —que sin él daría `base`— da `sale->total` EXACTO,
+     * que es el número que el vendedor le cobró al cliente y el único que puede ir en la factura.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 POR QUÉ EL DENOMINADOR NO ES `sale->total − forzar_total_monto`
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  Esa resta parece el total "antes del forzado" y es lo primero que uno escribe, pero NO es
+     *  lo que suman los renglones de ESTE calculador, que es lo único contra lo que el factor
+     *  tiene sentido. `sales.total` lo arma el front con capas que acá no existen:
+     *
+     *   - Los descuentos y recargos POR MEDIO DE PAGO viven en el pivot
+     *     `current_acount_payment_method_sale` y están adentro de `sales.total`, pero ni
+     *     `getTotalSale()` ni este calculador los conocen.
+     *   - `sales.descuento` se aplica solo sobre `total_articles` en `getTotalSale()` y renglón
+     *     por renglón acá: sobre una venta con servicios los dos números no coinciden.
+     *
+     *  Medido: con un 10 % de descuento por medio de pago, el ajuste se aplicaba un 11 % de más.
+     *  Usando el bruto que este mismo calculador suma, el cociente se cancela solo y la factura
+     *  cae en `sale->total` sin importar cuántas capas haya arriba.
+     *
+     *  Se le resta el canje por puntos porque el canje se aplica DESPUÉS, como porcentaje sobre
+     *  ese mismo bruto: la suma final es `(bruto − canje) · factor`, así que el denominador tiene
+     *  que ser `bruto − canje` para que el resultado dé el total.
+     *
+     * ⚠️ EL TOTAL SE COTIZA Y LA BASE YA VIENE COTIZADA. `get_article_price_raw()` multiplica por
+     * `valor_dolar`, así que el bruto está en PESOS, mientras que `sales.total` está en la moneda
+     * de la venta. Con la fórmula vieja no importaba —eran dos números de la misma moneda y el
+     * cociente los cancelaba—; con ésta, no cotizar el total mezclaría dólares con pesos y el
+     * factor saldría ridículamente chico. Es el mismo cuidado que ya tiene el canje.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 LA GUARDA DE REENTRADA NO SE PUEDE SACAR: DEVUELVE 1 MIENTRAS SE ARMA EL BRUTO
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  `get_bruto_facturable_de_la_venta()` suma los renglones llamando a
+     *  `get_article_price_with_discounts()`, que es justamente donde se aplica este factor. Ese
+     *  bruto es el denominador del porcentaje del canje por puntos. Si el factor entrara también
+     *  ahí, el bruto quedaría escalado y la cuenta del canje se desarmaría:
+     *
+     *      con el factor adentro del bruto:  (bruto·f)·(1 − canje/(bruto·f)) = bruto·f − canje
+     *      lo que tiene que dar:             (bruto − canje)·f               = bruto·f − canje·f
+     *
+     *  O sea que el canje quedaría sin escalar y el total de la factura se desviaría del forzado
+     *  en exactamente `canje · (f − 1)`. Medido el 17/9/2026 sacando esta guarda, con el escenario
+     *  de `tests/Feature/ForzarTotal/6` (bruto 100.000, canje 10.000, forzado a 89.000): la
+     *  factura daba **88.888,90** en vez de 89.000 — $111,10 de menos, que son
+     *  `10.000 · (89/90 − 1)`.
+     *
+     *  Con la guarda, el bruto es el total SIN forzar, el porcentaje del canje sale correcto y la
+     *  suma final da `(bruto − canje) · f = sale->total`.
+     *
+     *  Es la misma guarda, por el mismo motivo, que ya usa `get_porcentaje_descuento_puntos()`.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  ⚠️ LA GUARDA MIRA LAS DOS PUNTAS: `base <= 0` Y `total < 0`
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  Mirar solo el denominador es el error fácil: con la base positiva y un `sale->total`
+     *  NEGATIVO el factor sale negativo igual —por ejemplo −5— y se le mandan importes negativos a
+     *  ARCA, que los rechaza. Se llega a eso con una venta cuyos renglones cambiaron después de
+     *  forzar.
+     *
+     *  🔴 PERO EL TOTAL SE MIRA CON `< 0` Y NO CON `<= 0`, Y LA DIFERENCIA NO ES COSMÉTICA. Con
+     *  `<= 0`, una venta forzada a total CERO caería en la guarda, el factor quedaría en 1 y se
+     *  facturaría el BRUTO ENTERO: un comprobante fiscal por $100.000 sobre una venta de $0. Con
+     *  `< 0`, el factor da 0, la factura da 0 y `AfipWsfeHelper::solicitar_cae()` corta antes de
+     *  pedirle un CAE a ARCA — que es el camino que el repo ya tiene previsto para un total en
+     *  cero, y el mismo que toma el canje por puntos cuando se come la venta entera.
+     *
+     *  O sea: el cero no es un estado degenerado, es lo que el vendedor pidió. El negativo sí.
+     *
+     *  En los dos casos de guarda se factura sin escalar y se deja dicho en el log, que es el
+     *  mismo criterio que toma el canje cuando su bruto no da.
+     *
+     * @return float  1.0 si no hay nada que escalar.
+     */
+    public function get_factor_total_forzado()
+    {
+        /**
+         * Mientras se arma el bruto facturable, el forzado no existe. Ver el bloque de arriba.
+         *
+         * 🔴 VA ANTES DE LA MEMORIA, no después: durante el armado del bruto la respuesta correcta
+         * es 1 pero NO es la respuesta definitiva, y cachearla dejaría el factor en 1 para toda la
+         * factura. Es el mismo orden, por el mismo motivo, que en `get_porcentaje_descuento_puntos()`.
+         */
+        if ($this->calculando_bruto_de_la_venta) {
+            return 1.0;
+        }
+
+        if (!is_null($this->factor_total_forzado)) {
+            return $this->factor_total_forzado;
+        }
+
+        // Se cachea el 1 primero: casi ninguna venta fuerza el total y ese es el camino barato.
+        $this->factor_total_forzado = 1.0;
+
+        /** @var \App\Models\Sale|null $sale Venta sobre la que se está facturando. */
+        $sale = $this->afip_helper->sale;
+
+        if (is_null($sale)) {
+            return 1.0;
+        }
+
+        /** @var float $monto Monto con signo del forzado. 0 = la venta no se forzó. */
+        $monto = SaleHelper::get_forzar_total_monto($sale);
+
+        if ($monto == 0) {
+            return 1.0;
+        }
+
+        /**
+         * @var float $total El total final de la venta, que ya tiene el forzado adentro, cotizado
+         * a pesos para poder compararse contra el bruto. Ver el ⚠️ de arriba.
+         */
+        $total = (float) $sale->total;
+
+        if ($sale->moneda_id == 2 && $sale->valor_dolar) {
+            $total *= (float) $sale->valor_dolar;
+        }
+
+        /**
+         * @var float $base Lo que suman los renglones de esta factura por su cuenta: el bruto
+         * facturable menos el canje por puntos, que se aplica después.
+         */
+        $base = $this->get_bruto_facturable_de_la_venta() - $this->get_canje_en_pesos();
+
+        if ($base <= 0 || $total < 0) {
+            Log::warning(
+                'AfipItemCalculator: la venta '.$sale->id.' tiene forzar_total_monto ('.$monto.
+                ') pero su base facturable es '.$base.' y su total es '.$total.
+                '. No se puede prorratear sin mandar importes negativos: se factura sin escalar.'
+            );
+
+            return 1.0;
+        }
+
+        $this->factor_total_forzado = $total / $base;
+
+        return $this->factor_total_forzado;
+    }
+
+    /**
+     * Los pesos que el cliente canjeó en puntos en esta venta, ya cotizados.
+     *
+     * Existe como método propio porque lo necesitan DOS cuentas que tienen que usar exactamente el
+     * mismo número: el porcentaje del canje (`get_porcentaje_descuento_puntos()`) y la base del
+     * factor del total forzado (`get_factor_total_forzado()`). Si las dos lo derivaran por su
+     * cuenta, alcanzaría con que una se olvidara de cotizar para que la factura dejara de cerrar.
+     *
+     * @return float  0 si la venta no canjeó puntos.
+     */
+    private function get_canje_en_pesos()
+    {
+        /** @var \App\Models\Sale|null $sale Venta sobre la que se está facturando. */
+        $sale = $this->afip_helper->sale;
+
+        if (is_null($sale)) {
+            return 0.0;
+        }
+
+        /** @var float $descuento Pesos que canjeó el cliente, tal como los recalculó el servidor. */
+        $descuento = isset($sale->descuento_puntos) ? (float) $sale->descuento_puntos : 0.0;
+
+        if ($descuento <= 0) {
+            return 0.0;
+        }
+
+        /**
+         * El canje viaja en la MONEDA DE LA VENTA (el front hace `total -= descuento_puntos` sobre
+         * el total en esa moneda), mientras que el bruto contra el que se compara ya viene cotizado
+         * a pesos por `get_article_price_raw()`.
+         */
+        if ($sale->moneda_id == 2 && $sale->valor_dolar) {
+            $descuento *= (float) $sale->valor_dolar;
+        }
+
+        return $descuento;
     }
 
     /**
@@ -337,21 +558,15 @@ class AfipItemCalculator
             return 0.0;
         }
 
-        /** @var float $descuento Pesos que canjeó el cliente, tal como los recalculó el servidor. */
-        $descuento = isset($sale->descuento_puntos) ? (float) $sale->descuento_puntos : 0.0;
+        /**
+         * @var float $descuento Pesos que canjeó el cliente, ya cotizados. Sale del mismo método
+         * que usa la base del factor del total forzado, para que las dos cuentas no puedan
+         * discrepar.
+         */
+        $descuento = $this->get_canje_en_pesos();
 
         if ($descuento <= 0) {
             return 0.0;
-        }
-
-        /**
-         * El canje viaja en la MONEDA DE LA VENTA (el front hace `total -= descuento_puntos`
-         * sobre el total en esa moneda), mientras que el bruto que se arma abajo ya viene
-         * cotizado a pesos por `get_article_price_raw()`. Sin cotizar el canje, el cociente
-         * mezclaría dólares con pesos y el porcentaje saldría ridículamente chico.
-         */
-        if ($sale->moneda_id == 2 && $sale->valor_dolar) {
-            $descuento *= (float) $sale->valor_dolar;
         }
 
         /** @var float $bruto Total facturable de la venta ANTES del canje, en pesos. */
@@ -491,7 +706,23 @@ class AfipItemCalculator
             }
         }
 
-        return $price;
+        /**
+         * 🔴 EL FACTOR DEL TOTAL FORZADO, TAMBIÉN EN LA RAMA CRUDA (misión forzar-total-por-monto,
+         * 17/9/2026).
+         *
+         * Acá se llega en Factura C (monotributo), en exportación, y en cualquier ítem Exento / No
+         * Gravado / 0 % de una A/B. El precio que se devuelve es CRUDO: no lleva los descuentos de
+         * venta, ni `sales.descuento`, ni el canje por puntos. Eso es preexistente, está reportado
+         * y NO se toca acá — arreglarlo cambiaría el precio impreso de todo el parque.
+         *
+         * Lo que sí se agrega es el factor, y no es una inconsistencia más: es la que evita una.
+         * `sub_total()` —la columna de al lado, en la misma fila— pasa por la misma rama cruda, así
+         * que si el factor entrara solo en una de las dos, en una Factura C forzada dejaría de
+         * valer `Precio × Cantidad == Subtotal`. Las dos lo llevan o ninguna.
+         *
+         * Con una venta sin forzar el factor es 1 y esta línea no cambia absolutamente nada.
+         */
+        return $price * $this->get_factor_total_forzado();
     }
 
     /**
@@ -602,7 +833,13 @@ class AfipItemCalculator
             return $this->get_price_without_iva() * $this->get_article_amount();
         }
 
-        return $this->get_article_price_raw() * $this->get_article_amount();
+        /**
+         * El factor del total forzado, por el mismo motivo y con el mismo alcance que en
+         * `get_article_price()`: las dos columnas de la fila pasan por esta rama cruda en una
+         * Factura C, y si el factor entrara en una sola dejaría de valer
+         * `Precio × Cantidad == Subtotal`. Ver el bloque largo de allá.
+         */
+        return $this->get_article_price_raw() * $this->get_article_amount() * $this->get_factor_total_forzado();
     }
 
     /**

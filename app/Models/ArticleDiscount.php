@@ -59,4 +59,24 @@ class ArticleDiscount extends Model
     function provider() {
         return $this->belongsTo('App\Models\Provider');
     }
+
+    /**
+     * Descuento puntual de la ficha del proveedor del que salio esta fila (mision
+     * sincronizar-descuentos-proveedor, 17/9/2026).
+     *
+     * 🔴 NULLABLE Y NADIE LO ASUME PRESENTE. Todas las filas anteriores a la migracion
+     * 2026_09_17_110000 lo tienen en NULL, incluidas las tagueadas a un proveedor: de un descuento
+     * viejo no hay forma de saber cual de las bonificaciones lo origino. Un `provider_discount_id`
+     * vacio NO significa "no es de proveedor" — eso lo dice `origen`, y solo `origen`.
+     *
+     * Tampoco se eager-loadea: el nombre ya viaja copiado en la columna `nombre`, justamente para
+     * no sumarle una relacion mas a `Article::scopeWithAll()`, que es el camino mas caliente del
+     * sistema. Si la relacion devuelve null es porque el descuento del proveedor se borro, y el
+     * `nombre` copiado sigue siendo la foto correcta de lo que era cuando se aplico.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    function provider_discount() {
+        return $this->belongsTo('App\Models\ProviderDiscount');
+    }
 }

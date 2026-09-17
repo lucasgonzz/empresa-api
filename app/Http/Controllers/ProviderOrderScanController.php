@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderScanAltaHelper;
@@ -904,9 +905,20 @@ class ProviderOrderScanController extends Controller
         $ticket->emisor_razon_social = $this->texto_o_null(isset($factura['emisor_razon_social']) ? $factura['emisor_razon_social'] : null);
         $ticket->percepcion_iibb     = $this->numero_o_null(isset($factura['percepcion_iibb']) ? $factura['percepcion_iibb'] : null);
         $ticket->percepcion_iva      = $this->numero_o_null(isset($factura['percepcion_iva']) ? $factura['percepcion_iva'] : null);
-        $ticket->retencion_iibb      = $this->numero_o_null(isset($factura['retencion_iibb']) ? $factura['retencion_iibb'] : null);
-        $ticket->retencion_iva       = $this->numero_o_null(isset($factura['retencion_iva']) ? $factura['retencion_iva'] : null);
-        $ticket->retencion_ganancias = $this->numero_o_null(isset($factura['retencion_ganancias']) ? $factura['retencion_ganancias'] : null);
+
+        /*
+         * 🔴 Las retenciones NO se escriben más acá (misión `compras-factura-manual-alicuotas`,
+         * 17/9/2026). Una factura de compra no las tiene —retiene tu cliente cuando te paga, no el
+         * proveedor cuando te factura—, así que el escaneo dejó de pedírselas a la IA
+         * (`EscaneoFacturaCompraService::CAMPOS_NUMERICOS_FACTURA`) y se cargan al registrar un
+         * cobro en la cuenta corriente de un cliente.
+         *
+         * No alcanzaba con que la IA dejara de mandarlas: este método REUSA el comprobante que ya
+         * existe (ver `buscar_ticket_principal()`), así que las tres líneas de asignación le
+         * escribían `null` encima a lo que hubiera guardado. Re-escanear una factura vieja le
+         * borraba las retenciones que todavía están en esas columnas, que son justo las que se
+         * migran a `retenciones_sufridas`.
+         */
 
         if ($modo_facturacion === 'automatico') {
 
@@ -925,12 +937,31 @@ class ProviderOrderScanController extends Controller
             return [
                 'estado' => 'parcial',
                 'motivo' => 'La compra factura en modo automático: se guardaron el número, la fecha, el ' .
-                            'emisor y las percepciones/retenciones, pero el total y el IVA los sigue ' .
+                            'emisor y las percepciones, pero el total y el IVA los sigue ' .
                             'calculando el sistema desde los artículos.',
             ];
         }
 
-        $ticket->total = $this->numero_o_null(isset($factura['total']) ? $factura['total'] : null);
+        /*
+         * 🔴 `total` NO se guarda tal como viene (misión `compras-factura-manual-alicuotas`,
+         * 17/9/2026). Cuando el comprobante tiene desglose de IVA, el total es una cuenta y lo
+         * calcula el servidor abajo, con `FacturaDeCompraHelper::guardar_totales()`, igual que en
+         * `ProviderOrderAfipTicketController`. Ésta era la otra puerta por la que el total entraba
+         * tal como lo mandaba el cliente: dejar el campo de solo lectura en pantalla y seguir
+         * aceptándolo por acá es la misma promesa a medias.
+         *
+         * Pero un comprobante SIN desglose —una Factura C, que no discrimina IVA, o uno donde la
+         * IA no llegó a leer el detalle— no tiene total derivable, y ahí el único dato que existe
+         * es el número impreso en el papel, que el usuario ya revisó en el modal. Ese número es el
+         * que se pasa como base, neto de las percepciones (el TOTAL de una factura real las trae
+         * adentro, así que sumarlas de nuevo sería contarlas dos veces).
+         *
+         * Si el desglose está pero no cuadra con el total impreso, el aviso ya salió mucho antes:
+         * `EscaneoFacturaCompraService` marca `total` en `campos_dudosos` y agrega un aviso, para
+         * que la discrepancia se vea en el modal de revisión y no adentro de la deuda con el
+         * proveedor.
+         */
+        $total_impreso = $this->numero_o_null(isset($factura['total']) ? $factura['total'] : null);
 
         /* Hace falta el id para colgarle las filas de IVA. */
         $ticket->save();
@@ -939,8 +970,6 @@ class ProviderOrderScanController extends Controller
         ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $ticket->id)->delete();
 
         $ivas = isset($factura['ivas']) && is_array($factura['ivas']) ? $factura['ivas'] : [];
-
-        $total_iva = 0;
 
         foreach ($ivas as $fila) {
 
@@ -963,13 +992,25 @@ class ProviderOrderScanController extends Controller
                 'neto'                          => $this->numero_o_null(isset($fila['neto']) ? $fila['neto'] : null),
                 'iva_importe'                   => $iva_importe,
             ]);
-
-            $total_iva += (float) $iva_importe;
         }
 
-        /* Mismo criterio que ProviderOrderAfipTicketController::set_total_iva(). */
-        $ticket->total_iva = $total_iva;
-        $ticket->save();
+        /*
+         * Los totales del comprobante, en un solo lugar (el mismo que usa la factura cargada a
+         * mano):
+         *
+         *   · Con desglose: total_iva = Σ(iva_importe) y total = Σ(neto + iva_importe) +
+         *     percepciones. El total impreso que se pasa como base queda ignorado, que es el punto.
+         *   · Sin desglose: total = total impreso sin percepciones + percepciones (o sea, el total
+         *     impreso), y `total_iva` no se toca.
+         *
+         * No hace falta recalcular la compra acá: este método corre en el medio del confirmar, y
+         * `procesar_pedido()` —que es el que arma el total de la compra a partir de sus facturas—
+         * viene justo después (ver el comentario del PASO 8).
+         */
+        FacturaDeCompraHelper::guardar_totales(
+            $ticket,
+            (float) $total_impreso - FacturaDeCompraHelper::percepciones($ticket)
+        );
 
         return ['estado' => 'completa', 'motivo' => null];
     }

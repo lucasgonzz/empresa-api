@@ -11,6 +11,7 @@ use App\Models\Expense;
 use App\Models\ExpenseConcept;
 use App\Models\MovimientoCaja;
 use App\Models\ProviderOrderAfipTicket;
+use App\Models\RetencionSufrida;
 use App\Models\Sale;
 use App\Models\SaleTax;
 use Carbon\Carbon;
@@ -1636,10 +1637,20 @@ class ContabilidadRepository
     }
 
     /**
-     * Retenciones sufridas (IVA, IIBB, Ganancias) en facturas de compra del período.
+     * Retenciones sufridas (IVA, IIBB, Ganancias) del período.
      *
-     * FUENTE ACTUAL: tabla `provider_order_afip_tickets` (campos `retencion_iva`, `retencion_iibb`,
-     * `retencion_ganancias`), fechada por `issued_at`.
+     * FUENTE ACTUAL: tabla `retenciones_sufridas` (un registro por CERTIFICADO), fechada por
+     * `fecha` — la del certificado, que es la que decide en qué período fiscal entra la retención.
+     *
+     * 🔴 CAMBIÓ LA FUENTE EL 17/9/2026 (misión compras-factura-manual-alicuotas). Hasta ese día
+     * esto leía `provider_order_afip_tickets.retencion_*`, o sea la factura de COMPRA. Estaba en el
+     * lugar equivocado: una retención la practica el CLIENTE cuando te paga, no el proveedor cuando
+     * te factura, así que ahora se carga en el cobro de la cuenta corriente. Las retenciones que ya
+     * estaban cargadas en las facturas las trajo la migración de datos
+     * `migrar_retenciones_de_facturas_de_compra` (con `origen = migracion_factura_compra`), así que
+     * ningún período viejo cambia de número. Las columnas viejas siguen ahí, sin leerse.
+     *
+     * Las fórmulas de PosicionFiscalHelper NO cambiaron: siguen restando exactamente lo mismo.
      *
      * @param  int $user_id
      * @param  string $desde
@@ -1650,11 +1661,13 @@ class ContabilidadRepository
     {
         list($desde, $hasta) = self::rango($desde, $hasta);
 
-        $row = ProviderOrderAfipTicket::query()
+        $row = RetencionSufrida::query()
             ->where('user_id', $user_id)
-            ->whereDate('issued_at', '>=', $desde)
-            ->whereDate('issued_at', '<=', $hasta)
-            ->selectRaw('SUM(retencion_iva) as iva, SUM(retencion_iibb) as iibb, SUM(retencion_ganancias) as ganancias')
+            ->whereDate('fecha', '>=', $desde)
+            ->whereDate('fecha', '<=', $hasta)
+            ->selectRaw("SUM(CASE WHEN impuesto = 'iva' THEN importe ELSE 0 END) as iva")
+            ->selectRaw("SUM(CASE WHEN impuesto = 'iibb' THEN importe ELSE 0 END) as iibb")
+            ->selectRaw("SUM(CASE WHEN impuesto = 'ganancias' THEN importe ELSE 0 END) as ganancias")
             ->first();
 
         return [
@@ -1665,8 +1678,14 @@ class ContabilidadRepository
     }
 
     /**
-     * Detalle paginado de las retenciones que componen `retenciones_sufridas()`. Una misma factura
-     * puede aportar hasta tres registros (uno por impuesto).
+     * Detalle paginado de las retenciones que componen `retenciones_sufridas()`. Un registro por
+     * certificado (antes una misma factura aportaba hasta tres).
+     *
+     * 🔴 EL DRILL-DOWN CAMBIÓ DE DESTINO. Antes toda fila llevaba a la compra (`provider_order`),
+     * porque ahí vivía el dato. Ahora el comprobante de origen de una retención es el COBRO, así
+     * que va a `current_acount` — el mismo `link_tipo` que ya usan cobranzas y notas de crédito, y
+     * que la SPA tiene montado. Las filas que trajo la migración de datos no tienen cobro: esas
+     * siguen llevando a la compra de la que salieron, para que el histórico se pueda auditar igual.
      *
      * @param  int $user_id
      * @param  string $desde
@@ -1680,61 +1699,58 @@ class ContabilidadRepository
         list($desde, $hasta) = self::rango($desde, $hasta);
 
         $base = function () use ($user_id, $desde, $hasta) {
-            return ProviderOrderAfipTicket::query()
-                ->where('user_id', $user_id)
-                ->whereDate('issued_at', '>=', $desde)
-                ->whereDate('issued_at', '<=', $hasta)
-                ->where(function ($q) {
-                    $q->where('retencion_iva', '>', 0)
-                      ->orWhere('retencion_iibb', '>', 0)
-                      ->orWhere('retencion_ganancias', '>', 0);
-                });
+            return RetencionSufrida::query()
+                ->where('retenciones_sufridas.user_id', $user_id)
+                ->whereDate('retenciones_sufridas.fecha', '>=', $desde)
+                ->whereDate('retenciones_sufridas.fecha', '<=', $hasta)
+                /*
+                 * `!= 0` y no `> 0`: el total de arriba es un SUM() que incluye los importes
+                 * negativos (un ajuste), así que filtrarlos acá dejaría un detalle que no suma su
+                 * propio total. Es la clase de discrepancia que hace que alguien audite el renglón
+                 * y no encuentre la diferencia.
+                 */
+                ->where('retenciones_sufridas.importe', '!=', 0);
         };
 
         $total = $base()->count();
 
         $rows = $base()
-            ->orderBy('issued_at', 'ASC')
+            /*
+             * El join es para el drill-down de las filas migradas: la compra a la que hay que
+             * llevar es la del ticket, y guardar acá el `provider_order_id` denormalizado sería un
+             * segundo lugar donde el mismo dato se puede desincronizar. `left` porque la factura de
+             * origen puede haberse borrado, y ahí la fila igual tiene que listarse (sin link).
+             */
+            ->leftJoin('provider_order_afip_tickets', 'provider_order_afip_tickets.id', '=', 'retenciones_sufridas.provider_order_afip_ticket_id')
+            ->leftJoin('clients', 'clients.id', '=', 'retenciones_sufridas.client_id')
+            ->orderBy('retenciones_sufridas.fecha', 'ASC')
             ->skip(($page - 1) * $per_page)
             ->take($per_page)
-            ->get(['id', 'issued_at', 'code', 'retencion_iva', 'retencion_iibb', 'retencion_ganancias', 'provider_order_id']);
+            ->get([
+                'retenciones_sufridas.id as id',
+                'retenciones_sufridas.fecha as fecha',
+                'retenciones_sufridas.impuesto as impuesto',
+                'retenciones_sufridas.numero_certificado as numero_certificado',
+                'retenciones_sufridas.importe as importe',
+                'retenciones_sufridas.current_acount_id as current_acount_id',
+                'clients.name as client_name',
+                'provider_order_afip_tickets.provider_order_id as provider_order_id',
+            ]);
 
         $registros = [];
 
         foreach ($rows as $row) {
 
-            if ((float) $row->retencion_iva > 0) {
-                $registros[] = [
-                    'id'          => $row->id.'-iva',
-                    'fecha'       => $row->issued_at,
-                    'descripcion' => 'Retención IVA — Comprobante '.$row->code,
-                    'monto'       => (float) $row->retencion_iva,
-                    'link_tipo'   => 'provider_order',
-                    'link_id'     => $row->provider_order_id,
-                ];
-            }
+            list($link_tipo, $link_id) = self::link_de_retencion($row);
 
-            if ((float) $row->retencion_iibb > 0) {
-                $registros[] = [
-                    'id'          => $row->id.'-iibb',
-                    'fecha'       => $row->issued_at,
-                    'descripcion' => 'Retención IIBB — Comprobante '.$row->code,
-                    'monto'       => (float) $row->retencion_iibb,
-                    'link_tipo'   => 'provider_order',
-                    'link_id'     => $row->provider_order_id,
-                ];
-            }
-
-            if ((float) $row->retencion_ganancias > 0) {
-                $registros[] = [
-                    'id'          => $row->id.'-ganancias',
-                    'fecha'       => $row->issued_at,
-                    'descripcion' => 'Retención Ganancias — Comprobante '.$row->code,
-                    'monto'       => (float) $row->retencion_ganancias,
-                    'link_tipo'   => 'provider_order',
-                    'link_id'     => $row->provider_order_id,
-                ];
-            }
+            $registros[] = [
+                'id'          => $row->id,
+                'fecha'       => $row->fecha,
+                'descripcion' => self::descripcion_de_retencion($row),
+                'monto'       => (float) $row->importe,
+                'link_tipo'   => $link_tipo,
+                'link_id'     => $link_id,
+            ];
         }
 
         return [
@@ -1743,6 +1759,53 @@ class ContabilidadRepository
             'page'      => (int) $page,
             'per_page'  => (int) $per_page,
         ];
+    }
+
+    /**
+     * A qué comprobante lleva una fila del detalle de retenciones: al cobro donde se cargó el
+     * certificado, o —si es una fila que trajo la migración de datos— a la compra de la que salió.
+     * Sin ninguno de los dos, no hay link (la SPA ya no dibuja el clic cuando `link_id` viene nulo).
+     *
+     * @param  object $row Fila del `get()` de retenciones_sufridas_detalle().
+     * @return array{0: string|null, 1: int|null}
+     */
+    private static function link_de_retencion($row)
+    {
+        if (!is_null($row->current_acount_id)) {
+
+            return ['current_acount', $row->current_acount_id];
+        }
+
+        if (!is_null($row->provider_order_id)) {
+
+            return ['provider_order', $row->provider_order_id];
+        }
+
+        return [null, null];
+    }
+
+    /**
+     * Texto de una fila del detalle: impuesto + de quién vino (el cliente que retuvo) + número de
+     * certificado, con los dos últimos solo si están cargados.
+     *
+     * @param  object $row
+     * @return string
+     */
+    private static function descripcion_de_retencion($row)
+    {
+        $descripcion = 'Retención '.RetencionSufrida::nombre_impuesto($row->impuesto);
+
+        if (!is_null($row->client_name) && $row->client_name !== '') {
+
+            $descripcion .= ' — '.$row->client_name;
+        }
+
+        if (!is_null($row->numero_certificado) && $row->numero_certificado !== '') {
+
+            $descripcion .= ' — Certificado '.$row->numero_certificado;
+        }
+
+        return $descripcion;
     }
 
     // =========================================================================================

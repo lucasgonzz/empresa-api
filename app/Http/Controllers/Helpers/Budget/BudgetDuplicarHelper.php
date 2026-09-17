@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\Budget;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\BudgetHelper;
+use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Budget;
 use App\Models\BudgetStatus;
@@ -41,7 +42,7 @@ class BudgetDuplicarHelper {
         $budget_status_id = $budget_status ? (int) $budget_status->id : 1;
 
         /** Campos escalares copiados del origen según BudgetController::store. */
-        $model = Budget::create([
+        $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
             'num'                       => $controller->num('budgets'),
             'client_id'                 => $source->client_id,
             'start_at'                  => $source->start_at,
@@ -63,12 +64,31 @@ class BudgetDuplicarHelper {
                 BudgetController::duplicate() muere con el mismo 500 del alta.
             */
             'aplicar_recargos_directo_a_items' => $source->aplicar_recargos_directo_a_items,
+            /*
+                El monto del total forzado (mision forzar-total-por-monto, 17/9/2026). TERCER caso
+                del mismo olvido que ya documentan los dos comentarios de arriba y de abajo
+                —`aplicar_recargos_directo_a_items` y los combos—, y se rompe exactamente igual: el
+                `total` se copia del origen CON el forzado adentro, pero `BudgetHelper::getTotal()`
+                lo recalcula sobre el duplicado, que sin esta linea suma 0 de ajuste. La diferencia
+                es el monto del forzado y `BudgetController::duplicate()` corta con "El total del
+                presupuesto no corresponde con los productos ingresados".
+
+                🔴 Y EL CASO PEOR NO ES EL 500, ES EL QUE NO FALLA. Con un monto de 3 pesos o menos
+                la diferencia entra en el margen de tolerancia de `duplicate()`, el duplicado se
+                guarda con `total` forzado y `forzar_total_monto` en null —incoherente, en
+                silencio— y esa incoherencia despues viaja a la venta por `BudgetHelper::saveSale()`.
+
+                ⚠️ Entra por la guarda de esquema, al final del array: en la ventana entre que el
+                deploy sube los archivos y corre las migraciones, `$source->forzar_total_monto`
+                devuelve null sin error y ese null viaja igual al INSERT, que revienta con
+                `Unknown column`. Ver `ForzarTotalEsquemaHelper`.
+            */
             'moneda_id'                 => $source->moneda_id,
             'valor_dolar'               => $source->valor_dolar,
             'omitir_en_cuenta_corriente' => $source->omitir_en_cuenta_corriente,
             'employee_id'               => $controller->userId(false),
             'user_id'                   => $controller->userId(),
-        ]);
+        ], $source->forzar_total_monto, 'budgets'));
 
         /** Payloads en el formato que esperan GeneralHelper::attachModels y BudgetHelper::attach*. */
         $discounts_payload = self::discounts_to_payload($source);
