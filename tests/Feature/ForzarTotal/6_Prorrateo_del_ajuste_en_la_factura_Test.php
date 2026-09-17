@@ -3,9 +3,12 @@
 namespace Tests\Feature\ForzarTotal;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\AfipHelper\AfipItemCalculator;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;
+use App\Models\CurrentAcountPaymentMethod;
 use App\Models\IvaCondition;
+use Database\Seeders\testing\TestingFerreteriaSeeder;
 
 /**
  * Archivo 6 — la factura electronica tiene que dar EXACTAMENTE el total forzado, con el IVA
@@ -84,24 +87,37 @@ class Prorrateo_del_ajuste_en_la_factura_Test extends ForzarTotalTestCase
     }
 
     /**
-     * Corre el calculo de importes de una venta sin tocar la red.
+     * Arma el `AfipHelper` de una venta, EN MEMORIA, sin tocar la red.
      *
      * @param  \App\Models\Sale  $sale
      * @param  string            $condicion  Condicion IVA del EMISOR.
-     * @return array
+     * @param  int               $cbte_tipo  Tipo de comprobante de ARCA. 11/12/13 = Factura C.
+     * @return \App\Http\Controllers\Helpers\AfipHelper
      */
-    protected function importes_de($sale, $condicion = 'Responsable inscripto')
+    protected function afip_helper_de($sale, $condicion = 'Responsable inscripto', $cbte_tipo = 1)
     {
         $afip_ticket = new AfipTicket();
         $afip_ticket->facturar_importe_personalizado = null;
         $afip_ticket->importe_personalizado_ivas_json = null;
         $afip_ticket->afip_tipo_comprobante_id = 1;
+        $afip_ticket->cbte_tipo = $cbte_tipo;
         $afip_ticket->sale = $sale;
         $afip_ticket->setRelation('afip_information', $this->afip_information_en_memoria($condicion));
 
-        $afip_helper = new AfipHelper($afip_ticket);
+        return new AfipHelper($afip_ticket);
+    }
 
-        return $afip_helper->getImportes();
+    /**
+     * Corre el calculo de importes de una venta sin tocar la red.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  string            $condicion  Condicion IVA del EMISOR.
+     * @param  int               $cbte_tipo
+     * @return array
+     */
+    protected function importes_de($sale, $condicion = 'Responsable inscripto', $cbte_tipo = 1)
+    {
+        return $this->afip_helper_de($sale, $condicion, $cbte_tipo)->getImportes();
     }
 
     /**
@@ -267,31 +283,32 @@ class Prorrateo_del_ajuste_en_la_factura_Test extends ForzarTotalTestCase
     }
 
     /**
-     * Test 4 — LA GUARDA de `base <= 0`.
+     * Test 4 — LA GUARDA DEL TOTAL NEGATIVO.
      *
      * ─────────────────────────────────────────────────────────────────────────────
      *  🔴 CUAL ES EL ESTADO QUE DISPARA LA GUARDA, Y CUAL NO
      * ─────────────────────────────────────────────────────────────────────────────
      *
-     *  La base es `total - monto`, o sea el total ANTES del forzado. Con un monto NEGATIVO (un
-     *  descuento) la base siempre es mayor o igual que el total, asi que forzar una venta a cero
-     *  NO dispara esta guarda: ahi la base da 100.000, el factor da 0 y la factura da 0 —que es
-     *  exactamente lo que pidio el vendedor, y `AfipWsfeHelper::solicitar_cae()` corta antes de
-     *  pedirle un CAE a ARCA por un comprobante de cero.
+     *  El denominador del factor es el BRUTO FACTURABLE menos el canje —lo que suman los renglones
+     *  de esta factura por su cuenta—, no `total - monto`. Como el bruto es una suma de precios por
+     *  cantidades, en una venta con renglones siempre es positivo: el denominador practicamente no
+     *  se cae solo.
      *
-     *  El estado que SI la dispara es un RECARGO mas grande que el total: la venta quedo en $500
-     *  con un ajuste de +$600, o sea que "el total antes del forzado" seria -$100. Se llega ahi
-     *  sacando items despues de haber forzado. Sin la guarda, el factor daria negativo (500/-100 =
-     *  -5) y se le mandarian importes negativos a ARCA, que los rechaza.
+     *  Lo que si puede pasar es que el NUMERADOR sea negativo: una venta cuyos renglones cambiaron
+     *  despues de forzar puede quedar con `sales.total` en negativo. Ahi el factor sale negativo
+     *  (por ejemplo -5) y se le mandarian importes negativos a ARCA, que los rechaza.
+     *
+     *  El test de abajo (4 bis) fija el otro lado, que es el que se confunde: el total en CERO NO
+     *  es un estado degenerado y NO dispara la guarda.
      *
      * @group forzar_total
      * @test
      */
-    public function con_la_base_negativa_no_se_divide_y_se_factura_sin_escalar()
+    public function con_el_total_negativo_no_se_escala_y_no_salen_importes_negativos()
     {
         $sale = $this->venta_mezclada([
-            'total'              => 500.00,
-            'forzar_total_monto' => 600.00,
+            'total'              => 0.00 - 500.00,
+            'forzar_total_monto' => 0.00 - 600.00,
         ]);
 
         $importes = $this->importes_de($sale);
@@ -300,7 +317,7 @@ class Prorrateo_del_ajuste_en_la_factura_Test extends ForzarTotalTestCase
             self::BRUTO_FACTURA,
             $importes['total'],
             self::DELTA,
-            'con base negativa el factor tiene que quedar en 1: se factura el bruto en vez de mandar importes negativos a ARCA'
+            'con el total negativo el factor tiene que quedar en 1: se factura el bruto en vez de mandar importes negativos a ARCA'
         );
 
         $this->assertGreaterThan(
@@ -315,9 +332,14 @@ class Prorrateo_del_ajuste_en_la_factura_Test extends ForzarTotalTestCase
     /**
      * Test 4 bis — forzar el total a CERO factura cero, sin reventar.
      *
-     * No es la guarda de arriba (ver su bloque): es el camino normal con factor 0. Se afirma acá
-     * para que quede escrito cual de los dos comportamientos corresponde a cual estado, que es
-     * justo lo que se confunde al leer `base <= 0` sin la cuenta al lado.
+     * 🔴 NO es la guarda de arriba, y por eso la condicion del codigo es `$total < 0` y no
+     * `$total <= 0`. Con `<= 0` este caso caeria en la guarda, el factor quedaria en 1 y se
+     * facturaria el BRUTO ENTERO: un comprobante fiscal por $100.000 sobre una venta de $0. Con
+     * `< 0` el factor da 0, la factura da 0 y `AfipWsfeHelper::solicitar_cae()` corta antes de
+     * pedirle un CAE a ARCA.
+     *
+     * El cero es lo que pidio el vendedor. El negativo es un estado roto. Este test y el de arriba
+     * existen justamente para que esa distincion no se pierda.
      *
      * @group forzar_total
      * @test
@@ -377,5 +399,144 @@ class Prorrateo_del_ajuste_en_la_factura_Test extends ForzarTotalTestCase
         );
 
         $this->assert_desglose_cierra($importes);
+    }
+
+    /**
+     * Test 6 — EL DENOMINADOR. Con un descuento por MEDIO DE PAGO encima, la factura sigue cayendo
+     * exacto en el total forzado.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 EL CASO QUE DELATA UN DENOMINADOR MAL ELEGIDO
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  El descuento por medio de pago vive en el pivote `current_acount_payment_method_sale`, esta
+     *  adentro de `sales.total` y NO lo conoce ni `getTotalSale()` ni este calculador. O sea que es
+     *  una capa que separa `sales.total` de lo que suman los renglones facturables.
+     *
+     *  Venta bruta 100.000, 10 % de descuento por medio de pago -> el front manda total 90.000, y
+     *  el vendedor redondea a 89.000 (monto -1.000):
+     *
+     *      denominador = total - monto = 90.000  ->  factor 0,98889  ->  factura 98.888,90  ✗
+     *      denominador = bruto facturable        ->  factor 0,89     ->  factura 89.000,00  ✓
+     *
+     *  Casi diez mil pesos de diferencia en un comprobante fiscal. El denominador correcto es el
+     *  bruto que suma ESTE calculador, porque es contra eso —y solo contra eso— que el factor se
+     *  multiplica.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function con_descuento_por_medio_de_pago_la_factura_sigue_dando_el_total_forzado()
+    {
+        $sale = $this->venta_mezclada([
+            'total'              => 89000.00,
+            'forzar_total_monto' => -1000.00,
+        ]);
+
+        /*
+         * El pivote del medio de pago se adjunta de verdad y no se simula solo con el total: es el
+         * estado real de una venta cobrada con descuento por medio de pago, que es justamente la
+         * capa que el calculador no ve.
+         */
+        $metodo = CurrentAcountPaymentMethod::where('name', TestingFerreteriaSeeder::PAGO_EFECTIVO)->first();
+
+        $this->assertNotNull($metodo, 'Falta el metodo de pago del fixture.');
+
+        $sale->current_acount_payment_methods()->attach($metodo->id, [
+            'amount'              => 89000.00,
+            'discount_percentage' => 10,
+            'discount_amount'     => 10000.00,
+        ]);
+
+        $importes = $this->importes_de($sale->fresh());
+
+        $this->assertEqualsWithDelta(
+            89000.00,
+            $importes['total'],
+            self::DELTA,
+            'la factura tiene que dar el total forzado exacto (si diera 98.888,90 el denominador del factor seria `total - monto` en vez del bruto facturable)'
+        );
+
+        $this->assert_desglose_cierra($importes);
+    }
+
+    /**
+     * Test 7 — FACTURA C: la columna que se imprime tiene que sumar el total de la factura, y
+     * `Precio x Cantidad` tiene que dar el `Subtotal` de la misma fila.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 POR QUE ESTE COMPROBANTE MERECE SU PROPIO TEST
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  En Factura C (monotributo) y en exportacion, `get_article_price()` y `sub_total()` toman una
+     *  rama CRUDA: devuelven el precio del pivote sin descuentos. El forzado apunta justo al
+     *  mostrador chico, que es donde mas Facturas C hay, asi que sin el factor en esa rama el papel
+     *  imprimia los precios de lista —que suman 100.000— arriba de un total de 89.000.
+     *
+     *  Las dos aserciones cubren los dos errores posibles, que son distintos:
+     *
+     *   (a) `Precio x Cantidad == Subtotal` se rompe si el factor entra en UNA SOLA de las dos
+     *       ramas. Es el error que va a cometer el proximo que lea una de las dos funciones sin
+     *       ver la otra.
+     *   (b) `suma(Subtotal) == total de la factura` se rompe si el factor no entra en NINGUNA, que
+     *       es como estaba antes de esta mision.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function en_factura_c_la_columna_impresa_cierra_contra_el_total()
+    {
+        $sale = $this->venta_mezclada([
+            'total'              => 89000.00,
+            'forzar_total_monto' => -11000.00,
+        ]);
+
+        /** cbte_tipo 11 = Factura C, con el emisor monotributista, que es quien la emite. */
+        $afip_helper = $this->afip_helper_de($sale, 'Monotributista', 11);
+
+        /*
+         * `AfipHelper::get_item_calculator()` es privado y no hay envoltura publica de
+         * `monotributo()`, asi que se instancia el calculador aparte SOLO para esta asercion de
+         * escenario. Es barato: el calculador no guarda estado propio mas que sus memorias.
+         */
+        $this->assertTrue(
+            (new AfipItemCalculator($afip_helper))->monotributo(),
+            'el escenario tiene que caer en la rama cruda de monotributo, o no mide lo que dice'
+        );
+
+        $suma_subtotales = 0;
+
+        foreach ($sale->articles as $item) {
+
+            $item->is_article = true;
+
+            $precio   = (float) $afip_helper->getArticlePrice($sale, $item);
+            $subtotal = (float) $afip_helper->subTotal($item);
+
+            // (a) La fila tiene que cerrar contra si misma.
+            $this->assertEqualsWithDelta(
+                $subtotal,
+                $precio * (float) $item->pivot->amount,
+                self::DELTA,
+                'en la fila de "'.$item->name.'" Precio x Cantidad tiene que dar el Subtotal impreso'
+            );
+
+            $suma_subtotales += $subtotal;
+        }
+
+        // (b) Y la columna entera tiene que cerrar contra el total del comprobante.
+        $this->assertEqualsWithDelta(
+            $this->importes_de($sale, 'Monotributista', 11)['total'],
+            $suma_subtotales,
+            self::DELTA,
+            'la suma de la columna Subtotal tiene que dar el total de la factura, no el bruto sin forzar'
+        );
+
+        $this->assertEqualsWithDelta(
+            89000.00,
+            $suma_subtotales,
+            self::DELTA,
+            'y ese total es el forzado'
+        );
     }
 }
