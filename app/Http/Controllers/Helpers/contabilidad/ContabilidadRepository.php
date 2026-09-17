@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\contabilidad;
 
+use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Models\AfipTicket;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
@@ -142,7 +143,8 @@ class ContabilidadRepository
      * el total y el detalle (regla 08).
      *
      * FUENTE ACTUAL: tabla `sales` (campos `total`, `moneda_id`, `created_at`, `terminada`,
-     * `is_consolidacion_facturacion` vía el scope `soloVentasReales`).
+     * `is_consolidacion_facturacion` vía el scope `soloVentasReales`), neteada del IVA declarado de
+     * cada venta vía `afip_tickets` (ver `IvaDeVentaHelper` y `ventas_brutas()`).
      *
      * @param  int $user_id
      * @param  \Carbon\Carbon $desde
@@ -160,6 +162,10 @@ class ContabilidadRepository
             ->where('sales.terminada', 1)
             ->whereDate('sales.created_at', '>=', $desde)
             ->whereDate('sales.created_at', '<=', $hasta);
+
+        // Joins del IVA declarado por venta. Ninguno multiplica filas (ver aplicar_joins_de_iva()),
+        // así que el `count()` de `ventas_brutas_detalle()` sigue contando ventas, no comprobantes.
+        IvaDeVentaHelper::aplicar_joins_de_iva($query);
 
         self::aplicar_filtro_moneda($query, $filtros, 'sales.moneda_id');
 
@@ -179,7 +185,25 @@ class ContabilidadRepository
     }
 
     /**
-     * Total facturado/vendido del período, SIN descontar devoluciones/NC.
+     * Total vendido del período, SIN descontar devoluciones/NC y NETO del IVA que cada venta
+     * declaró ante ARCA.
+     *
+     * 🔴 Por qué va neto de IVA (misión saneo-ganancia-ventas, 17/9/2026): este renglón es el
+     * numerador del margen bruto y el minuendo del costo de mercadería vendida, que sale de
+     * `article_sale.cost` y es NETO. Sumando `sales.total` a secas se comparaba precio CON IVA
+     * contra costo SIN IVA, y el "margen bruto %" del Estado de Resultados salía inflado en el IVA
+     * débito completo. Además el renglón que se arma con esto se llama "Ventas netas", que en
+     * contabilidad significa justamente sin IVA: un ingreso por ventas nunca incluye el IVA, que
+     * no es del negocio.
+     *
+     * 🔴 El IVA sale del COMPROBANTE, no de la condición fiscal (ver `IvaDeVentaHelper`): las
+     * ventas sin comprobante no declaran nada y quedan enteras, que es lo correcto.
+     *
+     * 🔴 Diferencia deliberada con `iva_debito()`: allá el IVA se imputa por `afip_fecha_emision`
+     * (es un renglón FISCAL y el período lo manda la emisión); acá se imputa a la fecha de la
+     * VENTA, porque el renglón es la venta. Una factura emitida el 2 de agosto por una venta del
+     * 31 de julio netea la venta de julio y paga IVA en agosto: las dos cosas son correctas, cada
+     * reporte fechea por lo que mide.
      *
      * @param  int $user_id
      * @param  string $desde
@@ -189,7 +213,47 @@ class ContabilidadRepository
      */
     public static function ventas_brutas($user_id, $desde, $hasta, $filtros = [])
     {
-        return (float) self::query_ventas_brutas($user_id, $desde, $hasta, $filtros)->sum('sales.total');
+        return (float) self::query_ventas_brutas($user_id, $desde, $hasta, $filtros)
+            ->sum(DB::raw(IvaDeVentaHelper::expresion_total_neto_de_iva()));
+    }
+
+    /**
+     * Cuántas ventas del período tienen un comprobante AUTORIZADO cuyo `importe_iva` nunca se
+     * midió, y que por lo tanto entran ENTERAS (sin netear) en `ventas_brutas()`.
+     *
+     * 🔴 Existe por el mismo motivo que `notas_credito_sin_medir()`: que un renglón que quedó
+     * sobrevaluado no se confunda con uno medido. Un `importe_iva` en null no es un IVA de cero —
+     * es un dato que falta, y se recupera con `php artisan set_iva_debito <company_name>` (medido
+     * el 17/9/2026: 53 comprobantes en ferretotal, 8 en golonorte). Mientras tanto la venta suma
+     * con IVA adentro y el margen bruto de ese período queda un poco alto.
+     *
+     * No se filtra por moneda ni por sucursal: es un aviso de integridad del dato, no un renglón
+     * del reporte.
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @return int
+     */
+    public static function ventas_con_iva_sin_medir($user_id, $desde, $hasta)
+    {
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
+        return (int) Sale::query()
+            ->soloVentasReales()
+            ->where('sales.user_id', $user_id)
+            ->where('sales.terminada', 1)
+            ->whereDate('sales.created_at', '>=', $desde)
+            ->whereDate('sales.created_at', '<=', $hasta)
+            ->whereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('afip_tickets')
+                    ->whereNull('afip_tickets.deleted_at')
+                    ->where('afip_tickets.resultado', 'A')
+                    ->whereNull('afip_tickets.importe_iva')
+                    ->whereRaw('(afip_tickets.sale_id = sales.id OR afip_tickets.sale_id = sales.consolidacion_facturacion_id)');
+            })
+            ->count();
     }
 
     /**
@@ -213,11 +277,19 @@ class ContabilidadRepository
         // Count separado sobre la base sin limit (regla 06)
         $total = $base()->count();
 
+        // 🔴 `monto` es el total YA NETO del IVA declarado, con la misma expresión que suma la
+        // tarjeta: si acá volviera `sales.total` pelado, el drill-down sumaría más que el renglón
+        // que abrió, que es exactamente la divergencia tarjeta/detalle que este módulo persigue.
         $rows = $base()
             ->orderBy('sales.created_at', 'ASC')
             ->skip(($page - 1) * $per_page)
             ->take($per_page)
-            ->get(['sales.id', 'sales.created_at', 'sales.num', 'sales.total']);
+            ->get([
+                'sales.id',
+                'sales.created_at',
+                'sales.num',
+                DB::raw(IvaDeVentaHelper::expresion_total_neto_de_iva().' as total_neto_de_iva'),
+            ]);
 
         $registros = [];
 
@@ -226,7 +298,7 @@ class ContabilidadRepository
                 'id'          => $sale->id,
                 'fecha'       => $sale->created_at,
                 'descripcion' => 'Venta N° '.$sale->num,
-                'monto'       => (float) $sale->total,
+                'monto'       => (float) $sale->total_neto_de_iva,
                 'link_tipo'   => 'sale',
                 'link_id'     => $sale->id,
             ];
@@ -245,11 +317,47 @@ class ContabilidadRepository
     // =========================================================================================
 
     /**
+     * Subquery agregada por nota de crédito: el IVA que cada una canceló ante ARCA.
+     *
+     * Es el mismo criterio que `query_iva_notas_credito()` (`resultado = 'A'`, `importe_iva`,
+     * `nota_credito_id`), en forma de subquery para poder netear cada devolución en SQL. Va por
+     * `DB::table()`, así que el `whereNull('deleted_at')` del soft delete está escrito a mano —
+     * igual que en `IvaDeVentaHelper::subquery_por_venta()`, y por el mismo motivo.
+     *
+     * Devuelve un builder NUEVO en cada llamada, nunca uno clonado (regla 05).
+     *
+     * @return \Illuminate\Database\Query\Builder
+     */
+    private static function subquery_iva_por_nota_credito()
+    {
+        return DB::table('afip_tickets')
+            ->select([
+                'afip_tickets.nota_credito_id',
+                DB::raw('SUM(COALESCE(afip_tickets.importe_iva, 0)) as iva_declarado'),
+            ])
+            ->whereNotNull('afip_tickets.nota_credito_id')
+            ->whereNull('afip_tickets.deleted_at')
+            ->where('afip_tickets.resultado', 'A')
+            ->groupBy('afip_tickets.nota_credito_id');
+    }
+
+    /**
+     * Expresión SQL del `haber` de una nota de crédito YA NETO del IVA que canceló. Requiere que el
+     * query haya pasado por el `leftJoinSub` de `query_devoluciones()`.
+     *
+     * @return string
+     */
+    private static function expresion_devolucion_neta_de_iva()
+    {
+        return '(current_acounts.haber - COALESCE(iva_nota_credito.iva_declarado, 0))';
+    }
+
+    /**
      * Query base de devoluciones (notas de crédito) del período.
      *
      * FUENTE ACTUAL: tabla `current_acounts` (`status = 'nota_credito'`, campo `haber`), con
      * `leftJoin` a `credit_accounts` para resolver la moneda efectiva cuando `current_acounts.moneda_id`
-     * viene null (registros viejos).
+     * viene null (registros viejos), neteada del IVA de la nota de crédito vía `afip_tickets`.
      *
      * @param  int $user_id
      * @param  \Carbon\Carbon $desde
@@ -263,6 +371,9 @@ class ContabilidadRepository
 
         $query = CurrentAcount::query()
             ->leftJoin('credit_accounts', 'credit_accounts.id', '=', 'current_acounts.credit_account_id')
+            ->leftJoinSub(self::subquery_iva_por_nota_credito(), 'iva_nota_credito', function ($join) {
+                $join->on('iva_nota_credito.nota_credito_id', '=', 'current_acounts.id');
+            })
             ->where('current_acounts.user_id', $user_id)
             ->where('current_acounts.status', 'nota_credito')
             ->whereNotNull('current_acounts.haber')
@@ -279,7 +390,18 @@ class ContabilidadRepository
     }
 
     /**
-     * Total de notas de crédito / devoluciones del período.
+     * Total de notas de crédito / devoluciones del período, NETO del IVA que esas notas de crédito
+     * cancelaron ante ARCA.
+     *
+     * 🔴 Va neto por la misma razón que `ventas_brutas()`, y tiene que ir junto con aquélla: las
+     * dos arman el renglón "Ventas netas". Si las ventas se netearan de IVA y las devoluciones no,
+     * el renglón restaría un importe CON IVA a uno SIN IVA y quedaría subvaluado — la misma mezcla
+     * de bases que este cambio vino a sacar, cambiada de signo.
+     *
+     * 🔴 Una nota de crédito sin `importe_iva` medido queda ENTERA (el `COALESCE` la deja como
+     * estaba). Toda nota de crédito anterior al 1/9/2026 está en esa situación hasta que se corra
+     * `php artisan set_iva_notas_credito`, y `notas_credito_sin_medir()` es el contador que existe
+     * justamente para que ese hueco no pase por medido.
      *
      * @param  int $user_id
      * @param  string $desde
@@ -289,7 +411,8 @@ class ContabilidadRepository
      */
     public static function devoluciones($user_id, $desde, $hasta, $filtros = [])
     {
-        return (float) self::query_devoluciones($user_id, $desde, $hasta, $filtros)->sum('current_acounts.haber');
+        return (float) self::query_devoluciones($user_id, $desde, $hasta, $filtros)
+            ->sum(DB::raw(self::expresion_devolucion_neta_de_iva()));
     }
 
     /**
@@ -311,11 +434,17 @@ class ContabilidadRepository
 
         $total = $base()->count();
 
+        // `monto` neto de IVA, con la misma expresión que suma la tarjeta (ver devoluciones()).
         $rows = $base()
             ->orderBy('current_acounts.created_at', 'ASC')
             ->skip(($page - 1) * $per_page)
             ->take($per_page)
-            ->get(['current_acounts.id', 'current_acounts.created_at', 'current_acounts.description', 'current_acounts.haber']);
+            ->get([
+                'current_acounts.id',
+                'current_acounts.created_at',
+                'current_acounts.description',
+                DB::raw(self::expresion_devolucion_neta_de_iva().' as haber_neto_de_iva'),
+            ]);
 
         $registros = [];
 
@@ -324,7 +453,7 @@ class ContabilidadRepository
                 'id'          => $row->id,
                 'fecha'       => $row->created_at,
                 'descripcion' => $row->description ?: 'Nota de crédito',
-                'monto'       => (float) $row->haber,
+                'monto'       => (float) $row->haber_neto_de_iva,
                 // link_id es el id de la propia nota de crédito (current_acounts.id): es el
                 // comprobante real en la estructura actual, no un pivot.
                 'link_tipo'   => 'current_acount',

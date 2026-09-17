@@ -232,10 +232,22 @@ class Sale extends Model
      * Scope: excluye las ventas contenedoras de facturación de los reportes de ventas reales.
      * Usar en todos los queries que calculen totales, rendimiento, caja o performance.
      */
+    /**
+     * Scope: excluye las ventas contenedoras de facturación (ver ConsolidarFacturacionHelper).
+     *
+     * 🔴 Las dos columnas van calificadas con `sales.` a propósito (17/9/2026): sin eso, cualquier
+     * query que joinee otra vez la tabla `sales` —por ejemplo `ContabilidadRepository::ventas_brutas()`,
+     * que joinea la venta contenedora para prorratear su IVA— revienta con
+     * "Column 'is_consolidacion_facturacion' in where clause is ambiguous". Calificar no cambia el
+     * resultado de ningún uso existente: el scope es de `Sale` y siempre corre sobre `sales`.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
     public function scopeSoloVentasReales($query) {
         return $query->where(function($q) {
-            $q->whereNull('is_consolidacion_facturacion')
-              ->orWhere('is_consolidacion_facturacion', 0);
+            $q->whereNull('sales.is_consolidacion_facturacion')
+              ->orWhere('sales.is_consolidacion_facturacion', 0);
         });
     }
 

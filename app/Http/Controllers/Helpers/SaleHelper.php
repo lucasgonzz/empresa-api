@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
@@ -345,28 +346,70 @@ class SaleHelper extends Controller {
     /**
      * Calcula y persiste la ganancia total de la venta.
      *
+     * Fórmula (misión saneo-ganancia-ventas, 17/9/2026):
+     *
+     *     sales.ganancia = total − total_cost − IVA efectivamente declarado por esa venta
+     *
+     * 🔴 El tercer término es el que faltaba, y no es un detalle: `sales.total` es el precio CON
+     * IVA y `sales.total_cost` es el costo SIN IVA. Para un Responsable Inscripto que aplica el
+     * IVA después del margen, la resta pelada informaba como ganancia TODO el IVA débito. Con
+     * costo 100 y margen 40 %, la venta sale 169,40 y la fórmula vieja informaba $69,40 de
+     * ganancia donde la ganancia real es $40: los $29,40 restantes son de ARCA.
+     *
+     * El IVA sale del COMPROBANTE (`IvaDeVentaHelper`), nunca de la condición fiscal del negocio:
+     * las ventas sin comprobante —el 63 % de ferretotal y el 51 % de golonorte— no declaran nada,
+     * el IVA cobrado se lo queda la casa y para ellas la fórmula vieja ya era correcta. Ver el
+     * PHPDoc de `IvaDeVentaHelper` para la tabla de casos completa.
+     *
+     * 🔴 Las notas de crédito NO se netean acá, a propósito. `sales.total` y `sales.total_cost` no
+     * se tocan cuando se emite una nota de crédito (la devolución vive en `current_acounts` +
+     * `article_current_acount`, ver `ContabilidadRepository::devoluciones()` y
+     * `costo_mercaderia_devuelta()`): la fila de `sales` sigue describiendo la venta ORIGINAL
+     * entera. Netearle solo el IVA de la NC dejaría un número mestizo —precio bruto, costo bruto,
+     * IVA neteado— que no describe ninguna operación real. El neteo de las devoluciones es un
+     * renglón del Estado de Resultados, donde las tres puntas se netean juntas.
+     *
+     * 🔴 Un comprobante autorizado sin `importe_iva` medido deja la ganancia en NULL, no en el
+     * número viejo ni en "IVA 0". Null ya significa "no se puede calcular" en esta columna (es lo
+     * que se persiste cuando falta el total o el costo), y es la única respuesta que no miente:
+     * asumir 0 sería contar una venta facturada como si hubiera sido en negro. Se recuperan con
+     * `php artisan set_iva_debito <company_name>` y vuelve a correr `set_sales_ganancia`.
+     *
      * @param \App\Models\Sale $sale
      * @return \App\Models\Sale
      */
     static function set_sale_ganancia($sale) {
-        /** Total final de la venta usado para el calculo. */
-        $total_sale = is_null($sale->total) ? null : (float) $sale->total;
-
-        /** Costo total de la venta usado para el calculo. */
-        $total_cost = is_null($sale->total_cost) ? null : (float) $sale->total_cost;
-
-        /**
-         * Ganancia persistida.
-         * Si falta alguno de los dos valores base, se mantiene en null.
-         */
-        $sale_ganancia = is_null($total_sale) || is_null($total_cost) ? null : $total_sale - $total_cost;
+        /** IVA declarado por esta venta y comprobantes suyos que todavía no lo tienen medido. */
+        $medicion_iva = IvaDeVentaHelper::medir_venta($sale);
 
         /** Se guarda sin timestamps para mantener el comportamiento actual del helper. */
-        $sale->ganancia = $sale_ganancia;
+        $sale->ganancia = Self::calcular_ganancia($sale->total, $sale->total_cost, $medicion_iva);
         $sale->timestamps = false;
         $sale->save();
 
         return $sale;
+    }
+
+    /**
+     * La fórmula de la ganancia, sola y sin efectos: la comparten el guardado en vivo
+     * (`set_sale_ganancia()`) y el backfill (`php artisan set_sales_ganancia`), para que no puedan
+     * dar números distintos sobre la misma venta.
+     *
+     * @param  mixed $total Total de la venta (`sales.total`), puede venir null.
+     * @param  mixed $total_cost Costo total de la venta (`sales.total_cost`), puede venir null.
+     * @param  array{iva: float, sin_medir: int} $medicion_iva Salida de `IvaDeVentaHelper`.
+     * @return float|null Null cuando el número no se puede calcular (ver PHPDoc de set_sale_ganancia).
+     */
+    static function calcular_ganancia($total, $total_cost, $medicion_iva) {
+        if (is_null($total) || is_null($total_cost)) {
+            return null;
+        }
+
+        if ((int) $medicion_iva['sin_medir'] > 0) {
+            return null;
+        }
+
+        return (float) $total - (float) $total_cost - (float) $medicion_iva['iva'];
     }
 
     // Chequeo que no falten articulos como le suele pasar a Pack

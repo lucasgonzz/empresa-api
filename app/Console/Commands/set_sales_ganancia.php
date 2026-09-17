@@ -2,11 +2,25 @@
 
 namespace App\Console\Commands;
 
+use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Models\Sale;
 use Illuminate\Database\Connection;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Backfill de `sales.ganancia` con la fórmula vigente (misión saneo-ganancia-ventas, 17/9/2026).
+ *
+ *     sales.ganancia = total − total_cost − IVA efectivamente declarado por esa venta
+ *
+ * Tiene que dar EXACTAMENTE lo mismo que el guardado en vivo: las dos puntas comparten
+ * `SaleHelper::calcular_ganancia()` y `IvaDeVentaHelper`, no hay una segunda fórmula acá.
+ *
+ * 🔴 Corre sobre bases de producción con decenas de miles de ventas (53.155 en ferretotal, 27.368
+ * en golonorte al 17/9/2026), así que el chunking y la pausa entre lotes no son decorativos.
+ * `IvaDeVentaHelper::medir_ventas()` mide el lote entero en dos queries, no una por venta.
+ */
 class set_sales_ganancia extends Command
 {
     /**
@@ -59,6 +73,13 @@ class set_sales_ganancia extends Command
         /** Contador de ventas con ganancia nula por falta de total o costo. */
         $null_ganancia_sales = 0;
 
+        /**
+         * Contador de ventas que quedaron en null porque tienen un comprobante AUTORIZADO cuyo
+         * `importe_iva` nunca se midió. Se informa aparte del contador de arriba porque tiene una
+         * salida concreta: correr `set_iva_debito` y volver a correr este comando.
+         */
+        $sin_iva_medido_sales = 0;
+
         if (is_null($user_id)) {
             $this->error('No se encontro config(app.USER_ID).');
             return 1;
@@ -74,10 +95,17 @@ class set_sales_ganancia extends Command
             return 1;
         }
 
-        /** Query base con columnas minimas para reducir transferencia y memoria. */
+        /**
+         * Query base con columnas minimas para reducir transferencia y memoria.
+         *
+         * 🔴 `consolidacion_facturacion_id` NO es opcional en este select: es la columna con la que
+         * `IvaDeVentaHelper` le prorratea a cada venta consolidada la parte que le toca del
+         * comprobante único de su contenedora. Sin ella, todas las ventas consolidadas se medirían
+         * con IVA 0 — o sea, facturadas contadas como si fueran en negro.
+         */
         $sales_query = Sale::query()
             ->where('user_id', $user_id)
-            ->select('id', 'num', 'total', 'total_cost')
+            ->select('id', 'num', 'total', 'total_cost', 'consolidacion_facturacion_id')
             ->orderBy('id', 'asc');
 
         /** Total esperado para informar progreso general del proceso. */
@@ -85,31 +113,42 @@ class set_sales_ganancia extends Command
 
         $this->info('Iniciando set_sales_ganancia');
         $this->info('USER_ID: '.$user_id);
+        $this->info('Formula: ganancia = total - total_cost - IVA declarado por la venta');
         $this->info('Ventas a procesar: '.$total_sales);
         $this->info('Chunk: '.$chunk_size.' | Sleep: '.$sleep_seconds.'s');
 
         /**
          * Proceso incremental por id para soportar volumen alto sin cortar memoria ni ejecucion.
          */
-        $sales_query->chunkById($chunk_size, function ($sales_chunk) use (&$processed_sales, &$null_ganancia_sales, $total_sales, $sleep_seconds) {
+        $sales_query->chunkById($chunk_size, function ($sales_chunk) use (&$processed_sales, &$null_ganancia_sales, &$sin_iva_medido_sales, $total_sales, $sleep_seconds) {
+
+            /**
+             * IVA declarado de TODO el lote, en dos queries (no una por venta): el mismo criterio
+             * del comprobante que usa el guardado en vivo.
+             */
+            $medicion_por_venta = IvaDeVentaHelper::medir_ventas($sales_chunk);
+
             /** Recorre cada venta del lote actual y persiste la ganancia. */
             foreach ($sales_chunk as $sale) {
-                /** Total de venta convertido a numero para el calculo. */
-                $sale_total = is_null($sale->total) ? null : (float) $sale->total;
-
-                /** Costo total convertido a numero para el calculo. */
-                $sale_total_cost = is_null($sale->total_cost) ? null : (float) $sale->total_cost;
+                $medicion_iva = isset($medicion_por_venta[$sale->id])
+                    ? $medicion_por_venta[$sale->id]
+                    : ['iva' => 0.0, 'sin_medir' => 0];
 
                 /**
-                 * Ganancia final a guardar.
-                 * Si falta total o costo, se persiste null para mantener consistencia con backend.
+                 * Ganancia final a guardar, con la MISMA funcion que usa el guardado en vivo.
+                 * Si falta total o costo, o si hay un comprobante autorizado sin IVA medido, se
+                 * persiste null: null ya significa "no se puede calcular" en esta columna, y es la
+                 * unica respuesta que no miente.
                  */
-                $sale_ganancia = is_null($sale_total) || is_null($sale_total_cost)
-                    ? null
-                    : $sale_total - $sale_total_cost;
+                $sale_ganancia = SaleHelper::calcular_ganancia($sale->total, $sale->total_cost, $medicion_iva);
 
                 if (is_null($sale_ganancia)) {
-                    $null_ganancia_sales++;
+
+                    if ((int) $medicion_iva['sin_medir'] > 0) {
+                        $sin_iva_medido_sales++;
+                    } else {
+                        $null_ganancia_sales++;
+                    }
                 }
 
                 /** Se actualiza solo la columna necesaria para reducir tiempo de escritura. */
@@ -131,7 +170,22 @@ class set_sales_ganancia extends Command
 
         $this->info('Proceso finalizado');
         $this->info('Total procesadas: '.$processed_sales);
-        $this->info('Ganancia null: '.$null_ganancia_sales);
+        $this->info('Ganancia null por falta de total o costo: '.$null_ganancia_sales);
+        $this->info('Ganancia null por comprobante sin IVA medido: '.$sin_iva_medido_sales);
+
+        /**
+         * 🔴 El aviso va como warning y con el comando exacto: una venta facturada cuyo comprobante
+         * no tiene `importe_iva` no se puede saldar sola. Medido el 17/9/2026: 53 comprobantes asi
+         * en ferretotal y 8 en golonorte.
+         */
+        if ($sin_iva_medido_sales > 0) {
+            $this->warn(
+                $sin_iva_medido_sales.' venta(s) quedaron con ganancia en NULL porque tienen un comprobante '.
+                'autorizado sin importe_iva medido. No se las cuenta como IVA 0 a proposito: seria contar una '.
+                'venta facturada como si hubiera sido en negro. Corre "php artisan set_iva_debito <company_name>" '.
+                'y despues volve a correr este comando.'
+            );
+        }
 
         return 0;
     }

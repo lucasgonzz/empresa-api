@@ -282,10 +282,23 @@ class Semilla_Test extends EmpresaTestCase
 
     /**
      * Test 1 — El ancla de toda la aritmética de la semilla: con el costeo al 50% del precio que
-     * usa `SemillaHelper` en cada línea vendida, el resultado bruto del Estado de Resultados tiene
-     * que ser la mitad de las ventas netas del mismo mes sembrado. Si esto se pone rojo, o cambió
-     * el costeo del sistema o cambió la semilla, y en los dos casos hay que mirar (no ajustar esta
-     * aserción para que pase).
+     * usa `SemillaHelper` en cada línea vendida, el costo de la mercadería vendida del Estado de
+     * Resultados tiene que ser la mitad de las ventas netas del mes sembrado. Si esto se pone rojo,
+     * o cambió el costeo del sistema o cambió la semilla, y en los dos casos hay que mirar (no
+     * ajustar esta aserción para que pase).
+     *
+     * 🔴 La "mitad" es de las ventas netas CON IVA, y desde la misión saneo-ganancia-ventas
+     * (17/9/2026) hay que sumárselo de vuelta para verla. No es un ajuste para que el test pase: es
+     * que el renglón cambió de definición. `ventas_brutas` ahora informa las ventas NETAS del IVA
+     * declarado (antes sumaba `sales.total`, con IVA, contra un costo que siempre fue neto), y la
+     * semilla costea cada línea al 50% del PRECIO DE VENTA, que lleva IVA adentro. O sea que con la
+     * definición nueva el costo ya no es la mitad del renglón de ventas, y la relación exacta pasa
+     * a ser `costo = 0,5 × (ventas_netas + IVA declarado)`. El IVA sale de la planilla de control,
+     * que lo informa desde la misma misión.
+     *
+     * La aserción es MÁS fuerte que la anterior, no menos: ata el costeo al 50% y además obliga a
+     * que el neteo de IVA sea exactamente el que la semilla facturó (guard de `iva_ventas > 0`
+     * incluido, para que el test no se vuelva trivial si algún día la semilla deja de facturar).
      *
      * @group reportes
      * @group semilla
@@ -306,19 +319,44 @@ class Semilla_Test extends EmpresaTestCase
             'resultado_bruto del reporte no coincide con resultado_bruto de la planilla de control.'
         );
 
+        $iva_declarado = (float) $this->control['iva_ventas'];
+
+        $this->assertGreaterThan(
+            0,
+            $iva_declarado,
+            'La semilla tiene que haber facturado al menos una venta -- si no, el neteo de IVA de ventas_brutas no se estaría probando acá.'
+        );
+
+        /** Ventas netas del mes CON el IVA adentro, que es la base sobre la que costea la semilla. */
+        $ventas_netas_con_iva = (float) $estado['ventas_netas'] + $iva_declarado;
+
+        $costo_neto_mercaderia = (float) $estado['costo_mercaderia_vendida'] - (float) $estado['costo_mercaderia_devuelta'];
+
         $this->assertEqualsWithDelta(
-            0.5 * (float) $estado['ventas_netas'],
+            0.5 * $ventas_netas_con_iva,
+            $costo_neto_mercaderia,
+            self::DELTA,
+            'El costo neto de mercadería tiene que ser exactamente la mitad de las ventas netas CON IVA, dado el costeo al 50% que usa SemillaHelper en cada línea vendida.'
+        );
+
+        $this->assertEqualsWithDelta(
+            (float) $estado['ventas_netas'] - (0.5 * $ventas_netas_con_iva),
             (float) $estado['resultado_bruto'],
             self::DELTA,
-            'resultado_bruto tiene que ser exactamente la mitad de ventas_netas, dado el costeo al 50% que usa SemillaHelper en cada línea vendida.'
+            'resultado_bruto tiene que ser las ventas netas (ya sin IVA) menos ese costo al 50%.'
         );
     }
 
     /**
      * Test 2 — Verifica que las devoluciones se estén sembrando Y que el Estado de Resultados las
      * esté restando: `sembrar_mes()` siembra devoluciones por el 10% de las ventas brutas del mes
-     * (`SembrarDatosDePrueba::DEVOLUCIONES_FRACCION`), así que ventas_netas tiene que dar
-     * exactamente el 90% de ventas_brutas.
+     * (`SembrarDatosDePrueba::DEVOLUCIONES_FRACCION`).
+     *
+     * 🔴 El 10% es sobre las ventas CON IVA, y desde la misión saneo-ganancia-ventas (17/9/2026)
+     * hay que sumárselo de vuelta al renglón para verlo — mismo motivo que en el test 1: la
+     * definición de `ventas_brutas` cambió (ahora informa neto del IVA declarado), mientras que las
+     * devoluciones de la semilla no llevan comprobante y por lo tanto no tienen IVA que netear. La
+     * relación exacta pasa a ser `devoluciones = 0,1 × (ventas_brutas + IVA declarado)`.
      *
      * @group reportes
      * @group semilla
@@ -338,13 +376,29 @@ class Semilla_Test extends EmpresaTestCase
             'ventas_netas del reporte no coincide con ventas_netas de la planilla de control.'
         );
 
-        $fraccion_neta = 1 - SembrarDatosDePrueba::DEVOLUCIONES_FRACCION;
+        $iva_declarado = (float) $this->control['iva_ventas'];
+
+        $this->assertGreaterThan(
+            0,
+            $iva_declarado,
+            'La semilla tiene que haber facturado al menos una venta -- si no, el neteo de IVA de ventas_brutas no se estaría probando acá.'
+        );
+
+        /** Ventas brutas del mes CON el IVA adentro, que es la base sobre la que se sembró el 10%. */
+        $ventas_brutas_con_iva = (float) $estado['ventas_brutas'] + $iva_declarado;
 
         $this->assertEqualsWithDelta(
-            $fraccion_neta * (float) $estado['ventas_brutas'],
+            SembrarDatosDePrueba::DEVOLUCIONES_FRACCION * $ventas_brutas_con_iva,
+            (float) $estado['devoluciones'],
+            self::DELTA,
+            'devoluciones tiene que ser DEVOLUCIONES_FRACCION de las ventas brutas CON IVA.'
+        );
+
+        $this->assertEqualsWithDelta(
+            (float) $estado['ventas_brutas'] - (float) $estado['devoluciones'],
             (float) $estado['ventas_netas'],
             self::DELTA,
-            'ventas_netas tiene que ser (1 - DEVOLUCIONES_FRACCION) de ventas_brutas.'
+            'ventas_netas tiene que ser ventas_brutas menos devoluciones.'
         );
     }
 
