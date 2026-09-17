@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
@@ -348,13 +349,23 @@ class SaleHelper extends Controller {
      *
      * Fórmula (misión saneo-ganancia-ventas, 17/9/2026):
      *
-     *     sales.ganancia = total − total_cost − IVA efectivamente declarado por esa venta
+     *     sales.ganancia = total − costo NETO − IVA efectivamente declarado por esa venta
+     *
+     * donde el costo neto es `total_cost` menos el crédito fiscal que ese costo trae adentro
+     * (`CostoDeVentaHelper`), que es 0 en la enorme mayoría de las cuentas.
      *
      * 🔴 El tercer término es el que faltaba, y no es un detalle: `sales.total` es el precio CON
      * IVA y `sales.total_cost` es el costo SIN IVA. Para un Responsable Inscripto que aplica el
      * IVA después del margen, la resta pelada informaba como ganancia TODO el IVA débito. Con
      * costo 100 y margen 40 %, la venta sale 169,40 y la fórmula vieja informaba $69,40 de
      * ganancia donde la ganancia real es $40: los $29,40 restantes son de ARCA.
+     *
+     * 🔴 Y el segundo término no siempre es neto, que es lo que hacía que la fórmula nueva fuera
+     * PEOR que la vieja en una cuenta **legacy con `aplicar_iva_al_costo` prendida**: ahí el costo
+     * se guarda BRUTO y restarle además el IVA débito completo descuenta el IVA dos veces (costo
+     * bruto 121 y margen 40 % daban $19,00 donde la ganancia real es $40). Ese IVA de compra es
+     * crédito fiscal recuperable y se lo devuelve al costo antes de restar. Quién tiene el costo
+     * bruto, quién recupera ese IVA y por qué el Monotributista no entra: `CostoDeVentaHelper`.
      *
      * El IVA sale del COMPROBANTE (`IvaDeVentaHelper`), nunca de la condición fiscal del negocio:
      * las ventas sin comprobante —el 63 % de ferretotal y el 51 % de golonorte— no declaran nada,
@@ -382,8 +393,11 @@ class SaleHelper extends Controller {
         /** IVA declarado por esta venta y comprobantes suyos que todavía no lo tienen medido. */
         $medicion_iva = IvaDeVentaHelper::medir_venta($sale);
 
+        /** Crédito fiscal contenido en el costo (0 salvo en las cuentas con el costo BRUTO). */
+        $credito_fiscal = CostoDeVentaHelper::medir_venta($sale);
+
         /** Se guarda sin timestamps para mantener el comportamiento actual del helper. */
-        $sale->ganancia = Self::calcular_ganancia($sale->total, $sale->total_cost, $medicion_iva);
+        $sale->ganancia = Self::calcular_ganancia($sale->total, $sale->total_cost, $medicion_iva, $credito_fiscal);
         $sale->timestamps = false;
         $sale->save();
 
@@ -395,12 +409,17 @@ class SaleHelper extends Controller {
      * (`set_sale_ganancia()`) y el backfill (`php artisan set_sales_ganancia`), para que no puedan
      * dar números distintos sobre la misma venta.
      *
+     * El cuarto parámetro tiene default 0 y no es un atajo: 0 es la respuesta CORRECTA para toda
+     * cuenta cuyo costo ya es neto, que son casi todas. Sólo las cuentas con el costo BRUTO mandan
+     * algo distinto (ver `CostoDeVentaHelper`).
+     *
      * @param  mixed $total Total de la venta (`sales.total`), puede venir null.
      * @param  mixed $total_cost Costo total de la venta (`sales.total_cost`), puede venir null.
      * @param  array{iva: float, sin_medir: int} $medicion_iva Salida de `IvaDeVentaHelper`.
+     * @param  mixed $credito_fiscal_en_el_costo Salida de `CostoDeVentaHelper::medir_venta()`.
      * @return float|null Null cuando el número no se puede calcular (ver PHPDoc de set_sale_ganancia).
      */
-    static function calcular_ganancia($total, $total_cost, $medicion_iva) {
+    static function calcular_ganancia($total, $total_cost, $medicion_iva, $credito_fiscal_en_el_costo = 0.0) {
         if (is_null($total) || is_null($total_cost)) {
             return null;
         }
@@ -409,7 +428,10 @@ class SaleHelper extends Controller {
             return null;
         }
 
-        return (float) $total - (float) $total_cost - (float) $medicion_iva['iva'];
+        /** Costo YA NETO: se le devuelve al costo el IVA de compra que el negocio recupera. */
+        $costo_neto = (float) $total_cost - (float) $credito_fiscal_en_el_costo;
+
+        return (float) $total - $costo_neto - (float) $medicion_iva['iva'];
     }
 
     // Chequeo que no falten articulos como le suele pasar a Pack
