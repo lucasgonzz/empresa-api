@@ -1493,7 +1493,13 @@ class ContabilidadRepository
                 ->where('retenciones_sufridas.user_id', $user_id)
                 ->whereDate('retenciones_sufridas.fecha', '>=', $desde)
                 ->whereDate('retenciones_sufridas.fecha', '<=', $hasta)
-                ->where('retenciones_sufridas.importe', '>', 0);
+                /*
+                 * `!= 0` y no `> 0`: el total de arriba es un SUM() que incluye los importes
+                 * negativos (un ajuste), así que filtrarlos acá dejaría un detalle que no suma su
+                 * propio total. Es la clase de discrepancia que hace que alguien audite el renglón
+                 * y no encuentre la diferencia.
+                 */
+                ->where('retenciones_sufridas.importe', '!=', 0);
         };
 
         $total = $base()->count();

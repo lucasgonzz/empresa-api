@@ -250,6 +250,12 @@ class CurrentAcountController extends Controller
      * Idem, para los campos numericos: un string vacio tiene que quedar NULL y no 0, que se leeria
      * como "la base imponible fue cero".
      *
+     * 🔴 LO MISMO VALE PARA UN TEXTO QUE NO ES UN NUMERO. Los dos campos son inputs de texto libre
+     * en la SPA (no `type=number`, porque la coma y el punto decimal los escribe cada comercio como
+     * puede), y `(float)'abc'` en PHP da 0 sin avisar. Un 0 guardado no se distingue de un cero
+     * declarado, y en `base_imponible` eso es "la retencion se practico sobre una base de cero".
+     * Lo que no es un numero es un campo NO CARGADO.
+     *
      * @param  array $payment_method
      * @param  string $campo
      * @return float|null
@@ -258,7 +264,7 @@ class CurrentAcountController extends Controller
 
         $valor = $this->dato_de_retencion($payment_method, $campo);
 
-        if (is_null($valor)) {
+        if (is_null($valor) || !is_numeric($valor)) {
 
             return null;
         }
