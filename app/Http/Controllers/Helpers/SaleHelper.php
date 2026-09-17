@@ -1957,6 +1957,7 @@ class SaleHelper extends Controller {
 
         /*
             EL TOTAL FORZADO VA ULTIMO, DESPUES DE TODO (mision forzar-total-por-monto, 17/9/2026).
+            Ver `aplicar_forzar_total_monto()` justo abajo para el porque del lugar y de la guarda.
 
             🔴 POR QUE AL FINAL Y NO EN EL MEDIO, que es donde se estaria tentado de ponerlo al
             lado de `$sale->descuento`. El monto es la diferencia contra EL TOTAL QUE VIO EL
@@ -1974,9 +1975,65 @@ class SaleHelper extends Controller {
             La guarda de null va adentro de `get_forzar_total_monto()`: sin forzado esto es una
             suma de cero y el camino comun no cambia en nada.
         */
-        $total += Self::get_forzar_total_monto($sale);
+        $total = Self::aplicar_forzar_total_monto($sale, $total);
 
         return $total;
+    }
+
+    /**
+     * Le aplica a un total el monto del forzado, con la guarda del total negativo.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 POR QUE ESTA GUARDA EXISTE DEL LADO DEL BACK Y NO ALCANZA CON LA DE VENDER
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  El monto queda FIJO una vez aplicado, igual que cualquier descuento de venta. El caso borde
+     *  es que los renglones de la venta cambien despues de forzar hasta que el total base quede por
+     *  debajo del monto: ahi el forzado ya no describe nada y aplicarlo deja un total negativo.
+     *
+     *  En VENDER eso lo cubre el vendedor, que ve el numero. Pero hay un camino donde el total se
+     *  recalcula SIN QUE LA SPA PARTICIPE: `attachProperies()` llama a `update_total_sale()` cuando
+     *  una venta `to_check` se confirma por primera vez, justamente porque el total que mando
+     *  VENDER no contempla las unidades chequeadas por el deposito. Medido: comercio con
+     *  `check_sales`, venta forzada a $4.000 (monto -12), el deposito chequea un solo item de $10
+     *  -> el total daria **-2**, y ese numero sigue derecho a la cuenta corriente y al importe del
+     *  medio de pago. Nadie lo mira en el camino.
+     *
+     *  🔴 Y NO SE CLAMPEA A CERO EN SILENCIO. Un total pisado a 0 sin que nadie lo diga es plata que
+     *  desaparece sin rastro: la venta queda cobrada en cero y no hay nada en la fila ni en el log
+     *  que explique por que. Se devuelve el total SIN forzar —que es un numero real, el de los
+     *  renglones que quedaron— y se deja el warning con los dos numeros para poder reconstruirlo.
+     *  Es el mismo criterio que toma `AfipItemCalculator::get_factor_total_forzado()` cuando su
+     *  base no da, y el mismo que pide la SPA en `aplicar_forzar_total_monto()`.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|object  $sale   Venta.
+     * @param  float                                       $total  Total ya calculado, sin el forzado.
+     * @return float
+     */
+    static function aplicar_forzar_total_monto($sale, $total) {
+
+        /** Monto con signo. 0 = la venta no se forzo y no hay nada que hacer. */
+        $monto = Self::get_forzar_total_monto($sale);
+
+        if ($monto == 0) {
+            return $total;
+        }
+
+        /** El total que quedaria al aplicar el monto. */
+        $forzado = $total + $monto;
+
+        if ($forzado < 0) {
+
+            Log::warning(
+                'SaleHelper: la venta '.(isset($sale->id) ? $sale->id : '?').' tiene forzar_total_monto ('.$monto.
+                ') pero sus renglones suman '.$total.', asi que el total forzado daria '.$forzado.
+                '. Se descarta el forzado y se deja el total sin forzar: los items cambiaron despues de forzar.'
+            );
+
+            return $total;
+        }
+
+        return $forzado;
     }
 
     /**
@@ -1990,11 +2047,26 @@ class SaleHelper extends Controller {
      * NEGATIVO = descuento, POSITIVO = recargo, NULL = no se forzo nada. La semantica completa
      * esta en la migracion `2026_09_17_100000_add_forzar_total_monto_to_sales_and_budgets_tables`.
      *
-     * ⚠️ `isset()` y no `is_null($model->forzar_total_monto)`: este helper lo llaman tambien los
-     * PDF y el calculador de AFIP sobre modelos que pueden venir de una base de cliente que
-     * TODAVIA NO CORRIO LA MIGRACION. En esa base el atributo no existe en absoluto y preguntar
-     * por el con `->` tira un warning por cada renglon del comprobante. `isset()` cubre las dos
-     * cosas —columna ausente y columna en null— con la misma linea.
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  ⚠️ POR QUE `isset()` Y NO `is_null($model->forzar_total_monto)`
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  NO es para tolerar una base sin migrar. Esa garantia seria FALSA y conviene decirlo, porque
+     *  es lo primero que uno piensa: contra una base sin la columna, el alta de ventas ya revento
+     *  mucho antes de llegar aca —`SaleController` manda la clave en el INSERT sin ninguna guarda—,
+     *  asi que defender la lectura no salva nada.
+     *
+     *  La razon real es que este helper recibe modelos que NO SON `Sale` NI `Budget` y que nunca
+     *  van a tener la columna, ni aunque todas las migraciones esten corridas:
+     *
+     *    - `OrderProductionPdf.php:148` le pasa un `OrderProduction` a `BudgetHelper::getTotal()`,
+     *      que termina llamando acá. Ese modelo no tiene nada que ver con presupuestos.
+     *    - `AfipWsfeHelper.php:664` le pasa un `AfipTicket` a `getTotalSale()` (hoy detras de un
+     *      `return null` incondicional, o sea inalcanzable — pero la forma de la llamada existe y
+     *      el dia que se destrabe va a entrar por acá).
+     *
+     *  Sobre esos modelos, `is_null($model->forzar_total_monto)` tira un warning por cada renglon
+     *  del comprobante. `isset()` los cubre y de paso cubre el null, con la misma linea.
      *
      * @param  \Illuminate\Database\Eloquent\Model|object  $model  Venta o presupuesto.
      * @return float  0 si no hay forzado.
