@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\ColorContrastHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Models\OnlineConfiguration;
@@ -136,7 +137,26 @@ class LogoPaletteAiService
             return $this->fail('El servicio de IA no pudo procesar el logo. Intenta de nuevo en unos minutos.');
         }
 
-        $parsed = $this->parse_response($response->json());
+        $body = $response->json();
+
+        /*
+         * Consumo de tokens (mision tokens-por-cliente). Mismo criterio que el resto: se
+         * registra recien cuando la llamada salio bien, con el body todavia entero. El dueno
+         * ya viene resuelto por el controller — a este metodo nunca se le pasa un user_id de
+         * request, justamente por eso.
+         */
+        AiTokenUsageHelper::registrar([
+            'user_id' => (int) $user_id,
+            'proceso' => 'paleta_logo',
+            'body'    => is_array($body) ? $body : [],
+
+            // El modelo resuelto que devolvio Anthropic; la constante es solo el alias.
+            'modelo' => isset($body['model']) && (string) $body['model'] !== ''
+                ? (string) $body['model']
+                : self::CLAUDE_MODEL,
+        ]);
+
+        $parsed = $this->parse_response($body);
 
         if ($parsed === null) {
             Log::info('[PaletaLogo] No se pudo parsear la respuesta de Claude.', ['user_id' => $user_id]);

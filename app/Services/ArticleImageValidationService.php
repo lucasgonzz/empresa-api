@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Article;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -145,8 +146,11 @@ class ArticleImageValidationService
      * ningun comercio seguir asignando imagenes (el job, en el prompt 03, marca esos casos para
      * revision manual en vez de rechazarlos).
      *
-     * @param  string  $image_binary  Contenido binario de la imagen ya descargada.
-     * @param  Article $article       Articulo contra el que se valida la imagen.
+     * @param  string   $image_binary  Contenido binario de la imagen ya descargada.
+     * @param  Article  $article       Articulo contra el que se valida la imagen.
+     * @param  int|null $user_id       Dueno al que se le imputa el consumo de tokens. Opcional
+     *                                 y al final para no romper a ningun llamador; lo pasa
+     *                                 ProcessArticleBatchImagesJob, que es el unico que hay.
      * @return array {
      *     evaluated:  bool,          false si la validacion esta deshabilitada o la IA no respondio
      *     accepted:   bool,          si la imagen se puede usar
@@ -155,7 +159,7 @@ class ArticleImageValidationService
      *     reason:     string,       en castellano, lista para mostrar al usuario
      * }
      */
-    public function validate(string $image_binary, Article $article): array
+    public function validate(string $image_binary, Article $article, $user_id = null): array
     {
         // Interruptor general: si esta deshabilitado, no se llama a la IA y se asigna igual.
         if (!config('services.article_image_validation.enabled')) {
@@ -243,7 +247,38 @@ class ArticleImageValidationService
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
         }
 
-        $parsed = $this->parse_vision_response($response->json());
+        /*
+         * Consumo de tokens (misión tokens-por-cliente). Una tanda de imágenes son cientos de
+         * llamadas de visión seguidas, que es de lo más caro que corre el sistema, y hasta acá
+         * no se anotaba ninguna.
+         *
+         * Va después del guard de `!successful()`: los tres `return` de arriba son llamadas que
+         * no salieron o que Anthropic rechazó, y eso no se paga. El `$this->calls_made++` sí
+         * cuenta los rechazos, pero ese contador limita PETICIONES por corrida, que es otra cosa
+         * que el gasto real.
+         *
+         * El dueño viene del job y no de `$article->user_id` a propósito: es el mismo owner que
+         * la corrida usa para la cuota de Google y para todo el resto de sus escrituras, así que
+         * el gasto queda imputado a quien apretó el botón aunque un artículo tuviera el user_id
+         * mal cargado.
+         */
+        $body = $response->json();
+
+        AiTokenUsageHelper::registrar([
+            'user_id' => is_null($user_id) ? null : (int) $user_id,
+            'proceso' => 'validacion_imagen_articulo',
+            'body'    => is_array($body) ? $body : [],
+
+            // El que devolvió Anthropic (alias ya resuelto con su fecha); el de config, solo
+            // si no vino: el costo se calcula por modelo y el alias no alcanza.
+            'modelo' => isset($body['model']) && (string) $body['model'] !== ''
+                ? (string) $body['model']
+                : $model,
+
+            'referencia_id' => (int) $article->id,
+        ]);
+
+        $parsed = $this->parse_vision_response($body);
 
         if ($parsed === null) {
             Log::info('[ValidacionImagenIA] No se pudo parsear la respuesta de Claude.', [
