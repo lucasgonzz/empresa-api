@@ -1214,6 +1214,36 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * Cambia el precio de los renglones de una venta ya guardada (endpoint
+     * `PUT api/sale/update-prices/{id}`, `SaleController::updatePrices()`).
+     *
+     * 🔴 Y recalcula la GANANCIA de la línea, que hasta el 17/9/2026 no se tocaba. El pivot quedaba
+     * con la ganancia del precio VIEJO —`(price_viejo − cost) × amount`— cada vez que alguien
+     * editaba el precio de una venta guardada: un dato incorrecto que el sistema seguía generando
+     * todos los días.
+     *
+     * Y no era sólo un número feo en una columna. Esa línea desincronizada cumple la firma
+     * aritmética con la que `sale:sanear-costo-de-linea` reconoce las líneas que rompió
+     * `set_costo_ventas`, así que el saneo la confundía con una línea a corregir y la "arreglaba"
+     * sin que estuviera rota. Ese comando terminó necesitando una guarda extra para no comérselas:
+     * la guarda tapa el síntoma, esto saca la causa.
+     *
+     * El `cost` y el `amount` se LEEN del pivot y no se recalculan: son la foto del momento de la
+     * venta y este endpoint no los toca. La convención es la misma de `attachArticle()`, la ganancia
+     * TOTAL de la línea y no la unitaria: `(price − cost) × amount`.
+     *
+     * ⚠️ Con `cost` en NULL la ganancia se persiste en NULL, que ya significa "no se puede calcular"
+     * en el resto del sistema (`sales.ganancia`), en vez de inventarle un costo de cero. Pasa, por
+     * ejemplo, con las líneas que deja `OrderProductionHelper::attachSaleArticles()`. Ojo con la
+     * asimetría: `attachArticle()` sí le inventa el cero en ese caso (`(float) null` da 0, o sea
+     * ganancia = precio × cantidad), y eso quedó como está a propósito — es el camino de creación,
+     * con su propia batería de tests, y cambiarlo es una decisión aparte.
+     *
+     * @param  \App\Models\Sale $sale
+     * @param  array $items Renglones con el precio nuevo, tal cual los manda la SPA.
+     * @return void
+     */
     static function updateItemsPrices($sale, $items) {
         foreach ($items as $item) {
             if (isset($item['is_article']) && $item['price_vender'] != '') {
@@ -1221,10 +1251,25 @@ class SaleHelper extends Controller {
                  * Recalcula precio sin IVA cada vez que se actualiza precio de artículo.
                  */
                 $price_sin_iva = Self::get_price_sin_iva($item, $item['price_vender']);
-                $sale->articles()->updateExistingPivot($item['id'], [
-                                                        'price' => $item['price_vender'],
-                                                        'price_sin_iva' => $price_sin_iva,
-                                                    ]);
+
+                $cambios = [
+                    'price' => $item['price_vender'],
+                    'price_sin_iva' => $price_sin_iva,
+                ];
+
+                /** Línea actual, para leerle el costo y la cantidad que ya tiene guardados. */
+                $linea = $sale->articles()->find($item['id']);
+
+                if (!is_null($linea) && !is_null($linea->pivot)) {
+
+                    $cambios['ganancia'] = Self::ganancia_de_linea(
+                        $linea->pivot->cost,
+                        $linea->pivot->amount,
+                        $item['price_vender']
+                    );
+                }
+
+                $sale->articles()->updateExistingPivot($item['id'], $cambios);
             } else if (isset($item['is_service']) && $item['price_vender'] != '') {
                 $service = Service::find($item['id']);
                 $service->price = $item['price_vender'];
@@ -1234,6 +1279,30 @@ class SaleHelper extends Controller {
                                                     ]);
             }
         }
+    }
+
+    /**
+     * La ganancia de UNA línea de venta, sola y sin efectos.
+     *
+     * 🔴 Es la ganancia TOTAL de la línea, no la unitaria: `(price − cost) × amount`. Es la
+     * convención que fija `attachArticle()` al crear la venta (`'ganancia' => $ganancia * $amount`),
+     * y la que respeta todo lo que lee esa columna.
+     *
+     * Devuelve null cuando no hay con qué calcular —sin costo o sin cantidad—, que es lo mismo que
+     * significa null en `sales.ganancia`. Inventarle un costo de cero informaría como ganancia el
+     * precio entero.
+     *
+     * @param  mixed $cost Costo UNITARIO guardado en el pivot.
+     * @param  mixed $amount Cantidad de la línea.
+     * @param  mixed $price Precio unitario nuevo.
+     * @return float|null
+     */
+    static function ganancia_de_linea($cost, $amount, $price) {
+        if (is_null($cost) || is_null($amount)) {
+            return null;
+        }
+
+        return ((float) $price - (float) $cost) * (float) $amount;
     }
 
     /**
