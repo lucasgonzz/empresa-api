@@ -85,6 +85,14 @@ class EscaneoFacturaCompraService
     /**
      * Campos numéricos de la cabecera del comprobante.
      *
+     * 🔴 Las retenciones NO están, y no es un olvido (misión `compras-factura-manual-alicuotas`,
+     * 17/9/2026). Una factura de compra no trae retenciones: quien retiene es tu cliente cuando te
+     * paga, no el proveedor cuando te factura. Pedirle a la IA `retencion_iibb` / `retencion_iva` /
+     * `retencion_ganancias` de un papel donde ese número no existe es invitarla a inventarlo —
+     * cualquier importe con pinta de impuesto al pie del comprobante cae ahí. Las retenciones se
+     * cargan al registrar un cobro en la cuenta corriente de un cliente, con los datos del
+     * certificado.
+     *
      * @var array
      */
     const CAMPOS_NUMERICOS_FACTURA = [
@@ -93,9 +101,6 @@ class EscaneoFacturaCompraService
         'total',
         'percepcion_iibb',
         'percepcion_iva',
-        'retencion_iibb',
-        'retencion_iva',
-        'retencion_ganancias',
     ];
 
     /**
@@ -477,9 +482,8 @@ class EscaneoFacturaCompraService
             '    "ivas": [ { "porcentaje": 21, "neto": 100000, "importe": 21000 } ],',
             '    "percepcion_iibb": 2500,',
             '    "percepcion_iva": null,',
-            '    "retencion_iibb": null,',
-            '    "retencion_iva": null,',
-            '    "retencion_ganancias": null,',
+            // Las retenciones no se piden a propósito: una factura de compra no las tiene (retiene
+            // el cliente al pagar, no el proveedor al facturar). Ver CAMPOS_NUMERICOS_FACTURA.
             '    "campos_dudosos": []',
             '  },',
             '  "avisos": []',
