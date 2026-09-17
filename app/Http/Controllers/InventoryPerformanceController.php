@@ -14,16 +14,17 @@ use Maatwebsite\Excel\Facades\Excel;
 class InventoryPerformanceController extends Controller
 {
     /**
-     * Endpoint no bloqueante con semántica stale-while-revalidate: nunca genera el reporte
-     * dentro del request. Responde al instante con el último reporte disponible (sólo sus
-     * contadores, sin la relación pesada de artículos).
+     * Endpoint de sólo lectura: nunca genera ni encola nada dentro del request. Responde al
+     * instante con el último reporte disponible (sólo sus contadores, sin la relación pesada de
+     * artículos), o `null` si el comercio nunca generó uno.
      *
-     * Desde la 4.0.24 (misión optimizacion-vps-fase1) ya NO regenera por edad en cada entrada:
-     * el reporte lo genera de noche `inventario:generar` (Kernel, 04:00) y a pedido `generate()`
-     * (el botón Actualizar). Acá sólo se encola si no hay ningún reporte o si el último tiene más
-     * de 7 días — la red de seguridad de InventoryPerformanceHelper::debe_regenerar(), que explica
-     * el porqué del plazo. La forma de la respuesta no cambia (`models`, `generating`); el
-     * "actualizado hace N horas" lo calcula la SPA con el created_at, que ya viaja.
+     * Desde la misión reporte-inventario-manual (15/9/2026) esto ya no dispara una regeneración
+     * por antigüedad (se sacó la red de seguridad de 7 días que había acá): en horario comercial,
+     * con el servidor en uso, es exactamente cuando NO conviene disparar una corrida que en
+     * catálogos grandes tarda 18-20 minutos. Las únicas dos formas de generar el reporte son la
+     * corrida nocturna (`inventario:generar`, Kernel, 04:00 — con el servidor libre) y `generate()`,
+     * el botón Actualizar. Un comercio sin reporte (recién dado de alta, por ejemplo) se queda sin
+     * reporte hasta la próxima 04:00 o hasta que alguien lo pida a mano.
      */
     function index() {
 
@@ -31,11 +32,6 @@ class InventoryPerformanceController extends Controller
 
         // Sin withAll(): sólo se devuelven los contadores (stock_minimo, sin_stock, valores).
         $inventory_performance = $this->get_created_inventory_performance(false);
-
-        if ($this->debe_regenerar($inventory_performance)) {
-
-            $this->dispatch_generacion($user_id);
-        }
 
         return response()->json([
             'models'     => [$inventory_performance],
@@ -57,19 +53,6 @@ class InventoryPerformanceController extends Controller
         $this->dispatch_generacion($this->userId());
 
         return response()->json(['generating' => true], 200);
-    }
-
-    /**
-     * Delegado en el helper para que index(), generate() y el comando nocturno compartan un solo
-     * criterio. Ya no lee `duracion_reporte_inventario`: el porqué de los 7 días fijos está en
-     * InventoryPerformanceHelper::debe_regenerar().
-     *
-     * @param  InventoryPerformance|null $inventory_performance
-     * @return bool
-     */
-    function debe_regenerar($inventory_performance) {
-
-        return InventoryPerformanceHelper::debe_regenerar($inventory_performance);
     }
 
     /**

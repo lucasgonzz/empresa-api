@@ -551,6 +551,109 @@ class WhatsappChatHelper
     }
 
     /**
+     * Versión EN LOTE de `WhatsappChat::is_esperando_aprobacion()`: ids de `$chat_ids` que
+     * tienen al menos un mensaje esperando aprobación humana (misión
+     * whatsapp-tablero-clientes). Una sola consulta, sin importar cuántos chats haya —
+     * la usa `attach_estados_pendientes()` para no pagar una consulta por chat al armar
+     * la bandeja completa.
+     *
+     * @param  array<int>  $chat_ids
+     * @return array<int>
+     */
+    public static function chat_ids_esperando_aprobacion(array $chat_ids)
+    {
+        if ($chat_ids === []) {
+            return [];
+        }
+
+        return WhatsappChatMessage::whereIn('whatsapp_chat_id', $chat_ids)
+            ->where('ai_status', 'a_confirmar')
+            ->pluck('whatsapp_chat_id')
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Versión EN LOTE de `WhatsappChat::is_sin_responder()`: ids de `$chat_ids` cuyo
+     * último mensaje real (excluyendo `a_confirmar`) es entrante (misión
+     * whatsapp-tablero-clientes). Dos consultas en total, no una por chat: primero el id
+     * del último mensaje real de cada chat (agrupado), después cuáles de esos son
+     * entrantes.
+     *
+     * 🔴 `MAX(id)` Y NO `MAX(created_at)` PARA DESEMPATAR EL "ÚLTIMO", a diferencia del
+     * criterio de a-un-chat-por-vez (que ordena por `created_at` con `id` como desempate).
+     * Es una simplificación deliberada, no gratis: asume que el id más alto de un chat es
+     * su mensaje real más reciente, lo cual vale mientras los inserts se hagan en orden
+     * cronológico. Cubre con margen el caso que importa (nadie inserta este módulo con
+     * fecha manipulada ni en bulk fuera de orden) pero no una carrera teórica entre dos
+     * requests concurrentes del MISMO chat cuyo orden de `INSERT` termine invertido
+     * respecto del de su propio `now()` — ahí el batch y el criterio de a-un-chat-por-vez
+     * podrían elegir mensajes distintos como "el último real". Se acepta el margen porque
+     * hacerlo con una subquery correlacionada por `created_at` cuesta una query por chat en
+     * vez de dos para toda la colección, y esta suma nunca decide un envío real, solo el
+     * color de una fila.
+     *
+     * @param  array<int>  $chat_ids
+     * @return array<int>
+     */
+    public static function chat_ids_sin_responder(array $chat_ids)
+    {
+        if ($chat_ids === []) {
+            return [];
+        }
+
+        $last_real_message_ids = WhatsappChatMessage::whereIn('whatsapp_chat_id', $chat_ids)
+            ->where(function ($query) {
+                $query->whereNull('ai_status')->orWhere('ai_status', '!=', 'a_confirmar');
+            })
+            ->selectRaw('MAX(id) as id')
+            ->groupBy('whatsapp_chat_id')
+            ->pluck('id');
+
+        if ($last_real_message_ids->isEmpty()) {
+            return [];
+        }
+
+        return WhatsappChatMessage::whereIn('id', $last_real_message_ids)
+            ->where('direction', 'in')
+            ->pluck('whatsapp_chat_id')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Decora cada chat de `$chats` con `->estado_pendiente` (atributo dinámico, no
+     * columna: no se guarda, solo viaja en la respuesta JSON) usando la misma prioridad
+     * que `WhatsappChat::estado_pendiente()`, pero calculada EN LOTE para el índice
+     * completo de la bandeja (misión whatsapp-tablero-clientes) — dos consultas para
+     * toda la colección, no dos por chat.
+     *
+     * @param  \Illuminate\Support\Collection|\Illuminate\Database\Eloquent\Collection  $chats
+     * @return void
+     */
+    public static function attach_estados_pendientes($chats)
+    {
+        $chat_ids = $chats->pluck('id')->all();
+        if ($chat_ids === []) {
+            return;
+        }
+
+        $esperando_aprobacion_ids = self::chat_ids_esperando_aprobacion($chat_ids);
+        $sin_responder_ids = self::chat_ids_sin_responder($chat_ids);
+
+        foreach ($chats as $chat) {
+            if (in_array($chat->id, $esperando_aprobacion_ids)) {
+                $chat->estado_pendiente = 'esperando_aprobacion';
+            } elseif (in_array($chat->id, $sin_responder_ids)) {
+                $chat->estado_pendiente = 'sin_responder';
+            } else {
+                $chat->estado_pendiente = null;
+            }
+        }
+    }
+
+    /**
      * Borrado CONDICIONAL de respuestas pendientes: solo se van las filas que siguen en
      * 'a_confirmar'.
      *

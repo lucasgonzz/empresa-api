@@ -164,6 +164,16 @@ return [
      */
     'openai' => [
         'api_key' => env('OPENAI_API_KEY', ''),
+
+        /*
+         * Pausa global de la generación de embeddings (misión busqueda-lenta-y-pausa-embeddings,
+         * 14/9/2026), independiente de la extensión whatsapp_ia por cliente — ver
+         * EMBEDDINGS_GENERACION_PAUSADA en .env.example. Va acá y no se lee con env() directo en
+         * el código de aplicación: con config:cache activo (lo normal en producción) env() fuera
+         * de config/ devuelve el default, y esta misma clase de bug ya rompió DURACION_REPORTES
+         * en producción (ver CompanyPerformanceController::check_tiempo_ultima_creada()).
+         */
+        'embeddings_generacion_pausada' => filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /**
@@ -235,6 +245,18 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('MP_GUZZLE_CA_BUNDLE', ''),
+
+        /*
+         * Credenciales de Mercado Pago para conectar SOLAS una demo que no tiene ninguna cuenta
+         * conectada todavía (misión mp-precio-servidor-y-credenciales-env, 16/9/2026). Van acá y
+         * no se leen con env() directo en el código de aplicación: con config:cache activo (lo
+         * normal en producción) env() fuera de config/ devuelve el default, y esta misma clase de
+         * bug ya rompió DURACION_REPORTES en producción — ver el comentario de
+         * 'embeddings_generacion_pausada' más arriba en este archivo, o
+         * CompanyPerformanceController::check_tiempo_ultima_creada().
+         */
+        'demo_access_token' => env('MERCADOPAGO_DEMO_ACCESS_TOKEN'),
+        'demo_public_key'   => env('MERCADOPAGO_DEMO_PUBLIC_KEY'),
     ],
 
     /**
@@ -373,6 +395,27 @@ return [
      */
     'dolar_api' => [
         'url' => env('DOLAR_API_URL', 'https://dolarapi.com/v1/dolares'),
+    ],
+
+    /**
+     * El mostrador del módulo IA visto desde afuera (misión asistente-por-whatsapp, 16/9/2026).
+     *
+     * `spa_url` es la URL del SISTEMA de este cliente —lo que el dueño abre en el navegador,
+     * https://<cliente>.comerciocity.com—, y se usa para armar el link con el que el informe de la
+     * mañana se abre desde el teléfono (MostradorAccesoHelper).
+     *
+     * 🔴 NO tiene repliegue a `app.url` a propósito. `app.url` es la URL de la API
+     * (api-<cliente>.comerciocity.com): un link armado con eso da 404 en el teléfono del dueño, y
+     * el error aparece recién cuando 40 dueños tocan el link a las 8:30 de la mañana. Es la clase
+     * "la URL que un sistema le entrega a otro, armada con APP_URL" de APRENDER_NO_PARCHEAR.md
+     * (9/9/2026). Sin esta variable cargada, el informe se manda SIN link y queda registrado en el
+     * log: fallar visible antes que mandar un link roto.
+     *
+     * Va en config y no leído con env() adentro del código por el mismo motivo que
+     * github_error_reporter: con `config:cache` corrido en producción, un env() devuelve null.
+     */
+    'mostrador' => [
+        'spa_url' => env('SPA_URL'),
     ],
 
 ];

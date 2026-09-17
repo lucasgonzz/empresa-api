@@ -1,0 +1,506 @@
+<?php
+
+namespace App\Services\Mostrador;
+
+use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
+use App\Models\Article;
+use App\Models\User;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+
+/**
+ * Lo que comparten los cinco recolectores de hechos del mostrador (misiones
+ * modulo-ia-mostrador y mostrador-caja-vencimientos): la firma, los topes, el formato de
+ * montos y fechas, los nombres de los días, las deudas con clientes y proveedores, la URL
+ * pública de la primera imagen de un artículo y la respuesta "no aplica".
+ *
+ * Reglas duras de todos los recolectores (§1.2 del plan):
+ * - TODO scopeado por el user_id del dueño. Nunca User::all(), nunca tablas enteras.
+ * - SIN efectos secundarios: no crean sugerencias, conversaciones ni filas de ninguna
+ *   tabla. Son lectura pura; el que persiste es el controlador admin-sync.
+ * - Montos como float con 2 decimales, fechas 'Y-m-d', nombres tal cual.
+ * - Lo que no existe en la base se devuelve null o lista vacía, nunca inventado.
+ */
+abstract class RecolectorBase
+{
+    /** Tope general de las listas. */
+    const TOPE_LISTA = 10;
+
+    /** Moneda en pesos (cajas y cuentas viejas pueden tenerla null: se tratan como pesos). */
+    const MONEDA_PESOS = 1;
+
+    /**
+     * 🔴 Los tres valores de `moneda_id` que son PESOS en toda la base, y el criterio sale de
+     * Contabilidad: ContabilidadRepository dice textual "solo `moneda_id = 2` es USD; `0`, `null`
+     * y `1` son pesos" y FlujoCajaHelper filtra las cajas con `whereNull OR whereIn [0, 1]`. El
+     * `0` no es basura: lo deja un alta donde el select de moneda no se eligió, y hay filas así
+     * en producción. Contando solo null y 1, una caja de pesos con `moneda_id = 0` quedaba como
+     * moneda "otra" (su disponible afuera de `disponible_pesos`, pero sus liquidaciones adentro
+     * de `liquidaciones_pendientes_pesos`, que sí usa el criterio de Contabilidad) y una cuenta
+     * corriente con `moneda_id = 0` desaparecía de la deuda de clientes.
+     */
+    const MONEDAS_PESOS = [0, 1];
+
+    /** Nombres de los días de la semana, por Carbon::dayOfWeek (0 = domingo). */
+    const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+    /**
+     * Calcula los hechos del tipo para el dueño y la fecha pedidos.
+     *
+     * @param User $owner Dueño de la cuenta (owner_id null)
+     * @param Carbon $fecha Día del que habla el informe
+     * @return array
+     */
+    abstract public function recolectar(User $owner, Carbon $fecha): array;
+
+    /**
+     * Cuántos artículos tendría que recorrer el cálculo de este tipo para este dueño.
+     * Es lo que el controlador admin-sync compara contra config('mostrador.umbral_async')
+     * para decidir si calcula en el request o despacha CalcularHechosMostradorJob: los
+     * tipos que no recorren catálogo (dia, caja, tienda) devuelven 0 y siempre van en el
+     * request; compras y stock lo sobreescriben con sus candidatos.
+     *
+     * @param User $owner
+     * @return int
+     */
+    public function cantidad_de_candidatos(User $owner): int
+    {
+        return 0;
+    }
+
+    /**
+     * Respuesta de un tipo que no aplica a este comercio (tienda sin tienda online,
+     * stock con una sola sucursal). El API igual guarda la fila con estado 'hechos';
+     * la skill decide no redactar y el escritorio no la muestra.
+     *
+     * @param Carbon $fecha
+     * @param string $motivo
+     * @return array
+     */
+    protected function no_aplica(Carbon $fecha, string $motivo): array
+    {
+        return [
+            'aplica' => false,
+            'fecha'  => $fecha->format('Y-m-d'),
+            'motivo' => $motivo,
+        ];
+    }
+
+    /**
+     * Monto como float con dos decimales (null se queda null).
+     *
+     * @param mixed $valor
+     * @return float|null
+     */
+    protected function monto($valor)
+    {
+        if (is_null($valor)) {
+            return null;
+        }
+
+        return round((float) $valor, 2);
+    }
+
+    /**
+     * Fecha en 'Y-m-d' a partir de un timestamp de la base (null se queda null).
+     *
+     * @param mixed $valor
+     * @return string|null
+     */
+    protected function fecha_ymd($valor)
+    {
+        if (empty($valor)) {
+            return null;
+        }
+
+        return Carbon::parse($valor)->format('Y-m-d');
+    }
+
+    /**
+     * Condición de "venta real" para consultas que parten de article_purchases: la de
+     * Sale::scopeSoloVentasReales con prefijo de tabla, más el descarte de borradas y
+     * la tenencia por articles.user_id. Es el mismo filtro de CoberturaService y de
+     * CriteriosDeOfertaService::filtro_de_ventas_reales.
+     *
+     * @param \Illuminate\Database\Query\Builder $q Consulta cuyo FROM es article_purchases
+     * @param int $owner_id
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function ventas_reales_desde_article_purchases($q, int $owner_id)
+    {
+        return $q->join('articles', 'article_purchases.article_id', '=', 'articles.id')
+            ->join('sales', 'article_purchases.sale_id', '=', 'sales.id')
+            ->where('articles.user_id', $owner_id)
+            ->whereNull('sales.deleted_at')
+            ->where(function ($q2) {
+                $q2->whereNull('sales.is_consolidacion_facturacion')
+                    ->orWhere('sales.is_consolidacion_facturacion', 0);
+            });
+    }
+
+    /**
+     * Condición "quedó en cero" sobre una columna de stock: stock cargado Y en cero o
+     * negativo. `stock = NULL` NO es cero: es "no controla stock" (InventoryPerformanceHelper
+     * lo cuenta como "sin stockear" y la tienda lo vende como disponible), así que un
+     * artículo sin control de stock nunca puede "quedar sin stock".
+     *
+     * @param \Illuminate\Database\Query\Builder $q
+     * @param string $columna Columna calificada (articles.stock, a.stock, address_article.amount)
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function en_cero($q, string $columna)
+    {
+        return $q->whereNotNull($columna)->where($columna, '<=', 0);
+    }
+
+    /**
+     * Descarta los pedidos cancelados de una consulta sobre `orders`: un pedido cancelado
+     * no es una venta de la tienda y no suma ni en cantidad ni en total.
+     *
+     * "Cancelado" se resuelve por las DOS marcas que el sistema deja: el enum
+     * orders.status = 'canceled' (el que escribe la tienda) y order_status_id apuntando a
+     * la fila "Cancelado" de order_statuses (el que escribe el ERP al cambiar el estado).
+     * Esa fila se busca por NOMBRE, nunca por id: order_statuses no tiene ids garantizados
+     * entre instalaciones (cada base corre OrderStatusSeeder por su cuenta; ver
+     * OrderStatusHelper).
+     *
+     * @param \Illuminate\Database\Query\Builder $q Consulta cuyo FROM (o alias) es `orders`
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function sin_pedidos_cancelados($q)
+    {
+        $ids_cancelado = DB::table('order_statuses')
+            ->where('name', OrderStatusHelper::CANCELADO)
+            ->pluck('id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
+
+        return $q->where(function ($q2) {
+                $q2->whereNull('orders.status')->orWhere('orders.status', '!=', 'canceled');
+            })
+            ->when(!empty($ids_cancelado), function ($q2) use ($ids_cancelado) {
+                $q2->where(function ($q3) use ($ids_cancelado) {
+                    $q3->whereNull('orders.order_status_id')->orWhereNotIn('orders.order_status_id', $ids_cancelado);
+                });
+            });
+    }
+
+    /**
+     * Consulta base de las cuentas corrientes EN PESOS de un tipo de modelo (clientes o
+     * proveedores) del dueño. La fuente de verdad es credit_accounts.saldo (saldo
+     * positivo = deuda): nunca los espejos clients.saldo / providers.saldo (columna muerta
+     * que CurrentAcountHelper ya no escribe) ni saldo_pesos (nullable).
+     *
+     * 🔴 UN SOLO CRITERIO DE MONEDA para todo el mostrador, y es el de Contabilidad (ver
+     * MONEDAS_PESOS): null, 0 y 1 son pesos. Toda deuda que viaja en un informe —por cliente,
+     * por proveedor o total— sale de acá, así que no puede haber dos números distintos para la
+     * misma deuda según el bloque.
+     *
+     * @param User $owner
+     * @param string $model_name 'client' | 'provider'
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function consulta_deudas_en_pesos(User $owner, string $model_name)
+    {
+        $consulta = DB::table('credit_accounts')
+            ->where('user_id', $owner->id)
+            ->where('model_name', $model_name);
+
+        return $this->solo_pesos($consulta, 'moneda_id');
+    }
+
+    /**
+     * Acota una consulta a las filas EN PESOS por su columna de moneda: null, 0 o 1 (ver
+     * MONEDAS_PESOS, que dice de dónde sale el criterio). Es el único lugar del mostrador donde
+     * se escribe esa condición.
+     *
+     * @param \Illuminate\Database\Query\Builder $consulta
+     * @param string $columna Columna calificada o no (credit_accounts.moneda_id, moneda_id)
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function solo_pesos($consulta, string $columna)
+    {
+        return $consulta->where(function ($q) use ($columna) {
+            $q->whereNull($columna)->orWhereIn($columna, self::MONEDAS_PESOS);
+        });
+    }
+
+    /**
+     * true si un `moneda_id` leído de la base es pesos (ver MONEDAS_PESOS). Para los casos que
+     * no son una consulta, como resolver la moneda de una caja ya traída.
+     *
+     * @param mixed $moneda_id
+     * @return bool
+     */
+    protected function es_pesos($moneda_id): bool
+    {
+        return is_null($moneda_id) || in_array((int) $moneda_id, self::MONEDAS_PESOS, true);
+    }
+
+    /**
+     * Saldo en pesos de un lote de clientes o proveedores, por id de modelo (ver
+     * consulta_deudas_en_pesos).
+     *
+     * @param User $owner
+     * @param string $model_name 'client' | 'provider'
+     * @param array $model_ids
+     * @return array Mapa model_id => saldo (float)
+     */
+    protected function deudas_en_pesos(User $owner, string $model_name, array $model_ids): array
+    {
+        $mapa = [];
+
+        $model_ids = array_values(array_unique(array_filter(array_map('intval', $model_ids))));
+
+        if (empty($model_ids)) {
+            return $mapa;
+        }
+
+        $filas = $this->consulta_deudas_en_pesos($owner, $model_name)
+            ->whereIn('model_id', $model_ids)
+            ->get(['model_id', 'saldo']);
+
+        foreach ($filas as $fila) {
+            $model_id = (int) $fila->model_id;
+
+            if (!isset($mapa[$model_id])) {
+                $mapa[$model_id] = 0.0;
+            }
+
+            $mapa[$model_id] += (float) ($fila->saldo ?: 0);
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * Deuda total en pesos de los clientes o con los proveedores del dueño (mismo
+     * criterio que deudas_en_pesos, en una sola suma).
+     *
+     * @param User $owner
+     * @param string $model_name 'client' | 'provider'
+     * @return float
+     */
+    protected function deuda_total_en_pesos(User $owner, string $model_name): float
+    {
+        $total = $this->consulta_deudas_en_pesos($owner, $model_name)->sum('saldo');
+
+        return (float) $this->monto($total);
+    }
+
+    /**
+     * Los clientes con más deuda en pesos, con los días desde su último pago (null si
+     * nunca pagaron).
+     *
+     * Vive en la base porque lo usan dos informes con la misma regla: `dia` (en
+     * cobranzas) y `caja` (los clientes para cobrar). Se subió tal cual estaba en
+     * RecolectorDia.
+     *
+     * @param User $owner
+     * @param Carbon $fecha
+     * @return array
+     */
+    protected function clientes_con_mas_deuda(User $owner, Carbon $fecha): array
+    {
+        $consulta = DB::table('credit_accounts')
+            ->leftJoin('clients', function ($join) use ($owner) {
+                $join->on('clients.id', '=', 'credit_accounts.model_id')->where('clients.user_id', $owner->id);
+            })
+            ->where('credit_accounts.user_id', $owner->id)
+            ->where('credit_accounts.model_name', 'client');
+
+        // El mismo criterio de consulta_deudas_en_pesos (no se puede reusar tal cual: con el join
+        // a clients, un `user_id` sin calificar sería ambiguo).
+        $cuentas = $this->solo_pesos($consulta, 'credit_accounts.moneda_id')
+            ->where('credit_accounts.saldo', '>', 0)
+            ->orderByDesc('credit_accounts.saldo')
+            ->orderBy('credit_accounts.model_id')
+            ->limit(self::TOPE_LISTA)
+            ->get(['credit_accounts.model_id', 'clients.name', 'credit_accounts.saldo']);
+
+        if ($cuentas->isEmpty()) {
+            return [];
+        }
+
+        $client_ids = $cuentas->pluck('model_id')->map(function ($id) {
+            return (int) $id;
+        })->all();
+
+        $ultimos_pagos = DB::table('current_acounts')
+            ->where('user_id', $owner->id)
+            ->where('status', 'pago_from_client')
+            ->whereIn('client_id', $client_ids)
+            ->groupBy('client_id')
+            ->selectRaw('client_id, MAX(created_at) as ultimo')
+            ->get();
+
+        $ultimo_por_cliente = [];
+
+        foreach ($ultimos_pagos as $fila) {
+            $ultimo_por_cliente[(int) $fila->client_id] = $fila->ultimo;
+        }
+
+        $lista = [];
+
+        foreach ($cuentas as $cuenta) {
+            $client_id = (int) $cuenta->model_id;
+
+            $lista[] = [
+                'client_id'      => $client_id,
+                'nombre'         => (string) ($cuenta->name ?: 'Cliente #' . $client_id),
+                'saldo'          => $this->monto($cuenta->saldo),
+                'dias_sin_pagar' => isset($ultimo_por_cliente[$client_id])
+                    ? Carbon::parse($ultimo_por_cliente[$client_id])->startOfDay()->diffInDays($fecha->copy()->startOfDay())
+                    : null,
+            ];
+        }
+
+        return $lista;
+    }
+
+    /**
+     * URL pública de la primera imagen de cada artículo pedido (null si no tiene).
+     * Una sola consulta para todo el lote; la URL la resuelve ArticleHelper::getFirstImage,
+     * que es lo que ya usa el resto del sistema (incluido el prefijo de producción).
+     *
+     * @param array $article_ids
+     * @return array Mapa article_id => string|null
+     */
+    protected function imagenes_de(array $article_ids): array
+    {
+        $mapa = [];
+
+        $article_ids = array_values(array_unique(array_filter(array_map('intval', $article_ids))));
+
+        foreach ($article_ids as $id) {
+            $mapa[$id] = null;
+        }
+
+        if (empty($article_ids)) {
+            return $mapa;
+        }
+
+        $articulos = Article::withTrashed()
+            ->whereIn('id', $article_ids)
+            ->with('images')
+            ->get(['id']);
+
+        foreach ($articulos as $articulo) {
+            $url = ArticleHelper::getFirstImage($articulo);
+
+            $mapa[(int) $articulo->id] = is_string($url) && $url !== '' ? $url : null;
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * Nombres de un lote de artículos (con borrados, para que un artículo vendido ayer
+     * y borrado hoy siga teniendo nombre en el informe).
+     *
+     * @param array $article_ids
+     * @return array Mapa article_id => nombre
+     */
+    protected function nombres_de_articulos(array $article_ids): array
+    {
+        $article_ids = array_values(array_unique(array_filter(array_map('intval', $article_ids))));
+
+        if (empty($article_ids)) {
+            return [];
+        }
+
+        $mapa = [];
+
+        $filas = DB::table('articles')
+            ->whereIn('id', $article_ids)
+            ->get(['id', 'name']);
+
+        foreach ($filas as $fila) {
+            $mapa[(int) $fila->id] = (string) $fila->name;
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * Nombre de la persona que figura en una venta o un pago: el empleado si lo hay,
+     * si no el dueño.
+     *
+     * @param User $owner
+     * @param array $nombres_por_id Mapa users.id => name ya resuelto
+     * @param mixed $employee_id
+     * @return string
+     */
+    protected function nombre_de_empleado(User $owner, array $nombres_por_id, $employee_id): string
+    {
+        $employee_id = (int) $employee_id;
+
+        if ($employee_id > 0 && isset($nombres_por_id[$employee_id])) {
+            return $nombres_por_id[$employee_id];
+        }
+
+        return (string) ($owner->name ?: 'Dueño');
+    }
+
+    /**
+     * Nombres de las personas de la cuenta (dueño + empleados), para por_vendedor.
+     *
+     * @param User $owner
+     * @return array Mapa users.id => name
+     */
+    protected function nombres_de_la_cuenta(User $owner): array
+    {
+        $mapa = [(int) $owner->id => (string) $owner->name];
+
+        $empleados = DB::table('users')
+            ->where('owner_id', $owner->id)
+            ->get(['id', 'name']);
+
+        foreach ($empleados as $empleado) {
+            $mapa[(int) $empleado->id] = (string) $empleado->name;
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * Nombre de cada sucursal de la cuenta (addresses.street es el "nombre" que
+     * muestra el sistema en todos lados).
+     *
+     * @param User $owner
+     * @return array Mapa addresses.id => nombre
+     */
+    protected function nombres_de_sucursales(User $owner): array
+    {
+        $mapa = [];
+
+        $filas = DB::table('addresses')
+            ->where('user_id', $owner->id)
+            ->orderBy('id')
+            ->get(['id', 'street']);
+
+        foreach ($filas as $fila) {
+            $mapa[(int) $fila->id] = (string) $fila->street;
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * true si el comercio tiene tienda online: la URL en users.online o algún pedido.
+     *
+     * @param User $owner
+     * @return bool
+     */
+    protected function tiene_tienda(User $owner): bool
+    {
+        if (trim((string) $owner->online) !== '') {
+            return true;
+        }
+
+        return DB::table('orders')->where('user_id', $owner->id)->exists();
+    }
+}

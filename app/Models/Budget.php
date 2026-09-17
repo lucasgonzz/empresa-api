@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class Budget extends Model
@@ -12,7 +13,21 @@ class Budget extends Model
 
 
     function scopeWithAll($query) {
-        $query->with('client.iva_condition', 'client.price_type', 'client.credit_accounts.moneda', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type', 'sale_status', 'services', 'promocion_vinotecas');
+        /*
+            `combos.articles` y no `combos` a secas, igual que `Sale::scopeWithAll()`: al confirmar
+            el presupuesto, `BudgetHelper::attachSaleCombos()` tiene que descontar el stock de CADA
+            articulo componente del combo. Sin los articulos cargados, ese descuento saldria a
+            buscarlos de a uno (N+1) o —peor— no encontraria nada segun por donde entre el modelo.
+
+            🔴 Y entra por `ComboEsquemaHelper::relaciones_de_combos()`, no como una cadena mas de
+            la lista: en un cliente que todavia no corrio la migracion de `budget_combo`, pedirlo a
+            secas tira `Base table or view not found` y el LISTADO DE PRESUPUESTOS deja de abrir.
+            La lista se arma en un array justamente para poder agregarlo condicionalmente, igual
+            que en `Order::scopeWithAll()`.
+        */
+        $relaciones = ['client.iva_condition', 'client.price_type', 'client.credit_accounts.moneda', 'articles.article_variants', 'budget_status', 'discounts', 'surchages', 'price_type', 'sale_status', 'services', 'promocion_vinotecas'];
+
+        $query->with(array_merge($relaciones, ComboEsquemaHelper::relaciones_de_combos()));
         // $query->with('client.iva_condition', 'client.price_type', 'articles', 'budget_status', 'optional_order_production_statuses');
     }
 
@@ -22,6 +37,18 @@ class Budget extends Model
 
     public function promocion_vinotecas() {
         return $this->belongsToMany(PromocionVinoteca::class)->withPivot('amount', 'price')->withTrashed();
+    }
+
+    /**
+     * Combos del presupuesto (mision combos-y-rangos-de-precio, 16/9/2026).
+     *
+     * `withTrashed()` como en `promocion_vinotecas()` y en `articles()`: un combo borrado del ABM
+     * despues de presupuestarlo tiene que seguir apareciendo en el presupuesto viejo, en su PDF y
+     * en su total. Sin esto la linea desaparece del listado pero sigue contando en `total`, y el
+     * presupuesto queda descuadrado sin que nada lo explique.
+     */
+    public function combos() {
+        return $this->belongsToMany(Combo::class)->withPivot('amount', 'price')->withTrashed();
     }
 
     function discounts() {

@@ -181,6 +181,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // (reemplaza el envío de todos los artículos dentro del JSON del reporte principal).
     Route::get('inventory-performance/articles-stock-minimo', 'InventoryPerformanceController@articles_stock_minimo');
 
+    // Contadores de estado de los embeddings del catálogo (whatsapp-dashboard, misión
+    // embeddings-estado-whatsapp-dashboard, 15/9/2026): sin generar, pendiente y generándose.
+    // Sólo lectura, nunca encola nada.
+    Route::get('article-embeddings/estado', 'ArticleEmbeddingsController@estado');
+
     // Inputs Size
     Route::resource('inputs-size', 'InputsSizeController');
 
@@ -1068,12 +1073,51 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_intelige
 // del mensaje guarda y despacha el job de respuesta; el evento del canal privado avisa con
 // ids y la SPA busca el texto acá (show_message, también usado por el polling de respaldo).
 Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->group(function () {
-    Route::get('ai-conversations', 'AiConversationController@index');
-    Route::post('ai-conversations', 'AiConversationController@store');
-    Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
-    Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
-    Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
-    Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+    // Encima del gate de extensión, SOLO EL DUEÑO (o admin_access / acceso maestro) usa el chat:
+    // decisión de Lucas del 16/9/2026. Es el mismo criterio y el mismo MostradorHelper::puede_ver()
+    // que ya gateaba el mostrador, porque es el mismo módulo y el chat contesta lo mismo que traen
+    // los informes: cobranzas, deudas y compras. La tenencia doble del controller no se va a ningún
+    // lado — un empleado ya no llega, pero la defensa en profundidad se queda.
+    Route::middleware('solo_el_dueno_ia')->group(function () {
+        Route::get('ai-conversations', 'AiConversationController@index');
+        Route::post('ai-conversations', 'AiConversationController@store');
+        Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+        Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
+        Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
+        Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+
+        // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
+        // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
+        // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que
+        // el resto del chat (AiConversationController::conversacion_de_la_persona()).
+        Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
+        Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+
+        /*
+         * Lo que abren las menciones del chat (misión agente-ia-mano-derecha, §2 y §3 del
+         * contrato): la ficha del artículo al pasar el mouse por encima de su nombre, y el cliente
+         * con sus cuentas para abrir el modal de cuenta corriente al hacerle clic.
+         *
+         * 🔴 Van EN PLURAL (`articles/`, `clients/`) y no pegadas a los resources `article` y
+         * `client`, que están en singular: así no las captura el `show` de ningún resource y no
+         * dependen de dónde se declare cada una.
+         *
+         * Mismo gate que el resto del chat —extensión + solo el dueño— porque son parte del mismo:
+         * las dos existen para lo que el chat nombró y no se usan desde ninguna otra pantalla. La
+         * tenencia por `user_id` la resuelve igual cada controller, que es la que de verdad corta.
+         */
+        Route::get('articles/{id}/ficha-asistente', 'ArticleController@ficha_asistente');
+        Route::get('clients/{id}/para-cuenta-corriente', 'ClientController@para_cuenta_corriente');
+    });
+
+    // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
+    // del dueño, un informe abierto y su conversación. Mismo gate que el chat; encima, el
+    // controlador deja pasar SOLO al dueño (o admin_access): los informes traen cobranzas
+    // y deudas. La conversación que crea el POST es una AiConversation común, y la SPA
+    // sigue por las rutas de ai-conversations de arriba.
+    Route::get('mostrador/reportes', 'MostradorController@index');
+    Route::get('mostrador/reportes/{id}', 'MostradorController@show');
+    Route::post('mostrador/reportes/{id}/conversacion', 'MostradorController@conversacion');
 });
 
 // Sugerencias de compra a proveedores (misión sugerencias-compra-proveedores), gateado por auth
@@ -1206,7 +1250,42 @@ Route::middleware('admin.api.key')
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).
         Route::post('demo-token', 'AdminSync\\DemoTokenController@store');
+        // El mostrador del módulo IA (misión modulo-ia-mostrador): lo consume la skill /mostrador
+        // desde Claude Code. El API calcula los hechos (POST hechos) y la skill deposita el texto
+        // de cada informe (PUT reportes/{id}); contexto y memoria son lo que la skill sabe del
+        // dueño entre corridas. Mismo header y mismo límite conocido que el resto del grupo.
+        Route::get('mostrador/duenos', 'AdminSync\\MostradorController@duenos');
+        Route::post('mostrador/hechos', 'AdminSync\\MostradorController@hechos');
+        // Polling después de un 202 de POST hechos (compras y stock en un catálogo grande
+        // se calculan en la cola): estado, hechos y error_mensaje de un informe.
+        Route::get('mostrador/reportes/{id}', 'AdminSync\\MostradorController@mostrar');
+        Route::put('mostrador/reportes/{id}', 'AdminSync\\MostradorController@depositar');
+        Route::get('mostrador/contexto/{user_id}', 'AdminSync\\MostradorController@contexto');
+        Route::put('mostrador/memoria/{user_id}', 'AdminSync\\MostradorController@memoria');
+        // El asistente del negocio hablado desde WhatsApp (misión asistente-por-whatsapp): el
+        // admin recibe el mensaje del dueño en el número de ComercioCity y lo empuja acá, donde
+        // entra al MISMO asistente que el botón flotante. El POST deja el assistant 'pendiente' y
+        // despacha el job de siempre; el GET es el polling con el que el admin espera el texto.
+        // 🔴 Estas cuatro validan el header X-Admin-Api-Key ADENTRO del controlador, sin mirar
+        // services.admin_api.require_api_key (que en producción está apagado): es un canal que
+        // carga compras, gastos y pagos y no puede quedar abierto. Y el gate de la extensión
+        // asistente_ia va a mano, porque admin-sync no pasa por auth:sanctum.
+        Route::post('asistente/mensajes', 'AdminSync\\AsistenteController@mensajes');
+        Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
+        // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
+        // propósito: el admin pide los pendientes (con su link ya emitido) y recién DESPUÉS de que
+        // el WhatsApp salió marca el aviso. Si el envío falla, el informe no queda marcado y sale
+        // en la próxima corrida.
+        Route::get('asistente/informes-pendientes', 'AdminSync\\AsistenteController@informes_pendientes');
+        Route::post('asistente/informes/{id}/avisado', 'AdminSync\\AsistenteController@informe_avisado');
     });
+
+// El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
+// asistente-por-whatsapp). PÚBLICA a propósito: el dueño lo abre desde el teléfono, en la calle,
+// sin tipear usuario ni contraseña — decisión de Lucas en la Fase 2. Lo que la sostiene es el
+// token: 64 caracteres al azar, guardado SOLO como hash, vencimiento de 7 días, y abre UN informe
+// de solo lectura, nunca una sesión ni otra pantalla.
+Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);

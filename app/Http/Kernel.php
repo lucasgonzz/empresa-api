@@ -78,5 +78,7 @@ class Kernel extends HttpKernel
         'demo.session.vigente' => \App\Http\Middleware\DemoSessionVigente::class,
         /* Autentica al agente de impresion por su token de equipo (X-Print-Agent-Token). */
         'print.agent.token' => \App\Http\Middleware\PrintAgentToken::class,
+        /* Solo el dueño (o admin_access / acceso maestro) entra al asistente de IA. */
+        'solo_el_dueno_ia' => \App\Http\Middleware\SoloElDuenoIa::class,
     ];
 }

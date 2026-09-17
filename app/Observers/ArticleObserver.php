@@ -220,6 +220,22 @@ class ArticleObserver
             return false;
         }
 
+        // 0.5 Pausa global: interruptor independiente de la extensión por cliente (misión
+        // busqueda-lenta-y-pausa-embeddings). Existe para poder cortar la generación en TODO el
+        // parque de un saque, sin depender de que alguien desactive whatsapp_ia comercio por
+        // comercio -- y sin el efecto secundario de apagar con eso la búsqueda del bot de WhatsApp
+        // para quien ya la esté usando (whatsapp_ia habilita las dos cosas, no solo embeddings).
+        // Pensado para cuando el performance de embeddings vuelva a ser un problema, o para frenar
+        // de entrada si alguien reactiva whatsapp_ia para un cliente antes de que el arreglo de
+        // sinEmbedding() (puntos 1-3 de esta misma misión) esté probado en producción. Default
+        // false: no cambia nada para nadie hasta que alguien la prenda a mano en el .env.
+        //
+        // config(), no env() directo: con config:cache activo (lo normal en producción) env()
+        // fuera de config/ devuelve el default y esto no pausaría nada. Ver config/services.php.
+        if (config('services.openai.embeddings_generacion_pausada')) {
+            return false;
+        }
+
         // 1. Sin dueño no hay a quién preguntarle por la extensión.
         if (empty($user_id)) {
             return false;
