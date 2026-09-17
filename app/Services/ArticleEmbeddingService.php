@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Article;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
@@ -46,15 +47,41 @@ class ArticleEmbeddingService
     private const DESCRIPTIONS_MAX_CHARS = 4000;
 
     /**
+     * Proveedor que se imputa en `ai_token_usages`. Este servicio es el único que NO le
+     * paga a Anthropic, y por eso la columna existe: `text-embedding-3-small` no dice
+     * "openai" en ningún lado y el costo se calcula por proveedor.
+     */
+    const PROVEEDOR = 'openai';
+
+    /** Indexar el catálogo: una llamada por artículo que cambió. Lo dispara el scheduler. */
+    const PROCESO_ARTICULOS = 'embeddings_articulos';
+
+    /**
+     * La búsqueda semántica del RAG: una llamada por CADA respuesta del agente de WhatsApp.
+     *
+     * Va separado de `embeddings_articulos` a propósito. Son gastos de naturaleza distinta
+     * —uno es de alta, el otro es de tráfico— y mezclarlos esconde justo lo que se quiere
+     * ver: indexar el catálogo se paga una vez, buscar se paga en cada conversación.
+     */
+    const PROCESO_BUSQUEDA = 'embeddings_busqueda';
+
+    /**
      * Genera el vector de embedding para un texto arbitrario llamando a la API de OpenAI.
      *
-     * @param string $text Texto a embeddear. Debe ser no vacío.
+     * Los tres parámetros de metering van AL FINAL y son opcionales para no romper a ningún
+     * llamador: este método es público y lo usa también el comando que hornea los embeddings
+     * de la semilla, que no le imputa el gasto a ningún comercio.
+     *
+     * @param string   $text          Texto a embeddear. Debe ser no vacío.
+     * @param int|null $user_id       Dueño al que se le imputa el consumo. Sin él no se registra nada.
+     * @param string|null $proceso    PROCESO_ARTICULOS | PROCESO_BUSQUEDA.
+     * @param int|null $referencia_id Id del artículo, cuando el gasto es de indexación.
      *
      * @return array<int, float> Array de floats con las 1536 dimensiones del vector.
      *
      * @throws \RuntimeException Si la API responde con error o el payload es inesperado.
      */
-    public function generate_embedding(string $text): array
+    public function generate_embedding(string $text, $user_id = null, $proceso = null, $referencia_id = null): array
     {
         // Validación mínima: evitar llamadas vacías que OpenAI rechazaría.
         $text = trim($text);
@@ -84,6 +111,18 @@ class ArticleEmbeddingService
             );
         }
 
+        /*
+         * El registro va acá: la llamada salió bien (o sea, se pagó) y el body todavía está
+         * entero. Unas líneas más abajo el método se queda solo con el vector y el bloque
+         * `usage` deja de existir. Si la llamada hubiera fallado no se registra nada: OpenAI
+         * no cobra una request rechazada.
+         *
+         * 🔴 UNA FILA POR LLAMADA HTTP, sin agregar. GenerateArticleEmbeddingJob tiene
+         * $tries = 3: un artículo que reintenta deja tres filas, y está bien — se pagaron las
+         * tres. Un contador "por artículo" mostraría un tercio del gasto real.
+         */
+        $this->registrar_consumo($response->json(), $user_id, $proceso, $referencia_id);
+
         // El vector viene en data[0].embedding
         $embedding = $response->json('data.0.embedding');
 
@@ -94,6 +133,87 @@ class ArticleEmbeddingService
         }
 
         return $embedding;
+    }
+
+    /**
+     * Imputa el consumo de una llamada de embeddings, traduciendo el `usage` de OpenAI al
+     * esquema de `ai_token_usages`, que nació con la forma del de Anthropic.
+     *
+     * 🔴 LA TRADUCCIÓN NO ES OBVIA Y ES LO ÚNICO DELICADO DE ESTE MÉTODO. OpenAI devuelve
+     * `usage.prompt_tokens` y `usage.total_tokens`; no manda `output_tokens` porque un
+     * embedding no genera texto, y tampoco tiene caché de prompt. El mapeo es:
+     *
+     *   prompt_tokens  ->  input_tokens
+     *   output_tokens  ->  0   (no existe: el vector no se cobra como salida)
+     *   las dos de caché -> 0  (OpenAI no cachea prompts acá)
+     *
+     * `total_tokens` NO se guarda: en esta API es igual a `prompt_tokens`, y guardarlo en
+     * `input_tokens` sería contar lo mismo dos veces el día que dejen de coincidir.
+     *
+     * Sin dueño o sin proceso no se registra: es el mismo criterio del helper, adelantado
+     * acá para no ensuciar el log con un warning por cada artículo del comando de semilla,
+     * que legítimamente no le imputa el gasto a ningún comercio.
+     *
+     * @param  mixed       $body          Respuesta ya decodificada de OpenAI.
+     * @param  int|null    $user_id
+     * @param  string|null $proceso
+     * @param  int|null    $referencia_id
+     * @return void
+     */
+    protected function registrar_consumo($body, $user_id, $proceso, $referencia_id): void
+    {
+        if (empty($user_id) || empty($proceso)) {
+            return;
+        }
+
+        $body  = is_array($body) ? $body : [];
+        $usage = isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [];
+
+        /*
+         * 🔴 EL GUARD TIENE QUE ESTAR ACÁ Y NO EN EL HELPER, porque abajo el `usage` se traduce
+         * a las cuatro claves de Anthropic y a partir de esa línea las cuatro existen siempre,
+         * con valor cero. O sea que el aviso del helper nunca se dispararía para OpenAI: este
+         * es el último punto donde todavía se puede ver que `prompt_tokens` no vino.
+         *
+         * Importa porque el síntoma de que OpenAI cambie el formato no sería un error sino que
+         * el gasto de embeddings de todos los clientes baje a cero de un día para el otro, que
+         * es exactamente lo mismo que se ve cuando un comercio no usa la IA.
+         */
+        if (! isset($usage['prompt_tokens'])) {
+
+            Log::channel('daily')->warning(
+                'ArticleEmbeddingService: OpenAI respondió sin usage.prompt_tokens; el consumo se registra en cero.',
+                [
+                    'proceso'          => (string) $proceso,
+                    'claves_recibidas' => array_keys($usage),
+                ]
+            );
+        }
+
+        AiTokenUsageHelper::registrar([
+            'user_id'   => (int) $user_id,
+            'proceso'   => (string) $proceso,
+            'proveedor' => self::PROVEEDOR,
+
+            // El modelo, tal como lo devolvió OpenAI; si no vino, el que pedimos.
+            'modelo' => isset($body['model']) && (string) $body['model'] !== ''
+                ? (string) $body['model']
+                : self::EMBEDDING_MODEL,
+
+            'usage' => [
+                'input_tokens'                => isset($usage['prompt_tokens']) ? (int) $usage['prompt_tokens'] : 0,
+                'output_tokens'               => 0,
+                'cache_creation_input_tokens' => 0,
+                'cache_read_input_tokens'     => 0,
+            ],
+
+            /*
+             * auth_user_id queda null siempre: las dos puntas que llaman acá son automáticas
+             * (el job del scheduler que indexa, y el agente de WhatsApp contestándole a un
+             * cliente del comercio, que no es una persona del sistema).
+             */
+            'referencia_id' => is_null($referencia_id) ? null : (int) $referencia_id,
+        ]);
     }
 
     /**
@@ -263,8 +383,14 @@ class ArticleEmbeddingService
             return false;
         }
 
-        // Obtener vector como array de floats.
-        $embedding = $this->generate_embedding($text);
+        // Obtener vector como array de floats. El gasto se le imputa al dueño del artículo,
+        // como `embeddings_articulos`: es el costo de tener el catálogo indexado.
+        $embedding = $this->generate_embedding(
+            $text,
+            (int) $article->user_id,
+            self::PROCESO_ARTICULOS,
+            (int) $article->id
+        );
 
         $this->persistir_embedding((int) $article->id, $embedding);
 
@@ -348,8 +474,10 @@ class ArticleEmbeddingService
      */
     public function search_similar_articles(string $query, int $user_id, int $limit = 8): Collection
     {
-        // Generar embedding del query para comparar contra los artículos.
-        $query_embedding = $this->generate_embedding($query);
+        // Generar embedding del query para comparar contra los artículos. Se imputa como
+        // `embeddings_busqueda`, que es el gasto que corre en CADA respuesta del agente de
+        // WhatsApp — no el de indexar, que se paga una sola vez por artículo.
+        $query_embedding = $this->generate_embedding($query, $user_id, self::PROCESO_BUSQUEDA);
 
         if ($this->uses_pgvector()) {
             $vector_string = '['.implode(',', $query_embedding).']';

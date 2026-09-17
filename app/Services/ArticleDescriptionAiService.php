@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Article;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -96,7 +97,29 @@ class ArticleDescriptionAiService
             return $this->not_found('El servicio de IA devolvio un error.');
         }
 
-        $parsed = $this->parse_response($response->json());
+        $body = $response->json();
+
+        /*
+         * Consumo de tokens (mision tokens-por-cliente). Va justo despues del guard de
+         * `!successful()`: una llamada que Anthropic rechazo no se paga, y por eso los dos
+         * `return` de arriba no registran nada. El dueno sale del articulo, que es el unico
+         * lugar donde este servicio lo tiene (lo llaman un controller y un job, y los dos
+         * trabajan sobre articulos de un solo comercio).
+         */
+        AiTokenUsageHelper::registrar([
+            'user_id' => (int) $article->user_id,
+            'proceso' => 'descripcion_articulo',
+            'body'    => is_array($body) ? $body : [],
+
+            // El modelo resuelto que devolvio Anthropic; la constante es solo el alias.
+            'modelo' => isset($body['model']) && (string) $body['model'] !== ''
+                ? (string) $body['model']
+                : self::CLAUDE_MODEL,
+
+            'referencia_id' => (int) $article->id,
+        ]);
+
+        $parsed = $this->parse_response($body);
 
         if ($parsed === null) {
             Log::info('[DescripcionesIA] No se pudo parsear la respuesta de Claude.', [

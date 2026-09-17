@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 use App\Models\Address;
 use App\Models\Provider;
 use App\Models\User;
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -1865,6 +1866,26 @@ PROMPT;
         }
 
         $response_data = $response->json();
+
+        /*
+         * Consumo de tokens (misión tokens-por-cliente). Va acá, con el body entero todavía
+         * en la mano: unas líneas más abajo el método se queda solo con el texto y el bloque
+         * `usage` se pierde. Si la llamada hubiera fallado, arriba ya se salió por excepción
+         * y no se registra nada — un rechazo no se paga.
+         *
+         * registrar() nunca lanza: el analizador de un Excel no puede caerse por contabilidad.
+         */
+        AiTokenUsageHelper::registrar([
+            'user_id' => (int) $this->user_id,
+            'proceso' => 'import_excel_articulos',
+            'body'    => is_array($response_data) ? $response_data : [],
+
+            // El modelo que devolvió Anthropic (viene con la fecha resuelta del alias, que es
+            // lo que el admin necesita para costear); el de la constante, solo si no vino.
+            'modelo' => isset($response_data['model']) && (string) $response_data['model'] !== ''
+                ? (string) $response_data['model']
+                : self::CLAUDE_MODEL,
+        ]);
 
         /*
          * La respuesta de la API de Anthropic tiene el contenido en:

@@ -426,7 +426,9 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
                         continue;
                     }
 
-                    $validation = $validation_service->validate($image_binary, $article);
+                    // El owner de la corrida viaja hasta el validador para que el consumo de
+                    // tokens de la llamada de visión quede imputado (misión tokens-por-cliente).
+                    $validation = $validation_service->validate($image_binary, $article, $this->user_id);
 
                     if (!$validation['accepted']) {
                         /* La imagen se descartó por IA: borrar el archivo ya guardado para no llenar storage. */
