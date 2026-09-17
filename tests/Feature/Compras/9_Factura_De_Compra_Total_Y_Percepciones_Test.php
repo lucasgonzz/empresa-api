@@ -7,6 +7,7 @@ use App\Models\Iva;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderAfipTicketIva;
+use App\Models\ProviderOrderExtraCost;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 
 /**
@@ -870,6 +871,30 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
                 'model_id'        => $compra->id,
             ])->assertStatus(200);
 
+            /*
+             * 🔴 El assert que faltaba, y es justo donde se rompía. Una factura de MT no tiene
+             * filas de desglose de IVA (un MT no discrimina), así que Σ sobre cero filas daba 0 y
+             * el comprobante quedaba valiendo los 500 de la percepción en vez de 1500: mil pesos
+             * de deuda con el proveedor perdonados, sin error y sin log. El total de un
+             * comprobante sin desglose no es derivable — lo único que se le puede mover es la
+             * percepción.
+             */
+            $factura->refresh();
+
+            $this->assertEqualsWithDelta(
+                1500,
+                (float) $factura->total,
+                self::DELTA,
+                '🔴 Sin desglose de IVA el total no se deriva: se conserva el base (1000) y se le suma la percepción (500).'
+            );
+
+            $this->assertEqualsWithDelta(
+                1500,
+                (float) $compra->refresh()->total,
+                self::DELTA,
+                'Y la compra sigue al total de su factura, no a 500.'
+            );
+
             $this->volver_a_guardar_la_compra($compra, $overrides)->assertStatus(200);
 
             $factura->refresh();
@@ -941,5 +966,249 @@ class Factura_De_Compra_Total_Y_Percepciones_Test extends ComprasTestCase
         $this->assertNull($factura->retencion_iibb, 'El update tampoco guarda retención de IIBB.');
         $this->assertNull($factura->retencion_iva, 'El update tampoco guarda retención de IVA.');
         $this->assertNull($factura->retencion_ganancias, 'El update tampoco guarda retención de Ganancias.');
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 🔴 Comprobantes SIN desglose de IVA: el total no es derivable        */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Test 13 — 🔴 El comprobante aparte de un costo extra sin alícuota conserva su total cuando se
+     * lo edita por el endpoint.
+     *
+     * Es el mismo agujero que el del Monotributista pero en una cuenta **Responsable Inscripto**:
+     * un costo extra facturado aparte sin `iva_id` cargado no se puede desglosar, así que
+     * `ModoFacturacionHelper` le guarda el bruto directo como total y le borra las filas de IVA. Si
+     * después el usuario le carga el número del comprobante o una percepción, Σ sobre cero filas
+     * daría 0 y el flete de $3.000 desaparecería de la deuda con el proveedor.
+     *
+     * @group compras
+     * @test
+     */
+    public function un_comprobante_sin_alicuotas_conserva_su_total_al_editarlo()
+    {
+        $compra = $this->crear_compra([
+            'modo_facturacion'                       => 'automatico',
+            'total_from_provider_order_afip_tickets' => 1,
+            'generate_current_acount'                => 1,
+        ]);
+
+        // Un flete de $3.000 facturado por otro emisor y SIN alícuota cargada: no hay con qué
+        // desglosarlo, así que su comprobante aparte nace con el bruto como total y sin filas.
+        $costo_extra = ProviderOrderExtraCost::create([
+            'provider_order_id'   => $compra->id,
+            'description'         => 'Flete tercerizado',
+            'value'               => 3000,
+            'tipo'                => ProviderOrderExtraCost::TIPO_TRANSPORTE,
+            'facturado'           => true,
+            'en_factura_compra'   => false,
+            'iva_id'              => null,
+            'emisor_razon_social' => 'Transportes del Litoral',
+        ]);
+
+        $this->volver_a_guardar_la_compra($compra, [
+            'modo_facturacion'                       => 'automatico',
+            'total_from_provider_order_afip_tickets' => 1,
+            'generate_current_acount'                => 1,
+        ])->assertStatus(200);
+
+        $ticket_aparte = ProviderOrderAfipTicket::where('provider_order_extra_cost_id', $costo_extra->id)->first();
+
+        $this->assertNotNull($ticket_aparte, 'Tiene que existir el comprobante aparte del costo extra.');
+
+        $this->assertCount(
+            0,
+            ProviderOrderAfipTicketIva::where('provider_order_afip_ticket_id', $ticket_aparte->id)->get(),
+            'Sin iva_id cargado el comprobante aparte no tiene desglose; si lo tuviera, el test no estaría midiendo esto.'
+        );
+
+        $this->assertEqualsWithDelta(3000, (float) $ticket_aparte->total, self::DELTA, 'Punto de partida: el bruto del flete.');
+
+        // El usuario le completa el número del comprobante y le carga la percepción del papel.
+        $this->putJson('api/provider-order-afip-ticket/'.$ticket_aparte->id, [
+            'code'            => 'B 0005-00000077',
+            'issued_at'       => '2026-09-17',
+            'percepcion_iibb' => 200,
+            'percepcion_iva'  => null,
+            'total'           => 999999,
+            'model_id'        => $compra->id,
+        ])->assertStatus(200);
+
+        $ticket_aparte->refresh();
+
+        $this->assertEqualsWithDelta(
+            3200,
+            (float) $ticket_aparte->total,
+            self::DELTA,
+            '🔴 El total del flete se conserva y solo se le suma la percepción: 3000 + 200, nunca 0 + 200.'
+        );
+    }
+
+    /**
+     * Test 14 — Alícuota 0 / Exento / No Gravado: el neto entra entero al total y el IVA es 0.
+     *
+     * Es la Factura C cargada a mano, y el caso que más fácil se rompe con una cuenta que multiplica
+     * por una alícuota que no existe. Acá el desglose SÍ existe (hay una fila, con `iva_importe` en
+     * 0), así que el total se deriva normal — a diferencia del comprobante sin ninguna fila.
+     *
+     * @group compras
+     * @test
+     */
+    public function una_alicuota_exenta_suma_su_neto_entero_y_no_aporta_iva()
+    {
+        $compra = $this->crear_compra([
+            'total_from_provider_order_afip_tickets' => 1,
+            'generate_current_acount'                => 1,
+        ]);
+
+        $factura = $this->crear_factura($compra->id, ['percepcion_iibb' => 300]);
+
+        // Exento: el importe de IVA es 0 y el neto es todo lo que vale el renglón.
+        $this->agregar_alicuota($factura->id, 50000, 0, 'Exento')->assertStatus(201);
+
+        // Y una de No Gravado, para que convivan las dos sin IVA.
+        $this->agregar_alicuota($factura->id, 20000, 0, 'No Gravado')->assertStatus(201);
+
+        $factura->refresh();
+
+        $this->assertEqualsWithDelta(
+            70300,
+            (float) $factura->total,
+            self::DELTA,
+            'Total = 50000 de Exento + 20000 de No Gravado + 300 de percepción. El neto entra entero.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $factura->total_iva,
+            self::DELTA,
+            'Una alícuota exenta no aporta crédito fiscal: total_iva da 0 (que NO es lo mismo que null).'
+        );
+
+        $this->assertEqualsWithDelta(
+            70300,
+            (float) $compra->refresh()->total,
+            self::DELTA,
+            'Y el total de la compra sale de ahí.'
+        );
+    }
+
+    /**
+     * Test 15 — Mover una factura de una compra a otra recalcula LAS DOS.
+     *
+     * El formulario permite reasignar la factura, y recalcular solo la compra que la recibe dejaba
+     * a la que la pierde con un total que incluye un comprobante que ya no le cuelga — el mismo
+     * agujero que el `destroy()`, por la puerta de al lado.
+     *
+     * @group compras
+     * @test
+     */
+    public function mover_una_factura_de_compra_recalcula_las_dos()
+    {
+        $overrides = [
+            'total_from_provider_order_afip_tickets' => 1,
+            'generate_current_acount'                => 1,
+        ];
+
+        $compra_origen  = $this->crear_compra($overrides);
+        $compra_destino = $this->crear_compra($overrides);
+
+        $factura = $this->crear_factura($compra_origen->id);
+
+        $this->agregar_alicuota($factura->id, 100000, 21000)->assertStatus(201);
+
+        $this->assertEqualsWithDelta(121000, (float) $compra_origen->refresh()->total, self::DELTA, 'Punto de partida: la factura cuelga del origen.');
+        $this->assertEqualsWithDelta(0, (float) $compra_destino->refresh()->total, self::DELTA, 'Y el destino todavía no tiene ninguna.');
+
+        // Se la mueve al destino.
+        $this->putJson('api/provider-order-afip-ticket/'.$factura->id, [
+            'code'            => '0001-00000001',
+            'issued_at'       => '2026-09-17',
+            'percepcion_iibb' => null,
+            'percepcion_iva'  => null,
+            'total'           => 999999,
+            'model_id'        => $compra_destino->id,
+        ])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(
+            121000,
+            (float) $compra_destino->refresh()->total,
+            self::DELTA,
+            'La compra que recibe la factura queda con su total.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $compra_origen->refresh()->total,
+            self::DELTA,
+            '🔴 Y la que la pierde también se recalcula: si no, se queda con el total de una factura que ya no le cuelga.'
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (float) $this->current_acount_de($compra_origen->id)->debe,
+            self::DELTA,
+            'Con su deuda, que es lo que se le sigue reclamando al proveedor.'
+        );
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* La bandera apagada                                                  */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Test 16 — Con `total_from_provider_order_afip_tickets` APAGADO, la factura no mueve el total
+     * de la compra.
+     *
+     * Es la contracara de todo lo anterior y vale la pena anclarla: el recálculo corre igual (la
+     * factura se guarda, sus totales se calculan), pero `set_totales()` arma el total de la compra
+     * desde los artículos, así que una percepción cargada en la factura no puede cambiarlo. Si
+     * alguna vez alguien hace que el total de la factura entre por otro lado, este test lo denuncia.
+     *
+     * @group compras
+     * @test
+     */
+    public function con_la_bandera_apagada_la_factura_no_mueve_el_total_de_la_compra()
+    {
+        $compra = $this->crear_compra([
+            'total_from_provider_order_afip_tickets' => 0,
+            'generate_current_acount'                => 1,
+        ]);
+
+        // Un artículo de 1000, sin IVA por encima (`total_with_iva = 0`): la compra vale 1000.
+        $this->assertEqualsWithDelta(
+            1000,
+            (float) $compra->total,
+            self::DELTA,
+            'Con la bandera apagada el total de la compra sale de sus artículos.'
+        );
+
+        $factura = $this->crear_factura($compra->id, ['percepcion_iibb' => 2500]);
+
+        $this->agregar_alicuota($factura->id, 100000, 21000)->assertStatus(201);
+
+        $factura->refresh();
+        $compra->refresh();
+
+        $this->assertEqualsWithDelta(
+            123500,
+            (float) $factura->total,
+            self::DELTA,
+            'La factura calcula su propio total igual, esté la bandera como esté.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1000,
+            (float) $compra->total,
+            self::DELTA,
+            'Pero con la bandera apagada el total de la compra no se entera: sigue saliendo de los artículos.'
+        );
+
+        $this->assertEqualsWithDelta(
+            1000,
+            (float) $this->current_acount_de($compra->id)->debe,
+            self::DELTA,
+            'Y la deuda con el proveedor tampoco se mueve.'
+        );
     }
 }

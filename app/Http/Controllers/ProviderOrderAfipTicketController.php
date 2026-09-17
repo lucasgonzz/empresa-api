@@ -67,6 +67,23 @@ class ProviderOrderAfipTicketController extends Controller
 
     public function update(Request $request, $id) {
         $model = ProviderOrderAfipTicket::find($id);
+
+        /*
+         * Las dos cosas que hay que mirar ANTES de pisar nada:
+         *
+         * 1. Cuánto vale el comprobante sin sus percepciones. Es la base que `guardar_totales()`
+         *    conserva cuando la factura no tiene desglose de IVA (la de un Monotributista, una
+         *    Factura C) y su total, por lo tanto, no es derivable. Una vez pisadas las percepciones
+         *    con las del request, el total guardado y las del modelo ya no corresponden entre sí y
+         *    la resta daría cualquier cosa.
+         * 2. A qué compra colgaba. El formulario puede mover la factura de una compra a otra, y ahí
+         *    hay DOS compras para recalcular: la que la recibe y la que la pierde — que si no, se
+         *    queda con un total que incluye una factura que ya no le cuelga.
+         */
+        $total_base = FacturaDeCompraHelper::total_base_sin_percepciones($model);
+
+        $provider_order_id_anterior = $model->provider_order_id;
+
         $model->code                  = $request->code;
         $model->issued_at             = $request->issued_at;
         // $model->total_iva             = $request->total_iva;
@@ -81,9 +98,13 @@ class ProviderOrderAfipTicketController extends Controller
         $model->save();
         $this->sendAddModelNotification('provider_order_afip_ticket', $model->id);
 
-        FacturaDeCompraHelper::guardar_totales($model);
+        FacturaDeCompraHelper::guardar_totales($model, $total_base);
 
         FacturaDeCompraHelper::recalcular_compra($model->provider_order_id);
+
+        if ($provider_order_id_anterior != $model->provider_order_id) {
+            FacturaDeCompraHelper::recalcular_compra($provider_order_id_anterior);
+        }
 
         return response()->json(['model' => $this->fullModel('ProviderOrderAfipTicket', $model->id)], 200);
     }
@@ -106,17 +127,4 @@ class ProviderOrderAfipTicketController extends Controller
         return response(null);
     }
 
-    /**
-     * Suma el `iva_importe` de las alícuotas de la factura (y, desde la misión
-     * `compras-factura-manual-alicuotas`, también su `total`).
-     *
-     * Queda como envoltorio de `FacturaDeCompraHelper::guardar_totales()` para no dejar sin salida
-     * a ningún llamador viejo: era un método público de este controller.
-     *
-     * @param  \App\Models\ProviderOrderAfipTicket  $model
-     * @return void
-     */
-    function set_total_iva($model) {
-        FacturaDeCompraHelper::guardar_totales($model);
-    }
 }

@@ -127,7 +127,9 @@ class ModoFacturacionHelper
 
         foreach ($ivas as $iva_id => $value) {
 
-            Log::info('Sumando neto de:');
+            // El texto decía 'Sumando neto de' cuando este mismo loop acumulaba los totales; ya no
+            // suma nada, solo escribe la fila del desglose.
+            Log::info('Alicuota de la factura automatica:');
             Log::info($value);
 
             ProviderOrderAfipTicketIva::create([
