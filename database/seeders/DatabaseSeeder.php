@@ -2,7 +2,11 @@
 
 namespace Database\Seeders;
 
+use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Http\Controllers\Helpers\Seeders\ExcluirListaDePrecioExcelHelper;
+use App\Models\Platform;
+use App\Models\PlatformConnector;
+use App\Models\User;
 use Database\Seeders\sales\SaleReporteArticuloSeeder;
 use Database\Seeders\sales\SaleReporteSeeder;
 use Database\Seeders\sales\SaleRoadMapSeeder;
@@ -339,6 +343,39 @@ class DatabaseSeeder extends Seeder
                     [],
                     isset($this->command) ? $this->command->getOutput() : null
                 );
+            }
+
+            /*
+                Misión mp-zipnova-seed-local (17/9/2026): las integraciones de Mercado Pago
+                (tienda cobra) y de Zipnova (tienda cotiza/despacha envíos) se conectaban solas
+                con las credenciales de demo de la config, pero solo del lado de
+                `DemoSetupHelper::run()` -- un `migrate:fresh --seed` en local dejaba la tienda
+                sin poder cobrar ni cotizar, mientras que una demo recién armada sí podía.
+
+                Misma guarda LETRA POR LETRA que la de `semilla:datos` de acá arriba, y por el
+                mismo motivo: alinear local y demo. No hace falta que corra antes ni después de
+                `semilla:datos` -- ninguno de los dos lee lo que el otro siembra --, así que va
+                al lado para que quede junto al resto de "esto deja local igual a la demo".
+
+                Si ya hay un conector conectado (Mercado Pago u OAuth de Zipnova cargado a mano
+                en una base local que no pasó por `migrate:fresh`), no se pisa: se reutilizan las
+                MISMAS dos funciones que usa la demo, que ya traen ese criterio incorporado.
+            */
+            if (
+                env('APP_ENV') == 'local'
+                || $for_user == 'demo'
+            ) {
+                $user = User::find(config('app.USER_ID'));
+
+                if ($user) {
+                    if (!PlatformConnector::find_for_user_and_slug($user->id, Platform::SLUG_MERCADO_PAGO)) {
+                        DemoSetupHelper::conectar_mercado_pago_desde_env($user);
+                    }
+
+                    if (!PlatformConnector::find_for_user_and_slug($user->id, Platform::SLUG_ZIPNOVA)) {
+                        DemoSetupHelper::conectar_zipnova_desde_env($user);
+                    }
+                }
             }
 
         }
