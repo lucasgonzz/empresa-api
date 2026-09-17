@@ -14,7 +14,28 @@ use App\Http\Controllers\Pdf\AfipQrPdf;
 use App\Http\Controllers\Pdf\Puntos\PuntosComprobanteHelper;
 use App\Models\AfipInformation;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/*
+ * `require_once` y no `require` pelado como el resto de los PDF (mision forzar-total-por-monto,
+ * 17/9/2026).
+ *
+ * 🔴 CON `require` PELADO, DOS CLASES DE PDF NO PUEDEN CONVIVIR EN UN MISMO PROCESO: la segunda
+ * vuelve a ejecutar este archivo y PHP corta con "Cannot declare class FPDF, because the name is
+ * already in use". En produccion no se nota porque cada request arma UN solo PDF, pero es un
+ * fatal esperando a la primera pantalla que genere dos —y es lo que hace imposible testear dos
+ * comprobantes en la misma corrida de PHPUnit.
+ *
+ * ⚠️ QUEDAN 32 ARCHIVOS CON `require` PELADO (medido el 17/9/2026; 35 cargan fpdf y tres ya tienen
+ * `require_once`: este, `SaleAfipTicketPdf` y `BudgetPdf`). Mientras haya uno solo asi, el orden
+ * importa: `require_once` marca el archivo como incluido, pero un `require` POSTERIOR lo re-ejecuta
+ * igual y vuelve el fatal. O sea que esto arregla la convivencia ENTRE los tres convertidos, no con
+ * el resto.
+ *
+ * Se detectan con:
+ *     grep -rl "fpdf/fpdf.php" app/Http/Controllers/ | xargs grep -L require_once
+ *
+ * El barrido de los 32 esta declarado como hallazgo fuera de alcance en el informe de esta mision.
+ */
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class SaleTicketPdf extends fpdf {
 
@@ -180,6 +201,14 @@ class SaleTicketPdf extends fpdf {
 		$this->canje_de_puntos();
 
 		$this->payment_method_discounts();
+
+		/*
+		 * El ajuste del total forzado va ULTIMO de todos los renglones de la cuenta, que es el
+		 * orden con el que se aplica: `SaleHelper::getTotalSale()` lo suma despues de descuentos,
+		 * recargos y comisiones, y el front lo aplica despues del canje y de los descuentos por
+		 * medio de pago (vender_set_total.js). Es, literalmente, lo ultimo que le pasa al total.
+		 */
+		$this->total_forzado();
 
 		$this->total();
 
@@ -476,12 +505,19 @@ class SaleTicketPdf extends fpdf {
 	 * El canje de puntos entra en esta condicion junto con los descuentos y los recargos: es
 	 * otra cosa que separa el sub total del total, y sin este renglon el ticket arrancaria
 	 * directo en "Canje 500 pts $116.000" sin decir nunca de cuanto se partia.
+	 *
+	 * El total forzado entra por lo mismo (mision forzar-total-por-monto, 17/9/2026), y es el caso
+	 * en el que MAS hace falta: una venta forzada puede no tener ningun otro descuento —es
+	 * justamente el caso de uso, redondear $4.012 a $4.000 para no dar cambio—, asi que sin esta
+	 * condicion el ticket empezaria directo en "Ajuste -$12,00 $4.000" sin decir nunca que se
+	 * partia de $4.012.
 	 */
 	function total_sin_des_rec() {
 		if (
 			count($this->sale->discounts) >= 1
 			|| count($this->sale->surchages) >= 1
 			|| PuntosComprobanteHelper::tiene_canje($this->sale)
+			|| SaleHelper::get_forzar_total_monto($this->sale) != 0
 		) {
 		    $this->x = $this->x_incial;
 		    $this->SetFont('Arial', 'B', 10);
@@ -531,6 +567,55 @@ class SaleTicketPdf extends fpdf {
 		}
 
 		$this->total_sale -= PuntosComprobanteHelper::descuento_del_canje($this->sale);
+
+		$this->SetFont('Arial', 'B', 10);
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho / 2, 7, $texto, 'B', 0, 'L');
+		$this->Cell($this->cell_ancho / 2, 7, '$'.Numbers::price($this->total_sale), 'B', 1, 'R');
+	}
+
+	/**
+	 * El renglon del ajuste del total forzado (mision forzar-total-por-monto, 17/9/2026), con el
+	 * mismo formato que el canje y que los descuentos por medio de pago.
+	 *
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *  🔴 LA SUMA A $this->total_sale ES LO QUE HACE QUE EL TICKET CIERRE
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *
+	 *  Es el mismo mecanismo que documenta `canje_de_puntos()` aca arriba, y se rompe igual si se
+	 *  saca: `total()` compara `$this->sale->total` contra `$this->total_sale` para decidir si
+	 *  imprime "Total sin descuentos". Sin esta linea, una venta forzada imprimia un
+	 *  "Total sin descuentos: $4.012" y abajo un "TOTAL: $4.000" con $12 de diferencia que el
+	 *  papel no explicaba por ningun lado. Con ella, el ticket muestra el desglose entero
+	 *  —"Total $4.012" / "Ajuste -$12,00 $4.000" / "TOTAL $4.000"— que es lo que decidio Lucas:
+	 *  el desglose, no el silencio.
+	 *
+	 *  ⚠️ Y ESTE ES **EL** COMPROBANTE DEL CASO DE USO. Redondear para no dar cambio es una venta
+	 *  de mostrador, y de mostrador sale ticket de 80mm, no A4. Que el desglose estuviera en
+	 *  `NewSalePdf` y no aca dejaba el arreglo justo afuera del papel que el cliente se lleva.
+	 *
+	 * ⚠️ Se SUMA y no se resta, a diferencia del canje: `forzar_total_monto` viene CON SIGNO
+	 * (negativo = descuento, positivo = recargo), mientras que el canje siempre es un numero
+	 * positivo que se descuenta. Restarlo daria un recargo cada vez que el vendedor baja el total.
+	 *
+	 * @return void
+	 */
+	function total_forzado() {
+
+		/** Monto con signo. 0 = la venta no se forzo. */
+		$monto = SaleHelper::get_forzar_total_monto($this->sale);
+
+		if ($monto == 0) {
+			return;
+		}
+
+		$this->total_sale += $monto;
+
+		/*
+		 * "Ajuste" y el monto con su signo adelante, en vez de Menos/Mas: en 80mm la celda
+		 * izquierda es la mitad del ancho del ticket y no entra una palabra mas.
+		 */
+		$texto = 'Ajuste '.($monto < 0 ? '-' : '+').'$'.Numbers::price(abs($monto));
 
 		$this->SetFont('Arial', 'B', 10);
 		$this->x = $this->x_incial;
@@ -752,6 +837,20 @@ class SaleTicketPdf extends fpdf {
 		 * total, que sin canje no se imprimia, mas el renglon del canje).
 		 */
 		if (PuntosComprobanteHelper::tiene_canje($this->sale)) {
+			$height += 14;
+		}
+
+		/*
+		 * El total forzado suma los mismos dos renglones de 7mm que el canje: el "Total" del sub
+		 * total (que sin forzado ni descuentos no se imprimiria) mas el renglon del ajuste.
+		 *
+		 * ⚠️ Se reserva aunque la venta TAMBIEN tenga descuentos, o sea que en ese caso se reserva
+		 * de mas —el renglon del sub total ya estaba contado—. Es a proposito y es el mismo
+		 * criterio que el canje de aca arriba: en un rollo continuo, reservar de mas deja un
+		 * espacio en blanco al pie y reservar de menos CORTA el comprobante. Entre las dos, la
+		 * unica que se puede ver en el papel del cliente es la segunda.
+		 */
+		if (SaleHelper::get_forzar_total_monto($this->sale) != 0) {
 			$height += 14;
 		}
 

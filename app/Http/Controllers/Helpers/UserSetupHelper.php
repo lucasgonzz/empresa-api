@@ -507,6 +507,11 @@ class UserSetupHelper
             'scroll_infinito_en_home'   => 1,
             'default_article_image_url' => 'http://empresa.local:8000/storage/169705209718205.jpg',
             'pausar_tienda_online'      => 0,
+            // El gris que apoya las tarjetas blancas de la ficha, como hace Mercado Libre
+            // (pedido de Lucas, 17/9/2026). Va aca ademas de en la migracion que pinto a los
+            // que ya existian: el default de la columna sigue siendo blanco, asi que sin esta
+            // linea cada comercio nuevo volveria a nacer en blanco.
+            'background_color'          => '#EDEDED',
             'article_description_font_size' => 16,
             'user_id'                   => config('app.USER_ID'),
             'facebook'                  => $facebook,

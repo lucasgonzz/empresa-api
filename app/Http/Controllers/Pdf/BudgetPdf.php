@@ -8,10 +8,26 @@ use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\User;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/*
+	| require_once y NO require: los PDF de app/Http/Controllers/ cargan fpdf.php con un require
+	| pelado, asi que el SEGUNDO PDF que se instancie en un mismo proceso muere con
+	| 'Constant FPDF_VERSION already defined' / 'Cannot declare class FPDF'. En produccion no
+	| se nota porque cada request arma un solo PDF, pero una corrida de tests que toca el
+	| presupuesto y el ticket de venta juntos lo dispara: paso el 17/9/2026 al correr
+	| ForzarTotal junto con Presupuestos, Puntos e Iva en un mismo proceso.
+	|
+	| Medido el 17/9/2026: 35 archivos cargan fpdf y solo TRES tienen require_once (este,
+	| SaleTicketPdf y SaleAfipTicketPdf). Los otros 32 siguen con require pelado, asi que esto
+	| arregla la convivencia entre los tres convertidos y no con el resto: un require posterior
+	| re-ejecuta el archivo igual. El barrido completo esta declarado como hallazgo fuera de
+	| alcance en el informe 20260917-forzar-total-por-monto; se detecta con:
+	|     grep -rl "fpdf/fpdf.php" app/Http/Controllers/ | xargs grep -L require_once
+*/
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class BudgetPdf extends fpdf {
 
@@ -324,17 +340,62 @@ class BudgetPdf extends fpdf {
 		}
 
 		if ($this->with_prices) {
-			foreach ($this->budget->articles as $article) {
-				if (!is_null($article->pivot->bonus) && $article->pivot->bonus > 0) {
-					$height += 12;
-					break;
+
+			/**
+			 * 🔴 ESTE CONTEO TIENE QUE SEGUIR A `discountsSurchages()` FILA POR FILA, Y SI SE
+			 * SEPARAN NO FALLA: SE PIERDE EL TOTAL.
+			 *
+			 * `fits()` decide el corte de pagina con `y + articleRowHeight + footerHeight() <= 296`,
+			 * y fpdf NO PAGINA ADENTRO DE `Footer()`: las dos ramas de salto automatico
+			 * (`fpdf.php` lineas 581 y 912) piden `&& !$this->InFooter`. O sea que todo lo que el
+			 * pie dibuje mas alla de 296 se escribe fuera de la hoja y desaparece, sin error y sin
+			 * aviso.
+			 *
+			 * Y la ULTIMA fila del pie es `total()`. Reservar de menos no recorta un renglon
+			 * decorativo: se lleva el "Total: $X" del papel que se le da al cliente.
+			 *
+			 * Es el mismo acoplamiento que en `NewSalePdf::estimate_totals_box_height()`, donde
+			 * esto ya esta dicho para la caja de totales de la venta.
+			 */
+
+			/** Monto con signo del total forzado. 0 = no se forzo. */
+			$monto_forzado = SaleHelper::get_forzar_total_monto($this->budget);
+
+			/*
+				El renglon "Sub Total sin descuentos" (12mm).
+
+				La bonificacion por linea es el proxy historico de su condicion de impresion y se
+				deja tal cual. Lo que se suma es la OTRA condicion con la que ese renglon se
+				imprime desde la mision forzar-total-por-monto: el total forzado. Sin esto, un
+				presupuesto forzado SIN bonificacion imprimia un renglon de 12mm que nadie habia
+				reservado.
+			*/
+			$imprime_sub_total = $monto_forzado != 0;
+
+			if (!$imprime_sub_total) {
+
+				foreach ($this->budget->articles as $article) {
+					if (!is_null($article->pivot->bonus) && $article->pivot->bonus > 0) {
+						$imprime_sub_total = true;
+						break;
+					}
 				}
+			}
+
+			if ($imprime_sub_total) {
+				$height += 12;
 			}
 
 			$height += count($this->budget->discounts) * 7;
 
 			if (!$this->budget->aplicar_recargos_directo_a_items) {
 				$height += count($this->budget->surchages) * 7;
+			}
+
+			/* La fila del ajuste del total forzado, con el mismo alto que las de arriba. */
+			/* La fila del ajuste del total forzado, con el mismo alto que las de arriba. */
+			if ($monto_forzado != 0) {
+				$height += 7;
 			}
 		}
 
@@ -455,7 +516,19 @@ class BudgetPdf extends fpdf {
 
 		if ($this->with_prices) {
 
-		    if ($this->total_original > $this->budget->total) {
+		    /*
+		    	El total forzado tambien abre la diferencia entre el sub total y el total, asi que
+		    	tambien tiene que hacer aparecer este renglon (mision forzar-total-por-monto,
+		    	17/9/2026).
+
+		    	Hace falta nombrarlo aparte y no alcanza con la comparacion de arriba: un forzado
+		    	HACIA ARRIBA deja `total_original` MENOR que el total, la condicion da false y el
+		    	renglon del ajuste quedaria solo, sin decir nunca de cuanto se partia.
+		    */
+		    if (
+		    	$this->total_original > $this->budget->total
+		    	|| SaleHelper::get_forzar_total_monto($this->budget) != 0
+		    ) {
 
 		    	$this->SetFont('Arial', 'B', 12);
 		    	$this->y += 5;
@@ -495,6 +568,29 @@ class BudgetPdf extends fpdf {
 			    	$this->x = 5;
 					$this->Cell(200, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'R');
 			    }
+		    }
+
+		    /*
+		    	EL RENGLON DEL AJUSTE DEL TOTAL FORZADO (mision forzar-total-por-monto, 17/9/2026).
+
+		    	🔴 Va ULTIMO, despues de descuentos y recargos, que es el orden en que se aplica en
+		    	`BudgetHelper::getTotal()`.
+
+		    	Sin el, el presupuesto forzado imprimia "Sub Total sin descuentos: $4.012" y abajo
+		    	"Total: $4.000" —porque `getTotal()` si contempla el forzado— y NINGUNA fila
+		    	explicaba los doce pesos del medio. Lucas eligio el desglose, no el silencio, y los
+		    	presupuestos estan adentro del alcance que fijo.
+
+		    	El monto va en valor absoluto con el signo adelante, en el mismo formato que los
+		    	renglones de descuento y recargo de aca arriba.
+		    */
+		    $monto_forzado = SaleHelper::get_forzar_total_monto($this->budget);
+
+		    if ($monto_forzado != 0) {
+
+		    	$this->x = 5;
+		    	$signo = $monto_forzado < 0 ? '- ' : '+ ';
+				$this->Cell(200, 7, $signo.'$'.Numbers::price(abs($monto_forzado)).' Ajuste del total', 0, 1, 'R');
 		    }
 
 		}
