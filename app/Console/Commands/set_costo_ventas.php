@@ -10,9 +10,69 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Setea costo y ganancia en ventas y en el pivot article_sale.
+ *
+ * 🔴 `article_sale.cost` es el costo UNITARIO. No es una opinion: lo fijan tres lugares que
+ * ya estan en produccion y que multiplican por la cantidad DESPUES de leerlo:
+ *
+ *   - SaleHelper::attachArticle()                      guarda 'cost' unitario y 'ganancia' TOTAL de la linea
+ *   - SaleTotalesHelper::set_total_cost()              total += pivot->cost * pivot->amount
+ *   - ContabilidadRepository::costo_mercaderia_vendida SUM(article_sale.cost * article_sale.amount)
+ *
+ * Hasta el 17/9/2026 este comando escribia el costo TOTAL de la linea en esa columna
+ * (`$cost *= $amount` antes del update). Tres consecuencias en cascada:
+ *
+ *   1. el costo de la linea quedaba inflado por la cantidad;
+ *   2. `set_total_cost()` y el CMV del Estado de Resultados lo volvian a multiplicar por
+ *      la cantidad, o sea inflados por amount²;
+ *   3. no era idempotente: cada corrida multiplicaba de nuevo (medido en golonorte, donde
+ *      la ganancia acumulada de ventas quedo en −$2.327.527.825).
+ *
+ * Ahora persiste el costo unitario, la ganancia total de la linea —igual que
+ * `attachArticle`— y `sales.total_cost` como Σ(costo_unitario × cantidad).
+ *
+ * Guarda de idempotencia, en dos mitades:
+ *
+ *   a) la cotizacion a dolar solo se aplica cuando el costo se toma de `articles.costo_real`,
+ *      nunca cuando ya venia guardado en el pivot. Es la misma regla de
+ *      `SaleHelper::getCost()`, que cuando el item trae pivot devuelve el costo guardado
+ *      "ya cotizado": volver a cotizarlo era la otra fuente de corridas no repetibles;
+ *   b) no se escribe la fila cuando el valor calculado ya es el que esta guardado, asi que
+ *      la segunda corrida no toca una sola fila y lo informa.
+ *
+ * El histórico roto NO lo repara este comando: eso es `sale:sanear-costo-de-linea`.
+ *
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
+ * union types, promocion de constructor, readonly, enum ni #[...].
  */
 class set_costo_ventas extends Command
 {
+    /**
+     * Tolerancia para comparar contra lo guardado. Las columnas son decimal(x,2), asi que
+     * una diferencia por debajo de medio centavo es la misma fila.
+     */
+    const EPSILON = 0.005;
+
+    /**
+     * Lineas de pivot efectivamente escritas en la corrida.
+     *
+     * @var int
+     */
+    private $lineas_actualizadas = 0;
+
+    /**
+     * Lineas que ya tenian el valor correcto y no se tocaron (guarda de idempotencia).
+     *
+     * @var int
+     */
+    private $lineas_sin_cambios = 0;
+
+    /**
+     * Ventas a las que se les reescribio el total_cost.
+     *
+     * @var int
+     */
+    private $ventas_actualizadas = 0;
+
     /**
      * user_id: opcional (se usa si no existe config('app.USER_ID'))
      * from_sale_id / sale_id: reanudar desde un id de venta (>=).
@@ -107,6 +167,13 @@ class set_costo_ventas extends Command
         });
 
         $this->info('Termino. Ventas procesadas: ' . $processed_sales);
+        $this->info('Lineas escritas: ' . $this->lineas_actualizadas
+            . '. Lineas que ya estaban bien: ' . $this->lineas_sin_cambios . '.');
+        $this->info('Ventas con total_cost reescrito: ' . $this->ventas_actualizadas . '.');
+
+        if ($this->lineas_actualizadas === 0 && $this->ventas_actualizadas === 0) {
+            $this->comment('No se escribio nada: el dato ya estaba en su valor final (corrida idempotente).');
+        }
 
         return 0;
     }
@@ -129,52 +196,120 @@ class set_costo_ventas extends Command
 
         foreach ($sale->articles as $article) {
             $pivot = $article->pivot;
-            $cost = $pivot->cost;
             $price = (float) $pivot->price;
-
-            if ($cost === null && $article->costo_real) {
-                $cost = (float) $article->costo_real;
-            } else {
-                $cost = (float) $cost;
-            }
-
-            if ($valor_dolar) {
-                if (
-                    (int) $sale->moneda_id === 1
-                    && $cotizar_precios_en_dolares === 0
-                ) {
-                    if ((int) $article->cost_in_dollars === 1) {
-                        $cost *= $valor_dolar;
-                    }
-                } elseif ((int) $sale->moneda_id === 2) {
-                    if ((int) $article->cost_in_dollars === 0 || $article->cost_in_dollars === null) {
-                        $cost /= $valor_dolar;
-                    }
-                }
-            }
-
             $amount = (float) $pivot->amount;
-            $cost *= $amount;
-            $price *= $amount;
-            $ganancia = $price - $cost;
 
-            // UPDATE directo al pivot (mas rapido que updateExistingPivot por articulo).
-            DB::table('article_sale')
-                ->where('sale_id', $sale->id)
-                ->where('article_id', $article->id)
-                ->update([
-                    'cost' => $cost,
-                    'ganancia' => $ganancia,
-                ]);
+            /*
+             * Un costo ya guardado en el pivot esta cotizado en la moneda de la venta desde el
+             * momento en que se cargo (SaleHelper::getCost() lo devuelve tal cual cuando el item
+             * trae pivot). Solo el que se toma de `articles.costo_real` viene crudo y hay que
+             * cotizarlo. Cotizar siempre era lo que hacia que dos corridas seguidas sobre un
+             * cliente en dolares dieran numeros distintos.
+             */
+            if (is_null($pivot->cost)) {
+                $cost = (float) $article->costo_real;
+                $cost = $this->cotizar_costo(
+                    $cost,
+                    $sale,
+                    $article,
+                    $valor_dolar,
+                    $cotizar_precios_en_dolares
+                );
+            } else {
+                $cost = (float) $pivot->cost;
+            }
 
-            $total_cost += $cost;
+            /*
+             * Costo UNITARIO en `cost` y ganancia TOTAL de la linea en `ganancia`: la misma
+             * convencion que persiste SaleHelper::attachArticle().
+             */
+            $cost = round($cost, 2);
+            $ganancia = round(($price - $cost) * $amount, 2);
+
+            if ($this->hay_que_escribir_la_linea($pivot, $cost, $ganancia)) {
+                // UPDATE directo al pivot (mas rapido que updateExistingPivot por articulo).
+                DB::table('article_sale')
+                    ->where('sale_id', $sale->id)
+                    ->where('article_id', $article->id)
+                    ->update([
+                        'cost' => $cost,
+                        'ganancia' => $ganancia,
+                    ]);
+
+                $this->lineas_actualizadas++;
+            } else {
+                $this->lineas_sin_cambios++;
+            }
+
+            $total_cost += $cost * $amount;
         }
 
-        if ($total_cost > 0) {
+        $total_cost = round($total_cost, 2);
+
+        /*
+         * El total_cost en 0 no se escribe: una venta sin ningun costo cargado dejaria en cero
+         * un total que pudo haberse calculado antes por otro camino. Es el comportamiento que
+         * este comando ya tenia.
+         */
+        if ($total_cost > 0 && abs((float) $sale->total_cost - $total_cost) >= self::EPSILON) {
             DB::table('sales')
                 ->where('id', $sale->id)
                 ->update(['total_cost' => $total_cost]);
+
+            $this->ventas_actualizadas++;
         }
+    }
+
+    /**
+     * Cotiza a la moneda de la venta un costo tomado de `articles.costo_real` (crudo).
+     *
+     * @param  float  $cost
+     * @param  Sale  $sale
+     * @param  \App\Models\Article  $article
+     * @param  float  $valor_dolar
+     * @param  int  $cotizar_precios_en_dolares
+     * @return float
+     */
+    private function cotizar_costo(
+        $cost,
+        Sale $sale,
+        $article,
+        $valor_dolar,
+        $cotizar_precios_en_dolares
+    ) {
+        if (!$valor_dolar) {
+            return $cost;
+        }
+
+        if ((int) $sale->moneda_id === 1 && $cotizar_precios_en_dolares === 0) {
+            if ((int) $article->cost_in_dollars === 1) {
+                $cost *= $valor_dolar;
+            }
+        } elseif ((int) $sale->moneda_id === 2) {
+            if ((int) $article->cost_in_dollars === 0 || $article->cost_in_dollars === null) {
+                $cost /= $valor_dolar;
+            }
+        }
+
+        return $cost;
+    }
+
+    /**
+     * Guarda de idempotencia: la fila se escribe solo si alguno de los dos valores cambia.
+     *
+     * @param  object  $pivot
+     * @param  float  $cost
+     * @param  float  $ganancia
+     * @return bool
+     */
+    private function hay_que_escribir_la_linea($pivot, $cost, $ganancia)
+    {
+        if (is_null($pivot->cost) || is_null($pivot->ganancia)) {
+            return true;
+        }
+
+        return abs((float) $pivot->cost - $cost) >= self::EPSILON
+            || abs((float) $pivot->ganancia - $ganancia) >= self::EPSILON;
     }
 
     /**
