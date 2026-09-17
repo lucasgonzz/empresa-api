@@ -23,7 +23,12 @@ use App\Models\Impression;
 use App\Models\Sale;
 use App\Services\PdfColumnService;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/*
+ * `require_once` y no `require` pelado: mismo motivo, con el detalle completo, que el de
+ * `SaleTicketPdf.php`. Con `require` pelado dos clases de PDF no pueden convivir en un mismo
+ * proceso — la segunda corta con "Cannot declare class FPDF, because the name is already in use".
+ */
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 // Este se usa para las ventas
 class SaleAfipTicketPdf extends fpdf {
@@ -385,10 +390,35 @@ class SaleAfipTicketPdf extends fpdf {
 		// }
 	}
 
+	/**
+	 * El bloque "Total Original / Descuentos / Total final" de la factura A/B.
+	 *
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *  🔴 ARREGLO DE `$sale` -> `$this->sale` (mision forzar-total-por-monto, 17/9/2026)
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *
+	 *  Abajo habia un `Numbers::price($sale->sub_total, ...)` con una variable `$sale` QUE NO
+	 *  EXISTE: este metodo no la recibe por parametro y no hay ninguna local. En PHP 7.4 eso no
+	 *  corta nada —tira un notice y resuelve a null—, asi que el renglon "Total Original"
+	 *  imprimia **$0,00** en TODA factura A/B de una venta con descuentos, desde siempre y sin que
+	 *  nadie se enterara.
+	 *
+	 *  Es preexistente y entra en esta mision porque el total forzado lo pone en primer plano: un
+	 *  forzado ES un descuento, asi que toda factura de una venta forzada cae en este `if` y
+	 *  mostraria un "Total Original: $0,00" pegado al renglon del ajuste. No se puede entregar el
+	 *  desglose que pidio Lucas con la linea de arriba en cero.
+	 *
+	 * ⚠️ Y LA CONDICION TAMBIEN MIRA EL FORZADO. Si no, en una venta forzada sin ningun otro
+	 * descuento —que es el caso de uso: redondear $4.012 a $4.000— el bloque entero no se imprime
+	 * y la factura no explica de donde sale el total.
+	 *
+	 * @return void
+	 */
 	function printDiscounts() {
 		if (
 			count($this->sale->discounts) >= 1
 			|| $this->sale->descuento > 0
+			|| SaleHelper::get_forzar_total_monto($this->sale) != 0
 		) {
 			$this->setX(5);
 			$this->y += 3;
@@ -396,7 +426,9 @@ class SaleAfipTicketPdf extends fpdf {
 			$this->Cell(200, 7, $aclaracion, 1, 1, 'C');
 			$this->y += 2;
 				
-			$total = Numbers::price($sale->sub_total, true, $this->sale->moneda_id);
+			// `$this->sale`, NO `$sale`: ver el bloque de arriba. La variable suelta no existia y
+			// este renglon imprimia $0,00 en toda factura con descuentos.
+			$total = Numbers::price($this->sale->sub_total, true, $this->sale->moneda_id);
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 12);
 			$this->Cell(40, 7, 'Total Original: ', 1, 0, 'L');
@@ -413,7 +445,21 @@ class SaleAfipTicketPdf extends fpdf {
 			if ($this->sale->descuento > 0) {
 				$this->Cell(50, 7, $this->sale->descuento.'%', 1, 1, 'L');
 			}
-			
+
+			/*
+			 * El renglon del ajuste del total forzado, al lado de los otros descuentos y con el
+			 * mismo formato. Sin el, una venta forzada sin ningun otro descuento imprimiria la
+			 * etiqueta "Descuentos" sin una sola fila debajo, y un "Total Original: $4.012" y un
+			 * "Total final: $4.000" con $12 de diferencia que el cuadro no explica. Ese hueco es
+			 * justo lo que Lucas decidio que no pase.
+			 */
+			$monto_forzado = SaleHelper::get_forzar_total_monto($this->sale);
+
+			if ($monto_forzado != 0) {
+				$etiqueta = $monto_forzado < 0 ? 'Ajuste del total -$' : 'Ajuste del total +$';
+				$this->Cell(70, 7, $etiqueta.Numbers::price(abs($monto_forzado)), 1, 1, 'L');
+			}
+
 			$total_final = Numbers::price($this->sale->total, true, $this->sale->moneda_id);
 			$this->x = 5;
 			$this->SetFont('Arial', 'B', 12);

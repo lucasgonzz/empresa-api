@@ -693,6 +693,39 @@ class NewSalePdf extends fpdf
     }
 
     /**
+     * El renglón que explica el ajuste del total forzado (misión forzar-total-por-monto,
+     * 17/9/2026), o null si esta venta no se forzó.
+     *
+     * 🔴 SE IMPRIME SIEMPRE QUE HAYA FORZADO, TAMBIÉN EN MODO 'simple'. Los renglones de
+     * descuentos y recargos esconden el monto en ese modo porque ahí el dato es el PORCENTAJE y
+     * el monto es una cuenta derivada que el cliente puede rehacer. Acá es al revés: el ajuste ES
+     * un monto, no hay porcentaje del que derivarlo, y sin él quedarían un Sub Total y un Total
+     * distintos con un renglón en el medio que no explica la diferencia. Lucas pidió
+     * explícitamente que el comprobante muestre el desglose entero (`Sub Total: 4.012` / el
+     * ajuste / `Total: 4.000`), no que esconda el subtotal.
+     *
+     * @return string|null
+     */
+    private function renglon_total_forzado()
+    {
+        /** @var float $monto Monto con signo. Negativo = descuento, positivo = recargo, 0 = no hubo. */
+        $monto = SaleHelper::get_forzar_total_monto($this->sale);
+
+        if ($monto == 0) {
+            return null;
+        }
+
+        /**
+         * El texto arranca con Menos/Mas igual que los renglones de descuentos y recargos, para
+         * que la columna se lea de corrido. El monto va en valor absoluto: el signo ya lo dice la
+         * palabra, y un "Menos -$12,00" se lee como un recargo.
+         */
+        $palabra = $monto < 0 ? 'Menos ' : 'Mas ';
+
+        return $palabra.Numbers::price(abs($monto), true, $this->sale->moneda_id).' (ajuste del total)';
+    }
+
+    /**
      * Cuenta cuántos renglones va a producir build_discount_rows() sin mutar totales.
      * Se usa únicamente para estimar la altura de la caja de totales antes de dibujarla
      * (estimate_totals_box_height()), evitando así llamar a build_discount_rows() dos veces
@@ -885,7 +918,8 @@ class NewSalePdf extends fpdf
          */
         $total_bruto = $this->total_articles + $this->total_combos + $this->total_promocion_vinotecas + $this->total_services;
         $has_discounts_or_surchages = $total_bruto != $this->sale->total
-            || PuntosComprobanteHelper::tiene_canje($this->sale);
+            || PuntosComprobanteHelper::tiene_canje($this->sale)
+            || !is_null($this->renglon_total_forzado());
 
         /**
          * El renglón de "Total" siempre está presente.
@@ -904,6 +938,16 @@ class NewSalePdf extends fpdf
              * Sub Total − descuentos = Total.
              */
             if (PuntosComprobanteHelper::tiene_canje($this->sale)) {
+                $rows_count++;
+            }
+
+            /**
+             * El renglón del ajuste del total forzado. Se cuenta con la misma condición con la que
+             * print_totals_box() lo imprime (monto != 0): si este conteo y aquella condición se
+             * separan, la caja queda con un renglón más que su propia altura y el texto se escribe
+             * encima del borde.
+             */
+            if (!is_null($this->renglon_total_forzado())) {
                 $rows_count++;
             }
         }
@@ -957,7 +1001,8 @@ class NewSalePdf extends fpdf
          * distintos sin nada en el medio que los explique.
          */
         $has_discounts_or_surchages = $this->total_bruto != $this->sale->total
-            || PuntosComprobanteHelper::tiene_canje($this->sale);
+            || PuntosComprobanteHelper::tiene_canje($this->sale)
+            || !is_null($this->renglon_total_forzado());
 
         /**
          * Renglones a imprimir dentro de la caja, en orden: Sub Total (si corresponde),
@@ -990,6 +1035,17 @@ class NewSalePdf extends fpdf
 
             if (!is_null($renglon_canje)) {
                 $rows[] = ['text' => $renglon_canje, 'bold' => false];
+            }
+
+            /**
+             * El ajuste del total forzado va DESPUÉS del canje y antes del Total, que es el orden
+             * en que se aplica: es lo último que le pasa al total de la venta
+             * (`SaleHelper::getTotalSale()`).
+             */
+            $renglon_forzado = $this->renglon_total_forzado();
+
+            if (!is_null($renglon_forzado)) {
+                $rows[] = ['text' => $renglon_forzado, 'bold' => false];
             }
         }
 

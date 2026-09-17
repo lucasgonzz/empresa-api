@@ -24,6 +24,7 @@ use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\comisiones\ventasTerminadas\VentaTerminadaComisionesHelper;
 use App\Http\Controllers\Helpers\sale\AcopioHelper;
+use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
@@ -268,7 +269,7 @@ class SaleController extends Controller
             /** Checkbox "Enviar correo" en vender: sin extensión no se persiste ni se encola mail. */
             $can_enviar_mail_a_clientes = UserHelper::hasExtencion('enviar_mail_a_clientes');
 
-            $model = Sale::create([
+            $model = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
                 'client_id'                         => $request->client_id,
                 'sale_type_id'                      => $request->sale_type_id,
@@ -315,7 +316,23 @@ class SaleController extends Controller
                 'log'                               => $request->log,
                 // Umbral opcional de días para alertas de cobro (null => reglas globales de usuario).
                 'dias_alerta_venta_no_cobrada_personalizado' => $this->normalized_dias_alerta_venta_no_cobrada_personalizado($request),
-            ]);
+            /*
+             * El monto del total forzado (mision forzar-total-por-monto, 17/9/2026): plata CON
+             * SIGNO —negativo = descuento, positivo = recargo, null = no se forzo nada—, y no un
+             * porcentaje como `descuento`, que esta unas lineas mas arriba. La semantica completa
+             * esta en la migracion `2026_09_17_100000`.
+             *
+             * 🔴 ENTRA POR EL HELPER Y NO COMO UNA CLAVE MAS DEL ARRAY, y eso no es cosmetico: un
+             * deploy de empresa SUBE LOS ARCHIVOS ANTES DE MIGRAR
+             * (`DeploymentService::execute_steps()`: upload_api -> sync_env_keys -> run_migrations).
+             * En esa ventana el cliente tiene este codigo y no tiene la columna, y como `Sale`
+             * declara `$guarded = []` Eloquent la mete en el INSERT aunque valga null: se caeria el
+             * alta de TODA venta, forzada o no. El helper omite la clave mientras la columna no
+             * este. Ver `ForzarTotalEsquemaHelper`.
+             *
+             * El cero se normaliza a null en `SaleHelper::normalized_forzar_total_monto()`.
+             */
+            ], SaleHelper::normalized_forzar_total_monto($request), 'sales'));
 
             if (is_null($model->price_type_id)) {
                 if (!is_null($model->client) && !is_null($model->client->price_type_id)) {
@@ -567,8 +584,36 @@ class SaleController extends Controller
             $model->seller_id                           = $request->seller_id;
 
             $model->sub_total                           = $request->sub_total;
-            
+
             $model->total                               = $request->total;
+
+            /*
+                El monto del total forzado (mision forzar-total-por-monto, 17/9/2026).
+
+                🔴 SE ASIGNA PELADO, SIN GUARDA DE `$request->exists()`, Y ESO ES A PROPOSITO —
+                justo al reves de `omitir_en_cuenta_corriente` doce lineas mas arriba.
+
+                El motivo es que este campo NO ES INDEPENDIENTE de `total`: el monto esta definido
+                CONTRA ese total ("la venta daba 4.012 y se cobro 4.000, entonces -12"). Y `total`
+                se asigna pelado en la linea de arriba. Si se preservara el monto guardado cuando el
+                request no lo manda —la SPA anterior, durante la ventana entre el despliegue de la
+                api y el de la spa—, la venta quedaria con el total recalculado SIN forzar y con el
+                monto del forzado viejo todavia puesto: `getTotalSale()` volveria a restar esos 12 y
+                el prorrateo de AFIP sacaria el factor contra una base equivocada.
+
+                Los dos campos se escriben juntos o no se escriben: vienen del mismo request, del
+                mismo calculo y del mismo momento. Que la SPA vieja pierda el forzado al editar es
+                la consecuencia correcta — es exactamente lo que esa SPA esta pidiendo al mandar el
+                total sin forzar.
+
+                ⚠️ Y va adentro de la guarda de esquema por el mismo motivo que en el alta: entre
+                que el deploy sube los archivos y corre las migraciones, la columna puede no existir
+                y esta asignacion tumbaria la actualizacion de cualquier venta. Ver
+                `ForzarTotalEsquemaHelper`.
+            */
+            if (ForzarTotalEsquemaHelper::hay_columna_en_sales()) {
+                $model->forzar_total_monto              = SaleHelper::normalized_forzar_total_monto($request);
+            }
 
             $model->fecha_entrega                       = $request->fecha_entrega;
             

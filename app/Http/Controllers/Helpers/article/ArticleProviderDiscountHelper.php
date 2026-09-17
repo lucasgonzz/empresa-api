@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
+use App\Models\ProviderDiscount;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
@@ -45,6 +46,36 @@ class ArticleProviderDiscountHelper {
      * la fila entera: el preview corre en CADA guardado de la ficha de un proveedor, y uno grande
      * puede tener miles de `article_discounts` tagueados.
      */
+    /**
+     * Alcance de la sincronizacion manual desde el boton de la ficha del proveedor (17/9/2026).
+     *
+     *   - TODOS: alcanza a TODOS los articulos del proveedor, incluidos los que no tienen ningun
+     *     `article_discount` tagueado. Es lo que no existia hasta hoy.
+     *   - SOLO_CON_DESCUENTOS: solo los que ya tienen alguno tagueado a ese proveedor, que es el
+     *     universo que recorre `propagar_a_articulos()`.
+     */
+    const ALCANCE_TODOS = 'todos';
+    const ALCANCE_SOLO_CON_DESCUENTOS = 'solo_con_descuentos';
+
+    /**
+     * Que hacer con los articulos que tienen descuentos tagueados a ese proveedor que la ficha NO
+     * puede reponer (`origen` = compra, import, o null = desconocido).
+     *
+     * 🔴 Existe porque los descuentos se aplican EN CASCADA, no sumados
+     * (`ArticlePricesHelper::aplicar_descuentos`). Un articulo de costo 1000 con 10% de compra y
+     * 10% de ficha da 810, no 900.
+     *
+     *   - SALTEAR (default): no se los toca. Es el lado seguro: una bonificacion negociada en una
+     *     compra real NO se puede reconstruir si se pierde.
+     *   - PISAR: se reemplaza TODO lo tagueado a ese proveedor por los descuentos de la ficha. Se
+     *     pierde la bonificacion negociada.
+     *   - AGREGAR: se rehace lo de la ficha y se DEJA lo de la compra. Es la opcion que duplica, y
+     *     Lucas la pidio explicitamente — el modal se lo dice al usuario con el numero a la vista.
+     */
+    const ACCION_COMPRAS_SALTEAR = 'saltear';
+    const ACCION_COMPRAS_PISAR = 'pisar';
+    const ACCION_COMPRAS_AGREGAR = 'agregar';
+
     const COLUMNAS_PARA_CLASIFICAR = [
         'id',
         'article_id',
@@ -144,11 +175,15 @@ class ArticleProviderDiscountHelper {
             }
         }
 
-        foreach ($discounts as $discount) {
+        foreach ($discounts as $discount_original) {
 
             // Normalizo a objeto para leer percentage/amount sin importar si vino como array
             // (import) o como modelo Eloquent (ProviderOrderDiscount / ProviderDiscount).
-            $discount = (object) $discount;
+            //
+            // ⚠️ El item ORIGINAL se conserva aparte: `leer_provider_discount_id()` necesita saber
+            // de QUE CLASE vino, y el cast de un array a stdClass borra esa informacion. Ver el
+            // docblock de ese metodo, que es donde esta la trampa.
+            $discount = (object) $discount_original;
 
             $percentage = isset($discount->percentage) ? $discount->percentage : null;
 
@@ -182,8 +217,92 @@ class ArticleProviderDiscountHelper {
                 // sin esto hay que adivinarlo mirando la forma del descuento, que es de donde
                 // salieron nueve defectos en cuatro rondas de verificacion. Ver ArticleDiscount.
                 'origen' => $origen,
+                // DE CUAL descuento del proveedor salio, y como se llama (mision
+                // sincronizar-descuentos-proveedor, 17/9/2026). Los dos son opcionales y quedan en
+                // null cuando la fuente no los trae: el import manda arrays de
+                // `['percentage' => x]`, y una compra manda un ProviderOrderDiscount, que no
+                // pertenece a la relacion. Eso esta bien y no rompe nada: `origen` sigue siendo la
+                // unica columna con la que se decide algo.
+                'provider_discount_id' => self::leer_provider_discount_id($discount_original, $discount),
+                'nombre'               => self::leer_nombre_del_descuento($discount),
             ]);
         }
+    }
+
+    /**
+     * De que fila de `provider_discounts` sale este item de origen, si es que sale de alguna.
+     *
+     * 🔴 NUNCA se lee `$item->id` a secas, y esa es la trampa entera de este metodo. Los items que
+     * recibe `create_tagged_discounts()` vienen de cuatro fuentes distintas:
+     *
+     *   - `ProviderDiscount` (la ficha del proveedor): SU `id` es exactamente el dato que se busca.
+     *   - `ProviderOrderDiscount` (la bonificacion negociada en una compra): TAMBIEN tiene `id`,
+     *     pero es el id de OTRA tabla. Copiarlo dejaria `article_discounts.provider_discount_id`
+     *     apuntando a un `provider_discounts.id` que no tiene nada que ver — y como los dos son
+     *     enteros chicos y correlativos, la mayoria de las veces ese id existiria. Renombrar un
+     *     descuento del proveedor le cambiaria el nombre a descuentos de compras ajenas, sin un
+     *     solo error de por medio.
+     *   - arrays del import (`['percentage' => 10]`): no traen nada, y esta bien que quede null.
+     *   - lo que venga despues: si quiere declarar la relacion, la declara con todas las letras.
+     *
+     * Por eso se mira la CLASE del item original y, si no es de la ficha, se exige la clave
+     * explicita `provider_discount_id`.
+     *
+     * @param  mixed  $item_original Item tal como lo recibio el foreach (array o modelo).
+     * @param  object $item          El mismo item ya normalizado a objeto.
+     * @return int|null
+     */
+    static function leer_provider_discount_id($item_original, $item) {
+
+        if ($item_original instanceof ProviderDiscount) {
+            return $item_original->id;
+        }
+
+        // La clave explicita: la unica otra forma de declarar la relacion. `''` cuenta como vacio
+        // (clase de error del `??` del 27/8/2026: la SPA manda cadena vacia, no null).
+        if (isset($item->provider_discount_id) && $item->provider_discount_id !== '') {
+            return (int) $item->provider_discount_id;
+        }
+
+        return null;
+    }
+
+    /**
+     * Nombre/descripcion del descuento, leido con el mismo cuidado defensivo que `percentage` y
+     * `amount`/`monto`: cada fuente lo llama distinto y ninguna esta obligada a traerlo.
+     *
+     *   - `nombre`      -> el de `provider_discounts` (mision del 17/9/2026).
+     *   - `description` -> el de `provider_order_discounts`, que ya existia desde el 26/2/2026. Se
+     *                      acepta como alias por el mismo criterio por el que `monto` vale como
+     *                      `amount`: es el mismo dato con otro nombre de columna, y sin esto la
+     *                      bonificacion de una compra quedaria sin nombre teniendolo cargado.
+     *
+     * Vacio es null, nunca cadena vacia: la columna es nullable y "sin nombre" tiene que verse de
+     * una sola forma en la base.
+     *
+     * Se corta a 191 caracteres, que es el largo de la columna: un nombre mas largo tiraria un
+     * error de SQL a la mitad de una sincronizacion de miles de articulos, dejandola por la mitad.
+     *
+     * @param  object $item
+     * @return string|null
+     */
+    static function leer_nombre_del_descuento($item) {
+
+        $nombre = isset($item->nombre)
+            ? $item->nombre
+            : (isset($item->description) ? $item->description : null);
+
+        if (is_null($nombre)) {
+            return null;
+        }
+
+        $nombre = trim((string) $nombre);
+
+        if ($nombre === '') {
+            return null;
+        }
+
+        return mb_substr($nombre, 0, 191);
     }
 
     /**
@@ -843,5 +962,566 @@ class ArticleProviderDiscountHelper {
         }
 
         return $resultado;
+    }
+
+    /* ==================================================================================
+     * SINCRONIZACION MANUAL DESDE LA FICHA DEL PROVEEDOR (17/9/2026)
+     *
+     * Todo lo que sigue es el camino NUEVO, el del boton "Sincronizar articulos". Es otro
+     * camino que `propagar_a_articulos()` a proposito, y las dos diferencias importan:
+     *
+     * 🔴 1. NO consulta `users.aplicar_descuentos_proveedor_al_asignar`. Es una accion
+     *    explicita, sobre un proveedor puntual, con un modal que dice cuantos articulos
+     *    toca. Gatearla dejaria un boton mudo que devuelve 0 sin explicar que la causa es
+     *    un tilde en otra pantalla (decision de Lucas, 17/9/2026). La preferencia sigue
+     *    rigiendo TODO lo automatico —alta de articulo, cambio de proveedor, masiva,
+     *    import— y por eso el gate de `propagar_a_articulos()` se queda donde esta: sus
+     *    llamadores actuales no cambian de comportamiento ni un poco.
+     *
+     * 🔴 2. Alcanza a TODOS los articulos del proveedor, no solo a los que ya tienen un
+     *    descuento tagueado. Ese universo puede ser de miles de articulos, y por eso esto
+     *    corre en cola (ProcessSincronizarDescuentosProveedorJob) y no en el request.
+     * ================================================================================== */
+
+    /**
+     * Porcentajes utilizables que el proveedor tiene HOY en su ficha, normalizados.
+     *
+     * ⚠️ Cuenta solo los que sirven para rehacer algo: `provider_discounts.percentage` es nullable
+     * y el has_many del formulario deja agregar una fila sin completarla. Un proveedor con una fila
+     * vacia tiene un `provider_discount` pero cero porcentajes con que rehacer nada.
+     *
+     * (La misma cuenta esta escrita a mano dentro de `preview_propagacion()` y
+     * `propagar_a_articulos()`. No se las refactoriza para usar este metodo: son el camino viejo,
+     * estan verificadas y funcionando, y tocarlas para ahorrar seis lineas no paga el riesgo.)
+     *
+     * @param  \App\Models\Provider $provider
+     * @return array
+     */
+    static function percentages_de_la_ficha($provider) {
+
+        $percentages_actuales = [];
+
+        if (is_null($provider)) {
+            return $percentages_actuales;
+        }
+
+        foreach ($provider->provider_discounts as $provider_discount) {
+
+            $actual = self::normalizar_porcentaje($provider_discount->percentage);
+
+            if (!is_null($actual)) {
+                $percentages_actuales[] = $actual;
+            }
+        }
+
+        return $percentages_actuales;
+    }
+
+    /**
+     * ¿Este articulo tiene algun descuento tagueado que la ficha NO puede reponer?
+     *
+     * O sea: alguno con `origen` = compra, import, o null (desconocido). Es exactamente el
+     * complemento de `gobernado_por_la_ficha()`, y es lo que define el grupo "con descuentos de
+     * compra" del preview.
+     *
+     * ⚠️ Los descuentos MANUALES no entran nunca en esta cuenta, porque no estan tagueados
+     * (`provider_id` null) y estas colecciones se arman filtrando por `provider_id`. Se quedan
+     * afuera de toda la operacion, que es lo que corresponde.
+     *
+     * @param  iterable $tagueados
+     * @return bool
+     */
+    static function tiene_descuentos_que_la_ficha_no_puede_reponer($tagueados) {
+
+        foreach ($tagueados as $descuento) {
+
+            if (!self::gobernado_por_la_ficha($descuento)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recorre los articulos del proveedor UNA sola vez y los reparte en grupos EXCLUYENTES entre
+     * si. Es la base del preview, de la accion y del export de conflictos: los tres tienen que
+     * estar de acuerdo sobre que articulo cae en que grupo, o la ventana promete lo que la accion
+     * no hace (la clase de error que ya obligo a duplicar la guarda de los porcentajes entre
+     * `preview_propagacion()` y `propagar_a_articulos()`).
+     *
+     * ## El universo
+     *
+     * Es la UNION de dos conjuntos: los articulos cuyo `provider_id` es este proveedor, y los
+     * articulos que tienen algun `article_discount` tagueado a el. No son el mismo conjunto: a un
+     * articulo se le puede haber cambiado el proveedor despues de una compra y quedarse con los
+     * descuentos tagueados del anterior. La union deja que `solo_con_descuentos` alcance exactamente
+     * lo mismo que `propagar_a_articulos()` (que recorre por descuento) y que `todos` sume ademas a
+     * los articulos del proveedor que no tienen ninguno.
+     *
+     * ## Los grupos, en orden de precedencia
+     *
+     *   1. `sin_descuentos`           -> no tiene NINGUN tagueado a este proveedor.
+     *   2. `con_descuentos_de_compra` -> tiene al menos uno que la ficha no puede reponer.
+     *   3. `al_dia` / `desactualizados` / `editados_a_mano` -> todo lo tagueado es de la ficha, y
+     *      lo clasifica `clasificar_articulo()`.
+     *
+     * 🔴 El grupo 2 gana sobre el 3, y eso es una diferencia deliberada con `propagar_a_articulos()`:
+     * ahi, un articulo con un descuento de compra Y uno de ficha se clasifica mirando solo los de la
+     * ficha, y se actualiza. Aca cae en "con descuentos de compra" y su destino lo decide
+     * `accion_sobre_compras`, que por defecto es no tocarlo. Es mas conservador y, sobre todo, es lo
+     * que hace que el numero del modal signifique algo: el usuario esta eligiendo sobre los
+     * articulos que tienen datos que no se pueden reconstruir.
+     *
+     * Con los tres grupos excluyentes, `total_articulos` es la suma de los cinco contadores. (Solo
+     * cuando `hay_descuentos_en_la_ficha` es true: sin porcentajes utilizables no se clasifica nada,
+     * porque la accion no va a tocar un solo articulo y contarlos como "desactualizados" seria
+     * prometer un trabajo que no se va a hacer.)
+     *
+     * @param  \App\Models\Provider $provider
+     * @return array
+     */
+    static function escanear_articulos_del_proveedor($provider) {
+
+        $resultado = [
+            'hay_descuentos_en_la_ficha' => false,
+            'percentages_actuales'       => [],
+            'total_articulos'            => 0,
+            'sin_descuentos'             => [],
+            'con_descuentos_de_compra'   => [],
+            'al_dia'                     => [],
+            'desactualizados'            => [],
+            'editados_a_mano'            => [],
+            'tagueados_por_articulo'     => [],
+        ];
+
+        if (is_null($provider)) {
+            return $resultado;
+        }
+
+        $percentages_actuales = self::percentages_de_la_ficha($provider);
+
+        $resultado['percentages_actuales']       = $percentages_actuales;
+        $resultado['hay_descuentos_en_la_ficha'] = count($percentages_actuales) > 0;
+
+        /*
+         * Se seleccionan solo las columnas que la clasificacion necesita, igual que el preview
+         * viejo: un proveedor grande puede tener miles de filas tagueadas.
+         *
+         * El agrupado se hace a mano y no con `groupBy()` de Collection para que las claves sean
+         * enteros con certeza: mas abajo se las usa como indices de array y se las compara contra
+         * ids de `Article`.
+         */
+        $tagueados_por_articulo = [];
+
+        /*
+         * 🔴 ESTAS FILAS NO SE HIDRATAN COMO MODELOS ELOQUENT, Y NO ES UNA MICRO-OPTIMIZACION.
+         * `toBase()` devuelve `stdClass` crudos del query builder.
+         *
+         * Este escaneo es el unico pedazo de la sincronizacion que corre SINCRONICO: la accion se
+         * mando a la cola justamente porque un proveedor de un comercio grande tiene miles de
+         * articulos, pero `sincronizar_descuentos_preview()` —el que abre el modal, o sea el que
+         * dispara el usuario antes de confirmar nada— y
+         * `sincronizar_descuentos_exportar_conflictos()` pasan por aca adentro de un request HTTP,
+         * bajo el `memory_limit` y el `max_execution_time` de PHP-FPM del shared hosting, NO bajo
+         * el `timeout = 3600` del worker. Con 8.000 articulos a 3 descuentos cada uno son ~24.000
+         * filas: como modelos Eloquent (cada uno con sus atributos originales, su diccionario de
+         * cambios y su relacion vacia) eso es varias veces mas memoria que como `stdClass`, y el
+         * sintoma seria "el modal no abre" justo en el cliente grande, que es el que mas lo
+         * necesita.
+         *
+         * ⚠️ Se puede hacer porque NADA de lo que consume estas filas necesita un modelo:
+         * `gobernado_por_la_ficha()` lee `isset($descuento->origen)`, `clasificar_articulo()` lee
+         * `->editado_a_mano` y `->percentage`, y `rehacer_lo_de_la_ficha()` lee `->id` y
+         * `->show_in_online` — todo acceso por propiedad. `ArticleDiscount` no declara `$casts`, ni
+         * accessors, ni SoftDeletes, ni global scopes, asi que el crudo trae exactamente los mismos
+         * valores. Si algun dia alguno de esos consumidores necesita un metodo de Eloquent, se le
+         * pasa el id y se busca el modelo ahi, no se vuelve a hidratar el catalogo entero.
+         */
+        $filas = ArticleDiscount::where('provider_id', $provider->id)
+                                    ->select(self::COLUMNAS_PARA_CLASIFICAR)
+                                    ->toBase()
+                                    ->get();
+
+        foreach ($filas as $fila) {
+
+            $article_id = (int) $fila->article_id;
+
+            if (!isset($tagueados_por_articulo[$article_id])) {
+                $tagueados_por_articulo[$article_id] = [];
+            }
+
+            $tagueados_por_articulo[$article_id][] = $fila;
+        }
+
+        $resultado['tagueados_por_articulo'] = $tagueados_por_articulo;
+
+        // El universo: articulos del proveedor (Article usa SoftDeletes, asi que los borrados ya
+        // quedan afuera) mas los que arrastran descuentos tagueados a el.
+        $universo = [];
+
+        $ids_del_proveedor = Article::where('provider_id', $provider->id)
+                                        ->where('user_id', $provider->user_id)
+                                        ->pluck('id');
+
+        foreach ($ids_del_proveedor as $article_id) {
+            $universo[(int) $article_id] = true;
+        }
+
+        foreach (array_keys($tagueados_por_articulo) as $article_id) {
+            $universo[(int) $article_id] = true;
+        }
+
+        $resultado['total_articulos'] = count($universo);
+
+        foreach (array_keys($universo) as $article_id) {
+
+            $tagueados = isset($tagueados_por_articulo[$article_id])
+                ? $tagueados_por_articulo[$article_id]
+                : [];
+
+            if (count($tagueados) === 0) {
+                $resultado['sin_descuentos'][] = $article_id;
+                continue;
+            }
+
+            if (self::tiene_descuentos_que_la_ficha_no_puede_reponer($tagueados)) {
+                $resultado['con_descuentos_de_compra'][] = $article_id;
+                continue;
+            }
+
+            if (!$resultado['hay_descuentos_en_la_ficha']) {
+                // Sin porcentajes en la ficha no hay con que comparar ni con que rehacer: no se
+                // clasifica. Ver el docblock.
+                continue;
+            }
+
+            $clase = self::clasificar_articulo($tagueados, $percentages_actuales);
+
+            if ($clase === 'al_dia') {
+                $resultado['al_dia'][] = $article_id;
+            } else if ($clase === 'desactualizado') {
+                $resultado['desactualizados'][] = $article_id;
+            } else {
+                $resultado['editados_a_mano'][] = $article_id;
+            }
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Cuenta como quedaria la sincronizacion ANTES de hacerla, para el modal del boton. No modifica
+     * nada. Es el contrato exacto que consume `empresa-spa`.
+     *
+     * @param  \App\Models\Provider $provider
+     * @return array
+     */
+    static function preview_sincronizacion($provider) {
+
+        $escaneo = self::escanear_articulos_del_proveedor($provider);
+
+        return [
+            'nombre_proveedor'           => is_null($provider) ? null : $provider->name,
+            'hay_descuentos_en_la_ficha' => $escaneo['hay_descuentos_en_la_ficha'],
+            'total_articulos'            => $escaneo['total_articulos'],
+            'sin_descuentos'             => count($escaneo['sin_descuentos']),
+            'al_dia'                     => count($escaneo['al_dia']),
+            'desactualizados'            => count($escaneo['desactualizados']),
+            'editados_a_mano'            => count($escaneo['editados_a_mano']),
+            'con_descuentos_de_compra'   => count($escaneo['con_descuentos_de_compra']),
+        ];
+    }
+
+    /**
+     * Ids de los articulos del proveedor que tienen descuentos tagueados que la ficha no puede
+     * reponer. Es lo que exporta a excel el boton del modal, para que el comercio pueda mirar la
+     * lista antes de elegir entre saltear, pisar y agregar.
+     *
+     * @param  \App\Models\Provider $provider
+     * @return array
+     */
+    static function ids_articulos_con_descuentos_de_compra($provider) {
+
+        $escaneo = self::escanear_articulos_del_proveedor($provider);
+
+        return $escaneo['con_descuentos_de_compra'];
+    }
+
+    /**
+     * ¿Es un alcance valido?
+     *
+     * @param  mixed $alcance
+     * @return bool
+     */
+    static function alcance_valido($alcance) {
+
+        return in_array($alcance, [self::ALCANCE_TODOS, self::ALCANCE_SOLO_CON_DESCUENTOS], true);
+    }
+
+    /**
+     * ¿Es una accion sobre compras valida?
+     *
+     * @param  mixed $accion
+     * @return bool
+     */
+    static function accion_sobre_compras_valida($accion) {
+
+        return in_array(
+            $accion,
+            [self::ACCION_COMPRAS_SALTEAR, self::ACCION_COMPRAS_PISAR, self::ACCION_COMPRAS_AGREGAR],
+            true
+        );
+    }
+
+    /**
+     * Sincroniza los descuentos ACTUALES de la ficha del proveedor a sus articulos.
+     *
+     * 🔴 CORRE EN COLA (ProcessSincronizarDescuentosProveedorJob). No hay sesion ni `Auth::user()`:
+     * todo lo que necesita un usuario lo recibe explicito. Por eso `setFinalPrice()` va con
+     * `$article->user_id` y por eso este metodo NO consulta ninguna preferencia (ver el bloque de
+     * arriba). Es el pozo que ya esta documentado dos veces en `MasiveUpdateHelper` y en
+     * `ProcessRow`: dejarlo resolver solo da `false` siempre, con la funcionalidad muerta y sin un
+     * solo error que lo delate.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  string $alcance               ALCANCE_TODOS | ALCANCE_SOLO_CON_DESCUENTOS.
+     * @param  bool   $pisar_editados        Si tambien se rehacen los editados a mano.
+     * @param  string $accion_sobre_compras  ACCION_COMPRAS_*.
+     * @return array
+     */
+    static function sincronizar_a_articulos(
+        $provider,
+        $alcance = self::ALCANCE_SOLO_CON_DESCUENTOS,
+        $pisar_editados = false,
+        $accion_sobre_compras = self::ACCION_COMPRAS_SALTEAR
+    ) {
+
+        $resultado = [
+            'total_articulos'      => 0,
+            'creados'              => 0,
+            'actualizados'         => 0,
+            'respetados'           => 0,
+            'al_dia'               => 0,
+            'de_compra_salteados'  => 0,
+            'de_compra_pisados'    => 0,
+            'de_compra_agregados'  => 0,
+        ];
+
+        if (is_null($provider)) {
+            return $resultado;
+        }
+
+        /*
+         * Normalizacion defensiva: si llega cualquier otra cosa se cae al lado seguro en vez de
+         * entrar por una rama que nadie eligio. El controller ya rechaza lo que no esta en la lista
+         * blanca; esto es para los llamadores de codigo (tests, comandos) y para que el default
+         * quede escrito en un solo lugar.
+         */
+        if (!self::alcance_valido($alcance)) {
+            $alcance = self::ALCANCE_SOLO_CON_DESCUENTOS;
+        }
+
+        if (!self::accion_sobre_compras_valida($accion_sobre_compras)) {
+            $accion_sobre_compras = self::ACCION_COMPRAS_SALTEAR;
+        }
+
+        $escaneo = self::escanear_articulos_del_proveedor($provider);
+
+        $resultado['total_articulos'] = $escaneo['total_articulos'];
+        $resultado['al_dia']          = count($escaneo['al_dia']);
+
+        /*
+         * 🔴 LA MISMA GUARDA QUE CORTA `propagar_a_articulos()`, y por el mismo motivo: sin
+         * porcentajes utilizables en la ficha, sincronizar es DESTRUIR y nada mas. Se borrarian los
+         * descuentos tagueados que dejaron las compras y el import, sin nada con que reponerlos, y
+         * un catalogo entero pasaria a costo bruto de golpe.
+         *
+         * Y aca pesa mas que en el camino viejo: el modo "todos" alcanza articulos que nunca
+         * tuvieron un descuento de la ficha, asi que el destrozo seria mas grande.
+         */
+        if (!$escaneo['hay_descuentos_en_la_ficha']) {
+            return $resultado;
+        }
+
+        // 1) Articulos SIN ningun descuento tagueado a este proveedor. Es el alcance nuevo: hasta
+        //    hoy eran invisibles para toda propagacion.
+        if ($alcance === self::ALCANCE_TODOS) {
+
+            foreach ($escaneo['sin_descuentos'] as $article_id) {
+
+                if (self::aplicar_ficha_al_articulo($provider, $article_id, [], 0)) {
+                    $resultado['creados']++;
+                }
+            }
+        }
+
+        // 2) Desactualizados: tienen la copia vieja de la ficha y nadie los edito.
+        foreach ($escaneo['desactualizados'] as $article_id) {
+
+            if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, false)) {
+                $resultado['actualizados']++;
+            }
+        }
+
+        // 3) Editados a mano: se respetan salvo tilde explicito del usuario.
+        foreach ($escaneo['editados_a_mano'] as $article_id) {
+
+            if (!$pisar_editados) {
+                $resultado['respetados']++;
+                continue;
+            }
+
+            if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, false)) {
+                $resultado['actualizados']++;
+            }
+        }
+
+        // 4) Los que tienen descuentos que la ficha no puede reponer. Su destino lo eligio el
+        //    usuario en el modal.
+        foreach ($escaneo['con_descuentos_de_compra'] as $article_id) {
+
+            if ($accion_sobre_compras === self::ACCION_COMPRAS_SALTEAR) {
+                $resultado['de_compra_salteados']++;
+                continue;
+            }
+
+            if ($accion_sobre_compras === self::ACCION_COMPRAS_PISAR) {
+
+                /*
+                 * PISAR: se barre TODO lo tagueado a este proveedor —incluida la bonificacion
+                 * negociada de una compra— y se deja solo lo de la ficha. El usuario lo eligio con
+                 * el numero a la vista; el default es saltear justamente porque esto no se puede
+                 * deshacer.
+                 */
+                if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, true)) {
+                    $resultado['de_compra_pisados']++;
+                }
+
+                continue;
+            }
+
+            /*
+             * AGREGAR: se rehace lo de la ficha y se DEJA lo de la compra. El articulo queda con
+             * los dos, en cascada — 1000 con 10% de compra y 10% de ficha da 810, no 900. Es la
+             * opcion que duplica y Lucas la pidio explicitamente.
+             *
+             * ⚠️ "Agregar" rehace lo de la ficha en vez de sumar una copia mas: si el articulo ya
+             * tenia filas de ficha, apilar otras dejaria la operacion NO idempotente y cada click
+             * del boton bajaria el costo un escalon mas. Con esto, correrlo dos veces da el mismo
+             * resultado que correrlo una.
+             */
+            if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, false)) {
+                $resultado['de_compra_agregados']++;
+            }
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Rehace en un articulo los descuentos de la ficha del proveedor.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  array $escaneo     Salida de `escanear_articulos_del_proveedor()`.
+     * @param  int   $article_id
+     * @param  bool  $barrer_todo Si es true se borra TODO lo tagueado a este proveedor (opcion
+     *                            "pisar"); si es false, solo lo que gobierna la ficha.
+     * @return bool
+     */
+    static function rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, $barrer_todo) {
+
+        $tagueados = isset($escaneo['tagueados_por_articulo'][$article_id])
+            ? $escaneo['tagueados_por_articulo'][$article_id]
+            : [];
+
+        $a_barrer = [];
+
+        foreach ($tagueados as $descuento) {
+
+            if ($barrer_todo || self::gobernado_por_la_ficha($descuento)) {
+                $a_barrer[] = $descuento;
+            }
+        }
+
+        /*
+         * "Mostrar en la tienda online": si alguno de los descuentos que se reemplazan lo tenia
+         * activado, los nuevos nacen con el tilde puesto. Sin esto, cada sincronizacion le apagaria
+         * en silencio el precio tachado y el badge de oferta del ecommerce, articulo por articulo y
+         * sin forma de saber cuales. Es exactamente lo que ya hace `propagar_a_articulos()`.
+         */
+        $mostrar_en_online = 0;
+        $ids_a_barrer = [];
+
+        foreach ($a_barrer as $descuento) {
+
+            $ids_a_barrer[] = $descuento->id;
+
+            if ($descuento->show_in_online) {
+                $mostrar_en_online = 1;
+            }
+        }
+
+        return self::aplicar_ficha_al_articulo($provider, $article_id, $ids_a_barrer, $mostrar_en_online);
+    }
+
+    /**
+     * Borra los descuentos indicados y crea los de la ficha, en una transaccion, y recalcula el
+     * precio del articulo.
+     *
+     * ⚠️ A DIFERENCIA de `propagar_a_articulos()`, aca un `$ids_a_barrer` VACIO es un caso legitimo
+     * y se crea igual: es el articulo del proveedor que no tenia ningun descuento, que es
+     * justamente lo que el modo "todos" viene a alcanzar. La defensa contra duplicar —que en el
+     * camino viejo vive en este punto— aca vive mas arriba, en el reparto en grupos excluyentes de
+     * `escanear_articulos_del_proveedor()`: un articulo que ya tiene filas de la ficha nunca llega
+     * hasta aca con la lista de barrido vacia.
+     *
+     * 🔴 La transaccion no es decorativa: `ProviderController` despacha `ProcessSetFinalPrices`
+     * cuando algun descuento se toco hace menos de 2 minutos, asi que puede haber un worker
+     * recalculando estos mismos articulos. Sin transaccion, ese worker puede leer el articulo entre
+     * el DELETE y el INSERT y guardarle un `costo_real` calculado con CERO descuentos.
+     *
+     * 🔴 `unsetRelation('article_discounts')` antes de recalcular: clase de error del 31/8/2026, ya
+     * fijada dos veces en este helper. Eloquent cachea las relaciones ya cargadas, asi que sin esto
+     * `setFinalPrice()` calcula con los descuentos de ANTES y guarda el resultado como si estuviera
+     * bien, sin ninguna excepcion de por medio.
+     *
+     * 🔴 Y el usuario va EXPLICITO a `setFinalPrice()`: esto corre en un worker, donde no hay
+     * sesion.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  int   $article_id
+     * @param  array $ids_a_barrer
+     * @param  int   $mostrar_en_online
+     * @return bool  true si el articulo se toco.
+     */
+    static function aplicar_ficha_al_articulo($provider, $article_id, $ids_a_barrer, $mostrar_en_online) {
+
+        $article = Article::find($article_id);
+
+        if (is_null($article)) {
+            return false;
+        }
+
+        DB::transaction(function () use ($article, $provider, $ids_a_barrer, $mostrar_en_online) {
+
+            if (count($ids_a_barrer)) {
+                ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
+            }
+
+            self::create_tagged_discounts(
+                $article,
+                $provider->id,
+                $provider->provider_discounts,
+                $mostrar_en_online,
+                ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
+            );
+        });
+
+        $article->unsetRelation('article_discounts');
+
+        ArticleHelper::setFinalPrice($article, $article->user_id);
+
+        return true;
     }
 }

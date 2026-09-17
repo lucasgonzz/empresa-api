@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\DescuentoRecargoExcluyenteHelper;
 use App\Models\ArticleDiscount;
 use Illuminate\Http\Request;
 
@@ -20,6 +21,11 @@ class ArticleDiscountController extends Controller
     }
 
     public function store(Request $request) {
+        // Un descuento lleva SOLO porcentaje o SOLO monto: el monto de mas queda inerte en el
+        // calculo de precios. Ver DescuentoRecargoExcluyenteHelper.
+        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+            return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
+        }
         $model = ArticleDiscount::create([
             'article_id'            => $request->model_id,
             'temporal_id'           => $this->getTemporalId($request),
@@ -45,6 +51,15 @@ class ArticleDiscountController extends Controller
 
     public function update(Request $request, $id) {
         $model = ArticleDiscount::find($id);
+
+        // La guarda del porcentaje y el monto excluyentes, ANTES de todo lo demas: si el request es
+        // invalido no se toca nada, ni siquiera la marca de `editado_a_mano` de aca abajo.
+        // A diferencia de store(), aca se rechaza solo si el request INTRODUCE el conflicto: una
+        // fila vieja que ya venia con los dos cargados se puede volver a guardar sin cambiarlos.
+        // El porque esta escrito en DescuentoRecargoExcluyenteHelper::introduce_conflicto().
+        if (DescuentoRecargoExcluyenteHelper::introduce_conflicto($request, $model)) {
+            return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
+        }
 
         /**
          * Mision descuentos-proveedor-propagar (4/9/2026): si una persona le cambia el porcentaje a

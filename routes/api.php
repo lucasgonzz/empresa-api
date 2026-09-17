@@ -472,6 +472,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // arriba: el show del resource captura cualquier `provider/{algo}`.
     Route::get('provider/{id}/propagar-descuentos/preview', 'ProviderController@propagar_descuentos_preview');
     Route::put('provider/{id}/propagar-descuentos', 'ProviderController@propagar_descuentos');
+    // Boton "Sincronizar articulos" de la ficha del proveedor (mision
+    // sincronizar-descuentos-proveedor, 17/9/2026). ANTES del resource, por el mismo motivo que las
+    // de arriba: el show del resource captura cualquier `provider/{algo}`.
+    Route::get('provider/{id}/sincronizar-descuentos/preview', 'ProviderController@sincronizar_descuentos_preview');
+    Route::get('provider/{id}/sincronizar-descuentos/exportar-conflictos', 'ProviderController@sincronizar_descuentos_exportar_conflictos');
+    Route::put('provider/{id}/sincronizar-descuentos', 'ProviderController@sincronizar_descuentos');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
@@ -493,6 +499,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('provider-order', 'ProviderOrderController');
     Route::post('provider-order/excel/import', 'ProviderOrderController@import_excel_articles');
+    Route::get('provider-order/{id}/import-diff', 'ProviderOrderController@import_diff');
     Route::get('provider-order/from-date/{from_date?}/{until_date?}', 'ProviderOrderController@index');
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');

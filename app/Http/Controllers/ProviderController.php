@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Jobs\ProcessArticleExportJob;
 use App\Jobs\ProcessProviderExportJob;
+use App\Jobs\ProcessSincronizarDescuentosProveedorJob;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
@@ -297,5 +299,163 @@ class ProviderController extends Controller
         $resultado = ArticleProviderDiscountHelper::propagar_a_articulos($provider, $pisar_editados);
 
         return response()->json($resultado, 200);
+    }
+
+    /* ==================================================================================
+     * BOTON "SINCRONIZAR ARTICULOS" DE LA FICHA DEL PROVEEDOR (17/9/2026)
+     *
+     * Es otro camino que `propagar_descuentos*`, que se queda tal cual esta: aquel se ofrece
+     * al GUARDAR el proveedor y esta gateado por la preferencia del comercio; este es un boton
+     * explicito, alcanza tambien a los articulos que no tienen ningun descuento, y corre en
+     * cola.
+     * ================================================================================== */
+
+    /**
+     * Cuenta como quedaria la sincronizacion ANTES de hacerla. Es lo que llena el modal. No
+     * modifica nada.
+     *
+     * @param  int $id Id del proveedor.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function sincronizar_descuentos_preview($id) {
+
+        $provider = $this->proveedor_del_comercio($id);
+
+        if (is_null($provider)) {
+            return response()->json(['message' => 'No se encontro el proveedor'], 404);
+        }
+
+        return response()->json(
+            ArticleProviderDiscountHelper::preview_sincronizacion($provider),
+            200
+        );
+    }
+
+    /**
+     * Encola la sincronizacion que el usuario confirmo en el modal y responde de inmediato.
+     *
+     * 🔴 Los tres parametros se validan contra LISTA BLANCA y se rechaza lo que no este en ella.
+     * Es la clase de error "contrato de enumeracion partido entre cliente y servidor" (17/8/2026):
+     * aceptar cualquier string dejaria que un `alcanze` mal escrito, o una SPA vieja mandando otro
+     * valor, cayera en silencio en una rama que nadie eligio — y una de esas ramas borra
+     * bonificaciones de compras.
+     *
+     * ⚠️ Una clave AUSENTE no es un valor invalido: se cae al default conservador
+     * (`solo_con_descuentos` + `saltear`), que es el lado que no destruye nada. Lo que se rechaza es
+     * la clave presente con un valor que no existe.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  int $id Id del proveedor.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function sincronizar_descuentos(Request $request, $id) {
+
+        $provider = $this->proveedor_del_comercio($id);
+
+        if (is_null($provider)) {
+            return response()->json(['message' => 'No se encontro el proveedor'], 404);
+        }
+
+        $alcance = $request->has('alcance')
+            ? $request->input('alcance')
+            : ArticleProviderDiscountHelper::ALCANCE_SOLO_CON_DESCUENTOS;
+
+        if (!ArticleProviderDiscountHelper::alcance_valido($alcance)) {
+            return response()->json([
+                'message' => 'El alcance tiene que ser "todos" o "solo_con_descuentos"',
+            ], 422);
+        }
+
+        $accion_sobre_compras = $request->has('accion_sobre_compras')
+            ? $request->input('accion_sobre_compras')
+            : ArticleProviderDiscountHelper::ACCION_COMPRAS_SALTEAR;
+
+        if (!ArticleProviderDiscountHelper::accion_sobre_compras_valida($accion_sobre_compras)) {
+            return response()->json([
+                'message' => 'La accion sobre los descuentos de compra tiene que ser "saltear", "pisar" o "agregar"',
+            ], 422);
+        }
+
+        // filter_var y no cast crudo: `(bool) 'false'` en PHP da TRUE. Mismo criterio que
+        // `propagar_descuentos()`, unas lineas mas arriba.
+        $pisar_editados = $request->has('pisar_editados_a_mano')
+            ? filter_var($request->input('pisar_editados_a_mano'), FILTER_VALIDATE_BOOLEAN)
+            : false;
+
+        ProcessSincronizarDescuentosProveedorJob::dispatch(
+            $provider->id,
+            $this->userId(),
+            $this->userId(false),
+            $alcance,
+            $pisar_editados,
+            $accion_sobre_compras,
+            uniqid('sincro_desc_', true)
+        );
+
+        return response()->json([
+            'message' => 'La sincronizacion se esta procesando. Te avisamos cuando termine.',
+        ], 200);
+    }
+
+    /**
+     * Exporta a excel los articulos del proveedor que tienen descuentos tagueados que la ficha NO
+     * puede reponer (origen compra, import o desconocido). Es lo que le permite al comercio mirar
+     * la lista antes de elegir entre saltear, pisar y agregar, en vez de decidir a ciegas sobre un
+     * contador.
+     *
+     * 🔴 NO hay codigo de excel nuevo: se reusa `ProcessArticleExportJob`, el mismo circuito del
+     * export de articulos filtrados del listado. El usuario recibe el aviso de Pusher con el boton
+     * "Descargar excel" que ya conoce y le queda en el historial de exportaciones.
+     *
+     * @param  int $id Id del proveedor.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function sincronizar_descuentos_exportar_conflictos($id) {
+
+        $provider = $this->proveedor_del_comercio($id);
+
+        if (is_null($provider)) {
+            return response()->json(['message' => 'No se encontro el proveedor'], 404);
+        }
+
+        $article_ids = ArticleProviderDiscountHelper::ids_articulos_con_descuentos_de_compra($provider);
+
+        if (!count($article_ids)) {
+            return response()->json([
+                'message' => 'No hay articulos con descuentos de compra para exportar',
+            ], 422);
+        }
+
+        $export_history = ExportHistoryHelper::create_pending(
+            $this->userId(),
+            $this->userId(false),
+            'article'
+        );
+
+        ProcessArticleExportJob::dispatch(
+            $this->userId(),
+            $this->userId(false),
+            $article_ids,
+            $export_history->id
+        );
+
+        return response()->json([
+            'message' => 'La exportacion se esta procesando',
+        ], 200);
+    }
+
+    /**
+     * Proveedor scopeado al comercio de la sesion. Mismo guard que ya usa
+     * `propagar_descuentos_preview()`: sin el, un id de otro comercio devolveria sus datos y —peor—
+     * dejaria sincronizarle el catalogo.
+     *
+     * @param  int $id
+     * @return \App\Models\Provider|null
+     */
+    private function proveedor_del_comercio($id) {
+
+        return Provider::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
     }
 }
