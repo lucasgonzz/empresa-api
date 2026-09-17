@@ -74,7 +74,8 @@ class Reimportacion_Excel_Test extends ComprasTestCase
      * es el único identificador que el fixture de testing garantiza para todos sus artículos, y
      * es el mismo criterio que ya usa `9_Import_Excel_Chunks_Test::generar_excel_de_recibido()`.
      *
-     * @param array<int,array<string,mixed>> $filas Claves: nombre, cantidad, cantidad_recibida, costo.
+     * @param array<int,array<string,mixed>> $filas Claves: codigo_de_barras (opcional, default
+     *                                              vacío), nombre, cantidad, cantidad_recibida, costo.
      * @return string Ruta del archivo temporal generado.
      */
     protected function generar_excel(array $filas)
@@ -90,7 +91,9 @@ class Reimportacion_Excel_Test extends ComprasTestCase
 
         foreach ($filas as $fila) {
             $writer->addRow(WriterEntityFactory::createRowFromArray([
-                null,
+                // El código de barras por default va vacío (el matcheo de casi toda esta clase es
+                // por nombre); los tests de matcheo por código lo mandan explícito.
+                array_key_exists('codigo_de_barras', $fila) ? $fila['codigo_de_barras'] : null,
                 null,
                 $fila['nombre'],
                 array_key_exists('cantidad', $fila) ? $fila['cantidad'] : null,
@@ -754,6 +757,353 @@ class Reimportacion_Excel_Test extends ComprasTestCase
             $pivot = $this->pivot_de($provider_order, $pinza->id);
             $this->assertEqualsWithDelta(10, (float) $pivot->amount, self::DELTA, 'La cantidad pedida se actualizó igual.');
             $this->assertEqualsWithDelta(8, (float) $pivot->received, self::DELTA, 'La cantidad recibida se actualizó igual.');
+        } finally {
+            $this->restaurar_articulo($pinza, $snapshot);
+        }
+    }
+
+    /**
+     * Test 6 — 🔴 EL EXCEL EN MAYÚSCULAS TIENE QUE MATCHEAR CONTRA EL CATÁLOGO EN MINÚSCULAS.
+     *
+     * Es el defecto más caro que dejó la precarga del índice de artículos en memoria (17/9/2026).
+     * Hasta que existió esa precarga, el artículo lo buscaba MySQL (`where('name', $name)
+     * ->first()`), cuya collation `_ci` es insensible a mayúsculas: el proveedor que escribe
+     * `MARTILLO` matcheaba contra el `Martillo` del catálogo y lo ACTUALIZABA. La precarga cambió
+     * eso por un lookup de clave de array de PHP, que es exacto — y como en `import_type =
+     * 'pedido'` un artículo que no se encuentra SE CREA, cada fila que no matcheaba duplicaba el
+     * artículo. Con 700 filas de una lista escrita en mayúsculas —que es la mitad de las listas
+     * reales— eso duplica el catálogo entero, sin un solo error en pantalla.
+     *
+     * Por eso lo que se mide acá es `created_models === 0` y la cantidad de artículos con ese
+     * nombre ANTES y DESPUÉS: el síntoma no es un error, es una fila de más.
+     *
+     * @group compras
+     * @test
+     */
+    public function una_fila_en_mayusculas_matchea_el_articulo_del_catalogo_y_no_lo_duplica()
+    {
+        $pinza = $this->articulo('Pinza');
+        $snapshot = $this->snapshot_articulo($pinza);
+
+        $nombre_original = $pinza->name;
+        $nombre_en_mayusculas = mb_strtoupper($nombre_original, 'UTF-8');
+
+        $this->assertNotSame(
+            $nombre_original,
+            $nombre_en_mayusculas,
+            'Precondición: el artículo del fixture tiene que tener alguna minúscula, si no este test no prueba nada.'
+        );
+
+        /*
+         * Se cuenta con `where('name', ...)`, o sea con la collation `_ci` de MySQL: cuenta el
+         * `Pinza` del fixture Y cualquier `PINZA` que la importación hubiera creado. Justamente por
+         * eso sirve como detector del duplicado.
+         */
+        $articulos_con_ese_nombre = function () use ($pinza, $nombre_original) {
+            return (int) \App\Models\Article::where('user_id', $pinza->user_id)
+                                                ->where('name', $nombre_original)
+                                                ->count();
+        };
+
+        $cantidad_antes = $articulos_con_ese_nombre();
+
+        try {
+            $provider_order = $this->crear_orden_vacia([
+                'update_stock'  => 0,
+                'update_prices' => 0,
+            ]);
+
+            $import_status = $this->importar($provider_order, [
+                ['nombre' => $nombre_en_mayusculas, 'cantidad' => 7, 'costo' => 1000],
+            ], 'pedido');
+
+            $this->assertSame(
+                0,
+                (int) $import_status->created_models,
+                'Una fila cuyo nombre solo difiere en mayúsculas NO puede crear un artículo nuevo: el '.
+                'catálogo ya lo tiene. Si acá hay un creado, la importación está duplicando el catálogo '.
+                'de todo proveedor que escriba en mayúsculas.'
+            );
+
+            $this->assertSame(
+                1,
+                (int) $import_status->updated_models,
+                'La fila tiene que resolver en el artículo que YA existe.'
+            );
+
+            $this->assertSame(
+                $cantidad_antes,
+                $articulos_con_ese_nombre(),
+                'La cantidad de artículos con ese nombre tiene que quedar igual que antes de importar.'
+            );
+
+            $this->assertSame(
+                1,
+                $this->filas_de_pivot($provider_order),
+                'La compra tiene que quedar con un solo renglón.'
+            );
+
+            $pivot = $this->pivot_de($provider_order, $pinza->id);
+
+            $this->assertNotNull(
+                $pivot,
+                'El renglón de la compra tiene que apuntar al artículo EXISTENTE del catálogo, no a un clon nuevo.'
+            );
+            $this->assertEqualsWithDelta(7, (float) $pivot->amount, self::DELTA, 'El artículo existente queda con la cantidad del Excel.');
+
+            $pinza->refresh();
+
+            $this->assertSame(
+                $nombre_original,
+                $pinza->name,
+                'Matchear en mayúsculas no puede PISAR el nombre del catálogo con el del Excel: la '.
+                'normalización es solo para buscar, nunca para escribir.'
+            );
+        } finally {
+            $this->restaurar_articulo($pinza, $snapshot);
+        }
+    }
+
+    /**
+     * Una fila SIN acentos matchea el artículo acentuado del catálogo y no lo duplica.
+     *
+     * Es el hermano del test anterior y el caso más común de los dos en la vida real: el proveedor
+     * manda la lista en mayúsculas y, como suele pasar, sin acentuar — `CANERIA 1/2` contra la
+     * `Cañería 1/2` del catálogo.
+     *
+     * 🔴 Por qué este test tiene que existir: las tres columnas de búsqueda de `articles` son
+     * `utf8mb4_unicode_ci` (medido el 17/9/2026), y esa collation pliega los diacríticos además de
+     * la caja — `'Pina' = 'Piña'` da 1 en MySQL. O sea que el `where('name', ...)->first()` que
+     * había antes de la precarga YA resolvía este caso. Una normalización que sólo bajara la caja
+     * dejaría de resolverlo y volvería a crear el duplicado silencioso, sólo que en un caso más
+     * angosto que el de las mayúsculas. Este test es lo que impide que alguien "simplifique" el
+     * plegado de `clave_de_indice()` sin enterarse de que lo está rompiendo.
+     *
+     * @group compras
+     * @test
+     */
+    public function una_fila_sin_acentos_matchea_el_articulo_acentuado_del_catalogo()
+    {
+        $provider_order = $this->crear_orden_vacia([
+            'update_stock'  => 0,
+            'update_prices' => 0,
+        ]);
+
+        /*
+         * El artículo lo crea el test y no el fixture: el escenario sembrado no tiene garantizado
+         * ningún nombre con acento ni con eñe, y sin eso el test pasaría por el motivo equivocado.
+         */
+        $nombre_acentuado = $this->prefijo . 'Cañería';
+        $nombre_del_excel = mb_strtoupper($this->prefijo . 'Caneria', 'UTF-8');
+
+        $articulo = \App\Models\Article::create([
+            'name'    => $nombre_acentuado,
+            'user_id' => $provider_order->user_id,
+        ]);
+
+        $cantidad_antes = (int) \App\Models\Article::where('user_id', $provider_order->user_id)
+                                                        ->where('name', $nombre_acentuado)
+                                                        ->count();
+
+        $import_status = $this->importar($provider_order, [
+            ['nombre' => $nombre_del_excel, 'cantidad' => 9, 'costo' => 500],
+        ], 'pedido');
+
+        $this->assertSame(
+            0,
+            (int) $import_status->created_models,
+            'Una fila que sólo difiere en los acentos y la caja NO puede crear un artículo nuevo: MySQL '.
+            'ya la matcheaba antes de que existiera la precarga. Si acá hay un creado, el índice dejó de '.
+            'plegar diacríticos y todo proveedor que escriba sin acentos duplica el catálogo.'
+        );
+
+        $this->assertSame(
+            1,
+            (int) $import_status->updated_models,
+            'La fila tiene que resolver en el artículo acentuado que ya estaba en el catálogo.'
+        );
+
+        $this->assertSame(
+            $cantidad_antes,
+            (int) \App\Models\Article::where('user_id', $provider_order->user_id)
+                                        ->where('name', $nombre_acentuado)
+                                        ->count(),
+            'No puede haber aparecido un segundo artículo con ese nombre.'
+        );
+
+        $pivot = $this->pivot_de($provider_order, $articulo->id);
+
+        $this->assertNotNull(
+            $pivot,
+            'El renglón de la compra tiene que apuntar al artículo acentuado del catálogo, no a un clon sin acentos.'
+        );
+
+        $articulo->refresh();
+
+        $this->assertSame(
+            $nombre_acentuado,
+            $articulo->name,
+            'Matchear sin acentos no puede PISAR el nombre del catálogo: la normalización es sólo para buscar.'
+        );
+    }
+
+    /**
+     * Test 7 — el mismo código de barras escrito con y sin ceros a la izquierda dentro del MISMO
+     * archivo resuelve en UN artículo, no en dos.
+     *
+     * Es el otro modo de falla de un índice con la clave cruda, y el que más se ve en la vida real:
+     * el Excel del proveedor tiene la columna del código formateada como número, así que una fila
+     * sale `123456789` y otra —tipeada a mano— sale `000123456789`. Con la clave sin normalizar son
+     * dos claves distintas y la segunda fila crea un artículo nuevo con el mismo código.
+     *
+     * ⚠️ Lo que este test NO cubre (y no es una regresión de la precarga, nunca anduvo): que el
+     * cero a la izquierda esté guardado en la BASE y el Excel traiga el código pelado. Ahí la
+     * precarga ni siquiera trae esa fila del catálogo, porque `whereIn` compara string contra
+     * string — ver el comentario de `ProviderOrderArticleImport::clave_de_indice()`.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_mismo_codigo_con_y_sin_ceros_a_la_izquierda_resuelve_en_un_solo_articulo()
+    {
+        // Código propio de esta corrida (arranca en 9 para no arrastrar ceros propios) para no
+        // chocar con ningún código del fixture ni de una corrida anterior.
+        $codigo = '9' . substr(str_replace('.', '', (string) microtime(true)), -8);
+
+        $provider_order = $this->crear_orden_vacia([
+            'update_stock'  => 0,
+            'update_prices' => 0,
+        ]);
+
+        $import_status = $this->importar($provider_order, [
+            ['codigo_de_barras' => $codigo,          'nombre' => $this->prefijo . 'Codigo pelado', 'cantidad' => 3, 'costo' => 100],
+            ['codigo_de_barras' => '000' . $codigo,  'nombre' => $this->prefijo . 'Codigo con ceros', 'cantidad' => 5, 'costo' => 100],
+        ], 'pedido');
+
+        $this->assertSame(
+            1,
+            (int) $import_status->created_models,
+            'Las dos filas son el MISMO código: tiene que crearse un solo artículo. Si se crean dos, el '.
+            'índice está tratando "000123" y "123" como dos productos distintos.'
+        );
+
+        $creados = (int) \App\Models\Article::where('user_id', $provider_order->user_id)
+                                                ->whereIn('bar_code', [$codigo, '000' . $codigo])
+                                                ->count();
+
+        $this->assertSame(1, $creados, 'Tiene que quedar un solo artículo en el catálogo para ese código.');
+
+        $this->assertSame(
+            1,
+            $this->filas_de_pivot($provider_order),
+            'Y un solo renglón en la compra.'
+        );
+    }
+
+    /**
+     * Pega al endpoint real de importación y devuelve la respuesta CRUDA, sin correr el job ni
+     * asumir nada del código de estado. Es lo que `importar()` hace por dentro, pero acá hace falta
+     * mirar la respuesta en sí (200 contra 409), que es justamente lo que se está midiendo.
+     *
+     * @param \App\Models\ProviderOrder $provider_order
+     * @param array<int,array<string,mixed>> $filas
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function postear_importacion($provider_order, array $filas)
+    {
+        $archivo = $this->generar_excel($filas);
+
+        $data = array_merge([
+            'models'             => new UploadedFile($archivo, basename($archivo), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', null, true),
+            'provider_order_id'  => $provider_order->id,
+            'start_row'          => 2,
+            'finish_row'         => 1 + count($filas),
+            'import_type'        => 'pedido',
+            'overwrite_articles' => 0,
+        ], $this->columnas());
+
+        return $this->post('api/provider-order/excel/import', $data);
+    }
+
+    /**
+     * Test 8 — el candado de "ya tenés una importación en curso" es de COMPRAS contra COMPRAS, y
+     * el ImportHistory que deja el controller queda LINKEADO a su ImportStatus.
+     *
+     * Las dos cosas se miden juntas porque salen del mismo request y separarlas obligaría a
+     * repetirlo.
+     *
+     *  - El guard sin filtrar por `model_name` (como estaba hasta el 17/9/2026) le devolvía 409 a
+     *    quien estuviera importando su catálogo de artículos —que tarda minutos u horas— apenas
+     *    quisiera importar el Excel de una compra. Es una regresión: antes de que compras pasara a
+     *    la cola, los dos caminos convivían.
+     *  - Sin `import_status_id`, cuando el watchdog levanta una importación colgada solo puede
+     *    cerrar el ImportHistory y el ImportStatus se queda en 'en_proceso' para siempre — y un
+     *    ImportStatus huérfano en 'en_proceso' deja mudo al comando `articles:generate-embeddings`
+     *    de ese usuario, o sea que el agente de WhatsApp de ese cliente deja de encontrar los
+     *    artículos nuevos. No hay error: simplemente deja de responder bien.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_candado_de_importacion_en_curso_es_por_modelo_y_el_historial_queda_linkeado_al_status()
+    {
+        Bus::fake([ProcessProviderOrderArticleImport::class]);
+
+        $pinza = $this->articulo('Pinza');
+        $snapshot = $this->snapshot_articulo($pinza);
+
+        try {
+            $provider_order = $this->crear_orden_vacia([
+                'update_stock'  => 0,
+                'update_prices' => 0,
+            ]);
+
+            // Una importación de CATÁLOGO corriendo, que es lo que antes bloqueaba de más.
+            ImportHistory::create([
+                'user_id'          => $provider_order->user_id,
+                'model_name'       => 'article',
+                'status'           => 'en_proceso',
+                'total_chunks'     => 10,
+                'processed_chunks' => 1,
+            ]);
+
+            $this->postear_importacion($provider_order, [
+                ['nombre' => $pinza->name, 'cantidad' => 2, 'costo' => 100],
+            ])->assertStatus(
+                200,
+                'Una importación del CATÁLOGO en curso no puede bloquear la importación del Excel de una '.
+                'compra: son dos caminos distintos y antes convivían sin pisarse.'
+            );
+
+            $import_status = ImportStatus::where('provider_order_id', $provider_order->id)
+                                            ->orderBy('id', 'desc')
+                                            ->first();
+
+            $import_history = ImportHistory::where('provider_order_id', $provider_order->id)
+                                            ->where('model_name', 'provider_order')
+                                            ->orderBy('id', 'desc')
+                                            ->first();
+
+            $this->assertNotNull($import_status, 'El controller tiene que dejar el ImportStatus de la compra.');
+            $this->assertNotNull($import_history, 'El controller tiene que dejar el ImportHistory de la compra.');
+
+            $this->assertSame(
+                (int) $import_status->id,
+                (int) $import_history->import_status_id,
+                'El ImportHistory de una compra tiene que guardar el id de SU ImportStatus, igual que el '.
+                'camino de artículos. Sin ese link, el watchdog cierra el historial y deja el ImportStatus '.
+                'colgado en en_proceso para siempre.'
+            );
+
+            // Y el candado propio sí tiene que seguir cerrado: la importación de compras recién
+            // despachada quedó en 'en_preparacion'.
+            $this->postear_importacion($provider_order, [
+                ['nombre' => $pinza->name, 'cantidad' => 3, 'costo' => 100],
+            ])->assertStatus(
+                409,
+                'Dos importaciones de COMPRAS del mismo usuario a la vez sí tienen que seguir bloqueadas: '.
+                'es lo que evita que procesar_pedido() corra dos veces sobre la misma compra.'
+            );
         } finally {
             $this->restaurar_articulo($pinza, $snapshot);
         }

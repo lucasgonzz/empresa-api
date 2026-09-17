@@ -72,13 +72,13 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
      */
     protected $on_progress;
 
-    /** @var array<string,\App\Models\Article> Indice precargado por bar_code. */
+    /** @var array<string,\App\Models\Article> Indice precargado por bar_code, con la clave normalizada por clave_de_indice(). */
     protected $articulos_por_bar_code = [];
 
-    /** @var array<string,\App\Models\Article> Indice precargado por provider_code. */
+    /** @var array<string,\App\Models\Article> Indice precargado por provider_code, con la clave normalizada por clave_de_indice(). */
     protected $articulos_por_provider_code = [];
 
-    /** @var array<string,\App\Models\Article> Indice precargado por name. */
+    /** @var array<string,\App\Models\Article> Indice precargado por name, con la clave normalizada por clave_de_indice(). */
     protected $articulos_por_name = [];
 
     /**
@@ -263,28 +263,154 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         }
 
         if (count($bar_codes) > 0) {
-            $this->articulos_por_bar_code = Article::where('user_id', $this->user->id)
-                ->whereIn('bar_code', array_unique($bar_codes))
-                ->get()
-                ->keyBy('bar_code')
-                ->all();
+            $this->articulos_por_bar_code = $this->indexar_por(
+                Article::where('user_id', $this->user->id)
+                    ->whereIn('bar_code', array_unique($bar_codes))
+                    ->get(),
+                'bar_code'
+            );
         }
 
         if (count($provider_codes) > 0) {
-            $this->articulos_por_provider_code = Article::where('user_id', $this->user->id)
-                ->whereIn('provider_code', array_unique($provider_codes))
-                ->get()
-                ->keyBy('provider_code')
-                ->all();
+            $this->articulos_por_provider_code = $this->indexar_por(
+                Article::where('user_id', $this->user->id)
+                    ->whereIn('provider_code', array_unique($provider_codes))
+                    ->get(),
+                'provider_code'
+            );
         }
 
         if (count($names) > 0) {
-            $this->articulos_por_name = Article::where('user_id', $this->user->id)
-                ->whereIn('name', array_unique($names))
-                ->get()
-                ->keyBy('name')
-                ->all();
+            $this->articulos_por_name = $this->indexar_por(
+                Article::where('user_id', $this->user->id)
+                    ->whereIn('name', array_unique($names))
+                    ->get(),
+                'name'
+            );
         }
+    }
+
+    /**
+     * Arma un índice en memoria de artículos por uno de sus identificadores, con la clave pasada
+     * SIEMPRE por clave_de_indice().
+     *
+     * 🔴 NO reemplazar por `->keyBy('<campo>')->all()`, que es lo que hacía hasta el 17/9/2026.
+     * El porqué está entero en clave_de_indice(): la clave cruda deja el índice sensible a
+     * mayúsculas y a ceros a la izquierda, y con `import_type = 'pedido'` una fila que no matchea
+     * no falla — CREA un artículo duplicado, en silencio.
+     *
+     * ⚠️ Si dos artículos distintos del catálogo colapsan en la misma clave normalizada (existen
+     * `Martillo` y `MARTILLO` como dos filas separadas), este índice se queda con UNO solo — el
+     * último de la colección. Es aceptable a propósito: replica exactamente lo que hacía el
+     * `Article::where('name', $name)->first()` de antes de la precarga, que con la collation `_ci`
+     * de MySQL veía las dos filas y devolvía una sola.
+     *
+     * @param \Illuminate\Support\Collection $articulos
+     * @param string $campo 'bar_code' | 'provider_code' | 'name'
+     * @return array<string,\App\Models\Article>
+     */
+    protected function indexar_por(Collection $articulos, $campo)
+    {
+        $indice = [];
+
+        foreach ($articulos as $articulo) {
+            $indice[$this->clave_de_indice($articulo->getAttribute($campo))] = $articulo;
+        }
+
+        return $indice;
+    }
+
+    /**
+     * Normaliza un identificador (código de barras, código de proveedor o nombre) para usarlo como
+     * CLAVE del índice precargado de artículos.
+     *
+     * 🔴 ACÁ ES DONDE ALGUIEN VA A QUERER "SIMPLIFICAR" Y VOLVER A LA CLAVE CRUDA. No se hace, y
+     * este es el motivo, medido el 17/9/2026:
+     *
+     * Hasta la precarga en memoria, el artículo se buscaba con `Article::where('name', $name)
+     * ->first()`, o sea lo resolvía MySQL — cuya collation es `_ci`: INSENSIBLE a mayúsculas. La
+     * precarga cambió eso por un lookup de clave de array de PHP, que es EXACTO y sensible a
+     * mayúsculas. El Excel de un proveedor que escribe `MARTILLO` contra un catálogo que tiene
+     * `Martillo` dejaba de matchear — y como en `import_type = 'pedido'` un artículo no encontrado
+     * se CREA, cada fila no matcheada duplicaba el artículo. Con 700 filas de un proveedor que
+     * escribe en mayúsculas eso duplica el catálogo entero sin un solo error en pantalla.
+     *
+     * Con los códigos hay además el caso de los ceros a la izquierda: `'0123'` contra `'123'`. Por
+     * eso, cuando el valor es todo dígitos, se le sacan los ceros adelante antes de usarlo como
+     * clave. Lo que ESO cubre es la colisión DENTRO del mismo archivo (una fila crea el artículo
+     * con `'123'` y tres filas más abajo el mismo código viene escrito `'0123'`: sin esto se
+     * creaba un segundo artículo).
+     *
+     * ⚠️ Lo que NO cubre, y conviene saberlo antes de confiarse: si el cero a la izquierda está en
+     * la BASE (`bar_code = '0123'`) y el Excel trae `'123'`, la precarga ni siquiera trae esa fila
+     * —`whereIn` compara string contra string y no matchea—, así que el índice no la tiene y la
+     * fila termina creando un duplicado igual. Eso NO es culpa de la precarga: el
+     * `Article::where('bar_code', $bar_code)->first()` de antes (con `$bar_code` ya casteado a
+     * string por `ImportHelper::getColumnValue()`) tampoco matcheaba. Arreglarlo de verdad implica
+     * ensanchar la query, y eso se decide aparte.
+     *
+     * ⚠️ Esta función tiene que usarse en LOS DOS lados —al indexar y al buscar— y por eso vive
+     * acá y no inline: si un lado normalizara distinto del otro, el índice nunca matchearía y
+     * volvería el duplicado silencioso.
+     *
+     * ⚠️ Es solo para el ÍNDICE de búsqueda. Lo que se ESCRIBE en la base (el `name`, el
+     * `bar_code` y el `provider_code` del `Article::create()` de get_article()) sigue siendo el
+     * valor ORIGINAL del Excel, nunca el normalizado.
+     *
+     * 🔴 Los acentos TAMBIÉN se pliegan, y no es una decisión de gusto: es fidelidad al
+     * comportamiento que había antes de la precarga. Las tres columnas de búsqueda son
+     * `utf8mb4_unicode_ci` (medido el 17/9/2026 sobre `articles`), y esa collation pliega tanto la
+     * caja como los diacríticos. Medido en MySQL, no deducido del manual:
+     *
+     *     SELECT 'Martillo' COLLATE utf8mb4_unicode_ci = 'MARTÍLLO';  -- 1
+     *     SELECT 'Pina'     COLLATE utf8mb4_unicode_ci = 'Piña';      -- 1
+     *
+     * O sea que el `where('name', $name)->first()` viejo YA matcheaba `CAÑERIA` (como lo escribe un
+     * proveedor que manda la lista en mayúsculas y sin acentos) contra `Cañería` del catálogo. Si
+     * acá sólo bajáramos la caja, ese caso dejaría de matchear y crearía un duplicado — la misma
+     * falla silenciosa que esta función vino a cerrar, sólo que más angosta. Plegar la `ñ` a `n`
+     * hace que `Piña` y `Pina` colapsen en la misma clave: es exactamente lo que MySQL hacía, así
+     * que no es un riesgo nuevo que estemos introduciendo.
+     *
+     * @param mixed $valor Valor crudo del Excel o del modelo.
+     * @return string Clave normalizada.
+     */
+    protected function clave_de_indice($valor)
+    {
+        // mb_strtolower y no strtolower: strtolower es byte a byte y en UTF-8 deja los acentos
+        // sin bajar (y puede partir un carácter multibyte).
+        $clave = mb_strtolower(trim((string) $valor), 'UTF-8');
+
+        /*
+         * Plegado de diacríticos, para replicar la collation utf8mb4_unicode_ci (ver docblock).
+         * Mapa explícito en vez de iconv('ASCII//TRANSLIT'), que depende del locale del sistema y
+         * en Windows devuelve '?' o directamente el string sin tocar. Todas las claves van en
+         * minúscula porque esto corre DESPUÉS del mb_strtolower de arriba.
+         */
+        $clave = strtr($clave, [
+            'á' => 'a', 'à' => 'a', 'ä' => 'a', 'â' => 'a', 'ã' => 'a',
+            'é' => 'e', 'è' => 'e', 'ë' => 'e', 'ê' => 'e',
+            'í' => 'i', 'ì' => 'i', 'ï' => 'i', 'î' => 'i',
+            'ó' => 'o', 'ò' => 'o', 'ö' => 'o', 'ô' => 'o', 'õ' => 'o',
+            'ú' => 'u', 'ù' => 'u', 'ü' => 'u', 'û' => 'u',
+            'ñ' => 'n', 'ç' => 'c',
+        ]);
+
+        /*
+         * Ceros a la izquierda de un código numérico. Ojo además con que PHP castea a entero toda
+         * clave de array que parezca un entero (`'123'` se guarda como `123`): no es un problema
+         * mientras las dos puntas pasen por acá, porque el casteo lo aplica igual al indexar y al
+         * buscar.
+         */
+        if (preg_match('/^\d+$/', $clave) === 1) {
+            $clave = ltrim($clave, '0');
+
+            if ($clave === '') {
+                $clave = '0';
+            }
+        }
+
+        return $clave;
     }
 
     function load_current_pivots() {
@@ -382,12 +508,18 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
 
         $article = null;
 
+        /*
+         * 🔴 La búsqueda pasa SIEMPRE por clave_de_indice(), la MISMA función con la que se armó el
+         * índice en indexar_por(). No buscar acá con el valor crudo del Excel: el índice está
+         * normalizado y un lookup crudo no matchearía nunca contra un catálogo escrito con otra
+         * caja. Y no matchear no es un error visible — abajo, en modo 'pedido', crea el artículo.
+         */
         if (!is_null($bar_code)) {
-            $article = $this->articulos_por_bar_code[$bar_code] ?? null;
+            $article = $this->articulos_por_bar_code[$this->clave_de_indice($bar_code)] ?? null;
         } else if (!is_null($provider_code)) {
-            $article = $this->articulos_por_provider_code[$provider_code] ?? null;
+            $article = $this->articulos_por_provider_code[$this->clave_de_indice($provider_code)] ?? null;
         } else if (!is_null($name)) {
-            $article = $this->articulos_por_name[$name] ?? null;
+            $article = $this->articulos_por_name[$this->clave_de_indice($name)] ?? null;
         } else {
             /*
              * Fila sin ningún identificador: comportamiento preexistente (no introducido por esta
@@ -403,6 +535,11 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
                 return null;
             }
 
+            /*
+             * Se guarda el valor ORIGINAL del Excel, no el normalizado: la normalización es solo
+             * para la clave del índice de búsqueda (ver clave_de_indice()). Si acá se guardara la
+             * clave, el catálogo del cliente quedaría en minúsculas y sin los ceros de sus códigos.
+             */
             $article = Article::create([
                 'bar_code'     => $bar_code,
                 'provider_code' => $provider_code,
@@ -416,13 +553,16 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
 
             // Un artículo recién creado por esta fila puede volver a matchear en una fila
             // posterior del MISMO archivo (mismo identificador repetido): sin esto, el índice
-            // precargado no lo conoce y la fila siguiente crearía un duplicado.
+            // precargado no lo conoce y la fila siguiente crearía un duplicado. Con la clave
+            // normalizada, igual que en indexar_por(): si acá se indexara crudo, una fila que
+            // repite el identificador con otra caja (`MARTILLO` y después `Martillo`) volvería a
+            // crear el duplicado dentro del mismo archivo.
             if (!is_null($bar_code)) {
-                $this->articulos_por_bar_code[$bar_code] = $article;
+                $this->articulos_por_bar_code[$this->clave_de_indice($bar_code)] = $article;
             } else if (!is_null($provider_code)) {
-                $this->articulos_por_provider_code[$provider_code] = $article;
+                $this->articulos_por_provider_code[$this->clave_de_indice($provider_code)] = $article;
             } else if (!is_null($name)) {
-                $this->articulos_por_name[$name] = $article;
+                $this->articulos_por_name[$this->clave_de_indice($name)] = $article;
             }
         } else {
             $this->actualizados++;

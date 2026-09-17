@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
@@ -214,7 +215,19 @@ class ProviderOrderController extends Controller
          * disparar esto por accidente es mucho más ancha. Chequeo temprano, antes de guardar el
          * archivo, para no gastar esa escritura si de entrada no va a procesarse.
          */
-        if (ImportHistory::where('user_id', $user->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->exists()) {
+        /*
+         * 🔴 Y filtrado por `model_name`: el candado es de COMPRAS contra COMPRAS, nunca contra la
+         * importación de catálogo. Sin este filtro (como estaba hasta el 17/9/2026) un usuario que
+         * dejó corriendo la importación de su catálogo de artículos —que tarda minutos u horas—
+         * se comía un 409 al querer importar el Excel de una compra, y eso es una REGRESIÓN: antes
+         * de pasar compras a la cola los dos caminos convivían sin pisarse. Lo que este guard tiene
+         * que evitar es que DOS importaciones de la MISMA compra corran a la vez; el import de
+         * artículos no toca `article_provider_order` ni `procesar_pedido()`.
+         */
+        if (ImportHistory::where('user_id', $user->id)
+                            ->where('model_name', 'provider_order')
+                            ->whereIn('status', ['en_preparacion', 'en_proceso'])
+                            ->exists()) {
             return response()->json([
                 'message' => 'Ya tenés una importación en curso. Esperá a que termine antes de iniciar otra.',
             ], 409);
@@ -270,6 +283,14 @@ class ProviderOrderController extends Controller
         $hoja        = $request->input('hoja', 0);
         $hoja_nombre = $request->input('hoja_nombre');
 
+        /*
+         * Declaradas ANTES del try para que el catch pueda limpiarlas: si el dispatch falla (Redis
+         * caído, cola mal configurada) estas dos filas ya existen y nadie las va a cerrar. Ver el
+         * catch más abajo.
+         */
+        $import_status  = null;
+        $import_history = null;
+
         try {
 
             $total_chunks = ProviderOrderArticleImport::calcular_total_chunks($start_row, $finish_row);
@@ -298,6 +319,16 @@ class ProviderOrderController extends Controller
                 'updated_models'    => 0,
                 'status'            => 'en_preparacion',
                 'observations'      => 'Importación de excel de la compra #' . $provider_order->id . ' (' . $import_type . ')',
+                /*
+                 * 🔴 Link al ImportStatus, igual que InitExcelImport::crear_import_history() en el
+                 * camino de artículos. Sin esto el watchdog `imports:detectar-colgadas` solo puede
+                 * cerrar el ImportHistory y el ImportStatus se queda en 'en_proceso' PARA SIEMPRE —
+                 * y un ImportStatus huérfano en 'en_proceso' deja mudo al comando
+                 * `articles:generate-embeddings` de ese usuario (ver el comentario de
+                 * GenerateArticleEmbeddings), o sea que el agente de WhatsApp de ese cliente no
+                 * vuelve a encontrar ningún artículo nuevo. Falla muda y cara.
+                 */
+                'import_status_id'  => $import_status->id,
             ]);
 
             ProcessProviderOrderArticleImport::dispatch(
@@ -320,6 +351,26 @@ class ProviderOrderController extends Controller
                 'provider_order_id' => $request->provider_order_id,
                 'message' => $exception->getMessage(),
             ]);
+
+            /*
+             * 🔴 Soltar el candado antes de contestar el error. Si el dispatch falla después de
+             * haber creado las dos filas, el ImportHistory queda en 'en_preparacion' y bloquea
+             * TODA importación de compras de este usuario hasta que el watchdog lo levante — y el
+             * watchdog tiene un umbral mínimo de 45 minutos. El usuario ve un error, reintenta, y
+             * rebota media hora contra un 409 que no le explica nada.
+             *
+             * Se marcan como fallidas en vez de borrarlas: el historial de importaciones del
+             * usuario tiene que mostrar que el intento existió y por qué no salió, que es
+             * exactamente para lo que está `error_message`. Va por ImportFailureHandler porque es
+             * el único punto que marca un import como fallido, es idempotente y no tira nunca.
+             */
+            ImportFailureHandler::registrar(
+                !is_null($import_history) ? $import_history->id : null,
+                !is_null($import_status) ? $import_status->id : null,
+                $user->id,
+                'No se pudo iniciar la importación de la compra #' . $provider_order->id . '. '
+                    . ImportHelper::formatImportErrorMessage($exception)
+            );
 
             $error_payload = ImportHelper::buildImportErrorPayload(
                 $exception,

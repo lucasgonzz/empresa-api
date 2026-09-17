@@ -3,7 +3,7 @@
 namespace App\Jobs;
 
 use App\Events\ImportStatusUpdated;
-use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ProviderOrderArticleImport;
 use App\Models\ImportHistory;
@@ -117,14 +117,7 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
                 'linea'    => $e->getLine(),
             ]);
 
-            ImportFailureHandler::desde_excepcion(
-                $this->import_history_id,
-                $this->import_status_id,
-                $this->user->id ?? null,
-                $e,
-                null,
-                ['start_row' => $this->start_row, 'finish_row' => $this->finish_row]
-            );
+            $this->marcar_fallo($e);
 
             throw $e;
         }
@@ -132,14 +125,71 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
 
     public function failed(Throwable $exception)
     {
-        ImportFailureHandler::desde_excepcion(
+        $this->marcar_fallo($exception);
+    }
+
+    /**
+     * Marca esta importación como fallida con un mensaje que el USUARIO pueda leer.
+     *
+     * 🔴 Por qué no se usa `ImportFailureHandler::desde_excepcion()`, que sería lo obvio: ese
+     * camino arma el `error_message` concatenando `$e->getMessage()` crudo, y `error_message` es
+     * literalmente el texto que la tarjeta de fallo le muestra al usuario. Con una
+     * `QueryException` eso le tira por pantalla el SQL completo CON LOS BINDINGS — o sea, datos de
+     * su propia base y la estructura de las tablas, en un cartel de error. `formatImportErrorMessage()`
+     * ya sabe recortar el SQL y traducir los errores típicos de importación (decimal mal formateado,
+     * etc.), así que se reusa esa y se entra por `registrar()`, que es el mismo punto único de
+     * marcado pero recibiendo el mensaje ya armado.
+     *
+     * El detalle técnico no se pierde: va entero al `error_trace` (columna de investigación, no se
+     * le muestra al usuario) y al `Log::error` del catch de handle().
+     *
+     * ⚠️ El mecanismo del mensaje crudo es PREEXISTENTE y sigue vivo en el camino de ARTÍCULOS.
+     * Acá se corrige solo compras a propósito: tocar `armar_mensaje_humano()` cambiaría el
+     * comportamiento de la importación de catálogo, que está fuera de esta misión.
+     *
+     * @param \Throwable $e
+     * @return void
+     */
+    private function marcar_fallo($e)
+    {
+        $rango = ' (filas ' . $this->start_row . '–' . $this->finish_row . ')';
+
+        ImportFailureHandler::registrar(
             $this->import_history_id,
             $this->import_status_id,
-            $this->user->id ?? null,
-            $exception,
-            null,
-            ['start_row' => $this->start_row, 'finish_row' => $this->finish_row]
+            isset($this->user->id) ? $this->user->id : null,
+            'La importación de la compra falló' . $rango . '. Motivo: ' . ImportHelper::formatImportErrorMessage($e),
+            $this->armar_detalle_tecnico($e)
         );
+    }
+
+    /**
+     * Detalle técnico completo del fallo para la columna `error_trace`: clase, mensaje crudo,
+     * ubicación, cadena de causas y stack. Es lo que se mira para investigar, y es el lugar donde
+     * el mensaje crudo de la base SÍ tiene que estar entero.
+     *
+     * @param \Throwable $e
+     * @return string
+     */
+    private function armar_detalle_tecnico($e)
+    {
+        $out = 'Importación de compra #' . (isset($this->provider_order->id) ? $this->provider_order->id : '?')
+             . ' — filas ' . $this->start_row . ' a ' . $this->finish_row . "\n\n";
+
+        $actual = $e;
+        $nivel  = 0;
+
+        while (!is_null($actual)) {
+            $out .= ($nivel === 0 ? 'Excepción' : 'Causada por') . ': ' . get_class($actual) . "\n";
+            $out .= 'Mensaje: ' . $actual->getMessage() . "\n";
+            $out .= 'Ubicación: ' . $actual->getFile() . ':' . $actual->getLine() . "\n";
+            $out .= "Stack:\n" . $actual->getTraceAsString() . "\n\n";
+
+            $actual = $actual->getPrevious();
+            $nivel++;
+        }
+
+        return $out;
     }
 
     /**
@@ -164,16 +214,27 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
      * notifica por WebSocket. Actualización atómica por si en el futuro esto corriera con más de
      * un worker sobre la misma importación (hoy no aplica: es un solo job).
      *
+     * 🔴 `updated_at` se escribe a mano: `DB::table()->update()` va por el query builder crudo y
+     * NO toca los timestamps de Eloquent. El watchdog `imports:detectar-colgadas` decide si una
+     * importación está colgada mirando cuánto hace que no se actualiza — sin esta línea, una
+     * importación larga pero viva se ve idéntica a una muerta, y lo único que la salvaba era que
+     * el timeout del job (30 min) cae antes que el umbral del watchdog (45 min). Eso es un margen
+     * de 15 minutos apoyado en dos constantes que viven en archivos distintos: cualquiera de las
+     * dos que se mueva y el watchdog empieza a matar importaciones sanas.
+     *
      * @param int $filas_de_este_lote
      * @return void
      */
     private function avanzar_progreso($filas_de_este_lote)
     {
+        $ahora = now();
+
         DB::table('import_statuses')
             ->where('id', $this->import_status_id)
             ->update([
                 'processed_chunks' => DB::raw('LEAST(processed_chunks + 1, total_chunks)'),
                 'filas_procesadas' => DB::raw('filas_procesadas + ' . (int) $filas_de_este_lote),
+                'updated_at'       => $ahora,
             ]);
 
         DB::table('import_histories')
@@ -181,6 +242,7 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
             ->update([
                 'processed_chunks' => DB::raw('LEAST(processed_chunks + 1, total_chunks)'),
                 'filas_procesadas' => DB::raw('filas_procesadas + ' . (int) $filas_de_este_lote),
+                'updated_at'       => $ahora,
             ]);
 
         $this->notificar();
