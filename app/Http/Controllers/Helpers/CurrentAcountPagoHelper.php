@@ -227,7 +227,27 @@ class CurrentAcountPagoHelper {
         
         foreach ($pago->current_acount_payment_methods as $payment_method) {
 
-            if ($payment_method->pivot->caja_id) {
+            if (Self::nunca_impacta_caja($payment_method)) {
+
+                /*
+                 * 🔴 UNA RETENCION NO ENTRA A NINGUNA CAJA, TRAIGA CAJA O NO. Se corta ACA, antes
+                 * de mirar el caja_id, y no del lado del front (mision
+                 * compras-factura-manual-alicuotas, 17/9/2026).
+                 *
+                 * La plata no la tiene el comercio: el cliente la deposito a su nombre en ARCA. Lo
+                 * que cancela la deuda es el monto de la fila, no un ingreso de caja. Si esta fila
+                 * impactara, un cobro de $100.000 con $98.000 en efectivo y $2.000 de retencion le
+                 * meteria $100.000 a la caja y el arqueo del dia cerraria con $2.000 que no estan.
+                 *
+                 * La guarda del front (PaymentMethodsStep::show_caja_select() esconde el selector y
+                 * set_caja_por_defecto() no le propone ninguna) NO alcanza, y hay mas de una via
+                 * alcanzable de verdad: el ABM de "caja por defecto por metodo de pago" la sigue
+                 * ofreciendo, y el asistente de IA arma cada fila con caja si o si
+                 * (PagosIaHelper). Una guarda que vive solo en el front no es una guarda.
+                 */
+                Log::info('attachPaymentMethods: el metodo de pago '.$payment_method->id.' del pago '.$pago->id.' es una retencion, asi que no impacta en ninguna caja aunque tenga caja destino ('.$payment_method->pivot->caja_id.').');
+
+            } else if ($payment_method->pivot->caja_id) {
 
                 // Grupo 223 · Prompt 02: se pasa el id del método de pago (ya disponible acá en el
                 // foreach) para que guardar_pago() pueda resolver la cascada de liquidación/comisión.
@@ -297,11 +317,34 @@ class CurrentAcountPagoHelper {
     }
 
     /**
+     * Si un metodo de pago NO PUEDE mover plata de caja, ni siquiera cuando la fila llega con una
+     * caja destino cargada.
+     *
+     * 🔴 ES DISTINTO DE deberia_haber_impactado_caja(), Y LA DIFERENCIA IMPORTA. Aquel decide si
+     * hay que AVISAR por una fila que quedo sin caja; este decide si la fila puede IMPACTAR. Por
+     * eso el cheque no esta en esta lista: un cheque con caja destino sigue impactando como
+     * siempre (es la conducta que tiene hoy y no es de esta mision cambiarla), solo que no se
+     * avisa cuando viene sin caja. La retencion, en cambio, no impacta nunca.
+     *
+     * @param \App\Models\CurrentAcountPaymentMethod $payment_method Metodo con su pivot cargado.
+     * @return bool
+     */
+    static function nunca_impacta_caja($payment_method) {
+
+        return !is_null($payment_method->type) && $payment_method->type->slug == 'retencion';
+    }
+
+    /**
      * Si un metodo de pago que quedo sin caja destino TENIA que haber impactado en una.
      *
      * Un cheque no toca caja al cargarse: entra por ChequeHelper y recien mueve plata cuando se
      * cobra (ChequeController, que ahi si manda su caja). Avisar por cada cheque seria un warning
      * por cobro, o sea ruido que tapa justo el caso que interesa ver.
+     *
+     * Una retencion, por el mismo motivo y mas fuerte: NUNCA entra a una caja (ver
+     * nunca_impacta_caja()). Sin esta exclusion, cada cobro con retencion dispara el warning que
+     * se puso el 21/8/2026 para cazar plata que no entro a ninguna caja, y ese detector se ahoga
+     * en falsos positivos justo cuando mas hace falta.
      *
      * @param \App\Models\CurrentAcountPaymentMethod $payment_method Metodo con su pivot cargado.
      * @return bool
@@ -313,7 +356,10 @@ class CurrentAcountPagoHelper {
             return false;
         }
 
-        if (!is_null($payment_method->type) && $payment_method->type->slug == 'cheque') {
+        if (
+            !is_null($payment_method->type)
+            && ($payment_method->type->slug == 'cheque' || $payment_method->type->slug == 'retencion')
+        ) {
 
             return false;
         }

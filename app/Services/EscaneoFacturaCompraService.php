@@ -85,6 +85,14 @@ class EscaneoFacturaCompraService
     /**
      * Campos numéricos de la cabecera del comprobante.
      *
+     * 🔴 Las retenciones NO están, y no es un olvido (misión `compras-factura-manual-alicuotas`,
+     * 17/9/2026). Una factura de compra no trae retenciones: quien retiene es tu cliente cuando te
+     * paga, no el proveedor cuando te factura. Pedirle a la IA `retencion_iibb` / `retencion_iva` /
+     * `retencion_ganancias` de un papel donde ese número no existe es invitarla a inventarlo —
+     * cualquier importe con pinta de impuesto al pie del comprobante cae ahí. Las retenciones se
+     * cargan al registrar un cobro en la cuenta corriente de un cliente, con los datos del
+     * certificado.
+     *
      * @var array
      */
     const CAMPOS_NUMERICOS_FACTURA = [
@@ -93,9 +101,6 @@ class EscaneoFacturaCompraService
         'total',
         'percepcion_iibb',
         'percepcion_iva',
-        'retencion_iibb',
-        'retencion_iva',
-        'retencion_ganancias',
     ];
 
     /**
@@ -473,13 +478,18 @@ class EscaneoFacturaCompraService
             '    "receptor_cuit": null,',
             '    "neto_gravado": 100000,',
             '    "total_iva": 21000,',
-            '    "total": 124300,',
+            /*
+             * El ejemplo cuadra a propósito: 100000 de neto + 21000 de IVA + 2500 de percepción de
+             * IIBB = 123500. Desde que el total que se guarda sale de esa suma (y no del número
+             * suelto), un ejemplo donde el total no cierra con su propio desglose le estaría
+             * enseñando a la IA justo lo contrario de lo que tiene que leer.
+             */
+            '    "total": 123500,',
             '    "ivas": [ { "porcentaje": 21, "neto": 100000, "importe": 21000 } ],',
             '    "percepcion_iibb": 2500,',
             '    "percepcion_iva": null,',
-            '    "retencion_iibb": null,',
-            '    "retencion_iva": null,',
-            '    "retencion_ganancias": null,',
+            // Las retenciones no se piden a propósito: una factura de compra no las tiene (retiene
+            // el cliente al pagar, no el proveedor al facturar). Ver CAMPOS_NUMERICOS_FACTURA.
             '    "campos_dudosos": []',
             '  },',
             '  "avisos": []',
@@ -635,11 +645,27 @@ class EscaneoFacturaCompraService
         }
 
         /* Paso 5: normalización campo por campo. */
+        $factura = $this->normalizar_factura(isset($decoded['factura']) ? $decoded['factura'] : null);
+
+        $avisos = $this->normalizar_avisos(isset($decoded['avisos']) ? $decoded['avisos'] : null);
+
+        /*
+         * La discrepancia entre el total impreso y el que sale del desglose va además como aviso,
+         * no solo como `campos_dudosos`: el campo dudoso marca QUÉ mirar, el aviso dice CUÁNTO no
+         * cierra y por qué importa. Es lo único que separa un renglón mal leído de una deuda mal
+         * calculada, y es barato.
+         */
+        $aviso_total = $this->aviso_de_total_que_no_cuadra($factura);
+
+        if (!is_null($aviso_total)) {
+            $avisos[] = $aviso_total;
+        }
+
         return [
             'columnas_detectadas' => $this->normalizar_columnas(isset($decoded['columnas_detectadas']) ? $decoded['columnas_detectadas'] : null),
             'articulos'           => $this->normalizar_articulos(isset($decoded['articulos']) ? $decoded['articulos'] : null),
-            'factura'             => $this->normalizar_factura(isset($decoded['factura']) ? $decoded['factura'] : null),
-            'avisos'              => $this->normalizar_avisos(isset($decoded['avisos']) ? $decoded['avisos'] : null),
+            'factura'             => $factura,
+            'avisos'              => $avisos,
         ];
     }
 
@@ -813,9 +839,72 @@ class EscaneoFacturaCompraService
         }
 
         $normalizada['ivas']           = $this->normalizar_ivas(isset($factura['ivas']) ? $factura['ivas'] : null, $campos_dudosos);
+
+        /*
+         * 🔴 El total impreso contra el calculado (misión `compras-factura-manual-alicuotas`,
+         * 17/9/2026). Desde que el total del comprobante lo calcula el servidor a partir del
+         * desglose, un renglón mal leído por la IA deja de ser un número feo en pantalla y pasa a
+         * mover la deuda con el proveedor. Antes viajaba el número del papel y el desglose era
+         * decorativo; ahora manda el desglose, así que si los dos no coinciden hay que decirlo
+         * ANTES de guardar nada — acá, donde el modal de revisión lo muestra y el usuario lo
+         * corrige a mano.
+         */
+        if (!is_null($this->aviso_de_total_que_no_cuadra($normalizada))) {
+            $campos_dudosos[] = 'total';
+        }
+
         $normalizada['campos_dudosos'] = array_values(array_unique($campos_dudosos));
 
         return $normalizada;
+    }
+
+    /**
+     * Mensaje de aviso si el total impreso del comprobante no coincide con el que sale de su
+     * desglose de IVA más las percepciones. `null` si coinciden, o si no hay con qué comparar.
+     *
+     * No se avisa cuando falta uno de los dos lados:
+     *
+     *   · Sin desglose (una Factura C, o un comprobante donde la IA no lo leyó) no hay nada que
+     *     comparar, y el total impreso es el único dato que existe: se guarda ése, así que no hay
+     *     movimiento silencioso del que avisar.
+     *   · Sin total impreso tampoco: el desglose es lo único que hay.
+     *
+     * La tolerancia de medio peso absorbe el redondeo por fila (cada alícuota se guarda con dos
+     * decimales) sin dejar pasar un dígito mal leído, que es lo que se quiere cazar.
+     *
+     * @param  array  $factura  Factura ya normalizada (con `total`, `ivas` y las percepciones).
+     * @return string|null
+     */
+    protected function aviso_de_total_que_no_cuadra(array $factura)
+    {
+        $total_impreso = isset($factura['total']) ? $factura['total'] : null;
+
+        $ivas = isset($factura['ivas']) && is_array($factura['ivas']) ? $factura['ivas'] : [];
+
+        if (is_null($total_impreso) || count($ivas) === 0) {
+            return null;
+        }
+
+        $calculado = 0;
+
+        foreach ($ivas as $iva) {
+            $calculado += (float) (isset($iva['neto']) ? $iva['neto'] : 0)
+                        + (float) (isset($iva['importe']) ? $iva['importe'] : 0);
+        }
+
+        $calculado += (float) (isset($factura['percepcion_iibb']) ? $factura['percepcion_iibb'] : 0)
+                    + (float) (isset($factura['percepcion_iva']) ? $factura['percepcion_iva'] : 0);
+
+        $diferencia = round((float) $total_impreso - $calculado, 2);
+
+        if (abs($diferencia) <= 0.5) {
+            return null;
+        }
+
+        return 'El total de la factura ('.number_format((float) $total_impreso, 2, ',', '.').') no coincide '.
+                'con la suma de su desglose de IVA y percepciones ('.number_format($calculado, 2, ',', '.').'): '.
+                'hay una diferencia de '.number_format(abs($diferencia), 2, ',', '.').'. Revisá los netos, los '.
+                'importes de IVA y las percepciones antes de confirmar: el total que se guarda sale de esa suma.';
     }
 
     /**
