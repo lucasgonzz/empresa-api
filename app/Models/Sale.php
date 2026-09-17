@@ -229,11 +229,9 @@ class Sale extends Model
     }
 
     /**
-     * Scope: excluye las ventas contenedoras de facturación de los reportes de ventas reales.
-     * Usar en todos los queries que calculen totales, rendimiento, caja o performance.
-     */
-    /**
-     * Scope: excluye las ventas contenedoras de facturación (ver ConsolidarFacturacionHelper).
+     * Scope: excluye las ventas contenedoras de facturación de los reportes de ventas reales
+     * (ver `ConsolidarFacturacionHelper`). Usar en todos los queries que calculen totales,
+     * rendimiento, caja o performance.
      *
      * 🔴 Las dos columnas van calificadas con `sales.` a propósito (17/9/2026): sin eso, cualquier
      * query que joinee otra vez la tabla `sales` —por ejemplo `ContabilidadRepository::ventas_brutas()`,
