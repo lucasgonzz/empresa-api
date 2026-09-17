@@ -168,7 +168,12 @@ class ContabilidadRepository
 
         // Joins del IVA declarado por venta. Ninguno multiplica filas (ver aplicar_joins_de_iva()),
         // así que el `count()` de `ventas_brutas_detalle()` sigue contando ventas, no comprobantes.
-        IvaDeVentaHelper::aplicar_joins_de_iva($query);
+        //
+        // 🔴 El cliente y el período van adentro de las subqueries, no sólo afuera: sin eso MySQL
+        // materializa un derivado con GROUP BY sobre `afip_tickets` entera, dos veces por query, en
+        // cada Estado de Resultados y en cada página del drill-down. Son los MISMOS `$desde`/`$hasta`
+        // que filtran este query, ya normalizados por `rango()`.
+        IvaDeVentaHelper::aplicar_joins_de_iva($query, $user_id, $desde, $hasta);
 
         self::aplicar_filtro_moneda($query, $filtros, 'sales.moneda_id');
 

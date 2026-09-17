@@ -4,6 +4,7 @@ namespace Tests\Feature\Reportes;
 
 use App\Models\AfipTicket;
 use App\Models\CurrentAcount;
+use App\Models\Sale;
 use App\Models\User;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -57,6 +58,13 @@ class Ventas_Netas_De_Iva_Test extends EmpresaTestCase
     protected $afip_tickets_sembrados = [];
 
     /**
+     * Ids de las ventas CONTENEDORAS de facturación creadas por este archivo.
+     *
+     * @var array<int,int>
+     */
+    protected $contenedoras_sembradas = [];
+
+    /**
      * Limpia lo que sembró el test antes del rollback de `DatabaseTransactions` — red real
      * redundante, mismo criterio que `EscenariosDePlata::limpiar_escenarios()`.
      *
@@ -70,6 +78,10 @@ class Ventas_Netas_De_Iva_Test extends EmpresaTestCase
 
         if (count($this->notas_credito_sembradas) >= 1) {
             CurrentAcount::whereIn('id', $this->notas_credito_sembradas)->delete();
+        }
+
+        if (count($this->contenedoras_sembradas) >= 1) {
+            Sale::whereIn('id', $this->contenedoras_sembradas)->forceDelete();
         }
 
         $this->limpiar_escenarios();
@@ -267,9 +279,104 @@ class Ventas_Netas_De_Iva_Test extends EmpresaTestCase
         );
     }
 
+    /**
+     * Test 6 — Una venta CONSOLIDADA se netea con su parte del IVA del comprobante de la
+     * contenedora, aunque la contenedora se haya creado fuera del período.
+     *
+     * 🔴 Es el caso que rompe la optimización obvia. Desde el 17/9/2026 las dos subqueries de
+     * `IvaDeVentaHelper::aplicar_joins_de_iva()` van acotadas al cliente y al período —sin eso MySQL
+     * materializa un `GROUP BY` sobre `afip_tickets` entera, dos veces por query, en cada Estado de
+     * Resultados y en cada página del drill-down— y el recorte de cada una es DISTINTO:
+     *
+     *   - `iva_venta` se acota a las ventas del período (por `sales.id`);
+     *   - `iva_consolidacion` se acota a las **contenedoras de esas ventas**, que es otro conjunto.
+     *
+     * Acotar las dos con el mismo recorte es un bug silencioso: la contenedora se crea el día en que
+     * se consolida, que puede caer fuera del período de la venta original. Esa venta quedaría medida
+     * en 0 y contada como si hubiera sido en negro — justo lo que `IvaDeVentaHelper` existe para no
+     * hacer. Este test es el que se pone rojo si alguien "simplifica" ese recorte.
+     *
+     * Escenario: venta de $121.000 en junio, dentro de una contenedora de $242.000 creada en JULIO
+     * con un comprobante que declaró $42.000 de IVA. Le toca la mitad: 121.000 − 21.000 = 100.000.
+     *
+     * @group reportes
+     * @test
+     */
+    public function venta_consolidada_se_netea_aunque_la_contenedora_sea_de_otro_periodo()
+    {
+        $this->fijar_reloj_en('2015-06-10 10:00:00');
+
+        $venta = $this->crear_venta_cobrada(TestingFerreteriaSeeder::CAJA_EFECTIVO, TestingFerreteriaSeeder::PAGO_EFECTIVO, 121000);
+
+        $contenedora = $this->crear_contenedora_de_facturacion(242000, '2015-07-05 10:00:00');
+
+        Sale::where('id', $venta->id)->update(['consolidacion_facturacion_id' => $contenedora->id]);
+
+        $this->facturar($contenedora, 42000);
+
+        $estado = $this->pedir_estado_resultados('2015-06-01', '2015-06-30');
+
+        $this->assertEqualsWithDelta(
+            100000,
+            (float) $estado['ventas_brutas'],
+            self::DELTA,
+            'La venta consolidada tiene que entrar neta de SU PARTE del IVA del comprobante de la '.
+            'contenedora (121.000 − 42.000 × 121.000/242.000 = 100.000). Si dio 121.000, el recorte de '.
+            'la subquery de consolidación dejó afuera a la contenedora por ser de otro mes.'
+        );
+
+        $detalle = $this->pedir_detalle('ventas_brutas', '2015-06-01', '2015-06-30');
+
+        $suma_detalle = 0.0;
+        foreach ($detalle['registros'] as $registro) {
+            $suma_detalle += (float) $registro['monto'];
+        }
+
+        $this->assertEqualsWithDelta(
+            (float) $estado['ventas_brutas'],
+            $suma_detalle,
+            self::DELTA,
+            'El drill-down tiene que sumar lo mismo que la tarjeta también con el prorrateo de la consolidación.'
+        );
+
+        $this->assertEquals(
+            1,
+            (int) $detalle['paginacion']['total_registros'],
+            'La contenedora no es una venta real: no puede aparecer como un renglón más del detalle.'
+        );
+    }
+
     // =========================================================================================
     // Helpers del archivo
     // =========================================================================================
+
+    /**
+     * Venta CONTENEDORA de facturación, como la que deja `ConsolidarFacturacionHelper::consolidar()`:
+     * `is_consolidacion_facturacion = 1` (o sea que `scopeSoloVentasReales` la excluye del reporte) y
+     * `total` igual a la suma de los totales de las ventas que agrupa.
+     *
+     * @param  float $total
+     * @param  string $creada_el Fecha de creación, a propósito distinta de la de sus ventas.
+     * @return \App\Models\Sale
+     */
+    protected function crear_contenedora_de_facturacion($total, $creada_el)
+    {
+        $contenedora = new Sale();
+
+        $contenedora->user_id = $this->usuario_de_testing()->id;
+        $contenedora->total = $total;
+        $contenedora->terminada = 1;
+        $contenedora->is_consolidacion_facturacion = 1;
+        $contenedora->save();
+
+        /* El created_at se escribe aparte porque el modelo lo pisa con el reloj del test al guardar. */
+        Sale::where('id', $contenedora->id)->update(['created_at' => Carbon::parse($creada_el)]);
+
+        $this->contenedoras_sembradas[] = $contenedora->id;
+
+        return Sale::find($contenedora->id);
+    }
+
 
     /**
      * Usuario dueño del fixture de testing.

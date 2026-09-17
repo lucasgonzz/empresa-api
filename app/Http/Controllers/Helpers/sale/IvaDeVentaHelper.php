@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
 use App\Models\Sale;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -335,19 +336,87 @@ class IvaDeVentaHelper
      * contra la PK. Eso es lo que permite que `ventas_brutas_detalle()` siga haciendo `count()`
      * sobre esta misma base sin contar de más.
      *
+     * ---------------------------------------------------------------------------------------------
+     * 🔴 LAS DOS SUBQUERIES VAN ACOTADAS AL CLIENTE Y AL PERÍODO, Y NO ES UNA OPTIMIZACIÓN OPCIONAL
+     * ---------------------------------------------------------------------------------------------
+     *
+     * Sin `$user_id` y sin rango, MySQL tiene que materializar un derivado con `GROUP BY` sobre
+     * `afip_tickets` **entera, dos veces por query** — y esto corre en cada Estado de Resultados y en
+     * cada página del drill-down. Sobre bases reales eso es inaceptable: ferretotal tiene 53.155
+     * ventas, y la base compartida `u767360347_empresa` tiene 51 comercios adentro, así que ahí el
+     * derivado agrupaba además los comprobantes de los otros 50. El camino PHP (`medir_ventas()`) ya
+     * acotaba con su `whereIn`; el camino SQL no, y era la única diferencia entre los dos.
+     *
+     * Los dos acotamientos NO son el mismo, y por eso son dos:
+     *
+     *   - `iva_venta` se acota a las ventas del cliente en el período: es contra `sales.id`;
+     *   - `iva_consolidacion` se acota a las **contenedoras de facturación** de esas mismas ventas
+     *     (`consolidacion_facturacion_id`). Usar el mismo recorte de las dos sería un bug silencioso:
+     *     la contenedora se crea el día en que se consolida, que puede caer fuera del período de la
+     *     venta original, y esa venta quedaría medida en 0 — o sea contada como si hubiera sido en
+     *     negro, que es justo lo que esta clase existe para no hacer.
+     *
+     * ⚠️ El recorte de fechas es a propósito un **superconjunto exacto** del `whereDate()` del query
+     * de afuera: se escribe como rango sobre la columna (`created_at >= desde 00:00:00` y
+     * `< hasta+1día 00:00:00`) en vez de `DATE(created_at)`, porque envolver la columna en una
+     * función anula el índice `sales_user_id_created_at_idx`, que es justamente el que hace barato
+     * este recorte. Traer de más acá no cambia ningún número: lo que sobre en el derivado no matchea
+     * con ninguna fila del `LEFT JOIN`.
+     *
      * @param  \Illuminate\Database\Eloquent\Builder $query Query sobre la tabla `sales`.
+     * @param  int $user_id Cliente del reporte.
+     * @param  \Carbon\Carbon|string $desde Inicio del período (el mismo que filtra el query de afuera).
+     * @param  \Carbon\Carbon|string $hasta Fin del período.
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public static function aplicar_joins_de_iva($query)
+    public static function aplicar_joins_de_iva($query, $user_id, $desde, $hasta)
     {
+        $iva_venta = self::subquery_por_venta()
+            ->whereIn('afip_tickets.sale_id', self::ids_de_ventas_del_periodo($user_id, $desde, $hasta, 'sales_del_periodo.id'));
+
+        $iva_consolidacion = self::subquery_por_venta()
+            ->whereIn('afip_tickets.sale_id', self::ids_de_ventas_del_periodo($user_id, $desde, $hasta, 'sales_del_periodo.consolidacion_facturacion_id'));
+
         return $query
-            ->leftJoinSub(self::subquery_por_venta(), 'iva_venta', function ($join) {
+            ->leftJoinSub($iva_venta, 'iva_venta', function ($join) {
                 $join->on('iva_venta.sale_id', '=', 'sales.id');
             })
             ->leftJoin('sales as venta_consolidacion', 'venta_consolidacion.id', '=', 'sales.consolidacion_facturacion_id')
-            ->leftJoinSub(self::subquery_por_venta(), 'iva_consolidacion', function ($join) {
+            ->leftJoinSub($iva_consolidacion, 'iva_consolidacion', function ($join) {
                 $join->on('iva_consolidacion.sale_id', '=', 'sales.consolidacion_facturacion_id');
             });
+    }
+
+    /**
+     * Sub-select de ids de venta del cliente en el período, para acotar las subqueries de IVA.
+     *
+     * `$columna` es lo que se proyecta: `sales_del_periodo.id` para el comprobante propio de cada
+     * venta, o `sales_del_periodo.consolidacion_facturacion_id` para el de su contenedora de
+     * facturación (ver `aplicar_joins_de_iva()`).
+     *
+     * @param  int $user_id
+     * @param  \Carbon\Carbon|string $desde
+     * @param  \Carbon\Carbon|string $hasta
+     * @param  string $columna
+     * @return \Closure
+     */
+    private static function ids_de_ventas_del_periodo($user_id, $desde, $hasta, $columna)
+    {
+        /** Rango sobre la columna, sin envolverla en DATE(): ver la nota de aplicar_joins_de_iva(). */
+        $desde_hora = Carbon::parse($desde)->startOfDay();
+        $hasta_hora = Carbon::parse($hasta)->startOfDay()->addDay();
+
+        return function ($sub) use ($user_id, $desde_hora, $hasta_hora, $columna) {
+            $sub->select(DB::raw($columna))
+                ->from('sales as sales_del_periodo')
+                ->where('sales_del_periodo.user_id', $user_id)
+                ->where('sales_del_periodo.created_at', '>=', $desde_hora)
+                ->where('sales_del_periodo.created_at', '<', $hasta_hora);
+
+            if ($columna !== 'sales_del_periodo.id') {
+                $sub->whereNotNull(DB::raw($columna));
+            }
+        };
     }
 
     /**
