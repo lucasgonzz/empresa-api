@@ -52,6 +52,23 @@ class CurrentAcountPaymentMethodSeeder extends Seeder
             ],
 
 
+            /*
+             * Retencion (mision compras-factura-manual-alicuotas, 17/9/2026).
+             *
+             * El medio de pago con el que se carga una retencion sufrida al cobrarle a un cliente
+             * que es agente de retencion. Suma al haber del cobro (o sea, cancela deuda) y no toca
+             * caja, por su tipo `retencion` — ver CAPaymentMethodTypeSeeder.
+             *
+             * 🔴 VA ULTIMO. Los ids de este catalogo se usan hardcodeados en varios lados (el 1 es
+             * el Cheque y el 3 el Efectivo, que es el default del formulario de cobro de la SPA):
+             * meter una fila en el medio los correria a todos.
+             */
+            [
+                'name'  => 'Retención',
+                'type'  => 'retencion',
+            ],
+
+
         ];
         foreach ($payment_methods as $payment_method) {
 
