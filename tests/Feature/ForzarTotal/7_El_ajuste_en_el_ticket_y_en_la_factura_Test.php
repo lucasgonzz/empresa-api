@@ -256,6 +256,58 @@ class El_ajuste_en_el_ticket_y_en_la_factura_Test extends ForzarTotalTestCase
         return $espia->renglones;
     }
 
+    /**
+     * El alto que `BudgetPdf` reserva para su pie, con el presupuesto dado.
+     *
+     * @param  \App\Models\Budget  $budget
+     * @return float
+     */
+    protected function alto_reservado_del_pie($budget)
+    {
+        $espia = new class($budget) extends BudgetPdf {
+
+            public function __construct($budget)
+            {
+                $this->budget = $budget;
+                $this->with_prices = true;
+                $this->with_images = false;
+                $this->b = 0;
+                $this->line_height = 7;
+                $this->x = 0;
+                $this->y = 0;
+                $this->total_original = ForzarTotalTestCase::BRUTO;
+            }
+
+            public function Cell($w, $h = 0, $txt = '', $border = 0, $ln = 0, $align = '', $fill = false, $link = '') {}
+
+            public function SetFont($family, $style = '', $size = 0) {}
+        };
+
+        return (float) $espia->footerHeight();
+    }
+
+    /**
+     * Un presupuesto en memoria, sin bonificaciones, descuentos ni recargos.
+     *
+     * Es el escenario del caso de uso: el vendedor forzo el total y no hay nada mas en el pie.
+     *
+     * @param  float|null  $monto
+     * @return \App\Models\Budget
+     */
+    protected function presupuesto_en_memoria($monto)
+    {
+        $budget = new Budget();
+        $budget->total = is_null($monto) ? self::BRUTO : self::BRUTO + $monto;
+        $budget->forzar_total_monto = $monto;
+        $budget->observations = '';
+        $budget->aplicar_recargos_directo_a_items = 0;
+        $budget->setRelation('articles', collect([]));
+        $budget->setRelation('discounts', collect([]));
+        $budget->setRelation('surchages', collect([]));
+
+        return $budget;
+    }
+
     /*
      * ---------------------------------------------------------------------------------------
      *  El ticket de 80mm
@@ -496,6 +548,62 @@ class El_ajuste_en_el_ticket_y_en_la_factura_Test extends ForzarTotalTestCase
         $this->assertEmpty(
             $renglones,
             'sin forzado ni descuentos, el bloque de totales del presupuesto no imprime nada'
+        );
+    }
+
+    /**
+     * Test 9 — EL ALTO RESERVADO. El pie de un presupuesto forzado mide 19mm mas, y `footerHeight()`
+     * tiene que saberlo.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 LO QUE SE PIERDE SI ESTE TEST SE PONE EN ROJO NO ES UN RENGLON DECORATIVO
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  `fits()` decide el corte de pagina con `y + articleRowHeight + footerHeight() <= 296`, y
+     *  fpdf NO PAGINA ADENTRO DE `Footer()`: las dos ramas de salto automatico (`fpdf.php` 581 y
+     *  912) piden `&& !$this->InFooter`. Todo lo que el pie dibuje mas alla de 296 se escribe fuera
+     *  de la hoja y desaparece, sin error y sin aviso.
+     *
+     *  Y la ULTIMA fila del pie es `total()`. O sea que reservar de menos se lleva el "Total: $X"
+     *  del papel que se le da al cliente.
+     *
+     *  Los 19mm son las dos filas que agrego esta mision: "Sub Total sin descuentos" (12mm, que
+     *  antes solo se reservaba si algun articulo tenia bonificacion) y "Ajuste del total" (7mm,
+     *  nuevo). El escenario es un presupuesto forzado SIN bonificacion, sin descuentos y sin
+     *  recargos, que es exactamente el caso de uso.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function el_pie_del_presupuesto_forzado_reserva_sus_dos_renglones()
+    {
+        $sin_forzar = $this->alto_reservado_del_pie($this->presupuesto_en_memoria(null));
+        $forzado    = $this->alto_reservado_del_pie($this->presupuesto_en_memoria(self::MONTO));
+
+        $this->assertEqualsWithDelta(
+            19.0,
+            $forzado - $sin_forzar,
+            0.01,
+            'el pie de un presupuesto forzado tiene que reservar 19mm mas: 12 del "Sub Total sin '.
+            'descuentos" y 7 del "Ajuste del total". Si no, el renglon "Total" se dibuja fuera de la hoja'
+        );
+    }
+
+    /**
+     * Test 10 — NO REGRESION del alto: sin forzado, `footerHeight()` devuelve exactamente lo de
+     * siempre. Un presupuesto comun no puede empezar a cortar paginas antes por culpa de esto.
+     *
+     * @group forzar_total
+     * @test
+     */
+    public function el_pie_de_un_presupuesto_sin_forzar_reserva_lo_de_siempre()
+    {
+        // 6 de margen fijo + 10 del renglon del total. Calculado a mano sobre `footerHeight()`.
+        $this->assertEqualsWithDelta(
+            16.0,
+            $this->alto_reservado_del_pie($this->presupuesto_en_memoria(null)),
+            0.01,
+            'sin forzado, sin observaciones, sin bonificaciones y sin descuentos, el pie reserva lo mismo que antes de esta mision'
         );
     }
 }

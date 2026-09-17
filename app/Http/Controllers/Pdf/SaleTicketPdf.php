@@ -24,12 +24,16 @@ use fpdf;
  * fatal esperando a la primera pantalla que genere dos —y es lo que hace imposible testear dos
  * comprobantes en la misma corrida de PHPUnit.
  *
- * ⚠️ Los otros 40 archivos de esta carpeta siguen con `require` pelado. Mientras sea asi, este
- * archivo tiene que cargarse DESPUES de ellos, no antes: `require_once` marca el archivo como
- * incluido y un `require` posterior lo re-ejecuta igual. En PHPUnit eso se cumple solo, porque los
- * espias declarados a nivel de archivo (tests/Feature/Presupuestos/4, con BudgetPdf) cargan cuando
- * se arma la suite, antes de que corra el primer test. El barrido de los 40 restantes es otra
- * conversacion: se reporto y queda fuera del alcance de esta mision.
+ * ⚠️ QUEDAN 32 ARCHIVOS CON `require` PELADO (medido el 17/9/2026; 35 cargan fpdf y tres ya tienen
+ * `require_once`: este, `SaleAfipTicketPdf` y `BudgetPdf`). Mientras haya uno solo asi, el orden
+ * importa: `require_once` marca el archivo como incluido, pero un `require` POSTERIOR lo re-ejecuta
+ * igual y vuelve el fatal. O sea que esto arregla la convivencia ENTRE los tres convertidos, no con
+ * el resto.
+ *
+ * Se detectan con:
+ *     grep -rl "fpdf/fpdf.php" app/Http/Controllers/ | xargs grep -L require_once
+ *
+ * El barrido de los 32 esta declarado como hallazgo fuera de alcance en el informe de esta mision.
  */
 require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
