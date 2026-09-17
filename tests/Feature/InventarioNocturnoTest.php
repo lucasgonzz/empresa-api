@@ -22,19 +22,23 @@ use Illuminate\Support\Facades\Queue;
 use Tests\EmpresaTestCase;
 
 /**
- * Misión optimizacion-vps-fase1 (10/9/2026, release 4.0.24) — el reporte de inventario se genera
- * de noche y a pedido, no en cada entrada al sistema.
+ * Misión optimizacion-vps-fase1 (10/9/2026, release 4.0.24) y reporte-inventario-manual
+ * (15/9/2026) — el reporte de inventario se genera de noche o a pedido, nunca dentro de un
+ * request de usuario.
  *
  * Lo que protege este archivo, en orden:
- *   1. GET inventory-performance ya NO encola por edad: un reporte de dos horas (que antes, con
- *      `duracion_reporte_inventario` en 30 minutos, disparaba una regeneración) no encola nada.
- *      Encola sólo sin ningún reporte o con uno de más de 7 días, y nunca si ya hay una en curso.
+ *   1. GET inventory-performance NUNCA encola, bajo ninguna circunstancia: ni sin reporte, ni con
+ *      uno viejo (la red de seguridad de 7 días se sacó en reporte-inventario-manual, porque
+ *      disparaba en horario comercial, con el servidor en uso — justo lo que se quería evitar).
+ *      Es de sólo lectura: devuelve el último reporte que haya (o null) y si hay una generación
+ *      en curso.
  *   2. POST inventory-performance/generate (el botón Actualizar) encola una vez y deja el candado;
  *      el segundo POST no encola otra y responde lo mismo.
  *   3. inventario:generar elige a quién: el dueño de la instancia (app.USER_ID), el de --user_id
  *      (aunque sea un empleado), o todos los dueños con actividad reciente si no hay ninguno.
  *   4. El Kernel agenda inventario:generar a las 04:00 y set_company_performances el día 1 a las
- *      06:30 sólo con USER_ID; check_stocks no se agenda.
+ *      06:30 sólo con USER_ID; check_stocks no se agenda. Las 04:00 y el botón son las dos ÚNICAS
+ *      puertas que quedan.
  *
  * Los despachos se capturan con Queue::fake(); el candado es la llave de cache que comparten el
  * controller y el comando (CACHE_DRIVER=array en testing: vive en el proceso, cada test arranca
@@ -203,31 +207,34 @@ class InventarioNocturnoTest extends EmpresaTestCase
     }
 
     /**
-     * Sin ningún reporte del comercio, entrar sí encola uno (es el primer ingreso de una cuenta
-     * nueva) y la respuesta lo dice con generating: true.
+     * Sin ningún reporte del comercio (una cuenta nueva, por ejemplo), entrar NO encola nada — se
+     * queda así hasta la corrida de las 04:00 o hasta que alguien apriete Actualizar. Antes de
+     * reporte-inventario-manual esto sí encolaba (era "el primer ingreso"); se saca a propósito.
      *
      * @return void
      */
-    public function test_sin_ningun_reporte_encola_al_entrar()
+    public function test_sin_ningun_reporte_no_encola_al_entrar()
     {
         Queue::fake();
 
         $response = $this->getJson('api/inventory-performance');
 
         $response->assertStatus(200);
-        Queue::assertPushed(ProcessInventoryPerformanceJob::class, 1);
+        Queue::assertNotPushed(ProcessInventoryPerformanceJob::class);
 
-        $this->assertTrue($response->json('generating'));
+        $this->assertFalse($response->json('generating'));
         $this->assertNull($response->json('models.0'));
-        $this->assertTrue($this->candado($this->owner->id), 'Encolar deja el candado tomado.');
+        $this->assertFalse($this->candado($this->owner->id));
     }
 
     /**
-     * La red de seguridad son 7 días: seis no encola, ocho sí.
+     * Ya no hay red de seguridad por antigüedad: ni un reporte de 6 días ni uno de 8 (ni cualquier
+     * otra edad) encolan nada al entrar. La única red que queda es temporal (la corrida de las
+     * 04:00), no algo que dispare index().
      *
      * @return void
      */
-    public function test_un_reporte_de_seis_dias_no_encola_y_uno_de_ocho_si()
+    public function test_ningun_reporte_viejo_encola_al_entrar_ni_de_seis_ni_de_ocho_dias()
     {
         $this->reporte(Carbon::now()->subDays(6));
 
@@ -242,8 +249,8 @@ class InventarioNocturnoTest extends EmpresaTestCase
         $response = $this->getJson('api/inventory-performance');
 
         $response->assertStatus(200);
-        Queue::assertPushed(ProcessInventoryPerformanceJob::class, 1);
-        $this->assertTrue($response->json('generating'));
+        Queue::assertNotPushed(ProcessInventoryPerformanceJob::class);
+        $this->assertFalse($response->json('generating'));
     }
 
     /**

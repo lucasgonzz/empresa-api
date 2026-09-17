@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
+use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Address;
 use App\Models\AfipInformation;
 use App\Models\Article;
@@ -24,6 +25,7 @@ use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
+use App\Services\Zipnova\ZipnovaClient;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -145,6 +147,11 @@ class DemoSetupHelper
         // La conexión de Mercado Pago del dueño se fotografía ANTES del migrate:fresh, que la
         // borra junto con todo lo demás. Se restaura al final (ver `restaurar_mercado_pago()`).
         $foto_mercado_pago = self::foto_de_mercado_pago(config('app.USER_ID'));
+
+        // Mismo mecanismo para Zipnova (misión demo-integraciones-zipnova-mp, 16/9/2026): sin
+        // esto, la conexión de envíos desaparece en el primer rearmado después de conectarla,
+        // igual que le pasaba a Mercado Pago hasta el 5/9.
+        $foto_zipnova = self::foto_de_zipnova(config('app.USER_ID'));
 
         // `migrate:fresh` resetea la base. Obligatorio dejarlo limpio antes de los seeders.
         Artisan::call('migrate:fresh', ['--force' => true]);
@@ -401,6 +408,22 @@ class DemoSetupHelper
 
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
         self::restaurar_mercado_pago($user, $foto_mercado_pago);
+
+        // Sin nada que restaurar (primer armado, o nadie conectó nunca a mano), la instancia se
+        // conecta sola con lo que haya en el .env. Si ALGUIEN ya conectó una cuenta —por OAuth o a
+        // mano—, esto no la pisa: restaurar_mercado_pago() ya se encargó.
+        if (empty($foto_mercado_pago)) {
+            self::conectar_mercado_pago_desde_env($user);
+        }
+
+        // Misma sobrevida para la cuenta de Zipnova con la que la tienda cotiza y despacha envíos.
+        self::restaurar_zipnova($user, $foto_zipnova);
+
+        // Mismo default que Mercado Pago arriba: sin nada que restaurar, se conecta sola con lo
+        // que haya en el .env (misión mp-zipnova-seed-local, 17/9/2026).
+        if (empty($foto_zipnova)) {
+            self::conectar_zipnova_desde_env($user);
+        }
 
         $etapas['tienda'] = self::cronometrar($t_etapa);
 
@@ -1383,6 +1406,259 @@ class DemoSetupHelper
                 : $e->getMessage();
 
             Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Mercado Pago: '.$detalle);
+        }
+    }
+
+    /**
+     * Conecta Mercado Pago con las credenciales de demo de `config('services.mercadopago')`,
+     * cuando no hay ninguna conexión previa que restaurar — misión
+     * `mp-precio-servidor-y-credenciales-env`, 16/9/2026.
+     *
+     * Solo se llama cuando `foto_de_mercado_pago()` devolvió null: primer armado de la instancia,
+     * o una que nunca tuvo una cuenta conectada. Si YA hay una conexión (restaurada, o conectada
+     * por OAuth desde ABM -> Integraciones, que es la única vía real hoy: la carga manual de
+     * Access Token/Public Key se sacó del SPA), esto no se ejecuta y no la pisa — la config es el
+     * default para cuando no hay nada, no una fuente que gane siempre.
+     *
+     * Escribe el conector y lo espeja en `payment_methods` con el mismo método que usa el
+     * callback del OAuth (`MercadoPagoOAuthService::espejar_en_payment_methods()`), para que la
+     * tienda cobre igual lea del conector o del espejo — misma forma que deja cualquier conexión
+     * real, aunque el origen del dato acá sea la config y no un intercambio OAuth.
+     *
+     * 🔴 Las credenciales se leen de `config()`, NUNCA de `env()` directo: con `config:cache`
+     * activo (lo normal en producción) `env()` fuera de `config/*.php` devuelve el default, y esta
+     * misma clase de bug ya rompió `DURACION_REPORTES` en producción (ver el comentario de
+     * `config/services.php` junto a `demo_access_token`). Sin esto, la conexión automática
+     * quedaría muerta en cualquier instancia con la config cacheada, sin ningún aviso.
+     *
+     * Sin las dos claves cargadas no hace nada — es el estado de hoy, con ninguna instancia
+     * configurada. Un error nunca frena el setup: la demo se arma sin la conexión.
+     *
+     * `public` (y no `private` como el resto de los métodos de este helper) porque
+     * `DatabaseSeeder::run()` la llama también para que una corrida local de
+     * `migrate:fresh --seed` quede igual que una demo — misión mp-zipnova-seed-local, 17/9/2026.
+     * Ver `conectar_zipnova_desde_env()` más abajo, mismo motivo.
+     *
+     * @param User $user Dueño recién creado de la demo (o del sistema local).
+     * @return void
+     */
+    public static function conectar_mercado_pago_desde_env(User $user)
+    {
+        $access_token = config('services.mercadopago.demo_access_token');
+        $public_key   = config('services.mercadopago.demo_public_key');
+
+        if (empty($access_token) || empty($public_key)) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_MERCADO_PAGO);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "mercado_pago" en el catálogo, no se conectó con las credenciales de demo de la config.');
+
+                return;
+            }
+
+            $connector->access_token     = $access_token;
+            $connector->public_key       = $public_key;
+            $connector->refresh_token    = null;
+            $connector->expires_at       = null;
+            $connector->platform_user_id = null;
+            $connector->status           = PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message    = null;
+            $connector->save();
+
+            $service = new MercadoPagoOAuthService();
+            $service->espejar_en_payment_methods((int) $user->id, $access_token, $public_key);
+
+            Log::info('DemoSetupHelper: Mercado Pago conectado con las credenciales de demo de la config.', [
+                'user_id' => $user->id,
+            ]);
+        } catch (\Throwable $e) {
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo conectar Mercado Pago con las credenciales de demo de la config: '.$detalle);
+        }
+    }
+
+    /**
+     * Fotografía la conexión de Zipnova del dueño antes del `migrate:fresh`, que la borra junto
+     * con todo lo demás. Mismo mecanismo que `foto_de_mercado_pago()` (ver ese docblock para el
+     * porqué) — misión `demo-integraciones-zipnova-mp`, 16/9/2026.
+     *
+     * Zipnova no tiene espejo en otra tabla (no es un medio de pago, es una integración de
+     * envíos): alcanza con guardar lo que vive en `platform_connectors` — la credencial, la
+     * cuenta y la configuración comercial (`extra_config`: depósito, bulto por defecto, envío
+     * gratis desde $, webhook registrado) — y devolvérselo tal cual a `restaurar_zipnova()`.
+     *
+     * Devuelve null —y no rompe el setup— si el dueño no tiene conector con token, si la tabla
+     * todavía no existe (primer armado de una instancia) o si el token no se puede descifrar
+     * (APP_KEY rotada): en cualquiera de esos casos no hay nada que restaurar.
+     *
+     * @param int $user_id Dueño de la demo (`config('app.USER_ID')`): es el mismo id antes y después del fresh.
+     * @return array<string, mixed>|null
+     */
+    private static function foto_de_zipnova($user_id)
+    {
+        if ((int) $user_id <= 0) {
+            // Sin USER_ID en el .env de la instancia no hay dueño que fotografiar. Se dice, porque
+            // el resultado es que la demo pierde la conexión en cada rearmado sin ninguna otra señal.
+            Log::warning('DemoSetupHelper: config(app.USER_ID) vacío, no se puede fotografiar la conexión de Zipnova.');
+
+            return null;
+        }
+
+        try {
+            $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_ZIPNOVA);
+
+            if (!$connector) {
+                return null;
+            }
+
+            $access_token = $connector->access_token;
+
+            if (empty($access_token)) {
+                return null;
+            }
+
+            $foto = [
+                'access_token'     => $access_token,
+                'platform_user_id' => $connector->platform_user_id,
+                'status'           => $connector->status,
+                'extra_config'     => $connector->extra_config,
+            ];
+
+            Log::info('DemoSetupHelper: foto de la conexión de Zipnova tomada antes del rearmado.', [
+                'user_id'          => $user_id,
+                'platform_user_id' => $foto['platform_user_id'],
+            ]);
+
+            return $foto;
+        } catch (\Throwable $e) {
+            // Nunca se loguea el token. Un fallo acá no frena el setup: la demo se arma sin la
+            // conexión, que es lo que pasaba siempre hasta esta misión.
+            Log::warning('DemoSetupHelper: no se pudo tomar la foto de la conexión de Zipnova: '.$e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Vuelve a dejar la conexión de Zipnova tal como estaba antes del `migrate:fresh`.
+     *
+     * A diferencia de Mercado Pago acá no hay espejo que reponer en otra tabla ni webhook que
+     * volver a registrar contra la API de Zipnova: el webhook ya está dado de alta del lado de
+     * Zipnova apuntando a esta misma instancia, así que alcanza con reponer la fila de
+     * `platform_connectors` tal cual estaba.
+     *
+     * Necesita que la fila `zipnova` de `platforms` ya exista (la asegura una migración, igual
+     * que la de Mercado Pago), así que esto se llama al final de `run()`, después de `tienda()`.
+     *
+     * @param User $user Dueño recién creado de la demo.
+     * @param array<string, mixed>|null $foto Lo que devolvió `foto_de_zipnova()`.
+     * @return void
+     */
+    private static function restaurar_zipnova(User $user, $foto)
+    {
+        if (empty($foto) || empty($foto['access_token'])) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_ZIPNOVA);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "zipnova" en el catálogo, no se restauró la conexión de Zipnova.');
+
+                return;
+            }
+
+            $connector->access_token     = $foto['access_token'];
+            $connector->platform_user_id = $foto['platform_user_id'];
+            // El estado vuelve como estaba, igual que en Mercado Pago.
+            $connector->status        = !empty($foto['status']) ? $foto['status'] : PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message = null;
+            $connector->extra_config  = $foto['extra_config'];
+            $connector->save();
+
+            Log::info('DemoSetupHelper: conexión de Zipnova restaurada después del rearmado.', [
+                'user_id'          => $user->id,
+                'platform_user_id' => $foto['platform_user_id'],
+            ]);
+        } catch (\Throwable $e) {
+            // Una QueryException trae el SQL con los bindings, y el token va en claro. De esas
+            // se loguea solo la clase y el SQLSTATE, igual que en `restaurar_mercado_pago()`.
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo restaurar la conexión de Zipnova: '.$detalle);
+        }
+    }
+
+    /**
+     * Conecta Zipnova con las credenciales de demo de `config('services.zipnova')`, cuando no hay
+     * ninguna conexión previa que restaurar — misión mp-zipnova-seed-local, 17/9/2026. Espejo de
+     * `conectar_mercado_pago_desde_env()` de acá arriba: mismo motivo, mismo criterio de "es un
+     * default, no una fuente que gane siempre" (ver ese docblock).
+     *
+     * 🔴 NO llama a la API real de Zipnova (`ZipnovaConexionService::conectar()` sí lo hace: pega
+     * contra `GET /accounts`/`GET /addresses` y registra un webhook). Acá se escribe el conector
+     * directo, igual que Mercado Pago no pasa por el OAuth real: correr esto en cada
+     * `migrate:fresh --seed` local pegaría contra la cuenta real de ComercioCity y le registraría
+     * a Zipnova un webhook apuntando a `empresa.local`, inalcanzable desde afuera. Por eso
+     * `extra_config` queda en los defaults de `ZipnovaCredentialsHelper::config_defaults()` (sin
+     * depósito de origen elegido): alcanza para que `ZipnovaCredentialsHelper::esta_conectado()`
+     * de true y la tarjeta del ABM muestre "Conectado"; cotizar con depósito elegido o generar una
+     * etiqueta real necesita entrar a la tarjeta y correr "Actualizar depósitos" una vez, con
+     * conexión a internet — igual que le pasa a cualquier comercio recién conectado.
+     *
+     * Sin las dos credenciales cargadas no hace nada — es el estado de hoy, sin ninguna instancia
+     * de demo ni ninguna base local configurada. Un error nunca frena el setup ni el seed.
+     *
+     * `public` por el mismo motivo que `conectar_mercado_pago_desde_env()`: `DatabaseSeeder::run()`
+     * también la llama.
+     *
+     * @param User $user Dueño recién creado de la demo (o del sistema local).
+     * @return void
+     */
+    public static function conectar_zipnova_desde_env(User $user)
+    {
+        $api_token  = config('services.zipnova.demo_api_token');
+        $api_secret = config('services.zipnova.demo_api_secret');
+
+        if (empty($api_token) || empty($api_secret)) {
+            return;
+        }
+
+        try {
+            $connector = PlatformConnector::find_or_create_for_user_and_slug((int) $user->id, Platform::SLUG_ZIPNOVA);
+
+            if (!$connector) {
+                Log::warning('DemoSetupHelper: falta la plataforma "zipnova" en el catálogo, no se conectó con las credenciales de demo de la config.');
+
+                return;
+            }
+
+            $connector->access_token     = ZipnovaClient::codificar_credencial($api_token, $api_secret);
+            $connector->platform_user_id = config('services.zipnova.demo_account_id');
+            $connector->status           = PlatformConnector::STATUS_CONECTADO;
+            $connector->error_message    = null;
+            $connector->extra_config     = ZipnovaCredentialsHelper::config_defaults();
+            $connector->save();
+
+            Log::info('DemoSetupHelper: Zipnova conectado con las credenciales de demo de la config.', [
+                'user_id' => $user->id,
+            ]);
+        } catch (\Throwable $e) {
+            $detalle = ($e instanceof \Illuminate\Database\QueryException)
+                ? 'QueryException (SQLSTATE '.$e->getCode().')'
+                : $e->getMessage();
+
+            Log::error('DemoSetupHelper: no se pudo conectar Zipnova con las credenciales de demo de la config: '.$detalle);
         }
     }
 

@@ -25,6 +25,11 @@ class ComisionPorcentajeGeneral {
      * Crea una sola comision sobre el TOTAL FINAL de la venta (con descuentos, recargos e IVA ya
      * aplicados — decision explicita de Lucas, 29/7/2026, no usar subtotales ni netos).
      *
+     * Mision comision-vendedor-liquidacion-iva (14/9/2026): esa decision sigue firme como
+     * comportamiento POR DEFECTO. La excepcion es un vendedor con `commission_with_iva = 0`: ahi
+     * se resta del total el IVA de los articulos (ver total_iva_articulos()) antes de aplicar el
+     * porcentaje, para que la comision se liquide sobre el neto.
+     *
      * @param \App\Models\Sale $sale
      * @return void
      */
@@ -50,13 +55,21 @@ class ComisionPorcentajeGeneral {
 
         $ct = new Controller();
 
+        // Base de calculo: el total final de la venta, salvo que el vendedor tenga el check
+        // desactivado explicitamente (columna NOT NULL, default 1: solo puede ser 1 o 0).
+        $base_comision = $sale->total;
+
+        if ((int)$seller->commission_with_iva === 0) {
+            $base_comision -= Self::total_iva_articulos($sale);
+        }
+
         $seller_commission = SellerCommission::create([
             'num'           => $ct->num('seller_commissions'),
             'seller_id'     => $sale->seller_id,
             'percentage'    => $porcentaje_comision,
             'sale_id'       => $sale->id,
             'moneda_id'     => $moneda_id,
-            'debe'          => Numbers::redondear($sale->total * (float)$porcentaje_comision / 100),
+            'debe'          => Numbers::redondear($base_comision * (float)$porcentaje_comision / 100),
             'status'        => $status,
             'liquidada_at'  => $status == 'active' ? now() : null,
             'description'   => 'Venta N°'.$sale->num,
@@ -66,6 +79,48 @@ class ComisionPorcentajeGeneral {
         ComisionesHelper::recalcular_saldos($sale->seller_id, $moneda_id);
 
         Log::info('Se creo comision generica para sale_id '.$sale->id);
+    }
+
+    /**
+     * Suma el IVA de cada renglon de ARTICULO vendido (tabla `article_sale`), usando el precio
+     * unitario congelado en el pivot al momento de la venta (`price` con IVA, `price_sin_iva`
+     * sin IVA) — no el IVA actual del articulo, que puede haber cambiado desde entonces. Es el
+     * mismo dato ya usado por ContabilidadRepository::iibb_determinado() y por
+     * PuntosBaseHelper::calcular_grupos() para el mismo problema (base neta de un renglon).
+     *
+     * Para un articulo Exento/No Gravado, `price_sin_iva` ya viene igual a `price`
+     * (SaleHelper::get_price_sin_iva() no divide en esos casos), asi que la resta da 0 sola, sin
+     * necesidad de mirar la alicuota de nuevo aca.
+     *
+     * No prorratea descuentos ni recargos GLOBALES de la venta (descuento %, discounts, recargo
+     * con tarjeta) — misma limitacion, ya conocida y documentada, que tiene
+     * ContabilidadRepository::iibb_determinado() para el mismo calculo.
+     *
+     * Servicios, combos y promociones de vinoteca NO participan: sus pivots no tienen
+     * `price_sin_iva` ni `iva_percentage` (limitacion de schema ya documentada en
+     * PuntosBaseHelper), asi que no se les puede sacar el IVA con datos congelados.
+     *
+     * @param \App\Models\Sale $sale
+     * @return float
+     */
+    static function total_iva_articulos($sale) {
+
+        $sale->loadMissing('articles');
+
+        $iva_total = 0;
+
+        foreach ($sale->articles as $articulo) {
+
+            $pivot = $articulo->pivot;
+
+            // Fallback a `price` para renglones viejos, previos a que existiera la columna
+            // price_sin_iva: sin dato congelado, no se le inventa un IVA a restar.
+            $price_sin_iva = is_null($pivot->price_sin_iva) ? (float)$pivot->price : (float)$pivot->price_sin_iva;
+
+            $iva_total += ((float)$pivot->price - $price_sin_iva) * (float)$pivot->amount;
+        }
+
+        return $iva_total;
     }
 
 }

@@ -90,6 +90,7 @@ class BudgetController extends Controller
 
             BudgetHelper::attachServices($model, $request->services);
             BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+            BudgetHelper::attachCombos($model, $request->combos);
 
             BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
 
@@ -269,6 +270,12 @@ class BudgetController extends Controller
         BudgetHelper::attachArticles($model, $request->articles, true);
         BudgetHelper::attachServices($model, $request->services);
         BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+        /*
+            Va DESPUES de los otros tres y antes de `checkStatus()`: si este update confirma el
+            presupuesto, `checkStatus()` crea la venta leyendo `$budget->combos` de la base, asi que
+            los combos ya tienen que estar adjuntados.
+        */
+        BudgetHelper::attachCombos($model, $request->combos);
 
         /*
             🔴 checkStatus() SOLO si el estado cambio de verdad.

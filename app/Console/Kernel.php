@@ -107,46 +107,43 @@ class Kernel extends ConsoleKernel
         // ninguno — la creación manual de un artículo sigue embebiendo al toque igual, porque eso
         // vive en ArticleObserver/DescriptionObserver y no pasa por acá. Default false: ningún
         // cliente real nota que esta variable existe.
+        //
+        // EMBEDDINGS_GENERACION_PAUSADA (misión busqueda-lenta-y-pausa-embeddings) es OTRO
+        // interruptor, con OTRO propósito: no es por instancia de demo, es la pausa global de
+        // TODO el parque. No reemplaza a EMBEDDINGS_OMITIR_IMPORTACION ni se mezcla con ella -- las
+        // dos se evalúan por separado y cualquiera de las dos alcanza para no agendar. El comando ya
+        // corta solo si está pausado (mismo chequeo en GenerateArticleEmbeddings::handle()), así que
+        // esto no es estrictamente necesario para la corrección; es consistente con la filosofía ya
+        // escrita acá arriba: cero arranques de artisan cuando no hay nada que hacer.
+        //
+        // Se lee con config('services.openai.embeddings_generacion_pausada'), no con env()
+        // directo: con config:cache activo (lo normal en producción) env() fuera de config/
+        // devuelve el default. Ver config/services.php.
         if (
             $company_owner
             && UserHelper::hasExtencion('whatsapp_ia', $company_owner)
             && ! filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)
+            && ! config('services.openai.embeddings_generacion_pausada')
         ) {
             $schedule->command('articles:generate-embeddings')
                 ->everyThirtyMinutes()
                 ->withoutOverlapping(25);
         }
 
-        // Generación automática de sugerencias de stock (v2), solo con la
-        // extensión sugerencias_inteligentes. El comando decide adentro si
-        // según la periodicidad configurada hoy toca (o sale en una línea).
-        // 05:00: lejos de debt:snapshot (23:59) y antes de que abra el
-        // comercio; withoutOverlapping(60) cubre catálogos grandes.
-        if ($company_owner && UserHelper::hasExtencion('sugerencias_inteligentes', $company_owner)) {
-            $schedule->command('sugerencias:generar')
-                ->dailyAt('05:00')
-                ->withoutOverlapping(60);
-        }
-
-        // Generación automática de sugerencias de compra a proveedores, solo
-        // con la extensión sugerencias_compras. Mismo patrón que
-        // sugerencias:generar de arriba: el comando decide adentro si según
-        // la periodicidad configurada hoy toca (o sale en una línea).
-        // 05:30 y no 05:00: no se pisa con sugerencias:generar (mismo
-        // comercio, misma ventana horaria, dos comandos que recorren todo el
-        // catálogo). withoutOverlapping(60) cubre catálogos grandes.
-        if ($company_owner && UserHelper::hasExtencion('sugerencias_compras', $company_owner)) {
-            $schedule->command('compras:generar')
-                ->dailyAt('05:30')
-                ->withoutOverlapping(60);
-        }
+        // sugerencias:generar (05:00) y compras:generar (05:30) YA NO SE AGENDAN (misión
+        // modulo-ia-mostrador, 14/9/2026): las carpetas Stock y Compras del mostrador del módulo
+        // IA las reemplazan. Los hechos de esas dos carpetas los calcula el API a pedido de la
+        // skill /mostrador (admin-sync/mostrador/hechos) con los mismos motores
+        // (StockSuggestionService, PurchaseSuggestionService + CoberturaService), sin persistir
+        // corridas. Los dos comandos y sus rutas API (stock-suggestion, purchase-suggestion)
+        // siguen existiendo para correr a mano y para los SPA viejos; solo se apaga el cron.
 
         // Corrida automática del motor de ofertas por cliente, solo con la extensión
-        // motor_de_ofertas. Mismo patrón que los dos de arriba: el comando decide adentro si hoy
-        // toca según la periodicidad, y ese doble gate es a propósito (el de acá evita el SELECT;
-        // el de adentro cubre la corrida a mano). 06:00 y no 05:00/05:30: no se pisa con
-        // sugerencias:generar ni con compras:generar, que en la misma ventana recorren catálogo e
-        // historial del mismo comercio. withoutOverlapping(60) cubre padrones de clientes grandes.
+        // motor_de_ofertas. El comando decide adentro si hoy toca según la periodicidad, y ese
+        // doble gate es a propósito (el de acá evita el SELECT; el de adentro cubre la corrida
+        // a mano). 06:00: conserva su lugar en la ventana nocturna aunque sugerencias:generar y
+        // compras:generar ya no corran antes. withoutOverlapping(60) cubre padrones de clientes
+        // grandes. Sigue agendado: alimenta Promociones, que queda en Tienda Online.
         if ($company_owner && UserHelper::hasExtencion('motor_de_ofertas', $company_owner)) {
             $schedule->command('ofertas:generar')
                 ->dailyAt('06:00')
@@ -201,17 +198,16 @@ class Kernel extends ConsoleKernel
         }
 
         // Reporte de inventario (stock mínimo, sin stock, valuación) de cada comercio, una vez por
-        // noche (misión optimizacion-vps-fase1, 4.0.24). Hasta la 4.0.23 se regeneraba desde
-        // InventoryPerformanceController::index() en cada entrada al sistema con un reporte de más
-        // de 30 minutos, o sea todo el día: en servian (537k artículos) cada corrida son 18-20 min
-        // de worker. Ahora index() sólo encola si no hay reporte o si tiene más de 7 días, y el
-        // botón Actualizar lo dispara a pedido.
+        // noche (misión optimizacion-vps-fase1, 4.0.24). 04:00: después del backup nocturno del VPS
+        // (03:15) y con el servidor sin uso — sigue siendo el único momento en que conviene disparar
+        // una corrida que en catálogos grandes (537k artículos en servian) tarda 18-20 min.
         //
-        // 04:00: después del backup nocturno del VPS (03:15) y antes de sugerencias:generar (05:00)
-        // y compras:generar (05:30), que recorren el mismo catálogo del mismo comercio. Comparte la
-        // hora con tracking:purgar-buyers, que sólo corre con la extensión tracking_buyers y borra
-        // otra tabla. withoutOverlapping(120) y no el default de 1440: el job tiene timeout de
-        // 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
+        // Desde la misión reporte-inventario-manual (15/9/2026) esta corrida nocturna y el botón
+        // Actualizar (`generate()`) son las DOS ÚNICAS formas de generar el reporte: se sacó la red
+        // de seguridad que tenía InventoryPerformanceController::index() (regenerar si el último
+        // reporte tenía más de 7 días), que lo disparaba en horario comercial con el servidor en uso
+        // — justo lo que se quería evitar. withoutOverlapping(120) y no el default de 1440: el job
+        // tiene timeout de 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
         //
         // Sin gate por extensión (el reporte es de todos los comercios) y sin ->when(): corre una
         // vez por día, no por minuto, y adentro el candado atómico de Cache::add evita que se pise
@@ -325,6 +321,17 @@ class Kernel extends ConsoleKernel
         $schedule->command('zippin:refresh-tokens')
             ->daily()
             ->withoutOverlapping();
+
+        // Estado de los envíos en curso en Zipnova (misión zipnova-envios, 14/9/2026). Es la red de
+        // abajo del webhook `POST /api/zipnova/webhook`: si el WAF del hosting frena los avisos
+        // (pasó con Kapso) o el comercio conectó sin webhook, el operador igual ve el estado con
+        // no más de media hora de atraso. Corre para TODOS los comercios con envíos en curso (el
+        // conector es por comercio, no por instancia) y el comando saltea lo sincronizado hace
+        // menos de 30 minutos. Sin ->when(): la consulta que decide si hay trabajo es la misma
+        // que hace el comando, y cada 30 minutos (no cada minuto) un arranque de artisan no pesa.
+        $schedule->command('zipnova:sincronizar-envios')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping(25);
     }
 
     /**

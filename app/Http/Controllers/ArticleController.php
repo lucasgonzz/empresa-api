@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
@@ -160,6 +161,11 @@ class ArticleController extends Controller
         }
         
         $models = $models->orderBy('deleted_at', 'DESC')
+                            // Sin el vector de embeddings: mismo criterio que index() (misión
+                            // busqueda-lenta-y-pausa-embeddings, sobre lo que dejó optimizacion-vps-fase1
+                            // / 4.0.24). Esta consulta no usa withAll(), así que el scope no tiene que
+                            // ir antes de nada más: alcanza con encadenarlo antes de paginate().
+                            ->sinEmbedding()
                             ->paginate($per_page);
 
         return response()->json(['models' => $models], 200);
@@ -179,6 +185,33 @@ class ArticleController extends Controller
 
     function show($id) {
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
+    }
+
+    /**
+     * La ficha del artículo para la tarjeta que abre el hover sobre una mención del chat del
+     * asistente (misión agente-ia-mano-derecha, §2 del contrato, 16/9/2026): nombre, foto, código,
+     * precio, proveedor, stock total, stock por depósito y listas de precios en UN request.
+     *
+     * 🔴 Es una ruta aparte de `show()` y no un `with` más: `show()` resuelve por id PELADO
+     * (Controller::fullModel()) y devuelve el artículo de cualquier comercio; acá la consulta va
+     * scopeada por `user_id` y contesta 404 si el artículo no es del dueño. Y devuelve SOLO lo que
+     * la tarjeta dibuja: `show()` arrastra el modelo entero con todas sus relaciones, que para un
+     * hover de dos segundos es pagar de más.
+     *
+     * El recorte por `article.stock_only_sucursal` lo hace el helper: la SPA dibuja lo que llega.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse  200 {model} · 404 {message}
+     */
+    function ficha_asistente($id) {
+        $model = FichaArticuloIaHelper::ficha($id, $this->userId(), UserHelper::user(false));
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'Artículo no encontrado.'], 404);
+        }
+
+        return response()->json(['model' => $model], 200);
     }
 
     /**
@@ -1116,9 +1149,13 @@ class ArticleController extends Controller
     }
 
     function articles_por_defecto() {
+        // where('default_in_vender', '>', 0) y no whereNotNull: la columna es un INT que
+        // arranca en 0 (no en NULL) para los articulos que nunca se marcaron, asi que
+        // whereNotNull traia el catalogo entero en vez de solo los marcados. Mismo criterio
+        // que ultimos_actualizados() unas lineas mas abajo, que ya lo hacia bien.
         $models = Article::where('user_id', $this->userId())
                             ->where('status', 'active')
-                            ->whereNotNull('default_in_vender')
+                            ->where('default_in_vender', '>', 0)
                             ->orderBy('default_in_vender', 'DESC')
                             ->withAll()
                             ->get();

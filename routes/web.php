@@ -181,6 +181,7 @@ Route::get('/platform-connector/tiendanube/callback', function (\Illuminate\Http
 
 
 Route::post('login', 'CommonLaravel\AuthController@login');
+Route::post('login-forzado', 'CommonLaravel\AuthController@login_forzado');
 Route::post('logout', 'CommonLaravel\AuthController@logout');
 Route::post('version-session-token', 'CommonLaravel\AuthController@create_version_session_token')
     ->middleware('auth');

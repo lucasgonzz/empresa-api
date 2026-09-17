@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Models\Article;
 use App\Models\ArticlePurchase;
 use App\Models\Client;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\User;
@@ -107,18 +108,28 @@ class Consultas_helper_Test extends TestCase
      */
     public function clientes_trae_saldo_e_id_y_filtra_por_dueno()
     {
-        Client::create([
+        /*
+         * Misión asistente-ia-acciones (§3.9 del plan): la deuda se siembra donde vive de
+         * verdad, en la cuenta corriente en pesos del cliente (credit_accounts), y no en
+         * clients.saldo, que es una columna muerta. Cambia SOLO cómo se siembra: las aserciones
+         * de abajo son las mismas. La cuenta en dólares de Gomez no tiene que sumar. (El caso
+         * "moneda_id null cuenta como pesos" no se puede sembrar: credit_accounts.moneda_id es
+         * NOT NULL en el esquema.)
+         */
+        $gomez = Client::create([
             'name'    => 'Cliente P2 Gomez',
             'user_id' => $this->comercio->id,
             'phone'   => '2664001122',
             'email'   => 'gomez-p2@test.local',
-            'saldo'   => 1500.50,
         ]);
-        Client::create([
+        $this->cuenta_corriente($gomez, 1, 1500.50);
+        $this->cuenta_corriente($gomez, 2, 10);
+
+        $gomez_ajeno = Client::create([
             'name'    => 'Cliente P2 Gomez ajeno',
             'user_id' => $this->otro_comercio->id,
-            'saldo'   => 99,
         ]);
+        $this->cuenta_corriente($gomez_ajeno, 1, 99);
 
         $resultado = ConsultasSistemaIaHelper::clientes($this->comercio->id, 'Gomez');
 
@@ -266,21 +277,30 @@ class Consultas_helper_Test extends TestCase
      */
     public function clientes_con_saldo_pendiente_trae_solo_deudores_ordenados_por_deuda()
     {
-        Client::create([
+        /*
+         * Misión asistente-ia-acciones (§3.9 del plan): la deuda va en la cuenta corriente en
+         * pesos de cada cliente y no en la columna muerta clients.saldo. Cambia SOLO cómo se
+         * siembra; las aserciones de abajo son las mismas. La cuenta en dólares del deudor grande
+         * no suma a la deuda en pesos.
+         */
+        $chico = Client::create([
             'name'    => 'Deudor P2 chico',
             'user_id' => $this->comercio->id,
-            'saldo'   => 200,
         ]);
-        Client::create([
+        $this->cuenta_corriente($chico, 1, 200);
+
+        $grande = Client::create([
             'name'    => 'Deudor P2 grande',
             'user_id' => $this->comercio->id,
-            'saldo'   => 5000,
         ]);
-        Client::create([
+        $this->cuenta_corriente($grande, 1, 5000);
+        $this->cuenta_corriente($grande, 2, 70);
+
+        $al_dia = Client::create([
             'name'    => 'Cliente P2 al dia',
             'user_id' => $this->comercio->id,
-            'saldo'   => 0,
         ]);
+        $this->cuenta_corriente($al_dia, 1, 0);
 
         $resultado = ConsultasSistemaIaHelper::clientes_con_saldo_pendiente($this->comercio->id);
 
@@ -288,5 +308,63 @@ class Consultas_helper_Test extends TestCase
         $this->assertEquals('Deudor P2 grande', $resultado[0]['cliente'], 'El orden es por deuda descendente.');
         $this->assertEquals(5000.0, $resultado[0]['saldo_pendiente']);
         $this->assertEquals(['cliente', 'telefono', 'saldo_pendiente'], array_keys($resultado[0]));
+    }
+
+    /**
+     * Misión asistente-ia-acciones (§3.9 del plan): clients.saldo es una columna muerta. Un cliente
+     * con la columna vieja sembrada DISTINTA de su cuenta corriente tiene que devolver el saldo de
+     * la cuenta, en las dos consultas. Con la columna vieja el asistente decía "no te debe nada" (o
+     * una deuda que ya no existe) justo antes de cargarle un pago.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_saldo_sale_de_la_cuenta_corriente_y_no_de_la_columna_muerta_de_clients()
+    {
+        $con_deuda = Client::create([
+            'name'    => 'Cliente P2 columna muerta',
+            'user_id' => $this->comercio->id,
+            'saldo'   => 99999,
+        ]);
+        $this->cuenta_corriente($con_deuda, 1, 300);
+
+        $al_dia = Client::create([
+            'name'    => 'Cliente P2 columna muerta al dia',
+            'user_id' => $this->comercio->id,
+            'saldo'   => 5000,
+        ]);
+        $this->cuenta_corriente($al_dia, 1, 0);
+
+        $resultado = ConsultasSistemaIaHelper::clientes($this->comercio->id, 'columna muerta');
+
+        $this->assertCount(2, $resultado);
+        $this->assertEquals('Cliente P2 columna muerta', $resultado[0]['cliente']);
+        $this->assertEquals(300.0, $resultado[0]['saldo'], 'El saldo tiene que salir de credit_accounts y no de clients.saldo.');
+        $this->assertEquals(0.0, $resultado[1]['saldo'], 'Con la cuenta en 0 el cliente está al día, diga lo que diga clients.saldo.');
+
+        $pendientes = ConsultasSistemaIaHelper::clientes_con_saldo_pendiente($this->comercio->id);
+
+        $this->assertCount(1, $pendientes, 'El cliente con 5000 en la columna muerta y 0 en la cuenta no debe nada.');
+        $this->assertEquals('Cliente P2 columna muerta', $pendientes[0]['cliente']);
+        $this->assertEquals(300.0, $pendientes[0]['saldo_pendiente']);
+    }
+
+    /**
+     * Cuenta corriente de un cliente con su saldo: es donde el sistema guarda la deuda viva (§3.9).
+     *
+     * @param Client $cliente
+     * @param int $moneda_id 1 pesos, 2 dólares
+     * @param float $saldo
+     * @return CreditAccount
+     */
+    protected function cuenta_corriente($cliente, $moneda_id, $saldo)
+    {
+        return CreditAccount::create([
+            'model_name' => 'client',
+            'model_id'   => $cliente->id,
+            'moneda_id'  => $moneda_id,
+            'saldo'      => $saldo,
+            'user_id'    => $cliente->user_id,
+        ]);
     }
 }

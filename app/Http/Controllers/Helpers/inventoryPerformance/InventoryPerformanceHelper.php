@@ -36,15 +36,6 @@ class InventoryPerformanceHelper {
 	const MINUTOS_DEL_CANDADO = 60;
 
 	/**
-	 * Días de vigencia de un reporte para index(): pasado ese plazo, entrar al sistema vuelve a
-	 * encolar uno. Ver debe_regenerar() para por qué 7 días y no los minutos de
-	 * duracion_reporte_inventario.
-	 *
-	 * @var int
-	 */
-	const DIAS_DE_VIGENCIA = 7;
-
-	/**
 	 * Llave del candado de generación de un comercio.
 	 *
 	 * @param  int  $user_id
@@ -69,11 +60,12 @@ class InventoryPerformanceHelper {
 	/**
 	 * Encola la generación del reporte del comercio, salvo que ya haya una en curso.
 	 *
-	 * Cache::add() es atómico en cualquier driver y devuelve false si la llave ya existía: varios
-	 * admins entrando a la vez, el scheduler pisándose con el botón Actualizar, o dos schedule:run
-	 * solapados no disparan más de un job. Lo usan index() y generate() del controller y el comando
-	 * inventario:generar, para que las tres puertas compartan el mismo candado (misión
-	 * optimizacion-vps-fase1, 4.0.24).
+	 * Cache::add() es atómico en cualquier driver y devuelve false si la llave ya existía: el
+	 * comando nocturno pisándose con el botón Actualizar, o dos schedule:run solapados, no disparan
+	 * más de un job. Lo usan `generate()` del controller (el botón) y el comando `inventario:generar`
+	 * (la corrida de las 04:00), para que las dos puertas compartan el mismo candado (misión
+	 * optimizacion-vps-fase1, 4.0.24). `index()` ya no encola nada (misión
+	 * reporte-inventario-manual, 15/9/2026): es de sólo lectura.
 	 *
 	 * @param  int  $user_id
 	 * @return bool true si se encoló; false si ya había una generación en curso y no se encoló otra.
@@ -89,33 +81,6 @@ class InventoryPerformanceHelper {
 		ProcessInventoryPerformanceJob::dispatch($user_id);
 
 		return true;
-	}
-
-	/**
-	 * ¿index() tiene que encolar una generación al entrar? Sólo si no hay ningún reporte del
-	 * comercio o si el último tiene más de DIAS_DE_VIGENCIA días.
-	 *
-	 * Hasta la 4.0.23 el criterio era `duracion_reporte_inventario` minutos (30 por defecto): con la
-	 * SPA pidiendo el reporte al arrancar, eso era regenerarlo en cada entrada, todo el día, y en
-	 * servian (537k artículos) cada corrida son 18-20 minutos de worker. Desde la 4.0.24 el reporte
-	 * lo genera de noche inventario:generar (Kernel, 04:00) y a pedido el botón Actualizar, así que
-	 * acá queda sólo la red de seguridad: instancias sin cron de schedule:run (hay ~10 frentes
-	 * activos del shared en ese estado) o cuentas dormidas que el comando nocturno saltea por falta
-	 * de actividad. Siete días fijos y no un valor por comercio: la columna
-	 * duracion_reporte_inventario deja de leerse (queda en la base; la SPA ya no la muestra), porque
-	 * ningún comercio necesita elegir cuánto tarda en enterarse de que su red de seguridad se activó.
-	 *
-	 * @param  \App\Models\InventoryPerformance|null  $inventory_performance  El último reporte del comercio.
-	 * @return bool
-	 */
-	static function debe_regenerar($inventory_performance) {
-
-		if (is_null($inventory_performance) || is_null($inventory_performance->created_at)) {
-
-			return true;
-		}
-
-		return $inventory_performance->created_at->lt(Carbon::now()->subDays(self::DIAS_DE_VIGENCIA));
 	}
 
 	// Id del usuario owner para el que se genera el reporte.

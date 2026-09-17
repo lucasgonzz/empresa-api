@@ -2,30 +2,32 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Helpers\ComercioCityMailHelper;
-use App\Http\Controllers\Helpers\OfertaComunicacionHelper;
-use App\Models\Article;
-use App\Models\Client;
+use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\ClientOffer;
-use App\Models\ClientOfferRange;
 use App\Models\OfferSuggestionLine;
-use App\Models\User;
-use App\Services\OfertasClientes\OfertaSugeridaService;
-use App\Services\OfertasClientes\TechoDeDescuentoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
 /**
- * 🔴 EL ÚNICO CAMINO DE ESCRITURA DE `client_offers`, LA TABLA QUE LEE LA TIENDA
- * (misión 5). No hay endpoint entre los dos sistemas: comparten la base del
- * cliente y la tienda entra por SQL con la query textual del docblock de
- * 2026_08_17_100200_create_client_offers_table.php. Activar hace TRES cosas y el
- * orden importa (§A.8): (a) registra la promoción vigente, EN UNA TRANSACCIÓN
- * junto con el vencimiento de la anterior del mismo par; (b) manda el mail;
- * (c) arma el link de WhatsApp click-to-chat.
+ * 🔴 LA PUERTA HTTP de `client_offers`, LA TABLA QUE LEE LA TIENDA (misión 5). No
+ * hay endpoint entre los dos sistemas: comparten la base del cliente y la tienda
+ * entra por SQL con la query textual del docblock de
+ * 2026_08_17_100200_create_client_offers_table.php.
+ *
+ * 🔴 LA ESCRITURA EN SÍ NO VIVE ACÁ desde la misión agente-ia-mano-derecha
+ * (16/9/2026): está en ClientOfertaAltaHelper, público, porque el asistente de IA
+ * también activa ofertas —las que el dueño pide en palabras, sin línea sugerida— y
+ * no puede pasar por este controller. Acá queda lo que es del HTTP: leer y validar
+ * el request, resolver la línea sugerida del comercio y armar la respuesta. El
+ * payload y las respuestas de `POST api/client-offer` no cambiaron.
+ *
+ * Activar sigue haciendo TRES cosas y el orden importa (§A.8): (a) registra la
+ * promoción vigente, EN UNA TRANSACCIÓN junto con el vencimiento de la anterior
+ * del mismo par; (b) manda el mail; (c) arma el link de WhatsApp click-to-chat.
+ * (b) y (c) van por el parámetro `$avisar_al_cliente` del helper, que este camino
+ * —el de la pantalla— prende siempre.
  *
  * 🔴 LA OFERTA SE ACTIVA AUNQUE NO SE PUEDA AVISAR. (b) y (c) van FUERA de la
  * transacción y no pueden fallar hacia arriba: medido, el 84% de los clientes no
@@ -38,12 +40,13 @@ class ClientOfferController extends Controller
 {
     /**
      * Vigencia máxima: más allá deja de ser una oferta y pasa a ser el precio. 🔴 NO ES UN
-     * 180 escrito acá: apunta al del servicio, que es de donde también sale el tope que se le
-     * permite proponer a la IA (OfertaSugeridaService::tope_de_vigencia()). Antes eran dos
-     * números independientes y el motor precargaba en el datepicker fechas que este mismo
-     * controller después rechazaba con 422.
+     * 180 escrito acá: apunta al del helper, que apunta al del servicio, que es de donde
+     * también sale el tope que se le permite proponer a la IA
+     * (OfertaSugeridaService::tope_de_vigencia()). Antes eran dos números independientes y el
+     * motor precargaba en el datepicker fechas que esta misma activación rechazaba con 422.
+     * Se conserva acá porque hay tests que la leen por esta constante.
      */
-    const MAX_DIAS_VIGENCIA = OfertaSugeridaService::DIAS_VIGENCIA_MAXIMOS;
+    const MAX_DIAS_VIGENCIA = ClientOfertaAltaHelper::MAX_DIAS_VIGENCIA;
 
     /** Paginador, mismo criterio que OfferSuggestionController. */
     const PER_PAGE_MAX = 500;
@@ -141,11 +144,11 @@ class ClientOfferController extends Controller
                 return response()->json(['message' => $validator->errors()->first()], 422);
             }
         }
-        $hasta = $this->validar_hasta($request->input('hasta'));
+        $hasta = ClientOfertaAltaHelper::validar_hasta($request->input('hasta'));
         if (!($hasta instanceof Carbon)) {
             return response()->json(['message' => $hasta], 422);
         }
-        $techo = $this->techo_de_hoy($linea);
+        $techo = ClientOfertaAltaHelper::techo_de_hoy($this->userId(), $linea->client_id, $linea->article_id);
         if (!is_array($techo)) {
             return response()->json(['message' => $techo], 422);
         }
@@ -168,8 +171,22 @@ class ClientOfferController extends Controller
                 'porcentaje_techo' => $techo['techo'],
             ], 422);
         }
-        $offer = $this->activar($linea, $tipo_descuento, $porcentaje, $hasta, $tramos);
-        $this->avisarle_al_cliente($offer);
+        /*
+         * 🔴 El último parámetro en `true` es el aviso al cliente (mail + link de WhatsApp): este
+         * camino —el de la pantalla, donde el comerciante tocó "Activar" mirando a quién se la
+         * manda— lo prende siempre. El del asistente de IA lo deja apagado.
+         */
+        $offer = ClientOfertaAltaHelper::activar(
+            $this->userId(),
+            $linea->client_id,
+            $linea->article_id,
+            $tipo_descuento,
+            $porcentaje,
+            $hasta,
+            $tramos,
+            $linea,
+            true
+        );
 
         return response()->json(['model' => $this->fullModel('ClientOffer', $offer->id)], 201);
     }
@@ -203,252 +220,19 @@ class ClientOfferController extends Controller
     }
 
     /**
-     * (a) La promoción vigente, en UNA transacción con el vencimiento de la
-     * anterior del mismo par.
-     *
-     * @param OfferSuggestionLine $linea
-     * @param string $tipo_descuento
-     * @param int|null $porcentaje null cuando es 'cantidad': el número vive en los tramos.
-     * @param Carbon $hasta
-     * @param array $tramos
-     * @return ClientOffer
-     */
-    protected function activar($linea, $tipo_descuento, $porcentaje, $hasta, array $tramos) {
-        $user_id = $this->userId();
-        return DB::transaction(function () use ($linea, $tipo_descuento, $porcentaje, $hasta, $tramos, $user_id) {
-            /*
-             * 🔴 ACÁ SE SOSTIENE EL INVARIANTE "una sola oferta ACTIVA por
-             * (comercio, cliente, artículo)". No hay unique en la base a
-             * propósito (una cancelada tiene que poder convivir con una activa
-             * nueva: el historial no se borra), así que el invariante vive en
-             * este bloque y en la transacción que lo envuelve. Si alguien crea
-             * un ClientOffer por fuera de este método lo rompe, y la tienda
-             * pasaría a ver dos ofertas del mismo artículo sin desempate.
-             *
-             * 🔴 Y POR ESO EL lockForUpdate(), QUE NO ES DECORACIÓN: un UPDATE
-             * seguido de un INSERT, sin unique y sin lock, no es atómico frente
-             * a otra activación del MISMO par corriendo en paralelo (dos pestañas,
-             * un doble clic, dos workers). Las dos transacciones leen "no hay
-             * activa", las dos cancelan cero filas y las dos insertan: quedan DOS
-             * activas, que es exactamente lo que el docblock de la migración dice
-             * que no puede pasar. Con el lock, la segunda espera a que la primera
-             * cierre y recién ahí ve la fila que tiene que cancelar.
-             *
-             * Se lockea el PAR ENTERO y no solo las activas: el invariante es
-             * sobre el par, y así el gap lock cubre el lugar donde la otra
-             * transacción querría insertar. El historial de un par es un puñado
-             * de filas y entra por client_offers_user_client_article_estado_index.
-             * 🔴 No cambiar esto por un unique en la base: una cancelada o una
-             * vencida TIENEN que poder convivir con la activa nueva.
-             */
-            $del_par = ClientOffer::where('user_id', $user_id)
-                ->where('client_id', $linea->client_id)
-                ->where('article_id', $linea->article_id)
-                ->lockForUpdate()
-                ->get(['id', 'estado']);
-
-            $anteriores = [];
-            foreach ($del_par as $vieja) {
-                if ($vieja->estado === 'activa') {
-                    $anteriores[] = $vieja->id;
-                }
-            }
-            if (!empty($anteriores)) {
-                ClientOffer::whereIn('id', $anteriores)->update(['estado' => 'cancelada']);
-                /*
-                 * 🔴 Y LA LÍNEA VIEJA SE DESAPUNTA, igual que en destroy(). Sin
-                 * esto, la línea de la corrida anterior se queda con el
-                 * client_offer_id de una oferta que ya NO corre y la vista le
-                 * sigue mostrando el badge "Activada" apuntando a una cancelada:
-                 * el comerciante cree que esa promoción está viva. La
-                 * trazabilidad no se pierde, client_offers.offer_suggestion_line_id
-                 * sigue apuntando para el otro lado.
-                 */
-                OfferSuggestionLine::whereIn('client_offer_id', $anteriores)->update(['client_offer_id' => null]);
-            }
-            $offer = ClientOffer::create([
-                'user_id'                  => $user_id,
-                'client_id'                => $linea->client_id,
-                'article_id'               => $linea->article_id,
-                'tipo_descuento'           => $tipo_descuento,
-                // 🔴 En 'cantidad' el porcentaje queda NULL a propósito: el
-                // número vive en los tramos, y dejarlo cargado haría que un
-                // lector distraído (la tienda incluida) aplique el equivocado.
-                'porcentaje'               => $tipo_descuento === 'cantidad' ? null : $porcentaje,
-                'desde'                    => Carbon::today()->toDateString(),
-                'hasta'                    => $hasta->toDateString(),
-                'estado'                   => 'activa',
-                'offer_suggestion_line_id' => $linea->id,
-            ]);
-            if ($tipo_descuento === 'cantidad') {
-                foreach ($tramos as $tramo) {
-                    ClientOfferRange::create([
-                        'client_offer_id' => $offer->id,
-                        'min'             => (int) $tramo['min'],
-                        // max null = sin techo, la convención que la tienda ya
-                        // sabe leer (category_price_type_ranges): un número
-                        // grande en su lugar rompe el lado de allá.
-                        'max'             => self::max_del_tramo($tramo),
-                        'porcentaje'      => (int) $tramo['porcentaje'],
-                    ]);
-                }
-            }
-            // Lo que la vista mira para mostrar "ya activada".
-            $linea->client_offer_id = $offer->id;
-            $linea->save();
-
-            return $offer;
-        });
-    }
-
-    /**
-     * (b) y (c): el mail y el link de WhatsApp, SIEMPRE después de que la
-     * promoción quedó registrada y siempre fuera de la transacción. 🔴 EL
-     * try/catch NO ES DEFENSIVA VAGA: un SMTP mal configurado del comercio o una
-     * tabla `jobs` sin permisos tiran una excepción, y sin esto el comerciante
-     * vería un 500 sobre una oferta que YA quedó activa en la base: la volvería
-     * a activar y se duplicaría el aviso. Se loguea y se sigue.
-     *
-     * @param ClientOffer $offer
-     * @return void
-     */
-    protected function avisarle_al_cliente($offer) {
-        $user = User::find($offer->user_id);
-
-        try {
-            $email = ComercioCityMailHelper::nueva_oferta($offer);
-
-            if (!is_null($email)) {
-                $offer->email_destino = $email;
-                $offer->notificada_email_at = Carbon::now();
-            }
-        } catch (\Throwable $e) {
-            Log::error('Motor de ofertas: no salió el mail de la oferta ' . $offer->id . ': ' . $e->getMessage());
-        }
-        try {
-            $whatsapp = OfertaComunicacionHelper::whatsapp($offer, $user);
-            $offer->whatsapp_telefono = $whatsapp['telefono'];
-            $offer->whatsapp_url = $whatsapp['url'];
-        } catch (\Throwable $e) {
-            Log::error('Motor de ofertas: no se armó el link de whatsapp de la oferta ' . $offer->id . ': ' . $e->getMessage());
-        }
-
-        $offer->save();
-    }
-
-    /**
-     * 🔴 RE-VALIDA EL TECHO CON LOS DATOS DE HOY, y no con el `porcentaje_techo`
-     * guardado en la línea: entre que el motor sugirió y el comerciante activa
-     * pueden pasar días, y en el medio pudo subir el costo o bajar el precio.
-     * Activar contra un techo viejo es exactamente cómo se termina vendiendo
-     * bajo costo con el sistema diciendo que estaba todo bien.
-     *
-     * @param OfferSuggestionLine $linea
-     * @return array|string El array de TechoDeDescuentoService, o el error.
-     */
-    protected function techo_de_hoy($linea) {
-        $article = Article::where('id', $linea->article_id)
-            ->where('user_id', $this->userId())
-            ->with('price_types', 'provider')
-            ->first();
-        if (!$article) {
-            return 'El artículo de esta sugerencia ya no existe en el catálogo.';
-        }
-        $client = Client::where('id', $linea->client_id)->first();
-        $techo = TechoDeDescuentoService::calcular($article, $client, User::find($this->userId()));
-
-        if (is_null($techo)) {
-            // calcular() devuelve null cuando el artículo quedó excluido HOY
-            // (sin costo, dólares con listas, margen no positivo...). Sin techo
-            // no hay descuento seguro posible: no se activa nada.
-            return 'Hoy no se puede calcular un descuento seguro para este artículo: revisá que tenga costo y precio cargados.';
-        }
-
-        return $techo;
-    }
-
-    /**
-     * @param mixed $raw
-     * @return Carbon|string La fecha, o el mensaje de error.
-     */
-    protected function validar_hasta($raw) {
-        if (empty($raw)) {
-            return 'Falta la fecha hasta la que vale la oferta.';
-        }
-        try {
-            $hasta = Carbon::parse($raw)->startOfDay();
-        } catch (\Throwable $e) {
-            return 'La fecha hasta la que vale la oferta no es una fecha válida.';
-        }
-        if ($hasta->lt(Carbon::today())) {
-            return 'La oferta no puede vencer antes de hoy.';
-        }
-        if ($hasta->gt(Carbon::today()->addDays(self::MAX_DIAS_VIGENCIA))) {
-            return 'La oferta no puede durar más de ' . self::MAX_DIAS_VIGENCIA . ' días.';
-        }
-
-        return $hasta;
-    }
-
-    /**
-     * Valida los tramos de una oferta 'cantidad': arrancan en 1, son contiguos y
-     * sin huecos, el último no tiene techo, y NINGUNO supera el techo de hoy.
-     * 🔴 Un hueco (max 5 y el siguiente min 8) deja al comprador que lleva 6
-     * unidades sin ningún descuento aplicable, y la tienda no tiene cómo saber
-     * si eso fue a propósito: se frena acá.
+     * Valida los tramos de una oferta 'cantidad'. 🔴 La regla vive en
+     * ClientOfertaAltaHelper::validar_tramos() desde la misión agente-ia-mano-derecha
+     * (16/9/2026), junto con el resto de la activación; este método queda como delegación
+     * de una línea porque hay un test del motor de ofertas que lo invoca por reflexión sobre
+     * este controller para atar las dos puntas (lo que la IA propone tiene que poder
+     * activarse): tests/Feature/MotorDeOfertas/5_Recorte_de_la_ia_Test.php.
      *
      * @param array $tramos
      * @param int $techo
      * @return string|null El error, o null si están bien.
      */
     protected function validar_tramos(array $tramos, $techo) {
-        if (empty($tramos)) {
-            return 'Una oferta por cantidad necesita al menos un tramo.';
-        }
-        $ultimo = count($tramos) - 1;
-        $esperado_min = 1;
-
-        foreach ($tramos as $i => $tramo) {
-            if (!isset($tramo['min']) || !isset($tramo['porcentaje'])) {
-                return 'Cada tramo tiene que tener una cantidad mínima y un porcentaje.';
-            }
-            $min = (int) $tramo['min'];
-            $max = self::max_del_tramo($tramo);
-            $porcentaje = (int) $tramo['porcentaje'];
-
-            if ($min !== $esperado_min) {
-                // Cubre las dos fallas de una: el primero que no arranca en 1, y
-                // el hueco o el solapamiento entre dos tramos consecutivos.
-                return 'Los tramos tienen que arrancar en 1 unidad y ser contiguos: se esperaba que el tramo ' . ($i + 1) . ' empezara en ' . $esperado_min . '.';
-            }
-            if ($porcentaje < 1) {
-                return 'El porcentaje de cada tramo tiene que ser un número entero de al menos 1.';
-            }
-            if ($porcentaje > $techo) {
-                return 'Con el costo y el precio de hoy, el descuento máximo de este artículo es ' . $techo . '%, y el tramo ' . ($i + 1) . ' pide ' . $porcentaje . '%.';
-            }
-            if ($i === $ultimo) {
-                return is_null($max) ? null : 'El último tramo no lleva cantidad máxima: es el que vale de ahí en adelante.';
-            }
-            if (is_null($max) || $max < $min) {
-                return 'El tramo ' . ($i + 1) . ' necesita una cantidad máxima mayor o igual a su mínima.';
-            }
-            $esperado_min = $max + 1;
-        }
-
-        return null;
-    }
-
-    /**
-     * `max` null (o vacío, que es como lo manda un input limpiado en la SPA) =
-     * "sin techo", y es siempre el último tramo.
-     *
-     * @param array $tramo
-     * @return int|null
-     */
-    protected static function max_del_tramo(array $tramo) {
-        $vacio = !isset($tramo['max']) || is_null($tramo['max']) || $tramo['max'] === '';
-        return $vacio ? null : (int) $tramo['max'];
+        return ClientOfertaAltaHelper::validar_tramos($tramos, $techo);
     }
 
     /**

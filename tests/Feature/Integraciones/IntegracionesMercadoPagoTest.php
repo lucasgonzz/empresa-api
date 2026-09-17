@@ -631,14 +631,18 @@ class IntegracionesMercadoPagoTest extends EmpresaTestCase
             $por_slug[$integracion['slug']] = $integracion;
         }
 
-        foreach (['mercado_libre', 'tienda_nube', 'mercado_pago', 'zippin'] as $slug) {
+        // Desde la misión zipnova-envios (14/9/2026) la integración de envíos del catálogo es
+        // `zipnova` (credenciales de cuenta en platform_connectors) y no `zippin` (el OAuth viejo
+        // sobre online_configurations, que nunca cotizó nada). Cambio de comportamiento a propósito.
+        foreach (['mercado_libre', 'tienda_nube', 'mercado_pago', 'zipnova'] as $slug) {
             $this->assertArrayHasKey($slug, $por_slug, 'Falta la integración "'.$slug.'" en el listado.');
         }
+        $this->assertArrayNotHasKey('zippin', $por_slug, 'El OAuth viejo de Zippin no tiene que volver al catálogo.');
 
         $this->assertSame('sistema', $por_slug['mercado_libre']['grupo']);
         $this->assertSame('sistema', $por_slug['tienda_nube']['grupo']);
         $this->assertSame('tienda_online', $por_slug['mercado_pago']['grupo']);
-        $this->assertSame('tienda_online', $por_slug['zippin']['grupo']);
+        $this->assertSame('tienda_online', $por_slug['zipnova']['grupo']);
 
         $this->assertTrue($por_slug['mercado_pago']['connected'], 'El conector conectado no se reflejó en el listado.');
         $this->assertSame($vence->toJSON(), $por_slug['mercado_pago']['expires_at']);

@@ -71,6 +71,29 @@ class GenerateArticleEmbeddings extends Command
             return 0;
         }
 
+        /*
+         * Pausa global (misión busqueda-lenta-y-pausa-embeddings): interruptor independiente de la
+         * extensión whatsapp_ia, para poder cortar la generación en TODO el parque de un saque sin
+         * ir comercio por comercio desactivando la extensión (que además apagaría con eso la
+         * búsqueda del bot de WhatsApp para quien ya la esté usando). Va ANTES del gate de la
+         * extensión a propósito: a diferencia del aviso de OPENAI_API_KEY de más abajo -que sigue
+         * silencioso, porque no tener la extensión es la situación normal de la mayoría de las
+         * instancias-, acá la pausa es una decisión operativa deliberada y conviene que quede en el
+         * log del scheduler mientras esté prendida. Mismo interruptor que
+         * ArticleObserver::debe_generar_embedding() (el disparo inmediato) y el Kernel (que ni
+         * siquiera agenda el comando si está prendida). Default false: no cambia nada para nadie
+         * hasta que alguien la prenda a mano en el .env.
+         *
+         * Se lee con config('services.openai.embeddings_generacion_pausada'), NUNCA con env()
+         * directo acá: con config:cache activo (lo normal en producción) env() fuera de config/
+         * devuelve el default y prender la variable en el .env de un cliente real no haría nada
+         * — mismo bug que ya pasó con DURACION_REPORTES, ver config/services.php.
+         */
+        if (config('services.openai.embeddings_generacion_pausada')) {
+            $this->warn('articles:generate-embeddings: generación pausada por EMBEDDINGS_GENERACION_PAUSADA. Se omite.');
+            return 0;
+        }
+
         // Solo procesar si el usuario tiene la extensión whatsapp_ia activa.
         if (! UserHelper::hasExtencion('whatsapp_ia', $user)) {
             // Silencioso en scheduler; el usuario simplemente no tiene la extensión.
