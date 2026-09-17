@@ -12,7 +12,19 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\User;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/*
+	| require_once y NO require: los 54 PDF de app/Http/Controllers/ cargan fpdf.php con un
+	| require pelado, asi que el SEGUNDO PDF que se instancie en un mismo proceso muere con
+	| 'Constant FPDF_VERSION already defined' / 'Cannot declare class FPDF'. En produccion no
+	| se nota porque cada request arma un solo PDF, pero una corrida de tests que toca el
+	| presupuesto y el ticket de venta juntos lo dispara: paso el 17/9/2026 al correr
+	| ForzarTotal junto con Presupuestos, Puntos e Iva en un mismo proceso.
+	|
+	| Los otros 51 archivos siguen con require pelado. El barrido completo esta declarado como
+	| hallazgo fuera de alcance en el informe 20260917-forzar-total-por-monto; se detecta con:
+	|     grep -rln 'require(.*fpdf' app/Http/Controllers/
+*/
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class BudgetPdf extends fpdf {
 
