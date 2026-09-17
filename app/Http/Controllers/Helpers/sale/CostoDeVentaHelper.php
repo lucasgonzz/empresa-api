@@ -104,6 +104,15 @@ use Illuminate\Support\Facades\DB;
 class CostoDeVentaHelper
 {
     /**
+     * Alias del join a `articles` que usa la expresión SQL. Va con alias propio (y no como
+     * `articles` a secas) para no chocar con un join que el caller ya tuviera hecho por su cuenta.
+     */
+    const ALIAS_ARTICULO = 'articulo_del_costo';
+
+    /** Alias del join a `ivas`, por el mismo motivo. */
+    const ALIAS_IVA = 'iva_del_costo';
+
+    /**
      * ¿El costo guardado en `article_sale.cost` de esta cuenta trae el IVA adentro?
      *
      * No inventa un criterio nuevo: compone los dos que ya resuelven el pipeline de precios. El
@@ -263,21 +272,37 @@ class CostoDeVentaHelper
     }
 
     /**
-     * Alícuota de una línea: la persistida en el pivot al momento de la venta y, sólo si falta, la
-     * que tiene hoy el artículo.
+     * Alícuota de una línea: la persistida en el pivot al momento de la venta y, sólo si la columna
+     * está VACÍA, la que tiene hoy el artículo.
+     *
+     * 🔴 "Vacía" es null o cadena vacía, y no incluye 'Exento' ni 'No Gravado': esas son alícuotas
+     * fiscales reales, y son justamente la respuesta de que esa línea no lleva IVA. Cayéndose a la
+     * del artículo, una línea vendida como exenta cuyo artículo hoy tiene 21 % se netearía un 21 %
+     * que nunca pagó. Es, además, la misma regla que la expresión SQL (`COALESCE` sobre `NULLIF`),
+     * y que las dos coincidan es lo que hace que la tarjeta del reporte y `sales.ganancia` no puedan
+     * divergir.
      *
      * @param  mixed $fila
      * @return float|null Null cuando no hay una alícuota numérica utilizable.
      */
     private static function alicuota_de_la_linea($fila)
     {
-        $del_pivot = self::alicuota_numerica($fila->iva_percentage);
-
-        if (!is_null($del_pivot)) {
-            return $del_pivot;
+        if (!self::esta_vacio($fila->iva_percentage)) {
+            return self::alicuota_numerica($fila->iva_percentage);
         }
 
         return self::alicuota_numerica($fila->alicuota_del_articulo);
+    }
+
+    /**
+     * ¿Esta columna de texto no trae ningún valor? (null o cadena vacía).
+     *
+     * @param  mixed $valor
+     * @return bool
+     */
+    private static function esta_vacio($valor)
+    {
+        return is_null($valor) || trim((string) $valor) === '';
     }
 
     /**
@@ -300,6 +325,134 @@ class CostoDeVentaHelper
         }
 
         return (float) $valor;
+    }
+
+    // =========================================================================================
+    // LA MISMA CUENTA, PERO EN SQL (Estado de Resultados)
+    // =========================================================================================
+
+    /**
+     * Expresión SQL del costo NETO de una línea de pivot, y —si hace falta— los joins que esa
+     * expresión necesita, agregados al `$query` que se le pasa.
+     *
+     * 🔴 POR QUÉ EXISTE, aparte de los métodos de arriba. El Estado de Resultados suma el costo de
+     * decenas de miles de líneas y además lo pagina: traerlas a PHP no es una opción. Pero el
+     * criterio no puede vivir en dos lugares, así que lo que se duplica es la sintaxis, no la regla:
+     * esta expresión y `credito_de_la_linea()` preguntan exactamente lo mismo —`aplicar_iva`
+     * prendido y alícuota numérica mayor a cero, con la del pivot primero y la del artículo sólo si
+     * la columna está vacía— y el test que las compara sobre la misma venta es lo que impide que se
+     * separen.
+     *
+     * 🔴 LOS JOINS NO PUEDEN MULTIPLICAR FILAS, y eso es obligatorio: los dos van contra una PK
+     * (`article_sale.article_id → articles.id` y `articles.iva_id → ivas.id`), así que cada línea
+     * sigue dando una fila. Es lo que permite que el `count()` del drill-down siga contando lo
+     * mismo. No se filtra por `articles.deleted_at` a propósito: la relación `Sale::articles()` usa
+     * `withTrashed()`, o sea que un artículo borrado sigue aportando su costo, y filtrarlo acá haría
+     * que la tarjeta dejara de coincidir con `sales.total_cost`.
+     *
+     * ⚠️ Cuando la cuenta NO tiene el costo bruto —casi todas— devuelve el `cost * amount` de
+     * siempre y no agrega un solo join: la query queda idéntica a la de antes de esta misión.
+     *
+     * @param  mixed $query Builder (Eloquent o Query) sobre el que se van a agregar los joins.
+     * @param  string $tabla Nombre del pivot: `article_sale` o `article_current_acount`.
+     * @param  \App\Models\User|null $user Dueño de los datos.
+     * @return string Expresión SQL lista para meter en un `SUM()` o en un `select`.
+     */
+    public static function expresion_costo_neto_de_linea($query, $tabla, $user)
+    {
+        /** Costo BRUTO de la línea entera: la misma cuenta que hacen set_total_cost() y el CMV. */
+        $costo_bruto = '('.$tabla.'.cost * '.$tabla.'.amount)';
+
+        if (!self::hay_credito_fiscal_en_el_costo($user)) {
+            return $costo_bruto;
+        }
+
+        self::aplicar_joins_de_alicuota($query, $tabla);
+
+        /**
+         * Alícuota de la línea. El `NULLIF` es lo que hace que 'Exento' NO caiga a la del artículo
+         * (ver alicuota_de_la_linea()): sólo se cae cuando la columna está vacía de verdad.
+         *
+         * El `CAST` reemplaza a un `REGEXP` a propósito: MySQL convierte 'Exento' y 'No Gravado' a 0
+         * —con warning, no con error—, que es exactamente la respuesta que se necesita, y así no hay
+         * que pelear con el doble escapado de la barra invertida entre PHP, la cadena de MySQL y el
+         * motor de expresiones regulares.
+         */
+        $alicuota = 'CAST(COALESCE(NULLIF('.$tabla.".iva_percentage, ''), ".self::ALIAS_IVA.'.percentage) AS DECIMAL(10,4))';
+
+        /** Mismo guard que ArticlePricesHelper::aplicar_iva(): sin la tilde no se sumó IVA alguno. */
+        $linea_es_bruta = '('.self::ALIAS_ARTICULO.'.aplicar_iva = 1 AND '.$alicuota.' > 0)';
+
+        return '(CASE WHEN '.$linea_es_bruta
+            .' THEN '.$costo_bruto.' / (1 + ('.$alicuota.' / 100))'
+            .' ELSE '.$costo_bruto.' END)';
+    }
+
+    /**
+     * Agrega al query los dos joins que necesita `expresion_costo_neto_de_linea()`, una sola vez.
+     *
+     * Van con alias propios para no chocar con un join a `articles` que el caller ya tuviera hecho
+     * por su cuenta, y el guard de reentrada es porque la tarjeta y su drill-down comparten la misma
+     * query base.
+     *
+     * @param  mixed $query
+     * @param  string $tabla
+     * @return void
+     */
+    private static function aplicar_joins_de_alicuota($query, $tabla)
+    {
+        if (self::ya_tiene_los_joins($query)) {
+            return;
+        }
+
+        $query->leftJoin('articles as '.self::ALIAS_ARTICULO, self::ALIAS_ARTICULO.'.id', '=', $tabla.'.article_id')
+              ->leftJoin('ivas as '.self::ALIAS_IVA, self::ALIAS_IVA.'.id', '=', self::ALIAS_ARTICULO.'.iva_id');
+    }
+
+    /**
+     * ¿Este query ya tiene puestos los joins de alícuota?
+     *
+     * @param  mixed $query
+     * @return bool
+     */
+    private static function ya_tiene_los_joins($query)
+    {
+        $base = method_exists($query, 'getQuery') ? $query->getQuery() : $query;
+
+        if (!isset($base->joins) || !is_array($base->joins)) {
+            return false;
+        }
+
+        foreach ($base->joins as $join) {
+
+            if (isset($join->table) && $join->table === 'articles as '.self::ALIAS_ARTICULO) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Usuario dueño de un conjunto de datos, resuelto por id.
+     *
+     * Es el camino que usa `ContabilidadRepository`, que recibe el `$user_id` como parámetro:
+     * `EstadoResultadosHelper` tiene prohibido `auth()` (el cron `SetCompanyPerformances` lo llama
+     * sin sesión HTTP) y tiene prohibido consultar la base por fuera del repository.
+     *
+     * A propósito NO cachea: los tests cambian las tildes fiscales del usuario en medio de una
+     * corrida, y una caché estática les devolvería la configuración vieja.
+     *
+     * @param  int|null $user_id
+     * @return \App\Models\User|null
+     */
+    public static function user_por_id($user_id)
+    {
+        if (is_null($user_id)) {
+            return null;
+        }
+
+        return User::find($user_id);
     }
 
     /**

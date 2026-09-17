@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\contabilidad;
 
 use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Models\AfipTicket;
 use App\Models\CurrentAcount;
@@ -486,8 +487,16 @@ class ContabilidadRepository
      *
      * FUENTE ACTUAL: pivot `article_sale` (campos `cost`, `amount`), unido a `sales` para poder
      * filtrar por usuario/fecha/moneda/etc. El campo `article_sale.cost` es el costo real dejado por
-     * el refactor de precios (Capa 1, prompts 260-264): ya viene neto y sin mezclar bonificaciones de
-     * proveedor (ver `ArticlePricesHelper`), así que no hace falta recalcular nada acá.
+     * el refactor de precios (Capa 1, prompts 260-264): ya viene sin mezclar bonificaciones de
+     * proveedor (ver `ArticlePricesHelper`).
+     *
+     * 🔴 Lo que NO siempre es cierto es que ese costo venga NETO, y por eso el `SUM()` ya no suma
+     * `cost * amount` pelado: en una cuenta legacy con `aplicar_iva_al_costo` prendida el costo está
+     * guardado BRUTO, y ese IVA de compra es crédito fiscal recuperable. Ver
+     * `CostoDeVentaHelper::expresion_costo_neto_de_linea()`, que es la que decide y la que agrega
+     * los joins cuando hacen falta (en una cuenta con el costo neto no agrega ninguno).
+     *
+     * @see costo_neto_de_linea()
      *
      * @param  int $user_id
      * @param  \Carbon\Carbon $desde
@@ -525,7 +534,42 @@ class ContabilidadRepository
     }
 
     /**
-     * Costo real (Capa 1) de la mercadería vendida en el período.
+     * Expresión SQL del costo NETO de una línea de pivot, con los joins que necesite ya puestos en
+     * el `$query`. Es el único punto de este archivo que sabe del costo bruto (misión
+     * saneo-ganancia-ventas, 17/9/2026).
+     *
+     * 🔴 El `User` se resuelve por `$user_id` y NUNCA por `auth()`: el Estado de Resultados lo corre
+     * también el cron `SetCompanyPerformances`, sin sesión HTTP. Y la query vive acá, en el
+     * repository, que es donde `EstadoResultadosHelper` tiene permitido que se consulte la base.
+     *
+     * @param  mixed $query
+     * @param  string $tabla `article_sale` o `article_current_acount`.
+     * @param  int $user_id
+     * @return string
+     */
+    private static function costo_neto_de_linea($query, $tabla, $user_id)
+    {
+        return CostoDeVentaHelper::expresion_costo_neto_de_linea(
+            $query,
+            $tabla,
+            CostoDeVentaHelper::user_por_id($user_id)
+        );
+    }
+
+    /**
+     * Costo real (Capa 1) de la mercadería vendida en el período, NETO del IVA de compra que el
+     * negocio recupera.
+     *
+     * 🔴 Por qué el neteo tiene que estar acá y no se podía dejar para después: desde esta misma
+     * misión `ventas_brutas()` sale NETA del IVA declarado. Si el costo se siguiera sumando bruto,
+     * el "resultado bruto" de una cuenta legacy quedaría subvaluado en el 21 % del costo — y peor
+     * que antes, porque antes las dos puntas estaban igual de brutas y el error se cancelaba solo.
+     *
+     * ⚠️ El reporte se calcula en el momento, así que refleja siempre el criterio de HOY. Si la
+     * tilde `aplicar_iva_al_costo` se cambió en algún momento (algo que el sistema no registra en
+     * ninguna tabla, ver el guard de `set_sales_ganancia`), un período anterior a ese cambio se
+     * netea con el criterio actual. A diferencia de `sales.ganancia`, acá no se persiste nada: el
+     * número se recalcula entero cada vez que se abre el reporte.
      *
      * @param  int $user_id
      * @param  string $desde
@@ -535,8 +579,12 @@ class ContabilidadRepository
      */
     public static function costo_mercaderia_vendida($user_id, $desde, $hasta, $filtros = [])
     {
-        $row = self::query_costo_mercaderia_vendida($user_id, $desde, $hasta, $filtros)
-            ->selectRaw('SUM(article_sale.cost * article_sale.amount) as total')
+        $query = self::query_costo_mercaderia_vendida($user_id, $desde, $hasta, $filtros);
+
+        $costo_neto = self::costo_neto_de_linea($query, 'article_sale', $user_id);
+
+        $row = $query
+            ->selectRaw('SUM('.$costo_neto.') as total')
             ->first();
 
         return (float) ($row ? $row->total : 0);
@@ -548,6 +596,12 @@ class ContabilidadRepository
      * 🔴 `link_id` es el id de la VENTA (`sales.id`), nunca el de la línea `article_sale` (regla 07).
      * El `id` devuelto en cada registro es el de la línea (`article_sale.id`), útil solo como key en
      * el front.
+     *
+     * 🔴 El `monto` sale de la MISMA expresión que la tarjeta y ya no de `cost * amount` en PHP: si
+     * la tarjeta netea y el drill-down no, el usuario ve dos números distintos para lo mismo y no
+     * hay forma de que cierren. El `count()` corre sobre la query SIN los joins de alícuota, que es
+     * lo que garantiza que la cantidad de renglones no cambie (los joins tampoco la cambiarían —van
+     * contra PK—, pero no agregarlos lo vuelve imposible por construcción).
      *
      * @param  int $user_id
      * @param  string $desde
@@ -565,7 +619,11 @@ class ContabilidadRepository
 
         $total = $base()->count();
 
-        $rows = $base()
+        $query = $base();
+
+        $costo_neto = self::costo_neto_de_linea($query, 'article_sale', $user_id);
+
+        $rows = $query
             ->orderBy('sales.created_at', 'ASC')
             ->skip(($page - 1) * $per_page)
             ->take($per_page)
@@ -575,8 +633,8 @@ class ContabilidadRepository
                 'sales.id as sale_id',
                 'sales.num as sale_num',
                 'article_sale.name as articulo_nombre',
-                'article_sale.cost as cost',
                 'article_sale.amount as amount',
+                DB::raw($costo_neto.' as monto'),
             ]);
 
         $registros = [];
@@ -586,7 +644,7 @@ class ContabilidadRepository
                 'id'          => $row->id,
                 'fecha'       => $row->fecha,
                 'descripcion' => ($row->articulo_nombre ?: 'Artículo').' x'.$row->amount.' — Venta N° '.$row->sale_num,
-                'monto'       => (float) ($row->cost * $row->amount),
+                'monto'       => (float) $row->monto,
                 'link_tipo'   => 'sale',
                 // Regla 07: id de la venta, no de la línea article_sale.
                 'link_id'     => $row->sale_id,
@@ -637,6 +695,13 @@ class ContabilidadRepository
     /**
      * Costo de la mercadería devuelta en el período, para netear contra `costo_mercaderia_vendida()`.
      *
+     * 🔴 Se netea con el MISMO criterio que el CMV, y no es opcional: `article_current_acount.cost`
+     * es una copia del `cost` de la línea de venta original (ver
+     * `CurrentAcountHelper::attachNotaCreditoArticles()`), o sea que arrastra el mismo costo bruto —
+     * y su `iva_percentage` es también el de la venta original. Netear una punta sin la otra dejaría
+     * el renglón mestizo: el costo neto de mercadería es una resta entre las dos, y la devolución
+     * le quedaría restando de más un 21 %.
+     *
      * @param  int $user_id
      * @param  string $desde
      * @param  string $hasta
@@ -645,8 +710,12 @@ class ContabilidadRepository
      */
     public static function costo_mercaderia_devuelta($user_id, $desde, $hasta, $filtros = [])
     {
-        $row = self::query_costo_mercaderia_devuelta($user_id, $desde, $hasta, $filtros)
-            ->selectRaw('SUM(article_current_acount.cost * article_current_acount.amount) as total')
+        $query = self::query_costo_mercaderia_devuelta($user_id, $desde, $hasta, $filtros);
+
+        $costo_neto = self::costo_neto_de_linea($query, 'article_current_acount', $user_id);
+
+        $row = $query
+            ->selectRaw('SUM('.$costo_neto.') as total')
             ->first();
 
         return (float) ($row ? $row->total : 0);
@@ -674,7 +743,11 @@ class ContabilidadRepository
 
         $total = $base()->count();
 
-        $rows = $base()
+        $query = $base();
+
+        $costo_neto = self::costo_neto_de_linea($query, 'article_current_acount', $user_id);
+
+        $rows = $query
             ->orderBy('current_acounts.created_at', 'ASC')
             ->skip(($page - 1) * $per_page)
             ->take($per_page)
@@ -682,8 +755,8 @@ class ContabilidadRepository
                 'article_current_acount.id as id',
                 'current_acounts.created_at as fecha',
                 'current_acounts.id as current_acount_id',
-                'article_current_acount.cost as cost',
                 'article_current_acount.amount as amount',
+                DB::raw($costo_neto.' as monto'),
             ]);
 
         $registros = [];
@@ -693,7 +766,7 @@ class ContabilidadRepository
                 'id'          => $row->id,
                 'fecha'       => $row->fecha,
                 'descripcion' => 'Costo devuelto x'.$row->amount,
-                'monto'       => (float) ($row->cost * $row->amount),
+                'monto'       => (float) $row->monto,
                 'link_tipo'   => 'current_acount',
                 // Regla 07: id de la nota de crédito, no de la línea article_current_acount.
                 'link_id'     => $row->current_acount_id,
