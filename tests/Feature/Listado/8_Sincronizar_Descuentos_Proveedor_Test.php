@@ -412,6 +412,77 @@ class Sincronizar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 `alcance` y `accion_sobre_compras` son INDEPENDIENTES, y esto es DELIBERADO: quien pide
+     * "pisar", pisa, con cualquier alcance. Con `solo_con_descuentos` + `pisar`, la bonificacion de
+     * una compra SE PIERDE.
+     *
+     * ⚠️ ESTO NO ES UN DEFECTO Y NO SE "ARREGLA". Es la decision de Lucas del 17/9/2026: manda el
+     * pedido. El resguardo no es que el alcance limite la accion, es que el default de
+     * `accion_sobre_compras` sea `saltear` — o sea que nadie llega hasta acá sin haberlo elegido.
+     *
+     * El test existe porque la lectura natural de "solo_con_descuentos se comporta igual que la
+     * propagacion de hoy" invita a pensar lo contrario: `propagar_a_articulos()` NUNCA borra un
+     * descuento de compra, ni con `pisar_editados_a_mano`. La equivalencia entre los dos caminos
+     * vale con el default (`saltear`), no en general. Sin este test escrito, el proximo que lea
+     * `sincronizar_a_articulos()` va a ver el bucle de "con descuentos de compra" afuera del
+     * `if ($alcance === ALCANCE_TODOS)` y lo va a "corregir" adentro.
+     *
+     * Y la segunda mitad fija lo que el alcance SI gobierna: el articulo sin ningun descuento sigue
+     * sin recibir nada, porque para eso está el modo "todos".
+     *
+     * @test
+     */
+    public function solo_con_descuentos_con_pisar_si_toca_las_de_compra()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $this->descuento_del_proveedor($provider, 10, 'Bonif ficha');
+
+        $con_compra = $this->articulo_del_proveedor($provider, 'zz Sincro solo-con pisar');
+        $sin        = $this->articulo_del_proveedor($provider, 'zz Sincro solo-con pisar intacto');
+
+        $this->descuento_de_compra($con_compra, $provider, 20);
+
+        $de_la_compra = $this->tagueados($con_compra->id)->first();
+
+        $this->assertEqualsWithDelta(800, $this->costo_real($con_compra->id), self::DELTA, 'Precondicion.');
+
+        $this->sincronizar($provider, [
+            'alcance'              => 'solo_con_descuentos',
+            'accion_sobre_compras' => 'pisar',
+        ])->assertStatus(200);
+
+        $this->assertNull(
+            ArticleDiscount::find($de_la_compra->id),
+            'Con "pisar", la bonificacion de la compra se reemplaza aunque el alcance sea '.
+            '"solo_con_descuentos": manda el pedido, y el resguardo es que el default sea "saltear".'
+        );
+
+        $vigentes = $this->tagueados($con_compra->id);
+
+        $this->assertCount(1, $vigentes, 'Queda solo el de la ficha.');
+
+        $this->assertEquals(ArticleDiscount::ORIGEN_FICHA_PROVEEDOR, $vigentes->first()->origen);
+
+        $this->assertEqualsWithDelta(
+            900,
+            $this->costo_real($con_compra->id),
+            self::DELTA,
+            'Y el costo real pasa a reflejar el 10% de la ficha, no el 20% negociado.'
+        );
+
+        /* Lo que el alcance SI gobierna: al que no tiene ningun descuento no se le crea nada. */
+        $this->assertCount(
+            0,
+            $this->tagueados($sin->id),
+            'El articulo sin descuentos sigue sin recibir nada: eso es lo unico que decide el alcance.'
+        );
+
+        $this->assertEqualsWithDelta(self::COSTO, $this->costo_real($sin->id), self::DELTA);
+    }
+
+    /**
      * 🔴 EL ALCANCE NUEVO: el articulo del proveedor que no tenia NINGUN descuento recibe los de la
      * ficha, con el origen, la relacion y el nombre.
      *

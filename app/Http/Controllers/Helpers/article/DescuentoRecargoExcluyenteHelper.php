@@ -29,13 +29,24 @@ class DescuentoRecargoExcluyenteHelper
     /**
      * Si un valor mandado en el request cuenta como "cargado".
      *
-     * 🔴 Se pregunta por el VACIO, no por null. `''` no es null: un input que el usuario limpio
-     * llega como cadena vacia, `is_null('')` da false y `'' ?? 'x'` devuelve `''`. Preguntando por
-     * null, limpiar el porcentaje dejaba el monto trabado para siempre.
+     * "Cargado" es un valor que efectivamente se usa: null, cadena vacia y `0` no cuentan.
+     *
+     * 🔴 LA RAMA QUE SOSTIENE EL GUARD ES LA DE `is_null()`, Y NO ES LA QUE PARECE. Cuando el
+     * usuario limpia el input, la SPA manda cadena vacia — pero esa cadena NUNCA llega asi al
+     * controller: el middleware global `ConvertEmptyStringsToNull`
+     * (`app/Http/Kernel.php`, junto con `TrimStrings`) la convierte en null antes. Medido el
+     * 17/9/2026 sobre el request real, y verificado por mutacion: revertir la rama del string vacio
+     * de aca abajo deja el test del caso `percentage = ''` en VERDE; revertir la de `is_null()` lo
+     * pone en rojo.
+     *
+     * O sea que la rama de `is_string(...) && trim(...) === ''` es defensa para un llamador que NO
+     * pase por el stack HTTP (un comando de consola, un job, un test que arme el Request a mano).
+     * Es barata y se queda — pero **no se puede sacar la de `is_null()` creyendo que esta la
+     * cubre**, que es exactamente lo que invitaba a hacer la version anterior de este comentario.
      *
      * El `0` tambien cuenta como VACIO, a proposito y por la misma razon que en la SPA: un
      * descuento de 0% no descuenta nada y un recargo de $0 no recarga nada, asi que no tienen por
-     * que chocar con el otro campo.
+     * que chocar con el otro campo. Esa regla si la sostiene una sola linea, el `!= 0` del final.
      *
      * @param  mixed $valor
      * @return bool
