@@ -10,6 +10,43 @@ class CurrentAcount extends Model
 
     // protected $appends = ['moneda_id'];
 
+    /**
+     * Baja en cascada de los certificados de retención del cobro (misión
+     * compras-factura-manual-alicuotas, 17/9/2026, parte C).
+     *
+     * 🔴 VA ACÁ Y NO EN CurrentAcountController::delete(). Un certificado de
+     * `retenciones_sufridas` es el papel de una retención que se practicó AL COBRAR: si el cobro
+     * se borra, la retención no existió. Dejándolo en el controller, cualquier otro camino que
+     * borre un `CurrentAcount` (los comandos de integridad, la limpieza de pagos provisorios, un
+     * borrado en cascada de una venta) dejaría el certificado huérfano — y un certificado huérfano
+     * no se ve en ninguna pantalla pero SÍ lo suma la Posición Fiscal, o sea que le baja el IVA a
+     * pagar del período por un cobro que ya no está.
+     *
+     * ⚠️ Un `CurrentAcount::where(...)->delete()` por query builder NO dispara este evento. Hoy no
+     * hay ninguno en el código que borre cobros así; si mañana aparece, tiene que limpiar los
+     * certificados a mano.
+     *
+     * @return void
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::deleting(function ($current_acount) {
+
+            RetencionSufrida::where('current_acount_id', $current_acount->id)->delete();
+        });
+    }
+
+    /**
+     * Los certificados de retención que se cargaron en este cobro.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    public function retenciones_sufridas() {
+        return $this->hasMany(RetencionSufrida::class);
+    }
+
     function user() {
         return $this->belongsTo(User::class);
     }

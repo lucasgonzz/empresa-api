@@ -679,6 +679,172 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
     }
 
     /* ------------------------------------------------------------------ *
+     *  9 bis. El total impreso contra el calculado
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 Si el total impreso no cuadra con el desglose, se avisa ANTES de guardar nada.
+     *
+     * Desde que el total del comprobante lo calcula el servidor a partir de sus alícuotas (misión
+     * `compras-factura-manual-alicuotas`), un renglón mal leído por la IA dejó de ser un número feo
+     * en pantalla y pasa a mover la deuda con el proveedor. Antes viajaba el número del papel y el
+     * desglose era decorativo; ahora manda el desglose, así que la discrepancia tiene que verse en
+     * el modal de revisión —donde el usuario la corrige a mano— y no adentro de la cuenta corriente.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function avisa_cuando_el_total_impreso_no_cuadra_con_el_desglose()
+    {
+        /* Total impreso 124300, pero el desglose leído suma 100000 + 15000 + 2500 = 117500. */
+        $this->fake_de_anthropic($this->json_de_factura(['factura' => [
+            'es_factura_afip'     => true,
+            'confianza'           => 0.9,
+            'tipo_comprobante'    => 'A',
+            'punto_venta'         => '0003',
+            'numero'              => '00012345',
+            'issued_at'           => '2026-08-14',
+            'emisor_cuit'         => '30-71234567-8',
+            'emisor_razon_social' => 'DISTRIBUIDORA DEL SUR S.A.',
+            'receptor_cuit'       => null,
+            'neto_gravado'        => 100000,
+            'total_iva'           => 15000,
+            'total'               => 124300,
+            'ivas'                => [
+                /* Un dígito mal leído en el importe de IVA: 15000 donde el papel dice 21000. */
+                ['porcentaje' => 21, 'neto' => 100000, 'importe' => 15000],
+            ],
+            'percepcion_iibb'     => 2500,
+            'percepcion_iva'      => null,
+            'campos_dudosos'      => [],
+        ]]));
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('listo', $scan->estado);
+
+        $this->assertContains(
+            'total',
+            $scan->resultado['factura']['campos_dudosos'],
+            '🔴 El total tiene que quedar marcado como dudoso: es lo que le dice al usuario qué mirar.'
+        );
+
+        $avisos = implode(' | ', $scan->resultado['avisos']);
+
+        $this->assertStringContainsString(
+            'no coincide',
+            $avisos,
+            '🔴 Y tiene que haber un aviso que diga cuánto no cierra: el campo dudoso dice QUÉ mirar, el aviso CUÁNTO.'
+        );
+    }
+
+    /**
+     * Si el total impreso cuadra con el desglose, no se avisa nada: el aviso tiene que ser señal,
+     * no ruido en cada escaneo.
+     *
+     * ⚠️ La factura va escrita acá y no se reusa la de `json_de_factura()`, que tiene el total en
+     * 124300 contra un desglose que suma 123500 (100000 + 21000 + 2500, con `percepcion_iva` en
+     * null): son 800 pesos que nunca cerraron. Ese fixture existe para probar el parseo de
+     * "$ 124.300,00" como número, no la coherencia de los importes, y el test de la línea 477 se
+     * apoya en ese valor — así que se lo deja como está.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function no_avisa_nada_cuando_el_total_cuadra_con_el_desglose()
+    {
+        $this->fake_de_anthropic($this->json_de_factura(['factura' => [
+            'es_factura_afip'     => true,
+            'confianza'           => 0.9,
+            'tipo_comprobante'    => 'A',
+            'punto_venta'         => '0003',
+            'numero'              => '00012345',
+            'issued_at'           => '2026-08-14',
+            'emisor_cuit'         => '30-71234567-8',
+            'emisor_razon_social' => 'DISTRIBUIDORA DEL SUR S.A.',
+            'receptor_cuit'       => null,
+            'neto_gravado'        => 100000,
+            'total_iva'           => 21000,
+            /* 100000 + 21000 + 2500 = 123500: cierra exacto. */
+            'total'               => 123500,
+            'ivas'                => [
+                ['porcentaje' => 21, 'neto' => 100000, 'importe' => 21000],
+            ],
+            'percepcion_iibb'     => 2500,
+            'percepcion_iva'      => null,
+            'campos_dudosos'      => [],
+        ]]));
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('listo', $scan->estado);
+
+        $this->assertNotContains(
+            'total',
+            $scan->resultado['factura']['campos_dudosos'],
+            'Con el total cuadrando, no hay nada que marcar.'
+        );
+
+        $this->assertStringNotContainsString(
+            'no coincide',
+            implode(' | ', $scan->resultado['avisos']),
+            'Un aviso que sale siempre deja de mirarse.'
+        );
+    }
+
+    /**
+     * Un comprobante SIN desglose (una Factura C) no dispara el aviso: no hay con qué comparar, y
+     * el total impreso es el único dato que existe — se guarda ése, así que no hay movimiento
+     * silencioso del que avisar.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @return void
+     */
+    public function no_avisa_cuando_la_factura_no_trae_desglose()
+    {
+        $this->fake_de_anthropic($this->json_de_factura(['factura' => [
+            'es_factura_afip'     => true,
+            'confianza'           => 0.9,
+            'tipo_comprobante'    => 'C',
+            'punto_venta'         => '0003',
+            'numero'              => '00012345',
+            'issued_at'           => '2026-08-14',
+            'emisor_cuit'         => '30-71234567-8',
+            'emisor_razon_social' => 'DISTRIBUIDORA DEL SUR S.A.',
+            'receptor_cuit'       => null,
+            'neto_gravado'        => null,
+            'total_iva'           => null,
+            'total'               => 90000,
+            'ivas'                => [],
+            'percepcion_iibb'     => null,
+            'percepcion_iva'      => null,
+            'campos_dudosos'      => [],
+        ]]));
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('listo', $scan->estado);
+
+        $this->assertNotContains(
+            'total',
+            $scan->resultado['factura']['campos_dudosos'],
+            'Una Factura C no discrimina IVA: que no haya desglose es lo normal, no algo para marcar.'
+        );
+    }
+
+    /* ------------------------------------------------------------------ *
      *  10. Registro de consumo
      * ------------------------------------------------------------------ */
 
