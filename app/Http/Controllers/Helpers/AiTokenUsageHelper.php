@@ -6,21 +6,25 @@ use App\Models\AiTokenUsage;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Registro del consumo de tokens de las llamadas a la API de Anthropic.
+ * Registro del consumo de tokens de las llamadas a las APIs de IA
+ * (Anthropic y, desde la misión tokens-por-cliente, también OpenAI).
  *
  * Regla de oro: registrar() NUNCA lanza. El metering es contabilidad de
  * fondo; una falla acá no puede voltear una respuesta que el usuario ya está
  * esperando (ni un resumen, ni un mensaje del chat, ni un título). Todo va
  * adentro de un try/catch que degrada a Log::warning.
  *
- * Sin UI en esta misión: la tabla ai_token_usages junta números para que
- * Lucas decida después con datos reales (hoy la IA va incluida en la
- * suscripción).
+ * La tabla ai_token_usages dejó de ser write-only: la lee
+ * AdminSync\ConsumoIaController, que es de donde el admin trae el consumo de
+ * cada cliente para mostrarlo con su costo estimado.
  */
 class AiTokenUsageHelper
 {
+    /** Proveedor que se asume cuando el llamador no dice cuál es. */
+    const PROVEEDOR_POR_DEFECTO = 'anthropic';
+
     /**
-     * Graba una fila de consumo a partir de la respuesta de Anthropic.
+     * Graba una fila de consumo a partir de la respuesta de la API de IA.
      *
      * Claves aceptadas en $datos:
      * - user_id            (int, obligatorio: sin dueño no hay a quién imputar y no se graba)
@@ -28,9 +32,14 @@ class AiTokenUsageHelper
      * - body               (array, opcional: la respuesta JSON completa; de acá salen usage y model)
      * - usage              (array, opcional: el bloque usage suelto; pisa al de body)
      * - modelo             (string, opcional: pisa al model de body)
+     * - proveedor          (string, opcional: 'anthropic' por defecto; 'openai' para los embeddings)
      * - auth_user_id       (int, opcional: la persona; null si lo disparó un job automático)
      * - ai_conversation_id (int, opcional)
      * - referencia_id      (int, opcional: p. ej. stock_suggestions.id)
+     *
+     * Sobre `proveedor`: tiene default porque los 9 llamadores que existían antes de la
+     * misión tokens-por-cliente son todos de Anthropic y no lo pasan. No se deduce del
+     * nombre del modelo a propósito — ver el comentario de la migración.
      *
      * @param  array  $datos
      * @return void
@@ -67,6 +76,11 @@ class AiTokenUsageHelper
                 $modelo = (string) $body['model'];
             }
 
+            $proveedor = isset($datos['proveedor']) ? trim((string) $datos['proveedor']) : '';
+            if ($proveedor === '') {
+                $proveedor = self::PROVEEDOR_POR_DEFECTO;
+            }
+
             AiTokenUsage::create([
                 'user_id'      => $user_id,
                 'auth_user_id' => isset($datos['auth_user_id']) && ! is_null($datos['auth_user_id'])
@@ -74,8 +88,9 @@ class AiTokenUsageHelper
                     : null,
 
                 // Recortes a la longitud de columna: el metering jamás puede romper por un string largo.
-                'proceso' => mb_substr($proceso, 0, 40),
-                'modelo'  => mb_substr($modelo, 0, 80),
+                'proceso'   => mb_substr($proceso, 0, 40),
+                'proveedor' => mb_substr($proveedor, 0, 20),
+                'modelo'    => mb_substr($modelo, 0, 80),
 
                 'input_tokens'                => isset($usage['input_tokens']) ? (int) $usage['input_tokens'] : 0,
                 'output_tokens'               => isset($usage['output_tokens']) ? (int) $usage['output_tokens'] : 0,
