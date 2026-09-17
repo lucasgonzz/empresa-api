@@ -179,10 +179,15 @@ class AfipFexHelper
      * —que corre inmediatamente despues— lo persistia. Y no habia salida, porque el comando que
      * mediria ese IVA (`set_iva_debito`) esta roto en develop.
      *
-     * El camino normal, `AfipWsfeHelper::update_afip_ticket()`, escribe `resultado` e `importe_iva`
-     * en el mismo `update()` y por eso no tiene esa ventana. Escribir el 0 aca restituye esa misma
-     * invariante para el camino de exportacion: **el resultado y el IVA se persisten juntos o no se
-     * persiste ninguno.**
+     * La invariante que se restituye escribiendo el 0 aca es: **el resultado y el IVA se persisten
+     * en el mismo `update()`, o no se persiste ninguno.**
+     *
+     * ⚠️ Hasta el 17/9/2026 este PHPDoc agregaba que "el camino normal,
+     * `AfipWsfeHelper::update_afip_ticket()`, escribe las dos columnas juntas y por eso no tiene esa
+     * ventana". Ese metodo si, pero **el camino de WSFE no**: `AfipWsfeHelper` escribe `resultado`
+     * en tres lugares y `consultar_comprobante()` tenia la misma ventana, tapada. Se cerro en esta
+     * misma rama (ver `AfipWsfeHelper::importe_iva_de_la_consulta()`). La invariante es de la
+     * columna, no de un metodo: se verifica en cada lugar que escriba `resultado`.
      *
      * @param array $result Respuesta cruda de WSFEX.
      * @param string $moneda Moneda del comprobante ('PES' o 'DOL').

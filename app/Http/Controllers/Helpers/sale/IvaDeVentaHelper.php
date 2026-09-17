@@ -59,14 +59,42 @@ use Illuminate\Support\Facades\DB;
  *      declaró esta venta", y es la que arregla los comprobantes **ya emitidos**, que son los que
  *      hoy tienen la ganancia en NULL. Si se arreglara sólo en la emisión, esas ventas quedarían
  *      rotas para siempre — no hay backfill que las salve.
- *   2. **En `AfipFexHelper`**, escribiendo el 0 al emitir: restituye la invariante que el camino
- *      normal (`AfipWsfeHelper::update_afip_ticket()`) sí cumple —`resultado` e `importe_iva` se
- *      persisten en el MISMO `update()`—, y deja la columna con el dato correcto para cualquier
- *      otro lector directo de `afip_tickets.importe_iva` (por ejemplo
+ *   2. **En `AfipFexHelper`**, escribiendo el 0 al emitir: deja la columna con el dato correcto para
+ *      cualquier otro lector directo de `afip_tickets.importe_iva` (por ejemplo
  *      `ContabilidadRepository::ventas_con_iva_sin_medir()`, que lee la columna y no pasa por acá).
  *
  * Lo que NO se duplica es el criterio: qué códigos son de exportación se escribe una sola vez, en
  * `AfipWsHelper::CBTE_TIPOS_EXPORTACION`, y los cuatro call sites lo leen de ahí.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * 🔴 LA INVARIANTE, Y POR QUÉ NO ALCANZA CON MIRAR `update_afip_ticket()`
+ * ---------------------------------------------------------------------------------------------
+ *
+ * **La invariante es: todo lugar que escriba `afip_tickets.resultado` escribe `importe_iva` en el
+ * MISMO `update()`.** Un `resultado = 'A'` con `importe_iva` en NULL deja la ganancia de esa venta
+ * en NULL para siempre, por el encadenamiento de arriba.
+ *
+ * ⚠️ Hasta el 17/9/2026 este PHPDoc decía que "el camino de WSFE escribe las dos columnas juntas y
+ * por eso no tiene esa ventana". **Era falso, y hay que decirlo porque invita a no mirar.**
+ * `AfipWsfeHelper` escribe `resultado` en TRES lugares:
+ *
+ * | Dónde | Escribía `importe_iva` |
+ * |---|---|
+ * | `AfipWsfeHelper::update_afip_ticket()` — la emisión normal | sí, siempre |
+ * | `AfipWsfeHelper::consultar_comprobante()` | **NO, hasta esta misión** |
+ * | `AfipWsfeHelper::saveAfipTicket()` | no — pero es código muerto, nadie lo llama |
+ *
+ * Y a `consultar_comprobante()` no se llega por un camino raro: ante un error de RED al emitir,
+ * `solicitar_cae()` lo dispara solo para recuperar el CAE que puede haber quedado autorizado en
+ * ARCA, y si lo recupera trata la emisión como exitosa. También se llega a mano desde
+ * `AfipTicketController::consultar_comprobante()`. Es el camino de cualquier Responsable Inscripto,
+ * que es justamente donde el IVA no es cero. Se cerró en esta misma rama
+ * (`AfipWsfeHelper::importe_iva_de_la_consulta()`), tomando el `ImpIVA` que devuelve ARCA y, si no
+ * viniera, el snapshot `afip_tickets.imp_iva_enviado`.
+ *
+ * ✅ **Y eso convierte a `consultar_comprobante()` en la vía de recuperación de los comprobantes que
+ * hoy tienen la columna en NULL**: volver a consultar uno le escribe el `importe_iva` que ARCA
+ * informa, sin estimar nada y sin depender de `set_iva_debito`.
  *
  * El criterio de fondo (`resultado = 'A'` + `importe_iva`) es el mismo que ya usa
  * `ContabilidadRepository::query_iva_debito()` para el renglón fiscal; acá se agrega lo que aquel
@@ -84,7 +112,11 @@ use Illuminate\Support\Facades\DB;
  * única excepción es la exportación, y no es una excepción a la regla sino a la premisa: ahí el 0
  * no se asume, se sabe.
  *
- * ⚠️ Recuperar ese `importe_iva` es una tarea aparte y HOY NO HAY COMANDO QUE LA HAGA. El que
+ * ⚠️ Recuperar ese `importe_iva` es una tarea aparte y hoy NO HAY COMANDO QUE LA HAGA —pero sí hay
+ * camino, y es el de arriba: **volver a consultar el comprobante** contra ARCA
+ * (`AfipTicketController::consultar_comprobante()`, o el botón que lo llama) ahora le escribe el
+ * `ImpIVA` que el organismo informa. Es por comprobante y a mano, así que para los 61 medidos abajo
+ * conviene un comando que los recorra, pero **ya no depende de rehacer `set_iva_debito`.** El que
  * existe, `php artisan set_iva_debito <company_name>`, está roto en `develop`: muere con
  * `Call to undefined method App\Models\Sale::afip_ticket()` —la relación se llama `afip_tickets`
  * desde hace versiones— y además le pasa la `Sale` a `AfipHelper` en el parámetro donde va el
