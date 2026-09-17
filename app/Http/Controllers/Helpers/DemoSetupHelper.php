@@ -1223,7 +1223,11 @@ class DemoSetupHelper
             'secondary_color'               => '#333333',
             'text_color'                    => '#EDEDED',
             'hover_text_color'              => '#FFFFFF',
-            'background_color'              => '#FFFFFF',
+            // El gris de la plantilla ComercioCity (pedido de Lucas, 17/9/2026): apoya las
+            // tarjetas blancas de la ficha, como hace Mercado Libre. Va igual que en
+            // UserSetupHelper para que una demo nueva no nazca distinta de las que pinto la
+            // migracion 2026_09_17_120100.
+            'background_color'              => '#EDEDED',
             'titulo_quienes_somos'              => 'Quienes somos',
             'article_description_font_size' => 16,
 
