@@ -50,13 +50,16 @@ class ArticleDiscountController extends Controller
     }
 
     public function update(Request $request, $id) {
-        // Misma guarda que en store(), y va ANTES de todo lo demas: si el request es invalido no se
-        // toca nada, ni siquiera la marca de `editado_a_mano` de abajo.
-        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+        $model = ArticleDiscount::find($id);
+
+        // La guarda del porcentaje y el monto excluyentes, ANTES de todo lo demas: si el request es
+        // invalido no se toca nada, ni siquiera la marca de `editado_a_mano` de aca abajo.
+        // A diferencia de store(), aca se rechaza solo si el request INTRODUCE el conflicto: una
+        // fila vieja que ya venia con los dos cargados se puede volver a guardar sin cambiarlos.
+        // El porque esta escrito en DescuentoRecargoExcluyenteHelper::introduce_conflicto().
+        if (DescuentoRecargoExcluyenteHelper::introduce_conflicto($request, $model)) {
             return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
         }
-
-        $model = ArticleDiscount::find($id);
 
         /**
          * Mision descuentos-proveedor-propagar (4/9/2026): si una persona le cambia el porcentaje a

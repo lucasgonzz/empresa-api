@@ -60,14 +60,11 @@ class DescuentoRecargoExcluyenteHelper
     /**
      * Si el request trae porcentaje Y monto, los dos con un valor utilizable.
      *
-     * 🔴 Se mira el CONTENIDO DEL REQUEST, nunca el estado de la fila guardada. Aca es donde
-     * alguien va a estar tentado de preguntarle al modelo si ya tiene los dos campos cargados — no
-     * lo hagas: las filas viejas que quedaron con los dos son legitimas y la regla rige para lo que
-     * entra de ahora en adelante. Si se validara el estado de la fila, un `update()` que ni toca
-     * estos campos (cambiar el tipo, el "mostrar en la tienda") reventaria sobre una fila vieja.
+     * Esta es la guarda de `store()`: una fila nueva no tiene nada legado que respetar, asi que
+     * alcanza con mirar el contenido del request.
      *
-     * Por eso mismo, si el request no trae alguna de las dos claves, no hay nada que decidir: una
-     * actualizacion parcial que no menciona `percentage` o `amount` pasa derecho.
+     * Si el request no trae alguna de las dos claves, no hay nada que decidir: una actualizacion
+     * parcial que no menciona `percentage` o `amount` pasa derecho.
      *
      * @param  \Illuminate\Http\Request $request
      * @return bool
@@ -80,6 +77,79 @@ class DescuentoRecargoExcluyenteHelper
 
         return self::es_valor_cargado($request->percentage)
             && self::es_valor_cargado($request->amount);
+    }
+
+    /**
+     * La guarda de `update()`: si el request INTRODUCE el conflicto sobre la fila que ya existe.
+     *
+     * 🔴 Aca si se mira el estado previo, y en `store()` no. No es una asimetria al descuido, y
+     * antes de "unificar las dos ramas" hay que leer esto:
+     *
+     * `aplicar_descuentos()` viene aceptando filas con porcentaje Y monto desde siempre, asi que
+     * hay comercios que ya las tienen cargadas. Rechazar todo request que traiga los dos convertia
+     * un guardado inocente —abrir un descuento viejo, no tocar nada, apretar Guardar— en un error
+     * sobre un dato que el sistema mismo dejo entrar. El usuario no hizo nada malo y se le rompe un
+     * flujo que venia andando.
+     *
+     * La regla no es "validar el estado de la fila", es NO EMPEORAR LO QUE YA ESTABA:
+     *
+     *   - la fila NO estaba en conflicto y el request la deja en conflicto  -> se rechaza
+     *   - la fila YA estaba en conflicto y el request no cambia ninguno de los dos valores -> pasa
+     *   - la fila YA estaba en conflicto y el request cambia alguno y sigue en conflicto -> se
+     *     rechaza: eso ya es editar el conflicto, que es justamente lo que se quiere impedir
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  mixed $model Fila que se esta actualizando (null si no se encontro).
+     * @return bool
+     */
+    static function introduce_conflicto(Request $request, $model)
+    {
+        if (!self::hay_conflicto($request)) {
+            return false;
+        }
+
+        if (is_null($model) || !self::fila_en_conflicto($model)) {
+            // No habia conflicto antes y lo hay ahora: lo introduce este request.
+            return true;
+        }
+
+        return self::cambia_alguno_de_los_dos($request, $model);
+    }
+
+    /**
+     * Si la fila guardada ya tenia los dos campos cargados. Mismo criterio de "vacio" que el
+     * request: null, cadena vacia y 0 no cuentan.
+     *
+     * @param  mixed $model
+     * @return bool
+     */
+    static function fila_en_conflicto($model)
+    {
+        return self::es_valor_cargado($model->percentage)
+            && self::es_valor_cargado($model->amount);
+    }
+
+    /**
+     * Si el request cambia el porcentaje o el monto respecto de lo que hay guardado.
+     *
+     * Se compara con `ArticleProviderDiscountHelper::normalizar_porcentaje()`, que es lo mismo que
+     * usa el bloque de `editado_a_mano` de `ArticleDiscountController::update()` y por el mismo
+     * motivo: sin normalizar, `"10"`, `10.0` y `"10.00"` cuentan como distintos y un guardado
+     * inocente entraria por la rama equivocada.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @param  mixed $model
+     * @return bool
+     */
+    static function cambia_alguno_de_los_dos(Request $request, $model)
+    {
+        if (ArticleProviderDiscountHelper::normalizar_porcentaje($model->percentage)
+            !== ArticleProviderDiscountHelper::normalizar_porcentaje($request->percentage)) {
+            return true;
+        }
+
+        return ArticleProviderDiscountHelper::normalizar_porcentaje($model->amount)
+            !== ArticleProviderDiscountHelper::normalizar_porcentaje($request->amount);
     }
 
     /**

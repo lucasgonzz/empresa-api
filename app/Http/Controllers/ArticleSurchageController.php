@@ -46,12 +46,13 @@ class ArticleSurchageController extends Controller
     }
 
     public function update(Request $request, $id) {
-        // Misma guarda que en store(). Se mira el contenido del request, no el estado de la fila:
-        // las filas viejas que quedaron con los dos campos cargados siguen siendo editables.
-        if (DescuentoRecargoExcluyenteHelper::hay_conflicto($request)) {
+        $model = ArticleSurchage::find($id);
+        // A diferencia de store(), aca se rechaza solo si el request INTRODUCE el conflicto: una
+        // fila vieja que ya venia con los dos cargados se puede volver a guardar sin cambiarlos.
+        // El porque esta escrito en DescuentoRecargoExcluyenteHelper::introduce_conflicto().
+        if (DescuentoRecargoExcluyenteHelper::introduce_conflicto($request, $model)) {
             return DescuentoRecargoExcluyenteHelper::respuesta_de_conflicto();
         }
-        $model = ArticleSurchage::find($id);
         $model->percentage                = $request->percentage;
         $model->amount                    = $request->amount;
         $model->luego_del_precio_final    = $request->luego_del_precio_final;
