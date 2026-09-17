@@ -225,6 +225,7 @@ class SaleAfipTicketPdf extends fpdf {
         $this->printDiscounts();
         $this->printPaymentMethodDiscounts();
         $this->printCanjeDePuntos();
+        $this->printTotalForzado();
         $this->printPuntosDelCliente();
         $this->printImportes();
         // $this->printLine();
@@ -306,6 +307,48 @@ class SaleAfipTicketPdf extends fpdf {
 
 		$this->x = 5;
 		$this->Cell(200, 5, $texto.', aplicado en el precio de cada articulo', 0, 1, 'L');
+	}
+
+	/**
+	 * El renglon que explica el ajuste del total forzado (mision forzar-total-por-monto,
+	 * 17/9/2026).
+	 *
+	 * 🔴 VA ARRIBA DEL CUADRO DE IMPORTES DE AFIP, NO ADENTRO — exactamente por el mismo motivo
+	 * que el renglon del canje de puntos, que esta justo aca arriba: el cuadro fiscal declara los
+	 * importes que se le mandaron a ARCA, donde neto gravado + IVA = Importe Total. Meterle un
+	 * renglon de ajuste lo dejaria sin cerrar y el comprobante dejaria de coincidir con lo que la
+	 * AFIP tiene guardado.
+	 *
+	 * En la factura el ajuste YA esta prorrateado en el precio de cada articulo
+	 * (`AfipItemCalculator::get_factor_total_forzado()`), asi que la columna Subtotal suma el neto
+	 * y las cuentas cierran solas. Lo que falta, y es lo unico que hace este renglon, es decir POR
+	 * QUE los precios no son los de la lista: sin el, el cliente ve una factura que no coincide con
+	 * ningun precio publicado y no hay nada en el papel que lo explique.
+	 *
+	 * @return void
+	 */
+	function printTotalForzado() {
+
+		/** Monto con signo. Negativo = descuento, positivo = recargo, 0 = la venta no se forzo. */
+		$monto = SaleHelper::get_forzar_total_monto($this->sale);
+
+		if ($monto == 0) {
+			return;
+		}
+
+		/*
+			"Redondeo" cuando baja y "ajuste" cuando sube: es el lenguaje del mostrador, que es el
+			caso real que pidio Lucas (la venta da 4.012 y se cobra 4.000 para no dar cambio). El
+			monto va en valor absoluto porque la palabra ya dice el signo.
+		*/
+		$palabra = $monto < 0 ? 'Descuento por ajuste del total' : 'Recargo por ajuste del total';
+
+		$texto = $palabra.' de $'.Numbers::price(abs($monto)).', aplicado en el precio de cada articulo';
+
+		$this->SetFont('Arial', 'I', 9);
+
+		$this->x = 5;
+		$this->Cell(200, 5, $texto, 0, 1, 'L');
 	}
 
 	/**
