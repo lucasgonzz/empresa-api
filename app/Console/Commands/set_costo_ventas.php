@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Models\Sale;
 use App\Models\User;
 use Carbon\Carbon;
@@ -285,10 +286,36 @@ class set_costo_ventas extends Command
      * cliente que venga de esa version. Sin esta guarda, el upgrade destruye el historico en
      * silencio y nadie se entera hasta que alguien mira la ganancia acumulada.
      *
-     * El criterio es EXACTAMENTE el que el saneo usa para corregir —misma firma, misma condicion
-     * `cost > price`, mismo recorte de cantidades fraccionadas y de ventas en deposito—, a
-     * proposito: si la guarda frenara por lineas que el saneo despues se niega a tocar, el upgrade
-     * quedaria trabado para siempre sin ninguna forma de destrabarlo.
+     * ─── La paridad con el saneo, que es lo que hace usable a esta guarda ──────────────────────
+     *
+     * 🔴 **La guarda cuenta EXACTAMENTE las lineas que el saneo corregiria, ni una mas.** No es una
+     * aspiracion escrita en un comentario: las dos llaman a `CostoDeLineaDeVentaHelper::analizar()`,
+     * que es el unico lugar donde vive el criterio. Es lo unico que vuelve cierta la secuencia que
+     * este comando imprime mas abajo (dry-run → revisar → `--aplicar` → volver a correr): si frenara
+     * por una linea que el saneo despues se niega a tocar, esa secuencia NO destraba nada y al
+     * cliente le quedan dos salidas, las dos malas — `--force`, que destruye el historico que
+     * todavia era reparable, o quedarse trabado para siempre.
+     *
+     * Hasta el 17/9/2026 el criterio estaba escrito dos veces (en SQL aca, en PHP en el saneo) y el
+     * PHPDoc afirmaba que eran el mismo. Era falso: esto era una condicion NECESARIA y el saneo
+     * aplicaba cuatro descartes mas. Cada uno de los cuatro trababa a un cliente real:
+     *
+     * | Lo que contaba la guarda | Lo que hacia el saneo |
+     * |---|---|
+     * | `price` no null, sin exigir `> 0` | una linea de regalo (`price = 0`) se descartaba |
+     * | no joineaba `articles` | INNER JOIN: una linea con el articulo borrado en duro ni se miraba |
+     * | no verificaba que existiera `k` | sin `k` coherente se descartaba (cliente que corrio el comando 5+ veces) |
+     * | no miraba `article_sale.unidades_individuales` | si difiere de la del articulo, se descartaba |
+     *
+     * ⚠️ La guarda evalua la corrida POR DEFECTO del saneo (las dos causas y el `k_max` por defecto),
+     * que es exactamente el comando que le imprime al operador. Si alguien corriera el saneo con
+     * `--causa=b` o con un `k_max` mas chico, podria quedar algo sin corregir que la guarda sigue
+     * contando: la salida en ese caso es correr el saneo como la guarda lo indica.
+     *
+     * Y cuenta solo lo corregible por la causa **B**, no cualquier correccion: lo que este comando
+     * destruye es la firma de la causa B. Una linea de causa A se detecta por `cost > price × 2` mas
+     * `unidades_individuales`, que el recalculo de la ganancia no toca — sigue siendo reparable
+     * despues, asi que no hay por que trabar el upgrade por ella.
      *
      * @param  int  $user_id
      * @param  int|null  $from_sale_id
@@ -296,31 +323,7 @@ class set_costo_ventas extends Command
      */
     private function paso_la_guarda_de_orden($user_id, $from_sale_id)
     {
-        $query = DB::table('article_sale')
-            ->join('sales', 'sales.id', '=', 'article_sale.sale_id')
-            ->whereNull('sales.deleted_at')
-            ->where('sales.user_id', $user_id)
-            ->where('sales.to_check', 0)
-            ->where('sales.checked', 0)
-            ->whereNotNull('article_sale.price')
-            ->whereNotNull('article_sale.ganancia')
-            ->where('article_sale.cost', '>', 0)
-            ->where('article_sale.amount', '>', 1)
-            ->whereColumn('article_sale.cost', '>', 'article_sale.price')
-            // Cumple la firma que dejaba el comando viejo...
-            ->whereRaw('ABS(article_sale.ganancia - (article_sale.price * article_sale.amount - article_sale.cost)) <= 0.02 * GREATEST(1, ABS(article_sale.amount)) + 0.05')
-            // ...y NO cumple la firma sana, que es lo que las vuelve mutuamente excluyentes.
-            ->whereRaw('ABS(article_sale.ganancia - ((article_sale.price - article_sale.cost) * article_sale.amount)) > 0.02 * GREATEST(1, ABS(article_sale.amount)) + 0.05');
-
-        if ($from_sale_id !== null) {
-            $query->where('sales.id', '>=', $from_sale_id);
-        }
-
-        if ($this->option('solo_ventas_de_hoy')) {
-            $query->where('sales.created_at', '>=', Carbon::today()->startOfDay());
-        }
-
-        $rotas = $query->count();
+        $rotas = $this->contar_lineas_que_el_saneo_corregiria($user_id, $from_sale_id);
 
         if ($rotas === 0) {
             return true;
@@ -348,18 +351,81 @@ class set_costo_ventas extends Command
         $this->line('  todavia roto, la marca DESAPARECE y esas ventas quedan mal para siempre, sin forma de');
         $this->line('  encontrarlas. Ademas el costo total de cada venta se infla otra vez.');
         $this->line('');
-        $this->line('  Que hacer, en este orden:');
+        $this->line('  Esas ' . $rotas . ' son exactamente las que el saneo corrige, asi que esta secuencia destraba:');
         $this->line('');
         $this->line('    1) php artisan sale:sanear-costo-de-linea --user_id=' . $user_id . '            (dry-run, no escribe)');
         $this->line('    2) revisar el JSON que deja en storage/app/saneo-costo-de-linea/ y BAJARLO');
         $this->line('    3) php artisan sale:sanear-costo-de-linea --user_id=' . $user_id . ' --aplicar');
         $this->line('    4) recien ahi, volver a correr este comando');
         $this->line('');
+        $this->line('  Correr el saneo con --causa o con --k_max acotados puede dejar algo sin corregir: para');
+        $this->line('  destrabar, corrrelo tal cual dice el paso 3.');
+        $this->line('');
         $this->line('  Si sabes lo que estas haciendo y aceptas perder ese historico: --force');
         $this->line('');
 
         return false;
     }
+
+    /**
+     * Cuenta las lineas del cliente que `sale:sanear-costo-de-linea` corregiria por la causa B.
+     *
+     * El SQL de `acotar_a_candidatas_de_causa_b()` es SOLO un prefiltro —todas sus condiciones son
+     * necesarias para que haya correccion por causa B—, y quien decide es `analizar()`, en PHP: el
+     * mismo metodo, con los mismos parametros por defecto, que corre el saneo. De ahi sale la
+     * paridad.
+     *
+     * Se recorre en chunks y no se acumula nada: de cada fila solo sobrevive el incremento del
+     * contador.
+     *
+     * @param  int  $user_id
+     * @param  int|null  $from_sale_id
+     * @return int
+     */
+    private function contar_lineas_que_el_saneo_corregiria($user_id, $from_sale_id)
+    {
+        $query = CostoDeLineaDeVentaHelper::acotar_a_candidatas_de_causa_b(
+            CostoDeLineaDeVentaHelper::query_de_lineas($user_id)
+        );
+
+        /*
+         * Estos filtros son los de ESTA corrida, no del criterio: lo que la guarda cuida es el
+         * historico que este comando va a tocar. Las ventas en deposito se filtran aca ademas de en
+         * `analizar()` —que las descarta igual— para no traerlas a PHP al pedo.
+         */
+        $query->where('sales.to_check', 0)
+            ->where('sales.checked', 0);
+
+        if ($from_sale_id !== null) {
+            $query->where('sales.id', '>=', $from_sale_id);
+        }
+
+        if ($this->option('solo_ventas_de_hoy')) {
+            $query->where('sales.created_at', '>=', Carbon::today()->startOfDay());
+        }
+
+        $rotas = 0;
+
+        $query->chunkById(1000, function ($filas) use (&$rotas) {
+            foreach ($filas as $fila) {
+                $analisis = CostoDeLineaDeVentaHelper::analizar(
+                    $fila,
+                    true,
+                    true,
+                    CostoDeLineaDeVentaHelper::K_MAX_POR_DEFECTO
+                );
+
+                if (CostoDeLineaDeVentaHelper::corrige_por_causa_b($analisis)) {
+                    $rotas++;
+                }
+            }
+
+            return true;
+        }, 'article_sale.id', 'linea_id');
+
+        return $rotas;
+    }
+
 
     /**
      * Cotiza a la moneda de la venta un costo tomado de `articles.costo_real` (crudo).

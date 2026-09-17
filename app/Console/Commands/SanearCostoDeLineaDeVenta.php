@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Models\Sale;
 use Carbon\Carbon;
@@ -85,7 +86,8 @@ use Illuminate\Support\Facades\DB;
  *     implausible como costo unitario (`cost > price`). Sin esa segunda condicion, una linea SANA
  *     a la que le editaron el precio despues de la venta (`SaleHelper::updateItemsPrices()`, que
  *     reescribe `price` sin recalcular `ganancia`) cae justo sobre la firma y el saneo le partia
- *     el costo al medio. El detalle y el caso medido estan en `es_plausible_como_costo_unitario()`.
+ *     el costo al medio. El detalle y el caso medido estan en
+ *     `CostoDeLineaDeVentaHelper::es_plausible_como_costo_unitario()`.
  *     Lo que esto deja afuera son las lineas genuinamente rotas de margen alto, donde el costo
  *     inflado igual quedo por debajo del precio (costo unitario 100, cantidad 2, precio 1000):
  *     salen listadas con motivo propio, sin corregir.
@@ -98,6 +100,15 @@ use Illuminate\Support\Facades\DB;
  *     `article_sale.unidades_individuales` viniera cargada (hoy no la escribe nada) ESE seria el
  *     valor historico exacto — el comando lo denuncia y deja sin tocar las lineas donde difiera.
  *  7. No se toca `article_budget`. El informe del 1/9 lo dejo explicitamente afuera.
+ *
+ * ─── Donde vive el criterio ───────────────────────────────────────────────────────────────
+ *
+ * 🔴 En `CostoDeLineaDeVentaHelper`, no aca. Este comando no es el unico que necesita responder
+ * "¿esta linea esta rota, y en cuanto?": la guarda de orden de `set_costo_ventas` tiene que
+ * responderla IGUAL, porque si ella frena por lineas que este comando despues se niega a tocar, el
+ * upgrade de ese cliente queda trabado para siempre. Mientras el criterio estuvo escrito dos veces
+ * —en PHP aca y en SQL alla— divergio en cuatro puntos. El helper lo tiene una sola vez y los dos
+ * comandos lo llaman; `tests/Feature/Sales/30_Paridad_Guarda_Y_Saneo_Test` verifica la paridad.
  *
  * ─── Como se corre ────────────────────────────────────────────────────────────────────────
  *
@@ -136,12 +147,6 @@ class SanearCostoDeLineaDeVenta extends Command
      */
     protected $description = 'Sanea el historico de article_sale.cost (costo unitario) de un cliente, con respaldo y SQL de reversion. Dry-run por defecto.';
 
-    /**
-     * Umbral de incoherencia entre costo y precio de una linea: por encima de este multiplo del
-     * precio, la perdida de la linea supera su propia facturacion. Es el mismo criterio de
-     * `herramientas/sql/costo_sin_dividir_unidades_individuales.sql`.
-     */
-    const FACTOR_COSTO_INCOHERENTE = 2.0;
 
     /**
      * Cantidad de entradas (correcciones + descartes) por encima de la cual el JSON del respaldo
@@ -347,30 +352,7 @@ class SanearCostoDeLineaDeVenta extends Command
      */
     private function recorrer_lineas($user_id, $hacer_a, $hacer_b, $k_max, $limite)
     {
-        $query = DB::table('article_sale')
-            ->join('sales', 'sales.id', '=', 'article_sale.sale_id')
-            ->join('articles', 'articles.id', '=', 'article_sale.article_id')
-            ->whereNull('sales.deleted_at')
-            ->where('sales.user_id', $user_id)
-            ->select(
-                'article_sale.id as linea_id',
-                'article_sale.sale_id',
-                'article_sale.article_id',
-                'article_sale.amount',
-                'article_sale.price',
-                'article_sale.cost',
-                'article_sale.ganancia',
-                /*
-                 * Las dos columnas se llaman igual y hay que distinguirlas: la del articulo es el
-                 * valor de HOY, la del pivot —si tuviera algo— seria el valor historico exacto.
-                 */
-                'articles.unidades_individuales as unidades_del_articulo',
-                'article_sale.unidades_individuales as unidades_de_la_linea',
-                'sales.num as venta_num',
-                'sales.created_at as venta_fecha',
-                'sales.to_check as venta_to_check',
-                'sales.checked as venta_checked'
-            );
+        $query = CostoDeLineaDeVentaHelper::query_de_lineas($user_id);
 
         $sale_id = $this->option('sale_id');
 
@@ -435,6 +417,14 @@ class SanearCostoDeLineaDeVenta extends Command
     /**
      * Clasifica una linea y, si corresponde, calcula el costo unitario correcto.
      *
+     * 🔴 El criterio NO vive aca: vive en `CostoDeLineaDeVentaHelper::analizar()`, porque la guarda
+     * de orden de `set_costo_ventas` tiene que usar EXACTAMENTE el mismo. Mientras estuvieron
+     * escritos dos veces —en PHP aca y en SQL alla— divergieron en cuatro puntos, y cada divergencia
+     * era un cliente con el upgrade trabado por lineas que este comando despues se negaba a tocar.
+     *
+     * Lo que queda aca es lo unico que es de este comando: llevar los contadores informativos de la
+     * corrida.
+     *
      * @param  object  $fila
      * @param  bool  $hacer_a
      * @param  bool  $hacer_b
@@ -443,281 +433,19 @@ class SanearCostoDeLineaDeVenta extends Command
      */
     private function analizar_linea($fila, $hacer_a, $hacer_b, $k_max)
     {
-        $sana = ['accion' => 'ninguna', 'cost_final' => null, 'causas' => [], 'k' => null, 'motivo' => null];
+        $analisis = CostoDeLineaDeVentaHelper::analizar($fila, $hacer_a, $hacer_b, $k_max);
 
-        if (is_null($fila->cost)) {
-            $this->contadores['lineas_sin_costo']++;
-
-            return $sana;
-        }
-
-        $cost = (float) $fila->cost;
-        $price = is_null($fila->price) ? null : (float) $fila->price;
-        $amount = (float) $fila->amount;
-        $ganancia = is_null($fila->ganancia) ? null : (float) $fila->ganancia;
-        $unidades = is_null($fila->unidades_del_articulo) ? null : (float) $fila->unidades_del_articulo;
-
-        if (!is_null($fila->unidades_de_la_linea)) {
+        if ($analisis['tiene_unidades_en_el_pivot']) {
             $this->contadores['lineas_con_unidades_individuales_en_el_pivot']++;
         }
 
-        $sana['cost_final'] = $cost;
-
-        /*
-         * Una linea con cantidad fraccionada que paso por set_costo_ventas quedo con el costo
-         * DIVIDIDO, no multiplicado, y no hay criterio que la distinga de una sana. Se informa.
-         */
-        if ($amount < 1 && $hacer_b && $this->tiene_firma_del_comando($cost, $price, $amount, $ganancia)) {
-            return $this->descartar($sana, 'cantidad_fraccionada_no_evaluable');
+        if (!is_null($analisis['contador'])) {
+            $this->contadores[$analisis['contador']]++;
         }
 
-        $causas = [];
-        $k = null;
-        $cost_final = $cost;
-        $unidades = (!is_null($unidades) && $unidades > 1) ? $unidades : null;
-
-        /* ── Causa B ─────────────────────────────────────────────────────────────────────── */
-
-        if ($hacer_b && $this->tiene_firma_del_comando($cost, $price, $amount, $ganancia)) {
-            if (is_null($price) || $price <= 0) {
-                return $this->descartar($sana, 'firma_del_comando_sin_precio_para_acotar_k');
-            }
-
-            /*
-             * 🔴 La firma sola NO alcanza: hay un camino en vivo que la produce sobre una linea
-             * PERFECTAMENTE SANA. Ver `es_plausible_como_costo_unitario()`.
-             */
-            if ($this->es_plausible_como_costo_unitario($cost, $price)) {
-                return $this->descartar($sana, 'firma_del_comando_con_costo_plausible_como_unitario');
-            }
-
-            /*
-             * Si el articulo tiene unidades individuales, el costo que el comando multiplico
-             * puede ser el del bulto entero (o sea las dos causas encima de la misma linea).
-             * En ese caso el techo de coherencia de esta etapa sube por ese factor, o si no el
-             * buscador de k se comeria la division de las unidades individuales y devolveria un
-             * costo partido de mas. Lo que sobre lo divide despues la causa A.
-             */
-            $techo = $price * self::FACTOR_COSTO_INCOHERENTE * (is_null($unidades) ? 1 : $unidades);
-
-            $k = $this->buscar_k($cost, $techo, $amount, $k_max);
-
-            if (is_null($k)) {
-                return $this->descartar($sana, 'firma_del_comando_sin_k_coherente');
-            }
-
-            $cost_final = $cost / pow($amount, $k);
-            $causas[] = 'B';
-        }
-
-        /* ── Causa A ─────────────────────────────────────────────────────────────────────── */
-
-        $es_incoherente = !is_null($price)
-            && $price > 0
-            && $cost_final > $price * self::FACTOR_COSTO_INCOHERENTE;
-
-        $tiene_unidades_individuales = !is_null($unidades);
-
-        if ($es_incoherente && $tiene_unidades_individuales && $hacer_a) {
-            $candidato = $cost_final / $unidades;
-
-            if ($candidato > 0 && $candidato <= $price * self::FACTOR_COSTO_INCOHERENTE) {
-                $cost_final = $candidato;
-                $causas[] = 'A';
-            } else {
-                return $this->descartar($sana, 'dividir_por_unidades_individuales_no_alcanza');
-            }
-        } elseif ($es_incoherente && $tiene_unidades_individuales) {
-            return $this->descartar($sana, 'causa_a_no_pedida_en_esta_corrida');
-        } elseif ($es_incoherente) {
-            /*
-             * El costo supera el doble del precio pero no hay ninguna causa identificada: sin la
-             * firma del comando y sin unidades individuales, puede ser perfectamente una venta
-             * legitima a perdida. No se toca: se lista.
-             */
-            return $this->descartar($sana, 'costo_incoherente_sin_causa_identificada');
-        }
-
-        if (count($causas) === 0) {
-            $this->contadores['lineas_sanas']++;
-
-            return $sana;
-        }
-
-        $cost_final = round($cost_final, 2);
-
-        if ($cost_final <= 0) {
-            return $this->descartar($sana, 'costo_corregido_no_positivo');
-        }
-
-        /*
-         * El pivot tiene su propia columna `unidades_individuales`. Si trae un valor distinto del
-         * que tiene el articulo hoy, ese es el valor historico y la division de la causa A —que se
-         * hizo con el de hoy— estaria corrigiendo con el numero equivocado. Nadie midio nunca que
-         * guarda esa columna, asi que no se adivina: se deja la linea sin tocar y se denuncia.
-         */
-        if (!is_null($fila->unidades_de_la_linea)) {
-            $de_la_linea = (float) $fila->unidades_de_la_linea;
-            $del_articulo = is_null($fila->unidades_del_articulo) ? null : (float) $fila->unidades_del_articulo;
-
-            if (is_null($del_articulo) || abs($de_la_linea - $del_articulo) > 0.005) {
-                return $this->descartar($sana, 'pivot_con_unidades_individuales_historicas_distintas');
-            }
-        }
-
-        /*
-         * 🔴 Venta en deposito (`to_check` o `checked`): `SaleTotalesHelper::set_total_cost()`
-         * devuelve NULL para estas ventas a proposito. Corregir una sola de sus lineas obliga a
-         * recalcular la venta, y ese recalculo le BLANQUEA el `total_cost` a la venta entera. Se
-         * gana un costo de linea y se pierde el total de la venta: no vale la pena.
-         */
-        if ((int) $fila->venta_to_check === 1 || (int) $fila->venta_checked === 1) {
-            return $this->descartar($sana, 'venta_en_deposito_el_recalculo_blanquearia_su_total_cost');
-        }
-
-        return [
-            'accion' => 'corregir',
-            'cost_final' => $cost_final,
-            'ganancia_final' => round((is_null($price) ? 0 : $price - $cost_final) * $amount, 2),
-            'causas' => $causas,
-            'k' => $k,
-            'motivo' => null,
-        ];
+        return $analisis;
     }
 
-    /**
-     * ¿La fila la escribio `set_costo_ventas` con el bug del costo total?
-     *
-     * Firma: ganancia = price × amount − cost, que es lo que persistia el comando. La linea sana
-     * cumple ganancia = (price − cost) × amount. Con amount > 1 y cost > 0 las dos no pueden
-     * cumplirse a la vez.
-     *
-     * 🔴 LA FIRMA SOLA NO ALCANZA PARA ESCRIBIR. Una linea sana a la que le editaron el precio
-     * despues de la venta (`SaleHelper::updateItemsPrices()`) cumple esta misma firma sin estar
-     * rota. Todo lo que cumpla la firma tiene que pasar ademas por
-     * `es_plausible_como_costo_unitario()`, que es donde vive esa guarda y donde esta el caso
-     * medido.
-     *
-     * @param  float  $cost
-     * @param  float|null  $price
-     * @param  float  $amount
-     * @param  float|null  $ganancia
-     * @return bool
-     */
-    private function tiene_firma_del_comando($cost, $price, $amount, $ganancia)
-    {
-        /*
-         * Con amount = 1 las dos firmas son la misma expresion (y el bug no inflaba nada), asi
-         * que la fila no se puede atribuir. Con amount = 0 tampoco hay nada que dividir.
-         */
-        if (is_null($ganancia) || is_null($price) || $cost <= 0 || $amount <= 0 || $amount == 1.0) {
-            return false;
-        }
-
-        $tolerancia = $this->tolerancia($amount);
-
-        $firma_del_comando = abs($ganancia - ($price * $amount - $cost)) <= $tolerancia;
-        $firma_sana = abs($ganancia - (($price - $cost) * $amount)) <= $tolerancia;
-
-        return $firma_del_comando && !$firma_sana;
-    }
-
-    /**
-     * 🔴 El costo guardado, ¿todavia sirve como costo unitario de esa misma linea?
-     *
-     * Esta es la guarda que separa una linea ROTA de una linea SANA a la que alguien le edito el
-     * precio, porque las dos pueden cumplir la firma de la causa B.
-     *
-     * El camino del falso positivo: `SaleHelper::updateItemsPrices()` (llamado desde
-     * `SaleController::updatePrices()`) reescribe `price` y `price_sin_iva` de la linea y NO
-     * recalcula `ganancia`. La linea queda con la ganancia del precio VIEJO y el precio NUEVO, y
-     * eso cae justo sobre la firma cada vez que `price_viejo − price_nuevo = cost × (amount−1) / amount`:
-     *
-     *     cost 100, amount 2, precio 300 editado a 250  →  ganancia = (300 − 100) × 2 = 400
-     *     firma de la causa B:  250 × 2 − 100 = 400  ✓   (y la linea esta perfectamente sana)
-     *
-     * Sin esta guarda el saneo le escribia `cost = 50`: el costo de un negocio real partido al
-     * medio. El mismo vector abre `HelperController::set_sales_cost()`, que pisa `cost` sin tocar
-     * `ganancia`.
-     *
-     * Lo que los separa es que en la linea rota el valor guardado es un TOTAL metido en una columna
-     * unitaria —o sea `costo_unitario × cantidad`, con cantidad > 1—, mientras que en el falso
-     * positivo el valor guardado sigue siendo el costo unitario de verdad. Un costo unitario que no
-     * llega al precio unitario de su propia linea es un costo unitario plausible, y sobre eso no se
-     * escribe.
-     *
-     * Lo que esta guarda deja afuera, y se acepta: las lineas genuinamente rotas de margen alto,
-     * donde el costo inflado igual quedo por debajo del precio (`costo_unitario × cantidad ≤ price`,
-     * por ejemplo costo 100, cantidad 2 y precio 1000). Salen listadas con el motivo
-     * `firma_del_comando_con_costo_plausible_como_unitario` y se pueden mirar a mano. Corregir de
-     * menos se arregla despues; corregir de mas ya rompio el dato.
-     *
-     * ⚠️ El otro criterio que se evaluo —descartar las lineas cuyo `updated_at` no coincida con el
-     * `created_at`— NO SIRVE EN ESTE REPO: la relacion `Sale::articles()` no declara
-     * `withTimestamps()`, asi que ni `attach()` ni `updateExistingPivot()` escriben
-     * `article_sale.updated_at`, y `set_costo_ventas` escribe con `DB::table()->update()`, que
-     * tampoco lo toca. Medido el 17/9/2026 sobre `empresa_testing_s23`: 24 filas, 24 con
-     * `created_at` y 0 con `updated_at`. La columna esta siempre en NULL, asi que el criterio
-     * habria descartado todo o nada segun como se lo escribiera.
-     *
-     * @param  float  $cost
-     * @param  float  $price
-     * @return bool
-     */
-    private function es_plausible_como_costo_unitario($cost, $price)
-    {
-        return $cost <= $price;
-    }
-
-    /**
-     * Margen de comparacion. Las columnas son decimal(x,2), asi que precio y costo ya vienen
-     * redondeados: multiplicar por la cantidad arrastra ese redondeo.
-     *
-     * @param  float  $amount
-     * @return float
-     */
-    private function tolerancia($amount)
-    {
-        return 0.02 * max(1.0, abs($amount)) + 0.05;
-    }
-
-    /**
-     * Menor cantidad de divisiones por la cantidad que deja el costo por debajo del techo de
-     * coherencia. Arranca en 1 porque la firma ya probo que el costo se multiplico al menos una
-     * vez, y devuelve el MENOR k que entra: la correccion minima, para sub-corregir antes que
-     * sobre-corregir.
-     *
-     * @param  float  $cost
-     * @param  float  $techo
-     * @param  float  $amount
-     * @param  int  $k_max
-     * @return int|null
-     */
-    private function buscar_k($cost, $techo, $amount, $k_max)
-    {
-        for ($k = 1; $k <= $k_max; $k++) {
-            $candidato = $cost / pow($amount, $k);
-
-            if ($candidato > 0 && $candidato <= $techo) {
-                return $k;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array  $sana
-     * @param  string  $motivo
-     * @return array
-     */
-    private function descartar($sana, $motivo)
-    {
-        $sana['accion'] = 'descartar';
-        $sana['motivo'] = $motivo;
-
-        return $sana;
-    }
 
     /**
      * Acumula el costo de articulos proyectado de la venta, con el costo final de cada linea.
@@ -896,7 +624,7 @@ class SanearCostoDeLineaDeVenta extends Command
             'criterio' => [
                 'causa_b' => 'firma ganancia = price x amount - cost, ADEMAS cost > price (si no, un precio editado despues de la venta cumple la misma firma sin estar roto), + menor k con cost/amount^k <= price x 2 (x unidades_individuales si las tiene)',
                 'causa_a' => 'articles.unidades_individuales > 1 y cost > price x 2, se divide por unidades_individuales',
-                'factor_de_coherencia' => self::FACTOR_COSTO_INCOHERENTE,
+                'factor_de_coherencia' => CostoDeLineaDeVentaHelper::FACTOR_COSTO_INCOHERENTE,
             ],
             'contadores' => array_merge($this->contadores, [
                 'lineas_a_corregir' => count($this->correcciones),
