@@ -73,12 +73,26 @@ class ConsumoIaController extends Controller
         /*
          * Las fechas se arman con Carbon, que toma la zona de `config('app.timezone')` —
          * fijada en `America/Argentina/Buenos_Aires` en `config/app.php`, a mano y no por env.
-         * Eso mismo es lo que hace que el `DATE(created_at)` de abajo ya esté en la zona
-         * correcta: Laravel escribe los timestamps en la zona de la app, no en la del sistema
-         * operativo (que en el shared hosting es UTC y en el VPS es -03).
+         * O sea que PHP escribe y compara siempre en hora de Buenos Aires, y el
+         * `DATE(created_at)` de abajo devuelve ese mismo día de calendario.
          *
-         * 🔴 NO se usa `CONVERT_TZ()` para forzar la zona en SQL: necesita las tablas de zonas
-         * horarias cargadas en MySQL, que en el shared hosting NO están, y cuando faltan
+         * ⚠️ PERO EL SISTEMA OPERATIVO DEL SERVIDOR SÍ INFLUYE, y conviene saber cómo.
+         * `created_at` es un `TIMESTAMP` de MySQL (no un `DATETIME`) y `config/database.php` no
+         * fija `timezone`, así que la sesión corre con `time_zone = SYSTEM`: MySQL convierte de
+         * esa zona a UTC al escribir y de UTC a esa zona al leer. Mientras la zona del servidor
+         * no cambie, la ida y la vuelta se cancelan y el día leído es exactamente el que
+         * escribió PHP — que es el caso normal.
+         *
+         * Donde se rompe es cuando esa zona cambia: un cliente MIGRADO del shared (UTC) al VPS
+         * (-03) lee corridas 3 horas todas las filas escritas antes de la mudanza, así que el
+         * consumo de las primeras 3 h de cada día anterior a la migración cae en el día previo.
+         * Es un defecto de plataforma ya conocido en el pool —el mismo por el que el historial
+         * se lee 3 horas antes en el VPS—, no algo que este endpoint pueda arreglar: se
+         * arreglaría fijando la zona de la conexión en `config/database.php`, que es un cambio
+         * que toca a todo el repo y a todas las tablas con `timestamp`.
+         *
+         * 🔴 Y NO se usa `CONVERT_TZ()` para forzar la zona en SQL: necesita las tablas de
+         * zonas horarias cargadas en MySQL, que en el shared hosting NO están, y cuando faltan
          * devuelve NULL sin error — o sea, todos los días agrupados bajo una fecha nula y nadie
          * enterándose.
          */
@@ -271,9 +285,18 @@ class ConsumoIaController extends Controller
      * (aunque el flag del middleware siga apagado) y el que no la tiene se comporta igual que
      * el resto del grupo. Es estrictamente más seguro que el status quo y no rompe a nadie.
      *
-     * A diferencia del canal del asistente —que exige la clave siempre—, este endpoint SOLO
-     * LEE, y lo que devuelve son contadores de tokens: no expone ni ventas, ni clientes, ni
-     * precios, ni permite escribir nada. El riesgo de dejarlo como está hoy es otro.
+     * ⚠️ QUÉ QUEDA EXPUESTO EN UN CLIENTE SIN CLAVE, dicho con todas las letras porque alguien
+     * va a citar este comentario como precedente: además de los contadores de tokens, sale el
+     * corte `personas[]`, que lleva el **nombre de cada empleado** y su actividad diaria (qué
+     * días usó la IA y cuánto). No sale nada de ventas, clientes, precios ni stock, y el
+     * endpoint no escribe nada — pero no es "solo números". La puerta ya está igual de abierta
+     * para `AdminSync\EmployeesController@index`, que con la misma condición devuelve nombre y
+     * teléfono de cada empleado, así que esto no agrega una fuga nueva; la diferencia con el
+     * canal del asistente —que exige la clave siempre, sin mirar el flag— es que aquél CARGA
+     * compras, gastos y pagos, y éste solo lee.
+     *
+     * Lo que cierra esto de verdad es prender `ADMIN_SYNC_REQUIRE_API_KEY` y cargarle la clave
+     * a cada cliente, que es una decisión de plataforma y no de este endpoint.
      *
      * El día que Lucas prenda `ADMIN_SYNC_REQUIRE_API_KEY`, este método queda redundante y no
      * molesta.

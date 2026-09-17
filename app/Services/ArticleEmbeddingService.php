@@ -169,6 +169,27 @@ class ArticleEmbeddingService
         $body  = is_array($body) ? $body : [];
         $usage = isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [];
 
+        /*
+         * 🔴 EL GUARD TIENE QUE ESTAR ACÁ Y NO EN EL HELPER, porque abajo el `usage` se traduce
+         * a las cuatro claves de Anthropic y a partir de esa línea las cuatro existen siempre,
+         * con valor cero. O sea que el aviso del helper nunca se dispararía para OpenAI: este
+         * es el último punto donde todavía se puede ver que `prompt_tokens` no vino.
+         *
+         * Importa porque el síntoma de que OpenAI cambie el formato no sería un error sino que
+         * el gasto de embeddings de todos los clientes baje a cero de un día para el otro, que
+         * es exactamente lo mismo que se ve cuando un comercio no usa la IA.
+         */
+        if (! isset($usage['prompt_tokens'])) {
+
+            Log::channel('daily')->warning(
+                'ArticleEmbeddingService: OpenAI respondió sin usage.prompt_tokens; el consumo se registra en cero.',
+                [
+                    'proceso'          => (string) $proceso,
+                    'claves_recibidas' => array_keys($usage),
+                ]
+            );
+        }
+
         AiTokenUsageHelper::registrar([
             'user_id'   => (int) $user_id,
             'proceso'   => (string) $proceso,

@@ -304,9 +304,28 @@ class Endpoint_Test extends TestCase
             $this->assertNotEquals(777777, $fila['input_tokens']);
         }
 
-        foreach ($respuesta['personas'] as $fila) {
-            $this->assertNotEquals(777777, $fila['input_tokens']);
-        }
+        /*
+         * 🔴 ACÁ VA EL VALOR EXACTO, NO UN assertNotEquals. Las dos filas —la del vecino y la
+         * de los procesos automáticos de este comercio— caen el mismo día y las dos tienen
+         * auth_user_id null: si alguien le saca el where('user_id') a personas(), no aparece
+         * una fila de más, se SUMAN en la misma (50 + 777777 = 777827) y un assertNotEquals
+         * contra 777777 pasaría igual, con el test en verde y el cruce entre comercios puesto.
+         */
+        $automaticos = $this->buscar($respuesta['personas'], [
+            'fecha'        => '2026-09-10',
+            'auth_user_id' => null,
+        ]);
+
+        $this->assertNotNull($automaticos);
+        $this->assertEquals(
+            50,
+            $automaticos['input_tokens'],
+            'El corte por persona tiene que traer SOLO los 50 de este comercio: si trae más, se le sumó el consumo del vecino.'
+        );
+        $this->assertEquals(1, $automaticos['llamadas']);
+
+        /* Y el vecino no aportó ninguna otra fila al corte por persona. */
+        $this->assertCount(3, $respuesta['personas'], 'El vecino no puede agregar filas al corte por persona.');
     }
 
     /**

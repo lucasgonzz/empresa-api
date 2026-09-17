@@ -24,6 +24,17 @@ class AiTokenUsageHelper
     const PROVEEDOR_POR_DEFECTO = 'anthropic';
 
     /**
+     * Los cuatro contadores que se esperan en el bloque `usage`. Si no viene NINGUNO, la fila
+     * se graba igual pero con un warning: ver el comentario de `avisar_si_el_usage_vino_vacio()`.
+     */
+    const CLAVES_DE_USAGE = [
+        'input_tokens',
+        'output_tokens',
+        'cache_creation_input_tokens',
+        'cache_read_input_tokens',
+    ];
+
+    /**
      * Graba una fila de consumo a partir de la respuesta de la API de IA.
      *
      * Claves aceptadas en $datos:
@@ -81,6 +92,8 @@ class AiTokenUsageHelper
                 $proveedor = self::PROVEEDOR_POR_DEFECTO;
             }
 
+            self::avisar_si_el_usage_vino_vacio($usage, $proceso, $proveedor);
+
             AiTokenUsage::create([
                 'user_id'      => $user_id,
                 'auth_user_id' => isset($datos['auth_user_id']) && ! is_null($datos['auth_user_id'])
@@ -111,5 +124,47 @@ class AiTokenUsageHelper
                 'user_id' => isset($datos['user_id']) ? $datos['user_id'] : null,
             ]);
         }
+    }
+
+    /**
+     * Deja un warning cuando el bloque `usage` no trajo NINGUNO de los cuatro contadores.
+     *
+     * 🔴 POR QUÉ ESTO NO ES RUIDO. La fila se graba igual, con los cuatro contadores en cero —
+     * y ese es justamente el problema: un cero es indistinguible de un comercio que no usó la
+     * IA. Si mañana una de las dos APIs deja de mandar `usage`, o le cambia el nombre a las
+     * claves, el síntoma no va a ser un error: va a ser que el gasto de TODOS los clientes baja
+     * a cero de un día para el otro, en silencio, y que el admin muestra costo 0 sin que nada
+     * lo denuncie. Esta línea es la diferencia entre una falla muda y una que se encuentra
+     * buscando en el log.
+     *
+     * No se pregunta por las cuatro: las dos de caché faltan legítimamente en muchas respuestas
+     * de Anthropic, y el mapeo de OpenAI llena las cuatro a mano (ahí el guard equivalente vive
+     * en `ArticleEmbeddingService::registrar_consumo()`, que es donde todavía se puede ver el
+     * `prompt_tokens` original). El umbral es "ninguna de las cuatro".
+     *
+     * @param  array   $usage
+     * @param  string  $proceso
+     * @param  string  $proveedor
+     * @return void
+     */
+    protected static function avisar_si_el_usage_vino_vacio(array $usage, $proceso, $proveedor)
+    {
+        foreach (self::CLAVES_DE_USAGE as $clave) {
+
+            if (array_key_exists($clave, $usage)) {
+
+                return;
+            }
+        }
+
+        Log::warning(
+            'AiTokenUsageHelper::registrar - la respuesta vino sin bloque usage: se graba una fila en cero. '
+            . 'Si esto se repite, el consumo de este proceso quedó sin medir.',
+            [
+                'proceso'         => $proceso,
+                'proveedor'       => $proveedor,
+                'claves_recibidas' => array_keys($usage),
+            ]
+        );
     }
 }
