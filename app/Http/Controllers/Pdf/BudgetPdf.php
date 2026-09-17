@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ImageHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\User;
 use fpdf;
@@ -455,7 +456,19 @@ class BudgetPdf extends fpdf {
 
 		if ($this->with_prices) {
 
-		    if ($this->total_original > $this->budget->total) {
+		    /*
+		    	El total forzado tambien abre la diferencia entre el sub total y el total, asi que
+		    	tambien tiene que hacer aparecer este renglon (mision forzar-total-por-monto,
+		    	17/9/2026).
+
+		    	Hace falta nombrarlo aparte y no alcanza con la comparacion de arriba: un forzado
+		    	HACIA ARRIBA deja `total_original` MENOR que el total, la condicion da false y el
+		    	renglon del ajuste quedaria solo, sin decir nunca de cuanto se partia.
+		    */
+		    if (
+		    	$this->total_original > $this->budget->total
+		    	|| SaleHelper::get_forzar_total_monto($this->budget) != 0
+		    ) {
 
 		    	$this->SetFont('Arial', 'B', 12);
 		    	$this->y += 5;
@@ -495,6 +508,29 @@ class BudgetPdf extends fpdf {
 			    	$this->x = 5;
 					$this->Cell(200, 7, '+ '.$surchage->pivot->percentage.'% '.$surchage->name, 0, 1, 'R');
 			    }
+		    }
+
+		    /*
+		    	EL RENGLON DEL AJUSTE DEL TOTAL FORZADO (mision forzar-total-por-monto, 17/9/2026).
+
+		    	🔴 Va ULTIMO, despues de descuentos y recargos, que es el orden en que se aplica en
+		    	`BudgetHelper::getTotal()`.
+
+		    	Sin el, el presupuesto forzado imprimia "Sub Total sin descuentos: $4.012" y abajo
+		    	"Total: $4.000" —porque `getTotal()` si contempla el forzado— y NINGUNA fila
+		    	explicaba los doce pesos del medio. Lucas eligio el desglose, no el silencio, y los
+		    	presupuestos estan adentro del alcance que fijo.
+
+		    	El monto va en valor absoluto con el signo adelante, en el mismo formato que los
+		    	renglones de descuento y recargo de aca arriba.
+		    */
+		    $monto_forzado = SaleHelper::get_forzar_total_monto($this->budget);
+
+		    if ($monto_forzado != 0) {
+
+		    	$this->x = 5;
+		    	$signo = $monto_forzado < 0 ? '- ' : '+ ';
+				$this->Cell(200, 7, $signo.'$'.Numbers::price(abs($monto_forzado)).' Ajuste del total', 0, 1, 'R');
 		    }
 
 		}

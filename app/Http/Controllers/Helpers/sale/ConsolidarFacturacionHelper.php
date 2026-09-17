@@ -121,6 +121,32 @@ class ConsolidarFacturacionHelper extends Controller
             $total_consolidado  = $ventas_originales->sum('total');
             $sub_total_consolid = $ventas_originales->sum('sub_total');
 
+            /**
+             * El monto del total forzado de la consolidada es la SUMA de los montos de las ventas
+             * originales (mision forzar-total-por-monto, 17/9/2026).
+             *
+             * ─────────────────────────────────────────────────────────────────────────────
+             *  🔴 POR QUE ESTA LINEA NO ES OPCIONAL
+             * ─────────────────────────────────────────────────────────────────────────────
+             *
+             *  `$total_consolidado` ya viene con los forzados adentro, porque suma `sales.total` de
+             *  cada venta. Pero los renglones se copian con su `price` CRUDO. Sin el monto, la
+             *  consolidada queda con `total` = 4.000 y renglones que suman 4.012: el factor de
+             *  `AfipItemCalculator` da 1 y a un emisor Responsable Inscripto se le facturan los
+             *  4.012 — 12 pesos mas de lo que el cliente pago, en un comprobante fiscal.
+             *
+             *  Es la misma clase de error que esta mision vino a cerrar: un camino que escribe
+             *  `sales.total` sin escribir `forzar_total_monto`. Los dos campos se escriben juntos.
+             *
+             * El cero se guarda como null, igual que `SaleHelper::normalized_forzar_total_monto()`:
+             * ninguna de las ventas forzo nada, y "no se forzo" es null, no 0.
+             */
+            $forzado_consolidado = (float) $ventas_originales->sum('forzar_total_monto');
+
+            if ($forzado_consolidado == 0) {
+                $forzado_consolidado = null;
+            }
+
             /** Usa el sale_type_id de la primera venta como referencia; todas deben ser del mismo tipo. */
             $sale_type_id = $ventas_originales->first()->sale_type_id;
 
@@ -144,6 +170,8 @@ class ConsolidarFacturacionHelper extends Controller
                 'afip_tipo_comprobante_id'      => $afip_tipo_comprobante_id,
                 'total'                         => $total_consolidado,
                 'sub_total'                     => $sub_total_consolid,
+                /** Ver el bloque de arriba: va junto con `total`, o la factura sale por el bruto. */
+                'forzar_total_monto'            => $forzado_consolidado,
                 'moneda_id'                     => $moneda_id,
                 'valor_dolar'                   => $valor_dolar,
                 'iva_aplicado'                  => $iva_aplicado,

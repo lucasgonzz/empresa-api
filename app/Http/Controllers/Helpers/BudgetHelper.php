@@ -94,6 +94,34 @@ class BudgetHelper {
 
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
 
+	        /*
+	            🔴 EL `sub_total` DE LA VENTA NACIDA DE UN PRESUPUESTO (mision forzar-total-por-monto,
+	            17/9/2026).
+
+	            Hasta hoy `saveSale()` NO escribia esta columna: `sales.sub_total` se escribe solo en
+	            `SaleController` (alta y actualizacion), desde el request de VENDER. Una venta nacida
+	            de un presupuesto quedaba con `sub_total` en null, y nadie se enteraba porque nadie lo
+	            leia.
+
+	            Lo leen los comprobantes, y esta mision los hizo leerlo de verdad. Con null adentro,
+	            el ticket de 80mm arranca `total_sale` en 0 e imprime "Total $0", despues
+	            "Ajuste -$12   $-12" y despues "Total sin descuentos: $-12"; y la factura A/B imprime
+	            "Total Original: $0". O sea: tres renglones sin sentido en EL comprobante del caso de
+	            uso, justo en el camino que esta misma mision habilito al arrastrar el monto del
+	            presupuesto a la venta.
+
+	            Se calcula con `SaleHelper::get_sub_total()`, que suma los renglones ya adjuntados
+	            —articulos, combos, promociones y servicios, con el descuento por linea aplicado— y
+	            NO aplica ni descuentos ni recargos de venta ni el forzado. Es exactamente la misma
+	            definicion que manda VENDER en el alta, que es lo que hace que el desglose del
+	            comprobante cierre: sub_total menos los renglones del medio da el total.
+
+	            ⚠️ Va DESPUES de adjuntar los cuatro tipos de item: antes, la venta todavia no tiene
+	            renglones y la suma daria 0.
+	        */
+	        $sale->sub_total = SaleHelper::get_sub_total($sale);
+	        $sale->save();
+
 	        if (!$sale->to_check) {
 	        	SaleHelper::create_current_acount($sale);
 	        }
@@ -486,7 +514,7 @@ class BudgetHelper {
 			Y ademas hace que la cuenta corriente reciba el numero correcto: `saveCurrentAcount()`
 			usa este mismo metodo para el `debe` del presupuesto.
 		*/
-		$total += SaleHelper::get_forzar_total_monto($budget);
+		$total = SaleHelper::aplicar_forzar_total_monto($budget, $total);
 
 		return $total;
 	}
