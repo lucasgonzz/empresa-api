@@ -225,7 +225,7 @@ class Ganancia_De_Venta_Neta_De_Iva_Test extends EmpresaTestCase
      * 🔴 Lo que NO puede pasar es que se cuente como IVA 0: eso sería informar una venta facturada
      * como si hubiera sido en negro, con la ganancia inflada en todo el IVA y sin que nada lo avise.
      * Null ya significa "no se puede calcular" en esta columna, y el backfill lo cuenta aparte y
-     * dice cómo saldarlo (`php artisan set_iva_debito`). Medido el 17/9/2026: 53 comprobantes así
+     * lo denuncia para que se salde aparte. Medido el 17/9/2026: 53 comprobantes así
      * en ferretotal y 8 en golonorte.
      *
      * @group sales

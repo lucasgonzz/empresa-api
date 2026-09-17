@@ -223,9 +223,10 @@ class ContabilidadRepository
      *
      * 🔴 Existe por el mismo motivo que `notas_credito_sin_medir()`: que un renglón que quedó
      * sobrevaluado no se confunda con uno medido. Un `importe_iva` en null no es un IVA de cero —
-     * es un dato que falta, y se recupera con `php artisan set_iva_debito <company_name>` (medido
-     * el 17/9/2026: 53 comprobantes en ferretotal, 8 en golonorte). Mientras tanto la venta suma
-     * con IVA adentro y el margen bruto de ese período queda un poco alto.
+     * es un dato que falta, y hay que medirlo aparte (ver el PHPDoc de `IvaDeVentaHelper`: el
+     * comando que existía para eso está roto en `develop`). Medido el 17/9/2026: 53 comprobantes
+     * así en ferretotal y 8 en golonorte. Mientras tanto la venta suma con IVA adentro y el margen
+     * bruto de ese período queda un poco alto.
      *
      * No se filtra por moneda ni por sucursal: es un aviso de integridad del dato, no un renglón
      * del reporte.

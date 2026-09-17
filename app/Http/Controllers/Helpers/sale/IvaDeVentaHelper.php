@@ -47,9 +47,16 @@ use Illuminate\Support\Facades\DB;
  * 🔴 Un comprobante autorizado SIN `importe_iva` medido NO es un cero. Es un dato que falta, y se
  * devuelve aparte (`sin_medir`) para que cada consumidor decida: la ganancia se persiste en null y
  * el backfill lo cuenta y lo denuncia. Tratarlo como 0 sería contar una venta facturada como si
- * hubiera sido en negro, que es exactamente el error que esta clase existe para no cometer. Esos
- * comprobantes se recuperan con `php artisan set_iva_debito <company_name>` (medido el 17/9/2026:
- * 53 en ferretotal, 8 en golonorte).
+ * hubiera sido en negro, que es exactamente el error que esta clase existe para no cometer.
+ *
+ * ⚠️ Recuperar ese `importe_iva` es una tarea aparte y HOY NO HAY COMANDO QUE LA HAGA. El que
+ * existe, `php artisan set_iva_debito <company_name>`, está roto en `develop`: muere con
+ * `Call to undefined method App\Models\Sale::afip_ticket()` —la relación se llama `afip_tickets`
+ * desde hace versiones— y además le pasa la `Sale` a `AfipHelper` en el parámetro donde va el
+ * `AfipTicket`, así que aunque se arreglara el nombre de la relación se quedaría sin venta adentro.
+ * Verificado corriéndolo el 17/9/2026 en el slot s23. El molde para rehacerlo es
+ * `SetIvaNotasCredito` (1/9/2026), que sólo escribe cuando puede REPRODUCIR el valor declarado y no
+ * lo estima nunca. Volumen medido el 17/9/2026: 53 comprobantes así en ferretotal y 8 en golonorte.
  */
 class IvaDeVentaHelper
 {
@@ -132,7 +139,7 @@ class IvaDeVentaHelper
             ];
         }
 
-        /** Totales de las contenedoras, para prorratear (ver prorratear_consolidacion()). */
+        /** Totales de las contenedoras, para prorratear (ver sumar_consolidacion()). */
         $total_por_consolidacion = [];
 
         if (count($ids_consolidacion) >= 1) {

@@ -76,7 +76,7 @@ class set_sales_ganancia extends Command
         /**
          * Contador de ventas que quedaron en null porque tienen un comprobante AUTORIZADO cuyo
          * `importe_iva` nunca se midió. Se informa aparte del contador de arriba porque tiene una
-         * salida concreta: correr `set_iva_debito` y volver a correr este comando.
+         * salida concreta: medir el IVA de esos comprobantes y volver a correr este comando.
          */
         $sin_iva_medido_sales = 0;
 
@@ -174,16 +174,19 @@ class set_sales_ganancia extends Command
         $this->info('Ganancia null por comprobante sin IVA medido: '.$sin_iva_medido_sales);
 
         /**
-         * 🔴 El aviso va como warning y con el comando exacto: una venta facturada cuyo comprobante
-         * no tiene `importe_iva` no se puede saldar sola. Medido el 17/9/2026: 53 comprobantes asi
-         * en ferretotal y 8 en golonorte.
+         * 🔴 El aviso va como warning: una venta facturada cuyo comprobante no tiene `importe_iva`
+         * no se salda sola. Medido el 17/9/2026: 53 comprobantes asi en ferretotal y 8 en golonorte.
+         *
+         * ⚠️ A proposito NO nombra un comando: el unico que existe para eso
+         * (`php artisan set_iva_debito`) esta roto en develop y no corre. Ver el PHPDoc de
+         * `IvaDeVentaHelper` para el error exacto y para el molde con el que rehacerlo.
          */
         if ($sin_iva_medido_sales > 0) {
             $this->warn(
                 $sin_iva_medido_sales.' venta(s) quedaron con ganancia en NULL porque tienen un comprobante '.
                 'autorizado sin importe_iva medido. No se las cuenta como IVA 0 a proposito: seria contar una '.
-                'venta facturada como si hubiera sido en negro. Corre "php artisan set_iva_debito <company_name>" '.
-                'y despues volve a correr este comando.'
+                'venta facturada como si hubiera sido en negro. Hay que medir el IVA de esos comprobantes y '.
+                'volver a correr este comando.'
             );
         }
 

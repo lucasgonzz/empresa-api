@@ -15,6 +15,10 @@ use App\Models\User;
  *   = Ventas netas
  *   (− Costo de mercadería vendida, a costo real Capa 1)
  *   = Resultado bruto                          → + margen bruto %
+ *   (− Gastos operativos, por categoría)
+ *   = Resultado operativo
+ *   (− Impuestos y costos financieros: IIBB devengado, comisiones de cobro)
+ *   = Resultado neto                           → + margen neto %
  *
  * 🔴 Las dos primeras líneas vienen NETAS DEL IVA DECLARADO desde la misión
  * saneo-ganancia-ventas (17/9/2026). Hasta entonces `ventas_brutas()` sumaba `sales.total` (con
@@ -23,10 +27,6 @@ use App\Models\User;
  * justamente sin IVA. El IVA que se descuenta es el del COMPROBANTE, así que una venta sin
  * comprobante entra entera — que es lo correcto, porque ahí no se declaró nada. El detalle del
  * criterio está en `ContabilidadRepository::ventas_brutas()` y en `IvaDeVentaHelper`.
- *   (− Gastos operativos, por categoría)
- *   = Resultado operativo
- *   (− Impuestos y costos financieros: IIBB devengado, comisiones de cobro)
- *   = Resultado neto                           → + margen neto %
  *
  * Reemplaza la nomenclatura confusa del reporte viejo (`PerformanceHelper`/`CompanyPerformance`):
  * lo que ahí se llama `ingresos_brutos` es en realidad `resultado_bruto`, y `rentabilidad` es
@@ -119,7 +119,8 @@ class EstadoResultadosHelper
      * autorizado no tiene el `importe_iva` medido.
      *
      * Es un aviso de integridad, no un renglón: con un número mayor a cero, el margen bruto de ese
-     * período está un poco alto y se arregla corriendo `php artisan set_iva_debito <company_name>`.
+     * período está un poco alto, y se arregla midiendo el IVA de esos comprobantes (ver el PHPDoc
+     * de `IvaDeVentaHelper`).
      * Mismo criterio y mismo motivo que `notas_credito_sin_medir()` en la Posición Fiscal: un cero
      * medido y un cero por falta de dato no se pueden ver iguales en pantalla.
      *

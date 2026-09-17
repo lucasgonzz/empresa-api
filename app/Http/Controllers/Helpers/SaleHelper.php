@@ -372,8 +372,8 @@ class SaleHelper extends Controller {
      * 🔴 Un comprobante autorizado sin `importe_iva` medido deja la ganancia en NULL, no en el
      * número viejo ni en "IVA 0". Null ya significa "no se puede calcular" en esta columna (es lo
      * que se persiste cuando falta el total o el costo), y es la única respuesta que no miente:
-     * asumir 0 sería contar una venta facturada como si hubiera sido en negro. Se recuperan con
-     * `php artisan set_iva_debito <company_name>` y vuelve a correr `set_sales_ganancia`.
+     * asumir 0 sería contar una venta facturada como si hubiera sido en negro. Recuperar ese IVA es
+     * una tarea aparte y hoy no hay comando que la haga (ver el PHPDoc de `IvaDeVentaHelper`).
      *
      * @param \App\Models\Sale $sale
      * @return \App\Models\Sale

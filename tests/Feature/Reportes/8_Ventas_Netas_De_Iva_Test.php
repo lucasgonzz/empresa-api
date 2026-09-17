@@ -171,8 +171,8 @@ class Ventas_Netas_De_Iva_Test extends EmpresaTestCase
      * inventa un IVA) y el aviso `ventas_con_iva_sin_medir` lo denuncia.
      *
      * Es el mismo criterio que `notas_credito_sin_medir()` en la Posición Fiscal: un renglón que
-     * quedó sobrevaluado por falta de dato no puede verse igual que uno medido. Se salda con
-     * `php artisan set_iva_debito <company_name>`.
+     * quedó sobrevaluado por falta de dato no puede verse igual que uno medido. Se salda midiendo
+     * el IVA de esos comprobantes (ver el PHPDoc de `IvaDeVentaHelper`).
      *
      * @group reportes
      * @test
