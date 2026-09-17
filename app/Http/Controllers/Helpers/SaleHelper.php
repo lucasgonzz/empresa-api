@@ -1954,7 +1954,98 @@ class SaleHelper extends Controller {
                 $total -= $seller_commission->debe;
             }
         }
+
+        /*
+            EL TOTAL FORZADO VA ULTIMO, DESPUES DE TODO (mision forzar-total-por-monto, 17/9/2026).
+
+            🔴 POR QUE AL FINAL Y NO EN EL MEDIO, que es donde se estaria tentado de ponerlo al
+            lado de `$sale->descuento`. El monto es la diferencia contra EL TOTAL QUE VIO EL
+            VENDEDOR EN PANTALLA: la venta daba 4.012 y el cliente pago 4.000, entonces el monto
+            es -12 sobre el total completo. Si se aplicara antes de los descuentos y recargos, esos
+            porcentajes caerian tambien sobre el monto forzado y el total dejaria de dar 4.000
+            exacto, que es lo unico que el forzado promete.
+
+            Y por eso mismo se aplica al `$total` ya armado y no a `$total_articles`: ESE es el
+            defecto que esta mision viene a cerrar. La extension `forzar_total` vieja mandaba un
+            porcentaje que se restaba solo a los articulos, y despues el total se rearmaba sumando
+            articulos + servicios + combos + promociones. En una venta con servicios o combos el
+            numero forzado no aparecia por ningun lado.
+
+            La guarda de null va adentro de `get_forzar_total_monto()`: sin forzado esto es una
+            suma de cero y el camino comun no cambia en nada.
+        */
+        $total += Self::get_forzar_total_monto($sale);
+
         return $total;
+    }
+
+    /**
+     * El monto del total forzado de una venta o un presupuesto, normalizado a float.
+     *
+     * Es el unico lector de `forzar_total_monto` del repo: cualquier otro lugar que necesite el
+     * monto pasa por aca, para que la guarda de null y el casteo no se repitan (ni se olviden) en
+     * cada llamador. `BudgetHelper` tambien lo usa, por eso recibe un modelo generico y no una
+     * `Sale`.
+     *
+     * NEGATIVO = descuento, POSITIVO = recargo, NULL = no se forzo nada. La semantica completa
+     * esta en la migracion `2026_09_17_100000_add_forzar_total_monto_to_sales_and_budgets_tables`.
+     *
+     * ⚠️ `isset()` y no `is_null($model->forzar_total_monto)`: este helper lo llaman tambien los
+     * PDF y el calculador de AFIP sobre modelos que pueden venir de una base de cliente que
+     * TODAVIA NO CORRIO LA MIGRACION. En esa base el atributo no existe en absoluto y preguntar
+     * por el con `->` tira un warning por cada renglon del comprobante. `isset()` cubre las dos
+     * cosas —columna ausente y columna en null— con la misma linea.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|object  $model  Venta o presupuesto.
+     * @return float  0 si no hay forzado.
+     */
+    static function get_forzar_total_monto($model) {
+
+        if (is_null($model) || !isset($model->forzar_total_monto)) {
+            return 0.0;
+        }
+
+        return (float) $model->forzar_total_monto;
+    }
+
+    /**
+     * Normaliza el `forzar_total_monto` que llega en un request antes de persistirlo.
+     *
+     * Devuelve null (= no hubo forzado) cuando el campo no viene, viene null, viene no numerico o
+     * vale cero; y el monto redondeado a dos decimales en cualquier otro caso.
+     *
+     * 🔴 EL CERO SE GUARDA COMO NULL A PROPOSITO, y no como 0.00. Un cero seria "se forzo el total
+     * y dio justo lo mismo", que es indistinguible de no haber forzado nada pero hace que TODOS
+     * los lectores tengan que preguntar por las dos cosas: el renglon del comprobante, la caja de
+     * totales del PDF y el prorrateo de AFIP pasarian a mostrar y a calcular un ajuste de $0. Con
+     * null, la unica pregunta que hay que hacerse en todo el repo es "hay monto o no hay".
+     *
+     * ⚠️ `is_numeric()` y no un cast pelado: un `(float) 'cuatro mil'` da 0.0 en silencio, y ese
+     * cero terminaria guardado como "no se forzo nada" sobre una venta que el vendedor SI forzo.
+     * Preferimos que un payload roto no escriba la columna a que escriba un numero inventado.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return float|null
+     */
+    static function normalized_forzar_total_monto($request) {
+
+        if (!$request->exists('forzar_total_monto')) {
+            return null;
+        }
+
+        $monto = $request->forzar_total_monto;
+
+        if (is_null($monto) || !is_numeric($monto)) {
+            return null;
+        }
+
+        $monto = round((float) $monto, 2, PHP_ROUND_HALF_UP);
+
+        if ($monto == 0) {
+            return null;
+        }
+
+        return $monto;
     }
 
     static function total_menos_comisiones($sale) {

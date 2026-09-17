@@ -307,6 +307,19 @@ class SaleController extends Controller
                 // Si no se envía el campo, se asume true (comportamiento por defecto: precios con IVA).
                 'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
+                /*
+                 * El monto del total forzado (mision forzar-total-por-monto, 17/9/2026).
+                 *
+                 * 🔴 NO ES LO MISMO QUE `descuento`, que esta justo arriba y es un PORCENTAJE.
+                 * Este campo es plata, con signo: negativo = descuento, positivo = recargo, null =
+                 * no se forzo nada. La semantica completa esta en la migracion
+                 * `2026_09_17_100000_add_forzar_total_monto_to_sales_and_budgets_tables`.
+                 *
+                 * Se normaliza en `SaleHelper` y no acá con un `round()` pelado como la linea de
+                 * arriba porque el cero tiene que quedar en null: ver el porque en
+                 * `SaleHelper::normalized_forzar_total_monto()`.
+                 */
+                'forzar_total_monto'                => SaleHelper::normalized_forzar_total_monto($request),
                 'user_id'                           => $this->userId(),
                 // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
                 'price_description'                 => $request->price_description,
@@ -567,8 +580,29 @@ class SaleController extends Controller
             $model->seller_id                           = $request->seller_id;
 
             $model->sub_total                           = $request->sub_total;
-            
+
             $model->total                               = $request->total;
+
+            /*
+                El monto del total forzado (mision forzar-total-por-monto, 17/9/2026).
+
+                🔴 SE ASIGNA PELADO, SIN GUARDA DE `$request->exists()`, Y ESO ES A PROPOSITO —
+                justo al reves de `omitir_en_cuenta_corriente` doce lineas mas arriba.
+
+                El motivo es que este campo NO ES INDEPENDIENTE de `total`: el monto esta definido
+                CONTRA ese total ("la venta daba 4.012 y se cobro 4.000, entonces -12"). Y `total`
+                se asigna pelado en la linea de arriba. Si se preservara el monto guardado cuando el
+                request no lo manda —la SPA anterior, durante la ventana entre el despliegue de la
+                api y el de la spa—, la venta quedaria con el total recalculado SIN forzar y con el
+                monto del forzado viejo todavia puesto: `getTotalSale()` volveria a restar esos 12 y
+                el prorrateo de AFIP sacaria el factor contra una base equivocada.
+
+                Los dos campos se escriben juntos o no se escriben: vienen del mismo request, del
+                mismo calculo y del mismo momento. Que la SPA vieja pierda el forzado al editar es
+                la consecuencia correcta — es exactamente lo que esa SPA esta pidiendo al mandar el
+                total sin forzar.
+            */
+            $model->forzar_total_monto                  = SaleHelper::normalized_forzar_total_monto($request);
 
             $model->fecha_entrega                       = $request->fecha_entrega;
             

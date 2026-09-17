@@ -53,6 +53,18 @@ class BudgetHelper {
 	            'budget_id' 			=> $budget->id,
 	            'observations' 			=> $budget->observations,
 	            'total' 				=> $budget->total,
+	            /*
+	             * El monto del total forzado viaja del presupuesto a la venta (mision
+	             * forzar-total-por-monto, 17/9/2026).
+	             *
+	             * 🔴 VA JUNTO CON `total`, EN LA MISMA LINEA CONCEPTUAL. El total del presupuesto ya
+	             * es el forzado; si la venta se llevara el total pero no el monto, nadie podria
+	             * volver a explicar de donde sale ese numero: el comprobante no tendria renglon de
+	             * ajuste, el prorrateo de AFIP facturaria el total sin forzar y cualquier
+	             * recalculo del back (`getTotalSale()` al confirmar una venta chequeada) pisaria el
+	             * total con la suma pelada de los renglones.
+	             */
+	            'forzar_total_monto'	=> $budget->forzar_total_monto,
 	            'address_id' 			=> $budget->address_id,
 	            'moneda_id' 			=> $budget->moneda_id,
 	            'discounts_in_services'	=> $budget->discounts_in_services,
@@ -454,6 +466,28 @@ class BudgetHelper {
 
 			$total += $total_service;
 		}
+
+		/*
+			EL TOTAL FORZADO, ULTIMO Y SOBRE EL TOTAL COMPLETO (mision forzar-total-por-monto,
+			17/9/2026). Mismo lugar y mismo motivo que en `SaleHelper::getTotalSale()`: el monto es
+			la diferencia contra el total que vio el vendedor en pantalla, asi que aplicarlo antes
+			de los descuentos y recargos haria que esos porcentajes cayeran tambien sobre el.
+
+			🔴 ESTA LINEA ES LA QUE DEJA GUARDAR UN PRESUPUESTO CON EL TOTAL FORZADO. Los dos
+			llamadores de arriba —`BudgetController::store()` y `::duplicate()`— comparan lo que
+			devuelve este metodo contra `budgets.total` y cortan con "El total del presupuesto no
+			corresponde con los productos ingresados" si difieren en mas de 3. Con un total forzado,
+			`budgets.total` ES el forzado; sin sumar el monto aca, la diferencia seria exactamente
+			el monto del forzado y el guardado moriria con un 500 que no nombra la causa. Es el
+			mismo defecto que ya tuvieron los combos (ver el bucle de combos, mas arriba) y el
+			recargo directo a items: un bucket que entra en el `total` del payload pero no en esta
+			cuenta.
+
+			Y ademas hace que la cuenta corriente reciba el numero correcto: `saveCurrentAcount()`
+			usa este mismo metodo para el `debe` del presupuesto.
+		*/
+		$total += SaleHelper::get_forzar_total_monto($budget);
+
 		return $total;
 	}
 

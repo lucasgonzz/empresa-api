@@ -70,6 +70,17 @@ class BudgetController extends Controller
                 'discount_stock'            => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 'iva_aplicado'              => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
                 'total'                     => $request->total,
+                /*
+                 * El monto del total forzado (mision forzar-total-por-monto, 17/9/2026): plata con
+                 * signo, negativo = descuento, positivo = recargo, null = no se forzo nada.
+                 *
+                 * Sin esta clave, el `total` forzado que manda VENDER se guardaria igual pero la
+                 * validacion de treinta lineas mas abajo —`BudgetHelper::getTotal()` contra
+                 * `$model->total`, margen de 3— lo rechazaria con "El total del presupuesto no
+                 * corresponde con los productos ingresados", porque los renglones suman el total
+                 * SIN forzar. La otra mitad del arreglo esta en `BudgetHelper::getTotal()`.
+                 */
+                'forzar_total_monto'        => SaleHelper::normalized_forzar_total_monto($request),
                 'budget_status_id'          => $request->budget_status_id,
                 'address_id'                => $request->address_id,
                 'surchages_in_services'     => $request->surchages_in_services,
@@ -233,6 +244,19 @@ class BudgetController extends Controller
         $model->finish_at                 = $request->finish_at;
         $model->observations              = $request->observations;
         $model->total                     = $request->total;
+        /*
+            El monto del total forzado, asignado PELADO y junto a `total` (mision
+            forzar-total-por-monto, 17/9/2026).
+
+            🔴 Sin guarda de `$request->exists()`, al reves que `aplicar_recargos_directo_a_items`
+            cinco lineas mas abajo, y por el mismo motivo que en `SaleController::update()`: el
+            monto esta definido CONTRA el total de la linea de arriba, que se asigna pelado. Los dos
+            se escriben juntos o el presupuesto queda con un total sin forzar y un monto de forzado
+            viejo colgando, y en ese estado `BudgetHelper::getTotal()` suma el monto de mas y el
+            proximo guardado muere con "El total del presupuesto no corresponde con los productos
+            ingresados".
+        */
+        $model->forzar_total_monto        = SaleHelper::normalized_forzar_total_monto($request);
         $model->budget_status_id          = $request->budget_status_id;
         $model->address_id                = $request->address_id;
         // $model->omitir_en_cuenta_corriente                = $request->omitir_en_cuenta_corriente;
