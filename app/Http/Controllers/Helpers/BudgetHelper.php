@@ -88,6 +88,14 @@ class BudgetHelper {
 
 	        SaleTotalesHelper::set_total_cost($sale);
 
+	        /*
+	         * La ganancia de la venta se persiste igual que en el camino normal
+	         * (`SaleHelper::updateOrCreate()`: set_total_cost y enseguida set_sale_ganancia). Hasta
+	         * el 17/9/2026 acá solo se llamaba a set_total_cost, asi que TODA venta nacida de un
+	         * presupuesto se quedaba con `sales.ganancia` en NULL hasta que algo la tocara.
+	         */
+	        SaleHelper::set_sale_ganancia($sale);
+
 
 	        $sale->load('articles');
 		    $h = new ArticlePurchaseHelper();
@@ -134,10 +142,20 @@ class BudgetHelper {
 			
 			$cost = $article->pivot->cost;
 			$price = $article->pivot->price;
-        	$ganancia = (float)$price - (float)$cost;
-			
+			$amount = $article->pivot->amount;
+
+			/*
+			 * 🔴 `article_sale.cost` es UNITARIO y `article_sale.ganancia` es el TOTAL de la linea:
+			 * la convencion la fijan SaleHelper::attachArticle(), SaleTotalesHelper::set_total_cost()
+			 * y ContabilidadRepository::costo_mercaderia_vendida(). Hasta el 17/9/2026 acá se
+			 * guardaba (price − cost) SIN multiplicar por la cantidad, asi que TODA venta nacida de
+			 * un presupuesto tenia la ganancia de linea dividida por la cantidad. Y el presupuesto
+			 * es el camino dominante de las ventas en ferretotal.
+			 */
+        	$ganancia = ((float)$price - (float)$cost) * (float)$amount;
+
 			$sale->articles()->attach($article->id, [
-				'amount'			=> $article->pivot->amount,
+				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $price,
 				'cost'	    		=> $cost,

@@ -81,15 +81,23 @@ use Illuminate\Support\Facades\DB;
  *  3. Las lineas con `amount < 1` (kilos, metros) que paso el comando quedaron con el costo
  *     DIVIDIDO, no multiplicado. Ningun criterio basado en "el costo quedo alto" las ve, y
  *     dividir por amount^k las empeoraria. Se cuentan y se informan, no se tocan.
- *  4. Las lineas con `amount > 1` que paso el comando pero cuyo costo inflado igual quedo por
- *     debajo del umbral (por ejemplo costo unitario 100 y precio 1000 con amount 2) se
- *     corrigen: la firma dice que el costo se multiplico al menos una vez, no hace falta que
- *     "se note". Es el unico caso en que se corrige una linea que no parece rota.
- *  5. La causa A se repara dividiendo por `articles.unidades_individuales` de HOY. Si ese valor
+ *  4. 🔴 La firma sola NO alcanza para escribir: hace falta ademas que el costo guardado sea
+ *     implausible como costo unitario (`cost > price`). Sin esa segunda condicion, una linea SANA
+ *     a la que le editaron el precio despues de la venta (`SaleHelper::updateItemsPrices()`, que
+ *     reescribe `price` sin recalcular `ganancia`) cae justo sobre la firma y el saneo le partia
+ *     el costo al medio. El detalle y el caso medido estan en `es_plausible_como_costo_unitario()`.
+ *     Lo que esto deja afuera son las lineas genuinamente rotas de margen alto, donde el costo
+ *     inflado igual quedo por debajo del precio (costo unitario 100, cantidad 2, precio 1000):
+ *     salen listadas con motivo propio, sin corregir.
+ *  5. Las ventas en deposito (`to_check` o `checked`) no se tocan: `set_total_cost()` les devuelve
+ *     NULL a proposito, asi que corregir una linea les BLANQUEARIA el total_cost a la venta entera.
+ *  6. La causa A se repara dividiendo por `articles.unidades_individuales` de HOY. Si ese valor
  *     cambio despues de la venta, la division no reconstruye el costo de entonces. No hay
  *     registro historico de esa columna; la linea se corrige igual porque el costo del bulto es
- *     inequivocamente incorrecto, pero el respaldo permite revertirla.
- *  6. No se toca `article_budget`. El informe del 1/9 lo dejo explicitamente afuera.
+ *     inequivocamente incorrecto, pero el respaldo permite revertirla. La excepcion: si
+ *     `article_sale.unidades_individuales` viniera cargada (hoy no la escribe nada) ESE seria el
+ *     valor historico exacto — el comando lo denuncia y deja sin tocar las lineas donde difiera.
+ *  7. No se toca `article_budget`. El informe del 1/9 lo dejo explicitamente afuera.
  *
  * ─── Como se corre ────────────────────────────────────────────────────────────────────────
  *
@@ -136,6 +144,19 @@ class SanearCostoDeLineaDeVenta extends Command
     const FACTOR_COSTO_INCOHERENTE = 2.0;
 
     /**
+     * Cantidad de entradas (correcciones + descartes) por encima de la cual el JSON del respaldo
+     * se escribe compacto. Indentar 45.000 entradas —el volumen de golonorte— son decenas de MB
+     * que ademas viven enteras en memoria mientras se serializan.
+     */
+    const TOPE_JSON_INDENTADO = 2000;
+
+    /**
+     * Ventas por transaccion en la escritura. Cada transaccion cierra ventas COMPLETAS: sus lineas
+     * corregidas y su total recalculado. Ver `aplicar_correcciones()`.
+     */
+    const VENTAS_POR_TRANSACCION = 50;
+
+    /**
      * Correcciones planificadas, una por linea.
      *
      * @var array
@@ -172,6 +193,13 @@ class SanearCostoDeLineaDeVenta extends Command
         'lineas_miradas' => 0,
         'lineas_sanas' => 0,
         'lineas_sin_costo' => 0,
+        /*
+         * `article_sale.unidades_individuales` existe como columna del pivot y hoy no la escribe
+         * nada. Si apareciera cargada seria el valor historico exacto del articulo al momento de
+         * la venta, que es mejor dato que el `articles.unidades_individuales` de hoy — pero nadie
+         * midio nunca que haya adentro, asi que el comando lo denuncia en vez de usarlo.
+         */
+        'lineas_con_unidades_individuales_en_el_pivot' => 0,
     ];
 
     /**
@@ -225,10 +253,21 @@ class SanearCostoDeLineaDeVenta extends Command
          */
         $rutas = $this->escribir_respaldos($user_id, $ventas, $aplicar);
 
+        /*
+         * 🔴 Sin respaldo no se escribe una sola fila. Es la unica forma de volver atras y el
+         * comando toca la plata de un negocio real.
+         */
+        if ($rutas === false) {
+            $this->error('No se pudo dejar el respaldo, asi que NO se toco la base. Revisa permisos y espacio en disco y volve a correrlo.');
+
+            return 1;
+        }
+
         if (count($this->correcciones) === 0) {
             $this->reportar_descartes();
             $this->info('No hay nada para corregir con los criterios de esta corrida.');
             $this->line('Respaldo JSON:     ' . $rutas['json']);
+            $this->avisar_donde_queda_el_respaldo($rutas);
 
             return 0;
         }
@@ -238,6 +277,7 @@ class SanearCostoDeLineaDeVenta extends Command
 
         $this->line('Respaldo JSON:     ' . $rutas['json']);
         $this->line('SQL de reversion:  ' . $rutas['sql']);
+        $this->avisar_donde_queda_el_respaldo($rutas);
 
         if (!$aplicar) {
             $this->warn('Dry-run: no se escribio ninguna fila. Volve a correrlo con --aplicar para persistir.');
@@ -245,13 +285,28 @@ class SanearCostoDeLineaDeVenta extends Command
             return 0;
         }
 
-        $this->aplicar_correcciones(array_keys($ventas));
+        $this->aplicar_correcciones();
 
         $this->info('Listo. Lineas corregidas: ' . count($this->correcciones)
             . '. Ventas recalculadas: ' . count($ventas) . '.');
         $this->comment('Para revertir: mysql <base> < ' . $rutas['sql']);
+        $this->line('Memoria maxima de la corrida: ' . round(memory_get_peak_usage(true) / 1024 / 1024, 1) . ' MB.');
 
         return 0;
+    }
+
+    /**
+     * El respaldo queda en el disco del SERVIDOR donde corrio el comando, no en la maquina de
+     * quien lo lanzo por SSH. Si nadie lo baja, el dia que haya que revertir no va a estar.
+     *
+     * @param  array  $rutas
+     * @return void
+     */
+    private function avisar_donde_queda_el_respaldo($rutas)
+    {
+        $this->warn('🔴 Los dos archivos quedaron en el disco DEL SERVIDOR (storage/app/), no en tu maquina.');
+        $this->warn('   Bajalos ahora, antes de seguir: son lo unico que permite revertir esta corrida.');
+        $this->line('   scp/sftp desde: ' . dirname($rutas['json']));
     }
 
     /**
@@ -305,9 +360,16 @@ class SanearCostoDeLineaDeVenta extends Command
                 'article_sale.price',
                 'article_sale.cost',
                 'article_sale.ganancia',
-                'articles.unidades_individuales',
+                /*
+                 * Las dos columnas se llaman igual y hay que distinguirlas: la del articulo es el
+                 * valor de HOY, la del pivot —si tuviera algo— seria el valor historico exacto.
+                 */
+                'articles.unidades_individuales as unidades_del_articulo',
+                'article_sale.unidades_individuales as unidades_de_la_linea',
                 'sales.num as venta_num',
-                'sales.created_at as venta_fecha'
+                'sales.created_at as venta_fecha',
+                'sales.to_check as venta_to_check',
+                'sales.checked as venta_checked'
             );
 
         $sale_id = $this->option('sale_id');
@@ -393,7 +455,11 @@ class SanearCostoDeLineaDeVenta extends Command
         $price = is_null($fila->price) ? null : (float) $fila->price;
         $amount = (float) $fila->amount;
         $ganancia = is_null($fila->ganancia) ? null : (float) $fila->ganancia;
-        $unidades = is_null($fila->unidades_individuales) ? null : (float) $fila->unidades_individuales;
+        $unidades = is_null($fila->unidades_del_articulo) ? null : (float) $fila->unidades_del_articulo;
+
+        if (!is_null($fila->unidades_de_la_linea)) {
+            $this->contadores['lineas_con_unidades_individuales_en_el_pivot']++;
+        }
 
         $sana['cost_final'] = $cost;
 
@@ -415,6 +481,14 @@ class SanearCostoDeLineaDeVenta extends Command
         if ($hacer_b && $this->tiene_firma_del_comando($cost, $price, $amount, $ganancia)) {
             if (is_null($price) || $price <= 0) {
                 return $this->descartar($sana, 'firma_del_comando_sin_precio_para_acotar_k');
+            }
+
+            /*
+             * 🔴 La firma sola NO alcanza: hay un camino en vivo que la produce sobre una linea
+             * PERFECTAMENTE SANA. Ver `es_plausible_como_costo_unitario()`.
+             */
+            if ($this->es_plausible_como_costo_unitario($cost, $price)) {
+                return $this->descartar($sana, 'firma_del_comando_con_costo_plausible_como_unitario');
             }
 
             /*
@@ -476,6 +550,31 @@ class SanearCostoDeLineaDeVenta extends Command
             return $this->descartar($sana, 'costo_corregido_no_positivo');
         }
 
+        /*
+         * El pivot tiene su propia columna `unidades_individuales`. Si trae un valor distinto del
+         * que tiene el articulo hoy, ese es el valor historico y la division de la causa A —que se
+         * hizo con el de hoy— estaria corrigiendo con el numero equivocado. Nadie midio nunca que
+         * guarda esa columna, asi que no se adivina: se deja la linea sin tocar y se denuncia.
+         */
+        if (!is_null($fila->unidades_de_la_linea)) {
+            $de_la_linea = (float) $fila->unidades_de_la_linea;
+            $del_articulo = is_null($fila->unidades_del_articulo) ? null : (float) $fila->unidades_del_articulo;
+
+            if (is_null($del_articulo) || abs($de_la_linea - $del_articulo) > 0.005) {
+                return $this->descartar($sana, 'pivot_con_unidades_individuales_historicas_distintas');
+            }
+        }
+
+        /*
+         * 🔴 Venta en deposito (`to_check` o `checked`): `SaleTotalesHelper::set_total_cost()`
+         * devuelve NULL para estas ventas a proposito. Corregir una sola de sus lineas obliga a
+         * recalcular la venta, y ese recalculo le BLANQUEA el `total_cost` a la venta entera. Se
+         * gana un costo de linea y se pierde el total de la venta: no vale la pena.
+         */
+        if ((int) $fila->venta_to_check === 1 || (int) $fila->venta_checked === 1) {
+            return $this->descartar($sana, 'venta_en_deposito_el_recalculo_blanquearia_su_total_cost');
+        }
+
         return [
             'accion' => 'corregir',
             'cost_final' => $cost_final,
@@ -492,6 +591,12 @@ class SanearCostoDeLineaDeVenta extends Command
      * Firma: ganancia = price × amount − cost, que es lo que persistia el comando. La linea sana
      * cumple ganancia = (price − cost) × amount. Con amount > 1 y cost > 0 las dos no pueden
      * cumplirse a la vez.
+     *
+     * 🔴 LA FIRMA SOLA NO ALCANZA PARA ESCRIBIR. Una linea sana a la que le editaron el precio
+     * despues de la venta (`SaleHelper::updateItemsPrices()`) cumple esta misma firma sin estar
+     * rota. Todo lo que cumpla la firma tiene que pasar ademas por
+     * `es_plausible_como_costo_unitario()`, que es donde vive esa guarda y donde esta el caso
+     * medido.
      *
      * @param  float  $cost
      * @param  float|null  $price
@@ -515,6 +620,53 @@ class SanearCostoDeLineaDeVenta extends Command
         $firma_sana = abs($ganancia - (($price - $cost) * $amount)) <= $tolerancia;
 
         return $firma_del_comando && !$firma_sana;
+    }
+
+    /**
+     * 🔴 El costo guardado, ¿todavia sirve como costo unitario de esa misma linea?
+     *
+     * Esta es la guarda que separa una linea ROTA de una linea SANA a la que alguien le edito el
+     * precio, porque las dos pueden cumplir la firma de la causa B.
+     *
+     * El camino del falso positivo: `SaleHelper::updateItemsPrices()` (llamado desde
+     * `SaleController::updatePrices()`) reescribe `price` y `price_sin_iva` de la linea y NO
+     * recalcula `ganancia`. La linea queda con la ganancia del precio VIEJO y el precio NUEVO, y
+     * eso cae justo sobre la firma cada vez que `price_viejo − price_nuevo = cost × (amount−1) / amount`:
+     *
+     *     cost 100, amount 2, precio 300 editado a 250  →  ganancia = (300 − 100) × 2 = 400
+     *     firma de la causa B:  250 × 2 − 100 = 400  ✓   (y la linea esta perfectamente sana)
+     *
+     * Sin esta guarda el saneo le escribia `cost = 50`: el costo de un negocio real partido al
+     * medio. El mismo vector abre `HelperController::set_sales_cost()`, que pisa `cost` sin tocar
+     * `ganancia`.
+     *
+     * Lo que los separa es que en la linea rota el valor guardado es un TOTAL metido en una columna
+     * unitaria —o sea `costo_unitario × cantidad`, con cantidad > 1—, mientras que en el falso
+     * positivo el valor guardado sigue siendo el costo unitario de verdad. Un costo unitario que no
+     * llega al precio unitario de su propia linea es un costo unitario plausible, y sobre eso no se
+     * escribe.
+     *
+     * Lo que esta guarda deja afuera, y se acepta: las lineas genuinamente rotas de margen alto,
+     * donde el costo inflado igual quedo por debajo del precio (`costo_unitario × cantidad ≤ price`,
+     * por ejemplo costo 100, cantidad 2 y precio 1000). Salen listadas con el motivo
+     * `firma_del_comando_con_costo_plausible_como_unitario` y se pueden mirar a mano. Corregir de
+     * menos se arregla despues; corregir de mas ya rompio el dato.
+     *
+     * ⚠️ El otro criterio que se evaluo —descartar las lineas cuyo `updated_at` no coincida con el
+     * `created_at`— NO SIRVE EN ESTE REPO: la relacion `Sale::articles()` no declara
+     * `withTimestamps()`, asi que ni `attach()` ni `updateExistingPivot()` escriben
+     * `article_sale.updated_at`, y `set_costo_ventas` escribe con `DB::table()->update()`, que
+     * tampoco lo toca. Medido el 17/9/2026 sobre `empresa_testing_s23`: 24 filas, 24 con
+     * `created_at` y 0 con `updated_at`. La columna esta siempre en NULL, asi que el criterio
+     * habria descartado todo o nada segun como se lo escribiera.
+     *
+     * @param  float  $cost
+     * @param  float  $price
+     * @return bool
+     */
+    private function es_plausible_como_costo_unitario($cost, $price)
+    {
+        return $cost <= $price;
     }
 
     /**
@@ -604,7 +756,8 @@ class SanearCostoDeLineaDeVenta extends Command
             'article_id' => (int) $fila->article_id,
             'amount' => $fila->amount,
             'price' => $fila->price,
-            'unidades_individuales' => $fila->unidades_individuales,
+            'unidades_individuales' => $fila->unidades_del_articulo,
+            'unidades_individuales_de_la_linea' => $fila->unidades_de_la_linea,
             'causas' => $analisis['causas'],
             'k' => $analisis['k'],
             'cost_antes' => $fila->cost,
@@ -644,7 +797,8 @@ class SanearCostoDeLineaDeVenta extends Command
             'price' => $fila->price,
             'cost' => $fila->cost,
             'ganancia' => $fila->ganancia,
-            'unidades_individuales' => $fila->unidades_individuales,
+            'unidades_individuales' => $fila->unidades_del_articulo,
+            'unidades_individuales_de_la_linea' => $fila->unidades_de_la_linea,
             'motivo' => $motivo,
         ];
     }
@@ -692,10 +846,16 @@ class SanearCostoDeLineaDeVenta extends Command
     /**
      * Deja el JSON del respaldo y el .sql de reversion ANTES de escribir una sola fila.
      *
+     * 🔴 Si cualquiera de los dos archivos no se puede escribir, esto devuelve false y la corrida
+     * se corta sin tocar la base. Antes no se miraba el retorno de `mkdir()` ni el de los
+     * `file_put_contents()`: con `storage/app/` sin permiso de escritura (el caso tipico en el
+     * shared hosting, con el ownership mal puesto) o el disco lleno, el comando imprimia la ruta
+     * de un archivo que no existia y seguia derecho a escribir produccion SIN RESPALDO.
+     *
      * @param  int  $user_id
      * @param  array  $ventas
      * @param  bool  $aplicar
-     * @return array
+     * @return array|false
      */
     private function escribir_respaldos($user_id, $ventas, $aplicar)
     {
@@ -705,8 +865,16 @@ class SanearCostoDeLineaDeVenta extends Command
             $carpeta = storage_path('app/saneo-costo-de-linea');
         }
 
-        if (!is_dir($carpeta)) {
-            mkdir($carpeta, 0755, true);
+        if (!is_dir($carpeta) && !@mkdir($carpeta, 0755, true) && !is_dir($carpeta)) {
+            $this->error('No se pudo crear la carpeta del respaldo: ' . $carpeta);
+
+            return false;
+        }
+
+        if (!is_writable($carpeta)) {
+            $this->error('La carpeta del respaldo existe pero no se puede escribir: ' . $carpeta);
+
+            return false;
         }
 
         $sello = Carbon::now()->format('Ymd-His');
@@ -726,7 +894,7 @@ class SanearCostoDeLineaDeVenta extends Command
                 'limite' => $this->option('limite'),
             ],
             'criterio' => [
-                'causa_b' => 'firma ganancia = price x amount - cost (deterministica) + menor k con cost/amount^k <= price x 2 (x unidades_individuales si las tiene)',
+                'causa_b' => 'firma ganancia = price x amount - cost, ADEMAS cost > price (si no, un precio editado despues de la venta cumple la misma firma sin estar roto), + menor k con cost/amount^k <= price x 2 (x unidades_individuales si las tiene)',
                 'causa_a' => 'articles.unidades_individuales > 1 y cost > price x 2, se divide por unidades_individuales',
                 'factor_de_coherencia' => self::FACTOR_COSTO_INCOHERENTE,
             ],
@@ -740,57 +908,138 @@ class SanearCostoDeLineaDeVenta extends Command
             'descartes' => $this->descartes,
         ];
 
-        file_put_contents(
-            $base . '.json',
-            json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-        );
+        /*
+         * El JSON indentado de 45.000 correcciones (el volumen de golonorte) es varias decenas de
+         * MB que ademas viven en memoria enteros mientras se escriben. Por encima del tope va
+         * compacto, y el comando lo dice.
+         */
+        $indentar = (count($this->correcciones) + count($this->descartes)) <= self::TOPE_JSON_INDENTADO;
 
-        file_put_contents($base . '-reversion.sql', $this->armar_sql_de_reversion($user_id, $ventas, $sello));
+        $banderas = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+
+        if ($indentar) {
+            $banderas = $banderas | JSON_PRETTY_PRINT;
+        } else {
+            $this->comment('El JSON del respaldo va compacto (sin indentar): son '
+                . (count($this->correcciones) + count($this->descartes)) . ' entradas y indentarlo se come la memoria.');
+        }
+
+        $contenido = json_encode($json, $banderas);
+
+        if ($contenido === false) {
+            $this->error('No se pudo serializar el respaldo a JSON: ' . json_last_error_msg());
+
+            return false;
+        }
+
+        $escritos = @file_put_contents($base . '.json', $contenido);
+
+        if ($escritos === false || $escritos !== strlen($contenido)) {
+            $this->error('No se pudo escribir el respaldo JSON completo en ' . $base . '.json');
+
+            return false;
+        }
+
+        unset($contenido);
+
+        if (!$this->escribir_sql_de_reversion($base . '-reversion.sql', $user_id, $ventas, $sello)) {
+            return false;
+        }
 
         return ['json' => $base . '.json', 'sql' => $base . '-reversion.sql'];
     }
 
     /**
-     * SQL que devuelve cada fila tocada a su valor exacto anterior.
+     * Escribe el SQL que devuelve cada fila tocada a su valor exacto anterior.
      *
+     * Va derecho al archivo, linea por linea, en vez de armar un string gigante en memoria: con
+     * las 45.000 lineas de golonorte el array intermedio mas el implode duplicaban el mismo texto
+     * en RAM al pedo. Cada `fwrite` se chequea: un disco lleno a mitad del archivo deja un SQL de
+     * reversion truncado, que es peor que no tener ninguno porque parece completo.
+     *
+     * @param  string  $ruta
      * @param  int  $user_id
      * @param  array  $ventas
      * @param  string  $sello
-     * @return string
+     * @return bool
      */
-    private function armar_sql_de_reversion($user_id, $ventas, $sello)
+    private function escribir_sql_de_reversion($ruta, $user_id, $ventas, $sello)
     {
-        $lineas = [];
+        $manejador = @fopen($ruta, 'w');
 
-        $lineas[] = '-- Reversion del saneo de costo de linea de venta';
-        $lineas[] = '-- Cliente (user_id): ' . $user_id;
-        $lineas[] = '-- Base: ' . DB::connection()->getDatabaseName();
-        $lineas[] = '-- Generado: ' . Carbon::now()->toDateTimeString() . ' (' . $sello . ')';
-        $lineas[] = '-- Devuelve article_sale.cost / ganancia y sales.total_cost / ganancia a su valor exacto previo.';
-        $lineas[] = '-- Correr entero: no es un reporte, ESCRIBE.';
-        $lineas[] = '';
-        $lineas[] = 'START TRANSACTION;';
-        $lineas[] = '';
+        if ($manejador === false) {
+            $this->error('No se pudo abrir para escritura el SQL de reversion: ' . $ruta);
+
+            return false;
+        }
+
+        $encabezado = [
+            '-- Reversion del saneo de costo de linea de venta',
+            '-- Cliente (user_id): ' . $user_id,
+            '-- Base: ' . DB::connection()->getDatabaseName(),
+            '-- Generado: ' . Carbon::now()->toDateTimeString() . ' (' . $sello . ')',
+            '-- Devuelve article_sale.cost / ganancia y sales.total_cost / ganancia a su valor exacto previo.',
+            '-- Correr entero: no es un reporte, ESCRIBE.',
+            '',
+            'START TRANSACTION;',
+            '',
+        ];
+
+        $ok = $this->volcar($manejador, implode("\n", $encabezado) . "\n");
 
         foreach ($this->correcciones as $correccion) {
-            $lineas[] = 'UPDATE article_sale SET cost = ' . $this->valor_sql($correccion['cost_antes'])
+            if (!$ok) {
+                break;
+            }
+
+            $ok = $this->volcar($manejador, 'UPDATE article_sale SET cost = ' . $this->valor_sql($correccion['cost_antes'])
                 . ', ganancia = ' . $this->valor_sql($correccion['ganancia_antes'])
-                . ' WHERE id = ' . (int) $correccion['linea_id'] . ';';
+                . ' WHERE id = ' . (int) $correccion['linea_id'] . ";\n");
         }
 
-        $lineas[] = '';
+        if ($ok) {
+            $ok = $this->volcar($manejador, "\n");
+        }
 
         foreach ($ventas as $sale_id => $venta) {
-            $lineas[] = 'UPDATE sales SET total_cost = ' . $this->valor_sql($venta['total_cost_antes'])
+            if (!$ok) {
+                break;
+            }
+
+            $ok = $this->volcar($manejador, 'UPDATE sales SET total_cost = ' . $this->valor_sql($venta['total_cost_antes'])
                 . ', ganancia = ' . $this->valor_sql($venta['ganancia_antes'])
-                . ' WHERE id = ' . (int) $sale_id . ';';
+                . ' WHERE id = ' . (int) $sale_id . ";\n");
         }
 
-        $lineas[] = '';
-        $lineas[] = 'COMMIT;';
-        $lineas[] = '';
+        if ($ok) {
+            $ok = $this->volcar($manejador, "\nCOMMIT;\n");
+        }
 
-        return implode("\n", $lineas);
+        if (!fflush($manejador)) {
+            $ok = false;
+        }
+
+        fclose($manejador);
+
+        if (!$ok) {
+            $this->error('El SQL de reversion quedo incompleto (disco lleno o sin permiso): ' . $ruta);
+        }
+
+        return $ok;
+    }
+
+    /**
+     * fwrite que no acepta una escritura parcial ni un false.
+     *
+     * @param  resource  $manejador
+     * @param  string  $texto
+     * @return bool
+     */
+    private function volcar($manejador, $texto)
+    {
+        $escritos = @fwrite($manejador, $texto);
+
+        return $escritos !== false && $escritos === strlen($texto);
     }
 
     /**
@@ -811,45 +1060,69 @@ class SanearCostoDeLineaDeVenta extends Command
     /**
      * Escribe las correcciones y recalcula los totales de cada venta tocada.
      *
-     * @param  array  $sale_ids
+     * 🔴 LA UNIDAD DE TRABAJO ES LA VENTA, NO LA LINEA, y por eso esto se ve raro para lo que
+     * hace. Antes las lineas se escribian en transacciones de 500 y los totales de venta se
+     * recalculaban DESPUES, fuera de toda transaccion. Si el proceso se moria en el medio —un
+     * timeout de SSH, un OOM, un Ctrl+C, que es exactamente como muere una corrida de 45.000
+     * lineas sobre produccion— las lineas quedaban corregidas y los totales de venta viejos. Y no
+     * habia vuelta atras: corregida la linea, la firma de la causa B desaparece, la segunda
+     * corrida encuentra 0 correcciones y el comando informa "no hay nada para corregir" sobre una
+     * venta permanentemente inconsistente.
+     *
+     * Con la venta como unidad, cada transaccion deja ventas TERMINADAS: sus lineas corregidas y
+     * su total recalculado, o nada de las dos cosas. Una corrida cortada a la mitad deja unas
+     * ventas listas y las otras intactas —todavia con su firma, o sea todavia detectables—, y
+     * volver a correr el comando la termina. Es lo que el test de la doble corrida verifica.
+     *
+     * Los totales se reescriben con los mismos helpers que usa el sistema en vivo —no con una
+     * formula copiada aca— para que el saneo no pueda quedar desalineado de la convencion:
+     * set_total_cost suma costo_unitario × cantidad (y las promociones), y set_sale_ganancia
+     * deriva la ganancia de la venta de ese total.
+     *
      * @return void
      */
-    private function aplicar_correcciones($sale_ids)
+    private function aplicar_correcciones()
     {
+        $por_venta = [];
+
+        foreach ($this->correcciones as $correccion) {
+            $por_venta[(int) $correccion['sale_id']][] = $correccion;
+        }
+
         $barra = $this->output->createProgressBar(count($this->correcciones));
 
-        foreach (array_chunk($this->correcciones, 500) as $tanda) {
+        foreach (array_chunk($por_venta, self::VENTAS_POR_TRANSACCION, true) as $tanda) {
             DB::transaction(function () use ($tanda, $barra) {
-                foreach ($tanda as $correccion) {
-                    DB::table('article_sale')
-                        ->where('id', $correccion['linea_id'])
-                        ->update([
-                            'cost' => $correccion['cost_despues'],
-                            'ganancia' => $correccion['ganancia_despues'],
-                        ]);
+                foreach ($tanda as $correcciones_de_la_venta) {
+                    foreach ($correcciones_de_la_venta as $correccion) {
+                        DB::table('article_sale')
+                            ->where('id', $correccion['linea_id'])
+                            ->update([
+                                'cost' => $correccion['cost_despues'],
+                                'ganancia' => $correccion['ganancia_despues'],
+                            ]);
 
-                    $barra->advance();
+                        $barra->advance();
+                    }
+                }
+
+                /*
+                 * Con eager load de las dos relaciones que lee set_total_cost: sin esto eran dos
+                 * consultas por venta, y son decenas de miles de ventas.
+                 */
+                $ventas = Sale::whereIn('id', array_keys($tanda))
+                    ->with('articles', 'promocion_vinotecas')
+                    ->get();
+
+                foreach ($ventas as $venta) {
+                    $venta = SaleTotalesHelper::set_total_cost($venta);
+                    SaleHelper::set_sale_ganancia($venta);
                 }
             });
         }
 
         $barra->finish();
         $this->line('');
-
-        /*
-         * Los totales de la venta se reescriben con los mismos helpers que usa el sistema en
-         * vivo — no con una formula copiada aca — para que el saneo no pueda quedar desalineado
-         * de la convencion: set_total_cost suma costo_unitario × cantidad (y las promociones), y
-         * set_sale_ganancia deriva la ganancia de la venta de ese total.
-         */
-        foreach (array_chunk($sale_ids, 100) as $tanda) {
-            $ventas = Sale::whereIn('id', $tanda)->get();
-
-            foreach ($ventas as $venta) {
-                $venta = SaleTotalesHelper::set_total_cost($venta);
-                SaleHelper::set_sale_ganancia($venta);
-            }
-        }
     }
 
     /**
@@ -891,6 +1164,19 @@ class SanearCostoDeLineaDeVenta extends Command
     {
         $this->line('Lineas sanas: ' . $this->contadores['lineas_sanas']
             . '. Sin costo cargado: ' . $this->contadores['lineas_sin_costo'] . '.');
+
+        /*
+         * Caso no previsto: si `article_sale.unidades_individuales` tiene datos de alguna version
+         * vieja, ese es el valor historico exacto y la causa A se estaria corrigiendo con el valor
+         * de HOY. No se adivina: se denuncia para que lo mire una persona.
+         */
+        if ($this->contadores['lineas_con_unidades_individuales_en_el_pivot'] > 0) {
+            $this->warn('🔴 ' . $this->contadores['lineas_con_unidades_individuales_en_el_pivot']
+                . ' lineas tienen cargada `article_sale.unidades_individuales`, que hoy no la escribe nada.');
+            $this->warn('   Si ese valor viene de una version vieja es el historico EXACTO y hay que usarlo en');
+            $this->warn('   vez del `articles.unidades_individuales` de hoy. Las que difieren quedaron sin tocar');
+            $this->warn('   (motivo pivot_con_unidades_individuales_historicas_distintas). Mirá el JSON antes de aplicar.');
+        }
 
         if (count($this->descartes_por_motivo) === 0) {
             return;

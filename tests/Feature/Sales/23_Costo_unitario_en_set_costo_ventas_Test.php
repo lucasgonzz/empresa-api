@@ -263,4 +263,120 @@ class Costo_unitario_en_set_costo_ventas_Test extends TestCase
             'El costo guardado en el pivot se volvio a cotizar a dolar: cada corrida lo multiplica de nuevo'
         );
     }
+
+    /**
+     * Deja la unica linea de la venta tal cual la escribia la version vieja del comando: el costo
+     * TOTAL (850 x 15 = 12750) en la columna unitaria, y la ganancia con la firma que la delata
+     * (955 x 15 − 12750 = 1575).
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return void
+     */
+    protected function romper_la_linea_como_la_version_vieja($sale)
+    {
+        DB::table('article_sale')
+            ->where('sale_id', $sale->id)
+            ->update([
+                'cost' => $this->costo_unitario * $this->cantidad,
+                'ganancia' => $this->precio_unitario * $this->cantidad - $this->costo_unitario * $this->cantidad,
+            ]);
+    }
+
+    /**
+     * 🔴 EL ORDEN ENTRE LOS DOS COMANDOS ES OBLIGATORIO.
+     *
+     * Sobre una linea rota por la causa B, este comando recalcula `ganancia = (price − cost) × amount`
+     * con el `cost` todavia roto. Con eso la linea pasa a cumplir la firma SANA y el saneo no la
+     * detecta nunca mas: el historico de ese cliente queda irreparable, y de paso `sales.total_cost`
+     * pasa de estar inflado por `amount` a estarlo por `amount²`.
+     *
+     * Y no es teorico: este comando esta publicado en el admin como comando de la version 1.0.1 con
+     * `is_required=1` y `run_manually=0`, o sea que corre solo en el upgrade de cualquier cliente
+     * que venga de esa version.
+     *
+     * @group sales
+     * @test
+     */
+    public function se_niega_a_correr_si_el_cliente_tiene_historico_roto_sin_sanear()
+    {
+        $article = $this->crear_articulo();
+        $sale = $this->crear_venta_con_una_linea($article);
+
+        $this->romper_la_linea_como_la_version_vieja($sale);
+
+        $codigo = Artisan::call('set_costo_ventas', [
+            'user_id' => $this->user->id,
+            'from_sale_id' => $sale->id,
+        ]);
+
+        $this->assertEquals(
+            1,
+            $codigo,
+            'El comando tiene que negarse a correr cuando el cliente todavia tiene lineas con la firma de la causa B'
+        );
+
+        $linea = $this->linea($sale, $article);
+
+        $this->assertEquals(
+            $this->costo_unitario * $this->cantidad,
+            (float) $linea->cost,
+            'El comando escribio igual sobre un historico sin sanear'
+        );
+
+        $this->assertEquals(
+            $this->precio_unitario * $this->cantidad - $this->costo_unitario * $this->cantidad,
+            (float) $linea->ganancia,
+            'El comando borro la firma que es lo unico que hace reparable a esa linea'
+        );
+    }
+
+    /**
+     * La guarda se puede saltear a proposito, y este test documenta EXACTAMENTE lo que se pierde al
+     * hacerlo: la ganancia se recalcula con el costo roto y la firma desaparece para siempre.
+     *
+     * @group sales
+     * @test
+     */
+    public function con_force_corre_igual_y_la_firma_se_pierde()
+    {
+        $article = $this->crear_articulo();
+        $sale = $this->crear_venta_con_una_linea($article);
+
+        $this->romper_la_linea_como_la_version_vieja($sale);
+
+        $codigo = Artisan::call('set_costo_ventas', [
+            'user_id' => $this->user->id,
+            'from_sale_id' => $sale->id,
+            '--force' => true,
+        ]);
+
+        $this->assertEquals(0, $codigo, 'Con --force el comando tiene que correr igual');
+
+        $linea = $this->linea($sale, $article);
+
+        $this->assertEquals(
+            ($this->precio_unitario - $this->costo_unitario * $this->cantidad) * $this->cantidad,
+            (float) $linea->ganancia,
+            'Con --force la ganancia se recalcula con el costo roto: es justo lo que la guarda evita'
+        );
+    }
+
+    /**
+     * Una venta sana no tiene por que quedar bloqueada: la guarda solo mira la firma de la causa B.
+     *
+     * @group sales
+     * @test
+     */
+    public function la_guarda_no_frena_un_cliente_con_el_historico_sano()
+    {
+        $article = $this->crear_articulo();
+        $sale = $this->crear_venta_con_una_linea($article);
+
+        $codigo = Artisan::call('set_costo_ventas', [
+            'user_id' => $this->user->id,
+            'from_sale_id' => $sale->id,
+        ]);
+
+        $this->assertEquals(0, $codigo, 'La guarda freno una corrida sobre un historico sano');
+    }
 }

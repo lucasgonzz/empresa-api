@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 
 /**
@@ -155,9 +156,10 @@ class Saneo_de_costo_de_linea_de_venta_Test extends TestCase
     /**
      * @param  \App\Models\Sale  $sale
      * @param  bool  $aplicar
-     * @return void
+     * @param  array  $extra
+     * @return int  Codigo de salida del comando.
      */
-    protected function correr_saneo($sale, $aplicar)
+    protected function correr_saneo($sale, $aplicar, array $extra = [])
     {
         $parametros = [
             '--user_id' => $this->user->id,
@@ -169,7 +171,11 @@ class Saneo_de_costo_de_linea_de_venta_Test extends TestCase
             $parametros['--aplicar'] = true;
         }
 
-        Artisan::call('sale:sanear-costo-de-linea', $parametros);
+        foreach ($extra as $clave => $valor) {
+            $parametros[$clave] = $valor;
+        }
+
+        return Artisan::call('sale:sanear-costo-de-linea', $parametros);
     }
 
     /**
@@ -468,5 +474,312 @@ class Saneo_de_costo_de_linea_de_venta_Test extends TestCase
             (float) $escenario['sale']->total_cost,
             'La reversion no devolvio el total_cost anterior de la venta'
         );
+    }
+
+    /**
+     * 🔴 EL FALSO POSITIVO QUE CORROMPE LINEAS SANAS.
+     *
+     * `SaleHelper::updateItemsPrices()` —que corre cuando alguien edita los precios de una venta ya
+     * hecha, desde `SaleController::updatePrices()`— reescribe `price` y `price_sin_iva` y NO
+     * recalcula `ganancia`. La linea queda con la ganancia del precio viejo y el precio nuevo, y
+     * eso cumple la firma de la causa B cada vez que `price_viejo − price_nuevo = cost × (amount−1) / amount`.
+     *
+     * Los numeros exactos del caso medido: costo unitario 100, cantidad 2, vendida a 300 y despues
+     * editada a 250.
+     *
+     *     ganancia guardada = (300 − 100) × 2 = 400
+     *     firma de la causa B: 250 × 2 − 100  = 400   ✓  y la linea esta PERFECTAMENTE SANA
+     *
+     * Sin la guarda, el saneo le escribia `cost = 50`: el costo de un negocio real partido al
+     * medio, sin que nada lo denuncie.
+     *
+     * @group sales
+     * @test
+     */
+    public function no_toca_una_linea_sana_a_la_que_le_editaron_el_precio_despues_de_la_venta()
+    {
+        $article = $this->crear_articulo(['costo_real' => 100]);
+
+        $sale = $this->crear_venta(['total_cost' => 200, 'ganancia' => 400]);
+
+        $this->adjuntar_linea($sale, $article, 2, 250, 100, 400);
+
+        $this->correr_saneo($sale, true);
+
+        $linea = $this->linea($sale, $article);
+
+        $this->assertEquals(
+            100,
+            (float) $linea->cost,
+            'El saneo partio al medio el costo de una linea sana: lo unico que pasaba era que le habian editado el precio'
+        );
+
+        $this->assertEquals(
+            400,
+            (float) $linea->ganancia,
+            'El saneo reescribio la ganancia de una linea sana'
+        );
+
+        $json = $this->respaldo_json();
+
+        $this->assertCount(0, $json['correcciones'], 'El saneo planifico corregir una linea sana');
+
+        $this->assertArrayHasKey(
+            'firma_del_comando_con_costo_plausible_como_unitario',
+            $json['descartes_por_motivo'],
+            'La linea tiene que quedar listada con el motivo por el que se la dejo afuera'
+        );
+    }
+
+    /**
+     * La doble corrida: el comando tiene que ser repetible. Es el equivalente del que ya existe
+     * para `set_costo_ventas`, y lo que protege es que la segunda pasada no vuelva a dividir.
+     *
+     * @group sales
+     * @test
+     */
+    public function correrlo_dos_veces_deja_exactamente_el_mismo_dato()
+    {
+        $escenario = $this->sembrar_venta_con_las_tres_situaciones();
+
+        $this->correr_saneo($escenario['sale'], true);
+
+        $primera = $this->linea($escenario['sale'], $escenario['rota']);
+        $escenario['sale']->refresh();
+        $total_cost_primera = (float) $escenario['sale']->total_cost;
+        $ganancia_primera = $escenario['sale']->ganancia;
+
+        $this->correr_saneo($escenario['sale'], true);
+
+        $segunda = $this->linea($escenario['sale'], $escenario['rota']);
+        $escenario['sale']->refresh();
+
+        $this->assertEquals(
+            (float) $primera->cost,
+            (float) $segunda->cost,
+            'La segunda corrida volvio a dividir el costo: el saneo no es idempotente'
+        );
+
+        $this->assertEquals(
+            (float) $primera->ganancia,
+            (float) $segunda->ganancia,
+            'La segunda corrida cambio la ganancia de la linea'
+        );
+
+        $this->assertEquals(
+            $total_cost_primera,
+            (float) $escenario['sale']->total_cost,
+            'La segunda corrida cambio el total_cost de la venta'
+        );
+
+        $this->assertEquals(
+            (float) $ganancia_primera,
+            (float) $escenario['sale']->ganancia,
+            'La segunda corrida cambio la ganancia de la venta'
+        );
+    }
+
+    /**
+     * 🔴 La corrida que se muere a la mitad (timeout de SSH, OOM, Ctrl+C: exactamente como muere
+     * una corrida larga sobre produccion).
+     *
+     * Antes las lineas se escribian en transacciones de 500 y los totales de venta se recalculaban
+     * DESPUES, fuera de toda transaccion: un corte en el medio dejaba lineas corregidas con los
+     * totales viejos, y como la correccion borra la firma, la segunda corrida encontraba 0
+     * correcciones y salia por el `return 0` temprano informando "no hay nada para corregir" sobre
+     * una venta permanentemente inconsistente.
+     *
+     * Acá el corte se provoca con `--limite=1` sobre una venta con dos lineas rotas: lo que se mide
+     * es que despues de la corrida cortada el total de la venta este alineado con lo que hay en sus
+     * lineas —no con lo que habria si la corrida hubiera terminado—, y que volver a correr el
+     * comando la termine.
+     *
+     * @group sales
+     * @test
+     */
+    public function una_corrida_cortada_a_la_mitad_deja_la_venta_consistente_y_la_segunda_la_termina()
+    {
+        $sale = $this->crear_venta(['total_cost' => 999999, 'ganancia' => -979999]);
+
+        $primera = $this->crear_articulo(['costo_real' => 850]);
+        $segunda = $this->crear_articulo(['costo_real' => 300]);
+
+        /** Costo unitario 850, cantidad 15, precio 955: el comando viejo dejo 12750 y 1575. */
+        $this->adjuntar_linea($sale, $primera, 15, 955, 12750, 955 * 15 - 12750);
+
+        /** Costo unitario 300, cantidad 4, precio 310: el comando viejo dejo 1200 y 40. */
+        $this->adjuntar_linea($sale, $segunda, 4, 310, 1200, 310 * 4 - 1200);
+
+        $this->correr_saneo($sale, true, ['--limite' => 1]);
+
+        $sale->refresh();
+
+        $this->assertEquals(
+            850 * 15 + 1200 * 4,
+            (float) $sale->total_cost,
+            'La corrida cortada dejo una linea corregida y el total de la venta sin recalcular'
+        );
+
+        $this->correr_saneo($sale, true);
+
+        $sale->refresh();
+
+        $this->assertEquals(
+            300,
+            (float) $this->linea($sale, $segunda)->cost,
+            'La segunda corrida no termino la linea que habia quedado afuera por el limite'
+        );
+
+        $this->assertEquals(
+            850 * 15 + 300 * 4,
+            (float) $sale->total_cost,
+            'Despues de las dos corridas el total de la venta tiene que ser Σ(costo unitario x cantidad)'
+        );
+    }
+
+    /**
+     * 🔴 El corte donde realmente duele: la linea YA se escribio y el recalculo del total de la
+     * venta explota.
+     *
+     * Antes las lineas se escribian en transacciones de 500 y los totales de venta se recalculaban
+     * despues, fuera de toda transaccion. Con ese orden, un corte en el medio dejaba la linea
+     * corregida —o sea SIN la firma que la hacia detectable— y el total de la venta viejo. La
+     * segunda corrida encontraba 0 correcciones, salia por el `return 0` temprano y el comando
+     * informaba "no hay nada para corregir" sobre una venta rota para siempre.
+     *
+     * Ahora la unidad de trabajo es la venta: las lineas y el recalculo van en la MISMA
+     * transaccion, asi que un corte deja la venta intacta y todavia detectable.
+     *
+     * El corte se simula haciendo explotar el `save()` de esa venta, que es lo que dispara
+     * `SaleTotalesHelper::set_total_cost()`.
+     *
+     * @group sales
+     * @test
+     */
+    public function un_corte_durante_el_recalculo_deja_la_linea_como_estaba()
+    {
+        $escenario = $this->sembrar_venta_con_las_tres_situaciones();
+
+        $sale_id = (int) $escenario['sale']->id;
+
+        Sale::saving(function ($sale) use ($sale_id) {
+            if ((int) $sale->id === $sale_id) {
+                throw new \RuntimeException('corte simulado a mitad del recalculo');
+            }
+        });
+
+        $exploto = false;
+
+        try {
+            $this->correr_saneo($escenario['sale'], true);
+        } catch (\Exception $e) {
+            $exploto = true;
+        }
+
+        /** Se saca el listener enseguida: si no, se lo comen los tests que corran despues. */
+        Event::forget('eloquent.saving: ' . Sale::class);
+
+        $this->assertTrue($exploto, 'El corte simulado nunca llego a producirse');
+
+        $rota = $this->linea($escenario['sale'], $escenario['rota']);
+
+        $this->assertEquals(
+            12750,
+            (float) $rota->cost,
+            'El corte dejo la linea corregida y el total de la venta sin recalcular: asi la linea pierde su firma y no se la puede volver a detectar nunca'
+        );
+
+        $this->assertEquals(1575, (float) $rota->ganancia, 'El corte dejo la ganancia de la linea escrita a medias');
+
+        $escenario['sale']->refresh();
+
+        $this->assertEquals(999999, (float) $escenario['sale']->total_cost);
+    }
+
+    /**
+     * Caso no previsto 1: venta en deposito. `SaleTotalesHelper::set_total_cost()` devuelve NULL
+     * cuando la venta tiene `to_check` o `checked`, asi que corregir una sola de sus lineas obliga
+     * a un recalculo que le BLANQUEA el `total_cost` a la venta entera. Se gana un costo de linea
+     * y se pierde el total: no se toca, se lista.
+     *
+     * @group sales
+     * @test
+     */
+    public function no_toca_las_lineas_de_una_venta_en_deposito()
+    {
+        $article = $this->crear_articulo(['costo_real' => 850]);
+
+        $sale = $this->crear_venta(['to_check' => 1, 'total_cost' => 4242]);
+
+        $this->adjuntar_linea($sale, $article, 15, 955, 12750, 1575);
+
+        $this->correr_saneo($sale, true);
+
+        $linea = $this->linea($sale, $article);
+
+        $this->assertEquals(12750, (float) $linea->cost, 'El saneo toco una linea de una venta en deposito');
+
+        $sale->refresh();
+
+        $this->assertNotNull(
+            $sale->total_cost,
+            'El recalculo de una venta en deposito le blanquea el total_cost: por eso no se la toca'
+        );
+
+        $this->assertEquals(4242, (float) $sale->total_cost);
+
+        $json = $this->respaldo_json();
+
+        $this->assertArrayHasKey(
+            'venta_en_deposito_el_recalculo_blanquearia_su_total_cost',
+            $json['descartes_por_motivo'],
+            'La venta en deposito tiene que quedar listada con su motivo'
+        );
+    }
+
+    /**
+     * 🔴 Sin respaldo no se escribe una sola fila. Antes no se miraba el retorno de `mkdir()` ni el
+     * de los `file_put_contents()`: con `storage/app/` sin permiso de escritura —el caso tipico del
+     * shared hosting con el ownership mal puesto— el comando imprimia la ruta de un archivo que no
+     * existia y seguia derecho a escribir produccion.
+     *
+     * Acá la carpeta de salida se pide colgando de un ARCHIVO, que es una carpeta que no se puede
+     * crear en ningun sistema operativo.
+     *
+     * @group sales
+     * @test
+     */
+    public function no_escribe_nada_si_no_puede_dejar_el_respaldo()
+    {
+        $escenario = $this->sembrar_venta_con_las_tres_situaciones();
+
+        $archivo = tempnam(sys_get_temp_dir(), 'saneo-sin-respaldo');
+
+        $codigo = Artisan::call('sale:sanear-costo-de-linea', [
+            '--user_id' => $this->user->id,
+            '--sale_id' => $escenario['sale']->id,
+            '--salida' => $archivo . DIRECTORY_SEPARATOR . 'respaldo',
+            '--aplicar' => true,
+        ]);
+
+        unlink($archivo);
+
+        $this->assertEquals(
+            1,
+            $codigo,
+            'El comando tiene que cortar con error cuando no puede dejar el respaldo'
+        );
+
+        $rota = $this->linea($escenario['sale'], $escenario['rota']);
+
+        $this->assertEquals(
+            12750,
+            (float) $rota->cost,
+            'El comando escribio la base sin haber podido dejar el respaldo'
+        );
+
+        $escenario['sale']->refresh();
+
+        $this->assertEquals(999999, (float) $escenario['sale']->total_cost);
     }
 }

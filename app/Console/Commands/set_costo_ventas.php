@@ -39,7 +39,10 @@ use Illuminate\Support\Facades\DB;
  *   b) no se escribe la fila cuando el valor calculado ya es el que esta guardado, asi que
  *      la segunda corrida no toca una sola fila y lo informa.
  *
- * El histórico roto NO lo repara este comando: eso es `sale:sanear-costo-de-linea`.
+ * El histórico roto NO lo repara este comando: eso es `sale:sanear-costo-de-linea`. Y el orden
+ * entre los dos NO es una recomendacion: si este corre primero, borra la firma que hace reparable
+ * al historico. Por eso hay una guarda que se niega a correr, con `--force` para saltearla — ver
+ * `paso_la_guarda_de_orden()`.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promocion de constructor, readonly, enum ni #[...].
@@ -79,7 +82,8 @@ class set_costo_ventas extends Command
      *
      * @var string
      */
-    protected $signature = 'set_costo_ventas {user_id?} {from_sale_id?} {sale_id?} {--solo_ventas_de_hoy}';
+    protected $signature = 'set_costo_ventas {user_id?} {from_sale_id?} {sale_id?} {--solo_ventas_de_hoy}
+                            {--force : Corre igual aunque el cliente tenga historico roto sin sanear. Destruye la firma que lo hace reparable.}';
 
     /**
      * @var string
@@ -116,6 +120,10 @@ class set_costo_ventas extends Command
         }
 
         $from_sale_id = $this->resolve_from_sale_id();
+
+        if (!$this->paso_la_guarda_de_orden($user_id, $from_sale_id)) {
+            return 1;
+        }
 
         $sales_query = Sale::query()
             ->where('user_id', $user_id)
@@ -258,6 +266,99 @@ class set_costo_ventas extends Command
 
             $this->ventas_actualizadas++;
         }
+    }
+
+    /**
+     * 🔴 LA GUARDA DE ORDEN: este comando NO PUEDE correr antes que `sale:sanear-costo-de-linea`.
+     *
+     * Por que existe, que es lo unico que la justifica. Una linea rota por la causa B quedo con el
+     * costo TOTAL en la columna unitaria, y lo unico que la vuelve reparable es su FIRMA:
+     * `ganancia = price × amount − cost`. Este comando, ya arreglado, recalcula
+     * `ganancia = (price − cost) × amount` usando el `cost` todavia roto. Con eso:
+     *
+     *   1. la linea pasa a cumplir la firma SANA y el saneo no la detecta NUNCA MAS. El historico
+     *      de ese cliente queda irreparable;
+     *   2. `sales.total_cost` pasa de estar inflado por `amount` a estarlo por `amount²`.
+     *
+     * Y no es un riesgo teorico: este comando esta publicado en el admin como comando de la version
+     * 1.0.1 con `is_required=1` y `run_manually=0`, o sea que corre solo en el upgrade de cualquier
+     * cliente que venga de esa version. Sin esta guarda, el upgrade destruye el historico en
+     * silencio y nadie se entera hasta que alguien mira la ganancia acumulada.
+     *
+     * El criterio es EXACTAMENTE el que el saneo usa para corregir —misma firma, misma condicion
+     * `cost > price`, mismo recorte de cantidades fraccionadas y de ventas en deposito—, a
+     * proposito: si la guarda frenara por lineas que el saneo despues se niega a tocar, el upgrade
+     * quedaria trabado para siempre sin ninguna forma de destrabarlo.
+     *
+     * @param  int  $user_id
+     * @param  int|null  $from_sale_id
+     * @return bool
+     */
+    private function paso_la_guarda_de_orden($user_id, $from_sale_id)
+    {
+        $query = DB::table('article_sale')
+            ->join('sales', 'sales.id', '=', 'article_sale.sale_id')
+            ->whereNull('sales.deleted_at')
+            ->where('sales.user_id', $user_id)
+            ->where('sales.to_check', 0)
+            ->where('sales.checked', 0)
+            ->whereNotNull('article_sale.price')
+            ->whereNotNull('article_sale.ganancia')
+            ->where('article_sale.cost', '>', 0)
+            ->where('article_sale.amount', '>', 1)
+            ->whereColumn('article_sale.cost', '>', 'article_sale.price')
+            // Cumple la firma que dejaba el comando viejo...
+            ->whereRaw('ABS(article_sale.ganancia - (article_sale.price * article_sale.amount - article_sale.cost)) <= 0.02 * GREATEST(1, ABS(article_sale.amount)) + 0.05')
+            // ...y NO cumple la firma sana, que es lo que las vuelve mutuamente excluyentes.
+            ->whereRaw('ABS(article_sale.ganancia - ((article_sale.price - article_sale.cost) * article_sale.amount)) > 0.02 * GREATEST(1, ABS(article_sale.amount)) + 0.05');
+
+        if ($from_sale_id !== null) {
+            $query->where('sales.id', '>=', $from_sale_id);
+        }
+
+        if ($this->option('solo_ventas_de_hoy')) {
+            $query->where('sales.created_at', '>=', Carbon::today()->startOfDay());
+        }
+
+        $rotas = $query->count();
+
+        if ($rotas === 0) {
+            return true;
+        }
+
+        if ($this->option('force')) {
+            $this->warn('ATENCION: hay ' . $rotas . ' lineas de venta con el costo roto sin sanear y se corrio con --force.');
+            $this->warn('Esas lineas van a quedar IRREPARABLES: el recalculo de la ganancia borra la unica marca que');
+            $this->warn('permite detectarlas. Si esto no fue a proposito, cortalo ahora (Ctrl+C).');
+
+            return true;
+        }
+
+        $this->error('==============================================================================');
+        $this->error(' NO SE EJECUTO NADA. Este cliente tiene historico de ventas roto sin reparar.');
+        $this->error('==============================================================================');
+        $this->line('');
+        $this->line('  Lineas de venta afectadas (user_id ' . $user_id . '): ' . $rotas);
+        $this->line('');
+        $this->line('  Que pasa: esas lineas tienen el costo TOTAL guardado en `article_sale.cost`, que por');
+        $this->line('  convencion es el costo UNITARIO. Las dejo asi una version vieja de este mismo comando.');
+        $this->line('  Se pueden reparar porque su ganancia guardada tiene una marca que las delata.');
+        $this->line('');
+        $this->line('  Por que se freno: si este comando corre primero, recalcula la ganancia con el costo');
+        $this->line('  todavia roto, la marca DESAPARECE y esas ventas quedan mal para siempre, sin forma de');
+        $this->line('  encontrarlas. Ademas el costo total de cada venta se infla otra vez.');
+        $this->line('');
+        $this->line('  Que hacer, en este orden:');
+        $this->line('');
+        $this->line('    1) php artisan sale:sanear-costo-de-linea --user_id=' . $user_id . '            (dry-run, no escribe)');
+        $this->line('    2) revisar el JSON que deja en storage/app/saneo-costo-de-linea/ y BAJARLO');
+        $this->line('    3) php artisan sale:sanear-costo-de-linea --user_id=' . $user_id . ' --aplicar');
+        $this->line('    4) recien ahi, volver a correr este comando');
+        $this->line('');
+        $this->line('  Si sabes lo que estas haciendo y aceptas perder ese historico: --force');
+        $this->line('');
+
+        return false;
     }
 
     /**
