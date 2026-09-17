@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\Budget\BudgetDuplicarHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Models\Budget;
@@ -59,7 +60,7 @@ class BudgetController extends Controller
 
         try {
 
-            $model = Budget::create([
+            $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                       => $this->num('budgets'),
                 'client_id'                 => $request->client_id,
                 'start_at'                  => $request->start_at,
@@ -70,17 +71,6 @@ class BudgetController extends Controller
                 'discount_stock'            => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 'iva_aplicado'              => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
                 'total'                     => $request->total,
-                /*
-                 * El monto del total forzado (mision forzar-total-por-monto, 17/9/2026): plata con
-                 * signo, negativo = descuento, positivo = recargo, null = no se forzo nada.
-                 *
-                 * Sin esta clave, el `total` forzado que manda VENDER se guardaria igual pero la
-                 * validacion de treinta lineas mas abajo —`BudgetHelper::getTotal()` contra
-                 * `$model->total`, margen de 3— lo rechazaria con "El total del presupuesto no
-                 * corresponde con los productos ingresados", porque los renglones suman el total
-                 * SIN forzar. La otra mitad del arreglo esta en `BudgetHelper::getTotal()`.
-                 */
-                'forzar_total_monto'        => SaleHelper::normalized_forzar_total_monto($request),
                 'budget_status_id'          => $request->budget_status_id,
                 'address_id'                => $request->address_id,
                 'surchages_in_services'     => $request->surchages_in_services,
@@ -91,7 +81,22 @@ class BudgetController extends Controller
                 // 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
                 'employee_id'               => $this->userId(false),
                 'user_id'                   => $this->userId(),
-            ]);
+            /*
+             * El monto del total forzado (mision forzar-total-por-monto, 17/9/2026): plata con
+             * signo, negativo = descuento, positivo = recargo, null = no se forzo nada.
+             *
+             * Sin el, el `total` forzado que manda VENDER se guardaria igual pero la validacion de
+             * treinta lineas mas abajo —`BudgetHelper::getTotal()` contra `$model->total`, margen
+             * de 3— lo rechazaria con "El total del presupuesto no corresponde con los productos
+             * ingresados", porque los renglones suman el total SIN forzar. La otra mitad del
+             * arreglo esta en `BudgetHelper::getTotal()`.
+             *
+             * 🔴 Y entra por el helper de esquema, no como una clave mas: un deploy de empresa sube
+             * los archivos ANTES de migrar, y en esa ventana `Budget` —que declara `$guarded = []`—
+             * mandaria la columna en el INSERT aunque valga null, tumbando el alta de TODO
+             * presupuesto. Ver `ForzarTotalEsquemaHelper`.
+             */
+            ], SaleHelper::normalized_forzar_total_monto($request), 'budgets'));
             GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
             GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
 
@@ -255,8 +260,14 @@ class BudgetController extends Controller
             viejo colgando, y en ese estado `BudgetHelper::getTotal()` suma el monto de mas y el
             proximo guardado muere con "El total del presupuesto no corresponde con los productos
             ingresados".
+
+            ⚠️ Adentro de la guarda de esquema por el mismo motivo que el alta: entre que el deploy
+            sube los archivos y corre las migraciones, la columna puede no existir y esta asignacion
+            tumbaria la actualizacion de cualquier presupuesto. Ver `ForzarTotalEsquemaHelper`.
         */
-        $model->forzar_total_monto        = SaleHelper::normalized_forzar_total_monto($request);
+        if (ForzarTotalEsquemaHelper::hay_columna_en_budgets()) {
+            $model->forzar_total_monto    = SaleHelper::normalized_forzar_total_monto($request);
+        }
         $model->budget_status_id          = $request->budget_status_id;
         $model->address_id                = $request->address_id;
         // $model->omitir_en_cuenta_corriente                = $request->omitir_en_cuenta_corriente;

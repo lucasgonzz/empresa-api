@@ -46,21 +46,28 @@ use Illuminate\Support\Facades\Schema;
  *  🔴 LA DIRECCION CONTRARIA NO ES COMPATIBLE, Y HAY QUE DECIRLO
  * ─────────────────────────────────────────────────────────────────────────────
  *
- *  Codigo nuevo contra base SIN migrar NO anda, y no falla suave: `SaleController` manda
- *  `forzar_total_monto` en el `Sale::create()` y en las dos asignaciones de la actualizacion, y
- *  `BudgetController` hace lo mismo, todos sin guarda. Con `$guarded = []`, Eloquent incluye la
- *  columna en el INSERT aunque el valor sea null, asi que si esta migracion no corrio **se cae el
- *  alta de TODAS las ventas y de TODOS los presupuestos** con `Unknown column`, esten forzados o
- *  no.
+ *  🔴 UN DEPLOY DE EMPRESA SUBE LOS ARCHIVOS **ANTES** DE MIGRAR. `DeploymentService::execute_steps()`
+ *  de `admin-api` corre `upload_api` -> `sync_env_keys` -> `run_migrations`, en ese orden. Entre el
+ *  primero y el tercero hay una ventana real en la que el cliente tiene este codigo y no tiene esta
+ *  columna.
  *
- *  No se le ponen guardas de esquema a la escritura a proposito: un `Schema::hasColumn` por request
- *  cuesta una consulta y ademas seria incoherente con TODAS las columnas que se le agregaron a
- *  `sales` en siete años, que tienen exactamente la misma exposicion. `DeploymentService` corre las
- *  migraciones solo, antes de servir la version nueva.
+ *  Y ahi el daño no se limita a las ventas forzadas: `Sale` y `Budget` declaran `$guarded = []`,
+ *  asi que Eloquent mete `forzar_total_monto` en el INSERT **aunque el valor sea null**. Sin guarda,
+ *  en esa ventana se cae el alta de TODA venta y de TODO presupuesto, de todos los clientes, con
+ *  `SQLSTATE[42S22]: Unknown column`.
  *
- *  Pero en este parque el gap entre los archivos de migracion y la tabla `migrations` NO es
- *  teorico: hay clientes migrados con ese desfasaje. Por eso queda escrito acá — para que se
- *  chequee antes de un upgrade, en vez de descubrirse con el mostrador parado.
+ *  Por eso los cuatro puntos de escritura pasan por `ForzarTotalEsquemaHelper`, que omite la clave
+ *  mientras la columna no este. Es el mismo molde —y la misma ventana— que la guarda de
+ *  `budget_combo` (commit 5c0da889, 16/9/2026), cuyo mensaje ya dice textualmente que "un deploy de
+ *  empresa sube los archivos ANTES de migrar".
+ *
+ *  ⚠️ Una version anterior de este mismo comentario afirmaba lo contrario —que el deploy migraba
+ *  antes de servir la version nueva— y de ahi concluia que la guarda no hacia falta. Era falso, y
+ *  es exactamente lo que hizo que la guarda no se escribiera: un comentario que da una garantia que
+ *  no existe es peor que no tener comentario.
+ *
+ *  Y el gap entre los archivos de migracion y la tabla `migrations` tampoco es teorico en este
+ *  parque: hay clientes migrados con ese desfasaje.
  */
 class AddForzarTotalMontoToSalesAndBudgetsTables extends Migration
 {
