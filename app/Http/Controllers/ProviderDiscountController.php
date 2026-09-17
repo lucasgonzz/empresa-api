@@ -26,7 +26,12 @@ class ProviderDiscountController extends Controller
     }
 
     public function update(Request $request, $id) {
-        $model = ProviderDiscount::find($id);
+
+        $model = $this->descuento_del_comercio($id);
+
+        if (is_null($model)) {
+            return response()->json(['message' => 'No se encontro el descuento'], 404);
+        }
 
         // Nombre que tenia ANTES de guardar: es lo unico que permite saber si hubo renombre y no
         // disparar el UPDATE masivo de abajo en cada guardado del proveedor.
@@ -72,7 +77,12 @@ class ProviderDiscountController extends Controller
     }
 
     public function destroy($id) {
-        $model = ProviderDiscount::find($id);
+
+        $model = $this->descuento_del_comercio($id);
+
+        if (is_null($model)) {
+            return response()->json(['message' => 'No se encontro el descuento'], 404);
+        }
 
         $provider = $model->provider;
         $provider->should_update_prices = 1;
@@ -116,6 +126,42 @@ class ProviderDiscountController extends Controller
 
         ArticleDiscount::where('provider_discount_id', $model->id)
                             ->update(['nombre' => $model->nombre]);
+    }
+
+    /**
+     * Descuento de proveedor scopeado al comercio de la sesion. Devuelve null si el id no existe o
+     * es de otro comercio, y el llamador contesta 404.
+     *
+     * 🔴 POR QUE ESTE SCOPE NO SE SACA "PARA SIMPLIFICAR". Hasta esta mision, `update()` resolvia
+     * con un `find($id)` pelado y el daño de un id ajeno se limitaba a pisarle un porcentaje a otro
+     * comercio: una fila. Desde esta mision, `update()` dispara ademas
+     * `propagar_nombre_a_los_articulos()`, que es UN SOLO UPDATE MASIVO sobre `article_discounts`
+     * filtrando unicamente por `provider_discount_id` — sin `user_id` de por medio, porque la
+     * columna no existe en esa tabla. O sea que un `PUT provider-discount/{id}` con un id de otro
+     * comercio le reescribe el nombre a TODOS los articulos sincronizados de ese descuento, miles
+     * de filas, en una query y sin dejar rastro. El scope de aca es lo unico que lo frena.
+     *
+     * Y el `find()` pelado tampoco resistia un id inexistente: `$model->nombre` sobre null es un
+     * fatal error, no un 404.
+     *
+     * ⚠️ La pertenencia va POR EL PROVEEDOR, no directa: `provider_discounts` no tiene `user_id`
+     * (ver la migracion 2025_09_12_143743). Por eso el `whereHas` sobre la relacion, con el mismo
+     * criterio que `ProviderController::proveedor_del_comercio()` — y, como aquel, hereda el scope
+     * de SoftDeletes de `Provider`: un descuento cuyo proveedor esta borrado no se edita ni se
+     * borra desde aca, que es lo mismo que ya pasa con el proveedor en si.
+     *
+     * @param  int $id
+     * @return \App\Models\ProviderDiscount|null
+     */
+    private function descuento_del_comercio($id) {
+
+        $user_id = $this->userId();
+
+        return ProviderDiscount::where('id', $id)
+                                ->whereHas('provider', function ($query) use ($user_id) {
+                                    $query->where('user_id', $user_id);
+                                })
+                                ->first();
     }
 
     /**

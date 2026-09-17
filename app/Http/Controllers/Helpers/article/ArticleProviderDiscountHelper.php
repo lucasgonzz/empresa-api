@@ -1114,8 +1114,33 @@ class ArticleProviderDiscountHelper {
          */
         $tagueados_por_articulo = [];
 
+        /*
+         * 🔴 ESTAS FILAS NO SE HIDRATAN COMO MODELOS ELOQUENT, Y NO ES UNA MICRO-OPTIMIZACION.
+         * `toBase()` devuelve `stdClass` crudos del query builder.
+         *
+         * Este escaneo es el unico pedazo de la sincronizacion que corre SINCRONICO: la accion se
+         * mando a la cola justamente porque un proveedor de un comercio grande tiene miles de
+         * articulos, pero `sincronizar_descuentos_preview()` —el que abre el modal, o sea el que
+         * dispara el usuario antes de confirmar nada— y
+         * `sincronizar_descuentos_exportar_conflictos()` pasan por aca adentro de un request HTTP,
+         * bajo el `memory_limit` y el `max_execution_time` de PHP-FPM del shared hosting, NO bajo
+         * el `timeout = 3600` del worker. Con 8.000 articulos a 3 descuentos cada uno son ~24.000
+         * filas: como modelos Eloquent (cada uno con sus atributos originales, su diccionario de
+         * cambios y su relacion vacia) eso es varias veces mas memoria que como `stdClass`, y el
+         * sintoma seria "el modal no abre" justo en el cliente grande, que es el que mas lo
+         * necesita.
+         *
+         * ⚠️ Se puede hacer porque NADA de lo que consume estas filas necesita un modelo:
+         * `gobernado_por_la_ficha()` lee `isset($descuento->origen)`, `clasificar_articulo()` lee
+         * `->editado_a_mano` y `->percentage`, y `rehacer_lo_de_la_ficha()` lee `->id` y
+         * `->show_in_online` — todo acceso por propiedad. `ArticleDiscount` no declara `$casts`, ni
+         * accessors, ni SoftDeletes, ni global scopes, asi que el crudo trae exactamente los mismos
+         * valores. Si algun dia alguno de esos consumidores necesita un metodo de Eloquent, se le
+         * pasa el id y se busca el modelo ahi, no se vuelve a hidratar el catalogo entero.
+         */
         $filas = ArticleDiscount::where('provider_id', $provider->id)
                                     ->select(self::COLUMNAS_PARA_CLASIFICAR)
+                                    ->toBase()
                                     ->get();
 
         foreach ($filas as $fila) {
