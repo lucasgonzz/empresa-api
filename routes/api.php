@@ -1278,6 +1278,13 @@ Route::middleware('admin.api.key')
         // en la próxima corrida.
         Route::get('asistente/informes-pendientes', 'AdminSync\\AsistenteController@informes_pendientes');
         Route::post('asistente/informes/{id}/avisado', 'AdminSync\\AsistenteController@informe_avisado');
+        // Consumo de tokens de IA de este comercio (misión tokens-por-cliente): el admin lo
+        // recolecta todas las noches, lo espeja en su propia base y ahí le pone precio. Solo
+        // LEE ai_token_usages y devuelve contadores; la tabla de precios vive en el admin.
+        // La clave del header se valida adentro del controlador PERO solo si este cliente la
+        // tiene cargada: la mayoría todavía no tiene ADMIN_API_INBOUND_KEY en su .env y un 401
+        // duro dejaría la recolección rota en casi todos. Ver el docblock de rechazo_por_clave().
+        Route::get('consumo-ia', 'AdminSync\\ConsumoIaController@index');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
