@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
+use App\Models\ProviderDiscount;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
@@ -144,11 +145,15 @@ class ArticleProviderDiscountHelper {
             }
         }
 
-        foreach ($discounts as $discount) {
+        foreach ($discounts as $discount_original) {
 
             // Normalizo a objeto para leer percentage/amount sin importar si vino como array
             // (import) o como modelo Eloquent (ProviderOrderDiscount / ProviderDiscount).
-            $discount = (object) $discount;
+            //
+            // ⚠️ El item ORIGINAL se conserva aparte: `leer_provider_discount_id()` necesita saber
+            // de QUE CLASE vino, y el cast de un array a stdClass borra esa informacion. Ver el
+            // docblock de ese metodo, que es donde esta la trampa.
+            $discount = (object) $discount_original;
 
             $percentage = isset($discount->percentage) ? $discount->percentage : null;
 
@@ -182,8 +187,92 @@ class ArticleProviderDiscountHelper {
                 // sin esto hay que adivinarlo mirando la forma del descuento, que es de donde
                 // salieron nueve defectos en cuatro rondas de verificacion. Ver ArticleDiscount.
                 'origen' => $origen,
+                // DE CUAL descuento del proveedor salio, y como se llama (mision
+                // sincronizar-descuentos-proveedor, 17/9/2026). Los dos son opcionales y quedan en
+                // null cuando la fuente no los trae: el import manda arrays de
+                // `['percentage' => x]`, y una compra manda un ProviderOrderDiscount, que no
+                // pertenece a la relacion. Eso esta bien y no rompe nada: `origen` sigue siendo la
+                // unica columna con la que se decide algo.
+                'provider_discount_id' => self::leer_provider_discount_id($discount_original, $discount),
+                'nombre'               => self::leer_nombre_del_descuento($discount),
             ]);
         }
+    }
+
+    /**
+     * De que fila de `provider_discounts` sale este item de origen, si es que sale de alguna.
+     *
+     * 🔴 NUNCA se lee `$item->id` a secas, y esa es la trampa entera de este metodo. Los items que
+     * recibe `create_tagged_discounts()` vienen de cuatro fuentes distintas:
+     *
+     *   - `ProviderDiscount` (la ficha del proveedor): SU `id` es exactamente el dato que se busca.
+     *   - `ProviderOrderDiscount` (la bonificacion negociada en una compra): TAMBIEN tiene `id`,
+     *     pero es el id de OTRA tabla. Copiarlo dejaria `article_discounts.provider_discount_id`
+     *     apuntando a un `provider_discounts.id` que no tiene nada que ver — y como los dos son
+     *     enteros chicos y correlativos, la mayoria de las veces ese id existiria. Renombrar un
+     *     descuento del proveedor le cambiaria el nombre a descuentos de compras ajenas, sin un
+     *     solo error de por medio.
+     *   - arrays del import (`['percentage' => 10]`): no traen nada, y esta bien que quede null.
+     *   - lo que venga despues: si quiere declarar la relacion, la declara con todas las letras.
+     *
+     * Por eso se mira la CLASE del item original y, si no es de la ficha, se exige la clave
+     * explicita `provider_discount_id`.
+     *
+     * @param  mixed  $item_original Item tal como lo recibio el foreach (array o modelo).
+     * @param  object $item          El mismo item ya normalizado a objeto.
+     * @return int|null
+     */
+    static function leer_provider_discount_id($item_original, $item) {
+
+        if ($item_original instanceof ProviderDiscount) {
+            return $item_original->id;
+        }
+
+        // La clave explicita: la unica otra forma de declarar la relacion. `''` cuenta como vacio
+        // (clase de error del `??` del 27/8/2026: la SPA manda cadena vacia, no null).
+        if (isset($item->provider_discount_id) && $item->provider_discount_id !== '') {
+            return (int) $item->provider_discount_id;
+        }
+
+        return null;
+    }
+
+    /**
+     * Nombre/descripcion del descuento, leido con el mismo cuidado defensivo que `percentage` y
+     * `amount`/`monto`: cada fuente lo llama distinto y ninguna esta obligada a traerlo.
+     *
+     *   - `nombre`      -> el de `provider_discounts` (mision del 17/9/2026).
+     *   - `description` -> el de `provider_order_discounts`, que ya existia desde el 26/2/2026. Se
+     *                      acepta como alias por el mismo criterio por el que `monto` vale como
+     *                      `amount`: es el mismo dato con otro nombre de columna, y sin esto la
+     *                      bonificacion de una compra quedaria sin nombre teniendolo cargado.
+     *
+     * Vacio es null, nunca cadena vacia: la columna es nullable y "sin nombre" tiene que verse de
+     * una sola forma en la base.
+     *
+     * Se corta a 191 caracteres, que es el largo de la columna: un nombre mas largo tiraria un
+     * error de SQL a la mitad de una sincronizacion de miles de articulos, dejandola por la mitad.
+     *
+     * @param  object $item
+     * @return string|null
+     */
+    static function leer_nombre_del_descuento($item) {
+
+        $nombre = isset($item->nombre)
+            ? $item->nombre
+            : (isset($item->description) ? $item->description : null);
+
+        if (is_null($nombre)) {
+            return null;
+        }
+
+        $nombre = trim((string) $nombre);
+
+        if ($nombre === '') {
+            return null;
+        }
+
+        return mb_substr($nombre, 0, 191);
     }
 
     /**
