@@ -546,6 +546,78 @@ class Venta_de_contado_sin_metodo_de_pago_Test extends TestCase
     }
 
     /**
+     * 🔴 El default de `save_current_acount` (1) lo tiene que ver TAMBIÉN el límite de crédito.
+     *
+     * Cuando el default vivía solo en el create() de store(), `LimiteCreditoHelper::validar_venta_nueva()`
+     * armaba la venta hipotética con el request crudo: null → "no va a la cuenta corriente" → no
+     * hay tope que controlar → 201, y la venta se guardaba con 1 y su movimiento por encima del
+     * límite. Un POST sin la clave contra un cliente con límite excedido esquivaba el 422 que el
+     * mismo POST con la clave recibe. Lo encontró el revisor adversarial de la tanda 2 (18/9/2026).
+     *
+     * @group sales
+     * @test
+     */
+    public function post_sin_save_current_acount_contra_un_cliente_con_limite_excedido_responde_422()
+    {
+        $client = $this->cliente();
+
+        CreditAccount::where('model_name', 'client')
+            ->where('model_id', $client->id)
+            ->where('moneda_id', 1)
+            ->update(['limite_credito' => 1]);
+
+        $ventas_antes = $this->cantidad_de_ventas();
+
+        $payload = $this->payload_venta([
+            'client_id'                  => $client->id,
+            'omitir_en_cuenta_corriente' => 0,
+        ]);
+
+        unset($payload['save_current_acount']);
+
+        $con_la_clave = $this->postJson('api/sale', $this->payload_venta([
+            'client_id'                  => $client->id,
+            'omitir_en_cuenta_corriente' => 0,
+            'save_current_acount'        => 1,
+        ]));
+
+        $con_la_clave->assertStatus(422);
+        $this->assertTrue((bool) $con_la_clave->json('error_limite_credito'), 'Con la clave, el tope frena: es la referencia.');
+
+        $sin_la_clave = $this->postJson('api/sale', $payload);
+
+        $sin_la_clave->assertStatus(422);
+        $this->assertTrue((bool) $sin_la_clave->json('error_limite_credito'), 'Sin la clave el default es 1: el tope tiene que frenar igual.');
+
+        $this->assertEquals($ventas_antes, $this->cantidad_de_ventas(), 'Ninguno de los dos POST puede haber creado la venta.');
+    }
+
+    /**
+     * 🔴 La validación tiene que espejar la rama que después adjunta: con un reparto no vacío
+     * manda el reparto, y el método único no cuenta. Si valiera cualquiera de los dos (OR), un
+     * método único válido con un reparto de renglones inválidos pasaba la validación y el attach
+     * tomaba la rama del reparto, salteaba los renglones y la venta quedaba con CERO métodos.
+     *
+     * @group sales
+     * @test
+     */
+    public function metodo_unico_valido_con_un_reparto_de_renglones_invalidos_responde_422()
+    {
+        $ventas_antes = $this->cantidad_de_ventas();
+
+        $response = $this->postJson('api/sale', $this->payload_venta([
+            'current_acount_payment_method_id' => 3,
+            'selected_payment_methods'         => [
+                ['current_acount_payment_method_id' => 0, 'amount' => self::PRECIO * self::CANTIDAD],
+            ],
+        ]));
+
+        $this->assert_rechazo_sin_metodo($response);
+
+        $this->assertEquals($ventas_antes, $this->cantidad_de_ventas());
+    }
+
+    /**
      * Un request que NO habla del cobro —ninguna de las dos claves— no se rechaza y no adjunta
      * nada: no está cobrando con un placeholder, no está diciendo nada. Es la puerta de los
      * llamadores que no son VENDER (y de los tests que miden otra cosa), y queda fijada a

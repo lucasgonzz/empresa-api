@@ -121,10 +121,16 @@ class BudgetController extends Controller
                  * vender-lista-obligatoria, 18/9/2026, item A4). La SPA lo manda desde 2024
                  * (`vender_presupuestos.js`), la columna existe desde marzo de 2026
                  * (`2026_03_17_182325_add_omitir_to_budgets`) y `BudgetHelper::saveSale()` lo
-                 * arrastra a la venta desde entonces —pero esta linea estaba comentada, asi que
-                 * siempre arrastraba el 0 del default: la venta nacida de un presupuesto NUNCA
-                 * omitia la cuenta corriente, aunque el vendedor lo hubiera tildado, y el cliente
-                 * que pago en el acto quedaba debiendo la venta entera.
+                 * arrastraba a la venta —pero esta linea estaba comentada, asi que siempre
+                 * llegaba el 0 del default y el tilde del vendedor se perdia: al reabrir el
+                 * presupuesto en VENDER no se restauraba.
+                 *
+                 * 🔴 Lo que SIGUE sin pasar, a proposito: al confirmar desde el listado, la venta
+                 * NO nace omitida (BudgetHelper::saveSale() escribe 0 y explica por que): la
+                 * confirmacion no trae datos de cobro, y una venta de contado sin metodo de pago ni
+                 * caja es peor que la deuda en la cuenta corriente. El cliente que pago en el acto
+                 * sigue quedando en la cuenta corriente hasta que se registre el pago, o hasta que
+                 * la confirmacion pida el metodo de pago (decision de producto pendiente).
                  *
                  * Pelado a proposito (la SPA lo manda siempre) y normalizado a 0/1: la columna es
                  * NOT NULL con default 0, y un null explicito del request la tumbaria en modo
@@ -300,8 +306,9 @@ class BudgetController extends Controller
             se preserva lo guardado.
 
             Clave presente y en null (o en 0, que se lee como null: ver PriceTypeHelper) con la
-            cuenta trabajando con listas = 422 ANTES de escribir nada. Este metodo no abre
-            transaccion, asi que el orden importa: despues del save() ya no hay vuelta atras.
+            cuenta trabajando con listas = 422 ANTES de escribir nada. Desde la tanda 2 de la
+            mision (18/9/2026, item A1) este metodo corre en una transaccion, pero el 422 sigue
+            yendo antes de abrirla: es una respuesta, no un fallo que haya que revertir.
         */
         $actualizar_price_type_id = $request->exists('price_type_id');
 

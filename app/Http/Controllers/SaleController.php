@@ -341,7 +341,7 @@ class SaleController extends Controller
                  * flag)—. La semántica que ya tenía la columna es "a la cuenta corriente salvo que
                  * alguien diga que no": el default la respeta.
                  */
-                'save_current_acount'               => !is_null($request->save_current_acount) ? $request->save_current_acount : 1,
+                'save_current_acount'               => SaleHelper::get_save_current_acount_de_venta_nueva($request),
                 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
                 // Ya resuelta y validada antes de la transacción: request → cliente → null (o 422).
                 'price_type_id'                     => $price_type_id,

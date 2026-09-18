@@ -202,12 +202,25 @@ class PaymentMethodHelper {
 			return null;
 		}
 
-		if (!is_null(self::metodo_de_pago_valido($request->current_acount_payment_method_id))) {
-			return null;
-		}
+		/*
+			🔴 Se valida EXACTAMENTE la rama que despues va a adjuntar SaleHelper::attachSelectedPaymentMethods():
+			con reparto (array con al menos un renglon) manda SOLO el reparto; sin reparto, el metodo
+			unico. Cuando esto era un OR --metodo unico valido O reparto valido--, un request con el
+			metodo unico en 3 y un reparto no vacio con todos los renglones invalidos pasaba la
+			validacion por el 3, pero el attach tomaba la rama del reparto, salteaba los renglones
+			invalidos y la venta quedaba con CERO metodos: justo la venta cobrada sin metodo ni caja que
+			esta regla existe para impedir. Lo encontro el revisor adversarial de la tanda 2 (18/9/2026).
+		*/
+		$hay_reparto = is_array($request->selected_payment_methods) && count($request->selected_payment_methods) >= 1;
 
-		if (self::reparto_tiene_un_metodo_valido($request->selected_payment_methods)) {
-			return null;
+		if ($hay_reparto) {
+			if (self::reparto_tiene_un_metodo_valido($request->selected_payment_methods)) {
+				return null;
+			}
+		} else {
+			if (!is_null(self::metodo_de_pago_valido($request->current_acount_payment_method_id))) {
+				return null;
+			}
 		}
 
 		return [

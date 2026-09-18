@@ -1092,6 +1092,28 @@ class SaleHelper extends Controller {
         return (bool) ($sale->save_current_acount && !$sale->omitir_en_cuenta_corriente);
     }
 
+    /**
+     * El `save_current_acount` con el que NACE una venta nueva, resuelto UNA sola vez a partir
+     * del request: lo que viaja, o 1 si no viaja (como CreateSaleOrderHelper).
+     *
+     * 🔴 Lo tienen que usar TODOS los que miran el request antes del INSERT: el create() de
+     * SaleController::store() y la venta hipotetica de LimiteCreditoHelper::validar_venta_nueva().
+     * Cuando el default vivia solo en el create(), un POST sin la clave contra un cliente con
+     * limite de credito lo esquivaba: el tope se evaluaba con el null crudo (no va a la cuenta
+     * corriente -> no hay que controlar) y la venta se guardaba con 1 y su movimiento, por
+     * encima del limite. Medido el 18/9/2026 (mision vender-lista-obligatoria, tanda 2).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int  0 o 1
+     */
+    static function get_save_current_acount_de_venta_nueva($request) {
+        if (is_null($request->save_current_acount)) {
+            return 1;
+        }
+
+        return $request->save_current_acount ? 1 : 0;
+    }
+
     static function crear_comision($sale) {
         if (!is_null($sale->seller_id)) {
             
