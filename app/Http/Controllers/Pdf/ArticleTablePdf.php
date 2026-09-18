@@ -287,16 +287,20 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
-     * Convierte texto UTF-8 al encoding que FPDF usa para MEDIR: GetStringWidth() y NbLines()
-     * cuentan bytes contra la tabla de anchos de la fuente y no decodifican solos.
+     * Convierte texto UTF-8 al encoding que FPDF usa para MEDIR: GetStringWidth() y split_lines()
+     * cuentan bytes contra la tabla de anchos de la fuente (un byte por carácter en Latin-1) y
+     * no decodifican solos.
      *
-     * 🔴 NO se le pasa a Cell() ni a MultiCell(): las dos decodifican solas (el Cell() del
-     * fpdf.php del proyecto hace utf8_decode() y MultiCell() delega en Cell()). Pasarles texto
-     * ya decodificado lo decodifica dos veces y cada acento sale como "?" — medido el 18/9/2026:
-     * el pie "precios sujetos a modificación" salía "modificaci?n" en producción.
+     * 🔴 NO se le pasa a Cell(): el Cell() del fpdf.php del proyecto hace utf8_decode() solo, y
+     * decodificar dos veces convierte cada acento en "?" — medido el 18/9/2026: el pie "precios
+     * sujetos a modificación" salía "modificaci?n" en producción. Y el MultiCell() de ese mismo
+     * fpdf.php NO se usa en esta clase (ver print_multi_cell()): corta las líneas iterando bytes
+     * del texto que recibe y después delega en Cell(), así que con UTF-8 crudo mide cada acento
+     * como dos caracteres y con texto decodificado imprime "?". No hay forma de pasarle algo que
+     * mida bien e imprima bien a la vez.
      *
      * @param  string  $text  Texto en UTF-8.
-     * @return string         Texto listo para GetStringWidth / NbLines.
+     * @return string         Texto listo para GetStringWidth / split_lines.
      */
     private function pdf_text($text)
     {
@@ -430,9 +434,7 @@ class ArticleTablePdf extends fpdf
             $content_height = max(1, $lines) * $cell_line_height;
             $cell_y = $start_y + ($row_height - $content_height) / 2;
             $this->SetXY($x, $cell_y);
-            // Texto UTF-8 crudo: MultiCell() decodifica solo (ver pdf_text()). Con pdf_text() acá
-            // los acentos de las columnas con salto de línea salían como "?".
-            $this->MultiCell($width, $cell_line_height, $text, 0, $text_align, false);
+            $this->print_multi_cell($width, $cell_line_height, $text, $text_align);
             return;
         }
 
@@ -619,11 +621,10 @@ class ArticleTablePdf extends fpdf
      * una sola línea alineada a la derecha cuando entran; si no, cada uno en su MultiCell 'R'.
      * Un renglón sin título imprime solo el valor; uno sin valor, solo el título (sin los dos puntos).
      *
-     * Encoding: Cell() del FPDF del proyecto hace utf8_decode() solo, y MultiCell() delega en
-     * Cell() línea por línea, así que a las dos se les pasa el texto UTF-8 tal cual. La que NO
-     * decodifica es GetStringWidth(): mide sobre pdf_text(). Pasarle a MultiCell() texto ya
-     * decodificado lo decodifica dos veces y cada acento sale como "?" (medido el 18/9/2026
-     * sobre el fpdf.php del proyecto).
+     * Encoding: Cell() del FPDF del proyecto hace utf8_decode() solo, así que recibe el texto
+     * UTF-8 tal cual; los textos de varias líneas van por print_multi_cell(), que corta sobre el
+     * texto decodificado e imprime cada línea con Cell(). La que NO decodifica es
+     * GetStringWidth(): mide sobre pdf_text(). Ver el docblock de pdf_text().
      *
      * @param  float   $x      Borde izquierdo de la columna.
      * @param  float   $y      Y donde arranca el renglón.
@@ -678,13 +679,13 @@ class ArticleTablePdf extends fpdf
             if ($label !== '') {
                 $this->SetFont('Arial', 'B', 8);
                 $this->SetXY($x, $y);
-                $this->MultiCell($width, $line_height, $label, 0, 'R', false);
+                $this->print_multi_cell($width, $line_height, $label, 'R');
                 $y = $this->y;
             }
             if ($value !== '') {
                 $this->SetFont('Arial', '', 8);
                 $this->SetXY($x, $y);
-                $this->MultiCell($width, $line_height, $value, 0, 'R', false);
+                $this->print_multi_cell($width, $line_height, $value, 'R');
                 $y = $this->y;
             }
 
@@ -704,7 +705,7 @@ class ArticleTablePdf extends fpdf
 
             if ($value === '' || $label_cell_width > $width * 0.5) {
                 // Título solo, o demasiado largo para compartir la línea: ocupa su propia línea (envuelve si hace falta).
-                $this->MultiCell($width, $line_height, $label, 0, 'L', false);
+                $this->print_multi_cell($width, $line_height, $label, 'L');
                 $y = $this->y;
             } else {
                 $this->Cell($label_cell_width, $line_height, $label, 0, 0, 'L');
@@ -716,7 +717,7 @@ class ArticleTablePdf extends fpdf
         if ($value !== '') {
             $this->SetFont('Arial', '', 8);
             $this->SetXY($value_x, $y);
-            $this->MultiCell($value_width, $line_height, $value, 0, 'L', false);
+            $this->print_multi_cell($value_width, $line_height, $value, 'L');
             $y = $this->y;
         }
 
@@ -1203,9 +1204,7 @@ class ArticleTablePdf extends fpdf
 
         $this->y = 297 - self::BOTTOM_MARGIN_MM - self::FOOTER_TEXT_HEIGHT_MM;
         $this->x = $this->start_x;
-        // Texto UTF-8 crudo: MultiCell() decodifica solo (ver pdf_text()). Con pdf_text() acá el
-        // pie con acentos salía con "?" en cada acento.
-        $this->MultiCell($usable_width, 4, $this->footer_text, 0, 'L', false);
+        $this->print_multi_cell($usable_width, 4, $this->footer_text, 'L');
     }
 
     // ── Utilidades ────────────────────────────────────────────────────────────
@@ -1403,14 +1402,31 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
-     * Calcula cuántas líneas ocupará un texto dentro de un ancho de celda dado.
-     * Usado para estimar la altura de filas con wrap_content activo.
+     * Cantidad de líneas que ocupa un texto en un ancho dado con la fuente activa.
      *
-     * @param  int     $w    Ancho de la celda en mm.
-     * @param  string  $txt  Texto a medir.
-     * @return int           Cantidad de líneas necesarias (mínimo 1).
+     * @param  float   $w    Ancho de la celda en mm (0 = hasta el margen derecho).
+     * @param  string  $txt  Texto en UTF-8.
+     * @return int
      */
     private function NbLines($w, $txt)
+    {
+        return count($this->split_lines($w, $txt));
+    }
+
+    /**
+     * Corta un texto UTF-8 en las líneas que imprimiría FPDF en un ancho dado, con la fuente
+     * activa. Mismo algoritmo de corte que el MultiCell() de FPDF (corta en el último espacio
+     * que entra; una palabra más larga que el ancho se parte por caracteres; "\n" fuerza línea),
+     * pero sobre el texto DECODIFICADO (Latin-1, un byte por carácter), que es lo que hace que la
+     * medida coincida con lo que Cell() imprime después de su propio utf8_decode().
+     *
+     * Devuelve las líneas en Latin-1: print_multi_cell() las vuelve a UTF-8 antes de imprimir.
+     *
+     * @param  float   $w    Ancho de la celda en mm (0 = hasta el margen derecho).
+     * @param  string  $txt  Texto en UTF-8.
+     * @return array<int, string>  Líneas en Latin-1, al menos una (vacía si el texto es vacío).
+     */
+    private function split_lines($w, $txt)
     {
         /** Referencia al mapa de anchos de caracteres de la fuente activa en FPDF. */
         $cw = &$this->CurrentFont['cw'];
@@ -1428,21 +1444,21 @@ class ArticleTablePdf extends fpdf
             $nb--;
         }
 
+        $lines = [];
         $sep = -1;
         $i = 0;
         $j = 0;
         $l = 0;
-        $nl = 1;
 
         while ($i < $nb) {
             $c = $s[$i];
 
             if ($c == "\n") {
+                $lines[] = substr($s, $j, $i - $j);
                 $i++;
                 $sep = -1;
                 $j = $i;
                 $l = 0;
-                $nl++;
                 continue;
             }
 
@@ -1457,19 +1473,49 @@ class ArticleTablePdf extends fpdf
                     if ($i == $j) {
                         $i++;
                     }
+                    $lines[] = substr($s, $j, $i - $j);
                 } else {
+                    $lines[] = substr($s, $j, $sep - $j);
                     $i = $sep + 1;
                 }
                 $sep = -1;
                 $j = $i;
                 $l = 0;
-                $nl++;
             } else {
                 $i++;
             }
         }
 
-        return $nl;
+        /** Última línea (o la única, o vacía si el texto es vacío). */
+        $lines[] = substr($s, $j, $i - $j);
+
+        return $lines;
+    }
+
+    /**
+     * Imprime un texto UTF-8 en varias líneas, como MultiCell(), pero cortando sobre el texto
+     * decodificado (split_lines()) e imprimiendo cada línea con Cell(), que decodifica una sola
+     * vez. Es el reemplazo del MultiCell() del fpdf.php del proyecto para esta clase: ese
+     * MultiCell() corta iterando bytes del texto que recibe y después delega en Cell() —
+     * con UTF-8 crudo mide cada acento como dos caracteres (corta antes de tiempo y desencaja
+     * con NbLines(), que es lo que fija el alto de la fila: la última línea quedaba tapada por la
+     * fila siguiente), y con texto ya decodificado imprime "?" en cada acento. Medido el 18/9/2026.
+     *
+     * Deja el cursor como MultiCell(): y debajo de la última línea, x en el margen izquierdo.
+     *
+     * @param  float   $w      Ancho de la celda en mm.
+     * @param  float   $h      Alto de cada línea en mm.
+     * @param  string  $txt    Texto en UTF-8.
+     * @param  string  $align  'L', 'C' o 'R'.
+     * @return void
+     */
+    private function print_multi_cell($w, $h, $txt, $align = 'L')
+    {
+        foreach ($this->split_lines($w, $txt) as $line) {
+            $this->Cell($w, $h, utf8_encode($line), 0, 2, $align, false);
+        }
+
+        $this->x = $this->lMargin;
     }
 
     /**
