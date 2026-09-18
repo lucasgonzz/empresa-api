@@ -912,6 +912,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::get('import-status', 'ImportStatusController@index');
 
+    /*
+     * Procesos en segundo plano del comercio (misión procesos-en-segundo-plano, 18/9/2026):
+     * la píldora de arriba a la derecha, el modal y el detalle. `vistos` va ANTES de `{id}`
+     * a propósito, aunque hoy no choquen: si algún día la de `{id}` se vuelve un resource, el
+     * literal tiene que seguir ganando.
+     */
+    Route::get('background-processes', 'BackgroundProcessController@index');
+    Route::put('background-processes/vistos', 'BackgroundProcessController@vistos');
+    Route::get('background-processes/{id}', 'BackgroundProcessController@show');
+    Route::put('background-processes/{id}/visto', 'BackgroundProcessController@visto');
+
 
     /*
     |--------------------------------------------------------------------------
