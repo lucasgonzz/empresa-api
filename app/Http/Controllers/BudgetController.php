@@ -117,26 +117,20 @@ class BudgetController extends Controller
                 'moneda_id'                 => !is_null($request->moneda_id) ? $request->moneda_id : 1,
                 'valor_dolar'               => $request->valor_dolar,
                 /*
-                 * "Omitir en cuenta corriente" SE GUARDA (tanda 2 de la mision
-                 * vender-lista-obligatoria, 18/9/2026, item A4). La SPA lo manda desde 2024
-                 * (`vender_presupuestos.js`), la columna existe desde marzo de 2026
-                 * (`2026_03_17_182325_add_omitir_to_budgets`) y `BudgetHelper::saveSale()` lo
-                 * arrastraba a la venta —pero esta linea estaba comentada, asi que siempre
-                 * llegaba el 0 del default y el tilde del vendedor se perdia: al reabrir el
-                 * presupuesto en VENDER no se restauraba.
+                 * 🔴 Un presupuesto NO se puede omitir de la cuenta corriente: al confirmarlo, la
+                 * venta va SIEMPRE a la cuenta del cliente (decision de Lucas, 18/9/2026, tanda 3
+                 * de la mision vender-lista-obligatoria). Se fija 0 pase lo que mande el request
+                 * --la SPA manda 0 desde esa fecha, y una SPA vieja podia mandar el 1 que tuviera
+                 * el store de Vender-- y `BudgetHelper::saveSale()` escribe 0 en la venta. La
+                 * columna queda por compatibilidad (existe desde marzo de 2026 y es NOT NULL).
                  *
-                 * 🔴 Lo que SIGUE sin pasar, a proposito: al confirmar desde el listado, la venta
-                 * NO nace omitida (BudgetHelper::saveSale() escribe 0 y explica por que): la
-                 * confirmacion no trae datos de cobro, y una venta de contado sin metodo de pago ni
-                 * caja es peor que la deuda en la cuenta corriente. El cliente que pago en el acto
-                 * sigue quedando en la cuenta corriente hasta que se registre el pago, o hasta que
-                 * la confirmacion pida el metodo de pago (decision de producto pendiente).
-                 *
-                 * Pelado a proposito (la SPA lo manda siempre) y normalizado a 0/1: la columna es
-                 * NOT NULL con default 0, y un null explicito del request la tumbaria en modo
-                 * estricto. Sin la clave, 0: "no omitir" es el default del store de VENDER.
+                 * Por que no se honra un "omitir" en el presupuesto: la confirmacion desde el
+                 * listado no trae ningun dato de cobro, y una venta de contado sin metodo de pago
+                 * ni movimiento de caja es justo lo que `SaleController::store()` rechaza con el
+                 * 422 `sin_metodo_de_pago`. El cobro de un presupuesto confirmado se registra como
+                 * pago sobre la cuenta corriente del cliente.
                  */
-                'omitir_en_cuenta_corriente' => $request->omitir_en_cuenta_corriente ? 1 : 0,
+                'omitir_en_cuenta_corriente' => 0,
                 'employee_id'               => $this->userId(false),
                 'user_id'                   => $this->userId(),
             /*
@@ -387,16 +381,12 @@ class BudgetController extends Controller
                 $model->price_type_id         = $price_type_id_nuevo;
             }
             /*
-                "Omitir en cuenta corriente" en la edicion (tanda 2, 18/9/2026, item A4): SOLO si el
-                request manda la clave, con el mismo `exists()` que `SaleController::update()` usa para
-                este mismo campo y por el mismo motivo (San Cayetano): el form generico del modulo
-                Presupuestos y una SPA vieja pueden no mandarla, y a secas la dejarian en 0 —la venta
-                que nace al confirmar volveria a la cuenta corriente sin que nadie lo pidiera—. Clave
-                presente, tambien en null, se asigna normalizada a 0/1 (columna NOT NULL).
+                Un presupuesto no se puede omitir de la cuenta corriente (decision de Lucas,
+                18/9/2026): en la edicion se fija 0 pase lo que mande el request, igual que en el
+                alta. Hasta la tanda 2 de la mision la clave ni se guardaba; en la tanda 2 se guardo
+                con `exists()`, y en la tanda 3 quedo asi.
             */
-            if ($request->exists('omitir_en_cuenta_corriente')) {
-                $model->omitir_en_cuenta_corriente = $request->omitir_en_cuenta_corriente ? 1 : 0;
-            }
+            $model->omitir_en_cuenta_corriente = 0;
 
             $model->surchages_in_services     = $request->surchages_in_services;
             $model->discounts_in_services     = $request->discounts_in_services;
