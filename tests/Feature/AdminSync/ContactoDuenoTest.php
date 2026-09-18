@@ -17,6 +17,12 @@ use Tests\EmpresaTestCase;
  * payload —string con valor real o `null`, nunca `''`— es parte del contrato y no un detalle de
  * implementación.
  *
+ * 🔴 Y PROTEGE QUE EL PAYLOAD SIGA SIENDO MÍNIMO: `contacto.email` y nada más. Esta ruta hoy
+ * responde sin validar el header —el gate `ADMIN_SYNC_REQUIRE_API_KEY` está apagado en producción—
+ * y el `{user_id?}` deja pedir cualquier id de la base, que en las bases compartidas viejas son 51
+ * comercios distintos. Cada campo de más que se agregue acá es un padrón que se puede leer desde
+ * afuera.
+ *
  * @group admin-sync
  */
 class ContactoDuenoTest extends EmpresaTestCase
@@ -112,29 +118,43 @@ class ContactoDuenoTest extends EmpresaTestCase
     {
         $this->getJson(self::RUTA)
              ->assertStatus(200)
-             ->assertJson([
-                 'contacto' => [
-                     'email'        => $this->dueno->email,
-                     'name'         => 'Lucas Dueño',
-                     'company_name' => 'Ferretería de Prueba',
-                     'phone'        => '3415123456',
-                 ],
-             ]);
+             ->assertJson(['contacto' => ['email' => $this->dueno->email]]);
     }
 
-    /** El payload tiene exactamente las cuatro claves del contrato, ni una más. */
+    /**
+     * 🔴 El payload tiene UNA sola clave: `contacto.email`.
+     *
+     * Antes devolvía también `name`, `company_name` y `phone`, y se recortaron: admin-api no los
+     * leía —el nombre lo saca de `clients.company_name` y el teléfono de `clients.phone`— y esta
+     * ruta responde sin validar el header y con `{user_id?}` libre. Este test es el que impide que
+     * vuelvan a entrar sin que nadie lo piense.
+     */
     public function test_la_forma_del_payload_es_la_del_contrato()
     {
         $respuesta = $this->getJson(self::RUTA)->assertStatus(200);
 
-        $respuesta->assertJsonStructure([
-            'contacto' => ['email', 'name', 'company_name', 'phone'],
-        ]);
+        $respuesta->assertJsonStructure(['contacto' => ['email']]);
 
-        $this->assertSame(
-            ['email', 'name', 'company_name', 'phone'],
-            array_keys($respuesta->json('contacto'))
-        );
+        $this->assertSame(['email'], array_keys($respuesta->json('contacto')));
+    }
+
+    /**
+     * Y sigue siendo una sola clave aunque el dueño tenga TODOS los datos cargados: lo que decide
+     * qué sale es el contrato, no lo que haya en la fila.
+     */
+    public function test_el_payload_no_crece_aunque_el_dueno_tenga_todo_cargado()
+    {
+        $this->dueno->name         = 'Lucas Dueño';
+        $this->dueno->company_name = 'Ferretería de Prueba';
+        $this->dueno->phone        = '3415123456';
+        $this->dueno->save();
+
+        $contacto = $this->getJson(self::RUTA)->assertStatus(200)->json('contacto');
+
+        $this->assertSame(['email'], array_keys($contacto));
+        $this->assertArrayNotHasKey('name', $contacto);
+        $this->assertArrayNotHasKey('company_name', $contacto);
+        $this->assertArrayNotHasKey('phone', $contacto);
     }
 
     /** Con un user_id explícito devuelve ese dueño, no el de la instancia. */
@@ -200,21 +220,6 @@ class ContactoDuenoTest extends EmpresaTestCase
                 'El email invalido "' . $invalido . '" tendria que volver como null.'
             );
         }
-    }
-
-    /** Los otros tres campos siguen el mismo criterio: valor real o null, nunca string vacío. */
-    public function test_los_campos_vacios_vuelven_como_null_y_no_como_string_vacio()
-    {
-        $this->dueno->name         = '';
-        $this->dueno->company_name = null;
-        $this->dueno->phone        = '  ';
-        $this->dueno->save();
-
-        $contacto = $this->getJson(self::RUTA)->assertStatus(200)->json('contacto');
-
-        $this->assertNull($contacto['name']);
-        $this->assertNull($contacto['company_name']);
-        $this->assertNull($contacto['phone']);
     }
 
     /** Un user_id que no existe devuelve 404 con el mismo mensaje que branding. */
