@@ -543,6 +543,28 @@ class SearchController extends Controller
             $models = $models->where('status', 'active');
         }
 
+        // Suma de saldos (pesos y dolares) de TODOS los registros que matchean el filtro vigente,
+        // no solo los de la pagina que se va a devolver. Hoy solo aplica a client y provider, que
+        // comparten las mismas dos columnas (alimentadas por CurrentAcountHelper::set_model_saldo()
+        // sobre la cuenta corriente polimorfica) y las tienen declaradas y filtrables en sus
+        // models/*.js del front (models/client.js, models/provider.js).
+        //
+        // Se clona el builder ANTES del orderBy/paginate de mas abajo: el mismo WHERE que arma la
+        // tabla, pero agregado con SUM() en SQL en vez de sumar en PHP sobre las filas de una sola
+        // pagina (que es el bug que este calculo viene a resolver). No se reusa $models para el
+        // SUM porque paginate() lo pisa mas abajo con el resultado paginado.
+        $saldos = null;
+
+        if (Schema::hasColumn($table, 'saldo_pesos')) {
+            $saldos = [
+                'saldo_pesos' => (float) (clone $models)->sum('saldo_pesos'),
+            ];
+
+            if (Schema::hasColumn($table, 'saldo_dolares')) {
+                $saldos['saldo_dolares'] = (float) (clone $models)->sum('saldo_dolares');
+            }
+        }
+
         // Paginado con clamp 1..200 (default 50), igual que `search`.
         $per_page = (int) $request->input('per_page', 50);
         if ($per_page < 1) {
@@ -709,7 +731,7 @@ class SearchController extends Controller
             );
         }
 
-        return response()->json(['models' => $models, 'matches' => $matches], 200);
+        return response()->json(['models' => $models, 'matches' => $matches, 'saldos' => $saldos], 200);
     }
 
     /**

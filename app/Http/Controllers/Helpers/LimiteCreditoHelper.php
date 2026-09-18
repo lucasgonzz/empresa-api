@@ -62,7 +62,10 @@ class LimiteCreditoHelper {
         // venta fantasma.
         $sale = new Sale([
             'client_id'                  => $client_id,
-            'save_current_acount'        => $request->save_current_acount,
+            // 🔴 El MISMO default que usa el create() de SaleController::store() (1 si no viaja):
+            // con el request crudo, un POST sin la clave daba null -> "no va a la cuenta corriente"
+            // -> se salteaba el tope, y la venta se guardaba igual con 1 por encima del limite.
+            'save_current_acount'        => SaleHelper::get_save_current_acount_de_venta_nueva($request),
             'omitir_en_cuenta_corriente' => $request->omitir_en_cuenta_corriente,
             'to_check'                   => $request->to_check,
             'total'                      => $request->total,

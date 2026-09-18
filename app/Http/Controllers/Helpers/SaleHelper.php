@@ -537,6 +537,35 @@ class SaleHelper extends Controller {
                 // }
             } else {
 
+                /*
+                    🔴 El metodo unico se adjunta SOLO si es un metodo real (tanda 2 de la mision
+                    vender-lista-obligatoria, 18/9/2026). Hasta hoy esta rama hacia
+                    `attach($request->current_acount_payment_method_id, ...)` con lo que viniera:
+                    con el 0 del placeholder del select de VENDER quedaba una fila en
+                    `current_acount_payment_method_sale` apuntando a un metodo que no existe, la
+                    relacion `current_acount_payment_methods` la ignoraba (no hay fila 0 contra la
+                    cual unir) y `SaleCajaHelper::check_caja()` no creaba movimiento: venta
+                    "cobrada" sin metodo y sin caja, sin error. Mismo criterio que
+                    `PaymentMethodHelper::attach_payment_methods()` aplica al reparto desde el
+                    3/8/2026: lo que no es un metodo se saltea y queda dicho en el log.
+
+                    Con `null` el attach ya era un no-op (Eloquent no inserta nada con un id
+                    nulo); ahora el no-op es explicito y logueado para el 0, el inexistente y el
+                    null por igual.
+
+                    Que no llegue nada hasta aca desde VENDER lo garantiza el 422 de
+                    `SaleController` (`PaymentMethodHelper::validar_venta_nueva()`); esta guarda
+                    es la ultima linea, para los llamadores que no pasan por ese chequeo.
+                */
+                $current_acount_payment_method_id = PaymentMethodHelper::metodo_de_pago_valido($request->current_acount_payment_method_id);
+
+                if (is_null($current_acount_payment_method_id)) {
+
+                    Log::warning('attachSelectedPaymentMethods: la venta '.$sale->id.' es de contado y el metodo unico ('.var_export($request->current_acount_payment_method_id, true).') no es un metodo de pago valido; no se adjunta ninguno.');
+
+                    return;
+                }
+
                 $total = (float)$sale->total;
 
                 if (!is_null($request->discount_amount)) {
@@ -555,7 +584,7 @@ class SaleHelper extends Controller {
                     );
                 }
 
-                $sale->current_acount_payment_methods()->attach($request->current_acount_payment_method_id, [
+                $sale->current_acount_payment_methods()->attach($current_acount_payment_method_id, [
                     'amount'                => $total,
                     'discount_percentage'   => $discount_percentage,
                     'discount_amount'       => $request->discount_amount,
@@ -981,29 +1010,56 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * El vendedor de una venta que entra por VENDER: el del request, o el del cliente, o el del
+     * empleado que vende, o ninguno (0). Firma intacta; la regla vive en `get_seller_id_desde()`
+     * para que la venta nacida de un presupuesto (`BudgetHelper::saveSale()`) resuelva el vendedor
+     * con EXACTAMENTE el mismo criterio sin tener que fabricar un Request.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int  Id del vendedor, o 0.
+     */
     static function get_seller_id($request) {
-        if (isset($request->seller_id)
-            && !is_null($request->seller_id)
-            && $request->seller_id != 0) {
 
-            return $request->seller_id;
+        return Self::get_seller_id_desde($request->seller_id, $request->client_id, Self::getEmployeeId($request));
+    }
+
+    /**
+     * La regla del vendedor, sin request (tanda 2 de la mision vender-lista-obligatoria,
+     * 18/9/2026, item A3): primero el vendedor elegido (si es un id real), despues el del cliente,
+     * despues el del empleado que vende, y si no hay ninguno, 0 (que es lo que esta columna
+     * siempre uso como "sin vendedor" en el alta; `ComisionesHelper` trata 0 y null igual).
+     *
+     * Un `client_id` que no existe se saltea en vez de reventar: hasta hoy `Client::find()` sin
+     * guarda tiraba "Trying to get property 'seller_id' of null" y se llevaba puesta el alta.
+     *
+     * @param  mixed     $seller_id_elegido  El `seller_id` del request (null o 0 = no eligio).
+     * @param  int|null  $client_id
+     * @param  int|null  $employee_id        El empleado que vende (null = el dueno).
+     * @return int
+     */
+    static function get_seller_id_desde($seller_id_elegido, $client_id, $employee_id) {
+
+        if (!is_null($seller_id_elegido) && $seller_id_elegido != 0) {
+
+            return $seller_id_elegido;
         }
 
-        if (!is_null($request->client_id)) {
+        if (!is_null($client_id)) {
 
-            $client = Client::find($request->client_id);
+            $client = Client::find($client_id);
 
-            if (!is_null($client->seller_id)) {
+            if (!is_null($client) && !is_null($client->seller_id)) {
 
                 return $client->seller_id;
             }
         }
 
-        $employee_id = Self::getEmployeeId($request);
-        if (Self::getEmployeeId($request)) {
+        if ($employee_id) {
 
             $employee = User::find($employee_id);
-            if ($employee->seller_id) {
+
+            if (!is_null($employee) && $employee->seller_id) {
                 Log::info('retornando seller_id en base al empleado '.$employee->name);
                 return $employee->seller_id;
             }
@@ -1034,6 +1090,28 @@ class SaleHelper extends Controller {
      */
     static function va_a_volver_a_la_cuenta_corriente($sale) {
         return (bool) ($sale->save_current_acount && !$sale->omitir_en_cuenta_corriente);
+    }
+
+    /**
+     * El `save_current_acount` con el que NACE una venta nueva, resuelto UNA sola vez a partir
+     * del request: lo que viaja, o 1 si no viaja (como CreateSaleOrderHelper).
+     *
+     * 🔴 Lo tienen que usar TODOS los que miran el request antes del INSERT: el create() de
+     * SaleController::store() y la venta hipotetica de LimiteCreditoHelper::validar_venta_nueva().
+     * Cuando el default vivia solo en el create(), un POST sin la clave contra un cliente con
+     * limite de credito lo esquivaba: el tope se evaluaba con el null crudo (no va a la cuenta
+     * corriente -> no hay que controlar) y la venta se guardaba con 1 y su movimiento, por
+     * encima del limite. Medido el 18/9/2026 (mision vender-lista-obligatoria, tanda 2).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int  0 o 1
+     */
+    static function get_save_current_acount_de_venta_nueva($request) {
+        if (is_null($request->save_current_acount)) {
+            return 1;
+        }
+
+        return $request->save_current_acount ? 1 : 0;
     }
 
     static function crear_comision($sale) {

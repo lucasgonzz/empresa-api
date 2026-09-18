@@ -106,9 +106,37 @@ class BudgetController extends Controller
                 'surchages_in_services'     => $request->surchages_in_services,
                 'discounts_in_services'     => $request->discounts_in_services,
                 'aplicar_recargos_directo_a_items' => $request->aplicar_recargos_directo_a_items,
-                'moneda_id'                 => $request->moneda_id,
+                /*
+                 * Default 1 (pesos) si no viaja, igual que `SaleController::store()` (tanda 2 de la
+                 * mision vender-lista-obligatoria, 18/9/2026, item A6). Hasta hoy iba pelado: la
+                 * columna es NOT NULL default 1, asi que un request sin la clave (la SPA la manda
+                 * desde septiembre de 2025) insertaba null y el alta moria con un 500 que no
+                 * nombraba la causa; en una base sin modo estricto quedaba 0, `getCost()` no
+                 * cotizaba (ni `== 1` ni `== 2`) y `saveSale()` le pasaba ese 0 a la venta.
+                 */
+                'moneda_id'                 => !is_null($request->moneda_id) ? $request->moneda_id : 1,
                 'valor_dolar'               => $request->valor_dolar,
-                // 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
+                /*
+                 * "Omitir en cuenta corriente" SE GUARDA (tanda 2 de la mision
+                 * vender-lista-obligatoria, 18/9/2026, item A4). La SPA lo manda desde 2024
+                 * (`vender_presupuestos.js`), la columna existe desde marzo de 2026
+                 * (`2026_03_17_182325_add_omitir_to_budgets`) y `BudgetHelper::saveSale()` lo
+                 * arrastraba a la venta —pero esta linea estaba comentada, asi que siempre
+                 * llegaba el 0 del default y el tilde del vendedor se perdia: al reabrir el
+                 * presupuesto en VENDER no se restauraba.
+                 *
+                 * 🔴 Lo que SIGUE sin pasar, a proposito: al confirmar desde el listado, la venta
+                 * NO nace omitida (BudgetHelper::saveSale() escribe 0 y explica por que): la
+                 * confirmacion no trae datos de cobro, y una venta de contado sin metodo de pago ni
+                 * caja es peor que la deuda en la cuenta corriente. El cliente que pago en el acto
+                 * sigue quedando en la cuenta corriente hasta que se registre el pago, o hasta que
+                 * la confirmacion pida el metodo de pago (decision de producto pendiente).
+                 *
+                 * Pelado a proposito (la SPA lo manda siempre) y normalizado a 0/1: la columna es
+                 * NOT NULL con default 0, y un null explicito del request la tumbaria en modo
+                 * estricto. Sin la clave, 0: "no omitir" es el default del store de VENDER.
+                 */
+                'omitir_en_cuenta_corriente' => $request->omitir_en_cuenta_corriente ? 1 : 0,
                 'employee_id'               => $this->userId(false),
                 'user_id'                   => $this->userId(),
             /*
@@ -278,8 +306,9 @@ class BudgetController extends Controller
             se preserva lo guardado.
 
             Clave presente y en null (o en 0, que se lee como null: ver PriceTypeHelper) con la
-            cuenta trabajando con listas = 422 ANTES de escribir nada. Este metodo no abre
-            transaccion, asi que el orden importa: despues del save() ya no hay vuelta atras.
+            cuenta trabajando con listas = 422 ANTES de escribir nada. Desde la tanda 2 de la
+            mision (18/9/2026, item A1) este metodo corre en una transaccion, pero el 422 sigue
+            yendo antes de abrirla: es una respuesta, no un fallo que haya que revertir.
         */
         $actualizar_price_type_id = $request->exists('price_type_id');
 
@@ -301,106 +330,156 @@ class BudgetController extends Controller
         }
 
         /*
-            Se lee el estado GUARDADO antes de pisarlo con el del request: es lo que despues permite
-            saber si el estado cambio de verdad en este update.
+            🔴 TODO LO QUE SIGUE ES UNA SOLA TRANSACCION (tanda 2 de la mision
+            vender-lista-obligatoria, 18/9/2026, item A1). Hasta hoy este metodo era el unico de la
+            clase sin `DB::beginTransaction()` ni try/catch: store(), duplicate(), confirmar() y
+            anular() envuelven todo. Y el orden de adentro lo hacia peligroso: el `save()` de los
+            campos y el detach TOTAL de los articulos (`BudgetHelper::attachArticles()` empieza por
+            `detach()`) van ANTES de `attachArticles()`, `attachCombos()` y `checkStatus()`. Un
+            fallo en cualquiera de esos tres —un renglon mal formado, un `budget_status_id` que no
+            existe y deja `$budget->budget_status` en null— respondia 500 con el `total` ya
+            cambiado y el presupuesto SIN RENGLONES, o con los renglones a medias. El vendedor veia
+            un error y, si volvia a abrir el presupuesto, lo encontraba vacio.
+
+            Los 404 y 422 de arriba quedan afuera a proposito: no escriben nada y no tienen que
+            abrir ni cerrar nada. El orden de lo de adentro NO se cambia; solo se lo hace atomico.
+            Mismo estilo que store(): `report()` a mano porque el reporter global solo corre para
+            excepciones no manejadas.
         */
-        $estado_anterior = $model->budget_status_id;
+        DB::beginTransaction();
 
-        $model->client_id                 = $request->client_id;
-        $model->start_at                  = $request->start_at;
-        $model->finish_at                 = $request->finish_at;
-        $model->observations              = $request->observations;
-        $model->total                     = $request->total;
-        /*
-            El monto del total forzado, asignado PELADO y junto a `total` (mision
-            forzar-total-por-monto, 17/9/2026).
+        try {
 
-            🔴 Sin guarda de `$request->exists()`, al reves que `aplicar_recargos_directo_a_items`
-            cinco lineas mas abajo, y por el mismo motivo que en `SaleController::update()`: el
-            monto esta definido CONTRA el total de la linea de arriba, que se asigna pelado. Los dos
-            se escriben juntos o el presupuesto queda con un total sin forzar y un monto de forzado
-            viejo colgando, y en ese estado `BudgetHelper::getTotal()` suma el monto de mas y el
-            proximo guardado muere con "El total del presupuesto no corresponde con los productos
-            ingresados".
+            /*
+                Se lee el estado GUARDADO antes de pisarlo con el del request: es lo que despues permite
+                saber si el estado cambio de verdad en este update.
+            */
+            $estado_anterior = $model->budget_status_id;
 
-            ⚠️ Adentro de la guarda de esquema por el mismo motivo que el alta: entre que el deploy
-            sube los archivos y corre las migraciones, la columna puede no existir y esta asignacion
-            tumbaria la actualizacion de cualquier presupuesto. Ver `ForzarTotalEsquemaHelper`.
-        */
-        if (ForzarTotalEsquemaHelper::hay_columna_en_budgets()) {
-            $model->forzar_total_monto    = SaleHelper::normalized_forzar_total_monto($request);
-        }
-        $model->budget_status_id          = $request->budget_status_id;
-        $model->address_id                = $request->address_id;
-        // Misma guarda que en SaleController::update(): sin la clave, la lista guardada no se toca.
-        if ($actualizar_price_type_id) {
-            $model->price_type_id         = $price_type_id_nuevo;
-        }
-        // $model->omitir_en_cuenta_corriente                = $request->omitir_en_cuenta_corriente;
+            $model->client_id                 = $request->client_id;
+            $model->start_at                  = $request->start_at;
+            $model->finish_at                 = $request->finish_at;
+            $model->observations              = $request->observations;
+            $model->total                     = $request->total;
+            /*
+                El monto del total forzado, asignado PELADO y junto a `total` (mision
+                forzar-total-por-monto, 17/9/2026).
 
-        $model->surchages_in_services     = $request->surchages_in_services;
-        $model->discounts_in_services     = $request->discounts_in_services;
-        /*
-            Se PRESERVA el valor guardado si el request no trae el campo, igual que `discount_stock`
-            e `iva_aplicado` dos lineas mas abajo, y a diferencia de `SaleController::update()`, que
-            lo asigna pelado.
+                🔴 Sin guarda de `$request->exists()`, al reves que `aplicar_recargos_directo_a_items`
+                cinco lineas mas abajo, y por el mismo motivo que en `SaleController::update()`: el
+                monto esta definido CONTRA el total de la linea de arriba, que se asigna pelado. Los dos
+                se escriben juntos o el presupuesto queda con un total sin forzar y un monto de forzado
+                viejo colgando, y en ese estado `BudgetHelper::getTotal()` suma el monto de mas y el
+                proximo guardado muere con "El total del presupuesto no corresponde con los productos
+                ingresados".
 
-            El motivo es la SPA VIEJA, no la actual: `vender_presupuestos.js::actualizar()` SI manda
-            este campo desde esta misma tanda, pero la api y la spa no llegan juntas a produccion y
-            entre un despliegue y el otro hay una ventana con la spa anterior, que no lo manda.
+                ⚠️ Adentro de la guarda de esquema por el mismo motivo que el alta: entre que el deploy
+                sube los archivos y corre las migraciones, la columna puede no existir y esta asignacion
+                tumbaria la actualizacion de cualquier presupuesto. Ver `ForzarTotalEsquemaHelper`.
+            */
+            if (ForzarTotalEsquemaHelper::hay_columna_en_budgets()) {
+                $model->forzar_total_monto    = SaleHelper::normalized_forzar_total_monto($request);
+            }
+            $model->budget_status_id          = $request->budget_status_id;
+            $model->address_id                = $request->address_id;
+            // Misma guarda que en SaleController::update(): sin la clave, la lista guardada no se toca.
+            if ($actualizar_price_type_id) {
+                $model->price_type_id         = $price_type_id_nuevo;
+            }
+            /*
+                "Omitir en cuenta corriente" en la edicion (tanda 2, 18/9/2026, item A4): SOLO si el
+                request manda la clave, con el mismo `exists()` que `SaleController::update()` usa para
+                este mismo campo y por el mismo motivo (San Cayetano): el form generico del modulo
+                Presupuestos y una SPA vieja pueden no mandarla, y a secas la dejarian en 0 —la venta
+                que nace al confirmar volveria a la cuenta corriente sin que nadie lo pidiera—. Clave
+                presente, tambien en null, se asigna normalizada a 0/1 (columna NOT NULL).
+            */
+            if ($request->exists('omitir_en_cuenta_corriente')) {
+                $model->omitir_en_cuenta_corriente = $request->omitir_en_cuenta_corriente ? 1 : 0;
+            }
 
-            Con una asignacion pelada --como la de `SaleController::update()`-- ese PUT dejaria el
-            flag en null con los precios del pivot todavia recargados. Y no falla ahi, que es lo
-            peligroso: `update()` no valida el total como `store()`, asi que el presupuesto se
-            guarda mal y recien al confirmarlo la venta nace inflada el porcentaje del recargo.
-        */
-        $model->aplicar_recargos_directo_a_items = !is_null($request->aplicar_recargos_directo_a_items)
-                                                    ? $request->aplicar_recargos_directo_a_items
-                                                    : $model->aplicar_recargos_directo_a_items;
-        $model->moneda_id                 = $request->moneda_id;
-        $model->sale_status_id            = $request->sale_status_id;
-        $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
-        $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
+            $model->surchages_in_services     = $request->surchages_in_services;
+            $model->discounts_in_services     = $request->discounts_in_services;
+            /*
+                Se PRESERVA el valor guardado si el request no trae el campo, igual que `discount_stock`
+                e `iva_aplicado` dos lineas mas abajo, y a diferencia de `SaleController::update()`, que
+                lo asigna pelado.
 
-        $model->save();
-        GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
-        GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
+                El motivo es la SPA VIEJA, no la actual: `vender_presupuestos.js::actualizar()` SI manda
+                este campo desde esta misma tanda, pero la api y la spa no llegan juntas a produccion y
+                entre un despliegue y el otro hay una ventana con la spa anterior, que no lo manda.
+
+                Con una asignacion pelada --como la de `SaleController::update()`-- ese PUT dejaria el
+                flag en null con los precios del pivot todavia recargados. Y no falla ahi, que es lo
+                peligroso: `update()` no valida el total como `store()`, asi que el presupuesto se
+                guarda mal y recien al confirmarlo la venta nace inflada el porcentaje del recargo.
+            */
+            $model->aplicar_recargos_directo_a_items = !is_null($request->aplicar_recargos_directo_a_items)
+                                                        ? $request->aplicar_recargos_directo_a_items
+                                                        : $model->aplicar_recargos_directo_a_items;
+            // Sin la clave se preserva la guardada (columna NOT NULL): mismo motivo que el default 1 de store().
+            $model->moneda_id                 = !is_null($request->moneda_id) ? $request->moneda_id : $model->moneda_id;
+            $model->sale_status_id            = $request->sale_status_id;
+            $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
+            $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
+
+            $model->save();
+            GeneralHelper::attachModels($model, 'discounts', $request->discounts, ['percentage'], false);
+            GeneralHelper::attachModels($model, 'surchages', $request->surchages, ['percentage'], false);
         
-        $previus_articles = $model->articles;
+            $previus_articles = $model->articles;
 
-        BudgetHelper::attachArticles($model, $request->articles, true);
-        BudgetHelper::attachServices($model, $request->services);
-        BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
-        /*
-            Va DESPUES de los otros tres y antes de `checkStatus()`: si este update confirma el
-            presupuesto, `checkStatus()` crea la venta leyendo `$budget->combos` de la base, asi que
-            los combos ya tienen que estar adjuntados.
-        */
-        BudgetHelper::attachCombos($model, $request->combos);
+            BudgetHelper::attachArticles($model, $request->articles, true);
+            BudgetHelper::attachServices($model, $request->services);
+            BudgetHelper::attachPromocionVinotecas($model, $request->promocion_vinotecas);
+            /*
+                Va DESPUES de los otros tres y antes de `checkStatus()`: si este update confirma el
+                presupuesto, `checkStatus()` crea la venta leyendo `$budget->combos` de la base, asi que
+                los combos ya tienen que estar adjuntados.
+            */
+            BudgetHelper::attachCombos($model, $request->combos);
 
-        /*
-            🔴 checkStatus() SOLO si el estado cambio de verdad.
+            /*
+                🔴 checkStatus() SOLO si el estado cambio de verdad.
 
-            Hasta el 21/8/2026 esto se llamaba en cada update, y checkStatus() arranca siempre por
-            deleteCurrentAcount() + deleteSale() antes de mirar el estado. O sea que guardar un
-            presupuesto confirmado —aunque no se le tocara nada— borraba su venta y creaba una
-            nueva CON NUMERO NUEVO (saveSale usa $ct->num('sales')), devolviendo y volviendo a
-            descontar el stock y rehaciendo el movimiento de cuenta corriente.
+                Hasta el 21/8/2026 esto se llamaba en cada update, y checkStatus() arranca siempre por
+                deleteCurrentAcount() + deleteSale() antes de mirar el estado. O sea que guardar un
+                presupuesto confirmado —aunque no se le tocara nada— borraba su venta y creaba una
+                nueva CON NUMERO NUEVO (saveSale usa $ct->num('sales')), devolviendo y volviendo a
+                descontar el stock y rehaciendo el movimiento de cuenta corriente.
 
-            El guard del estado confirmado de mas arriba ya corta el caso peor. Esta condicion cubre
-            el resto: un update que no toca el estado no tiene por que pasar por el borrado.
+                El guard del estado confirmado de mas arriba ya corta el caso peor. Esta condicion cubre
+                el resto: un update que no toca el estado no tiene por que pasar por el borrado.
 
-            Por que condicional y no sacarlo del todo (decision de Lucas, 21/8/2026): asi una SPA
-            todavia no actualizada, que confirma cambiando el select y guardando, sigue creando la
-            venta igual. El orden de despliegue entre api y spa deja de importar.
-        */
-        if ($estado_anterior != $model->budget_status_id) {
+                Por que condicional y no sacarlo del todo (decision de Lucas, 21/8/2026): asi una SPA
+                todavia no actualizada, que confirma cambiando el select y guardando, sigue creando la
+                venta igual. El orden de despliegue entre api y spa deja de importar.
+            */
+            if ($estado_anterior != $model->budget_status_id) {
 
-            BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
+                BudgetHelper::checkStatus($this->fullModel('Budget', $model->id), $previus_articles);
+            }
+
+            DB::commit();
+
+            /*
+                La notificacion va DESPUES del commit, como en confirmar() y anular(): una
+                notificacion de un update que despues se revierte le anunciaria a la SPA un
+                presupuesto que no cambio.
+            */
+            $this->sendAddModelNotification('Budget', $model->id);
+            return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // report() a mano por el mismo motivo que en store(): el reporter global solo corre
+            // para excepciones NO manejadas, y esta la capturamos nosotros.
+            report($e);
+
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 500);
         }
-
-        $this->sendAddModelNotification('Budget', $model->id);
-        return response()->json(['model' => $this->fullModel('Budget', $model->id)], 200);
     }
 
     /**

@@ -1,0 +1,373 @@
+<?php
+
+namespace Tests\Feature\Presupuestos;
+
+use App\Models\Article;
+use App\Models\Budget;
+use App\Models\BudgetStatus;
+use App\Models\Client;
+use App\Models\CreditAccount;
+use App\Models\CurrentAcount;
+use App\Models\PriceType;
+use App\Models\Sale;
+use App\Models\User;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Tests\TestCase;
+
+/**
+ * Tanda 2 de la misión vender-lista-obligatoria (18/9/2026), ítem A4: "omitir en cuenta
+ * corriente" del presupuesto SE GUARDA, y la venta que nace al confirmarlo lo respeta.
+ *
+ * EL BUG: la SPA manda `omitir_en_cuenta_corriente` desde 2024 (`vender_presupuestos.js`), la
+ * columna existe desde marzo de 2026 y `BudgetHelper::saveSale()` la arrastra a la venta desde
+ * entonces, pero en `BudgetController::store()` y `update()` la asignación estaba COMENTADA:
+ * siempre llegaba el 0 del default, la venta nacida de un presupuesto nunca omitía la cuenta
+ * corriente aunque el vendedor lo hubiera tildado, y el cliente que pagó en el acto quedaba
+ * debiendo la venta entera.
+ *
+ * Lo que fijan estos tests: el alta guarda 1, 0 y (sin la clave) 0; confirmar un presupuesto
+ * omitido crea la venta con 1 y SIN movimiento de cuenta corriente; confirmar uno no omitido
+ * sigue creando el movimiento (no regresión); y el PUT preserva sin la clave y asigna con ella.
+ *
+ * DatabaseTransactions sobre la base sembrada del slot; `budget_statuses` se siembra en setUp
+ * (mismo cuidado que Presupuestos/1 y /5). La lista de precios viaja explícita en cada POST para
+ * que estos tests midan el omitir sin depender de cómo esté `users.listas_de_precio` en la base
+ * del slot.
+ *
+ * PHP 7.4: sin match, str_contains, ?->, argumentos nombrados ni union types.
+ */
+class Omitir_cuenta_corriente_Test extends TestCase
+{
+    use DatabaseTransactions;
+
+    /** Ids de `budget_statuses`, tabla global sembrada por `BudgetStatusSeeder`. */
+    const ESTADO_SIN_CONFIRMAR = 1;
+    const ESTADO_CONFIRMADO    = 2;
+
+    /** @var int Usuario del fixture de testing. */
+    const USER_ID = 500;
+
+    /** @var int Precio del renglón. */
+    const PRECIO = 100;
+
+    /** @var int Cantidad del renglón. */
+    const CANTIDAD = 2;
+
+    /** @var \App\Models\User */
+    protected $user;
+
+    /** @var \App\Models\PriceType */
+    protected $lista;
+
+    /** @var \App\Models\Article */
+    protected $article;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $estados = [
+            self::ESTADO_SIN_CONFIRMAR => 'Sin confirmar',
+            self::ESTADO_CONFIRMADO    => 'Confirmado',
+        ];
+
+        foreach ($estados as $id => $name) {
+
+            if (is_null(BudgetStatus::find($id))) {
+
+                $estado = new BudgetStatus();
+                $estado->id = $id;
+                $estado->name = $name;
+                $estado->save();
+            }
+        }
+
+        $this->user = User::find(self::USER_ID);
+
+        if (is_null($this->user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        $this->actingAs($this->user, 'web');
+
+        $this->lista = PriceType::create([
+            'name'     => 'zz Lista (presupuesto omitir cta cte)',
+            'user_id'  => self::USER_ID,
+            'position' => 5,
+        ]);
+
+        $this->article = Article::create([
+            'name'        => 'zz Articulo presupuesto omitir cta cte',
+            'user_id'     => self::USER_ID,
+            'final_price' => self::PRECIO,
+            'costo_real'  => 50,
+            'status'      => 'active',
+        ]);
+    }
+
+    /**
+     * Cliente propio del test, con su cuenta en pesos (confirmar crea la venta y
+     * `CurrentAcountFromSaleHelper` la usa sin chequear null cuando la venta entra a la cuenta).
+     *
+     * @return \App\Models\Client
+     */
+    protected function cliente()
+    {
+        $client = Client::create([
+            'name'    => 'zz Cliente presupuesto omitir '.uniqid(),
+            'user_id' => self::USER_ID,
+        ]);
+
+        CreditAccount::firstOrCreate(
+            ['model_name' => 'client', 'model_id' => $client->id, 'moneda_id' => 1],
+            ['saldo' => 0, 'user_id' => self::USER_ID]
+        );
+
+        return $client;
+    }
+
+    /**
+     * Payload de POST api/budget con un renglón (molde de Presupuestos/5), tal como lo manda
+     * `vender_presupuestos.js::crear()`. SIN `omitir_en_cuenta_corriente`: cada test decide.
+     *
+     * @param  \App\Models\Client  $client
+     * @param  array               $overrides
+     * @return array
+     */
+    protected function payload_crear($client, $overrides = [])
+    {
+        return array_merge([
+            'client_id'                        => $client->id,
+            'start_at'                         => null,
+            'finish_at'                        => null,
+            'observations'                     => null,
+            'price_type_id'                    => $this->lista->id,
+            'sale_status_id'                   => null,
+            'discount_stock'                   => 0,
+            'iva_aplicado'                     => 1,
+            'total'                            => self::PRECIO * self::CANTIDAD,
+            'budget_status_id'                 => self::ESTADO_SIN_CONFIRMAR,
+            'address_id'                       => null,
+            'surchages_in_services'            => 1,
+            'discounts_in_services'            => 1,
+            'aplicar_recargos_directo_a_items' => null,
+            'moneda_id'                        => 1,
+            'valor_dolar'                      => null,
+            'discounts'                        => [],
+            'surchages'                        => [],
+            'services'                         => [],
+            'promocion_vinotecas'              => [],
+            'articles'                         => [
+                [
+                    'id'                          => $this->article->id,
+                    'status'                      => $this->article->status,
+                    'cost_in_dollars'             => null,
+                    'name'                        => $this->article->name,
+                    'name_vender_personalizado'   => null,
+                    'amount'                      => self::CANTIDAD,
+                    'price'                       => self::PRECIO,
+                    'costo_real'                  => 50,
+                    'unidades_individuales'       => null,
+                    'presentacion'                => null,
+                    'price_type_personalizado_id' => null,
+                    'bonus'                       => null,
+                    'location'                    => null,
+                ],
+            ],
+        ], $overrides);
+    }
+
+    /**
+     * Payload mínimo y válido de PUT api/budget/{id} (molde de Presupuestos/5). SIN
+     * `omitir_en_cuenta_corriente` y sin `price_type_id` (se preservan): cada test decide.
+     *
+     * @param  \App\Models\Budget  $budget
+     * @param  array               $overrides
+     * @return array
+     */
+    protected function payload_actualizar($budget, $overrides = [])
+    {
+        return array_merge([
+            'client_id'             => $budget->client_id,
+            'start_at'              => null,
+            'finish_at'             => null,
+            'observations'          => 'actualizado por el test',
+            'total'                 => $budget->total,
+            'budget_status_id'      => $budget->budget_status_id,
+            'address_id'            => null,
+            'surchages_in_services' => 1,
+            'discounts_in_services' => 1,
+            'moneda_id'             => 1,
+            'sale_status_id'        => null,
+            'discount_stock'        => 0,
+            'iva_aplicado'          => 1,
+            'articles'              => [],
+            'services'              => [],
+            'promocion_vinotecas'   => [],
+            'discounts'             => [],
+            'surchages'             => [],
+        ], $overrides);
+    }
+
+    /**
+     * Presupuesto creado por el endpoint con el omitir que se pida.
+     *
+     * @param  \App\Models\Client  $client
+     * @param  mixed               $omitir
+     * @return \App\Models\Budget
+     */
+    protected function presupuesto_creado($client, $omitir)
+    {
+        $id = $this->postJson('api/budget', $this->payload_crear($client, [
+            'omitir_en_cuenta_corriente' => $omitir,
+        ]))->assertStatus(201)->json('model.id');
+
+        return Budget::find($id);
+    }
+
+    /**
+     * 🔴 EL CASO DEL BUG: el alta con el omitir tildado lo guarda. Antes quedaba el 0 del default.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_alta_con_omitir_en_uno_lo_guarda()
+    {
+        $budget = $this->presupuesto_creado($this->cliente(), 1);
+
+        $this->assertSame(1, (int) $budget->omitir_en_cuenta_corriente, 'El alta tiene que guardar el omitir que manda la SPA.');
+    }
+
+    /**
+     * Con 0 queda 0, y sin la clave (una SPA que no la manda) también 0, que es el default del
+     * store de VENDER y de la columna.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_alta_con_cero_o_sin_la_clave_guarda_cero()
+    {
+        $con_cero = $this->presupuesto_creado($this->cliente(), 0);
+
+        $this->assertSame(0, (int) $con_cero->omitir_en_cuenta_corriente);
+
+        $sin_clave_id = $this->postJson('api/budget', $this->payload_crear($this->cliente()))->assertStatus(201)->json('model.id');
+
+        $this->assertSame(0, (int) Budget::find($sin_clave_id)->omitir_en_cuenta_corriente, 'Sin la clave, 0: la columna es NOT NULL y "no omitir" es el default.');
+    }
+
+    /**
+     * 🔴 Confirmar un presupuesto omitido: el presupuesto CONSERVA su tilde, pero la venta que nace
+     * va a la cuenta corriente igual (omitir en 0, con su movimiento), como siempre fue.
+     *
+     * Por qué no se honra el tilde al confirmar (decisión de la tanda 2, 18/9/2026): la
+     * confirmación desde el listado (`POST api/budget/{id}/confirmar`) no trae ningún dato de
+     * cobro, y el presupuesto tampoco lo tiene. Una venta de contado SIN método de pago ni
+     * movimiento de caja es exactamente el estado que `SaleController::store()` rechaza con 422
+     * (`sin_metodo_de_pago`): la plata no queda registrada en ningún lado. Contra eso, la deuda en
+     * la cuenta corriente es el mal menor: el cobro se registra después como pago. Para honrar el
+     * tilde hace falta que la confirmación pida el método de pago (o que la venta guardada desde
+     * VENDER con el presupuesto cargado quede ligada a él), y eso es una decisión de producto que
+     * el informe le deja a Lucas. Si se toma, este test cambia junto con `BudgetHelper::saveSale()`.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function confirmar_un_presupuesto_omitido_lo_manda_igual_a_la_cuenta_corriente_porque_no_hay_cobro()
+    {
+        $client = $this->cliente();
+
+        $budget = $this->presupuesto_creado($client, 1);
+
+        $movimientos_antes = CurrentAcount::where('client_id', $client->id)->count();
+
+        $this->post('api/budget/'.$budget->id.'/confirmar')->assertStatus(200);
+
+        $sale = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertNotNull($sale, 'Confirmar tiene que haber creado la venta.');
+        $this->assertSame(1, (int) Budget::find($budget->id)->omitir_en_cuenta_corriente, 'El presupuesto conserva el tilde del vendedor.');
+        $this->assertSame(0, (int) $sale->omitir_en_cuenta_corriente, 'Sin datos de cobro, la venta confirmada no puede nacer omitida: iría cobrada sin método ni caja.');
+        $this->assertTrue(
+            CurrentAcount::where('sale_id', $sale->id)->exists(),
+            'La venta confirmada deja su movimiento en la cuenta corriente, como siempre.'
+        );
+        $this->assertEquals(
+            $movimientos_antes + 1,
+            CurrentAcount::where('client_id', $client->id)->count(),
+            'La cuenta corriente del cliente tiene un movimiento más: la venta.'
+        );
+        $this->assertSame(
+            0,
+            $sale->current_acount_payment_methods()->count(),
+            'Y no se inventa ningún método de pago: el cobro se registra después, como pago de la cuenta.'
+        );
+    }
+
+    /**
+     * NO REGRESIÓN: confirmar un presupuesto no omitido sigue creando la venta a la cuenta
+     * corriente, con su movimiento.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function confirmar_un_presupuesto_no_omitido_sigue_creando_el_movimiento_de_cuenta_corriente()
+    {
+        $client = $this->cliente();
+
+        $budget = $this->presupuesto_creado($client, 0);
+
+        $this->post('api/budget/'.$budget->id.'/confirmar')->assertStatus(200);
+
+        $sale = Sale::where('budget_id', $budget->id)->first();
+
+        $this->assertNotNull($sale);
+        $this->assertSame(0, (int) $sale->omitir_en_cuenta_corriente);
+        $this->assertTrue(
+            CurrentAcount::where('sale_id', $sale->id)->exists(),
+            'Una venta no omitida entra a la cuenta corriente, como siempre.'
+        );
+    }
+
+    /**
+     * 🔴 PUT SIN la clave (el form genérico del módulo Presupuestos y una SPA vieja): se preserva
+     * el 1 guardado. A secas, el presupuesto volvería a 0 y la venta a la cuenta corriente sin que
+     * nadie lo pidiera.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function put_sin_la_clave_preserva_el_omitir_guardado()
+    {
+        $budget = $this->presupuesto_creado($this->cliente(), 1);
+
+        $this->putJson('api/budget/'.$budget->id, $this->payload_actualizar($budget))->assertStatus(200);
+
+        $this->assertSame(1, (int) Budget::find($budget->id)->omitir_en_cuenta_corriente, 'Un PUT sin la clave pisó el omitir.');
+    }
+
+    /**
+     * PUT con la clave: se asigna, también a 0 y con null explícito (que es "no omitir").
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function put_con_la_clave_la_asigna()
+    {
+        $budget = $this->presupuesto_creado($this->cliente(), 0);
+
+        $this->putJson('api/budget/'.$budget->id, $this->payload_actualizar($budget, ['omitir_en_cuenta_corriente' => 1]))->assertStatus(200);
+
+        $this->assertSame(1, (int) Budget::find($budget->id)->omitir_en_cuenta_corriente);
+
+        $this->putJson('api/budget/'.$budget->id, $this->payload_actualizar($budget, ['omitir_en_cuenta_corriente' => 0]))->assertStatus(200);
+
+        $this->assertSame(0, (int) Budget::find($budget->id)->omitir_en_cuenta_corriente);
+
+        $this->putJson('api/budget/'.$budget->id, $this->payload_actualizar($budget, ['omitir_en_cuenta_corriente' => 1]))->assertStatus(200);
+
+        $this->putJson('api/budget/'.$budget->id, $this->payload_actualizar($budget, ['omitir_en_cuenta_corriente' => null]))->assertStatus(200);
+
+        $this->assertSame(0, (int) Budget::find($budget->id)->omitir_en_cuenta_corriente, 'Null explícito es "no omitir", y la columna NOT NULL no puede recibir null.');
+    }
+}

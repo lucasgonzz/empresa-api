@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Models\Buyer;
 use App\Models\Client;
 use App\Models\Location;
@@ -66,7 +67,14 @@ class ProcessArchivoDeIntercambioClientes implements ShouldQueue
                     'location_id'           => $location_id,
                     'phone'                 => $this->convert_to_utf8($data[4]),
                     'cuit'                  => $data[11],
-                    'price_type_id'         => (float)$data[13],
+                    /*
+                     * Normalizado con el mismo helper que la venta y el presupuesto (tanda 2 de
+                     * la mision vender-lista-obligatoria, 18/9/2026, item A2): hasta hoy era
+                     * `(float)$data[13]`, que con la columna vacia del archivo daba 0.0 y dejaba
+                     * al cliente con `price_type_id = 0`, un 0 que despues el rescate de la lista
+                     * copiaba a la venta. Columna vacia = ninguna lista = null.
+                     */
+                    'price_type_id'         => PriceTypeHelper::normalizar_price_type_id(trim((string) $data[13])),
                 ];
 
                 $client_ya_creado = $this->cliente_registrado($client);
