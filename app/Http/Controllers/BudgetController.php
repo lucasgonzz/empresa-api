@@ -108,7 +108,21 @@ class BudgetController extends Controller
                 'aplicar_recargos_directo_a_items' => $request->aplicar_recargos_directo_a_items,
                 'moneda_id'                 => $request->moneda_id,
                 'valor_dolar'               => $request->valor_dolar,
-                // 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
+                /*
+                 * "Omitir en cuenta corriente" SE GUARDA (tanda 2 de la mision
+                 * vender-lista-obligatoria, 18/9/2026, item A4). La SPA lo manda desde 2024
+                 * (`vender_presupuestos.js`), la columna existe desde marzo de 2026
+                 * (`2026_03_17_182325_add_omitir_to_budgets`) y `BudgetHelper::saveSale()` lo
+                 * arrastra a la venta desde entonces —pero esta linea estaba comentada, asi que
+                 * siempre arrastraba el 0 del default: la venta nacida de un presupuesto NUNCA
+                 * omitia la cuenta corriente, aunque el vendedor lo hubiera tildado, y el cliente
+                 * que pago en el acto quedaba debiendo la venta entera.
+                 *
+                 * Pelado a proposito (la SPA lo manda siempre) y normalizado a 0/1: la columna es
+                 * NOT NULL con default 0, y un null explicito del request la tumbaria en modo
+                 * estricto. Sin la clave, 0: "no omitir" es el default del store de VENDER.
+                 */
+                'omitir_en_cuenta_corriente' => $request->omitir_en_cuenta_corriente ? 1 : 0,
                 'employee_id'               => $this->userId(false),
                 'user_id'                   => $this->userId(),
             /*
@@ -336,7 +350,17 @@ class BudgetController extends Controller
         if ($actualizar_price_type_id) {
             $model->price_type_id         = $price_type_id_nuevo;
         }
-        // $model->omitir_en_cuenta_corriente                = $request->omitir_en_cuenta_corriente;
+        /*
+            "Omitir en cuenta corriente" en la edicion (tanda 2, 18/9/2026, item A4): SOLO si el
+            request manda la clave, con el mismo `exists()` que `SaleController::update()` usa para
+            este mismo campo y por el mismo motivo (San Cayetano): el form generico del modulo
+            Presupuestos y una SPA vieja pueden no mandarla, y a secas la dejarian en 0 —la venta
+            que nace al confirmar volveria a la cuenta corriente sin que nadie lo pidiera—. Clave
+            presente, tambien en null, se asigna normalizada a 0/1 (columna NOT NULL).
+        */
+        if ($request->exists('omitir_en_cuenta_corriente')) {
+            $model->omitir_en_cuenta_corriente = $request->omitir_en_cuenta_corriente ? 1 : 0;
+        }
 
         $model->surchages_in_services     = $request->surchages_in_services;
         $model->discounts_in_services     = $request->discounts_in_services;

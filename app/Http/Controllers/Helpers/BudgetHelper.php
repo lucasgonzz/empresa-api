@@ -72,6 +72,16 @@ class BudgetHelper {
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
+	            /*
+	             * Se arrastra tal cual, y desde la tanda 2 de la mision vender-lista-obligatoria
+	             * (18/9/2026, item A4) el presupuesto lo tiene guardado de verdad: hasta entonces
+	             * `BudgetController` no lo persistia y aca llegaba siempre el 0 del default, asi que
+	             * la venta nunca omitia la cuenta corriente aunque el vendedor lo hubiera tildado.
+	             * Quien lo respeta es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
+	             * (`save_current_acount && !omitir_en_cuenta_corriente`), que lee
+	             * `create_current_acount()` mas abajo: `get_guardar_cuenta_corriente()` decide solo
+	             * `save_current_acount`, y con el omitir en 1 la venta no entra a la cuenta.
+	             */
                 'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
 	        /*
 	         * El monto del total forzado viaja del presupuesto a la venta (mision
