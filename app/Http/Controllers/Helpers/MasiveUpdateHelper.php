@@ -232,6 +232,10 @@ class MasiveUpdateHelper
         $user_del_comercio = $model_name == 'article' ? User::find($masive_update->user_id) : null;
 
         foreach ($models as $model) {
+            // Se cuenta ANTES del continue: un modelo nulo también es un registro recorrido, y
+            // si no la barra quedaba por debajo del total hasta que completar() la corrigiera.
+            $recorridos++;
+
             if (!$model) {
                 continue;
             }
@@ -318,8 +322,6 @@ class MasiveUpdateHelper
              * más. El broadcast lo regula el helper. Los números parciales viajan para que el
              * detalle del modal ya muestre algo mientras corre.
              */
-            $recorridos++;
-
             if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
                 BackgroundProcessHelper::avanzar($proceso, $recorridos, [
                     'resultado' => ['afectados' => $affected_count, 'cambios' => $changes_count],
@@ -774,6 +776,8 @@ class MasiveUpdateHelper
         $recorridos = 0;
 
         foreach ($parent_masive_update->articles as $article) {
+            // Se cuenta antes de cualquier continue: un pivot ilegible o un artículo borrado
+            // también son registros recorridos para la barra.
             $recorridos++;
 
             if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {

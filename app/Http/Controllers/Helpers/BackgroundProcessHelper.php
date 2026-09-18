@@ -189,6 +189,14 @@ class BackgroundProcessHelper
                 $proceso->procesados = (int) DB::table('background_processes')
                     ->where('id', $proceso->id)
                     ->value('procesados');
+
+                /*
+                 * 🔴 Y se lo declara "limpio": si quedara dirty, el save() de aplicar_avance()
+                 * lo volvería a escribir con el valor leído, y otro worker que incrementó en
+                 * el medio vería su +1 retrocedido (la barra iba 50 → 100 → 50). El UPDATE
+                 * atómico de arriba es la única escritura del contador desde este método.
+                 */
+                $proceso->syncOriginalAttribute('procesados');
             }
 
             $cambios = self::cambios_de_avance($proceso, $opciones);

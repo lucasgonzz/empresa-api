@@ -315,5 +315,26 @@ class FinalizeArticleImport implements ShouldQueue
             null,
             array()
         );
+
+        /*
+         * El registro visible se cierra ACÁ además de en el handler, porque a esta altura el
+         * handler no llega: ImportFailureHandler::registrar() sale temprano cuando el history
+         * ya está en `terminado`, y el último chunk lo deja así antes de que este job exista.
+         * Sin esto, un finalizador muerto dejaba la píldora en "Lote N de N · 100 %" hasta que
+         * el listado lo diera por colgado tres horas después — y como fallo, encima. Mismo
+         * parche que ProcessProviderOrderArticleImport::marcar_fallo() para compras.
+         */
+        try {
+            $import_status = ImportStatus::find($this->import_status_id);
+
+            if (!is_null($import_status)) {
+                BackgroundProcessHelper::fallar(
+                    BackgroundProcessHelper::por_referencia($import_status),
+                    'La importación procesó todos los lotes pero no se pudo cerrar: ' . (!is_null($e) ? $e->getMessage() : 'el finalizador se interrumpió sin dejar traza.')
+                );
+            }
+        } catch (\Throwable $otro) {
+            Log::warning('FinalizeArticleImport::failed: no se pudo cerrar el registro visible: ' . $otro->getMessage());
+        }
     }
 }
