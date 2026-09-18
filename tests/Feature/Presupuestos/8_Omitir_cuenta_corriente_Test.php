@@ -257,14 +257,23 @@ class Omitir_cuenta_corriente_Test extends TestCase
     }
 
     /**
-     * 🔴 Confirmar un presupuesto omitido: la venta nace con `omitir_en_cuenta_corriente = 1` y NO
-     * crea movimiento de cuenta corriente para ese cliente. Es lo que el vendedor pidió al
-     * tildarlo y lo que hasta hoy nunca pasaba.
+     * 🔴 Confirmar un presupuesto omitido: el presupuesto CONSERVA su tilde, pero la venta que nace
+     * va a la cuenta corriente igual (omitir en 0, con su movimiento), como siempre fue.
+     *
+     * Por qué no se honra el tilde al confirmar (decisión de la tanda 2, 18/9/2026): la
+     * confirmación desde el listado (`POST api/budget/{id}/confirmar`) no trae ningún dato de
+     * cobro, y el presupuesto tampoco lo tiene. Una venta de contado SIN método de pago ni
+     * movimiento de caja es exactamente el estado que `SaleController::store()` rechaza con 422
+     * (`sin_metodo_de_pago`): la plata no queda registrada en ningún lado. Contra eso, la deuda en
+     * la cuenta corriente es el mal menor: el cobro se registra después como pago. Para honrar el
+     * tilde hace falta que la confirmación pida el método de pago (o que la venta guardada desde
+     * VENDER con el presupuesto cargado quede ligada a él), y eso es una decisión de producto que
+     * el informe le deja a Lucas. Si se toma, este test cambia junto con `BudgetHelper::saveSale()`.
      *
      * @group presupuestos
      * @test
      */
-    public function confirmar_un_presupuesto_omitido_crea_la_venta_omitida_y_sin_cuenta_corriente()
+    public function confirmar_un_presupuesto_omitido_lo_manda_igual_a_la_cuenta_corriente_porque_no_hay_cobro()
     {
         $client = $this->cliente();
 
@@ -277,15 +286,21 @@ class Omitir_cuenta_corriente_Test extends TestCase
         $sale = Sale::where('budget_id', $budget->id)->first();
 
         $this->assertNotNull($sale, 'Confirmar tiene que haber creado la venta.');
-        $this->assertSame(1, (int) $sale->omitir_en_cuenta_corriente, 'La venta se lleva el omitir del presupuesto.');
-        $this->assertFalse(
+        $this->assertSame(1, (int) Budget::find($budget->id)->omitir_en_cuenta_corriente, 'El presupuesto conserva el tilde del vendedor.');
+        $this->assertSame(0, (int) $sale->omitir_en_cuenta_corriente, 'Sin datos de cobro, la venta confirmada no puede nacer omitida: iría cobrada sin método ni caja.');
+        $this->assertTrue(
             CurrentAcount::where('sale_id', $sale->id)->exists(),
-            'Una venta omitida no puede dejar movimiento en la cuenta corriente.'
+            'La venta confirmada deja su movimiento en la cuenta corriente, como siempre.'
         );
         $this->assertEquals(
-            $movimientos_antes,
+            $movimientos_antes + 1,
             CurrentAcount::where('client_id', $client->id)->count(),
-            'La cuenta corriente del cliente tiene que quedar como estaba.'
+            'La cuenta corriente del cliente tiene un movimiento más: la venta.'
+        );
+        $this->assertSame(
+            0,
+            $sale->current_acount_payment_methods()->count(),
+            'Y no se inventa ningún método de pago: el cobro se registra después, como pago de la cuenta.'
         );
     }
 

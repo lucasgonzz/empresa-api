@@ -101,16 +101,29 @@ class BudgetHelper {
 	            'terminada'				=> SaleHelper::get_terminada($to_check, null),
 	            'terminada_at'			=> SaleHelper::get_terminada_at($to_check, null),
 	            /*
-	             * Se arrastra tal cual, y desde la tanda 2 de la mision vender-lista-obligatoria
-	             * (18/9/2026, item A4) el presupuesto lo tiene guardado de verdad: hasta entonces
-	             * `BudgetController` no lo persistia y aca llegaba siempre el 0 del default, asi que
-	             * la venta nunca omitia la cuenta corriente aunque el vendedor lo hubiera tildado.
-	             * Quien lo respeta es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
-	             * (`save_current_acount && !omitir_en_cuenta_corriente`), que lee
-	             * `create_current_acount()` mas abajo: `get_guardar_cuenta_corriente()` decide solo
-	             * `save_current_acount`, y con el omitir en 1 la venta no entra a la cuenta.
+	             * 🔴 NO se arrastra el `omitir_en_cuenta_corriente` del presupuesto, a proposito.
+	             *
+	             * Desde la tanda 2 de la mision vender-lista-obligatoria (18/9/2026, item A4) el
+	             * presupuesto lo tiene guardado de verdad (`BudgetController` lo persiste; hasta
+	             * entonces llegaba siempre el 0 del default). Pero la confirmacion desde el listado
+	             * (`POST api/budget/{id}/confirmar`) no trae ningun dato de cobro y el presupuesto
+	             * tampoco lo tiene: si la venta naciera omitida, seria una venta de contado SIN metodo
+	             * de pago ni movimiento de caja --justo el estado que `SaleController::store()` rechaza
+	             * con el 422 `sin_metodo_de_pago`-- y la plata no quedaria registrada en ningun lado.
+	             * Contra eso, la deuda en la cuenta corriente es el mal menor: el cobro se registra
+	             * despues como pago, y es como funciono siempre.
+	             *
+	             * Honrar el tilde al confirmar necesita que la confirmacion pida el metodo de pago (o
+	             * que la venta guardada desde VENDER con el presupuesto cargado quede ligada a el, cosa
+	             * que hoy no pasa: el POST de Vender no manda budget_id). Es una decision de producto
+	             * que el informe de la mision le deja a Lucas; si se toma, esto cambia junto con el
+	             * test `Presupuestos/8_Omitir_cuenta_corriente_Test`.
+	             *
+	             * Quien lee este campo es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
+	             * (`save_current_acount && !omitir_en_cuenta_corriente`), desde `create_current_acount()`
+	             * mas abajo: `get_guardar_cuenta_corriente()` decide solo `save_current_acount`.
 	             */
-                'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
+                'omitir_en_cuenta_corriente'        => 0,
 	        /*
 	         * El monto del total forzado viaja del presupuesto a la venta (mision
 	         * forzar-total-por-monto, 17/9/2026).
