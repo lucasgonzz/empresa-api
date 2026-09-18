@@ -1010,29 +1010,56 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * El vendedor de una venta que entra por VENDER: el del request, o el del cliente, o el del
+     * empleado que vende, o ninguno (0). Firma intacta; la regla vive en `get_seller_id_desde()`
+     * para que la venta nacida de un presupuesto (`BudgetHelper::saveSale()`) resuelva el vendedor
+     * con EXACTAMENTE el mismo criterio sin tener que fabricar un Request.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int  Id del vendedor, o 0.
+     */
     static function get_seller_id($request) {
-        if (isset($request->seller_id)
-            && !is_null($request->seller_id)
-            && $request->seller_id != 0) {
 
-            return $request->seller_id;
+        return Self::get_seller_id_desde($request->seller_id, $request->client_id, Self::getEmployeeId($request));
+    }
+
+    /**
+     * La regla del vendedor, sin request (tanda 2 de la mision vender-lista-obligatoria,
+     * 18/9/2026, item A3): primero el vendedor elegido (si es un id real), despues el del cliente,
+     * despues el del empleado que vende, y si no hay ninguno, 0 (que es lo que esta columna
+     * siempre uso como "sin vendedor" en el alta; `ComisionesHelper` trata 0 y null igual).
+     *
+     * Un `client_id` que no existe se saltea en vez de reventar: hasta hoy `Client::find()` sin
+     * guarda tiraba "Trying to get property 'seller_id' of null" y se llevaba puesta el alta.
+     *
+     * @param  mixed     $seller_id_elegido  El `seller_id` del request (null o 0 = no eligio).
+     * @param  int|null  $client_id
+     * @param  int|null  $employee_id        El empleado que vende (null = el dueno).
+     * @return int
+     */
+    static function get_seller_id_desde($seller_id_elegido, $client_id, $employee_id) {
+
+        if (!is_null($seller_id_elegido) && $seller_id_elegido != 0) {
+
+            return $seller_id_elegido;
         }
 
-        if (!is_null($request->client_id)) {
+        if (!is_null($client_id)) {
 
-            $client = Client::find($request->client_id);
+            $client = Client::find($client_id);
 
-            if (!is_null($client->seller_id)) {
+            if (!is_null($client) && !is_null($client->seller_id)) {
 
                 return $client->seller_id;
             }
         }
 
-        $employee_id = Self::getEmployeeId($request);
-        if (Self::getEmployeeId($request)) {
+        if ($employee_id) {
 
             $employee = User::find($employee_id);
-            if ($employee->seller_id) {
+
+            if (!is_null($employee) && $employee->seller_id) {
                 Log::info('retornando seller_id en base al empleado '.$employee->name);
                 return $employee->seller_id;
             }

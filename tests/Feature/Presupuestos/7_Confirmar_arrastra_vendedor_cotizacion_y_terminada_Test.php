@@ -3,14 +3,20 @@
 namespace Tests\Feature\Presupuestos;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\Article;
 use App\Models\Budget;
 use App\Models\BudgetStatus;
 use App\Models\Client;
+use App\Models\ExtencionEmpresa;
 use App\Models\PriceType;
 use App\Models\Sale;
+use App\Models\Seller;
+use App\Models\SellerCommission;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 /**
@@ -200,6 +206,198 @@ class Confirmar_arrastra_vendedor_cotizacion_y_terminada_Test extends TestCase
         $this->assertNotNull($sale, 'Confirmar tiene que haber creado la venta.');
 
         return $sale;
+    }
+
+    /**
+     * Un vendedor del usuario 500 con comisión del 10 %, que se cobra en el acto
+     * (`commission_after_pay_sale = 0`) para que la comisión nazca activa sin depender de la
+     * cuenta corriente.
+     *
+     * @return \App\Models\Seller
+     */
+    protected function vendedor()
+    {
+        return Seller::create([
+            'num'                       => 999001,
+            'name'                      => 'zz Vendedor confirmar arrastra '.uniqid(),
+            'user_id'                   => self::USER_ID,
+            'percentage_commission'     => 10,
+            'commission_after_pay_sale' => 0,
+            'commission_with_iva'       => 1,
+        ]);
+    }
+
+    /**
+     * Le da a la cuenta la extensión `check_sales` (ventas que pasan por depósito antes de
+     * terminarse). forceCreate porque el modelo no declara $fillable; DatabaseTransactions lo
+     * revierte.
+     *
+     * @return void
+     */
+    protected function dar_extension_check_sales()
+    {
+        $extencion = ExtencionEmpresa::where('slug', 'check_sales')->first();
+
+        if (is_null($extencion)) {
+
+            $extencion = ExtencionEmpresa::forceCreate([
+                'slug' => 'check_sales',
+                'name' => 'Chequear ventas',
+            ]);
+        }
+
+        if (!$this->user->extencions()->where('extencion_empresas.id', $extencion->id)->exists()) {
+            $this->user->extencions()->attach($extencion->id);
+        }
+    }
+
+    /**
+     * 🔴 A3, EL VENDEDOR: presupuesto de un cliente con vendedor asignado → la venta nace con ese
+     * `seller_id` y con su comisión en `seller_commissions`, exactamente como una venta de VENDER
+     * para el mismo cliente. Hasta hoy `saveSale()` no escribía el vendedor ni creaba la comisión:
+     * ferretotal, donde el presupuesto es el camino dominante, no comisionaba ninguna de esas ventas.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function la_venta_nace_con_el_vendedor_del_cliente_y_su_comision()
+    {
+        $vendedor = $this->vendedor();
+
+        $client = $this->cliente($vendedor->id);
+
+        $budget = $this->presupuesto_creado($client);
+
+        $sale = $this->confirmar($budget);
+
+        $this->assertEquals($vendedor->id, (int) $sale->seller_id, 'La venta se lleva el vendedor del cliente, como en el alta desde VENDER.');
+
+        $comision = SellerCommission::where('sale_id', $sale->id)->first();
+
+        $this->assertNotNull($comision, 'Confirmar un presupuesto de un cliente con vendedor tiene que crear la comisión.');
+        $this->assertEquals($vendedor->id, (int) $comision->seller_id);
+        $this->assertEquals(
+            self::PRECIO * self::CANTIDAD * 10 / 100,
+            (float) $comision->debe,
+            'La comisión es el 10 % del total de la venta.'
+        );
+    }
+
+    /**
+     * A3: sin vendedor por ningún lado (cliente sin vendedor, confirma el dueño) la venta queda
+     * con 0 —el "sin vendedor" que esta columna siempre usó en el alta— y no hay comisión. Fija
+     * que el no-op siga siendo un no-op.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function sin_vendedor_la_venta_queda_en_cero_y_no_hay_comision()
+    {
+        $budget = $this->presupuesto_creado($this->cliente(null));
+
+        $sale = $this->confirmar($budget);
+
+        $this->assertSame(0, (int) $sale->seller_id);
+        $this->assertFalse(SellerCommission::where('sale_id', $sale->id)->exists(), 'Sin vendedor no puede haber comisión.');
+    }
+
+    /**
+     * A3: el mismo criterio que el alta, sin request. Cliente → empleado → 0, y el vendedor
+     * elegido manda sobre todos. `get_seller_id_desde()` es lo que `get_seller_id($request)` llama
+     * por adentro, así que fijarlo acá fija las dos puntas.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function la_regla_del_vendedor_es_la_misma_con_y_sin_request()
+    {
+        $vendedor_del_cliente = $this->vendedor();
+        $vendedor_del_empleado = $this->vendedor();
+        $vendedor_elegido = $this->vendedor();
+
+        $client = $this->cliente($vendedor_del_cliente->id);
+
+        $empleado = User::create([
+            'name'      => 'zz Empleado confirmar arrastra',
+            'email'     => 'zz-confirmar-arrastra-'.uniqid().'@test.local',
+            'password'  => Hash::make('zz-password-testing'),
+            'status'    => 'commerce',
+            'owner_id'  => self::USER_ID,
+            'seller_id' => $vendedor_del_empleado->id,
+        ]);
+
+        $this->assertEquals($vendedor_elegido->id, SaleHelper::get_seller_id_desde($vendedor_elegido->id, $client->id, $empleado->id), 'El elegido manda.');
+        $this->assertEquals($vendedor_del_cliente->id, SaleHelper::get_seller_id_desde(null, $client->id, $empleado->id), 'Sin elegido, el del cliente.');
+        $this->assertEquals($vendedor_del_cliente->id, SaleHelper::get_seller_id_desde(0, $client->id, $empleado->id), 'El 0 es "no eligió".');
+        $this->assertEquals($vendedor_del_empleado->id, SaleHelper::get_seller_id_desde(null, $this->cliente(null)->id, $empleado->id), 'Cliente sin vendedor: el del empleado.');
+        $this->assertSame(0, SaleHelper::get_seller_id_desde(null, $this->cliente(null)->id, null), 'Nadie: 0.');
+        $this->assertSame(0, SaleHelper::get_seller_id_desde(null, 999999999, null), 'Un cliente inexistente se saltea en vez de reventar.');
+
+        $request = new Request(['seller_id' => null, 'client_id' => $client->id, 'employee_id' => null]);
+
+        $this->assertEquals(
+            SaleHelper::get_seller_id_desde(null, $client->id, null),
+            SaleHelper::get_seller_id($request),
+            'get_seller_id($request) tiene que dar lo mismo que la regla sin request.'
+        );
+    }
+
+    /**
+     * A3: `valor_dolar` del presupuesto viaja a la venta. Hasta hoy la venta perdía la cotización
+     * con la que se preciaron sus renglones.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function la_venta_se_lleva_el_valor_dolar_del_presupuesto()
+    {
+        $budget = $this->presupuesto_creado($this->cliente(), ['moneda_id' => 1, 'valor_dolar' => 1234]);
+
+        $this->assertEquals(1234, (float) $budget->valor_dolar, 'El presupuesto guarda la cotización.');
+
+        $sale = $this->confirmar($budget);
+
+        $this->assertEquals(1234, (float) $sale->valor_dolar, 'La venta se lleva la cotización del presupuesto.');
+    }
+
+    /**
+     * A3: sin la extensión `check_sales` la venta nace terminada Y fechada: `terminada = 1` con
+     * `terminada_at` no nulo, como en el alta desde VENDER. Hasta hoy quedaba terminada sin fecha.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function sin_check_sales_la_venta_nace_terminada_y_con_fecha()
+    {
+        $this->assertFalse(
+            $this->user->extencions()->where('slug', 'check_sales')->exists(),
+            'Este test mide la cuenta SIN check_sales; si la base del slot la tiene sembrada para el 500, no mide nada.'
+        );
+
+        $sale = $this->confirmar($this->presupuesto_creado($this->cliente()));
+
+        $this->assertSame(1, (int) $sale->terminada);
+        $this->assertSame(0, (int) $sale->to_check);
+        $this->assertNotNull($sale->terminada_at, 'Una venta terminada tiene que tener terminada_at.');
+    }
+
+    /**
+     * A3, la otra rama: con `check_sales` la venta nace `to_check`, sin terminar y sin fecha, que
+     * es lo que hace `SaleController::store()` con la misma extensión. Fija que el criterio sea el
+     * mismo en las dos puertas.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function con_check_sales_la_venta_nace_a_chequear_sin_terminar_y_sin_fecha()
+    {
+        $this->dar_extension_check_sales();
+
+        $sale = $this->confirmar($this->presupuesto_creado($this->cliente()));
+
+        $this->assertSame(1, (int) $sale->to_check);
+        $this->assertSame(0, (int) $sale->terminada);
+        $this->assertNull($sale->terminada_at);
     }
 
     /**
