@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
@@ -16,6 +17,8 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageAction;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Las herramientas de carga del asistente de IA (misión asistente-ia-acciones, §3.3 del plan): cinco
@@ -38,6 +41,19 @@ use App\Models\AiMessage;
  */
 class HerramientasDeCarga
 {
+    /**
+     * Los tipos de tarjeta que el modo "resuelto" auto-confirma tras proponerlos (misión
+     * foto-sucursal-y-asistente-configurable, 17/9/2026).
+     *
+     * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. Hoy es únicamente la foto de una sucursal: no toca plata
+     * ni borra nada, y se deshace desde el ABM. Todo lo que mueve plata (gastos, pagos, compras,
+     * combos, ofertas) NUNCA se auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la
+     * persona. Antes de sumar un tipo acá, tiene que cumplir las dos condiciones.
+     *
+     * @var array<int, string>
+     */
+    const AUTO_CONFIRMABLES = [AiMessageAction::TIPO_FOTO_SUCURSAL];
+
     /**
      * Definiciones con su input_schema para la API de Anthropic.
      *
@@ -400,6 +416,21 @@ class HerramientasDeCarga
                     'required'   => ['cliente_id', 'articulo_id', 'hasta'],
                 ],
             ],
+            [
+                'name'         => 'proponer_foto_sucursal',
+                'description'  => 'Asigna como foto de una sucursal la última foto que la persona te mandó y todavía no se usó (la saco sola de esta conversación, no me la pases). Solo la puede usar el dueño. Si el negocio tiene una sola sucursal no hace falta el nombre; si tiene varias, decime cuál. Con la confianza en "resuelto" la asigno en el acto y te aviso que quedó; con "cauteloso" queda una tarjeta para confirmar. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'sucursal'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la sucursal a la que va la foto. Solo hace falta si el negocio tiene más de una.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -592,6 +623,14 @@ class HerramientasDeCarga
             case 'proponer_compra_con_factura':
                 return self::resultado(PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input));
 
+            case 'proponer_foto_sucursal':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaFotoSucursalIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
 
@@ -619,6 +658,61 @@ class HerramientasDeCarga
             'content'  => json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]',
             'is_error' => false,
         ];
+    }
+
+    /**
+     * Si la propuesta recién creada es de un tipo auto-confirmable Y el dueño está en "resuelto", la
+     * confirma en el acto y devuelve el resultado ejecutado; si no, devuelve la propuesta tal cual
+     * (queda como una tarjeta más, para confirmar a mano). Misión foto-sucursal-y-asistente-configurable.
+     *
+     * 🔴 Es la única puerta a la auto-ejecución. Una respuesta negativa de proponer() (faltan datos,
+     * sin permiso, sin foto) no tiene tarjeta_id y sale sin tocar nada. Y el catch es la red: si la
+     * confirmación en el acto lanzara, la tarjeta ya quedó propuesta y la persona la puede confirmar
+     * a mano — la carga nunca se pierde por auto-ejecutar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage|null  $assistant_message
+     * @param  mixed  $respuesta  Lo que devolvió la herramienta proponer_.
+     * @return mixed
+     */
+    protected static function quizas_auto_confirmar(ContextoDeCargaIa $contexto, AiConversation $conversation, $assistant_message, $respuesta)
+    {
+        if (!is_array($respuesta) || empty($respuesta['ok']) || empty($respuesta['tarjeta_id'])) {
+
+            return $respuesta;
+        }
+
+        $tipo = isset($respuesta['tipo']) ? (string) $respuesta['tipo'] : '';
+
+        if (!in_array($tipo, self::AUTO_CONFIRMABLES, true)) {
+
+            return $respuesta;
+        }
+
+        $owner = $contexto->owner;
+
+        // Solo "resuelto" auto-ejecuta; "cauteloso" (y cualquier otro valor, o dueño nulo) deja la
+        // tarjeta propuesta.
+        if (is_null($owner) || (string) $owner->agente_confianza !== 'resuelto') {
+
+            return $respuesta;
+        }
+
+        try {
+
+            return ConfirmacionPorTextoIaHelper::confirmar_del_agente($conversation, (int) $respuesta['tarjeta_id']);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('HerramientasDeCarga: no se pudo auto-confirmar una tarjeta en modo resuelto', [
+                'ai_conversation_id' => (int) $conversation->id,
+                'tarjeta_id'         => (int) $respuesta['tarjeta_id'],
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $respuesta;
+        }
     }
 
     /**

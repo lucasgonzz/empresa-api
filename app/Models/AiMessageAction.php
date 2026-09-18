@@ -54,6 +54,14 @@ class AiMessageAction extends Model
      */
     const TIPO_COMPRA_CON_FACTURA = 'compra_con_factura';
 
+    /**
+     * Asignar como foto de una sucursal una foto que el dueño mandó (misión
+     * foto-sucursal-y-asistente-configurable, 17/9/2026). Es una carga inocua y reversible —no toca
+     * plata ni borra nada—, así que es la única que el modo "resuelto" auto-confirma
+     * (HerramientasDeCarga::AUTO_CONFIRMABLES).
+     */
+    const TIPO_FOTO_SUCURSAL = 'foto_sucursal';
+
     protected $guarded = [];
 
     /**

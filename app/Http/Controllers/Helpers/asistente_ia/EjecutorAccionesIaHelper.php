@@ -65,6 +65,45 @@ class EjecutorAccionesIaHelper {
      */
     static function confirmar(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver) {
 
+        return self::ejecutar_confirmacion($conversation, $accion_id, $persona, $num_expense_resolver, true);
+    }
+
+    /**
+     * Igual que confirmar(), pero SIN exigir que el mensaje que propuso la tarjeta esté 'listo'
+     * (misión foto-sucursal-y-asistente-configurable, 17/9/2026).
+     *
+     * 🔴 ES SOLO PARA LA AUTO-EJECUCIÓN DEL AGENTE EN MODO "RESUELTO". Ahí la tarjeta se confirma
+     * DENTRO del turno que la propone, con el assistant todavía 'pendiente' a propósito (el loop no
+     * terminó de escribir la respuesta). La guarda de 'listo' que sí aplica a la confirmación humana
+     * —botón o texto— rechazaría este caso con un 404. Lo llama ConfirmacionPorTextoIaHelper::
+     * confirmar_del_agente(), que ya autenticó a la persona; las demás guardas (propuesta, no
+     * vencida, mensaje no en error) siguen valiendo.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @param  \App\Models\User|null  $persona
+     * @param  callable  $num_expense_resolver
+     * @return array  ['status' => int, 'body' => array]
+     */
+    static function confirmar_en_el_turno(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver) {
+
+        return self::ejecutar_confirmacion($conversation, $accion_id, $persona, $num_expense_resolver, false);
+    }
+
+    /**
+     * El cuerpo compartido de confirmar() y confirmar_en_el_turno(): la transacción con candado que
+     * ejecuta la carga y deja la tarjeta 'confirmada' con su resultado. Ver el docblock de arriba
+     * (que era el de confirmar()) para el candado, el rollback y el broadcast.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @param  \App\Models\User|null  $persona
+     * @param  callable  $num_expense_resolver
+     * @param  bool  $exige_mensaje_listo  false solo para la auto-ejecución del agente.
+     * @return array  ['status' => int, 'body' => array]
+     */
+    protected static function ejecutar_confirmacion(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
+
         if (!self::es_de_la_conversacion($conversation, $accion_id)) {
 
             return self::respuesta(404, ['message' => self::MENSAJE_NO_ENCONTRADA]);
@@ -74,11 +113,11 @@ class EjecutorAccionesIaHelper {
 
         try {
 
-            DB::transaction(function () use ($contexto, $conversation, $accion_id, $num_expense_resolver) {
+            DB::transaction(function () use ($contexto, $conversation, $accion_id, $num_expense_resolver, $exige_mensaje_listo) {
 
                 $accion = self::bloquear($conversation, $accion_id);
 
-                self::verificar_que_siga_propuesta($accion);
+                self::verificar_que_siga_propuesta($accion, $exige_mensaje_listo);
 
                 $resultado = self::ejecutar_por_tipo($contexto, $accion, $num_expense_resolver);
 
@@ -187,11 +226,12 @@ class EjecutorAccionesIaHelper {
      * vencimiento se chequea aparte, porque una vencida hay que dejarla guardada como tal).
      *
      * @param  \App\Models\AiMessageAction  $accion
+     * @param  bool  $exige_mensaje_listo  false solo para la auto-ejecución del agente (ver confirmar_en_el_turno()).
      * @return void
      *
      * @throws AccionIaException
      */
-    protected static function verificar_que_siga_propuesta(AiMessageAction $accion) {
+    protected static function verificar_que_siga_propuesta(AiMessageAction $accion, $exige_mensaje_listo = true) {
 
         if ($accion->estado_guardado() !== AiMessageAction::ESTADO_PROPUESTA) {
 
@@ -213,8 +253,10 @@ class EjecutorAccionesIaHelper {
         }
 
         // Un mensaje todavía 'pendiente' no muestra sus tarjetas (AccionesIaHelper::cargar_en_mensajes()):
-        // para quien llame, esa tarjeta todavía no existe.
-        if ($mensaje->estado !== 'listo') {
+        // para quien confirma con el dedo, esa tarjeta todavía no existe. La auto-ejecución del agente
+        // (misión foto-sucursal-y-asistente-configurable) es la excepción: confirma DENTRO del turno
+        // que la propone, con el mensaje 'pendiente' a propósito, así que salta esta sola guarda.
+        if ($exige_mensaje_listo && $mensaje->estado !== 'listo') {
 
             throw new AccionIaException(404, self::MENSAJE_NO_ENCONTRADA);
         }
@@ -257,6 +299,9 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_COMPRA_CON_FACTURA:
                 return PropuestaCompraConFacturaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_FOTO_SUCURSAL:
+                return PropuestaFotoSucursalIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');
