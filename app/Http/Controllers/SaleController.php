@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
+use App\Http\Controllers\Helpers\PaymentMethodHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -258,6 +259,25 @@ class SaleController extends Controller
                 'message'               => PriceTypeHelper::mensaje_sin_lista(),
                 'sin_lista_de_precios'  => true,
             ], 422);
+        }
+
+        /*
+         * Método de pago obligatorio en la venta de contado (tanda 2 de la misma misión,
+         * 18/9/2026). Cuarto 422 temprano, con el mismo criterio que los tres de arriba: la SPA es
+         * guarda de UX (`chequeos/payment_methods.js`, que estuvo apagado del 4/3/2026 a la tanda
+         * 1) y la autoridad es este rechazo. Hasta hoy una venta de contado con el select en
+         * "Seleccione método de pago" (valor 0) se guardaba "cobrada" sin método y sin movimiento
+         * de caja, sin error en ningún lado. La regla entera —qué es de contado, qué es un método
+         * válido, y por qué un request que no habla del cobro no se rechaza— vive en el docblock
+         * de PaymentMethodHelper.
+         */
+        $error_metodo_de_pago = PaymentMethodHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_metodo_de_pago)) {
+
+            Log::info('store sale: rechazada sin metodo de pago (user_id '.$this->userId().', client_id '.$request->client_id.').');
+
+            return response()->json($error_metodo_de_pago, 422);
         }
 
         /*
@@ -536,6 +556,24 @@ class SaleController extends Controller
                     'sin_lista_de_precios'  => true,
                 ], 422);
             }
+        }
+
+        /*
+         * Método de pago obligatorio, lado edición (tanda 2, 18/9/2026). En el update el cobro se
+         * rehace desde cero —`attachSelectedPaymentMethods()` hace detach y vuelve a adjuntar lo
+         * que traiga el PUT—, así que un PUT de una venta de contado con el select en el
+         * placeholder la dejaría cobrada con nada. Mismo 422 y misma regla que en store(), ANTES
+         * de la transacción. Solo opina si el PUT habla del cobro (la SPA manda las dos claves
+         * siempre); "de contado" se mira sobre lo que la venta va a tener después del update. Ver
+         * PaymentMethodHelper.
+         */
+        $error_metodo_de_pago = PaymentMethodHelper::validar_venta_actualizada($request, $sale_a_actualizar);
+
+        if (!is_null($error_metodo_de_pago)) {
+
+            Log::info('update sale id '.$id.': rechazado sin metodo de pago.');
+
+            return response()->json($error_metodo_de_pago, 422);
         }
 
         /*

@@ -537,6 +537,35 @@ class SaleHelper extends Controller {
                 // }
             } else {
 
+                /*
+                    🔴 El metodo unico se adjunta SOLO si es un metodo real (tanda 2 de la mision
+                    vender-lista-obligatoria, 18/9/2026). Hasta hoy esta rama hacia
+                    `attach($request->current_acount_payment_method_id, ...)` con lo que viniera:
+                    con el 0 del placeholder del select de VENDER quedaba una fila en
+                    `current_acount_payment_method_sale` apuntando a un metodo que no existe, la
+                    relacion `current_acount_payment_methods` la ignoraba (no hay fila 0 contra la
+                    cual unir) y `SaleCajaHelper::check_caja()` no creaba movimiento: venta
+                    "cobrada" sin metodo y sin caja, sin error. Mismo criterio que
+                    `PaymentMethodHelper::attach_payment_methods()` aplica al reparto desde el
+                    3/8/2026: lo que no es un metodo se saltea y queda dicho en el log.
+
+                    Con `null` el attach ya era un no-op (Eloquent no inserta nada con un id
+                    nulo); ahora el no-op es explicito y logueado para el 0, el inexistente y el
+                    null por igual.
+
+                    Que no llegue nada hasta aca desde VENDER lo garantiza el 422 de
+                    `SaleController` (`PaymentMethodHelper::validar_venta_nueva()`); esta guarda
+                    es la ultima linea, para los llamadores que no pasan por ese chequeo.
+                */
+                $current_acount_payment_method_id = PaymentMethodHelper::metodo_de_pago_valido($request->current_acount_payment_method_id);
+
+                if (is_null($current_acount_payment_method_id)) {
+
+                    Log::warning('attachSelectedPaymentMethods: la venta '.$sale->id.' es de contado y el metodo unico ('.var_export($request->current_acount_payment_method_id, true).') no es un metodo de pago valido; no se adjunta ninguno.');
+
+                    return;
+                }
+
                 $total = (float)$sale->total;
 
                 if (!is_null($request->discount_amount)) {
@@ -555,7 +584,7 @@ class SaleHelper extends Controller {
                     );
                 }
 
-                $sale->current_acount_payment_methods()->attach($request->current_acount_payment_method_id, [
+                $sale->current_acount_payment_methods()->attach($current_acount_payment_method_id, [
                     'amount'                => $total,
                     'discount_percentage'   => $discount_percentage,
                     'discount_amount'       => $request->discount_amount,
