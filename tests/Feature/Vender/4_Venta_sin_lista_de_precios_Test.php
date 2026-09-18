@@ -396,6 +396,54 @@ class Venta_sin_lista_de_precios_Test extends TestCase
     }
 
     /**
+     * 🔴 El cliente con `price_type_id = 0` es el caso MÁS COMÚN de "cliente sin lista": el form
+     * genérico de clientes nace en 0 (`src/models/client.js`) y `ClientController` lo guarda
+     * pelado. Hasta esta misión el rescate copiaba ese 0 a la venta (`!is_null(0)` es true) y con
+     * eso esquivaba cualquier chequeo. El resolvedor pasa la lista del cliente por el mismo
+     * normalizador que el request: 0 es ninguna, y en una cuenta con listas es 422.
+     *
+     * @group vender
+     * @test
+     */
+    public function con_cliente_con_lista_en_cero_y_sin_lista_responde_422()
+    {
+        $this->cuenta_con_listas(1);
+
+        $client = $this->cliente(0);
+
+        $ventas_antes = $this->cantidad_de_ventas();
+
+        $response = $this->postJson('api/sale', $this->payload_venta_con_cliente($client));
+
+        $this->assert_rechazo_sin_lista($response);
+
+        $this->assertEquals($ventas_antes, $this->cantidad_de_ventas());
+    }
+
+    /**
+     * Y en una cuenta SIN listas el 0 del cliente tampoco se copia: la venta queda con null, no
+     * con 0. Es de donde salían las 309 ventas con `price_type_id = 0` de golonorte (auditoría del
+     * 17/9/2026): no de la SPA, que nunca manda un 0, sino de este rescate.
+     *
+     * @group vender
+     * @test
+     */
+    public function cuenta_sin_listas_con_cliente_en_cero_guarda_null_y_no_cero()
+    {
+        $this->cuenta_con_listas(0);
+
+        $client = $this->cliente(0);
+
+        $response = $this->postJson('api/sale', $this->payload_venta_con_cliente($client));
+
+        $response->assertStatus(201);
+
+        $sale = Sale::find($response->json('model.id'));
+
+        $this->assertNull($sale->price_type_id, 'El 0 del cliente no es una lista: no se copia, queda null.');
+    }
+
+    /**
      * El cero es "ninguna lista" escrito de otra forma (golonorte manda 0 en 309 ventas al mes, y
      * no es una lista): en una cuenta con listas se rechaza igual que el null.
      *

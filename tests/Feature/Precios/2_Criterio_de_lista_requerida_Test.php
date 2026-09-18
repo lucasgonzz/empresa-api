@@ -3,6 +3,7 @@
 namespace Tests\Feature\Precios;
 
 use App\Http\Controllers\Helpers\PriceTypeHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\PriceType;
@@ -299,5 +300,38 @@ class Criterio_de_lista_requerida_Test extends TestCase
         $this->assertStringContainsString('recargá la página', $presupuesto);
 
         $this->assertNotEquals($venta, $presupuesto);
+    }
+
+    /**
+     * 🔴 La extensión de rangos también se lee del DUEÑO. `UserHelper::hasExtencion($slug, $user)`
+     * con un empleado devuelve false SIEMPRE (las extensiones cuelgan del dueño y ese helper no
+     * resuelve `owner_id`), así que si el criterio le preguntara al empleado, al vendedor de una
+     * cuenta con rangos se le exigiría lista mientras a su dueño no. El criterio resuelve el dueño
+     * ANTES de preguntar por la extensión y por las listas.
+     *
+     * @group precios-por-lista
+     * @test
+     */
+    public function un_empleado_hereda_la_extension_de_rangos_de_su_dueno()
+    {
+        $this->dueno_con_listas(1);
+
+        $this->dar_extension_de_rangos();
+
+        $empleado = $this->empleado();
+
+        /*
+         * La trampa que este test evita: preguntarle la extensión al empleado da false. Si esta
+         * aserción cambia, el criterio de abajo puede pasar por el motivo equivocado.
+         */
+        $this->assertFalse(
+            UserHelper::hasExtencion(self::EXTENCION_RANGOS, $empleado),
+            'hasExtencion() sobre un empleado tiene que dar false: las extensiones son del dueño.'
+        );
+
+        $this->assertFalse(
+            PriceTypeHelper::requiere_lista_de_precios($empleado),
+            'El empleado de una cuenta con la extensión de rangos no tiene que requerir lista.'
+        );
     }
 }

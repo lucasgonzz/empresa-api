@@ -209,22 +209,75 @@ class Presupuesto_sin_lista_de_precios_Test extends TestCase
             'surchages'                        => [],
             'services'                         => [],
             'promocion_vinotecas'              => [],
-            'articles'                         => [[
-                'id'                          => $this->article->id,
-                'status'                      => $this->article->status,
-                'cost_in_dollars'             => null,
-                'name'                        => $this->article->name,
-                'name_vender_personalizado'   => null,
+            'articles'                         => [$this->articulo_payload(null)],
+        ], $overrides);
+    }
+
+    /**
+     * El renglón tal como lo manda `vender_presupuestos.js::crear()`: PLANO, con
+     * `price_type_personalizado_id` (la lista por línea de los rangos por cantidad) en la raíz y
+     * no bajo `pivot`.
+     *
+     * @param  int|null  $price_type_personalizado_id
+     * @return array
+     */
+    protected function articulo_payload($price_type_personalizado_id)
+    {
+        return [
+            'id'                          => $this->article->id,
+            'status'                      => $this->article->status,
+            'cost_in_dollars'             => null,
+            'name'                        => $this->article->name,
+            'name_vender_personalizado'   => null,
+            'amount'                      => self::CANTIDAD,
+            'price'                       => self::PRECIO,
+            'costo_real'                  => 50,
+            'unidades_individuales'       => null,
+            'presentacion'                => null,
+            'price_type_personalizado_id' => $price_type_personalizado_id,
+            'bonus'                       => null,
+            'location'                    => null,
+        ];
+    }
+
+    /**
+     * El mismo renglón como viaja en la ACTUALIZACIÓN (`actualizar()` con el ítem ya cargado, y el
+     * form genérico del módulo Presupuestos): los datos del renglón bajo `pivot`, sin la clave en
+     * la raíz.
+     *
+     * @param  int|null  $price_type_personalizado_id
+     * @return array
+     */
+    protected function articulo_payload_pivot($price_type_personalizado_id)
+    {
+        return [
+            'id'         => $this->article->id,
+            'status'     => $this->article->status,
+            'name'       => $this->article->name,
+            'costo_real' => 50,
+            'pivot'      => [
                 'amount'                      => self::CANTIDAD,
                 'price'                       => self::PRECIO,
-                'costo_real'                  => 50,
-                'unidades_individuales'       => null,
-                'presentacion'                => null,
-                'price_type_personalizado_id' => null,
                 'bonus'                       => null,
                 'location'                    => null,
-            ]],
-        ], $overrides);
+                'price_type_personalizado_id' => $price_type_personalizado_id,
+            ],
+        ];
+    }
+
+    /**
+     * La lista por línea del único renglón de un presupuesto, leída del pivote.
+     *
+     * @param  int  $budget_id
+     * @return mixed
+     */
+    protected function lista_por_linea_del_presupuesto($budget_id)
+    {
+        $article = Budget::find($budget_id)->articles()->first();
+
+        $this->assertNotNull($article, 'El presupuesto tiene que tener su renglón adjuntado.');
+
+        return $article->pivot->price_type_personalizado_id;
     }
 
     /**
@@ -530,5 +583,161 @@ class Presupuesto_sin_lista_de_precios_Test extends TestCase
 
         $this->assertNotNull($venta_sin_lista, 'Confirmar un presupuesto viejo sin lista no se rechaza.');
         $this->assertNull($venta_sin_lista->price_type_id);
+    }
+
+    /**
+     * 🔴 El cliente con `price_type_id = 0` (el form genérico de clientes nace en 0) es un cliente
+     * sin lista: en una cuenta con listas, 422. Hasta esta misión el rescate hubiera copiado el 0.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function con_cliente_con_lista_en_cero_y_sin_lista_responde_422()
+    {
+        $this->cuenta_con_listas(1);
+
+        $client = $this->cliente(0);
+
+        $antes = $this->cantidad_de_presupuestos();
+
+        $response = $this->postJson('api/budget', $this->payload_crear($client));
+
+        $this->assert_rechazo_sin_lista($response);
+
+        $this->assertEquals($antes, $this->cantidad_de_presupuestos());
+    }
+
+    /**
+     * Un presupuesto con `price_type_id = 0` (guardado así por una SPA vieja o por el form
+     * genérico) confirma con la lista del cliente, o con null si el cliente tampoco tiene —
+     * NUNCA con 0. `BudgetHelper::get_price_type_id()` preguntaba `!is_null` en las dos puntas y
+     * dejaba pasar el 0 del presupuesto y el del cliente; ahora usa el mismo resolvedor que el alta.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function un_presupuesto_con_lista_en_cero_confirma_con_la_del_cliente_o_con_ninguna()
+    {
+        $this->cuenta_con_listas(1);
+
+        $con_cliente_con_lista = $this->presupuesto_guardado($this->cliente($this->lista_mostrador->id), 0);
+
+        $this->assertEquals(
+            $this->lista_mostrador->id,
+            (int) BudgetHelper::get_price_type_id(Budget::find($con_cliente_con_lista->id)),
+            'El 0 del presupuesto no es una lista: tiene que caer al cliente.'
+        );
+
+        $this->post('api/budget/'.$con_cliente_con_lista->id.'/confirmar')->assertStatus(200);
+
+        $venta = Sale::where('budget_id', $con_cliente_con_lista->id)->first();
+
+        $this->assertNotNull($venta);
+        $this->assertEquals($this->lista_mostrador->id, (int) $venta->price_type_id);
+
+        $con_cliente_en_cero = $this->presupuesto_guardado($this->cliente(0), 0);
+
+        $this->assertNull(
+            BudgetHelper::get_price_type_id(Budget::find($con_cliente_en_cero->id)),
+            'Presupuesto en 0 y cliente en 0: ninguna lista, y ninguna es null, no 0.'
+        );
+
+        $this->post('api/budget/'.$con_cliente_en_cero->id.'/confirmar')->assertStatus(200);
+
+        $venta_sin_lista = Sale::where('budget_id', $con_cliente_en_cero->id)->first();
+
+        $this->assertNotNull($venta_sin_lista);
+        $this->assertNull($venta_sin_lista->price_type_id, 'La venta no puede nacer con price_type_id = 0.');
+    }
+
+    /**
+     * 🔴 La lista por línea (rangos por cantidad, `price_type_personalizado_id`) que VENDER manda
+     * PLANA en el alta del presupuesto se guarda en el pivote y viaja a la venta al confirmar.
+     * Hasta esta misión `BudgetHelper::attachArticles()` la leía solo de `pivot`, así que el alta
+     * la perdía: el precio ya estaba congelado en `pivot.price`, pero la trazabilidad de con qué
+     * lista se cobró ese renglón desaparecía (y con ella la base de puntos por lista).
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function el_alta_desde_vender_guarda_la_lista_por_linea_que_viaja_plana()
+    {
+        $this->cuenta_con_listas(1);
+
+        $client = $this->cliente($this->lista_mostrador->id);
+
+        $budget_id = $this->postJson('api/budget', $this->payload_crear($client, [
+            'price_type_id' => $this->lista_general->id,
+            'articles'      => [$this->articulo_payload($this->lista_mostrador->id)],
+        ]))->assertStatus(201)->json('model.id');
+
+        $this->assertEquals(
+            $this->lista_mostrador->id,
+            (int) $this->lista_por_linea_del_presupuesto($budget_id),
+            'La lista por línea que viaja plana tiene que quedar en el pivote del presupuesto.'
+        );
+
+        $this->post('api/budget/'.$budget_id.'/confirmar')->assertStatus(200);
+
+        $sale = Sale::where('budget_id', $budget_id)->first();
+
+        $this->assertNotNull($sale);
+
+        $renglon = $sale->articles()->first();
+
+        $this->assertNotNull($renglon, 'La venta tiene que nacer con el renglón del presupuesto.');
+        $this->assertEquals(
+            $this->lista_mostrador->id,
+            (int) $renglon->pivot->price_type_personalizado_id,
+            'Al confirmar, la línea de la venta conserva la lista por línea del presupuesto.'
+        );
+    }
+
+    /**
+     * El 0 con que nacen los ítems de VENDER es "sin lista por línea" y se guarda como NULL, con
+     * el mismo criterio que `SaleHelper::get_price_type_personalizado()` usa para la venta: en el
+     * alta (plano) y en la actualización (bajo `pivot`). Hasta esta misión la actualización guardaba
+     * el 0 tal cual y al confirmar llegaba a `article_sale`, donde la venta directa nunca escribe
+     * un 0. Y cuando la clave viene solo bajo `pivot` con una lista real, se respeta.
+     *
+     * @group presupuestos
+     * @test
+     */
+    public function la_lista_por_linea_en_cero_se_guarda_como_null_en_el_alta_y_en_la_edicion()
+    {
+        $this->cuenta_con_listas(1);
+
+        $client = $this->cliente($this->lista_mostrador->id);
+
+        $budget_id = $this->postJson('api/budget', $this->payload_crear($client, [
+            'price_type_id' => $this->lista_general->id,
+            'articles'      => [$this->articulo_payload(0)],
+        ]))->assertStatus(201)->json('model.id');
+
+        $this->assertNull(
+            $this->lista_por_linea_del_presupuesto($budget_id),
+            'El 0 plano del alta se guarda como null, no como 0.'
+        );
+
+        $budget = Budget::find($budget_id);
+
+        $this->putJson('api/budget/'.$budget_id, $this->payload_actualizar($budget, [
+            'articles' => [$this->articulo_payload_pivot(0)],
+        ]))->assertStatus(200);
+
+        $this->assertNull(
+            $this->lista_por_linea_del_presupuesto($budget_id),
+            'El 0 bajo pivot de la actualización se guarda como null, no como 0.'
+        );
+
+        $this->putJson('api/budget/'.$budget_id, $this->payload_actualizar($budget, [
+            'articles' => [$this->articulo_payload_pivot($this->lista_mostrador->id)],
+        ]))->assertStatus(200);
+
+        $this->assertEquals(
+            $this->lista_mostrador->id,
+            (int) $this->lista_por_linea_del_presupuesto($budget_id),
+            'Una lista real bajo pivot, sin la clave en la raíz, se respeta.'
+        );
     }
 }
