@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\comisiones\GolonorteComision;
 use App\Http\Controllers\Helpers\comisiones\RosMarComision;
 use App\Http\Controllers\Helpers\comisiones\TruvariComision;
 use App\Models\SellerCommission;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ComisionesHelper {
@@ -89,6 +90,13 @@ class ComisionesHelper {
 	}
 
     /**
+     * Cuantos ids entran en cada UPDATE ... CASE. Con este tope una tanda de 24.000 comisiones
+     * (el vendedor mas grande medido en Fenix, 18/9/2026) queda en ~48 sentencias en vez de una
+     * sola de varios MB de texto SQL.
+     */
+    const TANDA_UPDATE = 500;
+
+    /**
      * Grupo 268 · Prompt 02, bug B: unica funcion de saldo del ledger de comisiones, por vendedor
      * y por moneda (antes habia dos implementaciones con criterios de orden distintos —
      * ComisionesHelper::set_saldo() por id, SellerCommissionHelper::checkSaldos()/getSaldo() por
@@ -97,6 +105,17 @@ class ComisionesHelper {
      * Recorre TODAS las comisiones active del vendedor en esa moneda, en orden de id, y persiste
      * el saldo acumulado de cada una (debe - haber). Las comisiones inactive quedan con saldo en
      * null: una comision pendiente todavia no forma parte del ledger (bug C).
+     *
+     * 🔴 Medido en el VPS de Fenix (18/9/2026, transaccion con rollback): el vendedor con mas
+     * historial (24.107 comisiones) tardaba 4,05s y 2.164 queries porque la version anterior traia
+     * el modelo COMPLETO de cada fila con Eloquent (->get()) y guardaba una por una con ->save()
+     * dentro de un foreach. Esta version hace el MISMO calculo, en el MISMO orden, con el MISMO
+     * redondeo — solo cambia COMO se ejecuta: un SELECT liviano (4 columnas, no el modelo entero)
+     * y un UPDATE en bloque por tanda, en vez de N round-trips. No se toco el algoritmo en si
+     * (que filas se procesan y en que orden) porque el orden de ACTIVACION de una comision no
+     * siempre sigue el orden de id — un pago puede liquidar una deuda vieja mientras ventas mas
+     * nuevas del mismo vendedor ya estan activas — y limitar el recalculo a "desde la ultima
+     * conocida" es un cambio de logica financiera con mas riesgo del que justifica esta mejora.
      *
      * @param int $seller_id
      * @param int|null $moneda_id null se trata como 1 (pesos), igual que en todo el read-path.
@@ -117,30 +136,77 @@ class ComisionesHelper {
             }
         };
 
-        $seller_commissions = SellerCommission::where('seller_id', $seller_id)
-                                                ->where('status', 'active')
-                                                ->where($filtro_moneda)
-                                                ->orderBy('id', 'ASC')
-                                                ->get();
+        // Select liviano: solo las 4 columnas que hacen falta, no el modelo Eloquent completo.
+        $filas = DB::table('seller_commissions')
+                    ->select('id', 'debe', 'haber', 'saldo')
+                    ->where('seller_id', $seller_id)
+                    ->where('status', 'active')
+                    ->where($filtro_moneda)
+                    ->orderBy('id', 'ASC')
+                    ->get();
 
         $saldo = 0;
+        $por_actualizar = [];
 
-        foreach ($seller_commissions as $seller_commission) {
+        foreach ($filas as $fila) {
 
-            $debe = !is_null($seller_commission->debe) ? (float)$seller_commission->debe : 0;
-            $haber = !is_null($seller_commission->haber) ? (float)$seller_commission->haber : 0;
+            $debe = !is_null($fila->debe) ? (float)$fila->debe : 0;
+            $haber = !is_null($fila->haber) ? (float)$fila->haber : 0;
 
             $saldo = Numbers::redondear($saldo + $debe - $haber);
 
-            $seller_commission->saldo = $saldo;
-            $seller_commission->save();
+            // Mismo criterio que el dirty-tracking de Eloquent: si el saldo ya es el que
+            // corresponde, no hace falta reescribir la fila.
+            $saldo_actual = !is_null($fila->saldo) ? (float)$fila->saldo : null;
+
+            if (is_null($saldo_actual) || abs($saldo_actual - $saldo) >= 0.00001) {
+                $por_actualizar[(int)$fila->id] = $saldo;
+            }
         }
+
+        self::aplicar_saldos_en_tandas($por_actualizar);
 
         // Una comision pendiente no tiene saldo: todavia no forma parte del ledger.
         SellerCommission::where('seller_id', $seller_id)
                             ->where('status', 'inactive')
                             ->where($filtro_moneda)
                             ->update(['saldo' => null]);
+    }
+
+    /**
+     * Escribe {id => saldo} con UPDATE ... CASE en tandas de TANDA_UPDATE ids, para no armar una
+     * sola sentencia de decenas de miles de WHEN. Los valores de saldo van bindeados (nunca
+     * concatenados como texto), solo los ids literales viajan armados a mano en el WHERE/CASE
+     * porque ya pasaron por (int) arriba.
+     *
+     * @param array $por_actualizar id (int) => saldo (float)
+     * @return void
+     */
+    private static function aplicar_saldos_en_tandas($por_actualizar) {
+
+        if (empty($por_actualizar)) {
+            return;
+        }
+
+        $ids = array_keys($por_actualizar);
+
+        foreach (array_chunk($ids, self::TANDA_UPDATE) as $tanda_ids) {
+
+            $case = 'CASE id ';
+            $bindings = [];
+
+            foreach ($tanda_ids as $id) {
+                $case .= 'WHEN ' . $id . ' THEN ? ';
+                $bindings[] = $por_actualizar[$id];
+            }
+
+            $case .= 'END';
+
+            DB::update(
+                'UPDATE seller_commissions SET saldo = ' . $case . ' WHERE id IN (' . implode(',', $tanda_ids) . ')',
+                $bindings
+            );
+        }
     }
 
     /**
