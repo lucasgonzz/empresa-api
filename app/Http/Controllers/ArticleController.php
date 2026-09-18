@@ -10,6 +10,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\ArticleTablePdfHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -1035,6 +1036,12 @@ class ArticleController extends Controller
      * Query: pdf_column_profile_id (requerido), articles_id o filters (como export Excel).
      * Opcional: price_type_id cuando el dueño usa listas de precio (columna precio final del pivot).
      *
+     * Los artículos salen EN EL ORDEN que pidió el usuario: el del filtrado (ordenar_de de los
+     * filtros, que aplica SearchController::search) o el de la selección (articles_id tal como
+     * viene). Antes esta función terminaba con orderBy('created_at', 'DESC') y pisaba los dos
+     * (misión catalogo-pdf-encabezado, 18/9/2026); la resolución y la carga viven en
+     * ArticleTablePdfHelper, donde se prueban con PHPUnit.
+     *
      * @param \Illuminate\Http\Request $request
      * @return void
      */
@@ -1049,47 +1056,17 @@ class ArticleController extends Controller
             }])
             ->firstOrFail();
 
-        $article_ids = [];
-
-        if ($request->has('articles_id') && $request->query('articles_id') !== '') {
-            $ids = explode('-', $request->query('articles_id'));
-            $article_ids = array_map('intval', $ids);
-        } elseif ($request->has('filters')) {
-            $json_data = $request->query('filters');
-            $filters = json_decode($json_data, true);
-            $search_ct = new SearchController();
-            $models = $search_ct->search($request, 'article', $filters);
-            $article_ids = $models->pluck('id')->toArray();
-        }
+        $article_ids = ArticleTablePdfHelper::resolve_article_ids($request);
 
         if (! count($article_ids)) {
             abort(404, 'No hay artículos para generar el PDF');
         }
 
-        /** Lista de precios opcional para resolver `article_final_price` desde el pivot. */
-        $price_type_id = $request->query('price_type_id');
-
-        $article_with = [
-            'category',
-            'sub_category',
-            'brand',
-            'provider',
-            'iva',
-            'unidad_medida',
-            'images' => function ($query) {
-                $query->orderBy('id', 'asc');
-            },
-        ];
-
-        if (! is_null($price_type_id) && $price_type_id !== '' && UserHelper::uses_listas_de_precio()) {
-            $article_with[] = 'price_types';
-        }
-
-        $articles = Article::where('user_id', $this->userId())
-            ->whereIn('id', $article_ids)
-            ->with($article_with)
-            ->orderBy('created_at', 'DESC')
-            ->get();
+        $articles = ArticleTablePdfHelper::load_articles_in_order(
+            $article_ids,
+            $this->userId(),
+            $request->query('price_type_id')
+        );
 
         new ArticleTablePdf($profile, $articles);
     }
