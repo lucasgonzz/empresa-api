@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\Provider;
 use App\Models\User;
@@ -157,12 +158,40 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
                 return;
             }
 
+            /*
+             * Registro visible (misión procesos-en-segundo-plano, 18/9/2026). Sin total: el
+             * loop por artículo vive en ArticleProviderDiscountHelper::sincronizar_a_articulos()
+             * y no expone avance, así que la barra es indeterminada y lo que se muestra es el
+             * cierre con los números. La referencia es el proveedor: es lo que permite que
+             * failed() —que corre sobre otra instancia— encuentre la misma fila.
+             */
+            BackgroundProcessHelper::iniciar(
+                $this->owner_user_id,
+                'sincronizar_descuentos',
+                'Sincronización de descuentos de ' . $provider->name,
+                [
+                    'auth_user_id' => $this->auth_user_id,
+                    'referencia'   => $provider,
+                    'unidad'       => 'artículos',
+                    'detalle'      => $this->alcance === ArticleProviderDiscountHelper::ALCANCE_TODOS
+                        ? 'Todos los artículos del proveedor'
+                        : 'Solo los artículos que ya tenían descuentos',
+                    'etapa'        => 'Sincronizando los artículos',
+                ]
+            );
+
             $resultado = ArticleProviderDiscountHelper::sincronizar_a_articulos(
                 $provider,
                 $this->alcance,
                 $this->pisar_editados_a_mano,
                 $this->accion_sobre_compras
             );
+
+            BackgroundProcessHelper::completar(BackgroundProcessHelper::por_referencia($provider), [
+                'creados'      => (int) $resultado['creados'],
+                'actualizados' => (int) $resultado['actualizados'],
+                'al_dia'       => (int) $resultado['al_dia'],
+            ]);
 
             $this->avisar_que_termino($provider, $resultado);
 
@@ -275,6 +304,24 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
      */
     private function avisar_que_fallo($motivo = null)
     {
+        /*
+         * El registro visible se cierra ANTES del candado de la cache y no después: fallar() ya
+         * es idempotente por el status de la fila, así que llamarlo desde el catch y desde
+         * failed() no duplica nada, y así cierra aunque el driver de cache esté caído. Se busca
+         * por el proveedor (la referencia con la que se abrió), scopeado al dueño igual que en
+         * handle().
+         */
+        $provider = Provider::where('id', $this->provider_id)
+                            ->where('user_id', $this->owner_user_id)
+                            ->first();
+
+        BackgroundProcessHelper::fallar(
+            BackgroundProcessHelper::por_referencia($provider),
+            is_null($motivo) || $motivo === ''
+                ? 'La sincronización se interrumpió antes de terminar.'
+                : $motivo
+        );
+
         $clave = 'sincronizar_descuentos_proveedor_fallo_' . $this->operacion_id;
 
         if (!Cache::add($clave, 1, 3600)) {

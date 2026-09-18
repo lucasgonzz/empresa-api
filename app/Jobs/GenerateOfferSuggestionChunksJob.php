@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\OfferSuggestion;
 use App\Models\OfferSuggestionLine;
 use App\Models\User;
@@ -41,10 +42,50 @@ class GenerateOfferSuggestionChunksJob implements ShouldQueue
     /** @var int Identificador de la corrida a procesar (offer_suggestions.id) */
     protected $offer_suggestion_id;
 
-    /** @param int $offer_suggestion_id */
-    public function __construct($offer_suggestion_id)
+    /**
+     * Si la corrida se muestra en la píldora de procesos (misión procesos-en-segundo-plano,
+     * 18/9/2026). Lo prende SOLO el controller cuando encola por padrón grande; el camino inline
+     * y el comando programado no lo pasan. Default false: un job encolado antes de este deploy
+     * se deserializa sin la property y sigue igual. Mismo criterio que el molde de stock.
+     *
+     * @var bool
+     */
+    protected $visible_para_el_usuario = false;
+
+    /**
+     * @param int  $offer_suggestion_id
+     * @param bool $visible_para_el_usuario  true sólo al encolar desde el controller.
+     */
+    public function __construct($offer_suggestion_id, $visible_para_el_usuario = false)
     {
         $this->offer_suggestion_id = $offer_suggestion_id;
+        $this->visible_para_el_usuario = (bool) $visible_para_el_usuario;
+    }
+
+    /**
+     * El registro visible de esta corrida, o null si no corresponde mostrarla. En un reintento
+     * ($tries = 3) se reusa la fila abierta del intento anterior en vez de abrir otra.
+     *
+     * @param  \App\Models\OfferSuggestion $suggestion
+     * @return \App\Models\BackgroundProcess|null
+     */
+    protected function proceso_visible($suggestion)
+    {
+        if (!$this->visible_para_el_usuario) {
+            return null;
+        }
+
+        $proceso = BackgroundProcessHelper::por_referencia($suggestion);
+
+        if (!is_null($proceso)) {
+            return $proceso;
+        }
+
+        return BackgroundProcessHelper::iniciar($suggestion->user_id, 'sugerencias_ofertas', 'Sugerencias de ofertas', [
+            'referencia' => $suggestion,
+            'unidad'     => 'lotes',
+            'etapa'      => 'Buscando candidatos',
+        ]);
     }
 
     /**
@@ -57,6 +98,8 @@ class GenerateOfferSuggestionChunksJob implements ShouldQueue
         if (!$suggestion) {
             return;
         }
+
+        $proceso = $this->proceso_visible($suggestion);
 
         // 🔴 Re-entrada limpia ANTES de calcular total_chunks: con $tries = 3, un reintento tras un
         // fallo parcial re-inserta desde cero en vez de duplicar lo que la corrida anterior alcanzó
@@ -97,6 +140,10 @@ class GenerateOfferSuggestionChunksJob implements ShouldQueue
         // total_chunks antes de procesar evita condiciones de carrera al marcar terminado.
         $suggestion->update(['total_chunks' => $chunk_count]);
 
+        // Recién acá el registro visible conoce su total en lotes (procesados en 0: si es un
+        // reintento, arranca de nuevo igual que la corrida).
+        BackgroundProcessHelper::avanzar($proceso, 0, ['total' => $chunk_count, 'etapa' => 'Evaluando a los clientes']);
+
         if ($chunk_count === 0) {
             // Corrida sin un solo candidato (comercio sin historial, o todos sus clientes excluidos
             // por deuda). Cierra igual, con los totales en cero y el conteo de excluidos cargado: es
@@ -110,12 +157,29 @@ class GenerateOfferSuggestionChunksJob implements ShouldQueue
                 'total_clientes_excluidos_por_deuda' => $excluidos,
             ]);
 
+            BackgroundProcessHelper::completar($proceso, ['clientes' => 0], 'Sin clientes con historial para evaluar');
+
             return;
         }
 
+        $lotes_procesados = 0;
+
         foreach ($lotes as $lote) {
             (new ProcessOfferSuggestionChunkJob($lote, $suggestion->id, $evaluacion, $excluidos))->handle();
+
+            $lotes_procesados++;
+            BackgroundProcessHelper::avanzar($proceso, $lotes_procesados, [
+                'etapa' => 'Lote ' . $lotes_procesados . ' de ' . $chunk_count,
+            ]);
         }
+
+        // total_clientes lo calcula el último lote al cerrar la corrida (ProcessOfferSuggestionChunkJob):
+        // se lee fresco, no de la copia con la que se arrancó.
+        $cerrada = $suggestion->fresh();
+
+        BackgroundProcessHelper::completar($proceso, [
+            'clientes' => is_null($cerrada) ? null : (int) $cerrada->total_clientes,
+        ]);
     }
 
     /**
@@ -165,6 +229,9 @@ class GenerateOfferSuggestionChunksJob implements ShouldQueue
         $suggestion->status = 'error';
         $suggestion->error_mensaje = $exception->getMessage();
         $suggestion->save();
+
+        // El registro visible cae con la corrida; si no se mostraba, no hay fila y no pasa nada.
+        BackgroundProcessHelper::fallar(BackgroundProcessHelper::por_referencia($suggestion), $exception->getMessage());
 
         $user = User::find($suggestion->user_id);
         if (!$user) {

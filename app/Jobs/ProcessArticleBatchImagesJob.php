@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ArticleBatchImagesProcessed;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\Article;
 use App\Models\ArticleImageSearchAttempt;
 use App\Models\GeocoderCounter;
@@ -151,8 +152,39 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             $batch_uuid
         ));
 
+        /*
+         * Registro visible (misión procesos-en-segundo-plano, 18/9/2026). Este job no tiene
+         * modelo propio al que apuntar, así que el proceso vive en esta variable mientras corre
+         * y failed() lo busca por tipo y dueño (ver proceso_visible_abierto()).
+         */
+        $total_articulos = count($this->article_ids);
+        $proceso = BackgroundProcessHelper::iniciar($this->user_id, 'imagenes_automaticas', 'Imágenes automáticas', [
+            'total'   => $total_articulos,
+            'unidad'  => 'artículos',
+            'detalle' => $total_articulos . ' artículos',
+            'etapa'   => 'Buscando imágenes',
+        ]);
+        $articulos_recorridos = 0;
+
         foreach ($this->article_ids as $article_id) {
             $attempted_article_ids[] = $article_id;
+
+            /*
+             * Un artículo por vuelta, termine como termine (imagen asignada, salteado o sin
+             * cuota). Se suma ACÁ arriba y no al final porque el cuerpo sale por varios
+             * continue/break; los números parciales son los de las vueltas ya cerradas. El
+             * helper regula el broadcast, así que llamarlo por artículo no satura Pusher.
+             */
+            $articulos_recorridos++;
+            BackgroundProcessHelper::incrementar($proceso, 1, [
+                'etapa'     => 'Artículo ' . $articulos_recorridos . ' de ' . $total_articulos,
+                'resultado' => [
+                    'procesados'            => $processed,
+                    'saltados'              => $skipped,
+                    'a_revisar'             => $needs_review,
+                    'sin_procesar_por_cuota' => $skipped_by_quota,
+                ],
+            ]);
 
             $article = Article::where('id', $article_id)
                 ->where('user_id', $this->user_id)
@@ -668,6 +700,17 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             $skipped_items
         ));
 
+        /*
+         * Cierre del registro visible con los mismos contadores del evento. Si el corte fue por
+         * cuota, la etapa lo dice: un "Terminado" a secas con la mitad sin procesar engaña.
+         */
+        BackgroundProcessHelper::completar($proceso, [
+            'procesados'            => $processed,
+            'saltados'              => $skipped,
+            'a_revisar'             => $needs_review,
+            'sin_procesar_por_cuota' => $skipped_by_quota,
+        ], $quota_reached ? 'Se agotó la cuota diaria de búsquedas' : 'Terminado');
+
         Log::info('ProcessArticleBatchImagesJob: finalizado.', [
             'user_id'             => $this->user_id,
             'batch_uuid'          => $batch_uuid,
@@ -681,6 +724,38 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
             // (grupo 217, prompt 02).
             'attempts_registrados' => ArticleImageSearchAttempt::where('batch_uuid', $batch_uuid)->count(),
         ]);
+    }
+
+    /**
+     * Cierra en fallo el registro visible cuando el job muere: por una excepción del handle()
+     * (que no tiene catch, así que con $tries = 1 Laravel llega acá en el mismo proceso) o por
+     * una muerte sin catch (OOM, timeout, worker reiniciado), donde failed() corre en un
+     * proceso fresco. Hasta esta misión el job no tenía failed(): el usuario se quedaba sin el
+     * evento de resumen y sin ninguna explicación.
+     *
+     * @param  \Throwable $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        $motivo = !is_null($e) && $e->getMessage() !== ''
+            ? $e->getMessage()
+            : 'El proceso se interrumpió sin dejar traza (probable falta de memoria, timeout o worker reiniciado).';
+
+        BackgroundProcessHelper::fallar($this->proceso_visible_abierto(), $motivo);
+    }
+
+    /**
+     * El registro visible abierto de imágenes automáticas de este comercio, para failed(): la
+     * instancia sobre la que corre failed() es la deserializada del payload original, así que
+     * nada de lo que handle() guardó en memoria existe ahí. Se toma el más nuevo por tipo y
+     * dueño; si ya se cerró, activos() no lo devuelve y fallar() no hace nada.
+     *
+     * @return \App\Models\BackgroundProcess|null
+     */
+    private function proceso_visible_abierto()
+    {
+        return BackgroundProcessHelper::ultimo_activo($this->user_id, 'imagenes_automaticas');
     }
 
     /**

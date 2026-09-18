@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
@@ -139,12 +140,22 @@ class RunExcelAnalysisJob implements ShouldQueue
             ->where('created_at', '<', now()->subDays(2))
             ->delete();
 
+        /*
+         * Registro visible del proceso (misión procesos-en-segundo-plano, 18/9/2026). Se abre
+         * acá, cuando el worker ya levantó la corrida, y de ahí en adelante cada hito de
+         * `progreso` que esta corrida ya escribía se replica con etapa(): viaja como porcentaje
+         * sobre 100, que es como la SPA lo pinta. Se busca por referencia a la corrida en cada
+         * hito; el id de la fila no se guarda en ningún lado.
+         */
+        $this->iniciar_proceso_en_segundo_plano($run);
+
         /* Hito de progreso inicial: recién estamos por abrir el archivo. */
         $run->update([
             'estado'   => 'procesando',
             'progreso' => 5,
             'paso'     => 'Leyendo el archivo…',
         ]);
+        $this->etapa_del_proceso_en_segundo_plano($run, 'Leyendo el archivo…', 5);
 
         /* Ruta absoluta del Excel, guardado previamente por el controller. */
         $excel_full_path = storage_path('app/' . $run->excel_path);
@@ -224,6 +235,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'progreso' => 40,
                 'paso'     => 'Analizando el archivo con IA…',
             ]);
+            $this->etapa_del_proceso_en_segundo_plano($run, 'Analizando el archivo con IA…', 40);
 
             $analysis = $analyzer->analyze($excel_full_path, $original_filename, $opciones);
 
@@ -298,6 +310,9 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'resultado'         => $resultado,
                 'codigos_proveedor' => $codigos_proveedor,
             ]);
+
+            /* El hito del 100 es el cierre: completar() ya deja porcentaje 100 y etapa "Terminado". */
+            $this->completar_proceso_en_segundo_plano($run);
 
             $this->notificar_fin($run);
 
@@ -434,6 +449,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'progreso' => 30,
                 'paso'     => 'Calculando estadísticas…',
             ]);
+            $this->etapa_del_proceso_en_segundo_plano($run, 'Calculando estadísticas…', 30);
 
             /*
              * Recalcular duplicate_stats con el proveedor real confirmado por el usuario,
@@ -491,6 +507,7 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'progreso' => 80,
                 'paso'     => 'Generando recomendación con IA…',
             ]);
+            $this->etapa_del_proceso_en_segundo_plano($run, 'Generando recomendación con IA…', 80);
 
             /* Generar recomendación con los stats recalculados para el proveedor confirmado. */
             $recomendacion = $analyzer->ask_claude_for_recomendation($stats, $column_mapping, $formatos_numericos, $duplicados_con_nombres);
@@ -514,6 +531,9 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'paso'      => null,
                 'resultado' => $resultado,
             ]);
+
+            /* Mismo criterio que en handle_analisis(): el 100 es el cierre. */
+            $this->completar_proceso_en_segundo_plano($run);
 
             $this->notificar_fin($run);
 
@@ -576,7 +596,141 @@ class RunExcelAnalysisJob implements ShouldQueue
             'error'  => $mensaje,
         ]);
 
+        /*
+         * Registro visible del proceso: mismo mensaje que ve el usuario en el modal. Cubre las
+         * cinco salidas de error del handle() y el failed() del job (que entra por acá), sin que
+         * ninguna pueda olvidarse; fallar() es idempotente, así que el doble camino no duplica.
+         */
+        $this->fallar_proceso_en_segundo_plano($run, $mensaje);
+
         $this->notificar_fin($run);
+    }
+
+    /**
+     * Abre el registro visible del proceso para esta corrida (misión procesos-en-segundo-plano).
+     *
+     * El título depende del tipo de corrida, que es lo que el usuario está esperando: la
+     * recomendación es el segundo tramo del mismo modal y no "otro análisis". El nombre del
+     * archivo sale de datos_de_presentacion(), que para una recomendación lo hereda del análisis
+     * padre. `total` va en 100 desde el alta para que la barra sea determinada desde el primer
+     * cuadro (los hitos viajan como porcentaje).
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @return void
+     */
+    protected function iniciar_proceso_en_segundo_plano(ExcelAnalysisRun $run)
+    {
+        try {
+            $archivo = $this->nombre_del_archivo($run);
+
+            $titulo = $run->tipo === 'recomendacion'
+                ? 'Recomendación de importación'
+                : 'Análisis del Excel con IA';
+
+            BackgroundProcessHelper::iniciar($run->user_id, 'analisis_excel', $titulo, [
+                'auth_user_id' => empty($run->auth_user_id) ? null : $run->auth_user_id,
+                'referencia'   => $run,
+                'detalle'      => $archivo,
+                'total'        => 100,
+                /* La misma etapa que el primer hito, para que el alta no viaje con la etapa vacía. */
+                'etapa'        => 'Leyendo el archivo…',
+                'resultado'    => is_null($archivo) ? [] : ['archivo' => $archivo],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('RunExcelAnalysisJob: no se pudo abrir el proceso en segundo plano (la corrida sigue).', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Replica un hito de `progreso` de la corrida en el registro visible del proceso.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @param  string                        $paso      Texto del hito (el mismo `paso` de la corrida).
+     * @param  int                           $progreso  0..100.
+     * @return void
+     */
+    protected function etapa_del_proceso_en_segundo_plano(ExcelAnalysisRun $run, $paso, $progreso)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($run);
+
+            if (!is_null($proceso)) {
+                BackgroundProcessHelper::etapa($proceso, $paso, $progreso);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('RunExcelAnalysisJob: no se pudo registrar el hito del proceso en segundo plano (la corrida sigue).', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso como terminado.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @return void
+     */
+    protected function completar_proceso_en_segundo_plano(ExcelAnalysisRun $run)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($run);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            $archivo = $this->nombre_del_archivo($run);
+
+            BackgroundProcessHelper::completar($proceso, is_null($archivo) ? [] : ['archivo' => $archivo]);
+        } catch (\Throwable $e) {
+            Log::warning('RunExcelAnalysisJob: no se pudo cerrar el proceso en segundo plano (la corrida terminó igual).', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso como fallido.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @param  string                        $mensaje  El mismo texto que ve el usuario.
+     * @return void
+     */
+    protected function fallar_proceso_en_segundo_plano(ExcelAnalysisRun $run, $mensaje)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($run);
+
+            if (!is_null($proceso)) {
+                BackgroundProcessHelper::fallar($proceso, $mensaje);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('RunExcelAnalysisJob: no se pudo marcar el fallo del proceso en segundo plano.', [
+                'excel_analysis_run_id' => $run->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Nombre original del archivo, o null si la corrida no lo tiene (corridas viejas, o una
+     * recomendación cuyo análisis padre ya se limpió).
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @return string|null
+     */
+    protected function nombre_del_archivo(ExcelAnalysisRun $run)
+    {
+        $presentacion = $run->datos_de_presentacion();
+
+        $archivo = trim((string) $presentacion['original_filename']);
+
+        return $archivo === '' ? null : $archivo;
     }
 
     /**

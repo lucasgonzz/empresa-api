@@ -64,7 +64,10 @@ class InventoryPerformanceController extends Controller
      */
     function dispatch_generacion($user_id) {
 
-        InventoryPerformanceHelper::encolar_generacion($user_id);
+        // Quién apretó el botón (dueño o empleado): con eso el reporte aparece en la píldora de
+        // procesos. El comando nocturno no lo pasa y por eso no se registra (misión
+        // procesos-en-segundo-plano, 18/9/2026).
+        InventoryPerformanceHelper::encolar_generacion($user_id, $this->userId(false));
     }
 
     function get_created_inventory_performance($with_all = false) {

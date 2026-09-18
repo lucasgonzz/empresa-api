@@ -3,10 +3,12 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
+use App\Models\Provider;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use Illuminate\Bus\Queueable;
@@ -157,6 +159,15 @@ class RollbackArticleImportHistory implements ShouldQueue
             return;
         }
 
+        /*
+         * Registro visible del proceso (misión procesos-en-segundo-plano, 18/9/2026). Se abre
+         * recién después de validar el owner: un rollback pedido por alguien que no es el dueño
+         * no tiene por qué aparecer en la lista del dueño. Sin total (barra indeterminada): la
+         * reversión es una sola transacción, no hay unidades que contar en el medio. Se busca
+         * por referencia al ImportHistory al cerrar; el id no se guarda en el job.
+         */
+        $this->iniciar_proceso_en_segundo_plano($import_history);
+
         /**
          * No permitimos rollback mientras la importación esté activa para
          * evitar conflictos con chunks que aún puedan modificar artículos.
@@ -172,6 +183,10 @@ class RollbackArticleImportHistory implements ShouldQueue
                     'rollback_status' => 'fallido',
                     'rollback_error'  => 'La importacion volvio a quedar en curso antes de que el job pudiera revertirla',
                 ]);
+
+            /* El registro tiene que decir lo mismo que rollback_error: falló, y por qué. */
+            $this->fallar_proceso_en_segundo_plano('La importación volvió a quedar en curso antes de que se pudiera revertirla.');
+
             return;
         }
 
@@ -412,6 +427,15 @@ class RollbackArticleImportHistory implements ShouldQueue
             $import_history->save();
         });
 
+        /*
+         * Registro visible del proceso: se cierra DESPUÉS del commit, con los mismos dos números
+         * del aviso de abajo. Si la transacción tira, no se llega acá y lo cierra failed().
+         */
+        $this->completar_proceso_en_segundo_plano([
+            'restaurados' => count($restore_map),
+            'eliminados'  => count($created_article_ids),
+        ]);
+
         /**
          * Enviamos una notificación global al finalizar para mantener el mismo
          * comportamiento UX que el cierre de importación de artículos.
@@ -478,6 +502,112 @@ class RollbackArticleImportHistory implements ShouldQueue
                 'rollback_status' => 'fallido',
                 'rollback_error'  => substr($exception->getMessage(), 0, 500),
             ]);
+
+        /*
+         * Registro visible del proceso: hasta esta misión el fallo quedaba solo en rollback_error,
+         * sin ningún aviso; ahora el registro lo dice (y emite). Corre fuera de la transacción
+         * del handle(), igual que la marca de arriba, así que sobrevive al rollback de la base.
+         */
+        $this->fallar_proceso_en_segundo_plano(substr($exception->getMessage(), 0, 500));
+    }
+
+    /**
+     * Abre el registro visible del proceso para esta reversión (misión procesos-en-segundo-plano).
+     *
+     * El dueño es el del historial (ya validado contra quien pidió la reversión) y el detalle
+     * identifica la importación que se está deshaciendo: número y proveedor, si lo tiene.
+     * Nunca tira: es presentación, y una excepción acá abortaría una reversión que el usuario
+     * ya no puede volver a pedir (rollback_status quedaría en 'encolado').
+     *
+     * @param  \App\Models\ImportHistory  $import_history
+     * @return void
+     */
+    protected function iniciar_proceso_en_segundo_plano(ImportHistory $import_history)
+    {
+        try {
+            $partes = ['Importación #' . $import_history->id];
+
+            if (!is_null($import_history->provider_id)) {
+                $provider = Provider::find($import_history->provider_id);
+
+                if (!is_null($provider) && trim((string) $provider->name) !== '') {
+                    $partes[] = 'Proveedor ' . trim((string) $provider->name);
+                }
+            }
+
+            BackgroundProcessHelper::iniciar($import_history->user_id, 'rollback_importacion', 'Reversión de una importación', [
+                'auth_user_id' => $this->owner_user_id,
+                'referencia'   => $import_history,
+                'detalle'      => implode(' · ', $partes),
+                'etapa'        => 'Revirtiendo los artículos',
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('RollbackArticleImportHistory: no se pudo abrir el proceso en segundo plano (la reversión sigue).', [
+                'import_history_id' => $this->import_history_id,
+                'error'             => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso como terminado, con los contadores de la reversión.
+     *
+     * @param  array  $resultado  ['restaurados' => int, 'eliminados' => int]
+     * @return void
+     */
+    protected function completar_proceso_en_segundo_plano(array $resultado)
+    {
+        try {
+            $proceso = $this->proceso_en_segundo_plano();
+
+            if (!is_null($proceso)) {
+                BackgroundProcessHelper::completar($proceso, $resultado);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('RollbackArticleImportHistory: no se pudo cerrar el proceso en segundo plano (la reversión terminó igual).', [
+                'import_history_id' => $this->import_history_id,
+                'error'             => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso como fallido. Idempotente del lado del helper.
+     *
+     * @param  string  $mensaje
+     * @return void
+     */
+    protected function fallar_proceso_en_segundo_plano($mensaje)
+    {
+        try {
+            $proceso = $this->proceso_en_segundo_plano();
+
+            if (!is_null($proceso)) {
+                BackgroundProcessHelper::fallar($proceso, $mensaje);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('RollbackArticleImportHistory: no se pudo marcar el fallo del proceso en segundo plano.', [
+                'import_history_id' => $this->import_history_id,
+                'error'             => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * El proceso abierto de esta reversión, buscado por referencia al ImportHistory (releído
+     * liviano: solo hace falta la clave). Null si no existe o ya se cerró.
+     *
+     * @return \App\Models\BackgroundProcess|null
+     */
+    protected function proceso_en_segundo_plano()
+    {
+        $import_history = ImportHistory::select('id')->find($this->import_history_id);
+
+        if (is_null($import_history)) {
+            return null;
+        }
+
+        return BackgroundProcessHelper::por_referencia($import_history);
     }
 
     /**

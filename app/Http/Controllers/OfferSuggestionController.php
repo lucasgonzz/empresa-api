@@ -152,7 +152,10 @@ class OfferSuggestionController extends Controller
         $client_count = Client::where('user_id', $model->user_id)->count();
 
         if ($client_count > self::LIMITE_SINCRONICO) {
-            dispatch(new GenerateOfferSuggestionChunksJob($model->id));
+            // El true es lo que la muestra en la píldora de procesos: sólo en la cola, porque el
+            // camino inline de abajo termina dentro de este mismo request (misión
+            // procesos-en-segundo-plano, 18/9/2026).
+            dispatch(new GenerateOfferSuggestionChunksJob($model->id, true));
             return;
         }
 

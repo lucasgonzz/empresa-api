@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Events\ArticleBatchDescriptionsProcessed;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\Article;
 use App\Models\Description;
 use App\Models\GeocoderCounter;
@@ -159,8 +160,37 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             $batch_uuid
         ));
 
+        /*
+         * Registro visible (misión procesos-en-segundo-plano, 18/9/2026), mismo molde que el
+         * job de imágenes: vive en esta variable mientras corre y failed() lo busca por tipo y
+         * dueño (ver proceso_visible_abierto()).
+         */
+        $total_articulos = count($this->article_ids);
+        $proceso = BackgroundProcessHelper::iniciar($this->user_id, 'descripciones_ia', 'Descripciones inteligentes', [
+            'total'   => $total_articulos,
+            'unidad'  => 'artículos',
+            'detalle' => $total_articulos . ' artículos',
+            'etapa'   => 'Generando descripciones',
+        ]);
+        $articulos_recorridos = 0;
+
         foreach ($this->article_ids as $article_id) {
             $attempted_article_ids[] = $article_id;
+
+            /*
+             * Un artículo por vuelta, termine como termine. Se suma acá arriba porque el cuerpo
+             * sale por varios continue/break; los parciales son de las vueltas ya cerradas.
+             * "saltados" junta los sin evidencia y los que ya tenían descripción: para el
+             * usuario son lo mismo (no se les generó nada), y el evento propio ya los desglosa.
+             */
+            $articulos_recorridos++;
+            BackgroundProcessHelper::incrementar($proceso, 1, [
+                'etapa'     => 'Artículo ' . $articulos_recorridos . ' de ' . $total_articulos,
+                'resultado' => [
+                    'procesados' => $processed,
+                    'saltados'   => $skipped + $skipped_existing,
+                ],
+            ]);
 
             $article = Article::where('id', $article_id)
                 ->where('user_id', $this->user_id)
@@ -335,6 +365,19 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             $batch_uuid
         ));
 
+        /*
+         * Cierre del registro visible con los contadores del evento. `a_revisar` y
+         * `sin_procesar_por_cuota` no están en el contrato de este tipo, pero son escalares que
+         * el detalle genérico muestra y el usuario los entiende; el corte por cuota va en la
+         * etapa, igual que en imágenes.
+         */
+        BackgroundProcessHelper::completar($proceso, [
+            'procesados'            => $processed,
+            'saltados'              => $skipped + $skipped_existing,
+            'a_revisar'             => $needs_review,
+            'sin_procesar_por_cuota' => $skipped_by_quota,
+        ], $quota_reached ? 'Se agotó la cuota diaria de búsquedas' : 'Terminado');
+
         Log::info('[DescripcionesIA] Batch finalizado.', [
             'user_id'          => $this->user_id,
             'batch_uuid'       => $batch_uuid,
@@ -345,6 +388,35 @@ class ProcessArticleBatchDescriptionsJob implements ShouldQueue
             'skipped_by_quota' => $skipped_by_quota,
             'quota_reached'    => $quota_reached,
         ]);
+    }
+
+    /**
+     * Cierra en fallo el registro visible cuando el job muere (excepción del handle(), que no
+     * tiene catch, o muerte sin catch: OOM, timeout, worker reiniciado). Hasta esta misión el
+     * job no tenía failed(): el usuario se quedaba sin resumen y sin explicación.
+     *
+     * @param  \Throwable $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        $motivo = !is_null($e) && $e->getMessage() !== ''
+            ? $e->getMessage()
+            : 'El proceso se interrumpió sin dejar traza (probable falta de memoria, timeout o worker reiniciado).';
+
+        BackgroundProcessHelper::fallar($this->proceso_visible_abierto(), $motivo);
+    }
+
+    /**
+     * El registro visible abierto de descripciones de este comercio, para failed(): esa
+     * instancia es la deserializada del payload original y no tiene lo que handle() guardó en
+     * memoria. El más nuevo por tipo y dueño; si ya se cerró, activos() no lo devuelve.
+     *
+     * @return \App\Models\BackgroundProcess|null
+     */
+    private function proceso_visible_abierto()
+    {
+        return BackgroundProcessHelper::ultimo_activo($this->user_id, 'descripciones_ia');
     }
 
     /**

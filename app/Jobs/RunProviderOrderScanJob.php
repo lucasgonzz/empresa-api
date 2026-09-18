@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\ProviderOrderScan;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -98,12 +99,20 @@ class RunProviderOrderScanJob implements ShouldQueue
             return;
         }
 
+        /*
+         * Registro visible del proceso (misión procesos-en-segundo-plano, 18/9/2026): mismo
+         * patrón que RunExcelAnalysisJob. Se abre cuando el worker levanta el escaneo y cada hito
+         * de `progreso` que ya se escribía se replica con etapa(), como porcentaje sobre 100.
+         */
+        $this->iniciar_proceso_en_segundo_plano($scan);
+
         /* Hito de progreso inicial: recién estamos por abrir las fotos. */
         $scan->update([
             'estado'   => 'procesando',
             'progreso' => 10,
             'paso'     => 'Leyendo las fotos…',
         ]);
+        $this->etapa_del_proceso_en_segundo_plano($scan, 'Leyendo las fotos…', 10);
 
         try {
             /* Hito de progreso: entramos a la parte lenta (la llamada de visión). */
@@ -111,6 +120,7 @@ class RunProviderOrderScanJob implements ShouldQueue
                 'progreso' => 40,
                 'paso'     => 'Analizando la factura con IA…',
             ]);
+            $this->etapa_del_proceso_en_segundo_plano($scan, 'Analizando la factura con IA…', 40);
 
             $service   = new EscaneoFacturaCompraService();
             $resultado = $service->escanear($scan);
@@ -122,6 +132,9 @@ class RunProviderOrderScanJob implements ShouldQueue
                 'error'     => null,
                 'resultado' => $resultado,
             ]);
+
+            /* El hito del 100 es el cierre: completar() deja porcentaje 100 y los artículos leídos. */
+            $this->completar_proceso_en_segundo_plano($scan);
 
             $this->notificar_fin($scan);
 
@@ -166,7 +179,141 @@ class RunProviderOrderScanJob implements ShouldQueue
             'error'  => $mensaje,
         ]);
 
+        /*
+         * Registro visible del proceso: mismo mensaje que ve el usuario. Cubre las salidas de
+         * error del handle() y el failed() del job (que entra por acá); fallar() es idempotente.
+         */
+        $this->fallar_proceso_en_segundo_plano($scan, $mensaje);
+
         $this->notificar_fin($scan);
+    }
+
+    /**
+     * Abre el registro visible del proceso para este escaneo (misión procesos-en-segundo-plano).
+     *
+     * El proveedor sale de contexto_para_frontend(), que ya resuelve compra → proveedor sin
+     * romperse si alguno no está. `total` va en 100 desde el alta para que la barra sea
+     * determinada desde el primer cuadro (los hitos viajan como porcentaje).
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @return void
+     */
+    protected function iniciar_proceso_en_segundo_plano(ProviderOrderScan $scan)
+    {
+        try {
+            $proveedor = $this->nombre_del_proveedor($scan);
+
+            BackgroundProcessHelper::iniciar($scan->user_id, 'escaneo_factura', 'Escaneo de factura de compra', [
+                'auth_user_id' => empty($scan->auth_user_id) ? null : $scan->auth_user_id,
+                'referencia'   => $scan,
+                'detalle'      => is_null($proveedor) ? null : 'Proveedor ' . $proveedor,
+                'total'        => 100,
+                /* La misma etapa que el primer hito, para que el alta no viaje con la etapa vacía. */
+                'etapa'        => 'Leyendo las fotos…',
+                'resultado'    => is_null($proveedor) ? [] : ['proveedor' => $proveedor],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('RunProviderOrderScanJob: no se pudo abrir el proceso en segundo plano (el escaneo sigue).', [
+                'provider_order_scan_id' => $scan->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Replica un hito de `progreso` del escaneo en el registro visible del proceso.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @param  string                         $paso      Texto del hito (el mismo `paso` del escaneo).
+     * @param  int                            $progreso  0..100.
+     * @return void
+     */
+    protected function etapa_del_proceso_en_segundo_plano(ProviderOrderScan $scan, $paso, $progreso)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($scan);
+
+            if (!is_null($proceso)) {
+                BackgroundProcessHelper::etapa($proceso, $paso, $progreso);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('RunProviderOrderScanJob: no se pudo registrar el hito del proceso en segundo plano (el escaneo sigue).', [
+                'provider_order_scan_id' => $scan->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso como terminado, con cuántos artículos se leyeron.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan  Ya con `resultado` persistido.
+     * @return void
+     */
+    protected function completar_proceso_en_segundo_plano(ProviderOrderScan $scan)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($scan);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            $contexto  = $scan->contexto_para_frontend();
+            $proveedor = isset($contexto['provider_nombre']) ? trim((string) $contexto['provider_nombre']) : '';
+
+            $resultado = ['articulos' => isset($contexto['cantidad_articulos']) ? (int) $contexto['cantidad_articulos'] : 0];
+
+            if ($proveedor !== '') {
+                $resultado['proveedor'] = $proveedor;
+            }
+
+            BackgroundProcessHelper::completar($proceso, $resultado);
+        } catch (\Throwable $e) {
+            Log::warning('RunProviderOrderScanJob: no se pudo cerrar el proceso en segundo plano (el escaneo terminó igual).', [
+                'provider_order_scan_id' => $scan->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso como fallido.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @param  string                         $mensaje  El mismo texto que ve el usuario.
+     * @return void
+     */
+    protected function fallar_proceso_en_segundo_plano(ProviderOrderScan $scan, $mensaje)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($scan);
+
+            if (!is_null($proceso)) {
+                BackgroundProcessHelper::fallar($proceso, $mensaje);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('RunProviderOrderScanJob: no se pudo marcar el fallo del proceso en segundo plano.', [
+                'provider_order_scan_id' => $scan->id,
+                'message'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Nombre del proveedor de la compra escaneada, o null si no se puede resolver. Reusa
+     * contexto_para_frontend() en vez de repetir la cadena compra → proveedor con sus guardas.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @return string|null
+     */
+    protected function nombre_del_proveedor(ProviderOrderScan $scan)
+    {
+        $contexto = $scan->contexto_para_frontend();
+
+        $nombre = isset($contexto['provider_nombre']) ? trim((string) $contexto['provider_nombre']) : '';
+
+        return $nombre === '' ? null : $nombre;
     }
 
     /**
