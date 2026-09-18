@@ -10,8 +10,8 @@ use App\Models\User;
  *
  * Arma la estructura contable formal:
  *
- *   Ventas brutas
- *   (− Devoluciones / NC)
+ *   Ventas brutas                              → SIN IVA (ver más abajo)
+ *   (− Devoluciones / NC)                      → también sin IVA
  *   = Ventas netas
  *   (− Costo de mercadería vendida, a costo real Capa 1)
  *   = Resultado bruto                          → + margen bruto %
@@ -19,6 +19,14 @@ use App\Models\User;
  *   = Resultado operativo
  *   (− Impuestos y costos financieros: IIBB devengado, comisiones de cobro)
  *   = Resultado neto                           → + margen neto %
+ *
+ * 🔴 Las dos primeras líneas vienen NETAS DEL IVA DECLARADO desde la misión
+ * saneo-ganancia-ventas (17/9/2026). Hasta entonces `ventas_brutas()` sumaba `sales.total` (con
+ * IVA) y se le restaba un costo de mercadería que es neto: el "margen bruto %" salía inflado en el
+ * IVA débito completo, y el renglón se llamaba "Ventas netas", que en contabilidad significa
+ * justamente sin IVA. El IVA que se descuenta es el del COMPROBANTE, así que una venta sin
+ * comprobante entra entera — que es lo correcto, porque ahí no se declaró nada. El detalle del
+ * criterio está en `ContabilidadRepository::ventas_brutas()` y en `IvaDeVentaHelper`.
  *
  * Reemplaza la nomenclatura confusa del reporte viejo (`PerformanceHelper`/`CompanyPerformance`):
  * lo que ahí se llama `ingresos_brutos` es en realidad `resultado_bruto`, y `rentabilidad` es
@@ -104,6 +112,29 @@ class EstadoResultadosHelper
         }
 
         return UserHelper::hasExtencion('ventas_en_dolares', $user);
+    }
+
+    /**
+     * Cuántas ventas del período entraron a `ventas_brutas()` SIN netear, porque su comprobante
+     * autorizado no tiene el `importe_iva` medido.
+     *
+     * Es un aviso de integridad, no un renglón: con un número mayor a cero, el margen bruto de ese
+     * período está un poco alto, y se arregla midiendo el IVA de esos comprobantes (ver el PHPDoc
+     * de `IvaDeVentaHelper`).
+     * Mismo criterio y mismo motivo que `notas_credito_sin_medir()` en la Posición Fiscal: un cero
+     * medido y un cero por falta de dato no se pueden ver iguales en pantalla.
+     *
+     * Va acá y no adentro de `calcular_lineas_por_moneda()` porque no tiene dimensión de moneda y
+     * `combinar_lineas()` solo acepta líneas por moneda (regla dura del prompt original).
+     *
+     * @param  int $user_id
+     * @param  string $desde
+     * @param  string $hasta
+     * @return int
+     */
+    private static function ventas_con_iva_sin_medir($user_id, $desde, $hasta)
+    {
+        return ContabilidadRepository::ventas_con_iva_sin_medir($user_id, $desde, $hasta);
     }
 
     /**
@@ -287,6 +318,7 @@ class EstadoResultadosHelper
             'hasta'                           => $hasta,
             'iibb_determinado'                => $iibb_determinado,
             'resultado_neto'                  => $resultado_neto,
+            'ventas_con_iva_sin_medir'        => self::ventas_con_iva_sin_medir($user_id, $desde, $hasta),
             'lineas_no_atribuibles_a_moneda'  => [],
             'cotizacion_estimada'             => false,
         ]);
@@ -320,6 +352,7 @@ class EstadoResultadosHelper
             // los márgenes con ventas netas en 0.
             'iibb_determinado'                => null,
             'resultado_neto'                  => $resultado_neto,
+            'ventas_con_iva_sin_medir'        => self::ventas_con_iva_sin_medir($user_id, $desde, $hasta),
             'lineas_no_atribuibles_a_moneda'  => ['iibb_determinado'],
             'cotizacion_estimada'             => false,
         ]);
@@ -370,6 +403,7 @@ class EstadoResultadosHelper
             'hasta'                           => $hasta,
             'iibb_determinado'                => $iibb_determinado,
             'resultado_neto'                  => $resultado_neto,
+            'ventas_con_iva_sin_medir'        => self::ventas_con_iva_sin_medir($user_id, $desde, $hasta),
             'lineas_no_atribuibles_a_moneda'  => [],
             'cotizacion_estimada'             => true,
         ]);

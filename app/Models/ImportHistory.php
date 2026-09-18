@@ -16,6 +16,14 @@ class ImportHistory extends Model
         /* Seguimiento de reversión (grupo 305, prompt 01). */
         'rollback_requested_at'  => 'datetime',
         'rolled_back_at'         => 'datetime',
+        /*
+         * Resultado libre de una importación que no tiene su propio modelo de detalle (hoy: el
+         * diff pedido/recibido de una compra). Ver App\Jobs\ProcessProviderOrderArticleImport,
+         * misión `import-excel-compras-chunks`, 14/9/2026. Solo aplica al LEER una instancia
+         * (find/first): un update() masivo por query builder sigue necesitando json_encode a
+         * mano, el cast no interviene ahí.
+         */
+        'operaciones'            => 'array',
     ];
 
     function chunks() {

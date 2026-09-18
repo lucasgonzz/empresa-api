@@ -325,6 +325,21 @@ return [
         // bundle solo: se le pasa por `guzzle_ca_bundle`, o cae al de `zippin` que ya está cargado.
         'guzzle_verify'    => filter_var(env('ZIPNOVA_GUZZLE_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
         'guzzle_ca_bundle' => env('ZIPNOVA_GUZZLE_CA_BUNDLE', ''),
+
+        /*
+         * API Token + API Secret para conectar SOLA una demo (o una base local) que no tiene
+         * ninguna cuenta de Zipnova conectada todavía (misión mp-zipnova-seed-local, 17/9/2026,
+         * mismo patrón que 'demo_access_token'/'demo_public_key' del bloque 'mercadopago' de
+         * arriba). Van acá y no se leen con env() directo en el código de aplicación: con
+         * config:cache activo (lo normal en producción) env() fuera de config/ devuelve el
+         * default — ver el comentario de 'demo_access_token' en el bloque 'mercadopago'.
+         *
+         * demo_account_id es opcional: sin él, el conector queda sin platform_user_id (mismo
+         * criterio que un conector recién creado por OAuth antes de resolver la cuenta).
+         */
+        'demo_api_token'   => env('ZIPNOVA_DEMO_API_TOKEN'),
+        'demo_api_secret'  => env('ZIPNOVA_DEMO_API_SECRET'),
+        'demo_account_id'  => env('ZIPNOVA_DEMO_ACCOUNT_ID'),
     ],
 
     /**

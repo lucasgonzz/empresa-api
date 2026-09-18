@@ -51,6 +51,13 @@ class OpcionesDeCargaIaHelper {
     const MOTIVOS_NO_USABLES = [
         'cheque'             => 'Los cheques se cargan desde la pantalla.',
         'tarjeta_de_credito' => 'Los cobros con tarjeta de crédito (recargo y cuotas) se cargan desde la pantalla.',
+        /*
+         * La retención pide los datos del certificado que da el cliente (impuesto, número, fecha,
+         * régimen), y el asistente no los tiene: armar la fila sin ellos guardaría un certificado
+         * en blanco que después nadie completa. Sumado a que PagosIaHelper le pone caja a toda
+         * fila con monto, y una retención no entra a ninguna caja.
+         */
+        'retencion'          => 'Las retenciones se cargan desde la pantalla, con los datos del certificado.',
     ];
 
     /**

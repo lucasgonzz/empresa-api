@@ -1257,22 +1257,61 @@ class SembrarDatosDePrueba extends Command
             ]);
         }
 
+        /*
+         * IVA que van a declarar los comprobantes de venta de este mes (misión
+         * saneo-ganancia-ventas, 17/9/2026).
+         *
+         * 🔴 Por qué aparece en la planilla: desde esa misión, `ContabilidadRepository::ventas_brutas()`
+         * informa las ventas NETAS del IVA declarado por cada venta (el renglón se llama "Ventas
+         * netas" y se compara contra un costo de mercadería que también es neto). La planilla de
+         * control existe para predecir EXACTAMENTE lo que van a mostrar los reportes, así que
+         * `ventas_brutas`, `ventas_netas`, `resultado_bruto` y `resultado_operativo` bajan por este
+         * número. El bruto original queda en `ventas_brutas_con_iva`, que es el que sigue mandando
+         * toda la aritmética del mes (compras, IIBB, cobranzas: nada de eso cambió).
+         *
+         * Se suma de las operaciones ya planificadas —no se estima con un porcentaje— porque es
+         * exactamente lo que va a terminar escrito en `afip_tickets.importe_iva`: se factura una
+         * venta de cada dos (paridad del índice) y el importe se redondea por venta.
+         */
+        $iva_de_ventas_facturadas = 0.0;
+
+        foreach ($operaciones as $operacion) {
+
+            if ($operacion['tipo'] !== 'venta_mostrador' && $operacion['tipo'] !== 'venta_cuenta_corriente') {
+                continue;
+            }
+
+            if (empty($operacion['datos']['facturar'])) {
+                continue;
+            }
+
+            $iva_de_ventas_facturadas += (float) $operacion['datos']['importe_iva'];
+        }
+
+        $iva_de_ventas_facturadas = round($iva_de_ventas_facturadas, 2);
+
         $control = [
             'meses_atras'          => $meses_atras,
             'mes'                  => $inicio_mes->format('Y-m'),
             'es_mes_actual'        => $es_mes_actual,
-            'ventas_brutas'        => $ventas_brutas_mes,
+            // Netas de IVA: es lo que informa el Estado de Resultados (ver el bloque de arriba).
+            'ventas_brutas'        => round($ventas_brutas_mes - $iva_de_ventas_facturadas, 2),
+            'ventas_brutas_con_iva' => $ventas_brutas_mes,
+            'iva_ventas'           => $iva_de_ventas_facturadas,
             'cantidad_ventas'                  => $cantidad_mes,
             'cantidad_ventas_mostrador'        => $cant_mostrador,
             'cantidad_ventas_cuenta_corriente' => $cant_cc,
             'ventas_mostrador'     => $mostrador_total,
             'ventas_cuenta_corriente' => $ventas_cc_total,
+            // Las devoluciones de la semilla NO llevan comprobante (`SemillaHelper::devolucion()` no
+            // crea ningún afip_ticket), así que no tienen IVA propio que netear y este renglón es el
+            // mismo antes y después de la misión saneo-ganancia-ventas.
             'devoluciones'         => $devoluciones_total,
-            'ventas_netas'         => $ventas_netas,
+            'ventas_netas'         => round($ventas_netas - $iva_de_ventas_facturadas, 2),
             'costo'                => $costo_total,
-            'resultado_bruto'      => $resultado_bruto,
+            'resultado_bruto'      => round($resultado_bruto - $iva_de_ventas_facturadas, 2),
             'gastos'               => $gastos_total,
-            'resultado_operativo'  => $resultado_operativo,
+            'resultado_operativo'  => round($resultado_operativo - $iva_de_ventas_facturadas, 2),
             'cobranza_arrastrada'  => $cobranza_arrastrada,
             'cobranza_cuenta_corriente' => $cobranza_cc_total,
             'compras_proveedores'  => $compras_total,

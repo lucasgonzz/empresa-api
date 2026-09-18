@@ -472,6 +472,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // arriba: el show del resource captura cualquier `provider/{algo}`.
     Route::get('provider/{id}/propagar-descuentos/preview', 'ProviderController@propagar_descuentos_preview');
     Route::put('provider/{id}/propagar-descuentos', 'ProviderController@propagar_descuentos');
+    // Boton "Sincronizar articulos" de la ficha del proveedor (mision
+    // sincronizar-descuentos-proveedor, 17/9/2026). ANTES del resource, por el mismo motivo que las
+    // de arriba: el show del resource captura cualquier `provider/{algo}`.
+    Route::get('provider/{id}/sincronizar-descuentos/preview', 'ProviderController@sincronizar_descuentos_preview');
+    Route::get('provider/{id}/sincronizar-descuentos/exportar-conflictos', 'ProviderController@sincronizar_descuentos_exportar_conflictos');
+    Route::put('provider/{id}/sincronizar-descuentos', 'ProviderController@sincronizar_descuentos');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
@@ -493,6 +499,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('provider-order', 'ProviderOrderController');
     Route::post('provider-order/excel/import', 'ProviderOrderController@import_excel_articles');
+    Route::get('provider-order/{id}/import-diff', 'ProviderOrderController@import_diff');
     Route::get('provider-order/from-date/{from_date?}/{until_date?}', 'ProviderOrderController@index');
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');
@@ -1278,6 +1285,13 @@ Route::middleware('admin.api.key')
         // en la próxima corrida.
         Route::get('asistente/informes-pendientes', 'AdminSync\\AsistenteController@informes_pendientes');
         Route::post('asistente/informes/{id}/avisado', 'AdminSync\\AsistenteController@informe_avisado');
+        // Consumo de tokens de IA de este comercio (misión tokens-por-cliente): el admin lo
+        // recolecta todas las noches, lo espeja en su propia base y ahí le pone precio. Solo
+        // LEE ai_token_usages y devuelve contadores; la tabla de precios vive en el admin.
+        // La clave del header se valida adentro del controlador PERO solo si este cliente la
+        // tiene cargada: la mayoría todavía no tiene ADMIN_API_INBOUND_KEY en su .env y un 401
+        // duro dejaría la recolección rota en casi todos. Ver el docblock de rechazo_por_clave().
+        Route::get('consumo-ia', 'AdminSync\\ConsumoIaController@index');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión

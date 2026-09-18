@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
@@ -46,7 +47,7 @@ class BudgetHelper {
 	static function saveSale($budget, $previus_articles) {
 		if (is_null($budget->sale)) {
 	        $ct = new Controller();
-	        $sale = Sale::create([
+	        $sale = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
 	            'num' 					=> $ct->num('sales'),
 	            'user_id' 				=> UserHelper::userId(),
 	            'client_id' 			=> $budget->client_id,
@@ -71,7 +72,25 @@ class BudgetHelper {
 	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
 	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
                 'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
-	        ]);
+	        /*
+	         * El monto del total forzado viaja del presupuesto a la venta (mision
+	         * forzar-total-por-monto, 17/9/2026).
+	         *
+	         * 🔴 VA JUNTO CON `total`, EN LA MISMA LINEA CONCEPTUAL. El total del presupuesto ya es
+	         * el forzado; si la venta se llevara el total pero no el monto, nadie podria volver a
+	         * explicar de donde sale ese numero: el comprobante no tendria renglon de ajuste, el
+	         * prorrateo de AFIP facturaria el total sin forzar y cualquier recalculo del back
+	         * (`getTotalSale()` al confirmar una venta chequeada) pisaria el total con la suma
+	         * pelada de los renglones.
+	         *
+	         * ⚠️ Y ENTRA POR LA GUARDA DE ESQUEMA. Confirmar un presupuesto no es un caso borde: es
+	         * mostrador normal, y es el MISMO circuito que `develop` tapo el 16/9 con la guarda de
+	         * `budget_combo`. En la ventana en la que el codigo esta y la columna no, este
+	         * `$budget->forzar_total_monto` devuelve null sin error —el atributo no existe— y ese
+	         * null viaja igual al INSERT, que revienta con `Unknown column`. Ver
+	         * `ForzarTotalEsquemaHelper`.
+	         */
+	        ], $budget->forzar_total_monto, 'sales'));
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 
 	        Self::attachSaleServices($sale, $budget);
@@ -82,11 +101,47 @@ class BudgetHelper {
 
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
 
+	        /*
+	            🔴 EL `sub_total` DE LA VENTA NACIDA DE UN PRESUPUESTO (mision forzar-total-por-monto,
+	            17/9/2026).
+
+	            Hasta hoy `saveSale()` NO escribia esta columna: `sales.sub_total` se escribe solo en
+	            `SaleController` (alta y actualizacion), desde el request de VENDER. Una venta nacida
+	            de un presupuesto quedaba con `sub_total` en null, y nadie se enteraba porque nadie lo
+	            leia.
+
+	            Lo leen los comprobantes, y esta mision los hizo leerlo de verdad. Con null adentro,
+	            el ticket de 80mm arranca `total_sale` en 0 e imprime "Total $0", despues
+	            "Ajuste -$12   $-12" y despues "Total sin descuentos: $-12"; y la factura A/B imprime
+	            "Total Original: $0". O sea: tres renglones sin sentido en EL comprobante del caso de
+	            uso, justo en el camino que esta misma mision habilito al arrastrar el monto del
+	            presupuesto a la venta.
+
+	            Se calcula con `SaleHelper::get_sub_total()`, que suma los renglones ya adjuntados
+	            —articulos, combos, promociones y servicios, con el descuento por linea aplicado— y
+	            NO aplica ni descuentos ni recargos de venta ni el forzado. Es exactamente la misma
+	            definicion que manda VENDER en el alta, que es lo que hace que el desglose del
+	            comprobante cierre: sub_total menos los renglones del medio da el total.
+
+	            ⚠️ Va DESPUES de adjuntar los cuatro tipos de item: antes, la venta todavia no tiene
+	            renglones y la suma daria 0.
+	        */
+	        $sale->sub_total = SaleHelper::get_sub_total($sale);
+	        $sale->save();
+
 	        if (!$sale->to_check) {
 	        	SaleHelper::create_current_acount($sale);
 	        }
 
 	        SaleTotalesHelper::set_total_cost($sale);
+
+	        /*
+	         * La ganancia de la venta se persiste igual que en el camino normal
+	         * (`SaleHelper::updateOrCreate()`: set_total_cost y enseguida set_sale_ganancia). Hasta
+	         * el 17/9/2026 acá solo se llamaba a set_total_cost, asi que TODA venta nacida de un
+	         * presupuesto se quedaba con `sales.ganancia` en NULL hasta que algo la tocara.
+	         */
+	        SaleHelper::set_sale_ganancia($sale);
 
 
 	        $sale->load('articles');
@@ -134,10 +189,20 @@ class BudgetHelper {
 			
 			$cost = $article->pivot->cost;
 			$price = $article->pivot->price;
-        	$ganancia = (float)$price - (float)$cost;
-			
+			$amount = $article->pivot->amount;
+
+			/*
+			 * 🔴 `article_sale.cost` es UNITARIO y `article_sale.ganancia` es el TOTAL de la linea:
+			 * la convencion la fijan SaleHelper::attachArticle(), SaleTotalesHelper::set_total_cost()
+			 * y ContabilidadRepository::costo_mercaderia_vendida(). Hasta el 17/9/2026 acá se
+			 * guardaba (price − cost) SIN multiplicar por la cantidad, asi que TODA venta nacida de
+			 * un presupuesto tenia la ganancia de linea dividida por la cantidad. Y el presupuesto
+			 * es el camino dominante de las ventas en ferretotal.
+			 */
+        	$ganancia = ((float)$price - (float)$cost) * (float)$amount;
+
 			$sale->articles()->attach($article->id, [
-				'amount'			=> $article->pivot->amount,
+				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $price,
 				'cost'	    		=> $cost,
@@ -454,6 +519,28 @@ class BudgetHelper {
 
 			$total += $total_service;
 		}
+
+		/*
+			EL TOTAL FORZADO, ULTIMO Y SOBRE EL TOTAL COMPLETO (mision forzar-total-por-monto,
+			17/9/2026). Mismo lugar y mismo motivo que en `SaleHelper::getTotalSale()`: el monto es
+			la diferencia contra el total que vio el vendedor en pantalla, asi que aplicarlo antes
+			de los descuentos y recargos haria que esos porcentajes cayeran tambien sobre el.
+
+			🔴 ESTA LINEA ES LA QUE DEJA GUARDAR UN PRESUPUESTO CON EL TOTAL FORZADO. Los dos
+			llamadores de arriba —`BudgetController::store()` y `::duplicate()`— comparan lo que
+			devuelve este metodo contra `budgets.total` y cortan con "El total del presupuesto no
+			corresponde con los productos ingresados" si difieren en mas de 3. Con un total forzado,
+			`budgets.total` ES el forzado; sin sumar el monto aca, la diferencia seria exactamente
+			el monto del forzado y el guardado moriria con un 500 que no nombra la causa. Es el
+			mismo defecto que ya tuvieron los combos (ver el bucle de combos, mas arriba) y el
+			recargo directo a items: un bucket que entra en el `total` del payload pero no en esta
+			cuenta.
+
+			Y ademas hace que la cuenta corriente reciba el numero correcto: `saveCurrentAcount()`
+			usa este mismo metodo para el `debe` del presupuesto.
+		*/
+		$total = SaleHelper::aplicar_forzar_total_monto($budget, $total);
+
 		return $total;
 	}
 

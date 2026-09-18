@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\Afip;
 
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;
 use App\Models\AfipTipoComprobante;
@@ -50,7 +51,58 @@ class MakeAfipTicket {
             
         $ct = new AfipWsController($afip_ticket);
         $result = $ct->init();
+
+        $this->recalcular_ganancia_facturada($sale);
 	}
+
+    /**
+     * Recalcula `sales.ganancia` después de emitir el comprobante (misión saneo-ganancia-ventas,
+     * 17/9/2026).
+     *
+     * 🔴 Sin esto, la fórmula nueva de `SaleHelper::set_sale_ganancia()` no cambiaría NADA en el
+     * camino en vivo. La ganancia se calcula dentro de `SaleHelper::attachProperies()`, que corre
+     * al guardar la venta — o sea SIEMPRE antes de que exista el comprobante: en
+     * `SaleController::store()` la facturación va después (`set_total_a_facturar()` solo calcula
+     * cuánto facturar), y el camino normal de facturar es un request aparte
+     * (`SaleController::makeAfipTicket()`), a veces días más tarde. Medido así el 17/9/2026: la
+     * venta se guardaba con IVA declarado 0 —correcto en ese instante— y ese número quedaba
+     * congelado aunque después se facturara.
+     *
+     * Se recarga la venta de la base en vez de usar la instancia de arriba: entre medio
+     * `AfipWsController` ya le escribió columnas propias (`total_facturado`, `incoterms`), y
+     * guardar una instancia vieja las pisaría.
+     *
+     * Si la venta es una consolidación de facturación, el comprobante que se acaba de emitir es el
+     * de TODAS las ventas que contiene: sus ganancias también quedan viejas, y se recalculan acá
+     * (`IvaDeVentaHelper` les prorratea la parte que les toca).
+     *
+     * @param  \App\Models\Sale|null $sale Venta sobre la que se emitió el comprobante.
+     * @return void
+     */
+    private function recalcular_ganancia_facturada($sale)
+    {
+        if (is_null($sale)) {
+            return;
+        }
+
+        $venta = Sale::find($sale->id);
+
+        if (is_null($venta)) {
+            return;
+        }
+
+        SaleHelper::set_sale_ganancia($venta);
+
+        if (!$venta->is_consolidacion_facturacion) {
+            return;
+        }
+
+        $consolidadas = Sale::where('consolidacion_facturacion_id', $venta->id)->get();
+
+        foreach ($consolidadas as $consolidada) {
+            SaleHelper::set_sale_ganancia($consolidada);
+        }
+    }
 
     /**
      * Claves internas de alicuota que entiende `AfipImportesCalculator::default_ivas()`.
