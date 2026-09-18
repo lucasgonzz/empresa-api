@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\Order;
 
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Sale;
@@ -257,12 +258,23 @@ class CreateSaleOrderHelper {
             'created_at'            => $from_meli ? $order->created_at : Carbon::now(),
         ]);
 
-        if (
-            !is_null($sale->client)
-            && !is_null($sale->client->price_type_id)
-        ) {
+        /*
+         * La lista del cliente, con el mismo resolvedor que la venta y el presupuesto (tanda 2
+         * de la mision vender-lista-obligatoria, 18/9/2026, item A2). Hasta hoy preguntaba
+         * `!is_null($sale->client->price_type_id)`, y un cliente con `price_type_id = 0` —el 0
+         * del form generico de clientes, que es el caso mas comun de "cliente sin lista"— pasaba
+         * como si fuera una lista: la venta del pedido nacia con `price_type_id = 0`. Un 0 no es
+         * una lista, es "ninguna" escrito de otra forma (docblock de PriceTypeHelper): con el
+         * cliente en 0 o en null la venta queda con null, y con una lista real, con esa.
+         *
+         * No hay `price_type_id` de request aca: el pedido no elige lista, los precios de linea
+         * ya los cobro la tienda (`article_order.price`).
+         */
+        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar(null, $sale->client);
 
-            $sale->price_type_id = $sale->client->price_type_id;
+        if (!is_null($price_type_id)) {
+
+            $sale->price_type_id = $price_type_id;
             $sale->save();
         }
 
