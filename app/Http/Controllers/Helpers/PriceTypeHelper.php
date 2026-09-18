@@ -31,7 +31,7 @@ use Illuminate\Support\Facades\Log;
  * 🔴 POR QUÉ SE RECHAZA Y NO SE COMPLETA CON UNA LISTA POR DEFECTO — es lo primero que alguien va
  * a querer "simplificar", y no se puede: `SaleHelper::attachArticle()` persiste en
  * `article_sale.price` el `price_vender` que mandó el front, y `BudgetHelper::attachArticles()`
- * hace lo mismo con `budget_article.price`. Los renglones llegan YA PRECIADOS por la SPA; el back
+ * hace lo mismo con `article_budget.price`. Los renglones llegan YA PRECIADOS por la SPA; el back
  * no tiene ningún camino para volver a preciarlos con la lista que elegiría. Si acá se pusiera la
  * lista por defecto (la de mayor `position`, como hace `ArticlePricesHelper::resolver_precio_de_venta()`),
  * la venta quedaría diciendo "lista General" con renglones cobrados a precio base: peor que la

@@ -160,7 +160,7 @@ class BudgetHelper {
 	 * ⚠️ Un presupuesto viejo sin lista —guardado antes de la mision vender-lista-obligatoria
 	 * (17/9/2026), o de una cuenta que no trabaja con listas— confirma con null A PROPOSITO, y aca
 	 * no se le exige lista: sus renglones ya se preciaron asi cuando se guardo
-	 * (`budget_article.price` viaja tal cual a `article_sale.price` en attachSaleArticles()), y
+	 * (`article_budget.price` viaja tal cual a `article_sale.price` en attachSaleArticles()), y
 	 * ponerle una lista ahora diria que la venta se cobro con precios que nadie aplico. La
 	 * obligatoriedad vive en el alta y en la edicion (`BudgetController` + `PriceTypeHelper`), que
 	 * es donde se eligen los precios.

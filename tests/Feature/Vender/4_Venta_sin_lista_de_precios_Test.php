@@ -11,6 +11,7 @@ use App\Models\PriceType;
 use App\Models\Sale;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 /**
@@ -323,6 +324,28 @@ class Venta_sin_lista_de_precios_Test extends TestCase
     }
 
     /**
+     * Un empleado del usuario 500, autenticado (mismo molde que tests/Feature/CotizacionDolar/1 y
+     * Preferencias/6, que pegan a la API como empleado con `actingAs` a secas: `auth:sanctum` no
+     * pide sesión, y `UserHelper::user(true)` resuelve al dueño por `owner_id` sin `set_sessions`).
+     *
+     * @return \App\Models\User
+     */
+    protected function empleado_autenticado()
+    {
+        $empleado = User::create([
+            'name'     => 'zz Empleado venta sin lista',
+            'email'    => 'zz-venta-sin-lista-'.uniqid().'@test.local',
+            'password' => Hash::make('zz-password-testing'),
+            'status'   => 'commerce',
+            'owner_id' => self::USER_ID,
+        ]);
+
+        $this->actingAs($empleado, 'web');
+
+        return $empleado;
+    }
+
+    /**
      * @return int
      */
     protected function cantidad_de_ventas()
@@ -441,6 +464,59 @@ class Venta_sin_lista_de_precios_Test extends TestCase
         $sale = Sale::find($response->json('model.id'));
 
         $this->assertNull($sale->price_type_id, 'El 0 del cliente no es una lista: no se copia, queda null.');
+    }
+
+    /**
+     * 🔴 EL EMPLEADO, por el endpoint: el vendedor de Trama que hizo 7 ventas seguidas a costo el
+     * 10/9 no era el dueño. El flag, la extensión y las listas cuelgan del dueño, y el empleado no
+     * tiene ninguna de las tres: si `$this->user()` o `PriceTypeHelper::owner_de()` no resolvieran
+     * el `owner_id`, el criterio daría false para el empleado y la venta saldría a costo igual que
+     * antes. Único test que pega a `api/sale` autenticado como empleado.
+     *
+     * @group vender
+     * @test
+     */
+    public function un_empleado_de_una_cuenta_con_listas_recibe_el_422()
+    {
+        $this->cuenta_con_listas(1);
+
+        $this->empleado_autenticado();
+
+        $ventas_antes = $this->cantidad_de_ventas();
+
+        $response = $this->postJson('api/sale', $this->payload_venta());
+
+        $this->assert_rechazo_sin_lista($response);
+
+        $this->assertEquals($ventas_antes, $this->cantidad_de_ventas());
+    }
+
+    /**
+     * Y el mismo empleado con lista explícita guarda: la venta nace a nombre del dueño (`user_id`)
+     * y con el empleado en `employee_id`. Sin este test, el 422 de arriba podría estar saliendo
+     * por cualquier otra cosa que frene a un empleado antes del alta.
+     *
+     * @group vender
+     * @test
+     */
+    public function un_empleado_con_lista_explicita_guarda_la_venta_a_su_nombre()
+    {
+        $this->cuenta_con_listas(1);
+
+        $empleado = $this->empleado_autenticado();
+
+        $response = $this->postJson('api/sale', $this->payload_venta([
+            'price_type_id' => $this->lista_general->id,
+        ]));
+
+        $response->assertStatus(201);
+
+        $sale = Sale::find($response->json('model.id'));
+
+        $this->assertNotNull($sale);
+        $this->assertEquals(self::USER_ID, (int) $sale->user_id, 'La venta es del comercio, no del empleado.');
+        $this->assertEquals($empleado->id, (int) $sale->employee_id, 'El empleado queda como quien vendió.');
+        $this->assertEquals($this->lista_general->id, (int) $sale->price_type_id);
     }
 
     /**
