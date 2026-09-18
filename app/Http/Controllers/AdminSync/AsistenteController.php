@@ -5,6 +5,7 @@ namespace App\Http\Controllers\AdminSync;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
@@ -220,6 +221,22 @@ class AsistenteController extends Controller
         if ($sin_transcribir) {
 
             $assistant_message->contenido = self::RESPUESTA_AUDIO_SIN_TRANSCRIPCION;
+            $assistant_message->estado = 'listo';
+            $assistant_message->save();
+
+            return $this->respuesta_del_turno($assistant_message);
+        }
+
+        /*
+         * Corte por tope del plan (misión foto-sucursal-y-asistente-configurable): si el dueño ya
+         * superó el tope de su plan este mes, se contesta con el texto de límite SIN despachar el
+         * job ni gastar una llamada a la API. El assistant nace 'listo' con el wamid ya puesto, así
+         * que un reintento del admin con el mismo wamid sigue siendo idempotente, y el admin lee el
+         * texto por el polling de siempre. Sin tope configurado no corta.
+         */
+        if (TopeDeTokensHelper::estado($dueno)['supero']) {
+
+            $assistant_message->contenido = TopeDeTokensHelper::MENSAJE_LIMITE;
             $assistant_message->estado = 'listo';
             $assistant_message->save();
 

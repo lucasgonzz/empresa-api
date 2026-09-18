@@ -681,11 +681,12 @@ class Acciones_service_y_job_Test extends TestCase
     {
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 
-        // El inventario: 10 de la misión asistente-ia-acciones + proponer_combo y proponer_oferta,
-        // que sumó agente-ia-mano-derecha (16/9/2026). El número se toca SOLO cuando se agrega o se
-        // saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es que algo se
-        // declaró (o se borró) de más.
-        $this->assertCount(12, HerramientasDeCarga::definiciones());
+        // El inventario: 10 de la misión asistente-ia-acciones + proponer_combo y proponer_oferta
+        // (agente-ia-mano-derecha, 16/9/2026) + proponer_foto_sucursal
+        // (foto-sucursal-y-asistente-configurable, 17/9/2026). El número se toca SOLO cuando se
+        // agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es
+        // que algo se declaró (o se borró) de más.
+        $this->assertCount(13, HerramientasDeCarga::definiciones());
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {
             $this->assertStringContainsString(

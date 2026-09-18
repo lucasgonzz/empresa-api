@@ -93,6 +93,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // UserController@update con id = "set-impresora".
     Route::put('user/set-impresora', 'UserController@set_impresora');
 
+    // Configuración del asistente de IA y consumo del plan, POR DUEÑO (misión
+    // foto-sucursal-y-asistente-configurable). Mismo gate que el chat: la extensión asistente_ia
+    // y solo el dueño (solo_el_dueno_ia); auth:sanctum ya lo pone el grupo de arriba.
+    // 🔴 `user/asistente-config` va ANTES de `user/{id}` por la misma trampa del orden que
+    // set-chat-ia-preferencias: son dos segmentos y abajo del comodín el PUT caería en
+    // UserController@update con id = "asistente-config". `mi-consumo-ia` no tiene ese problema
+    // (es de un solo segmento propio), pero comparte el mismo gate, así que va en el mismo grupo.
+    Route::middleware(['check_extencion_empresa:asistente_ia', 'solo_el_dueno_ia'])->group(function () {
+        Route::get('user/asistente-config', 'AsistenteConfigController@show');
+        Route::put('user/asistente-config', 'AsistenteConfigController@update');
+        Route::get('mi-consumo-ia', 'AsistenteConfigController@mi_consumo');
+    });
+
     // Agente de impresion: lo que consume el SPA. El agente en si tiene su propio grupo mas abajo,
     // fuera de sanctum, porque es un programa y no una persona con sesion.
     Route::post('print-agents/codigo', 'PrintAgentController@codigo');
@@ -1301,6 +1314,12 @@ Route::middleware('admin.api.key')
         // tiene cargada: la mayoría todavía no tiene ADMIN_API_INBOUND_KEY en su .env y un 401
         // duro dejaría la recolección rota en casi todos. Ver el docblock de rechazo_por_clave().
         Route::get('consumo-ia', 'AdminSync\\ConsumoIaController@index');
+        // El plan de IA que el admin le asigna a este cliente (misión
+        // foto-sucursal-y-asistente-configurable): el admin maneja los paquetes y su precio, y
+        // pushea acá el nombre y los dos topes. Guarda en el dueño. Como el canal de WhatsApp y
+        // consumo-ia, valida X-Admin-Api-Key ADENTRO del controlador (require_api_key está apagado
+        // en producción) porque ESCRIBE el plan del cliente. Idempotente; 409 si no hay dueño resoluble.
+        Route::put('plan-ia', 'AdminSync\\PlanIaController@update');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión

@@ -114,7 +114,7 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
 
         $nombres = HerramientasDeCarga::nombres(true);
 
-        $this->assertCount(15, $nombres, 'Doce de la pantalla más las tres del canal de WhatsApp.');
+        $this->assertCount(16, $nombres, 'Trece de la pantalla (incluida proponer_foto_sucursal) más las tres del canal de WhatsApp.');
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(
