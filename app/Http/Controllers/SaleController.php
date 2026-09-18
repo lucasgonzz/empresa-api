@@ -787,8 +787,29 @@ class SaleController extends Controller
             }
 
             // $model->valor_dolar                         = $request->valor_dolar;
-            
-            $model->employee_id                         = SaleHelper::getEmployeeId($request);
+
+            /*
+                🔴 EDITAR NO CAMBIA EL EMPLEADO DE LA VENTA, salvo que el PUT mande explícitamente
+                un `employee_id` mayor a cero (tanda 2 de la misión vender-lista-obligatoria,
+                18/9/2026, ítem A5).
+
+                Hasta hoy acá se llamaba a `SaleHelper::getEmployeeId($request)`, que es el
+                resolvedor del ALTA: sin `employee_id` en el request (o con 0) devuelve el empleado
+                LOGUEADO, y para el dueño devuelve null. Eso está bien para crear —el que vende es
+                el que está sentado— pero en la edición significaba que una venta del DUEÑO
+                (`employee_id` null) editada por un empleado quedaba a nombre del empleado: la SPA
+                restauraba `employee_id` solo si era truthy (`previus_sale/index.js`), así que
+                mandaba el empleado logueado, y las comisiones y los reportes por empleado se
+                movían sin que nadie lo pidiera.
+
+                Con esta regla: PUT sin la clave, con null o con 0 → queda el empleado guardado
+                (null incluido); PUT con un id → se reasigna. La SPA vieja manda el empleado
+                logueado (> 0) y sigue reasignando como hoy; la SPA nueva manda el de la venta.
+                Compatible en las dos direcciones.
+            */
+            $model->employee_id                         = (int) $request->employee_id > 0
+                                                            ? (int) $request->employee_id
+                                                            : $model->employee_id;
             
             $model->updated_at                          = Carbon::now();
             
