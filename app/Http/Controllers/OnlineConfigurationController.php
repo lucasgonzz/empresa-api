@@ -94,6 +94,7 @@ class OnlineConfigurationController extends Controller
         $model->auto_scroll_home_interval           = $request->auto_scroll_home_interval;       
         $model->article_description_font_size       = $request->article_description_font_size;
         $model->mostrar_catalogo                    = $request->mostrar_catalogo;
+        $model->mostrar_catalogo_categorias_home    = $request->mostrar_catalogo_categorias_home;
 
         $model->enviar_whatsapp_al_terminar_pedido  = $request->enviar_whatsapp_al_terminar_pedido;
 
