@@ -1245,6 +1245,13 @@ Route::middleware('admin.api.key')
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
+        // Contacto del dueño (misión aviso-de-actualizacion-al-cliente): el admin necesita su
+        // casilla para mandarle el mail con las novedades cuando le actualiza el sistema, y el
+        // teléfono para el WhatsApp que lo anuncia. Hoy el único endpoint del canal que devuelve
+        // `email` es mostrador/duenos, que filtra por la extensión `asistente_ia` y por eso
+        // devuelve vacío para la mayoría de los clientes; branding y mensualidad-info no lo traen.
+        // Solo lee: no escribe nada ni despacha jobs.
+        Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
