@@ -16,12 +16,28 @@ class ExportHistoryHelper
      */
     public static function create_pending($user_id, $employee_id, $model_name)
     {
-        return ExportHistory::create([
+        $export_history = ExportHistory::create([
             'user_id' => (int) $user_id,
             'employee_id' => (int) $employee_id,
             'model_name' => $model_name,
             'status' => 'pending',
         ]);
+
+        /*
+         * El registro visible (misión procesos-en-segundo-plano, 18/9/2026) nace acá, en el
+         * request, y en `pendiente`: entre que el usuario apretó "Exportar" y que un worker
+         * levanta el job pueden pasar minutos en el shared hosting, y en ese rato la píldora ya
+         * tiene que decir que hay algo esperando. El job lo pasa a en_proceso al arrancar. Sin
+         * total: generar un Excel no tiene unidades que contar, la barra es indeterminada.
+         */
+        BackgroundProcessHelper::iniciar($user_id, 'exportacion', 'Exportación de ' . DeleteModelsHelper::get_model_label($model_name), [
+            'auth_user_id' => $employee_id,
+            'referencia'   => $export_history,
+            'status'       => 'pendiente',
+            'etapa'        => 'En espera del procesador',
+        ]);
+
+        return $export_history;
     }
 
     /**
@@ -43,6 +59,13 @@ class ExportHistoryHelper
         $export_history->error_message = null;
         $export_history->save();
 
+        // El link viaja en el resultado: es lo que el detalle del modal ofrece para descargar.
+        BackgroundProcessHelper::completar(BackgroundProcessHelper::por_referencia($export_history), [
+            'archivo'    => $file_name,
+            'link'       => $download_link,
+            'exportados' => is_null($exported_count) ? null : (int) $exported_count,
+        ]);
+
         return $download_link;
     }
 
@@ -58,6 +81,16 @@ class ExportHistoryHelper
         $export_history->status = 'failed';
         $export_history->error_message = $error_message;
         $export_history->save();
+
+        /*
+         * Único punto de cierre en fallo del registro visible: acá llegan el catch y el
+         * failed() de los tres jobs (vía BackgroundJobFailureHandler, que ya es idempotente
+         * por el status del historial) y también el comando que detecta historiales colgados.
+         */
+        BackgroundProcessHelper::fallar(
+            BackgroundProcessHelper::por_referencia($export_history),
+            (string) $error_message
+        );
     }
 
     /**
