@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
 use App\Models\Article;
@@ -126,6 +127,17 @@ class ProcessSetFinalPrices implements ShouldQueue
                 DB::table('price_update_runs')
                     ->where('id', $run->id)
                     ->update(['total_chunks' => (int) $chunks_despachados]);
+
+                /*
+                 * Recién acá el registro visible conoce su total: la barra pasa de
+                 * indeterminada a "X de N lotes". Se escribe solo el total, no los
+                 * procesados —esos los suman los chunks con incrementar(), y con una cola
+                 * inline ya pueden haber sumado todos antes de llegar a esta línea.
+                 */
+                BackgroundProcessHelper::avanzar(BackgroundProcessHelper::por_referencia($run), null, [
+                    'total' => (int) $chunks_despachados,
+                    'etapa' => 'Recalculando',
+                ]);
             } else {
                 /*
                  * No hay un solo artículo que recalcular. Se cierra acá y se notifica igual:

@@ -192,6 +192,16 @@ class PriceTypeHelper {
 				'chunks_encolados' => 1,
 			]);
 
+		/*
+		 * Mismo tratamiento que ProcessSetFinalPrices: recién acá el registro visible conoce
+		 * su total en lotes. Los procesados los suman los chunks con incrementar(), asi que
+		 * este punto no los toca (con una cola inline ya sumaron todos antes de esta linea).
+		 */
+		BackgroundProcessHelper::avanzar(BackgroundProcessHelper::por_referencia($run), null, [
+			'total' => count($article_chunks),
+			'etapa' => 'Recalculando',
+		]);
+
 		Log::info('Se encolo el recalculo de precios de '.count($article_ids).' articulos');
 
 		/*

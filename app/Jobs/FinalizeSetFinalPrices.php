@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
 use App\Models\PriceUpdateRun;
 use Carbon\Carbon;
@@ -157,6 +158,21 @@ class FinalizeSetFinalPrices implements ShouldQueue
         $run->status           = $articles_updated > 0 ? 'terminado' : 'sin_cambios';
         $run->finished_at      = Carbon::now();
         $run->save();
+
+        /*
+         * El registro visible cierra acá, con los mismos números que va a mostrar el modal.
+         * Los caminos de error NO se cierran en este job: los tres (chunk muerto, tope de
+         * reloj, finalizador muerto) pasan por notify_prices_update_failed() →
+         * PriceUpdateRunHelper::cerrar_con_error(), que ya lo marca en fallo una sola vez.
+         */
+        BackgroundProcessHelper::completar(
+            BackgroundProcessHelper::por_referencia($run),
+            [
+                'articulos_actualizados' => $articles_updated,
+                'proveedores'            => count($stats['proveedores']),
+            ],
+            $articles_updated > 0 ? 'Terminado' : 'Sin cambios'
+        );
 
         /*
          * Se notifica también cuando no cambió ningún precio (decisión de Lucas): un cambio
