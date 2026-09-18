@@ -287,10 +287,16 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
-     * Convierte texto UTF-8 al encoding esperado por FPDF en celdas sin utf8_decode automático.
+     * Convierte texto UTF-8 al encoding que FPDF usa para MEDIR: GetStringWidth() y NbLines()
+     * cuentan bytes contra la tabla de anchos de la fuente y no decodifican solos.
+     *
+     * 🔴 NO se le pasa a Cell() ni a MultiCell(): las dos decodifican solas (el Cell() del
+     * fpdf.php del proyecto hace utf8_decode() y MultiCell() delega en Cell()). Pasarles texto
+     * ya decodificado lo decodifica dos veces y cada acento sale como "?" — medido el 18/9/2026:
+     * el pie "precios sujetos a modificación" salía "modificaci?n" en producción.
      *
      * @param  string  $text  Texto en UTF-8.
-     * @return string         Texto listo para MultiCell / NbLines.
+     * @return string         Texto listo para GetStringWidth / NbLines.
      */
     private function pdf_text($text)
     {
@@ -424,7 +430,9 @@ class ArticleTablePdf extends fpdf
             $content_height = max(1, $lines) * $cell_line_height;
             $cell_y = $start_y + ($row_height - $content_height) / 2;
             $this->SetXY($x, $cell_y);
-            $this->MultiCell($width, $cell_line_height, $this->pdf_text($text), 0, $text_align, false);
+            // Texto UTF-8 crudo: MultiCell() decodifica solo (ver pdf_text()). Con pdf_text() acá
+            // los acentos de las columnas con salto de línea salían como "?".
+            $this->MultiCell($width, $cell_line_height, $text, 0, $text_align, false);
             return;
         }
 
@@ -1195,7 +1203,9 @@ class ArticleTablePdf extends fpdf
 
         $this->y = 297 - self::BOTTOM_MARGIN_MM - self::FOOTER_TEXT_HEIGHT_MM;
         $this->x = $this->start_x;
-        $this->MultiCell($usable_width, 4, $this->pdf_text($this->footer_text), 0, 'L', false);
+        // Texto UTF-8 crudo: MultiCell() decodifica solo (ver pdf_text()). Con pdf_text() acá el
+        // pie con acentos salía con "?" en cada acento.
+        $this->MultiCell($usable_width, 4, $this->footer_text, 0, 'L', false);
     }
 
     // ── Utilidades ────────────────────────────────────────────────────────────
