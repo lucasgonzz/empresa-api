@@ -106,6 +106,10 @@ class ProcessDeleteModelsJob implements ShouldQueue
                 'message' => $e->getMessage(),
             ]);
 
+            // El registro visible cae con el mismo motivo que el aviso (ver el docblock de
+            // DeleteModelsHelper::$proceso_en_curso para por qué llega hasta acá).
+            DeleteModelsHelper::fallar_proceso_en_curso($e->getMessage(), $this->owner_user_id);
+
             DeleteModelsHelper::notify_result(
                 $this->owner_user_id,
                 $this->auth_user_id,
@@ -115,5 +119,21 @@ class ProcessDeleteModelsJob implements ShouldQueue
                 $e->getMessage()
             );
         }
+    }
+
+    /**
+     * Cubre lo que el catch de arriba no ve: un \Error (que no es Exception) o una muerte sin
+     * catch (OOM, timeout, worker reiniciado), donde Laravel llama a failed() en un proceso
+     * fresco. Sólo cierra el registro visible; el aviso al usuario de ese camino ya no existía
+     * antes de esta misión y no se agrega acá. Idempotente: si el catch ya lo cerró, no pasa nada.
+     *
+     * @param  \Throwable $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        $motivo = !is_null($e) ? $e->getMessage() : 'El proceso se interrumpió sin dejar traza.';
+
+        DeleteModelsHelper::fallar_proceso_en_curso($motivo, $this->owner_user_id);
     }
 }
