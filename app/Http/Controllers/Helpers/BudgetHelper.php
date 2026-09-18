@@ -101,23 +101,16 @@ class BudgetHelper {
 	            'terminada'				=> SaleHelper::get_terminada($to_check, null),
 	            'terminada_at'			=> SaleHelper::get_terminada_at($to_check, null),
 	            /*
-	             * 🔴 NO se arrastra el `omitir_en_cuenta_corriente` del presupuesto, a proposito.
+	             * 🔴 Un presupuesto NO se puede omitir de la cuenta corriente: la venta que nace al
+	             * confirmarlo va SIEMPRE a la cuenta del cliente (decision de Lucas, 18/9/2026,
+	             * tanda 3 de la mision vender-lista-obligatoria). `BudgetController` guarda 0 en el
+	             * alta y la edicion, la SPA manda 0 y deshabilita el toggle en modo presupuesto, y
+	             * aca se escribe 0 sin mirar el presupuesto (un 1 viejo no cambia nada).
 	             *
-	             * Desde la tanda 2 de la mision vender-lista-obligatoria (18/9/2026, item A4) el
-	             * presupuesto lo tiene guardado de verdad (`BudgetController` lo persiste; hasta
-	             * entonces llegaba siempre el 0 del default). Pero la confirmacion desde el listado
-	             * (`POST api/budget/{id}/confirmar`) no trae ningun dato de cobro y el presupuesto
-	             * tampoco lo tiene: si la venta naciera omitida, seria una venta de contado SIN metodo
-	             * de pago ni movimiento de caja --justo el estado que `SaleController::store()` rechaza
-	             * con el 422 `sin_metodo_de_pago`-- y la plata no quedaria registrada en ningun lado.
-	             * Contra eso, la deuda en la cuenta corriente es el mal menor: el cobro se registra
-	             * despues como pago, y es como funciono siempre.
-	             *
-	             * Honrar el tilde al confirmar necesita que la confirmacion pida el metodo de pago (o
-	             * que la venta guardada desde VENDER con el presupuesto cargado quede ligada a el, cosa
-	             * que hoy no pasa: el POST de Vender no manda budget_id). Es una decision de producto
-	             * que el informe de la mision le deja a Lucas; si se toma, esto cambia junto con el
-	             * test `Presupuestos/8_Omitir_cuenta_corriente_Test`.
+	             * El motivo de fondo: la confirmacion desde el listado no trae ningun dato de cobro,
+	             * y una venta de contado sin metodo de pago ni movimiento de caja es justo el estado
+	             * que `SaleController::store()` rechaza con el 422 `sin_metodo_de_pago`. La deuda en
+	             * la cuenta corriente se cancela despues, registrando el pago.
 	             *
 	             * Quien lee este campo es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
 	             * (`save_current_acount && !omitir_en_cuenta_corriente`), desde `create_current_acount()`
