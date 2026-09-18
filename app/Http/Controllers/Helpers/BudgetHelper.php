@@ -56,7 +56,9 @@ class BudgetHelper {
 	            'observations' 			=> $budget->observations,
 	            'total' 				=> $budget->total,
 	            'address_id' 			=> $budget->address_id,
-	            'moneda_id' 			=> $budget->moneda_id,
+	            // Pesos si el presupuesto no tiene moneda (item A6, 18/9/2026): `sales.moneda_id` es
+	            // nullable y con null ninguna cotizacion aplica. Mismo default que SaleController.
+	            'moneda_id' 			=> $budget->moneda_id ? $budget->moneda_id : 1,
 	            'discounts_in_services'	=> $budget->discounts_in_services,
 	            'surchages_in_services'	=> $budget->surchages_in_services,
 	            // La venta que nace del presupuesto se lleva la opcion: sus articulos ya vienen con

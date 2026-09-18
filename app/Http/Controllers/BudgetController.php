@@ -106,7 +106,15 @@ class BudgetController extends Controller
                 'surchages_in_services'     => $request->surchages_in_services,
                 'discounts_in_services'     => $request->discounts_in_services,
                 'aplicar_recargos_directo_a_items' => $request->aplicar_recargos_directo_a_items,
-                'moneda_id'                 => $request->moneda_id,
+                /*
+                 * Default 1 (pesos) si no viaja, igual que `SaleController::store()` (tanda 2 de la
+                 * mision vender-lista-obligatoria, 18/9/2026, item A6). Hasta hoy iba pelado: la
+                 * columna es NOT NULL default 1, asi que un request sin la clave (la SPA la manda
+                 * desde septiembre de 2025) insertaba null y el alta moria con un 500 que no
+                 * nombraba la causa; en una base sin modo estricto quedaba 0, `getCost()` no
+                 * cotizaba (ni `== 1` ni `== 2`) y `saveSale()` le pasaba ese 0 a la venta.
+                 */
+                'moneda_id'                 => !is_null($request->moneda_id) ? $request->moneda_id : 1,
                 'valor_dolar'               => $request->valor_dolar,
                 /*
                  * "Omitir en cuenta corriente" SE GUARDA (tanda 2 de la mision
@@ -381,7 +389,8 @@ class BudgetController extends Controller
         $model->aplicar_recargos_directo_a_items = !is_null($request->aplicar_recargos_directo_a_items)
                                                     ? $request->aplicar_recargos_directo_a_items
                                                     : $model->aplicar_recargos_directo_a_items;
-        $model->moneda_id                 = $request->moneda_id;
+        // Sin la clave se preserva la guardada (columna NOT NULL): mismo motivo que el default 1 de store().
+        $model->moneda_id                 = !is_null($request->moneda_id) ? $request->moneda_id : $model->moneda_id;
         $model->sale_status_id            = $request->sale_status_id;
         $model->discount_stock            = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
         $model->iva_aplicado              = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
