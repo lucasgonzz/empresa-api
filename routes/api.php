@@ -812,6 +812,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('pdf-column-options/{id}', 'PdfColumnOptionController@show');
     // Duplica un perfil de diseño de PDF con toda su configuración y columnas (pivots).
     Route::post('pdf-column-profiles/{id}/duplicate', 'PdfColumnProfileController@duplicate');
+    // Datos del negocio, logo, nombre y diseño por defecto para el diseñador del encabezado del
+    // catálogo de artículos. Va ANTES del resource: si no, el GET lo captura show/{id} con
+    // id = "catalog-header-sources" y responde 404.
+    Route::get('pdf-column-profiles/catalog-header-sources', 'PdfColumnProfileController@catalog_header_sources');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
