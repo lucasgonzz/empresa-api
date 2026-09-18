@@ -58,7 +58,32 @@ class BackgroundProcessController extends Controller
             'recientes' => $recientes->map(function ($proceso) {
                 return BackgroundProcessHelper::payload($proceso);
             })->values(),
+            'broadcast' => $this->estado_del_broadcast(),
         ], 200);
+    }
+
+    /**
+     * Si ESTE servidor puede avisar en tiempo real.
+     *
+     * El punto verde de la SPA mide el socket del navegador contra Pusher, y eso no alcanza:
+     * una instancia con `BROADCAST_DRIVER=log` o sin `PUSHER_APP_KEY` tiene el socket
+     * perfectamente conectado y no emite nunca nada. El usuario vería verde y no le llegaría un
+     * solo aviso. Con esto la SPA puede poner el punto en rojo aunque el socket esté sano, con
+     * el motivo de verdad.
+     *
+     * No revela credenciales: solo el nombre del driver y si la clave está cargada.
+     *
+     * @return array
+     */
+    protected function estado_del_broadcast()
+    {
+        $driver = (string) config('broadcasting.default');
+        $clave = (string) config('broadcasting.connections.pusher.key');
+
+        return [
+            'driver'     => $driver,
+            'habilitado' => $driver === 'pusher' && $clave !== '',
+        ];
     }
 
     /**

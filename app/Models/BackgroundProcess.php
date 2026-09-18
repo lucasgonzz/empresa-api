@@ -26,6 +26,18 @@ class BackgroundProcess extends Model
     protected $dates = ['started_at', 'finished_at', 'broadcast_at', 'visto_at'];
 
     /**
+     * Convención del workspace: todo modelo nuevo lo declara aunque quede vacío. La referencia
+     * NO se carga acá a propósito: es polimórfica y el detalle la arma
+     * BackgroundProcessHelper::referencia_para_detalle() eligiendo columnas.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $q
+     * @return void
+     */
+    public function scopeWithAll($q)
+    {
+    }
+
+    /**
      * Registro propio del flujo al que pertenece este proceso (ImportStatus, PriceUpdateRun,
      * MasiveUpdate, ExportHistory, ExcelAnalysisRun...). Puede no haber ninguno.
      *

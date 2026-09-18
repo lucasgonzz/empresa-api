@@ -336,6 +336,34 @@ class BackgroundProcessHelper
     }
 
     /**
+     * El proceso ABIERTO más nuevo de un tipo para un comercio.
+     *
+     * Es para el `failed()` de los jobs que no tienen modelo propio al que referenciar (borrado
+     * masivo, imágenes y descripciones IA, reporte de inventario): `failed()` corre sobre una
+     * instancia deserializada del payload original, así que nada de lo que `handle()` guardó en
+     * memoria existe ahí. Si el proceso ya se cerró (bien o mal), no lo devuelve, y `fallar()`
+     * sobre null no hace nada — que es exactamente lo que se quiere en ese caso.
+     *
+     * @param  int    $user_id
+     * @param  string $tipo
+     * @return \App\Models\BackgroundProcess|null
+     */
+    public static function ultimo_activo($user_id, $tipo)
+    {
+        try {
+            return BackgroundProcess::where('user_id', (int) $user_id)
+                ->where('tipo', (string) $tipo)
+                ->activos()
+                ->orderBy('id', 'DESC')
+                ->first();
+        } catch (\Throwable $e) {
+            self::loguear('ultimo_activo', $e, ['user_id' => $user_id, 'tipo' => $tipo]);
+
+            return null;
+        }
+    }
+
+    /**
      * Payload que viaja por Pusher y que devuelven los endpoints. Es el contrato con la SPA:
      * las claves son las columnas, más `resultado` decodificado.
      *
@@ -568,9 +596,12 @@ class BackgroundProcessHelper
     {
         $status_anterior = $proceso->status;
 
-        // El primer avance saca al proceso de "pendiente": ya hay alguien trabajando en él.
+        // El primer avance saca al proceso de "pendiente": ya hay alguien trabajando en él. Y
+        // recién ahí arranca el reloj que ve el usuario: `started_at` de un encolado era la hora
+        // en que se pidió, no la hora en que empezó a correr (created_at guarda la primera).
         if ($proceso->status === BackgroundProcess::STATUS_PENDIENTE) {
-            $cambios['status'] = BackgroundProcess::STATUS_EN_PROCESO;
+            $cambios['status']     = BackgroundProcess::STATUS_EN_PROCESO;
+            $cambios['started_at'] = Carbon::now();
         }
 
         $proceso->fill($cambios);

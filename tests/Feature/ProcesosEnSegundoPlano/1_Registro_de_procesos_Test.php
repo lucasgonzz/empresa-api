@@ -286,6 +286,12 @@ class Registro_de_procesos_Test extends EmpresaTestCase
         $activos = collect($respuesta->json('activos'))->pluck('id')->all();
         $recientes = collect($respuesta->json('recientes'))->keyBy('id');
 
+        // El listado dice si ESTE servidor puede emitir: en testing el driver es `log`, así que
+        // habilitado tiene que venir en false (y con el driver a la vista, para que el que lea
+        // sepa por qué).
+        $this->assertSame('log', $respuesta->json('broadcast.driver'));
+        $this->assertFalse($respuesta->json('broadcast.habilitado'));
+
         $this->assertSame([$vivo->id], $activos);
         $this->assertSame('fallo', $recientes[$muerto->id]['status']);
         $this->assertStringContainsString('dejó de reportar', $recientes[$muerto->id]['error_message']);
