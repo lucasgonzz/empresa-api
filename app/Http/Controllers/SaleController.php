@@ -331,7 +331,17 @@ class SaleController extends Controller
                 'address_id'                        => $request->address_id,
                 'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
                 'afip_information_id'               => $request->afip_information_id,
-                'save_current_acount'               => $request->save_current_acount,
+                /*
+                 * Default 1 si la clave no viaja (tanda 2 de la misión vender-lista-obligatoria,
+                 * 18/9/2026, ítem A8), igual que `CreateSaleOrderHelper::createSale()`. La SPA lo
+                 * manda siempre (arranca en 1), pero hasta hoy un request sin la clave insertaba
+                 * null en una columna NOT NULL con default 1 y el alta moría con un 500 que no
+                 * nombraba la causa —o, en una base sin modo estricto, dejaba la venta del cliente
+                 * fuera de su cuenta corriente (`va_a_volver_a_la_cuenta_corriente()` lee este
+                 * flag)—. La semántica que ya tenía la columna es "a la cuenta corriente salvo que
+                 * alguien diga que no": el default la respeta.
+                 */
+                'save_current_acount'               => !is_null($request->save_current_acount) ? $request->save_current_acount : 1,
                 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
                 // Ya resuelta y validada antes de la transacción: request → cliente → null (o 422).
                 'price_type_id'                     => $price_type_id,
@@ -361,6 +371,14 @@ class SaleController extends Controller
                 'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 // Si no se envía el campo, se asume true (comportamiento por defecto: precios con IVA).
                 'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
+                /*
+                 * `descuento` es el PORCENTAJE legacy del "forzar total" viejo, y se deja como está
+                 * a propósito (auditoría del 17/9/2026, ítem A8 de la tanda 2): hoy ningún
+                 * componente de VENDER lo commitea con valor (`limpiar_vender.js` lo deja en null)
+                 * y `update()` no lo toca, así que `round(null)` = 0 es el único valor que llega
+                 * por acá. `getTotalSale()` lo sigue aplicando para las ventas viejas que lo
+                 * tienen. El forzado vigente es `forzar_total_monto`, más abajo.
+                 */
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
                 'user_id'                           => $this->userId(),
                 // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
@@ -774,9 +792,19 @@ class SaleController extends Controller
             // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
             $model->price_description                   = $request->price_description;
 
-            /** Sin extensión no se altera send_mail (no borrar histórico en ventas ya marcadas). */
-            if ($can_enviar_mail_a_clientes) {
-                $model->send_mail = !is_null($request->send_mail) ? (bool) $request->send_mail : false;
+            /*
+                Sin extensión no se altera send_mail (no borrar histórico en ventas ya marcadas).
+
+                Y SOLO si el request manda la clave (tanda 2 de la misión vender-lista-obligatoria,
+                18/9/2026, ítem A8): hasta hoy la ausencia de la clave lo ponía en false, o sea que
+                el "no borrar histórico" del comentario de arriba valía para la cuenta sin extensión
+                pero no para la que sí la tiene y edita desde una SPA anterior a abril de 2026,
+                que no manda `send_mail`. Mismo patrón que `omitir_en_cuenta_corriente` y
+                `dias_alerta_venta_no_cobrada_personalizado` en este mismo método: clave ausente =
+                se preserva; presente (también en null) = se asigna.
+            */
+            if ($can_enviar_mail_a_clientes && $request->exists('send_mail')) {
+                $model->send_mail = (bool) $request->send_mail;
             }
             // Log detallado de acciones en vender serializado desde frontend.
             $model->log                                 = $request->log;

@@ -510,6 +510,42 @@ class Venta_de_contado_sin_metodo_de_pago_Test extends TestCase
     }
 
     /**
+     * `save_current_acount` (ítem A8 de la misma tanda, vive acá porque es el mismo POST con
+     * cliente de arriba): sin la clave, la venta con cliente entra a la cuenta corriente, que es
+     * la semántica de la columna (NOT NULL, default 1) y lo que ya hacía
+     * `CreateSaleOrderHelper::createSale()`. Hasta hoy `store()` la asignaba pelada y un request
+     * sin la clave insertaba null en una columna NOT NULL: 500 sin causa a la vista. La SPA la
+     * manda siempre; esto cubre a cualquier otro llamador.
+     *
+     * @group sales
+     * @test
+     */
+    public function post_sin_save_current_acount_con_cliente_entra_a_la_cuenta_corriente()
+    {
+        $client = $this->cliente();
+
+        $payload = $this->payload_venta([
+            'client_id'                  => $client->id,
+            'omitir_en_cuenta_corriente' => 0,
+        ]);
+
+        unset($payload['save_current_acount']);
+
+        $response = $this->postJson('api/sale', $payload);
+
+        $response->assertStatus(201);
+
+        $sale = Sale::find($response->json('model.id'));
+
+        $this->assertNotNull($sale);
+        $this->assertSame(1, (int) $sale->save_current_acount, 'Sin la clave, save_current_acount tiene que quedar en 1.');
+        $this->assertTrue(
+            CurrentAcount::where('sale_id', $sale->id)->exists(),
+            'Con save_current_acount en 1 la venta tiene que entrar a la cuenta corriente del cliente.'
+        );
+    }
+
+    /**
      * Un request que NO habla del cobro —ninguna de las dos claves— no se rechaza y no adjunta
      * nada: no está cobrando con un placeholder, no está diciendo nada. Es la puerta de los
      * llamadores que no son VENDER (y de los tests que miden otra cosa), y queda fijada a

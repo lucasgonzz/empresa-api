@@ -3,6 +3,7 @@
 namespace Tests\Feature\Sales;
 
 use App\Models\Article;
+use App\Models\ExtencionEmpresa;
 use App\Models\Sale;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -222,5 +223,85 @@ class Update_preserva_campos_que_no_viajan_Test extends TestCase
             (int) Sale::find($venta->id)->discount_stock,
             'Una venta que ya descontó stock no puede dejar de hacerlo por un PUT.'
         );
+    }
+
+    /**
+     * Le da a la cuenta la extensión `enviar_mail_a_clientes`, que es la única condición bajo la
+     * cual `update()` toca `send_mail`. forceCreate porque el modelo no declara $fillable (ver
+     * tests/Feature/Extenciones/1); DatabaseTransactions revierte todo.
+     *
+     * @return void
+     */
+    protected function dar_extension_de_mail()
+    {
+        $extencion = ExtencionEmpresa::where('slug', 'enviar_mail_a_clientes')->first();
+
+        if (is_null($extencion)) {
+
+            $extencion = ExtencionEmpresa::forceCreate([
+                'slug' => 'enviar_mail_a_clientes',
+                'name' => 'Enviar mail a clientes',
+            ]);
+        }
+
+        $user = User::find(self::USER_ID);
+
+        if (!$user->extencions()->where('extencion_empresas.id', $extencion->id)->exists()) {
+            $user->extencions()->attach($extencion->id);
+        }
+    }
+
+    /**
+     * 🔴 `send_mail`, la cuarta de la misma clase (tanda 2 de la misión, 18/9/2026, ítem A8): con
+     * la extensión `enviar_mail_a_clientes`, un PUT sin la clave APAGABA el envío de una venta que
+     * lo tenía prendido, aunque el comentario de al lado dijera "no borrar histórico". La SPA
+     * anterior a abril de 2026 no manda `send_mail`. Ahora la ausencia preserva; mandarla sí la
+     * cambia (también a false), para que la guarda no vuelva el campo de solo lectura.
+     *
+     * @group sales
+     * @test
+     */
+    public function un_put_sin_send_mail_lo_deja_como_estaba_y_con_la_clave_lo_cambia()
+    {
+        $this->dar_extension_de_mail();
+
+        $venta = $this->venta_guardada(['send_mail' => 1]);
+
+        $this->putJson('api/sale/'.$venta->id, $this->payload_update())->assertStatus(200);
+
+        $this->assertSame(
+            1,
+            (int) Sale::find($venta->id)->send_mail,
+            'Un PUT sin send_mail apagó el envío de una venta que lo tenía prendido.'
+        );
+
+        $this->putJson('api/sale/'.$venta->id, $this->payload_update(['send_mail' => 0]))->assertStatus(200);
+
+        $this->assertSame(0, (int) Sale::find($venta->id)->send_mail, 'Con la clave en 0 el envío se apaga.');
+
+        $this->putJson('api/sale/'.$venta->id, $this->payload_update(['send_mail' => 1]))->assertStatus(200);
+
+        $this->assertSame(1, (int) Sale::find($venta->id)->send_mail, 'Con la clave en 1 el envío se prende.');
+    }
+
+    /**
+     * Sin la extensión, `send_mail` no se toca nunca, viaje o no la clave: es la regla que ya
+     * existía ("sin extensión no se altera send_mail") y la guarda nueva no la cambia.
+     *
+     * @group sales
+     * @test
+     */
+    public function sin_la_extension_de_mail_send_mail_no_se_toca_aunque_viaje()
+    {
+        $venta = $this->venta_guardada(['send_mail' => 1]);
+
+        $this->assertFalse(
+            User::find(self::USER_ID)->extencions()->where('slug', 'enviar_mail_a_clientes')->exists(),
+            'Este test mide la cuenta SIN la extensión; si la base del slot la tiene sembrada para el 500, no mide nada.'
+        );
+
+        $this->putJson('api/sale/'.$venta->id, $this->payload_update(['send_mail' => 0]))->assertStatus(200);
+
+        $this->assertSame(1, (int) Sale::find($venta->id)->send_mail);
     }
 }
