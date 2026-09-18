@@ -24,6 +24,16 @@ class ContextoFinancieroService
     const MONEDA_CAJAS = 1;
 
     /**
+     * 🔴 Los valores de `cajas.moneda_id` que son PESOS, y el criterio sale de Contabilidad:
+     * ContabilidadRepository dice textual "solo `moneda_id = 2` es USD; `0`, `null` y `1` son
+     * pesos" y FlujoCajaHelper filtra las cajas con `whereNull OR whereIn [0, 1]` para las
+     * liquidaciones pendientes. El `0` no es basura: lo deja un alta de caja donde el select de
+     * moneda no se eligió, y hay filas así en producción. Sin el 0, una caja de pesos quedaba
+     * afuera del disponible mientras sus liquidaciones pendientes seguían adentro.
+     */
+    const MONEDAS_CAJAS_PESOS = [0, 1];
+
+    /**
      * Arma el contexto financiero de la corrida: deuda por proveedor
      * (credit_accounts.saldo — NUNCA el recálculo full de checkSaldos() ni
      * los espejos desnormalizados providers.saldo_pesos/saldo_dolares/saldo)
@@ -119,7 +129,8 @@ class ContextoFinancieroService
      * no filtra por moneda (suma todos los movimientos de la caja): por eso
      * las cajas se filtran por moneda_id ANTES del loop, no después.
      * cajas.moneda_id es nullable (cajas viejas sin moneda asignada) y se
-     * tratan como pesos, igual criterio que el resto del sistema.
+     * tratan como pesos, igual criterio que el resto del sistema: null, 0 y 1
+     * (ver MONEDAS_CAJAS_PESOS, que dice de dónde sale).
      *
      * @param int $user_id
      * @return float
@@ -128,7 +139,7 @@ class ContextoFinancieroService
     {
         $caja_ids = Caja::where('user_id', $user_id)
             ->where(function ($q) {
-                $q->where('moneda_id', self::MONEDA_CAJAS)->orWhereNull('moneda_id');
+                $q->whereIn('moneda_id', self::MONEDAS_CAJAS_PESOS)->orWhereNull('moneda_id');
             })
             ->pluck('id');
 

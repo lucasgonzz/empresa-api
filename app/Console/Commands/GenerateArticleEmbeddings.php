@@ -71,9 +71,50 @@ class GenerateArticleEmbeddings extends Command
             return 0;
         }
 
+        /*
+         * Pausa global (misión busqueda-lenta-y-pausa-embeddings): interruptor independiente de la
+         * extensión whatsapp_ia, para poder cortar la generación en TODO el parque de un saque sin
+         * ir comercio por comercio desactivando la extensión (que además apagaría con eso la
+         * búsqueda del bot de WhatsApp para quien ya la esté usando). Va ANTES del gate de la
+         * extensión a propósito: a diferencia del aviso de OPENAI_API_KEY de más abajo -que sigue
+         * silencioso, porque no tener la extensión es la situación normal de la mayoría de las
+         * instancias-, acá la pausa es una decisión operativa deliberada y conviene que quede en el
+         * log del scheduler mientras esté prendida. Mismo interruptor que
+         * ArticleObserver::debe_generar_embedding() (el disparo inmediato) y el Kernel (que ni
+         * siquiera agenda el comando si está prendida). Default false: no cambia nada para nadie
+         * hasta que alguien la prenda a mano en el .env.
+         *
+         * Se lee con config('services.openai.embeddings_generacion_pausada'), NUNCA con env()
+         * directo acá: con config:cache activo (lo normal en producción) env() fuera de config/
+         * devuelve el default y prender la variable en el .env de un cliente real no haría nada
+         * — mismo bug que ya pasó con DURACION_REPORTES, ver config/services.php.
+         */
+        if (config('services.openai.embeddings_generacion_pausada')) {
+            $this->warn('articles:generate-embeddings: generación pausada por EMBEDDINGS_GENERACION_PAUSADA. Se omite.');
+            return 0;
+        }
+
         // Solo procesar si el usuario tiene la extensión whatsapp_ia activa.
         if (! UserHelper::hasExtencion('whatsapp_ia', $user)) {
             // Silencioso en scheduler; el usuario simplemente no tiene la extensión.
+            return 0;
+        }
+
+        /*
+         * Sin clave de OpenAI no hay nada que despachar (misión optimizacion-vps-fase1, 4.0.24).
+         *
+         * Va DESPUÉS del gate de la extensión (que sigue silencioso: las instancias sin whatsapp_ia
+         * no tienen por qué ver un aviso cada 30 minutos) y ANTES de tocar la base. El caso real:
+         * el .env del segundo frente de ferretotal se instaló sin OPENAI_API_KEY y este comando
+         * siguió encolando cada media hora — 35.324 jobs fallidos (401 de OpenAI, tres intentos
+         * cada uno) sin que nadie lo viera. Un job que nace sin clave no puede terminar bien, así
+         * que mejor un warn por ciclo en el log del scheduler. Cubre también el disparo
+         * post-importación: FinalizeArticleImport llama a este mismo comando con
+         * --ignorar-importacion-en-curso. El sync de claves entre frentes del deploy (admin-api,
+         * misma misión) ataca la causa; esto es la red para cualquier otra forma de quedarse sin ella.
+         */
+        if (trim((string) config('services.openai.api_key')) === '') {
+            $this->warn('articles:generate-embeddings: no hay OPENAI_API_KEY configurada. No se despacha ningún job hasta que se cargue.');
             return 0;
         }
 

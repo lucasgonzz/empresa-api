@@ -17,6 +17,7 @@ use App\Http\Controllers\Helpers\PdfPrintCurrentAcounts;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCuotaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
 use App\Http\Controllers\Pdf\AfipTicketPdf;
 use App\Http\Controllers\Pdf\CurrentAcountPdf;
 use App\Http\Controllers\Pdf\CurrentAcount\NewPagoPdf;
@@ -26,6 +27,8 @@ use App\Imports\CurrentAcountsImport;
 use App\Models\Commissioner;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\CurrentAcountPaymentMethod;
+use App\Models\RetencionSufrida;
 use App\Models\Sale;
 use App\Models\Seller;
 use App\Models\User;
@@ -94,105 +97,244 @@ class CurrentAcountController extends Controller
             ], 422);
         }
 
-        $pago = CurrentAcount::create([
-            'haber'                             => $this->get_haber($request),
-            'description'                       => $request->description,
-            'numero_orden_de_compra'            => $request->numero_orden_de_compra,
-            'credit_account_id'                 => $request->credit_account_id,
-            'is_provisorio'                     => $request->is_provisorio,
-            'status'                            => 'pago_from_client',
-            'user_id'                           => $this->userId(),
-            'num_receipt'                       => CurrentAcountHelper::getNumReceipt(),
-            /*
-             * to_pay explícito del request, o —si el pago viene de una cuota de un plan de
-             * pago— el débito de la venta del plan (tanda correctivos 2408, ítem 13: regla
-             * de Lucas, el pago de una cuota se imputa a la venta del plan y no al
-             * comprobante más viejo). Ver CurrentAcountCuotaHelper::get_to_pay_id().
-             */
-            'to_pay_id'                         => CurrentAcountCuotaHelper::get_to_pay_id($request),
-            'client_id'                         => $request->model_name == 'client' ? $request->model_id : null,
-            'provider_id'                       => $request->model_name == 'provider' ? $request->model_id : null,
-            'created_at'                        => CurrentAcountHelper::getCreatedAt($request),
-            'employee_id'                       => UserHelper::userId(false),
-        ]);
+        /*
+         * El alta en sí (el create, los métodos de pago con sus movimientos de caja, el saldo, la
+         * imputación contra los débitos y la cuota) vive en CurrentAcountPagoAltaHelper::registrar()
+         * desde la misión asistente-ia-acciones (15/9/2026), junto con get_haber(): el asistente de
+         * IA registra pagos por el MISMO camino, adentro de su propia transacción. Acá queda lo que
+         * es del HTTP: la prevalidación de cajas de arriba, armar las 12 claves que el alta le leía
+         * al request, la notificación y la respuesta. El payload y las respuestas de
+         * `POST api/current-acount/pago` no cambiaron, y esta pantalla sigue sin transacción
+         * (hallazgo 5 del informe del 21/8/2026, fuera de alcance).
+         */
+        $datos = [];
 
-        $pago->detalle = 'Pago N°'.$pago->num_receipt;
-        $pago->save();
+        foreach (CurrentAcountPagoAltaHelper::CLAVES as $clave) {
 
-        CurrentAcountPagoHelper::attachPaymentMethods($pago, $request->current_acount_payment_methods, $request->model_name);
-
-        if (!$pago->is_provisorio) {
-
-            // Calcular el saldo que genera este pago y persistirlo
-            // Se resta el haber al saldo previo de la cuenta corriente
-            $saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $pago) - (float)$request->haber;
-            $pago->saldo = $saldo;
-            $pago->save();
-            // Sincroniza saldo de la cuenta corriente y saldo por moneda en el model asociado.
-            CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
-
-            /*
-             * 🔴 LAS DOS RAMAS SALDAN EL MISMO DÉBITO, ASÍ QUE LAS DOS TIENEN QUE DEJAR TODO
-             *    LO QUE DEPENDE DE QUE UN DÉBITO QUEDE SALDADO.
-             *
-             * `current_date` NO es una bandera de negocio: es una optimización. Con fecha pasada
-             * hay que recalcular la cuenta entera porque el pago se mete en el medio del orden
-             * cronológico; con la fecha de hoy alcanza con imputar el pago nuevo contra los
-             * débitos pendientes. El hecho económico es el mismo.
-             *
-             * Y el default de la SPA es `current_date = 1`, o sea que la rama de abajo es EL
-             * COBRO DE TODOS LOS DÍAS, no el caso raro. Cualquier efecto que se enganche a "el
-             * débito quedó pagado" y viva solo del lado del recálculo completo va a andar en la
-             * excepción y fallar en la regla — es exactamente lo que pasó con los puntos para
-             * clientes hasta el 22/8/2026.
-             *
-             * Por eso acá NO hay ninguna llamada al módulo de puntos, ni la tiene que haber:
-             * el enganche está al final de `CurrentAcountPagoHelper::init()`, que es el único
-             * método por el que pasan las DOS ramas (check_saldos_y_pagos() también termina
-             * llamándolo, una vez por pago). Si mañana aparece otro efecto de ese tipo, el lugar
-             * es ése y no una copia en cada rama de este if.
-             */
-            if (!$request->current_date) {
-                // Pago con fecha pasada: el recálculo completo ya se encarga
-                // de recalcular saldos e imputar todos los pagos (incluyendo este)
-                Log::info('Chequeando cuenta corriente entera');
-                CurrentAcountHelper::check_saldos_y_pagos($request->credit_account_id);
-            } else {
-                // Pago con fecha actual: solo imputar el nuevo pago a los débitos pendientes
-                // No hace falta recalcular toda la cuenta corriente
-                Log::info('NO se chequeo cuenta corriente entera');
-                $pago_helper = new CurrentAcountPagoHelper($request->credit_account_id, $request->model_name, $request->model_id, $pago);
-                $pago_helper->init();
-            }
-
-
-            CurrentAcountCuotaHelper::pagar_cuota($pago, $request);
+            // `$request->clave` devuelve null si no vino: es exactamente lo que leía pago().
+            $datos[$clave] = $request->{$clave};
         }
+
+        $pago = CurrentAcountPagoAltaHelper::registrar($datos);
+
+        /*
+         * Los certificados de las filas de medio de pago que son RETENCIONES. Va despues del alta
+         * porque necesita el id del cobro recien creado, y fuera de
+         * CurrentAcountPagoAltaHelper::registrar() a proposito: el alta es el circuito de la PLATA
+         * (el haber, el saldo, la imputacion, la caja) y ya funciona sin saber nada de esto. La
+         * retencion cancela deuda por su fila de `current_acount_payment_methods`, igual que
+         * cualquier otro medio de pago; lo que se guarda aca es el papel.
+         */
+        $this->guardar_retenciones_sufridas($pago, $request->current_acount_payment_methods, $request->model_name, $request->model_id);
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');
         return response()->json(['current_acount' => $pago], 201);
     }
 
-    function get_haber($request) {
-        $total = 0;
-        foreach ($request->current_acount_payment_methods as $payment_method) {
-            
-            if (
-                isset($payment_method['amount_cotizado'])
-                && !is_null($payment_method['amount_cotizado'])
-                && $payment_method['amount_cotizado'] != ''
-                && (float)$payment_method['amount_cotizado'] > 0
-            ) {
-                $haber = (float)$payment_method['amount_cotizado'];
-            } else {
+    /**
+     * Guarda un `retenciones_sufridas` por cada fila de medio de pago del cobro cuyo tipo sea
+     * `retencion` (mision compras-factura-manual-alicuotas, 17/9/2026, parte C).
+     *
+     * 🔴 ESTE METODO NO MUEVE UN PESO Y NO TIENE QUE MOVERLO. Lo que cancela la deuda es el `amount`
+     * de la fila de medio de pago, que ya sumo al haber en
+     * CurrentAcountPagoAltaHelper::get_haber(): si el cliente te debe $100.000 y te retiene $2.000,
+     * te paga $98.000 y la deuda se cancela por $100.000. Si alguna vez alguien siente que aca hay
+     * que restar, descontar o ajustar algo, es el error clasico de este circuito y le deja al
+     * cliente $2.000 de deuda que ya pago.
+     *
+     * 🔴 SOLO PARA COBROS A CLIENTES. Una retencion SUFRIDA la practica el cliente cuando te paga.
+     * En un pago a un PROVEEDOR el agente de retencion sos vos, o sea que esa retencion es
+     * PRACTICADA, y meterla en esta tabla se la restaria a tu propia posicion de IVA o de IIBB como
+     * si te la hubieran hecho a vos. El medio de pago sigue funcionando igual en los dos lados (la
+     * deuda se cancela entera sin que salga plata de la caja, que para un pago a proveedor tambien
+     * es lo correcto); lo unico que no se guarda es el certificado.
+     *
+     * @param  \App\Models\CurrentAcount $pago El cobro recien creado.
+     * @param  array|null $payment_methods Las filas tal como las manda el modal de cobro.
+     * @param  string|null $model_name `client` o `provider`.
+     * @param  int|null $model_id
+     * @return int Cantidad de certificados guardados.
+     */
+    protected function guardar_retenciones_sufridas($pago, $payment_methods, $model_name, $model_id) {
 
-                $haber = (float)$payment_method['amount'];
+        if ($model_name != 'client' || !is_array($payment_methods)) {
+
+            return 0;
+        }
+
+        $guardadas = 0;
+
+        foreach ($payment_methods as $payment_method) {
+
+            if (!isset($payment_method['current_acount_payment_method_id'])) {
+
+                continue;
             }
 
-            $total += $haber;
+            $metodo = CurrentAcountPaymentMethod::find($payment_method['current_acount_payment_method_id']);
+
+            if (
+                is_null($metodo)
+                || is_null($metodo->type)
+                || $metodo->type->slug != 'retencion'
+            ) {
+
+                continue;
+            }
+
+            $importe = isset($payment_method['amount']) ? (float) $payment_method['amount'] : 0;
+
+            if ($importe <= 0) {
+
+                /*
+                 * Una fila de retencion sin monto no cancelo nada (attach_payment_methods tampoco
+                 * la adjunta), asi que no hay certificado que guardar. Se avisa por log porque del
+                 * lado del usuario parece cargada.
+                 */
+                Log::warning('guardar_retenciones_sufridas: el cobro '.$pago->id.' trae una fila de retencion sin importe. No se guarda certificado.');
+
+                continue;
+            }
+
+            RetencionSufrida::create([
+                'user_id'                       => $pago->user_id,
+                'current_acount_id'             => $pago->id,
+                'client_id'                     => $model_id,
+                'impuesto'                      => RetencionSufrida::normalizar_impuesto($this->dato_de_retencion($payment_method, 'impuesto')),
+                'numero_certificado'            => $this->dato_de_retencion($payment_method, 'numero_certificado'),
+                /*
+                 * La fecha del certificado es obligatoria: es la que decide en que periodo fiscal
+                 * entra la retencion. Si el papel no la trae, se usa la del cobro — el agente
+                 * entrega el certificado en el momento de practicar la retencion (RG 2233, art. 8),
+                 * asi que es la mejor aproximacion posible y no bloquea el cobro por un campo
+                 * administrativo.
+                 */
+                'fecha'                         => $this->fecha_de_retencion($payment_method, $pago),
+                'regimen'                       => $this->dato_de_retencion($payment_method, 'regimen'),
+                'base_imponible'                => $this->numero_de_retencion($payment_method, 'base_imponible'),
+                'alicuota'                      => $this->numero_de_retencion($payment_method, 'alicuota'),
+                'importe'                       => $importe,
+                'origen'                        => RetencionSufrida::ORIGEN_COBRO,
+                'provider_order_afip_ticket_id' => null,
+            ]);
+
+            $guardadas++;
         }
-        return $total;
+
+        return $guardadas;
+    }
+
+    /**
+     * Lee un campo del certificado de una fila de medio de pago. Las claves viajan prefijadas con
+     * `retencion_` para no chocar con las del cheque (`numero`, `banco`, `fecha_emision`), que
+     * comparten la misma fila del payload.
+     *
+     * @param  array $payment_method
+     * @param  string $campo Sin el prefijo.
+     * @return string|null
+     */
+    private function dato_de_retencion($payment_method, $campo) {
+
+        $clave = 'retencion_'.$campo;
+
+        if (!isset($payment_method[$clave]) || $payment_method[$clave] === '') {
+
+            return null;
+        }
+
+        return $payment_method[$clave];
+    }
+
+    /**
+     * Idem, para los campos numericos: un string vacio tiene que quedar NULL y no 0, que se leeria
+     * como "la base imponible fue cero".
+     *
+     * 🔴 LO MISMO VALE PARA UN TEXTO QUE NO ES UN NUMERO. Los dos campos son inputs de texto libre
+     * en la SPA (no `type=number`, porque la coma y el punto decimal los escribe cada comercio como
+     * puede), y `(float)'abc'` en PHP da 0 sin avisar. Un 0 guardado no se distingue de un cero
+     * declarado, y en `base_imponible` eso es "la retencion se practico sobre una base de cero".
+     * Lo que no es un numero es un campo NO CARGADO.
+     *
+     * @param  array $payment_method
+     * @param  string $campo
+     * @return float|null
+     */
+    private function numero_de_retencion($payment_method, $campo) {
+
+        $valor = $this->dato_de_retencion($payment_method, $campo);
+
+        if (is_null($valor)) {
+
+            return null;
+        }
+
+        $valor = self::normalizar_numero_escrito_a_mano($valor);
+
+        if (!is_numeric($valor)) {
+
+            return null;
+        }
+
+        return (float) $valor;
+    }
+
+    /**
+     * Pasa un numero escrito a mano al formato que entiende PHP.
+     *
+     * El comercio copia estos dos campos del certificado de papel, y en Argentina eso se escribe
+     * "2.500,50": punto de miles y coma decimal. `is_numeric('2.500,50')` da false, asi que sin
+     * esto el dato se descartaba en silencio — el comercio escribia la base imponible, la veia en
+     * pantalla, y se guardaba NULL.
+     *
+     * Solo se toca el separador: lo que despues de esto sigue sin ser un numero (un "n/a", un
+     * "-") lo descarta igual el `is_numeric` de arriba, que es lo correcto.
+     *
+     * @param  string $valor
+     * @return string
+     */
+    private static function normalizar_numero_escrito_a_mano($valor) {
+
+        $valor = trim((string) $valor);
+
+        // Con coma Y punto, el ultimo es el decimal y el otro es separador de miles ("2.500,50" o
+        // "2,500.50"). Con una sola coma, es el decimal ("2500,50").
+        if (strpos($valor, ',') !== false && strpos($valor, '.') !== false) {
+
+            $valor = (strrpos($valor, ',') > strrpos($valor, '.'))
+                        ? str_replace(['.', ','], ['', '.'], $valor)
+                        : str_replace(',', '', $valor);
+
+        } else if (strpos($valor, ',') !== false) {
+
+            $valor = str_replace(',', '.', $valor);
+        }
+
+        return $valor;
+    }
+
+    /**
+     * Fecha del certificado, con la del cobro como respaldo (ver el comentario del create).
+     *
+     * @param  array $payment_method
+     * @param  \App\Models\CurrentAcount $pago
+     * @return string Fecha en formato Y-m-d.
+     */
+    private function fecha_de_retencion($payment_method, $pago) {
+
+        $fecha = $this->dato_de_retencion($payment_method, 'fecha');
+
+        if (!is_null($fecha)) {
+
+            return Carbon::parse($fecha)->format('Y-m-d');
+        }
+
+        if (!is_null($pago->created_at)) {
+
+            return Carbon::parse($pago->created_at)->format('Y-m-d');
+        }
+
+        return Carbon::now()->format('Y-m-d');
     }
 
     /**

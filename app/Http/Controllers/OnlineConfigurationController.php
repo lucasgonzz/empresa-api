@@ -67,7 +67,17 @@ class OnlineConfigurationController extends Controller
         $model->meta_description = $meta_description;
 
         $model->has_delivery                    = $request->has_delivery;
-        $model->order_description               = $request->order_description;                     
+
+        // Boton "Comprar ahora" en la ficha del articulo de la tienda: si esta activo, el boton
+        // agrega el articulo al carrito y lleva directo a terminar la compra; si esta apagado,
+        // la ficha muestra solo "Agregar al carrito" y el comprador sigue navegando. Arranca en
+        // false (decision de Lucas). Se lee con $request->boolean() y default al valor actual
+        // del modelo por el mismo motivo que los booleanos de mas abajo: una pantalla abierta
+        // desde antes del deploy manda el PUT sin la clave, y ese PUT no tiene que apagar el
+        // flag solo.
+        $model->mostrar_comprar_ahora           = $request->boolean('mostrar_comprar_ahora', $model->mostrar_comprar_ahora ?? false);
+
+        $model->order_description               = $request->order_description;
         $model->online_template_id               = $request->online_template_id;                     
         $model->cantidad_tarjetas_en_telefono               = $request->cantidad_tarjetas_en_telefono;                     
         $model->cantidad_tarjetas_en_tablet               = $request->cantidad_tarjetas_en_tablet;                     
@@ -84,6 +94,7 @@ class OnlineConfigurationController extends Controller
         $model->auto_scroll_home_interval           = $request->auto_scroll_home_interval;       
         $model->article_description_font_size       = $request->article_description_font_size;
         $model->mostrar_catalogo                    = $request->mostrar_catalogo;
+        $model->mostrar_catalogo_categorias_home    = $request->mostrar_catalogo_categorias_home;
 
         $model->enviar_whatsapp_al_terminar_pedido  = $request->enviar_whatsapp_al_terminar_pedido;
 

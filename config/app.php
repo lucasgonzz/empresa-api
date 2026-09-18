@@ -252,4 +252,22 @@ return [
     /* Clave de API de Anthropic (Claude) para la importación de Excel asistida por IA. */
     'ANTHROPIC_API_KEY'                         => env('ANTHROPIC_API_KEY'),
 
+    /*
+        Minutos durante los que se reutiliza el snapshot del tablero del día
+        (CompanyPerformanceController::check_tiempo_ultima_creada). Pasados, la próxima entrada
+        al tablero lo borra y lo recalcula entero (PerformanceHelper::create_company_performance),
+        que en un cliente grande son >10 s de request. El default era 1 minuto, o sea: casi cada
+        entrada recalculaba; 10 es lo que ya tenían a mano en su .env los clientes más grandes
+        del VPS (misión actualizar-sin-el-vps, 9/9/2026). Vive acá y no en un env() suelto porque
+        env() en código deja de leerse con config:cache.
+
+        Se castea a float y no a int solo para no cambiarle el tipo a lo que ya hay cargado en
+        producción (demo tiene 0.5, hipermax-prueba tenía .1), pero ⚠️ esos valores NO significan
+        "medio minuto": Carbon trunca en addUnit() con un (int) $value, así que subMinutes(0.5)
+        no resta nada y el efecto real es "recalcular en cada entrada". Medido con el binario 7.4
+        el 9/9/2026. Si algún día hace falta granularidad menor a un minuto, hay que cambiar la
+        cuenta del controlador, no este cast.
+    */
+    'duracion_reportes'                         => (float) env('DURACION_REPORTES', 10),
+
 ];

@@ -18,10 +18,18 @@ use Tests\TestCase;
  *
  * Lo que protege este archivo son las dos fronteras del módulo: la extensión
  * (sin asistente_ia, 403 en TODAS las rutas) y la tenencia por PERSONA (las
- * conversaciones pueden traer saldos de clientes: el empleado no ve las del
+ * conversaciones pueden traer saldos de clientes: el encargado no ve las del
  * dueño ni al revés, aunque compartan cuenta). Más el contrato del POST del
  * mensaje: guarda los dos globos, toca la actividad, despacha los jobs y
  * defiende la carrera de dos mensajes seguidos con el 409 de servidor.
+ *
+ * 🔴 LA SEGUNDA PERSONA DE ESTE ARCHIVO ES UN ENCARGADO (admin_access), NO UN EMPLEADO RASO, y
+ * desde la misión agente-ia-mano-derecha eso es obligatorio: el chat pasó a ser solo del dueño (y
+ * de quien tenga admin_access o el acceso maestro), así que un empleado raso se come un 403 en la
+ * puerta y no llega a ninguno de los contratos que se miden acá. La tenencia por persona NO se
+ * aflojó ni un poco — al contrario, ahora se mide contra alguien que SÍ puede entrar, que es el
+ * caso que de verdad importa: entrar no es ver las conversaciones del dueño. Que el empleado raso
+ * quede afuera lo mide 18_Gate_solo_el_dueno_Test.
  *
  * Queue::fake en los tests de send_message: acá se verifica el DESPACHO; los
  * jobs ya tienen su propio archivo (P6) y la cola sync saldría a la red.
@@ -37,7 +45,7 @@ class Endpoints_chat_Test extends TestCase
     protected $comercio;
 
     /** @var User */
-    protected $empleado;
+    protected $encargado;
 
     protected function setUp(): void
     {
@@ -53,17 +61,21 @@ class Endpoints_chat_Test extends TestCase
             'password'     => Hash::make('secret'),
         ]);
 
-        $this->empleado = User::create([
-            'name'     => 'Empleado chat-ia P7',
-            'email'    => 'chat-ia-p7-empleado-' . uniqid() . '@test.local',
+        $this->encargado = User::create([
+            'name'     => 'Encargado chat-ia P7',
+            'email'    => 'chat-ia-p7-encargado-' . uniqid() . '@test.local',
             'password' => Hash::make('secret'),
             'owner_id' => $this->comercio->id,
+            // 🔴 Con admin_access porque desde la misión agente-ia-mano-derecha el chat es SOLO del
+            // dueño: un empleado raso ya no pasa la puerta, y lo que este archivo mide es lo que
+            // pasa ADENTRO. Que el empleado raso quede afuera lo mide 18_Gate_solo_el_dueno_Test.
+            'admin_access' => 1,
         ]);
     }
 
     /**
      * Asigna la extensión al comercio (el middleware resuelve al owner, así
-     * que con dársela al dueño alcanza también para sus empleados).
+     * que con dársela al dueño alcanza también para sus encargados).
      *
      * @return void
      */
@@ -129,42 +141,42 @@ class Endpoints_chat_Test extends TestCase
      * @group chat-ia
      * @test
      */
-    public function el_indice_del_empleado_no_muestra_las_conversaciones_del_dueno()
+    public function el_indice_del_encargado_no_muestra_las_conversaciones_del_dueno()
     {
         $this->dar_extension();
 
         $del_dueno    = $this->conversacion($this->comercio, ['titulo' => 'Chat del dueño']);
-        $del_empleado = $this->conversacion($this->empleado, ['titulo' => 'Chat del empleado']);
+        $del_encargado = $this->conversacion($this->encargado, ['titulo' => 'Chat del encargado']);
 
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         $response = $this->getJson('api/ai-conversations');
         $response->assertStatus(200);
 
         $ids = array_column($response->json('models'), 'id');
-        $this->assertEquals([$del_empleado->id], $ids, 'El empleado ve SOLO su conversación, no la del dueño.');
+        $this->assertEquals([$del_encargado->id], $ids, 'El encargado ve SOLO su conversación, no la del dueño.');
     }
 
     /**
      * La jerarquía tampoco corre al revés: ser el dueño de la cuenta no abre
-     * los chats de los empleados (pueden charlar de saldos con la IA igual
+     * los chats de los encargados (pueden charlar de saldos con la IA igual
      * que el dueño).
      *
      * @group chat-ia
      * @test
      */
-    public function el_indice_del_dueno_no_muestra_las_conversaciones_del_empleado()
+    public function el_indice_del_dueno_no_muestra_las_conversaciones_del_encargado()
     {
         $this->dar_extension();
 
         $del_dueno    = $this->conversacion($this->comercio, ['titulo' => 'Chat del dueño']);
-        $del_empleado = $this->conversacion($this->empleado, ['titulo' => 'Chat del empleado']);
+        $del_encargado = $this->conversacion($this->encargado, ['titulo' => 'Chat del encargado']);
 
         $this->actingAs($this->comercio, 'web');
         $response = $this->getJson('api/ai-conversations');
         $response->assertStatus(200);
 
         $ids = array_column($response->json('models'), 'id');
-        $this->assertEquals([$del_dueno->id], $ids, 'El dueño ve SOLO su conversación, no la del empleado.');
+        $this->assertEquals([$del_dueno->id], $ids, 'El dueño ve SOLO su conversación, no la del encargado.');
     }
 
     /**
@@ -177,11 +189,11 @@ class Endpoints_chat_Test extends TestCase
     public function el_indice_ordena_por_actividad_con_las_sin_actividad_al_final()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
-        $vieja = $this->conversacion($this->empleado, ['last_message_at' => now()->subDay()]);
-        $sin_actividad = $this->conversacion($this->empleado);
-        $reciente = $this->conversacion($this->empleado, ['last_message_at' => now()]);
+        $vieja = $this->conversacion($this->encargado, ['last_message_at' => now()->subDay()]);
+        $sin_actividad = $this->conversacion($this->encargado);
+        $reciente = $this->conversacion($this->encargado, ['last_message_at' => now()]);
 
         $ids = array_column($this->getJson('api/ai-conversations')->json('models'), 'id');
 
@@ -195,9 +207,9 @@ class Endpoints_chat_Test extends TestCase
     public function messages_pagina_con_per_page_y_techo_200()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         for ($i = 1; $i <= 5; $i++) {
             AiMessage::create([
@@ -228,10 +240,10 @@ class Endpoints_chat_Test extends TestCase
     public function send_message_guarda_los_dos_globos_toca_la_actividad_y_despacha_los_jobs()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
         $this->assertNull($conversation->last_message_at);
 
         $response = $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
@@ -266,10 +278,10 @@ class Endpoints_chat_Test extends TestCase
     public function el_titulo_solo_se_infiere_con_el_primer_mensaje()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
             'contenido' => 'primer mensaje',
@@ -298,10 +310,10 @@ class Endpoints_chat_Test extends TestCase
     public function con_una_respuesta_en_curso_devuelve_409_y_no_crea_nada()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         AiMessage::create([
             'ai_conversation_id' => $conversation->id,
@@ -342,10 +354,10 @@ class Endpoints_chat_Test extends TestCase
     public function un_pendiente_vencido_no_bloquea_el_post_y_queda_cerrado_en_error()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         $huerfano = AiMessage::create([
             'ai_conversation_id' => $conversation->id,
@@ -386,10 +398,10 @@ class Endpoints_chat_Test extends TestCase
     public function un_pendiente_dentro_de_la_ventana_sigue_bloqueando_con_409()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         AiMessage::create([
             'ai_conversation_id' => $conversation->id,
@@ -412,10 +424,10 @@ class Endpoints_chat_Test extends TestCase
     public function un_contenido_vacio_o_pasado_de_largo_devuelve_422()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
             'contenido' => '',
@@ -443,7 +455,7 @@ class Endpoints_chat_Test extends TestCase
             'contenido'          => 'saldo del cliente García',
         ]);
 
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
         Queue::fake();
 
         $base = 'api/ai-conversations/' . $del_dueno->id;
@@ -466,9 +478,9 @@ class Endpoints_chat_Test extends TestCase
     public function destroy_borra_la_conversacion_con_sus_mensajes()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
-        $conversation = $this->conversacion($this->empleado);
+        $conversation = $this->conversacion($this->encargado);
 
         AiMessage::create([
             'ai_conversation_id' => $conversation->id,
@@ -498,7 +510,7 @@ class Endpoints_chat_Test extends TestCase
     public function store_crea_una_conversacion_de_la_persona_sin_titulo()
     {
         $this->dar_extension();
-        $this->actingAs($this->empleado, 'web');
+        $this->actingAs($this->encargado, 'web');
 
         $response = $this->postJson('api/ai-conversations');
 
@@ -506,7 +518,7 @@ class Endpoints_chat_Test extends TestCase
 
         $model = $response->json('model');
 
-        $this->assertEquals($this->empleado->id, (int) $model['auth_user_id'], 'La conversación es de la PERSONA.');
+        $this->assertEquals($this->encargado->id, (int) $model['auth_user_id'], 'La conversación es de la PERSONA.');
         $this->assertEquals($this->comercio->id, (int) $model['user_id'], 'La cuenta es la del dueño.');
         $this->assertNull($model['titulo'], 'El título nace null: la SPA muestra "Nueva conversación".');
         $this->assertEquals('usuario', AiConversation::find($model['id'])->origen);

@@ -95,6 +95,17 @@ class InitExcelImport
         $this->interpretacion_punto                                 = $data['interpretacion_punto'] ?? 'auto';
 
         /*
+         * Desempate por nombre cuando el provider_code matchea más de un artículo
+         * (misión `desempate-por-nombre-codigo-repetido`, 9/9/2026). Los dos controllers
+         * ya lo normalizan con filter_var, pero se vuelve a resolver el default acá por
+         * si algún llamador viejo (AdminSync, tests) no manda la clave.
+         */
+        $this->desempatar_por_nombre = filter_var(
+            isset($data['desempatar_por_nombre']) ? $data['desempatar_por_nombre'] : false,
+            FILTER_VALIDATE_BOOLEAN
+        );
+
+        /*
          * Flag opcional que separa la decisión "repetido dentro del propio archivo"
          * de "repetido contra la base" (prompt 04, grupo 265). Antes de ese prompt,
          * ambas decisiones compartían permitir_provider_code_repetido. Cualquier valor
@@ -557,7 +568,8 @@ class InitExcelImport
                 $this->actualizar_por_provider_code,
                 $this->interpretacion_punto,
                 $this->filas_repetidas_del_archivo,
-                $this->precios_incluyen_iva
+                $this->precios_incluyen_iva,
+                $this->desempatar_por_nombre
             );
 
             $this->chunk_number++;
@@ -659,6 +671,18 @@ class InitExcelImport
                  */
                 'name'  => 'Filas repetidas del archivo',
                 'value' => $this->filas_repetidas_del_archivo,
+            ],
+            [
+                /*
+                 * Deja registrado si se pidió desempatar por nombre los artículos que
+                 * comparten provider_code (misión 9/9/2026). Mismo motivo que las dos de
+                 * arriba: dentro de unos meses, cuando alguien pregunte por qué un artículo
+                 * quedó con el precio del pack, esto es lo que responde con qué opciones se
+                 * corrió esa importación. Va dentro del JSON de 'operaciones' que ya existe;
+                 * no se agrega columna nueva a import_histories.
+                 */
+                'name'  => 'Desempatar por nombre',
+                'value' => $this->desempatar_por_nombre ? 'Si' : 'No',
             ],
         ];
     }

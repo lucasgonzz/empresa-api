@@ -9,6 +9,9 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ClienteDeMencionIaHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
@@ -63,7 +66,17 @@ class ClientController extends Controller
             'dni'                       => $request->dni,
             'razon_social'              => $request->razon_social,
             'iva_condition_id'          => $request->iva_condition_id,
-            'price_type_id'             => $request->price_type_id,
+            /*
+             * 🔴 El 0 del placeholder NO es una lista (tanda 2 de la misión vender-lista-obligatoria,
+             * 18/9/2026, ítem A2). El form genérico de clientes nace con `price_type_id` en 0
+             * (`empresa-spa/src/models/client.js`) y hasta hoy se guardaba pelado: es LA RAÍZ del
+             * 0 en `clients.price_type_id` (Trama: 9.440 de 12.194 clientes en 0; golonorte: 527
+             * de 733), que después el rescate de la lista del cliente copiaba a la venta y al
+             * pedido de la tienda. Se normaliza con el mismo helper que leen la venta y el
+             * presupuesto: 0, '' y null son "ninguna", o sea null. La migración de datos
+             * `2026_09_18_120000_normalizar_price_type_id_cero_en_clients` limpia lo ya guardado.
+             */
+            'price_type_id'             => PriceTypeHelper::normalizar_price_type_id($request->price_type_id),
             'location_id'               => $request->location_id,
             'provincia_id'              => $request->provincia_id,
             'description'               => $request->description,
@@ -89,6 +102,32 @@ class ClientController extends Controller
         return response()->json(['model' => $this->fullModel('Client', $id)], 200);
     }
 
+    /**
+     * El cliente que necesita el modal de cuenta corriente cuando se lo abre desde una mención del
+     * chat del asistente (misión agente-ia-mano-derecha, §3 del contrato, 16/9/2026): su nombre,
+     * cuántos movimientos tiene y sus `credit_accounts` con saldo y límite.
+     *
+     * 🔴 Es un camino aparte de `show()` y no un adorno: `show()` resuelve por id PELADO
+     * (Controller::fullModel()) y devuelve el cliente de cualquier comercio. Acá la consulta va
+     * scopeada por `user_id` y contesta 404 si el cliente no es del dueño. El detalle completo, y
+     * las otras dos diferencias, están en ClienteDeMencionIaHelper.
+     *
+     * Envuelto en `{ model: ... }` como el resto del API; la SPA acepta las dos formas.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse  200 {model} · 404 {message}
+     */
+    public function para_cuenta_corriente($id) {
+        $model = ClienteDeMencionIaHelper::cliente($id, $this->userId(), UserHelper::user(true));
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'Cliente no encontrado.'], 404);
+        }
+
+        return response()->json(['model' => $model], 200);
+    }
+
     public function update(Request $request, $id) {
         $model = Client::find($id);
         $model->name                        = $request->name;
@@ -100,7 +139,8 @@ class ClientController extends Controller
         $model->dni                         = $request->dni;
         $model->razon_social                = $request->razon_social;
         $model->iva_condition_id            = $request->iva_condition_id;
-        $model->price_type_id               = $request->price_type_id;
+        // El 0 del placeholder es "ninguna lista" y se guarda como null: ver el comentario en store().
+        $model->price_type_id               = PriceTypeHelper::normalizar_price_type_id($request->price_type_id);
         $model->location_id                 = $request->location_id;
         $model->provincia_id                = $request->provincia_id;
         $model->description                 = $request->description;

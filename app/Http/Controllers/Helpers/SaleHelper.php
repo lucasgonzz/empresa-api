@@ -23,6 +23,8 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
+use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
@@ -345,28 +347,91 @@ class SaleHelper extends Controller {
     /**
      * Calcula y persiste la ganancia total de la venta.
      *
+     * Fórmula (misión saneo-ganancia-ventas, 17/9/2026):
+     *
+     *     sales.ganancia = total − costo NETO − IVA efectivamente declarado por esa venta
+     *
+     * donde el costo neto es `total_cost` menos el crédito fiscal que ese costo trae adentro
+     * (`CostoDeVentaHelper`), que es 0 en la enorme mayoría de las cuentas.
+     *
+     * 🔴 El tercer término es el que faltaba, y no es un detalle: `sales.total` es el precio CON
+     * IVA y `sales.total_cost` es el costo SIN IVA. Para un Responsable Inscripto que aplica el
+     * IVA después del margen, la resta pelada informaba como ganancia TODO el IVA débito. Con
+     * costo 100 y margen 40 %, la venta sale 169,40 y la fórmula vieja informaba $69,40 de
+     * ganancia donde la ganancia real es $40: los $29,40 restantes son de ARCA.
+     *
+     * 🔴 Y el segundo término no siempre es neto, que es lo que hacía que la fórmula nueva fuera
+     * PEOR que la vieja en una cuenta **legacy con `aplicar_iva_al_costo` prendida**: ahí el costo
+     * se guarda BRUTO y restarle además el IVA débito completo descuenta el IVA dos veces (costo
+     * bruto 121 y margen 40 % daban $19,00 donde la ganancia real es $40). Ese IVA de compra es
+     * crédito fiscal recuperable y se lo devuelve al costo antes de restar. Quién tiene el costo
+     * bruto, quién recupera ese IVA y por qué el Monotributista no entra: `CostoDeVentaHelper`.
+     *
+     * El IVA sale del COMPROBANTE (`IvaDeVentaHelper`), nunca de la condición fiscal del negocio:
+     * las ventas sin comprobante —el 63 % de ferretotal y el 51 % de golonorte— no declaran nada,
+     * el IVA cobrado se lo queda la casa y para ellas la fórmula vieja ya era correcta. Ver el
+     * PHPDoc de `IvaDeVentaHelper` para la tabla de casos completa.
+     *
+     * 🔴 Las notas de crédito NO se netean acá, a propósito. `sales.total` y `sales.total_cost` no
+     * se tocan cuando se emite una nota de crédito (la devolución vive en `current_acounts` +
+     * `article_current_acount`, ver `ContabilidadRepository::devoluciones()` y
+     * `costo_mercaderia_devuelta()`): la fila de `sales` sigue describiendo la venta ORIGINAL
+     * entera. Netearle solo el IVA de la NC dejaría un número mestizo —precio bruto, costo bruto,
+     * IVA neteado— que no describe ninguna operación real. El neteo de las devoluciones es un
+     * renglón del Estado de Resultados, donde las tres puntas se netean juntas.
+     *
+     * 🔴 Un comprobante autorizado sin `importe_iva` medido deja la ganancia en NULL, no en el
+     * número viejo ni en "IVA 0". Null ya significa "no se puede calcular" en esta columna (es lo
+     * que se persiste cuando falta el total o el costo), y es la única respuesta que no miente:
+     * asumir 0 sería contar una venta facturada como si hubiera sido en negro. Recuperar ese IVA es
+     * una tarea aparte y hoy no hay comando que la haga (ver el PHPDoc de `IvaDeVentaHelper`).
+     *
      * @param \App\Models\Sale $sale
      * @return \App\Models\Sale
      */
     static function set_sale_ganancia($sale) {
-        /** Total final de la venta usado para el calculo. */
-        $total_sale = is_null($sale->total) ? null : (float) $sale->total;
+        /** IVA declarado por esta venta y comprobantes suyos que todavía no lo tienen medido. */
+        $medicion_iva = IvaDeVentaHelper::medir_venta($sale);
 
-        /** Costo total de la venta usado para el calculo. */
-        $total_cost = is_null($sale->total_cost) ? null : (float) $sale->total_cost;
-
-        /**
-         * Ganancia persistida.
-         * Si falta alguno de los dos valores base, se mantiene en null.
-         */
-        $sale_ganancia = is_null($total_sale) || is_null($total_cost) ? null : $total_sale - $total_cost;
+        /** Crédito fiscal contenido en el costo (0 salvo en las cuentas con el costo BRUTO). */
+        $credito_fiscal = CostoDeVentaHelper::medir_venta($sale);
 
         /** Se guarda sin timestamps para mantener el comportamiento actual del helper. */
-        $sale->ganancia = $sale_ganancia;
+        $sale->ganancia = Self::calcular_ganancia($sale->total, $sale->total_cost, $medicion_iva, $credito_fiscal);
         $sale->timestamps = false;
         $sale->save();
 
         return $sale;
+    }
+
+    /**
+     * La fórmula de la ganancia, sola y sin efectos: la comparten el guardado en vivo
+     * (`set_sale_ganancia()`) y el backfill (`php artisan set_sales_ganancia`), para que no puedan
+     * dar números distintos sobre la misma venta.
+     *
+     * El cuarto parámetro tiene default 0 y no es un atajo: 0 es la respuesta CORRECTA para toda
+     * cuenta cuyo costo ya es neto, que son casi todas. Sólo las cuentas con el costo BRUTO mandan
+     * algo distinto (ver `CostoDeVentaHelper`).
+     *
+     * @param  mixed $total Total de la venta (`sales.total`), puede venir null.
+     * @param  mixed $total_cost Costo total de la venta (`sales.total_cost`), puede venir null.
+     * @param  array{iva: float, sin_medir: int} $medicion_iva Salida de `IvaDeVentaHelper`.
+     * @param  mixed $credito_fiscal_en_el_costo Salida de `CostoDeVentaHelper::medir_venta()`.
+     * @return float|null Null cuando el número no se puede calcular (ver PHPDoc de set_sale_ganancia).
+     */
+    static function calcular_ganancia($total, $total_cost, $medicion_iva, $credito_fiscal_en_el_costo = 0.0) {
+        if (is_null($total) || is_null($total_cost)) {
+            return null;
+        }
+
+        if ((int) $medicion_iva['sin_medir'] > 0) {
+            return null;
+        }
+
+        /** Costo YA NETO: se le devuelve al costo el IVA de compra que el negocio recupera. */
+        $costo_neto = (float) $total_cost - (float) $credito_fiscal_en_el_costo;
+
+        return (float) $total - $costo_neto - (float) $medicion_iva['iva'];
     }
 
     // Chequeo que no falten articulos como le suele pasar a Pack
@@ -472,6 +537,35 @@ class SaleHelper extends Controller {
                 // }
             } else {
 
+                /*
+                    🔴 El metodo unico se adjunta SOLO si es un metodo real (tanda 2 de la mision
+                    vender-lista-obligatoria, 18/9/2026). Hasta hoy esta rama hacia
+                    `attach($request->current_acount_payment_method_id, ...)` con lo que viniera:
+                    con el 0 del placeholder del select de VENDER quedaba una fila en
+                    `current_acount_payment_method_sale` apuntando a un metodo que no existe, la
+                    relacion `current_acount_payment_methods` la ignoraba (no hay fila 0 contra la
+                    cual unir) y `SaleCajaHelper::check_caja()` no creaba movimiento: venta
+                    "cobrada" sin metodo y sin caja, sin error. Mismo criterio que
+                    `PaymentMethodHelper::attach_payment_methods()` aplica al reparto desde el
+                    3/8/2026: lo que no es un metodo se saltea y queda dicho en el log.
+
+                    Con `null` el attach ya era un no-op (Eloquent no inserta nada con un id
+                    nulo); ahora el no-op es explicito y logueado para el 0, el inexistente y el
+                    null por igual.
+
+                    Que no llegue nada hasta aca desde VENDER lo garantiza el 422 de
+                    `SaleController` (`PaymentMethodHelper::validar_venta_nueva()`); esta guarda
+                    es la ultima linea, para los llamadores que no pasan por ese chequeo.
+                */
+                $current_acount_payment_method_id = PaymentMethodHelper::metodo_de_pago_valido($request->current_acount_payment_method_id);
+
+                if (is_null($current_acount_payment_method_id)) {
+
+                    Log::warning('attachSelectedPaymentMethods: la venta '.$sale->id.' es de contado y el metodo unico ('.var_export($request->current_acount_payment_method_id, true).') no es un metodo de pago valido; no se adjunta ninguno.');
+
+                    return;
+                }
+
                 $total = (float)$sale->total;
 
                 if (!is_null($request->discount_amount)) {
@@ -490,7 +584,7 @@ class SaleHelper extends Controller {
                     );
                 }
 
-                $sale->current_acount_payment_methods()->attach($request->current_acount_payment_method_id, [
+                $sale->current_acount_payment_methods()->attach($current_acount_payment_method_id, [
                     'amount'                => $total,
                     'discount_percentage'   => $discount_percentage,
                     'discount_amount'       => $request->discount_amount,
@@ -916,29 +1010,56 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * El vendedor de una venta que entra por VENDER: el del request, o el del cliente, o el del
+     * empleado que vende, o ninguno (0). Firma intacta; la regla vive en `get_seller_id_desde()`
+     * para que la venta nacida de un presupuesto (`BudgetHelper::saveSale()`) resuelva el vendedor
+     * con EXACTAMENTE el mismo criterio sin tener que fabricar un Request.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int  Id del vendedor, o 0.
+     */
     static function get_seller_id($request) {
-        if (isset($request->seller_id)
-            && !is_null($request->seller_id)
-            && $request->seller_id != 0) {
 
-            return $request->seller_id;
+        return Self::get_seller_id_desde($request->seller_id, $request->client_id, Self::getEmployeeId($request));
+    }
+
+    /**
+     * La regla del vendedor, sin request (tanda 2 de la mision vender-lista-obligatoria,
+     * 18/9/2026, item A3): primero el vendedor elegido (si es un id real), despues el del cliente,
+     * despues el del empleado que vende, y si no hay ninguno, 0 (que es lo que esta columna
+     * siempre uso como "sin vendedor" en el alta; `ComisionesHelper` trata 0 y null igual).
+     *
+     * Un `client_id` que no existe se saltea en vez de reventar: hasta hoy `Client::find()` sin
+     * guarda tiraba "Trying to get property 'seller_id' of null" y se llevaba puesta el alta.
+     *
+     * @param  mixed     $seller_id_elegido  El `seller_id` del request (null o 0 = no eligio).
+     * @param  int|null  $client_id
+     * @param  int|null  $employee_id        El empleado que vende (null = el dueno).
+     * @return int
+     */
+    static function get_seller_id_desde($seller_id_elegido, $client_id, $employee_id) {
+
+        if (!is_null($seller_id_elegido) && $seller_id_elegido != 0) {
+
+            return $seller_id_elegido;
         }
 
-        if (!is_null($request->client_id)) {
+        if (!is_null($client_id)) {
 
-            $client = Client::find($request->client_id);
+            $client = Client::find($client_id);
 
-            if (!is_null($client->seller_id)) {
+            if (!is_null($client) && !is_null($client->seller_id)) {
 
                 return $client->seller_id;
             }
         }
 
-        $employee_id = Self::getEmployeeId($request);
-        if (Self::getEmployeeId($request)) {
+        if ($employee_id) {
 
             $employee = User::find($employee_id);
-            if ($employee->seller_id) {
+
+            if (!is_null($employee) && $employee->seller_id) {
                 Log::info('retornando seller_id en base al empleado '.$employee->name);
                 return $employee->seller_id;
             }
@@ -969,6 +1090,28 @@ class SaleHelper extends Controller {
      */
     static function va_a_volver_a_la_cuenta_corriente($sale) {
         return (bool) ($sale->save_current_acount && !$sale->omitir_en_cuenta_corriente);
+    }
+
+    /**
+     * El `save_current_acount` con el que NACE una venta nueva, resuelto UNA sola vez a partir
+     * del request: lo que viaja, o 1 si no viaja (como CreateSaleOrderHelper).
+     *
+     * 🔴 Lo tienen que usar TODOS los que miran el request antes del INSERT: el create() de
+     * SaleController::store() y la venta hipotetica de LimiteCreditoHelper::validar_venta_nueva().
+     * Cuando el default vivia solo en el create(), un POST sin la clave contra un cliente con
+     * limite de credito lo esquivaba: el tope se evaluaba con el null crudo (no va a la cuenta
+     * corriente -> no hay que controlar) y la venta se guardaba con 1 y su movimiento, por
+     * encima del limite. Medido el 18/9/2026 (mision vender-lista-obligatoria, tanda 2).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int  0 o 1
+     */
+    static function get_save_current_acount_de_venta_nueva($request) {
+        if (is_null($request->save_current_acount)) {
+            return 1;
+        }
+
+        return $request->save_current_acount ? 1 : 0;
     }
 
     static function crear_comision($sale) {
@@ -1149,6 +1292,36 @@ class SaleHelper extends Controller {
         }
     }
 
+    /**
+     * Cambia el precio de los renglones de una venta ya guardada (endpoint
+     * `PUT api/sale/update-prices/{id}`, `SaleController::updatePrices()`).
+     *
+     * 🔴 Y recalcula la GANANCIA de la línea, que hasta el 17/9/2026 no se tocaba. El pivot quedaba
+     * con la ganancia del precio VIEJO —`(price_viejo − cost) × amount`— cada vez que alguien
+     * editaba el precio de una venta guardada: un dato incorrecto que el sistema seguía generando
+     * todos los días.
+     *
+     * Y no era sólo un número feo en una columna. Esa línea desincronizada cumple la firma
+     * aritmética con la que `sale:sanear-costo-de-linea` reconoce las líneas que rompió
+     * `set_costo_ventas`, así que el saneo la confundía con una línea a corregir y la "arreglaba"
+     * sin que estuviera rota. Ese comando terminó necesitando una guarda extra para no comérselas:
+     * la guarda tapa el síntoma, esto saca la causa.
+     *
+     * El `cost` y el `amount` se LEEN del pivot y no se recalculan: son la foto del momento de la
+     * venta y este endpoint no los toca. La convención es la misma de `attachArticle()`, la ganancia
+     * TOTAL de la línea y no la unitaria: `(price − cost) × amount`.
+     *
+     * ⚠️ Con `cost` en NULL la ganancia se persiste en NULL, que ya significa "no se puede calcular"
+     * en el resto del sistema (`sales.ganancia`), en vez de inventarle un costo de cero. Pasa, por
+     * ejemplo, con las líneas que deja `OrderProductionHelper::attachSaleArticles()`. Ojo con la
+     * asimetría: `attachArticle()` sí le inventa el cero en ese caso (`(float) null` da 0, o sea
+     * ganancia = precio × cantidad), y eso quedó como está a propósito — es el camino de creación,
+     * con su propia batería de tests, y cambiarlo es una decisión aparte.
+     *
+     * @param  \App\Models\Sale $sale
+     * @param  array $items Renglones con el precio nuevo, tal cual los manda la SPA.
+     * @return void
+     */
     static function updateItemsPrices($sale, $items) {
         foreach ($items as $item) {
             if (isset($item['is_article']) && $item['price_vender'] != '') {
@@ -1156,10 +1329,25 @@ class SaleHelper extends Controller {
                  * Recalcula precio sin IVA cada vez que se actualiza precio de artículo.
                  */
                 $price_sin_iva = Self::get_price_sin_iva($item, $item['price_vender']);
-                $sale->articles()->updateExistingPivot($item['id'], [
-                                                        'price' => $item['price_vender'],
-                                                        'price_sin_iva' => $price_sin_iva,
-                                                    ]);
+
+                $cambios = [
+                    'price' => $item['price_vender'],
+                    'price_sin_iva' => $price_sin_iva,
+                ];
+
+                /** Línea actual, para leerle el costo y la cantidad que ya tiene guardados. */
+                $linea = $sale->articles()->find($item['id']);
+
+                if (!is_null($linea) && !is_null($linea->pivot)) {
+
+                    $cambios['ganancia'] = Self::ganancia_de_linea(
+                        $linea->pivot->cost,
+                        $linea->pivot->amount,
+                        $item['price_vender']
+                    );
+                }
+
+                $sale->articles()->updateExistingPivot($item['id'], $cambios);
             } else if (isset($item['is_service']) && $item['price_vender'] != '') {
                 $service = Service::find($item['id']);
                 $service->price = $item['price_vender'];
@@ -1169,6 +1357,30 @@ class SaleHelper extends Controller {
                                                     ]);
             }
         }
+    }
+
+    /**
+     * La ganancia de UNA línea de venta, sola y sin efectos.
+     *
+     * 🔴 Es la ganancia TOTAL de la línea, no la unitaria: `(price − cost) × amount`. Es la
+     * convención que fija `attachArticle()` al crear la venta (`'ganancia' => $ganancia * $amount`),
+     * y la que respeta todo lo que lee esa columna.
+     *
+     * Devuelve null cuando no hay con qué calcular —sin costo o sin cantidad—, que es lo mismo que
+     * significa null en `sales.ganancia`. Inventarle un costo de cero informaría como ganancia el
+     * precio entero.
+     *
+     * @param  mixed $cost Costo UNITARIO guardado en el pivot.
+     * @param  mixed $amount Cantidad de la línea.
+     * @param  mixed $price Precio unitario nuevo.
+     * @return float|null
+     */
+    static function ganancia_de_linea($cost, $amount, $price) {
+        if (is_null($cost) || is_null($amount)) {
+            return null;
+        }
+
+        return ((float) $price - (float) $cost) * (float) $amount;
     }
 
     /**
@@ -1954,7 +2166,170 @@ class SaleHelper extends Controller {
                 $total -= $seller_commission->debe;
             }
         }
+
+        /*
+            EL TOTAL FORZADO VA ULTIMO, DESPUES DE TODO (mision forzar-total-por-monto, 17/9/2026).
+            Ver `aplicar_forzar_total_monto()` justo abajo para el porque del lugar y de la guarda.
+
+            🔴 POR QUE AL FINAL Y NO EN EL MEDIO, que es donde se estaria tentado de ponerlo al
+            lado de `$sale->descuento`. El monto es la diferencia contra EL TOTAL QUE VIO EL
+            VENDEDOR EN PANTALLA: la venta daba 4.012 y el cliente pago 4.000, entonces el monto
+            es -12 sobre el total completo. Si se aplicara antes de los descuentos y recargos, esos
+            porcentajes caerian tambien sobre el monto forzado y el total dejaria de dar 4.000
+            exacto, que es lo unico que el forzado promete.
+
+            Y por eso mismo se aplica al `$total` ya armado y no a `$total_articles`: ESE es el
+            defecto que esta mision viene a cerrar. La extension `forzar_total` vieja mandaba un
+            porcentaje que se restaba solo a los articulos, y despues el total se rearmaba sumando
+            articulos + servicios + combos + promociones. En una venta con servicios o combos el
+            numero forzado no aparecia por ningun lado.
+
+            La guarda de null va adentro de `get_forzar_total_monto()`: sin forzado esto es una
+            suma de cero y el camino comun no cambia en nada.
+        */
+        $total = Self::aplicar_forzar_total_monto($sale, $total);
+
         return $total;
+    }
+
+    /**
+     * Le aplica a un total el monto del forzado, con la guarda del total negativo.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  🔴 POR QUE ESTA GUARDA EXISTE DEL LADO DEL BACK Y NO ALCANZA CON LA DE VENDER
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  El monto queda FIJO una vez aplicado, igual que cualquier descuento de venta. El caso borde
+     *  es que los renglones de la venta cambien despues de forzar hasta que el total base quede por
+     *  debajo del monto: ahi el forzado ya no describe nada y aplicarlo deja un total negativo.
+     *
+     *  En VENDER eso lo cubre el vendedor, que ve el numero. Pero hay un camino donde el total se
+     *  recalcula SIN QUE LA SPA PARTICIPE: `attachProperies()` llama a `update_total_sale()` cuando
+     *  una venta `to_check` se confirma por primera vez, justamente porque el total que mando
+     *  VENDER no contempla las unidades chequeadas por el deposito. Medido: comercio con
+     *  `check_sales`, venta forzada a $4.000 (monto -12), el deposito chequea un solo item de $10
+     *  -> el total daria **-2**, y ese numero sigue derecho a la cuenta corriente y al importe del
+     *  medio de pago. Nadie lo mira en el camino.
+     *
+     *  🔴 Y NO SE CLAMPEA A CERO EN SILENCIO. Un total pisado a 0 sin que nadie lo diga es plata que
+     *  desaparece sin rastro: la venta queda cobrada en cero y no hay nada en la fila ni en el log
+     *  que explique por que. Se devuelve el total SIN forzar —que es un numero real, el de los
+     *  renglones que quedaron— y se deja el warning con los dos numeros para poder reconstruirlo.
+     *  Es el mismo criterio que toma `AfipItemCalculator::get_factor_total_forzado()` cuando su
+     *  base no da, y el mismo que pide la SPA en `aplicar_forzar_total_monto()`.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|object  $sale   Venta.
+     * @param  float                                       $total  Total ya calculado, sin el forzado.
+     * @return float
+     */
+    static function aplicar_forzar_total_monto($sale, $total) {
+
+        /** Monto con signo. 0 = la venta no se forzo y no hay nada que hacer. */
+        $monto = Self::get_forzar_total_monto($sale);
+
+        if ($monto == 0) {
+            return $total;
+        }
+
+        /** El total que quedaria al aplicar el monto. */
+        $forzado = $total + $monto;
+
+        if ($forzado < 0) {
+
+            Log::warning(
+                'SaleHelper: la venta '.(isset($sale->id) ? $sale->id : '?').' tiene forzar_total_monto ('.$monto.
+                ') pero sus renglones suman '.$total.', asi que el total forzado daria '.$forzado.
+                '. Se descarta el forzado y se deja el total sin forzar: los items cambiaron despues de forzar.'
+            );
+
+            return $total;
+        }
+
+        return $forzado;
+    }
+
+    /**
+     * El monto del total forzado de una venta o un presupuesto, normalizado a float.
+     *
+     * Es el unico lector de `forzar_total_monto` del repo: cualquier otro lugar que necesite el
+     * monto pasa por aca, para que la guarda de null y el casteo no se repitan (ni se olviden) en
+     * cada llamador. `BudgetHelper` tambien lo usa, por eso recibe un modelo generico y no una
+     * `Sale`.
+     *
+     * NEGATIVO = descuento, POSITIVO = recargo, NULL = no se forzo nada. La semantica completa
+     * esta en la migracion `2026_09_17_100000_add_forzar_total_monto_to_sales_and_budgets_tables`.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────
+     *  ⚠️ POR QUE `isset()` Y NO `is_null($model->forzar_total_monto)`
+     * ─────────────────────────────────────────────────────────────────────────────
+     *
+     *  NO es para tolerar una base sin migrar. Esa garantia seria FALSA y conviene decirlo, porque
+     *  es lo primero que uno piensa: contra una base sin la columna, el alta de ventas ya revento
+     *  mucho antes de llegar aca —`SaleController` manda la clave en el INSERT sin ninguna guarda—,
+     *  asi que defender la lectura no salva nada.
+     *
+     *  La razon real es que este helper recibe modelos que NO SON `Sale` NI `Budget` y que nunca
+     *  van a tener la columna, ni aunque todas las migraciones esten corridas:
+     *
+     *    - `OrderProductionPdf.php:148` le pasa un `OrderProduction` a `BudgetHelper::getTotal()`,
+     *      que termina llamando acá. Ese modelo no tiene nada que ver con presupuestos.
+     *    - `AfipWsfeHelper.php:664` le pasa un `AfipTicket` a `getTotalSale()` (hoy detras de un
+     *      `return null` incondicional, o sea inalcanzable — pero la forma de la llamada existe y
+     *      el dia que se destrabe va a entrar por acá).
+     *
+     *  Sobre esos modelos, `is_null($model->forzar_total_monto)` tira un warning por cada renglon
+     *  del comprobante. `isset()` los cubre y de paso cubre el null, con la misma linea.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|object  $model  Venta o presupuesto.
+     * @return float  0 si no hay forzado.
+     */
+    static function get_forzar_total_monto($model) {
+
+        if (is_null($model) || !isset($model->forzar_total_monto)) {
+            return 0.0;
+        }
+
+        return (float) $model->forzar_total_monto;
+    }
+
+    /**
+     * Normaliza el `forzar_total_monto` que llega en un request antes de persistirlo.
+     *
+     * Devuelve null (= no hubo forzado) cuando el campo no viene, viene null, viene no numerico o
+     * vale cero; y el monto redondeado a dos decimales en cualquier otro caso.
+     *
+     * 🔴 EL CERO SE GUARDA COMO NULL A PROPOSITO, y no como 0.00. Un cero seria "se forzo el total
+     * y dio justo lo mismo", que es indistinguible de no haber forzado nada pero hace que TODOS
+     * los lectores tengan que preguntar por las dos cosas: el renglon del comprobante, la caja de
+     * totales del PDF y el prorrateo de AFIP pasarian a mostrar y a calcular un ajuste de $0. Con
+     * null, la unica pregunta que hay que hacerse en todo el repo es "hay monto o no hay".
+     *
+     * ⚠️ `is_numeric()` y no un cast pelado: un `(float) 'cuatro mil'` da 0.0 en silencio, y ese
+     * cero terminaria guardado como "no se forzo nada" sobre una venta que el vendedor SI forzo.
+     * Preferimos que un payload roto no escriba la columna a que escriba un numero inventado.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return float|null
+     */
+    static function normalized_forzar_total_monto($request) {
+
+        if (!$request->exists('forzar_total_monto')) {
+            return null;
+        }
+
+        $monto = $request->forzar_total_monto;
+
+        if (is_null($monto) || !is_numeric($monto)) {
+            return null;
+        }
+
+        $monto = round((float) $monto, 2, PHP_ROUND_HALF_UP);
+
+        if ($monto == 0) {
+            return null;
+        }
+
+        return $monto;
     }
 
     static function total_menos_comisiones($sale) {

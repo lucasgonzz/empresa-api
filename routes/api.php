@@ -93,6 +93,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // UserController@update con id = "set-impresora".
     Route::put('user/set-impresora', 'UserController@set_impresora');
 
+    // Configuración del asistente de IA y consumo del plan, POR DUEÑO (misión
+    // foto-sucursal-y-asistente-configurable). Mismo gate que el chat: la extensión asistente_ia
+    // y solo el dueño (solo_el_dueno_ia); auth:sanctum ya lo pone el grupo de arriba.
+    // 🔴 `user/asistente-config` va ANTES de `user/{id}` por la misma trampa del orden que
+    // set-chat-ia-preferencias: son dos segmentos y abajo del comodín el PUT caería en
+    // UserController@update con id = "asistente-config". `mi-consumo-ia` no tiene ese problema
+    // (es de un solo segmento propio), pero comparte el mismo gate, así que va en el mismo grupo.
+    Route::middleware(['check_extencion_empresa:asistente_ia', 'solo_el_dueno_ia'])->group(function () {
+        Route::get('user/asistente-config', 'AsistenteConfigController@show');
+        Route::put('user/asistente-config', 'AsistenteConfigController@update');
+        Route::get('mi-consumo-ia', 'AsistenteConfigController@mi_consumo');
+    });
+
     // Agente de impresion: lo que consume el SPA. El agente en si tiene su propio grupo mas abajo,
     // fuera de sanctum, porque es un programa y no una persona con sesion.
     Route::post('print-agents/codigo', 'PrintAgentController@codigo');
@@ -172,9 +185,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Inventory performance
     Route::get('inventory-performance', 'InventoryPerformanceController@index');
 
+    // Botón Actualizar del reporte de inventario (4.0.24): encola la generación a pedido, con el
+    // mismo candado que el GET y que el comando nocturno inventario:generar. Aditivo: una SPA
+    // vieja no lo llama, y una SPA nueva contra una API vieja recibe 404 y lo loguea sin romper.
+    Route::post('inventory-performance/generate', 'InventoryPerformanceController@generate');
+
     // Artículos bajo el stock mínimo del último reporte, paginados y con buscador
     // (reemplaza el envío de todos los artículos dentro del JSON del reporte principal).
     Route::get('inventory-performance/articles-stock-minimo', 'InventoryPerformanceController@articles_stock_minimo');
+
+    // Contadores de estado de los embeddings del catálogo (whatsapp-dashboard, misión
+    // embeddings-estado-whatsapp-dashboard, 15/9/2026): sin generar, pendiente y generándose.
+    // Sólo lectura, nunca encola nada.
+    Route::get('article-embeddings/estado', 'ArticleEmbeddingsController@estado');
 
     // Inputs Size
     Route::resource('inputs-size', 'InputsSizeController');
@@ -412,8 +435,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
 
     // Agenda
-    
+
     // Pending
+    // 🔴 Va ANTES de Route::resource('pending'), como 'provider-order-scan/pendientes' antes de
+    // '{uuid}': es un segmento fijo y si algún día se lo escribe como 'pending/agenda/...' lo
+    // captura 'pending/{pending}' y responde 404 sin decir nada. Con el guion no choca, pero el
+    // orden deja la intención a la vista (misión agenda-tareas-calendario, 14/9/2026).
+    Route::get('pending-agenda/{desde}/{hasta}', 'PendingController@agenda');
     Route::resource('pending', 'PendingController');
     Route::get('pending/from-date/{from_date}/{until_date}', 'PendingController@index');
     Route::get('pending-recurrentes', 'PendingController@recurrentes');
@@ -457,6 +485,12 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // arriba: el show del resource captura cualquier `provider/{algo}`.
     Route::get('provider/{id}/propagar-descuentos/preview', 'ProviderController@propagar_descuentos_preview');
     Route::put('provider/{id}/propagar-descuentos', 'ProviderController@propagar_descuentos');
+    // Boton "Sincronizar articulos" de la ficha del proveedor (mision
+    // sincronizar-descuentos-proveedor, 17/9/2026). ANTES del resource, por el mismo motivo que las
+    // de arriba: el show del resource captura cualquier `provider/{algo}`.
+    Route::get('provider/{id}/sincronizar-descuentos/preview', 'ProviderController@sincronizar_descuentos_preview');
+    Route::get('provider/{id}/sincronizar-descuentos/exportar-conflictos', 'ProviderController@sincronizar_descuentos_exportar_conflictos');
+    Route::put('provider/{id}/sincronizar-descuentos', 'ProviderController@sincronizar_descuentos');
     Route::resource('provider', 'ProviderController');
     Route::get('provider/get-afip-information-by-cuit/{cuit}', 'ProviderController@get_afip_information_by_cuit');
     Route::post('/provider/excel/import', 'ProviderController@import');
@@ -478,6 +512,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('provider-order', 'ProviderOrderController');
     Route::post('provider-order/excel/import', 'ProviderOrderController@import_excel_articles');
+    Route::get('provider-order/{id}/import-diff', 'ProviderOrderController@import_diff');
     Route::get('provider-order/from-date/{from_date?}/{until_date?}', 'ProviderOrderController@index');
     Route::get('provider-order/days-to-advise/not-received', 'ProviderOrderController@indexDaysToAdvise');
     Route::resource('provider-order-status', 'ProviderOrderStatusController');
@@ -684,6 +719,28 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('integraciones/zippin/connect', 'ZippinOAuthController@connect');
     Route::post('integraciones/zippin/disconnect', 'ZippinOAuthController@disconnect');
 
+    // Zipnova (ex Zippin), misión zipnova-envios (14/9/2026): el comercio conecta SU cuenta con
+    // API Token + API Secret (no hay OAuth ni callback: las credenciales se prueban contra
+    // Zipnova y se guardan cifradas en platform_connectors). Las cinco responden `{integracion}`
+    // con la misma forma que un item de `integraciones`. El webhook que Zipnova llama está más
+    // abajo, fuera de este grupo. Las rutas `integraciones/zippin/*` de arriba quedan vivas pero
+    // la tarjeta ya no las usa.
+    Route::post('integraciones/zipnova/conectar', 'ZipnovaIntegracionController@conectar');
+    Route::post('integraciones/zipnova/disconnect', 'ZipnovaIntegracionController@disconnect');
+    Route::put('integraciones/zipnova/config', 'ZipnovaIntegracionController@config');
+    Route::post('integraciones/zipnova/origenes', 'ZipnovaIntegracionController@origenes');
+    Route::post('integraciones/zipnova/cotizar-prueba', 'ZipnovaIntegracionController@cotizar_prueba');
+
+    // Envío del pedido de la tienda (misión zipnova-envios): generar en Zipnova, ver, sincronizar,
+    // cancelar y etiqueta. `generar` responde el PEDIDO completo (con `envio` por withAll); el
+    // resto, el envío. Todo scopeado por el comercio autenticado (404 si es de otro).
+    Route::post('envio/generar/{order_id}', 'EnvioController@generar');
+    Route::get('envio/{id}', 'EnvioController@show');
+    Route::post('envio/{id}/sincronizar', 'EnvioController@sincronizar');
+    Route::post('envio/{id}/cancelar', 'EnvioController@cancelar');
+    Route::get('envio/{id}/etiqueta', 'EnvioController@etiqueta');
+
+
     Route::get('report/from-date/{from_date}/{until_date?}/{employee_id?}', 'CajaViejaController@reports');
     Route::get('chart/from-date/{from_date}/{until_date?}', 'CajaViejaController@charts');
 
@@ -755,6 +812,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('pdf-column-options/{id}', 'PdfColumnOptionController@show');
     // Duplica un perfil de diseño de PDF con toda su configuración y columnas (pivots).
     Route::post('pdf-column-profiles/{id}/duplicate', 'PdfColumnProfileController@duplicate');
+    // Datos del negocio, logo, nombre y diseño por defecto para el diseñador del encabezado del
+    // catálogo de artículos. Va ANTES del resource: si no, el GET lo captura show/{id} con
+    // id = "catalog-header-sources" y responde 404.
+    Route::get('pdf-column-profiles/catalog-header-sources', 'PdfColumnProfileController@catalog_header_sources');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
@@ -1001,6 +1062,15 @@ Route::get('integraciones/mercadopago/callback', 'MercadoPagoOAuthController@cal
 // `state` aleatorio que connect persistió y que este endpoint valida.
 Route::get('integraciones/zippin/callback', 'ZippinOAuthController@callback');
 
+// Webhook público de Zipnova (misión zipnova-envios, 14/9/2026): Zipnova hace POST acá con
+// cada cambio de estado de un envío. Sin auth a propósito (Zipnova no tiene sesión); no se
+// confía en el payload: el controller re-consulta el envío con las credenciales del comercio y
+// responde SIEMPRE 200, porque un 4xx hace que Zipnova reintente cada hora durante 12 horas.
+// Throttle propio, como los otros webhooks públicos.
+Route::post('zipnova/webhook', 'ZipnovaWebhookController@receive')
+        ->middleware('throttle:120,1');
+
+
 // Grupo 211: export de articulos para flujos automatizados externos (n8n). Sin auth a proposito
 // (decision de Lucas): el consumidor solo pega una URL. El comercio se identifica por el
 // articles_export_key aleatorio del path, que ademas resuelve el user_id — nunca se acepta un
@@ -1027,12 +1097,51 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:sugerencias_intelige
 // del mensaje guarda y despacha el job de respuesta; el evento del canal privado avisa con
 // ids y la SPA busca el texto acá (show_message, también usado por el polling de respaldo).
 Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->group(function () {
-    Route::get('ai-conversations', 'AiConversationController@index');
-    Route::post('ai-conversations', 'AiConversationController@store');
-    Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
-    Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
-    Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
-    Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+    // Encima del gate de extensión, SOLO EL DUEÑO (o admin_access / acceso maestro) usa el chat:
+    // decisión de Lucas del 16/9/2026. Es el mismo criterio y el mismo MostradorHelper::puede_ver()
+    // que ya gateaba el mostrador, porque es el mismo módulo y el chat contesta lo mismo que traen
+    // los informes: cobranzas, deudas y compras. La tenencia doble del controller no se va a ningún
+    // lado — un empleado ya no llega, pero la defensa en profundidad se queda.
+    Route::middleware('solo_el_dueno_ia')->group(function () {
+        Route::get('ai-conversations', 'AiConversationController@index');
+        Route::post('ai-conversations', 'AiConversationController@store');
+        Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+        Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
+        Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
+        Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+
+        // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
+        // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
+        // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que
+        // el resto del chat (AiConversationController::conversacion_de_la_persona()).
+        Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
+        Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+
+        /*
+         * Lo que abren las menciones del chat (misión agente-ia-mano-derecha, §2 y §3 del
+         * contrato): la ficha del artículo al pasar el mouse por encima de su nombre, y el cliente
+         * con sus cuentas para abrir el modal de cuenta corriente al hacerle clic.
+         *
+         * 🔴 Van EN PLURAL (`articles/`, `clients/`) y no pegadas a los resources `article` y
+         * `client`, que están en singular: así no las captura el `show` de ningún resource y no
+         * dependen de dónde se declare cada una.
+         *
+         * Mismo gate que el resto del chat —extensión + solo el dueño— porque son parte del mismo:
+         * las dos existen para lo que el chat nombró y no se usan desde ninguna otra pantalla. La
+         * tenencia por `user_id` la resuelve igual cada controller, que es la que de verdad corta.
+         */
+        Route::get('articles/{id}/ficha-asistente', 'ArticleController@ficha_asistente');
+        Route::get('clients/{id}/para-cuenta-corriente', 'ClientController@para_cuenta_corriente');
+    });
+
+    // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
+    // del dueño, un informe abierto y su conversación. Mismo gate que el chat; encima, el
+    // controlador deja pasar SOLO al dueño (o admin_access): los informes traen cobranzas
+    // y deudas. La conversación que crea el POST es una AiConversation común, y la SPA
+    // sigue por las rutas de ai-conversations de arriba.
+    Route::get('mostrador/reportes', 'MostradorController@index');
+    Route::get('mostrador/reportes/{id}', 'MostradorController@show');
+    Route::post('mostrador/reportes/{id}/conversacion', 'MostradorController@conversacion');
 });
 
 // Sugerencias de compra a proveedores (misión sugerencias-compra-proveedores), gateado por auth
@@ -1153,6 +1262,15 @@ Route::middleware('admin.api.key')
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
+        // Contacto del dueño (misión aviso-de-actualizacion-al-cliente): el admin necesita su
+        // casilla para mandarle el mail con las novedades cuando le actualiza el sistema. Hoy el
+        // único endpoint del canal que devuelve `email` es mostrador/duenos, que filtra por la
+        // extensión `asistente_ia` y por eso devuelve vacío para la mayoría de los clientes;
+        // branding y mensualidad-info no lo traen.
+        // Solo lee: no escribe nada ni despacha jobs. Y devuelve UN solo campo, `contacto.email`:
+        // el nombre y el teléfono el admin ya los tiene en `clients`, y esta ruta responde sin
+        // validar el header mientras ADMIN_SYNC_REQUIRE_API_KEY siga apagado.
+        Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
@@ -1165,7 +1283,55 @@ Route::middleware('admin.api.key')
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).
         Route::post('demo-token', 'AdminSync\\DemoTokenController@store');
+        // El mostrador del módulo IA (misión modulo-ia-mostrador): lo consume la skill /mostrador
+        // desde Claude Code. El API calcula los hechos (POST hechos) y la skill deposita el texto
+        // de cada informe (PUT reportes/{id}); contexto y memoria son lo que la skill sabe del
+        // dueño entre corridas. Mismo header y mismo límite conocido que el resto del grupo.
+        Route::get('mostrador/duenos', 'AdminSync\\MostradorController@duenos');
+        Route::post('mostrador/hechos', 'AdminSync\\MostradorController@hechos');
+        // Polling después de un 202 de POST hechos (compras y stock en un catálogo grande
+        // se calculan en la cola): estado, hechos y error_mensaje de un informe.
+        Route::get('mostrador/reportes/{id}', 'AdminSync\\MostradorController@mostrar');
+        Route::put('mostrador/reportes/{id}', 'AdminSync\\MostradorController@depositar');
+        Route::get('mostrador/contexto/{user_id}', 'AdminSync\\MostradorController@contexto');
+        Route::put('mostrador/memoria/{user_id}', 'AdminSync\\MostradorController@memoria');
+        // El asistente del negocio hablado desde WhatsApp (misión asistente-por-whatsapp): el
+        // admin recibe el mensaje del dueño en el número de ComercioCity y lo empuja acá, donde
+        // entra al MISMO asistente que el botón flotante. El POST deja el assistant 'pendiente' y
+        // despacha el job de siempre; el GET es el polling con el que el admin espera el texto.
+        // 🔴 Estas cuatro validan el header X-Admin-Api-Key ADENTRO del controlador, sin mirar
+        // services.admin_api.require_api_key (que en producción está apagado): es un canal que
+        // carga compras, gastos y pagos y no puede quedar abierto. Y el gate de la extensión
+        // asistente_ia va a mano, porque admin-sync no pasa por auth:sanctum.
+        Route::post('asistente/mensajes', 'AdminSync\\AsistenteController@mensajes');
+        Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
+        // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
+        // propósito: el admin pide los pendientes (con su link ya emitido) y recién DESPUÉS de que
+        // el WhatsApp salió marca el aviso. Si el envío falla, el informe no queda marcado y sale
+        // en la próxima corrida.
+        Route::get('asistente/informes-pendientes', 'AdminSync\\AsistenteController@informes_pendientes');
+        Route::post('asistente/informes/{id}/avisado', 'AdminSync\\AsistenteController@informe_avisado');
+        // Consumo de tokens de IA de este comercio (misión tokens-por-cliente): el admin lo
+        // recolecta todas las noches, lo espeja en su propia base y ahí le pone precio. Solo
+        // LEE ai_token_usages y devuelve contadores; la tabla de precios vive en el admin.
+        // La clave del header se valida adentro del controlador PERO solo si este cliente la
+        // tiene cargada: la mayoría todavía no tiene ADMIN_API_INBOUND_KEY en su .env y un 401
+        // duro dejaría la recolección rota en casi todos. Ver el docblock de rechazo_por_clave().
+        Route::get('consumo-ia', 'AdminSync\\ConsumoIaController@index');
+        // El plan de IA que el admin le asigna a este cliente (misión
+        // foto-sucursal-y-asistente-configurable): el admin maneja los paquetes y su precio, y
+        // pushea acá el nombre y los dos topes. Guarda en el dueño. Como el canal de WhatsApp y
+        // consumo-ia, valida X-Admin-Api-Key ADENTRO del controlador (require_api_key está apagado
+        // en producción) porque ESCRIBE el plan del cliente. Idempotente; 409 si no hay dueño resoluble.
+        Route::put('plan-ia', 'AdminSync\\PlanIaController@update');
     });
+
+// El informe del mostrador abierto desde el link que llegó por WhatsApp (misión
+// asistente-por-whatsapp). PÚBLICA a propósito: el dueño lo abre desde el teléfono, en la calle,
+// sin tipear usuario ni contraseña — decisión de Lucas en la Fase 2. Lo que la sostiene es el
+// token: 64 caracteres al azar, guardado SOLO como hash, vencimiento de 7 días, y abre UN informe
+// de solo lectura, nunca una sesión ni otra pantalla.
+Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -228,13 +229,23 @@ class Sale extends Model
     }
 
     /**
-     * Scope: excluye las ventas contenedoras de facturación de los reportes de ventas reales.
-     * Usar en todos los queries que calculen totales, rendimiento, caja o performance.
+     * Scope: excluye las ventas contenedoras de facturación de los reportes de ventas reales
+     * (ver `ConsolidarFacturacionHelper`). Usar en todos los queries que calculen totales,
+     * rendimiento, caja o performance.
+     *
+     * 🔴 Las dos columnas van calificadas con `sales.` a propósito (17/9/2026): sin eso, cualquier
+     * query que joinee otra vez la tabla `sales` —por ejemplo `ContabilidadRepository::ventas_brutas()`,
+     * que joinea la venta contenedora para prorratear su IVA— revienta con
+     * "Column 'is_consolidacion_facturacion' in where clause is ambiguous". Calificar no cambia el
+     * resultado de ningún uso existente: el scope es de `Sale` y siempre corre sobre `sales`.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeSoloVentasReales($query) {
         return $query->where(function($q) {
-            $q->whereNull('is_consolidacion_facturacion')
-              ->orWhere('is_consolidacion_facturacion', 0);
+            $q->whereNull('sales.is_consolidacion_facturacion')
+              ->orWhere('sales.is_consolidacion_facturacion', 0);
         });
     }
 
@@ -290,20 +301,31 @@ class Sale extends Model
      * disciplina de la proxima sesion: se mueven juntos por construccion, y el proximo reporte de
      * ventas que alguien escriba usando el scope ya viene bien.
      *
-     * 🔴 CON LA PREFERENCIA APAGADA EL SQL QUE SALE ES IDENTICO AL DE SIEMPRE: misma forma, mismos
-     * binds, misma columna. No es cosmetico: son ~40 comercios que no pidieron nada, y ademas el
-     * indice `sales_user_id_created_at_idx` (migracion 2026_09_01_180000) esta hecho para esa forma.
-     * El camino apagado no se toca; solo el prendido usa la expresion nueva.
+     * 🔴 CON LA PREFERENCIA APAGADA LAS FILAS SON LAS MISMAS DE SIEMPRE, PERO LA FORMA DEL SQL
+     * CAMBIO A PROPOSITO (14/9/2026). Hasta entonces el camino apagado emitia `DATE(created_at) = ?`
+     * (el `whereDate()` de siempre), y una funcion sobre la columna deja al optimizador sin poder
+     * usar `sales_user_id_created_at_idx` (migracion 2026_09_01_180000): MySQL recorria todas las
+     * ventas del usuario y le aplicaba DATE() a cada una. Ahora un dia se pide como el rango
+     * semiabierto `created_at >= 'X 00:00:00' AND created_at < 'X+1 00:00:00'` (y un rango A..B
+     * como `>= 'A 00:00:00' AND < 'B+1 00:00:00'`), que es la forma para la que el indice sirve.
+     * Son las MISMAS filas: cada timestamp del dia X, incluido `23:59:59`, cae adentro, y el
+     * `00:00:00` del dia siguiente queda afuera. Solo cambia la forma; si alguien vuelve a poner
+     * `whereDate()` "porque es mas corto", vuelve el barrido. Son ~40 comercios que no pidieron
+     * nada y no ven ninguna diferencia salvo que el listado del dia carga mas rapido.
+     *
+     * El camino que compara el datetime completo (`$comparar_solo_la_fecha = false`, el grafico)
+     * sigue igual que siempre; el prendido usa la expresion de fecha de pedido.
      *
      * @param  \Illuminate\Database\Eloquent\Builder $query
      * @param  string|\DateTimeInterface|null $from_date  Inicio del rango; null o '' no filtra nada.
      * @param  string|\DateTimeInterface|null $until_date Fin del rango; null o '' = un solo dia.
      * @param  \App\Models\User|int|null      $user       Usuario del reporte; null usa el de la sesion.
      * @param  bool $comparar_solo_la_fecha  true (default) compara solo la parte fecha, que es lo
-     *                                       que hacen el listado, los Excel y Rendimiento (whereDate);
+     *                                       que hacen el listado, los Excel y Rendimiento (antes
+     *                                       via whereDate, hoy via los limites del dia);
      *                                       false compara el datetime completo, que es lo que hace
      *                                       el grafico de ventas. Se respeta el que ya usaba cada
-     *                                       sitio para no cambiarle el SQL al camino apagado.
+     *                                       sitio para no cambiarle las filas a ningun reporte.
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeEnRangoDeFechas($query, $from_date, $until_date = null, $user = null, $comparar_solo_la_fecha = true)
@@ -316,20 +338,27 @@ class Sale extends Model
 
         if (!self::fechaDeReportePorPedido($user)) {
 
-            /* Camino de siempre, tal cual estaba escrito en cada sitio antes de esta mision. */
             if ($hay_rango) {
 
                 if ($comparar_solo_la_fecha) {
-                    return $query->whereDate('created_at', '>=', $from_date)
-                                 ->whereDate('created_at', '<=', $until_date);
+                    /* Mismas filas que `DATE(created_at) BETWEEN A AND B`, con el indice usable. */
+                    $limites = self::limites_del_dia($from_date, $until_date);
+
+                    return $query->where('created_at', '>=', $limites[0])
+                                 ->where('created_at', '<', $limites[1]);
                 }
 
+                /* Camino del grafico, tal cual estaba escrito antes de la mision del scope. */
                 return $query->where('created_at', '>=', $from_date)
                              ->where('created_at', '<=', $until_date);
             }
 
             if ($comparar_solo_la_fecha) {
-                return $query->whereDate('created_at', $from_date);
+                /* Mismas filas que `DATE(created_at) = X`, con el indice usable. */
+                $limites = self::limites_del_dia($from_date);
+
+                return $query->where('created_at', '>=', $limites[0])
+                             ->where('created_at', '<', $limites[1]);
             }
 
             return $query->where('created_at', $from_date);
@@ -367,6 +396,39 @@ class Sale extends Model
         }
 
         return $fecha;
+    }
+
+    /**
+     * Limites del dia (o del rango de dias) con los que el camino apagado reemplaza a
+     * `DATE(created_at) = X` / `DATE(created_at) BETWEEN A AND B`, listos para el bind:
+     * `['A 00:00:00', 'B+1 00:00:00']`. El primero va con `>=` y el segundo con `<`.
+     *
+     * Con `<` sobre el arranque del dia siguiente y no con `<= 'B 23:59:59'` porque `created_at` es
+     * un timestamp de MySQL y podria tener fraccion de segundo en alguna base; el semiabierto no
+     * deja ningun instante del dia afuera.
+     *
+     * Entra un string `Y-m-d` (los controllers) o un Carbon/DateTime (`PerformanceHelper` pasa
+     * `mes_inicio` / `mes_fin`, que ya traen hora), y las dos formas se normalizan con Carbon: lo
+     * que se compara es siempre el arranque del dia, sin importar la hora que traiga la entrada.
+     * `Carbon::instance()` copia, asi que no se muta lo que mando el llamador.
+     *
+     * @param  string|\DateTimeInterface      $desde
+     * @param  string|\DateTimeInterface|null $hasta  null = un solo dia (`$desde`).
+     * @return string[]  [inicio inclusive, fin exclusivo], los dos en `Y-m-d H:i:s`.
+     */
+    private static function limites_del_dia($desde, $hasta = null)
+    {
+        if (is_null($hasta)) {
+            $hasta = $desde;
+        }
+
+        $inicio = $desde instanceof \DateTimeInterface ? Carbon::instance($desde) : Carbon::parse($desde);
+        $fin = $hasta instanceof \DateTimeInterface ? Carbon::instance($hasta) : Carbon::parse($hasta);
+
+        return [
+            $inicio->startOfDay()->format('Y-m-d H:i:s'),
+            $fin->startOfDay()->addDay()->format('Y-m-d H:i:s'),
+        ];
     }
 
 }

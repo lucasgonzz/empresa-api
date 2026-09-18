@@ -27,7 +27,76 @@ jobs:
           VERSION=$(echo "$MSG" | grep -oP '(?<=\[release:)[^\]]+')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
+      # ------------------------------------------------------------------------------------
+      # Paquete de la API (misión actualizar-sin-el-vps, 9/9/2026).
+      #
+      # Hasta acá cada ClientVersionUpgrade armaba la API en el VPS de producción: composer
+      # install en /home/builds y un zip de 759 MB que arrastraba .git entero y dejaba vendor/
+      # afuera. Desde acá el paquete se arma UNA vez por versión, en este runner, con vendor/
+      # ADENTRO, y el admin lo baja del release (ReleaseArtifactService::find_asset) en vez
+      # de compilar nada en el VPS.
+      #
+      # 🔴 EL PAQUETE VA ANTES DEL MERGE A MASTER, y el orden importa. Cuando el asset falta,
+      # el admin NO cae a compilar en el VPS: falla el upgrade con un mensaje que dice qué
+      # archivo buscó (decisión de Lucas, 9/9/2026 — "no quiero que se vuelva a usar más el
+      # VPS para actualizar clientes"). O sea que una versión publicada sin su zip es una
+      # versión que no se puede desplegar. Por eso, si cualquiera de los tres pasos de abajo
+      # falla, el job corta ANTES de tocar master: no queda ni merge, ni tag, ni release. Se
+      # arregla en develop y se vuelve a pushear el [release:X.Y.Z].
+      #
+      # Se empaqueta el árbol de develop, que es exactamente el que master va a recibir en el
+      # merge --no-ff de abajo (master es ancestro de develop en este punto).
+      # ------------------------------------------------------------------------------------
+
+      - name: Preparar PHP 7.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          # composer.json no declara ext-* propias: la lista sale de los `require` (no dev) de
+          # los paquetes del composer.lock, que composer valida al instalar (ctype, json,
+          # libxml, openssl, pcre, filter y tokenizer también están, pero vienen compiladas
+          # adentro del PHP que instala setup-php). pdo_mysql, bcmath, intl y soap no las pide
+          # ningún paquete: son las que la aplicación usa en runtime (MySQL, Laravel, AFIP por
+          # SoapClient) y van explícitas para que el runner se parezca al hosting.
+          extensions: mbstring, curl, dom, fileinfo, gd, iconv, simplexml, xml, xmlreader, xmlwriter, zip, zlib, pdo_mysql, bcmath, intl, soap
+          tools: composer:v2
+          coverage: none
+
+      - name: composer install (mismas banderas que el admin)
+        # Banderas copiadas de admin-api, DeploymentService::build_composer_install_command()
+        # (líneas 2168-2172): `--no-dev --optimize-autoloader --no-interaction --no-ansi`, más
+        # `--no-scripts` porque este es el modo "sin scripts" ($skip_scripts = true), el mismo
+        # que el admin usa en el VPS de builds. El post-autoload-dump (artisan package:discover)
+        # necesita un .env que acá no existe; lo corre el `composer install` CON scripts que el
+        # admin hace en el hosting después de descomprimir, como hoy. `--prefer-dist` no hace
+        # falta: composer.json ya fija config.preferred-install = dist.
+        env:
+          COMPOSER_ALLOW_SUPERUSER: 1
+          COMPOSER_MEMORY_LIMIT: -1
+        run: composer install --no-dev --optimize-autoloader --no-interaction --no-ansi --no-scripts
+
+      - name: Empaquetar la API con vendor adentro
+        # Mismas exclusiones que el pipeline actual del admin (step_upload_api), MENOS vendor/,
+        # que es el punto de todo esto. Se suman .git/* (el zip viejo lo arrastraba y por eso
+        # pesaba 759 MB), .env.* y node_modules/*. storage/ y public/ quedan afuera porque en
+        # el hosting son del cliente (archivos subidos, .htaccess, certificados).
+        run: |
+          ZIP="empresa-api-v${{ steps.version.outputs.VERSION }}.zip"
+          zip -qr "$ZIP" . \
+            -x '.git/*' '.env' '.env.*' 'storage/*' 'public/*' 'tests/*' '*.zip' \
+               'node_modules/*' 'database/super-budgets/*' 'database/seeders/articles/*' \
+               'database/seeders/truvari/*' 'database/seeders/subcategories/*' \
+               'database/seeders/sales/*'
+          unzip -tq "$ZIP"
+          # Lo que el admin verifica al bajarlo: artisan en la raíz y el autoload de composer.
+          unzip -l "$ZIP" | grep -qE ' artisan$'                || { echo 'FALTA artisan en la raiz del zip'; exit 1; }
+          unzip -l "$ZIP" | grep -qE ' vendor/autoload\.php$'    || { echo 'FALTA vendor/autoload.php en el zip'; exit 1; }
+          unzip -l "$ZIP" | tail -1
+          ls -la "$ZIP"
+
       - name: Merge develop a master
+        # vendor/ está en el .gitignore y el zip queda como archivo sin trackear: ninguno de los
+        # dos existe en master, así que el checkout no tiene con qué chocar.
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -42,5 +111,6 @@ jobs:
           name: v${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
           target_commitish: master
+          files: empresa-api-v${{ steps.version.outputs.VERSION }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -31,6 +31,13 @@ class TableColumnPreferenceController extends Controller
      *   puede generar hoy queda afuera del regex, y el más largo mide 53 caracteres
      *   (`search_pago_de_cliente_current_acount_payment_methods`) contra la columna
      *   `preference_type varchar(60)` — quedan 7 de margen.
+     * - table_*: columnas de la tabla principal de un modelo con ámbito de vista, es decir cuando una
+     *   misma tabla se mira desde más de una pantalla y cada una quiere sus propias columnas sin pisar
+     *   la preferencia `table` genérica del modelo. El primer ámbito es `table_por_entregar` sobre
+     *   `sale` (la vista Ventas > Por Entregar, que hasta entonces tenía cinco columnas fijas). Las
+     *   columnas de esta familia pueden traer keys con punto (`client.description`: una propiedad
+     *   del modelo relacionado) y varias filas con el mismo `order` (las hijas de un bloque comparten
+     *   la posición del bloque); ninguna de las dos cosas la toca `normalize_column_payload()`.
      *
      * Valida que preference_type sea alguno de los anteriores; aborta con 404 si no.
      */
@@ -50,6 +57,15 @@ class TableColumnPreferenceController extends Controller
         // en un solo regex haría que cualquier prefijo nuevo entre sin que nadie lo decida.
         // El regex además exige el guion bajo: `searchx` no es un ámbito y tiene que seguir en 404.
         if (preg_match('/^search_[a-z0-9_]+$/', $preference_type)) {
+            return;
+        }
+
+        // Tercera familia, aparte de las otras dos por el mismo motivo: son columnas de la tabla
+        // principal de un modelo con ámbito de vista (el primer ámbito es `table_por_entregar`
+        // sobre `sale`), no de un buscador ni de una belongs_to_many, y cada prefijo nuevo se
+        // decide acá y no entra por arrastre de un regex más ancho. El guion bajo es obligatorio:
+        // `tablex` no es un ámbito y tiene que seguir en 404.
+        if (preg_match('/^table_[a-z0-9_]+$/', $preference_type)) {
             return;
         }
 

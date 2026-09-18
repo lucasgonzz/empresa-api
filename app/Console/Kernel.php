@@ -2,10 +2,16 @@
 
 namespace App\Console;
 
+use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\ExportHistory;
+use App\Models\ImportHistory;
+use App\Models\SyncToMeliArticle;
+use App\Models\SyncToTNArticle;
 use App\Models\User;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+use Illuminate\Support\Facades\Log;
 
 class Kernel extends ConsoleKernel
 {
@@ -14,6 +20,14 @@ class Kernel extends ConsoleKernel
      *
      * En producción debe existir un único cron cada minuto:
      *   * * * * * cd /ruta/empresa-api && php artisan schedule:run >> /dev/null 2>&1
+     *
+     * 🔴 Regla del schedule (misión actualizar-sin-el-vps, 9/9/2026): CERO procesos nuevos cuando
+     * no hay nada que hacer. Cada comando que el scheduler dispara es un `php artisan` aparte, y
+     * arrancar Laravel son 0,3-0,5 s de CPU; en el VPS, con 17 instancias, eran ~80 arranques por
+     * minuto (entre medio núcleo y uno, permanente) para que casi todos salieran en su primera
+     * línea. Por eso los comandos de cada minuto llevan un `->when()` que decide ADENTRO del
+     * proceso de schedule:run (que ya está booteado) si hay trabajo, y recién ahí se paga el
+     * arranque. Para quien sí tiene trabajo el comportamiento es exactamente el de antes.
      *
      * @param  \Illuminate\Console\Scheduling\Schedule  $schedule
      * @return void
@@ -33,7 +47,13 @@ class Kernel extends ConsoleKernel
         // misma variable que ya usa config/filesystems.php para decidir el prefijo /public de los
         // archivos. El default false de env('VPS') deja intacto el comportamiento de toda instancia
         // que no la declare, que es el caso de todas las del shared.
-        if (! config('app.VPS')) {
+        //
+        // Y un segundo interruptor, independiente del anterior: QUEUE_SCHEDULER_WORKER (config
+        // queue.scheduler_worker, misión actualizar-sin-el-vps). Apaga este worker en cualquier
+        // instancia que ya tenga otro consumidor de la cola, sin depender de que VPS esté declarada
+        // — es lo que se va a setear en false en las instancias del VPS. Default true: el shared
+        // hosting, donde este worker es lo ÚNICO que procesa la cola, sigue igual.
+        if (! config('app.VPS') && config('queue.scheduler_worker')) {
             $schedule->command('queue:work --stop-when-empty')
                 ->everyMinute()
                 ->withoutOverlapping(75);
@@ -43,17 +63,37 @@ class Kernel extends ConsoleKernel
         $company_owner = $this->resolve_company_owner_for_schedule();
 
         // Sincronización de artículos pendientes hacia Tienda Nube solo si tiene la extensión.
+        //
+        // El when() es la misma consulta con la que arranca el comando (sync_to_t_n_articles del
+        // dueño en 'pendiente'), pero hecha acá, en el proceso de schedule:run: con la extensión
+        // activa y nada pendiente, antes se arrancaba un artisan por minuto para imprimir
+        // "0 sincronizaciones". Con algo pendiente el comando corre exactamente igual que antes.
         if ($company_owner && UserHelper::hasExtencion('usa_tienda_nube', $company_owner)) {
             $schedule->command('sync_articles_to_tienda_nube')
                 ->everyMinute()
-                ->withoutOverlapping(15);
+                ->withoutOverlapping(15)
+                ->when(function () {
+                    return $this->gate_de_datos(function () {
+                        return SyncToTNArticle::where('user_id', config('app.USER_ID'))
+                            ->where('status', 'pendiente')
+                            ->exists();
+                    });
+                });
         }
 
         // Sincronización de artículos pendientes hacia Mercado Libre solo si tiene la extensión.
+        // Mismo gate que Tienda Nube, sobre sync_to_meli_articles.
         if ($company_owner && UserHelper::hasExtencion('usa_mercado_libre', $company_owner)) {
             $schedule->command('sync_to_meli_articles')
                 ->everyMinute()
-                ->withoutOverlapping(15);
+                ->withoutOverlapping(15)
+                ->when(function () {
+                    return $this->gate_de_datos(function () {
+                        return SyncToMeliArticle::where('user_id', config('app.USER_ID'))
+                            ->where('status', 'pendiente')
+                            ->exists();
+                    });
+                });
         }
 
         // Genera embeddings vectoriales de artículos nuevos o modificados,
@@ -67,46 +107,43 @@ class Kernel extends ConsoleKernel
         // ninguno — la creación manual de un artículo sigue embebiendo al toque igual, porque eso
         // vive en ArticleObserver/DescriptionObserver y no pasa por acá. Default false: ningún
         // cliente real nota que esta variable existe.
+        //
+        // EMBEDDINGS_GENERACION_PAUSADA (misión busqueda-lenta-y-pausa-embeddings) es OTRO
+        // interruptor, con OTRO propósito: no es por instancia de demo, es la pausa global de
+        // TODO el parque. No reemplaza a EMBEDDINGS_OMITIR_IMPORTACION ni se mezcla con ella -- las
+        // dos se evalúan por separado y cualquiera de las dos alcanza para no agendar. El comando ya
+        // corta solo si está pausado (mismo chequeo en GenerateArticleEmbeddings::handle()), así que
+        // esto no es estrictamente necesario para la corrección; es consistente con la filosofía ya
+        // escrita acá arriba: cero arranques de artisan cuando no hay nada que hacer.
+        //
+        // Se lee con config('services.openai.embeddings_generacion_pausada'), no con env()
+        // directo: con config:cache activo (lo normal en producción) env() fuera de config/
+        // devuelve el default. Ver config/services.php.
         if (
             $company_owner
             && UserHelper::hasExtencion('whatsapp_ia', $company_owner)
             && ! filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)
+            && ! config('services.openai.embeddings_generacion_pausada')
         ) {
             $schedule->command('articles:generate-embeddings')
                 ->everyThirtyMinutes()
                 ->withoutOverlapping(25);
         }
 
-        // Generación automática de sugerencias de stock (v2), solo con la
-        // extensión sugerencias_inteligentes. El comando decide adentro si
-        // según la periodicidad configurada hoy toca (o sale en una línea).
-        // 05:00: lejos de debt:snapshot (23:59) y antes de que abra el
-        // comercio; withoutOverlapping(60) cubre catálogos grandes.
-        if ($company_owner && UserHelper::hasExtencion('sugerencias_inteligentes', $company_owner)) {
-            $schedule->command('sugerencias:generar')
-                ->dailyAt('05:00')
-                ->withoutOverlapping(60);
-        }
-
-        // Generación automática de sugerencias de compra a proveedores, solo
-        // con la extensión sugerencias_compras. Mismo patrón que
-        // sugerencias:generar de arriba: el comando decide adentro si según
-        // la periodicidad configurada hoy toca (o sale en una línea).
-        // 05:30 y no 05:00: no se pisa con sugerencias:generar (mismo
-        // comercio, misma ventana horaria, dos comandos que recorren todo el
-        // catálogo). withoutOverlapping(60) cubre catálogos grandes.
-        if ($company_owner && UserHelper::hasExtencion('sugerencias_compras', $company_owner)) {
-            $schedule->command('compras:generar')
-                ->dailyAt('05:30')
-                ->withoutOverlapping(60);
-        }
+        // sugerencias:generar (05:00) y compras:generar (05:30) YA NO SE AGENDAN (misión
+        // modulo-ia-mostrador, 14/9/2026): las carpetas Stock y Compras del mostrador del módulo
+        // IA las reemplazan. Los hechos de esas dos carpetas los calcula el API a pedido de la
+        // skill /mostrador (admin-sync/mostrador/hechos) con los mismos motores
+        // (StockSuggestionService, PurchaseSuggestionService + CoberturaService), sin persistir
+        // corridas. Los dos comandos y sus rutas API (stock-suggestion, purchase-suggestion)
+        // siguen existiendo para correr a mano y para los SPA viejos; solo se apaga el cron.
 
         // Corrida automática del motor de ofertas por cliente, solo con la extensión
-        // motor_de_ofertas. Mismo patrón que los dos de arriba: el comando decide adentro si hoy
-        // toca según la periodicidad, y ese doble gate es a propósito (el de acá evita el SELECT;
-        // el de adentro cubre la corrida a mano). 06:00 y no 05:00/05:30: no se pisa con
-        // sugerencias:generar ni con compras:generar, que en la misma ventana recorren catálogo e
-        // historial del mismo comercio. withoutOverlapping(60) cubre padrones de clientes grandes.
+        // motor_de_ofertas. El comando decide adentro si hoy toca según la periodicidad, y ese
+        // doble gate es a propósito (el de acá evita el SELECT; el de adentro cubre la corrida
+        // a mano). 06:00: conserva su lugar en la ventana nocturna aunque sugerencias:generar y
+        // compras:generar ya no corran antes. withoutOverlapping(60) cubre padrones de clientes
+        // grandes. Sigue agendado: alimenta Promociones, que queda en Tienda Online.
         if ($company_owner && UserHelper::hasExtencion('motor_de_ofertas', $company_owner)) {
             $schedule->command('ofertas:generar')
                 ->dailyAt('06:00')
@@ -160,6 +197,52 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(30);
         }
 
+        // Reporte de inventario (stock mínimo, sin stock, valuación) de cada comercio, una vez por
+        // noche (misión optimizacion-vps-fase1, 4.0.24). 04:00: después del backup nocturno del VPS
+        // (03:15) y con el servidor sin uso — sigue siendo el único momento en que conviene disparar
+        // una corrida que en catálogos grandes (537k artículos en servian) tarda 18-20 min.
+        //
+        // Desde la misión reporte-inventario-manual (15/9/2026) esta corrida nocturna y el botón
+        // Actualizar (`generate()`) son las DOS ÚNICAS formas de generar el reporte: se sacó la red
+        // de seguridad que tenía InventoryPerformanceController::index() (regenerar si el último
+        // reporte tenía más de 7 días), que lo disparaba en horario comercial con el servidor en uso
+        // — justo lo que se quería evitar. withoutOverlapping(120) y no el default de 1440: el job
+        // tiene timeout de 60 min, y si un día se cuelga, el comando no queda mudo un día entero.
+        //
+        // Sin gate por extensión (el reporte es de todos los comercios) y sin ->when(): corre una
+        // vez por día, no por minuto, y adentro el candado atómico de Cache::add evita que se pise
+        // con una generación pedida a mano. El comando resuelve el dueño por app.USER_ID igual que
+        // el resto del schedule; sin USER_ID (dev/testing) recorre los dueños con actividad.
+        $schedule->command('inventario:generar')
+            ->dailyAt('04:00')
+            ->withoutOverlapping(120);
+
+        // Cierre mensual del rendimiento del comercio (company_performances / article_performances,
+        // misión optimizacion-vps-fase1, 4.0.24): el día 1 borra lo que se fue calculando durante
+        // el mes anterior y lo recrea completo, así que es idempotente y una segunda corrida el
+        // mismo día da el mismo resultado. En el shared convive con el cron manual que algunas
+        // instancias ya tenían (dos corridas el día 1); en el VPS nunca corrió — supervisor sólo
+        // tiene queue y schedule — y con esto empieza a correr.
+        //
+        // 06:30: después de la ventana 03:30-06:00 de los otros comandos nocturnos del mismo
+        // comercio. withoutOverlapping(120): recorre un mes entero de ventas.
+        //
+        // 🔴 El ->when() con app.USER_ID no es cosmética: sin USER_ID el comando cae a su lista
+        // hardcodeada de ids [121, 228, 2] (Colman, HiperMax, Fenix), que en cualquier otra base
+        // son otros comercios o no existen. En una instancia de cliente USER_ID siempre está.
+        $schedule->command('set_company_performances')
+            ->monthlyOn(1, '06:30')
+            ->withoutOverlapping(120)
+            ->when(function () {
+                return ! empty(config('app.USER_ID'));
+            });
+
+        // check_stocks NO se agenda, a propósito (decisión de la misión optimizacion-vps-fase1).
+        // No es una función del cliente: recorre TODO el catálogo con ->get() (en servian son 537k
+        // modelos Eloquent en memoria, un OOM seguro), hace una consulta a stock_movements por
+        // artículo (N+1) y le manda un mail a Lucas con los que no coinciden con su último
+        // movimiento. Queda como corrida manual hasta que se reescriba como una consulta agregada.
+
         // Reintenta cada 5 minutos los mensajes de soporte no sincronizados a admin-api.
         $schedule->command('support:retry-pending-syncs')->everyFiveMinutes();
 
@@ -168,14 +251,21 @@ class Kernel extends ConsoleKernel
         // movimiento en vivo; el push inmediato va por afterResponse y esto es la red de abajo.
         //
         // En una instancia que no es de demo el comando sale en su primera línea — pero ojo:
-        // sale DESPUÉS de un SELECT a demo_tracking_config. O sea que este es el único costo
-        // permanente de la misión 50 en los ~40 clientes reales: un SELECT sobre una tabla
-        // vacía por minuto. Lo que la misión exige en cero es el camino del request del
-        // usuario, y ahí sí es cero; esto es el cron, y no hay forma de saber si hay canal
-        // sin preguntárselo a la base.
+        // sale DESPUÉS de un SELECT a demo_tracking_config. Lo que la misión 50 exige en cero es
+        // el camino del request del usuario, y ahí sí es cero; esto es el cron, y no hay forma
+        // de saber si hay canal sin preguntárselo a la base.
+        //
+        // Ese SELECT ahora se hace acá, en el when(), con el mismo hay_canal() que el comando
+        // evalúa primero: en los ~40 clientes reales el costo permanente pasa de "un artisan por
+        // minuto que sale en su primera línea" a un SELECT sobre una tabla vacía en el proceso
+        // que ya está corriendo. En demo, demo2 y demo3 hay canal y el comando corre cada minuto
+        // como siempre. Si la tabla todavía no existe, hay_canal() ya devuelve false (y loguea).
         $schedule->command('demo:flush-eventos')
             ->everyMinute()
-            ->withoutOverlapping(5);
+            ->withoutOverlapping(5)
+            ->when(function () {
+                return DemoTrackingConfigHelper::hay_canal();
+            });
 
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
@@ -185,17 +275,36 @@ class Kernel extends ConsoleKernel
         // withoutOverlapping(10) permite reintentos si el comando muere; por default (1440 min = 24 horas)
         // el comando quedaría "trabado" un día entero sin poder correr de nuevo.
         // Corre cada 5 min, 10 min de margen es suficiente sin dejarlo mudo por 24 horas.
+        //
+        // El when() mira solo si hay alguna importación en estado activo (los mismos dos estados
+        // que busca el comando, sin el umbral de minutos: eso lo sigue decidiendo el comando).
+        // Sin ninguna en curso no hay nada que pueda estar colgado, y ese es el estado normal de
+        // una instancia el 99 % del tiempo. Con una en curso el comando corre igual que antes.
         $schedule->command('imports:detectar-colgadas')
             ->everyFiveMinutes()
-            ->withoutOverlapping(10);
+            ->withoutOverlapping(10)
+            ->when(function () {
+                return $this->gate_de_datos(function () {
+                    return ImportHistory::whereIn('status', ['en_preparacion', 'en_proceso'])->exists();
+                });
+            });
 
         // Watchdog de historiales colgados: desbloquea exportaciones (y a futuro imports) que murieron sin traza.
         // withoutOverlapping(10) permite reintentos si el comando muere; por default (1440 min = 24 horas)
         // el comando quedaría "trabado" un día entero sin poder correr de nuevo.
         // Corre cada 5 min, 10 min de margen es suficiente sin dejarlo mudo por 24 horas.
+        //
+        // Mismo gate que el de importaciones, sobre export_histories en 'pending'/'processing'
+        // (los dos estados que busca DetectarHistorialesColgados::tipos()). Si algún día se suma
+        // otro tipo de historial a ese comando, hay que sumarlo también acá.
         $schedule->command('historiales:detectar-colgados')
             ->everyFiveMinutes()
-            ->withoutOverlapping(10);
+            ->withoutOverlapping(10)
+            ->when(function () {
+                return $this->gate_de_datos(function () {
+                    return ExportHistory::whereIn('status', ['pending', 'processing'])->exists();
+                });
+            });
 
         // Renueva los access_token de Mercado Pago próximos a vencer (grupo 170, prompt 598).
         // Corre para TODOS los comercios con conector de Mercado Pago (no depende de
@@ -212,6 +321,17 @@ class Kernel extends ConsoleKernel
         $schedule->command('zippin:refresh-tokens')
             ->daily()
             ->withoutOverlapping();
+
+        // Estado de los envíos en curso en Zipnova (misión zipnova-envios, 14/9/2026). Es la red de
+        // abajo del webhook `POST /api/zipnova/webhook`: si el WAF del hosting frena los avisos
+        // (pasó con Kapso) o el comercio conectó sin webhook, el operador igual ve el estado con
+        // no más de media hora de atraso. Corre para TODOS los comercios con envíos en curso (el
+        // conector es por comercio, no por instancia) y el comando saltea lo sincronizado hace
+        // menos de 30 minutos. Sin ->when(): la consulta que decide si hay trabajo es la misma
+        // que hace el comando, y cada 30 minutos (no cada minuto) un arranque de artisan no pesa.
+        $schedule->command('zipnova:sincronizar-envios')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping(25);
     }
 
     /**
@@ -229,6 +349,30 @@ class Kernel extends ConsoleKernel
         }
 
         return User::with('extencions')->find($user_id);
+    }
+
+    /**
+     * Evalúa un gate de datos de un `->when()` sin que una excepción tumbe schedule:run entero.
+     *
+     * Los filtros del schedule corren adentro del proceso de schedule:run y
+     * `Event::filtersPass()` no atrapa nada: si la consulta tira (la tabla todavía no existe en
+     * la ventana entre copiar el código y correr las migraciones de un upgrade, la base no
+     * responde, etc.), la excepción cortaría el schedule:run de ESE minuto para todos los
+     * comandos que vienen después. El gate es un ahorro, no una guarda: si no se puede decidir,
+     * se corre el comando como hasta hoy, y se deja una línea en el log.
+     *
+     * @param  \Closure  $gate  Devuelve true si hay trabajo para el comando.
+     * @return bool
+     */
+    protected function gate_de_datos(\Closure $gate)
+    {
+        try {
+            return (bool) $gate();
+        } catch (\Throwable $e) {
+            Log::warning('Kernel: no se pudo evaluar el gate de un comando del schedule, se corre igual: ' . $e->getMessage());
+
+            return true;
+        }
     }
 
     /**

@@ -193,7 +193,7 @@ class AfipWsfeHelper extends Controller
                             )
                         ) {
 
-                            $this->afip_ticket->update([
+                            $campos = [
                                 'cbte_letra'        => AfipWsHelper::getTipoLetra($data->CbteTipo),
                                 'importe_total'     => $data->ImpTotal,
                                 'moneda_id'         => $data->MonId,
@@ -204,7 +204,15 @@ class AfipWsfeHelper extends Controller
                                 'cae_expired_at'    => $data->FchVto,
                                 'request'           => $result['request'],
                                 'response'          => $result['response'],
-                            ]);
+                            ];
+
+                            $importe_iva = $this->importe_iva_de_la_consulta($data);
+
+                            if (!is_null($importe_iva)) {
+                                $campos['importe_iva'] = $importe_iva;
+                            }
+
+                            $this->afip_ticket->update($campos);
                             Log::info('se actualizo la info del comprobante');
 
                             if ($from_sale) {
@@ -235,7 +243,65 @@ class AfipWsfeHelper extends Controller
 
                 $this->save_error($result);
             }
-        } 
+        }
+    }
+
+    /**
+     * 🔴 El `importe_iva` que corresponde escribir junto con el `resultado` en `consultar_comprobante()`,
+     * o null cuando no hay ningun valor confiable y por lo tanto NO hay que tocar la columna.
+     *
+     * ─── Por que existe ───────────────────────────────────────────────────────────────────────
+     *
+     * `AfipWsfeHelper` escribe `afip_tickets.resultado` en DOS lugares vivos, no en uno:
+     * `update_afip_ticket()` (la emision normal), que siempre escribio tambien `importe_iva`, y
+     * `consultar_comprobante()`, que hasta el 17/9/2026 escribia `resultado = 'A'` y dejaba
+     * `importe_iva` en NULL.
+     *
+     * Y a `consultar_comprobante()` se llega solo, no es un camino raro: ante un error de RED al
+     * emitir, `solicitar_cae()` lo dispara para recuperar el CAE que puede haber quedado autorizado
+     * en ARCA, y si lo recupera hace `return` tratandolo como exito. Tambien se llega a mano desde
+     * `AfipTicketController::consultar_comprobante()`. Los dos son caminos de Responsable Inscripto,
+     * que es justamente donde el IVA no es cero.
+     *
+     * Antes de la mision saneo-ganancia-ventas eso era inocuo. Ahora no: `IvaDeVentaHelper` cuenta un
+     * comprobante autorizado sin `importe_iva` como `sin_medir`, `SaleHelper::calcular_ganancia()`
+     * devuelve null para esa venta y `sales.ganancia` queda en NULL **para siempre** —la misma
+     * ventana que la Factura E tenia por `AfipFexHelper` y que se cerro en esta misma rama—. La
+     * invariante que se restituye es la que `update_afip_ticket()` ya cumplia: **el resultado y el
+     * IVA se persisten en el MISMO `update()`**.
+     *
+     * ─── De donde sale el valor, en este orden ────────────────────────────────────────────────
+     *
+     *  1. **`ResultGet->ImpIVA` de la respuesta de ARCA.** Es el mejor dato posible: no es lo que
+     *     nosotros calculamos, es lo que el organismo dice que tiene asentado ese comprobante. Y
+     *     sirve para CUALQUIER comprobante, por viejo que sea — que es lo que convierte a este
+     *     metodo en la via de recuperacion de los comprobantes que hoy tienen la columna en NULL.
+     *  2. **`afip_tickets.imp_iva_enviado`**, el snapshot exacto de lo que se mando en
+     *     `FECAESolicitar`. `persist_importes_enviados()` lo escribe ANTES de la llamada que puede
+     *     fallar, asi que en el camino "error de red al emitir" siempre esta poblado. Pero la
+     *     columna existe recien desde la migracion `2026_04_06_130000`: en un ticket anterior a esa
+     *     fecha esta en NULL, y por eso no puede ser la fuente primaria.
+     *  3. **Nada.** Se devuelve null y la columna queda como estaba. Escribir un NULL encima, o
+     *     peor, un numero estimado, es lo unico que no vale: lo que este metodo arregla no es que
+     *     el dato falte, es que faltara PUDIENDO saberse.
+     *
+     * No se filtra por `resultado`: si ARCA contesta el comprobante, el IVA que informa es el de ese
+     * comprobante. `IvaDeVentaHelper` ya descarta lo que no esta autorizado.
+     *
+     * @param  mixed $data Nodo `FECompConsultarResult->ResultGet` de la respuesta de ARCA.
+     * @return float|null
+     */
+    protected function importe_iva_de_la_consulta($data)
+    {
+        if (isset($data->ImpIVA) && is_numeric($data->ImpIVA)) {
+            return (float) $data->ImpIVA;
+        }
+
+        if (!is_null($this->afip_ticket->imp_iva_enviado)) {
+            return (float) $this->afip_ticket->imp_iva_enviado;
+        }
+
+        return null;
     }
 
     function solicitar_cae() {
@@ -590,6 +656,22 @@ class AfipWsfeHelper extends Controller
     }
 
 
+    /**
+     * ⚠️ CODIGO MUERTO: nadie llama a este metodo (verificado el 17/9/2026 con un barrido de
+     * `saveAfipTicket` sobre `app/` y `tests/`; el unico otro resultado es `SaleHelper::saveAfipTicket()`,
+     * que es otro metodo). Se deja anotado y no se borra en esta mision, que no vino a limpiar este
+     * archivo.
+     *
+     * 🔴 Si alguna vez se lo revive, tiene que escribir `importe_iva` en el MISMO `create()` que
+     * `resultado`. Hoy no lo hace, y esa es exactamente la ventana que dejaba la ganancia de la
+     * venta en NULL para siempre (ver `importe_iva_de_la_consulta()`).
+     *
+     * @param  mixed $result
+     * @param  mixed $cbte_nro
+     * @param  mixed $importe_total
+     * @param  mixed $moneda_id
+     * @return \App\Models\AfipTicket|null
+     */
     function saveAfipTicket($result, $cbte_nro, $importe_total, $moneda_id) {
         if (!isset($result->FECAESolicitarResult->Errors)) {
         // if (!isset($result->FECAESolicitarResult->Errors) && !isset($result->FECAESolicitarResult->FeDetResp->FECAEDetResponse->Observaciones)) {

@@ -64,11 +64,20 @@ class CompanyPerformanceController extends Controller
 
     }
 
+    /**
+     * Recalcula el snapshot del tablero del día solo si no existe o si tiene más de
+     * config('app.duracion_reportes') minutos (DURACION_REPORTES, default 10). Antes era
+     * env('DURACION_REPORTES', 1): con config:cache env() devuelve null y el snapshot se
+     * recalculaba en CADA entrada, y sin cache lo hacía cada minuto igual — en Fenix son
+     * >10 s por entrada al tablero.
+     *
+     * @return void
+     */
     function check_tiempo_ultima_creada() {
 
         $current_company_performance = $this->get_company_performance_today();
 
-        if (is_null($current_company_performance) || $current_company_performance->created_at->lt(Carbon::now()->subMinutes(env('DURACION_REPORTES', 1)))) {
+        if (is_null($current_company_performance) || $current_company_performance->created_at->lt(Carbon::now()->subMinutes(config('app.duracion_reportes')))) {
 
             if (!is_null($current_company_performance)) {
 

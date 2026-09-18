@@ -10,6 +10,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\ArticleTablePdfHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -22,6 +23,7 @@ use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\article\ArticleVariantHelper;
 use App\Http\Controllers\Helpers\article\BarCodeAutomaticoHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\article\ResetStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateAddressesStockHelper;
 use App\Http\Controllers\Helpers\article\UpdateVariantsStockHelper;
@@ -93,6 +95,10 @@ class ArticleController extends Controller
                             });
         }
         $models = $models->orderBy('created_at', 'DESC')
+                            // Sin el vector de embeddings: 29 KB por fila que ningún front lee
+                            // (4.0.24). El select explícito del scope va antes de withAll(), que
+                            // sólo agrega eager loads y no toca las columnas.
+                            ->sinEmbedding()
                             ->withAll()
                             ->paginate($per_page);
 
@@ -156,6 +162,11 @@ class ArticleController extends Controller
         }
         
         $models = $models->orderBy('deleted_at', 'DESC')
+                            // Sin el vector de embeddings: mismo criterio que index() (misión
+                            // busqueda-lenta-y-pausa-embeddings, sobre lo que dejó optimizacion-vps-fase1
+                            // / 4.0.24). Esta consulta no usa withAll(), así que el scope no tiene que
+                            // ir antes de nada más: alcanza con encadenarlo antes de paginate().
+                            ->sinEmbedding()
                             ->paginate($per_page);
 
         return response()->json(['models' => $models], 200);
@@ -175,6 +186,33 @@ class ArticleController extends Controller
 
     function show($id) {
         return response()->json(['model' => $this->fullModel('article', $id)], 200);
+    }
+
+    /**
+     * La ficha del artículo para la tarjeta que abre el hover sobre una mención del chat del
+     * asistente (misión agente-ia-mano-derecha, §2 del contrato, 16/9/2026): nombre, foto, código,
+     * precio, proveedor, stock total, stock por depósito y listas de precios en UN request.
+     *
+     * 🔴 Es una ruta aparte de `show()` y no un `with` más: `show()` resuelve por id PELADO
+     * (Controller::fullModel()) y devuelve el artículo de cualquier comercio; acá la consulta va
+     * scopeada por `user_id` y contesta 404 si el artículo no es del dueño. Y devuelve SOLO lo que
+     * la tarjeta dibuja: `show()` arrastra el modelo entero con todas sus relaciones, que para un
+     * hover de dos segundos es pagar de más.
+     *
+     * El recorte por `article.stock_only_sucursal` lo hace el helper: la SPA dibuja lo que llega.
+     *
+     * @param  int  $id
+     * @return \Illuminate\Http\JsonResponse  200 {model} · 404 {message}
+     */
+    function ficha_asistente($id) {
+        $model = FichaArticuloIaHelper::ficha($id, $this->userId(), UserHelper::user(false));
+
+        if (is_null($model)) {
+
+            return response()->json(['message' => 'Artículo no encontrado.'], 404);
+        }
+
+        return response()->json(['model' => $model], 200);
     }
 
     /**
@@ -759,6 +797,17 @@ class ArticleController extends Controller
              */
             'interpretacion_punto'                                  => ImportHelper::normalizarInterpretacionPunto($request->interpretacion_punto),
 
+            /*
+             * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026): cuando un
+             * provider_code matchea más de un artículo, quedarse con el que además
+             * coincide en nombre. Default false = comportamiento de siempre, así que una
+             * SPA que todavía no lo manda importa exactamente igual que hasta hoy.
+             *
+             * filter_var y no cast crudo: `(bool) 'false'` en PHP da TRUE. Mismo criterio
+             * que `precios_incluyen_iva`, unas líneas más arriba.
+             */
+            'desempatar_por_nombre'                                 => filter_var($request->desempatar_por_nombre, FILTER_VALIDATE_BOOLEAN),
+
         ]);
         
         if ($result['hubo_un_error']) {
@@ -987,6 +1036,12 @@ class ArticleController extends Controller
      * Query: pdf_column_profile_id (requerido), articles_id o filters (como export Excel).
      * Opcional: price_type_id cuando el dueño usa listas de precio (columna precio final del pivot).
      *
+     * Los artículos salen EN EL ORDEN que pidió el usuario: el del filtrado (ordenar_de de los
+     * filtros, que aplica SearchController::search) o el de la selección (articles_id tal como
+     * viene). Antes esta función terminaba con orderBy('created_at', 'DESC') y pisaba los dos
+     * (misión catalogo-pdf-encabezado, 18/9/2026); la resolución y la carga viven en
+     * ArticleTablePdfHelper, donde se prueban con PHPUnit.
+     *
      * @param \Illuminate\Http\Request $request
      * @return void
      */
@@ -1001,47 +1056,17 @@ class ArticleController extends Controller
             }])
             ->firstOrFail();
 
-        $article_ids = [];
-
-        if ($request->has('articles_id') && $request->query('articles_id') !== '') {
-            $ids = explode('-', $request->query('articles_id'));
-            $article_ids = array_map('intval', $ids);
-        } elseif ($request->has('filters')) {
-            $json_data = $request->query('filters');
-            $filters = json_decode($json_data, true);
-            $search_ct = new SearchController();
-            $models = $search_ct->search($request, 'article', $filters);
-            $article_ids = $models->pluck('id')->toArray();
-        }
+        $article_ids = ArticleTablePdfHelper::resolve_article_ids($request);
 
         if (! count($article_ids)) {
             abort(404, 'No hay artículos para generar el PDF');
         }
 
-        /** Lista de precios opcional para resolver `article_final_price` desde el pivot. */
-        $price_type_id = $request->query('price_type_id');
-
-        $article_with = [
-            'category',
-            'sub_category',
-            'brand',
-            'provider',
-            'iva',
-            'unidad_medida',
-            'images' => function ($query) {
-                $query->orderBy('id', 'asc');
-            },
-        ];
-
-        if (! is_null($price_type_id) && $price_type_id !== '' && UserHelper::uses_listas_de_precio()) {
-            $article_with[] = 'price_types';
-        }
-
-        $articles = Article::where('user_id', $this->userId())
-            ->whereIn('id', $article_ids)
-            ->with($article_with)
-            ->orderBy('created_at', 'DESC')
-            ->get();
+        $articles = ArticleTablePdfHelper::load_articles_in_order(
+            $article_ids,
+            $this->userId(),
+            $request->query('price_type_id')
+        );
 
         new ArticleTablePdf($profile, $articles);
     }
@@ -1101,9 +1126,13 @@ class ArticleController extends Controller
     }
 
     function articles_por_defecto() {
+        // where('default_in_vender', '>', 0) y no whereNotNull: la columna es un INT que
+        // arranca en 0 (no en NULL) para los articulos que nunca se marcaron, asi que
+        // whereNotNull traia el catalogo entero en vez de solo los marcados. Mismo criterio
+        // que ultimos_actualizados() unas lineas mas abajo, que ya lo hacia bien.
         $models = Article::where('user_id', $this->userId())
                             ->where('status', 'active')
-                            ->whereNotNull('default_in_vender')
+                            ->where('default_in_vender', '>', 0)
                             ->orderBy('default_in_vender', 'DESC')
                             ->withAll()
                             ->get();

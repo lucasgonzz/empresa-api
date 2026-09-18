@@ -22,6 +22,22 @@ use Illuminate\Database\Eloquent\Model;
  * - 'sugerencia_oferta': ídem con una corrida del motor de ofertas por cliente
  *   terminada (referencia_id = offer_suggestions.id). Toda misión que sume un
  *   origen actualiza esta lista en el MISMO commit: no hay enum ni constante.
+ * - 'mostrador_reporte': la abrió el dueño desde un informe del mostrador del
+ *   módulo IA (referencia_id = mostrador_reportes.id, misión modulo-ia-mostrador).
+ *   Una por (informe, persona); la crea MostradorController@conversacion con el
+ *   informe pasado a texto plano más sus hechos como `contexto`, y es la ÚNICA
+ *   conversación que después lee alguien más que la persona: la skill /mostrador
+ *   la recibe por admin-sync/mostrador/contexto para saber qué le importa al dueño
+ *   (MostradorReporte::ORIGEN_CONVERSACION).
+ * - 'whatsapp': la abrió el dueño escribiéndole al asistente desde WhatsApp (misión
+ *   asistente-por-whatsapp, 16/9/2026). No hay tabla nueva ni columna de canal en la
+ *   conversación: es un valor nuevo de esta columna, que ya existía. `referencia_id`
+ *   queda null. La conversación se lee y se sigue desde el panel del chat como
+ *   cualquier otra —es la MISMA conversación—; lo que la distingue es el ícono del
+ *   listado y que sus mensajes tienen `ai_messages.canal = 'whatsapp'`.
+ *   🔴 Quién la resuelve: el admin manda `ai_conversation_id` SOLO cuando la dedujo de
+ *   una cita (responder citando un mensaje del asistente reabre esa conversación); si no
+ *   lo manda, decide AsistenteCanalHelper con el corte de 6 h sin hablar.
  *
  * `contexto` guarda el bloque de DATOS ya calculados de la sugerencia (no las
  * instrucciones de redacción): viaja como segundo bloque del system en cada
@@ -33,6 +49,9 @@ use Illuminate\Database\Eloquent\Model;
  */
 class AiConversation extends Model
 {
+    /** Origen de las conversaciones que nacen de un mensaje de WhatsApp (misión asistente-por-whatsapp). */
+    const ORIGEN_WHATSAPP = 'whatsapp';
+
     protected $guarded = [];
 
     /**

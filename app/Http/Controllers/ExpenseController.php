@@ -3,15 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
-use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
-use App\Http\Controllers\Helpers\PaymentMethodHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
+use App\Http\Controllers\Helpers\expense\ExpenseHelper;
 use App\Models\Expense;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class ExpenseController extends Controller
 {
@@ -34,14 +31,16 @@ class ExpenseController extends Controller
     }
 
     public function store(Request $request) {
+
         /*
-         * moneda_id=0 llega cuando el formulario no envía moneda (sin extensión ventas_en_dolares).
-         * Se normaliza a pesos (1) para reportes y listados.
+         * El alta en sí (transacción, desglose de métodos de pago, movimientos de caja) vive en
+         * ExpenseHelper::crear() desde la misión agenda-tareas-calendario (14/9/2026), porque la
+         * Agenda también da de alta gastos y el helper viejo lo hacía armando un Request falso
+         * contra este método. Acá queda lo que es del HTTP: normalizar la moneda, prevalidar las
+         * cajas para responder 422 sin escribir nada, y armar la respuesta. El payload y las
+         * respuestas de `POST api/expense` no cambiaron.
          */
-        $moneda_id = $request->moneda_id;
-        if (is_null($moneda_id) || (int) $moneda_id === 0) {
-            $moneda_id = 1;
-        }
+        $moneda_id = ExpenseHelper::normalizar_moneda_id($request->moneda_id);
 
         /*
          * Prevalidación de las cajas destino, ANTES de escribir nada. Es la misma que hace
@@ -71,76 +70,21 @@ class ExpenseController extends Controller
             ], 422);
         }
 
-        /*
-         * Todo lo que escribe va adentro de una transacción. La prevalidación de arriba cubre el
-         * caso conocido, pero si algo revienta igual —por ejemplo una caja que se cierra entre la
-         * validación y el guardado— no puede quedar un gasto a medias con solo una parte de los
-         * movimientos de caja hechos.
-         */
-        $model = DB::transaction(function () use ($request, $moneda_id) {
+        $data = $request->only([
+            'expense_concept_id',
+            'amount',
+            'importe_iva',
+            'observations',
+            'created_at',
+            'payment_methods',
+        ]);
 
-            $model = Expense::create([
-                'num'                                   => $this->num('expenses'),
-                'expense_concept_id'                    => $request->expense_concept_id,
-                'amount'                                => $request->amount,
-                'moneda_id'                             => $moneda_id,
-                'importe_iva'                           => $request->importe_iva,
-                'observations'                          => $request->observations,
-                'created_at'                            => $request->created_at,
-                'user_id'                               => $this->userId(),
-                'caja_id'                               => 0,
-            ]);
+        $data['moneda_id'] = $moneda_id;
 
-            PaymentMethodHelper::attach_payment_methods($model, $request->payment_methods);
-
-            // `.type` va explícito para no lazy-loadear la relación una vez por método de pago
-            // adentro de la transacción: deberia_haber_impactado_caja() la lee en cada vuelta para
-            // dejar los cheques afuera del warning.
-            $model->load('current_acount_payment_methods.type');
-
-            foreach ($model->current_acount_payment_methods as $payment_method) {
-
-                /*
-                 * Sin guard de cheque, a propósito. Hasta el 29/8/2026 acá decía
-                 * `$payment_method->type != 'cheque'`: `type` es una relación belongsTo a
-                 * CAPaymentMethodType, no una columna, así que eso comparaba un modelo de Eloquent
-                 * contra un string y daba SIEMPRE true. Nunca excluyó un cheque, o sea que el
-                 * comportamiento real y vigente en producción es el de esta condición pelada. Se
-                 * deja igual, pero escrito sin la comparación rota para que el código diga lo que
-                 * de verdad hace.
-                 *
-                 * 🔴 Que el cheque mueva o no la caja al cargar el gasto es una decisión aparte, y
-                 * NO entra acá (Lucas, 29/8/2026): en el pago de cuenta corriente el cheque con caja
-                 * también genera movimiento (CurrentAcountPagoHelper), así que cambiarlo de un solo
-                 * lado dejaría dos criterios distintos para la misma decisión.
-                 */
-                if ($payment_method->pivot->caja_id) {
-
-                    $data = [
-                        'amount'    => $payment_method->pivot->amount,
-                        'caja_id'   => $payment_method->pivot->caja_id,
-                    ];
-
-                    ExpenseCajaHelper::guardar_movimiento_caja($model, $data);
-
-                } else if (CurrentAcountPagoHelper::deberia_haber_impactado_caja($payment_method)) {
-
-                    /*
-                     * Un método de pago con monto pero SIN caja destino no impacta en ninguna caja,
-                     * y hasta el 29/8/2026 eso pasaba sin dejar rastro: la respuesta era 201, el
-                     * gasto aparecía cargado y la plata no estaba en ninguna caja. Es el mismo
-                     * agujero que se tapó en el pago de cuenta corriente el 21/8/2026.
-                     *
-                     * NO se lanza excepción: el método igual queda guardado y el gasto es válido; lo
-                     * único que falta es el movimiento, y eso se arregla desde Tesorería.
-                     */
-                    Log::warning('ExpenseController@store: el metodo de pago '.$payment_method->id.' del gasto '.$model->id.' tiene monto '.$payment_method->pivot->amount.' pero no tiene caja destino, asi que no impacta en ninguna caja.');
-                }
-            }
-
-            $model->save();
-
-            return $model;
+        // El correlativo va como closure para que num() corra ADENTRO de la transacción del helper
+        // y su lockForUpdate se sostenga hasta el commit (ver el docblock de ExpenseHelper::crear()).
+        $model = ExpenseHelper::crear($data, $this->userId(), function () {
+            return $this->num('expenses');
         });
 
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 201);

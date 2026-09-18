@@ -24,6 +24,15 @@ use Tests\TestCase;
  * EL ARREGLO: create_version_session_token() libera el candado en la MISMA request que genera
  * el token, antes de que el SPA dispare el `/logout` ni redirija a ningún lado.
  *
+ * ────────────────────────────────────────────────────────────────────────────────────────────
+ * SEGUNDA VUELTA (10/9/2026, misión redireccion-version-sesion-pwa). Liberar el candado no
+ * alcanzaba: la SESIÓN del frente origen seguía abierta, porque el cierre dependía del mismo
+ * `/logout` best-effort de arriba. Cuando el login automático en el destino fallaba y el usuario
+ * volvía al frente origen a entrar a mano, se encontraba con la sesión vieja colgada en vez de
+ * la pantalla de login. Ahora create_version_session_token() también CIERRA la sesión del
+ * origen, en la misma request y después de emitir el token. Los tres tests del final cubren eso.
+ * ────────────────────────────────────────────────────────────────────────────────────────────
+ *
  * DatabaseTransactions (no RefreshDatabase): la base de testing del slot está sembrada de antes.
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados,
@@ -63,7 +72,8 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
      * vencido, checkUserLastActivity() lo tomaría solo y el test no probaría nada.
      *
      * 🔴 `activity_minutes` se fuerza a 60 explícitamente. El usuario 500 sembrado en esta base
-     * (empresa_testing_s9) lo tiene en 0, y con 0 minutos de ventana `ya_paso_el_tiempo()` da
+     * (medido en empresa_testing_s9 y de nuevo en empresa_testing_s3) lo tiene en 0, y con 0
+     * minutos de ventana `ya_paso_el_tiempo()` da
      * `true` SIEMPRE -incluso con `last_activity` recién puesto en `Carbon::now()`, porque el
      * valor que vuelve de la base pierde los microsegundos y `now()` en el chequeo siguiente ya
      * es un instante después-. Medido: sin este seteo, `test_el_login_manual_funciona_...`
@@ -179,11 +189,14 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
         $plain_token = $token_response->json('token');
 
         /**
-         * Sigue siendo la MISMA sesión de test (actingAs() y el cookie jar persisten entre
-         * llamadas de un mismo método), no una request real desde otro host. Alcanza para
-         * probar el endpoint: login_from_version_session_token() no lee el guard actual, solo
-         * el token, y por eso "quién esté actingAs" en este punto es irrelevante para el
-         * resultado.
+         * Sigue siendo la MISMA aplicación de test -las llamadas de un mismo método comparten
+         * el contenedor, y con él el guard `web` en memoria que dejó actingAs()-, no una request
+         * real desde otro host. Alcanza para probar el endpoint:
+         * login_from_version_session_token() no lee el guard actual, solo el token, y por eso
+         * "quién esté actingAs" en este punto es irrelevante para el resultado.
+         *
+         * (Lo que NO persiste entre llamadas es un cookie jar: Laravel solo manda las cookies que
+         * se le pasen a mano con withCookie()/withCookies(). Acá decía lo contrario.)
          */
         $login_por_transferencia = $this->postJson('/login-from-version-session-token', [
             'token' => $plain_token,
@@ -193,5 +206,149 @@ class CandadoLibreAlCambiarDeVersionTest extends TestCase
         $this->assertTrue($login_por_transferencia->json('login'));
         $this->assertSame($this->user->id, $login_por_transferencia->json('user.id'));
         $this->assertFalse($login_por_transferencia->json('user_last_activity'));
+    }
+
+    /**
+     * 🔴 EL PEDIDO DE LUCAS DEL 10/9/2026: al entrar por el frente en desuso, la sesión tiene que
+     * quedar CERRADA ahí, en la misma request que emite el token, sin depender del `POST /logout`
+     * que el SPA dispara después -best-effort, con `.catch()` silencioso y redirigiendo igual
+     * aunque falle-.
+     *
+     * Se mide con DOS sondas distintas, y hacen falta las dos:
+     *
+     * 1. **El propio `/version-session-token`**, que está detrás del middleware `auth` (ver
+     *    routes/web.php) y es la única ruta autenticada de web.php. Si la sesión del origen
+     *    siguiera abierta, una segunda llamada devolvería otro token con 200; con la sesión
+     *    cerrada tiene que dar 401. Esto prueba que corrió `Auth::logout()`.
+     * 2. **Las claves propias adentro de la sesión.** 🔴 Esta segunda sonda no es adorno: la
+     *    primera se satisface con `Auth::logout()` a secas, que solo borra las claves del guard.
+     *    Sin ella se podrían sacar los cinco `forget()`, el `invalidate()` y el
+     *    `regenerateToken()` del controlador y los tests seguirían en verde -o sea, la parte del
+     *    cierre que de verdad vacía la sesión del frente origen, que es LO QUE PIDIÓ LUCAS,
+     *    quedaría sin cubrir-. Por eso la sesión se siembra a mano con withSession() antes de
+     *    llamar: si el vaciado no corre, esas claves siguen ahí.
+     *
+     * @return void
+     */
+    public function test_crear_el_token_de_transferencia_cierra_la_sesion_del_origen()
+    {
+        $this->el_candado_esta_tomado_por_la_version_origen();
+
+        $respuesta = $this->actingAs($this->user, 'web')
+            ->withSession([
+                'auth_user' => $this->user->id,
+                'owner' => $this->user->id,
+                'session_id' => self::CANDADO_DE_LA_VERSION_ORIGEN,
+                'skip_offline_articles_sync' => true,
+            ])
+            ->postJson('/version-session-token');
+
+        $respuesta->assertStatus(200);
+        $this->assertNotEmpty($respuesta->json('token'), 'Tiene que devolver el token de transferencia.');
+
+        $this->assertGuest('web');
+
+        /** Sonda 2: la sesión quedó vacía, no solo deslogueada. */
+        $respuesta->assertSessionMissing('auth_user');
+        $respuesta->assertSessionMissing('owner');
+        $respuesta->assertSessionMissing('session_id');
+        $respuesta->assertSessionMissing('skip_offline_articles_sync');
+
+        /** Sonda 1: y la ruta autenticada ya no la deja pasar. */
+        $segunda_llamada = $this->postJson('/version-session-token');
+
+        $segunda_llamada->assertStatus(401);
+    }
+
+    /**
+     * El camino feliz del cierre: cerrar la sesión del origen NO puede romper la transferencia.
+     * El token se emite antes del cierre justo por esto -necesita al usuario autenticado-, y
+     * tiene que seguir sirviendo en el frente destino aunque en el origen ya no quede sesión.
+     *
+     * Es el mismo ángulo que `test_el_login_automatico_en_la_version_destino_sigue_funcionando_con_el_token`,
+     * pero con el cierre del origen VERIFICADO en el medio: sin ese 401 intermedio no se estaría
+     * probando que el token sobrevive al cierre, solo que el token funciona.
+     *
+     * @return void
+     */
+    public function test_el_token_sigue_sirviendo_en_el_destino_despues_de_cerrar_la_sesion_del_origen()
+    {
+        $this->el_candado_esta_tomado_por_la_version_origen();
+
+        $token_response = $this->actingAs($this->user, 'web')
+            ->postJson('/version-session-token');
+
+        $token_response->assertStatus(200);
+        $plain_token = $token_response->json('token');
+
+        /** El origen quedó cerrado en esa misma request. */
+        $this->postJson('/version-session-token')->assertStatus(401);
+
+        /** Y el token emitido antes del cierre sigue entrando en el destino. */
+        $login_por_transferencia = $this->postJson('/login-from-version-session-token', [
+            'token' => $plain_token,
+        ]);
+
+        $login_por_transferencia->assertStatus(200);
+        $this->assertTrue(
+            $login_por_transferencia->json('login'),
+            'Cerrar la sesión del origen no puede invalidar el token que se emitió antes de cerrarla.'
+        );
+        $this->assertSame($this->user->id, $login_por_transferencia->json('user.id'));
+        $this->assertFalse($login_por_transferencia->json('user_last_activity'));
+    }
+
+    /**
+     * 🔴 LO QUE EL PEDIDO BUSCA DE VERDAD: que si el login automático en el destino falla, el
+     * usuario pueda entrar A MANO en el frente origen. Para eso tienen que valer las dos cosas
+     * a la vez, y acá se comprueban juntas:
+     *
+     *   1. la sesión del origen está cerrada (si no, se encuentra la app vieja colgada en vez de
+     *      la pantalla de login), y
+     *   2. el candado está libre (si no, el login manual choca con "cuenta en uso en otro
+     *      dispositivo").
+     *
+     * `test_el_login_manual_funciona_aunque_el_logout_posterior_nunca_llegue` ya cubre el punto 2
+     * solo; este agrega el 1 y prueba el escenario completo tal como lo vive el usuario.
+     *
+     * @return void
+     */
+    public function test_el_usuario_puede_entrar_a_mano_en_el_origen_despues_de_pedir_el_token()
+    {
+        $password_original = $this->user->password;
+        $this->user->password = bcrypt(self::PASSWORD_DE_PRUEBA);
+        $this->user->save();
+
+        $this->el_candado_esta_tomado_por_la_version_origen();
+
+        $token_response = $this->actingAs($this->user, 'web')
+            ->postJson('/version-session-token');
+
+        $token_response->assertStatus(200);
+
+        /** Punto 1: no quedó sesión abierta en el frente origen. */
+        $this->postJson('/version-session-token')->assertStatus(401);
+
+        /**
+         * Punto 2: y el login manual ahí mismo entra. Nada más pasó en el medio: ni el `/logout`
+         * del SPA, ni el consumo del token en el destino.
+         */
+        $login_manual = $this->postJson('/login', [
+            'doc_number' => $this->user->doc_number,
+            'password' => self::PASSWORD_DE_PRUEBA,
+        ]);
+
+        $login_manual->assertStatus(200);
+        $this->assertTrue(
+            $login_manual->json('login'),
+            'Con la sesión cerrada y el candado libre, el login manual en el origen tiene que entrar.'
+        );
+        $this->assertFalse(
+            $login_manual->json('user_last_activity'),
+            'No puede aparecer el cartel de "cuenta en uso en otro dispositivo": la sesión que lo tenía ya se cerró.'
+        );
+
+        $this->user->password = $password_original;
+        $this->user->save();
     }
 }

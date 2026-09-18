@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\client;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
@@ -101,7 +102,7 @@ class AiClientAnalyzer
     ];
 
     /**
-     * ID del usuario propietario, reservado para extensiones futuras.
+     * ID del usuario propietario: a quien se le imputa el consumo de tokens de la llamada.
      *
      * @var int
      */
@@ -807,6 +808,22 @@ PROMPT;
         }
 
         $response_data = $response->json();
+
+        /*
+         * Consumo de tokens (misión tokens-por-cliente). Mismo lugar y mismo motivo que en
+         * AiExcelAnalyzer: el body entero todavía está acá y abajo se descarta.
+         */
+        AiTokenUsageHelper::registrar([
+            'user_id' => (int) $this->user_id,
+            'proceso' => 'import_excel_clientes',
+            'body'    => is_array($response_data) ? $response_data : [],
+
+            // El modelo que devolvió Anthropic (viene con la fecha resuelta del alias, que es
+            // lo que el admin necesita para costear); el de la constante, solo si no vino.
+            'modelo' => isset($response_data['model']) && (string) $response_data['model'] !== ''
+                ? (string) $response_data['model']
+                : self::CLAUDE_MODEL,
+        ]);
 
         /*
          * La respuesta de la API de Anthropic tiene el contenido en:

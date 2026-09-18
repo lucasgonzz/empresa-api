@@ -93,6 +93,16 @@ return [
     'anthropic' => [
         'api_key'    => env('ANTHROPIC_API_KEY'),
         'model'      => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+        /*
+         * Los dos modelos que elige la preferencia "cómo piensa" del agente (misión
+         * foto-sucursal-y-asistente-configurable, 17/9/2026). `model_agil` cae por defecto al
+         * `ANTHROPIC_MODEL` de siempre: un negocio en 'agil' (el default) usa exactamente el modelo
+         * actual, sin cambiar nada. `model_profundo` es el modelo caro, para el que elige "piensa a
+         * fondo". El service elige entre los dos por `users.agente_pensamiento`; los ids NO se
+         * hardcodean en el service, salen de acá y se pueden mover por .env.
+         */
+        'model_agil'     => env('ANTHROPIC_MODEL_AGIL', env('ANTHROPIC_MODEL', 'claude-sonnet-5')),
+        'model_profundo' => env('ANTHROPIC_MODEL_PROFUNDO', 'claude-opus-5'),
         'ca_bundle'  => env('ANTHROPIC_CAINFO'),
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],
@@ -164,6 +174,16 @@ return [
      */
     'openai' => [
         'api_key' => env('OPENAI_API_KEY', ''),
+
+        /*
+         * Pausa global de la generación de embeddings (misión busqueda-lenta-y-pausa-embeddings,
+         * 14/9/2026), independiente de la extensión whatsapp_ia por cliente — ver
+         * EMBEDDINGS_GENERACION_PAUSADA en .env.example. Va acá y no se lee con env() directo en
+         * el código de aplicación: con config:cache activo (lo normal en producción) env() fuera
+         * de config/ devuelve el default, y esta misma clase de bug ya rompió DURACION_REPORTES
+         * en producción (ver CompanyPerformanceController::check_tiempo_ultima_creada()).
+         */
+        'embeddings_generacion_pausada' => filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /**
@@ -235,6 +255,18 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('MP_GUZZLE_CA_BUNDLE', ''),
+
+        /*
+         * Credenciales de Mercado Pago para conectar SOLAS una demo que no tiene ninguna cuenta
+         * conectada todavía (misión mp-precio-servidor-y-credenciales-env, 16/9/2026). Van acá y
+         * no se leen con env() directo en el código de aplicación: con config:cache activo (lo
+         * normal en producción) env() fuera de config/ devuelve el default, y esta misma clase de
+         * bug ya rompió DURACION_REPORTES en producción — ver el comentario de
+         * 'embeddings_generacion_pausada' más arriba en este archivo, o
+         * CompanyPerformanceController::check_tiempo_ultima_creada().
+         */
+        'demo_access_token' => env('MERCADOPAGO_DEMO_ACCESS_TOKEN'),
+        'demo_public_key'   => env('MERCADOPAGO_DEMO_PUBLIC_KEY'),
     ],
 
     /**
@@ -277,6 +309,47 @@ return [
             FILTER_VALIDATE_BOOLEAN
         ),
         'guzzle_ca_bundle' => env('ZIPPIN_GUZZLE_CA_BUNDLE', ''),
+    ],
+
+    /**
+     * Zipnova (ex Zippin), misión zipnova-envios (14/9/2026): el agregador de correos con el que
+     * la tienda cotiza y despacha envíos.
+     *
+     * Acá NO hay credenciales: a diferencia del bloque `zippin` de arriba (OAuth con una app de
+     * ComercioCity que nunca llegó a existir), cada comercio se conecta con SU API Token + API
+     * Secret, que viven cifrados en `platform_connectors.access_token`. Lo único que se configura
+     * a nivel instancia es cómo llegar a la API: el host (por si Zipnova lo cambia o para apuntar
+     * a un stub en desarrollo), el timeout y la verificación SSL. `ZipnovaClient::base_url()` y
+     * `ZipnovaClient::http_client_options()` son los únicos lectores.
+     */
+    'zipnova' => [
+        // Host de la API v2. Los dominios `zippin` vencen el 1/4/2026; el vigente es zipnova.com.ar.
+        'base_url'         => env('ZIPNOVA_BASE_URL', 'https://api.zipnova.com.ar/v2'),
+        // Segundos máximos de espera por respuesta. Zipnova cotiza en ~1-3 s; 20 cubre un pico.
+        'timeout'          => (int) env('ZIPNOVA_TIMEOUT', 20),
+        // Reintento único ante 429 respetando Retry-After (máx. 5 s). En el ERP queda prendido:
+        // opera de a un envío. En la tienda está apagado (endpoint público, IP compartida).
+        'reintento_429'    => filter_var(env('ZIPNOVA_REINTENTO_429', true), FILTER_VALIDATE_BOOLEAN),
+        // Verificación del certificado. Por defecto true (en el header viaja el token del
+        // comercio: desactivarla no es opción en producción). En wamp el PHP no encuentra el
+        // bundle solo: se le pasa por `guzzle_ca_bundle`, o cae al de `zippin` que ya está cargado.
+        'guzzle_verify'    => filter_var(env('ZIPNOVA_GUZZLE_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+        'guzzle_ca_bundle' => env('ZIPNOVA_GUZZLE_CA_BUNDLE', ''),
+
+        /*
+         * API Token + API Secret para conectar SOLA una demo (o una base local) que no tiene
+         * ninguna cuenta de Zipnova conectada todavía (misión mp-zipnova-seed-local, 17/9/2026,
+         * mismo patrón que 'demo_access_token'/'demo_public_key' del bloque 'mercadopago' de
+         * arriba). Van acá y no se leen con env() directo en el código de aplicación: con
+         * config:cache activo (lo normal en producción) env() fuera de config/ devuelve el
+         * default — ver el comentario de 'demo_access_token' en el bloque 'mercadopago'.
+         *
+         * demo_account_id es opcional: sin él, el conector queda sin platform_user_id (mismo
+         * criterio que un conector recién creado por OAuth antes de resolver la cuenta).
+         */
+        'demo_api_token'   => env('ZIPNOVA_DEMO_API_TOKEN'),
+        'demo_api_secret'  => env('ZIPNOVA_DEMO_API_SECRET'),
+        'demo_account_id'  => env('ZIPNOVA_DEMO_ACCOUNT_ID'),
     ],
 
     /**
@@ -347,6 +420,27 @@ return [
      */
     'dolar_api' => [
         'url' => env('DOLAR_API_URL', 'https://dolarapi.com/v1/dolares'),
+    ],
+
+    /**
+     * El mostrador del módulo IA visto desde afuera (misión asistente-por-whatsapp, 16/9/2026).
+     *
+     * `spa_url` es la URL del SISTEMA de este cliente —lo que el dueño abre en el navegador,
+     * https://<cliente>.comerciocity.com—, y se usa para armar el link con el que el informe de la
+     * mañana se abre desde el teléfono (MostradorAccesoHelper).
+     *
+     * 🔴 NO tiene repliegue a `app.url` a propósito. `app.url` es la URL de la API
+     * (api-<cliente>.comerciocity.com): un link armado con eso da 404 en el teléfono del dueño, y
+     * el error aparece recién cuando 40 dueños tocan el link a las 8:30 de la mañana. Es la clase
+     * "la URL que un sistema le entrega a otro, armada con APP_URL" de APRENDER_NO_PARCHEAR.md
+     * (9/9/2026). Sin esta variable cargada, el informe se manda SIN link y queda registrado en el
+     * log: fallar visible antes que mandar un link roto.
+     *
+     * Va en config y no leído con env() adentro del código por el mismo motivo que
+     * github_error_reporter: con `config:cache` corrido en producción, un env() devuelve null.
+     */
+    'mostrador' => [
+        'spa_url' => env('SPA_URL'),
     ],
 
 ];

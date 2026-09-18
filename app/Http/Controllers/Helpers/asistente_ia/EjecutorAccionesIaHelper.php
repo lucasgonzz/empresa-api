@@ -1,0 +1,390 @@
+<?php
+
+namespace App\Http\Controllers\Helpers\asistente_ia;
+
+use App\Models\AiConversation;
+use App\Models\AiMessage;
+use App\Models\AiMessageAction;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Confirmar y cancelar una tarjeta de carga del asistente de IA (misión asistente-ia-acciones, §3.6
+ * del plan). Lo llaman los endpoints `POST ai-conversations/{id}/acciones/{accion_id}/confirmar` y
+ * `.../cancelar`, en el request del clic y autenticados COMO LA PERSONA: la decisión es humana, los
+ * permisos se chequean contra quien confirma, y los helpers de plata (correlativos, employee_id del
+ * pago, empleado del movimiento de caja) leen la sesión.
+ *
+ * Devuelve `['status' => int, 'body' => array]` con el contrato §2.4/§2.5; la tenencia de la
+ * conversación ya la resolvió el controller (conversacion_de_la_persona()).
+ *
+ * Misión asistente-por-whatsapp (16/9/2026): por WhatsApp no hay botón, así que el mismo
+ * confirmar()/cancelar() lo llama ConfirmacionPorTextoIaHelper desde adentro del job — con la
+ * persona puesta en Auth, porque los helpers de plata la leen de ahí — cuando el dueño contesta que
+ * sí por texto. La lógica no cambia: lo que cambia es quién aprieta el botón.
+ */
+class EjecutorAccionesIaHelper {
+
+    const MENSAJE_ERROR_GENERICO = 'No se pudo registrar. Probá de nuevo en unos segundos.';
+
+    const MENSAJE_NO_ENCONTRADA = 'Tarjeta no encontrada.';
+
+    const MENSAJE_RESUELTA = 'Esta tarjeta ya no se puede confirmar ni cancelar.';
+
+    const MENSAJE_VENCIDA = 'Esta tarjeta venció. Si todavía querés cargarlo, pedíselo de nuevo al asistente.';
+
+    const MENSAJE_DESCARTADA = 'Esta tarjeta quedó descartada.';
+
+    /**
+     * Ejecuta la carga de la tarjeta y la deja 'confirmada' con su resultado.
+     *
+     * 🔴 CANDADO CONTRA EL SEGUNDO CLIC. Todo corre en una transacción que empieza con
+     * `lockForUpdate` sobre la fila de la tarjeta: un doble clic o dos pestañas llegan los dos acá, el
+     * segundo espera el candado, y cuando entra ya la ve 'confirmada' y sale por 409 sin volver a
+     * ejecutar nada. Sin eso, los dos verían 'propuesta' y registrarían el gasto dos veces (la clase
+     * "la operación que mueve plata sin candado contra el segundo clic" de APRENDER_NO_PARCHEAR.md).
+     *
+     * 🔴 LO QUE TIENE QUE SOBREVIVIR AL ROLLBACK SE ESCRIBE AFUERA DE LA TRANSACCIÓN. Un 422 (caja
+     * nunca abierta, sin permiso, tarea editada en el medio...) revierte todo lo que la carga alcanzó
+     * a escribir, y si el `error_mensaje` se guardara adentro, el mismo rollback se lo llevaría: la
+     * tarjeta quedaría sin decir por qué no se pudo. Por eso la excepción sale de la transacción y
+     * recién en el catch, ya revertida, se persisten el `error_mensaje` y el paso a 'vencida' o
+     * 'descartada'. La SPA muestra `model.error_mensaje` (422) y `model.estado` (409), así que esas
+     * escrituras van ANTES de armar la respuesta.
+     *
+     * 🔴 Adentro del try de la escritura no hay broadcast ni notificación: un aviso que falla después
+     * de que la carga quedó bien volvería 500 algo que ya está registrado (clase "el aviso que voltea
+     * la operación que ya terminó").
+     *
+     * @param  \App\Models\AiConversation  $conversation  Conversación de la persona autenticada.
+     * @param  int  $accion_id
+     * @param  \App\Models\User|null  $persona  La persona autenticada.
+     * @param  callable  $num_expense_resolver  Controller::num('expenses'), para el correlativo del gasto.
+     * @return array  ['status' => int, 'body' => array]
+     */
+    static function confirmar(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver) {
+
+        return self::ejecutar_confirmacion($conversation, $accion_id, $persona, $num_expense_resolver, true);
+    }
+
+    /**
+     * Igual que confirmar(), pero SIN exigir que el mensaje que propuso la tarjeta esté 'listo'
+     * (misión foto-sucursal-y-asistente-configurable, 17/9/2026).
+     *
+     * 🔴 ES SOLO PARA LA AUTO-EJECUCIÓN DEL AGENTE EN MODO "RESUELTO". Ahí la tarjeta se confirma
+     * DENTRO del turno que la propone, con el assistant todavía 'pendiente' a propósito (el loop no
+     * terminó de escribir la respuesta). La guarda de 'listo' que sí aplica a la confirmación humana
+     * —botón o texto— rechazaría este caso con un 404. Lo llama ConfirmacionPorTextoIaHelper::
+     * confirmar_del_agente(), que ya autenticó a la persona; las demás guardas (propuesta, no
+     * vencida, mensaje no en error) siguen valiendo.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @param  \App\Models\User|null  $persona
+     * @param  callable  $num_expense_resolver
+     * @return array  ['status' => int, 'body' => array]
+     */
+    static function confirmar_en_el_turno(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver) {
+
+        return self::ejecutar_confirmacion($conversation, $accion_id, $persona, $num_expense_resolver, false);
+    }
+
+    /**
+     * El cuerpo compartido de confirmar() y confirmar_en_el_turno(): la transacción con candado que
+     * ejecuta la carga y deja la tarjeta 'confirmada' con su resultado. Ver el docblock de arriba
+     * (que era el de confirmar()) para el candado, el rollback y el broadcast.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @param  \App\Models\User|null  $persona
+     * @param  callable  $num_expense_resolver
+     * @param  bool  $exige_mensaje_listo  false solo para la auto-ejecución del agente.
+     * @return array  ['status' => int, 'body' => array]
+     */
+    protected static function ejecutar_confirmacion(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
+
+        if (!self::es_de_la_conversacion($conversation, $accion_id)) {
+
+            return self::respuesta(404, ['message' => self::MENSAJE_NO_ENCONTRADA]);
+        }
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation, $persona);
+
+        try {
+
+            DB::transaction(function () use ($contexto, $conversation, $accion_id, $num_expense_resolver, $exige_mensaje_listo) {
+
+                $accion = self::bloquear($conversation, $accion_id);
+
+                self::verificar_que_siga_propuesta($accion, $exige_mensaje_listo);
+
+                $resultado = self::ejecutar_por_tipo($contexto, $accion, $num_expense_resolver);
+
+                $accion->estado = AiMessageAction::ESTADO_CONFIRMADA;
+                $accion->resultado = $resultado;
+                $accion->resuelta_at = Carbon::now();
+                $accion->error_mensaje = null;
+                $accion->save();
+            });
+
+        } catch (AccionIaException $e) {
+
+            return self::respuesta_de_negocio($accion_id, $e);
+
+        } catch (\Throwable $e) {
+
+            Log::error('EjecutorAccionesIaHelper: falló la confirmación de una tarjeta del asistente', [
+                'ai_message_action_id' => (int) $accion_id,
+                'ai_conversation_id'   => (int) $conversation->id,
+                'error'                => $e->getMessage(),
+            ]);
+
+            // Afuera de la transacción, que ya se revirtió: ver el docblock.
+            self::guardar_error($accion_id, self::MENSAJE_ERROR_GENERICO);
+
+            return self::respuesta(500, ['message' => self::MENSAJE_ERROR_GENERICO]);
+        }
+
+        return self::respuesta(200, ['model' => AiMessageAction::find((int) $accion_id)]);
+    }
+
+    /**
+     * Deja la tarjeta 'cancelada', con el mismo candado que confirmar(): una cancelación y una
+     * confirmación simultáneas no pueden terminar las dos bien.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @return array  ['status' => int, 'body' => array]
+     */
+    static function cancelar(AiConversation $conversation, $accion_id) {
+
+        if (!self::es_de_la_conversacion($conversation, $accion_id)) {
+
+            return self::respuesta(404, ['message' => self::MENSAJE_NO_ENCONTRADA]);
+        }
+
+        try {
+
+            DB::transaction(function () use ($conversation, $accion_id) {
+
+                $accion = self::bloquear($conversation, $accion_id);
+
+                self::verificar_que_siga_propuesta($accion);
+
+                $accion->estado = AiMessageAction::ESTADO_CANCELADA;
+                $accion->resuelta_at = Carbon::now();
+                $accion->save();
+            });
+
+        } catch (AccionIaException $e) {
+
+            return self::respuesta_de_negocio($accion_id, $e);
+        }
+
+        return self::respuesta(200, ['model' => AiMessageAction::find((int) $accion_id)]);
+    }
+
+    /**
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @return bool
+     */
+    protected static function es_de_la_conversacion(AiConversation $conversation, $accion_id) {
+
+        return AiMessageAction::where('id', (int) $accion_id)
+                                ->where('ai_conversation_id', $conversation->id)
+                                ->exists();
+    }
+
+    /**
+     * La tarjeta con la fila bloqueada hasta el commit (ver el candado en confirmar()).
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @return \App\Models\AiMessageAction
+     *
+     * @throws AccionIaException
+     */
+    protected static function bloquear(AiConversation $conversation, $accion_id) {
+
+        $accion = AiMessageAction::where('id', (int) $accion_id)
+                                    ->where('ai_conversation_id', $conversation->id)
+                                    ->lockForUpdate()
+                                    ->first();
+
+        if (is_null($accion)) {
+
+            throw new AccionIaException(404, self::MENSAJE_NO_ENCONTRADA);
+        }
+
+        return $accion;
+    }
+
+    /**
+     * Corta si la tarjeta ya no se puede resolver. Se mira el estado GUARDADO (la lectura con el
+     * vencimiento se chequea aparte, porque una vencida hay que dejarla guardada como tal).
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  bool  $exige_mensaje_listo  false solo para la auto-ejecución del agente (ver confirmar_en_el_turno()).
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_que_siga_propuesta(AiMessageAction $accion, $exige_mensaje_listo = true) {
+
+        if ($accion->estado_guardado() !== AiMessageAction::ESTADO_PROPUESTA) {
+
+            throw new AccionIaException(409, self::MENSAJE_RESUELTA);
+        }
+
+        if ($accion->vencio()) {
+
+            throw new AccionIaException(409, self::MENSAJE_VENCIDA, AiMessageAction::ESTADO_VENCIDA);
+        }
+
+        $mensaje = AiMessage::find($accion->ai_message_id);
+
+        // Una tarjeta de un mensaje que terminó en error ya tendría que estar descartada; si una
+        // carrera la dejó propuesta, se descarta acá en vez de ejecutarla.
+        if (is_null($mensaje) || $mensaje->estado === 'error') {
+
+            throw new AccionIaException(409, self::MENSAJE_DESCARTADA, AiMessageAction::ESTADO_DESCARTADA);
+        }
+
+        // Un mensaje todavía 'pendiente' no muestra sus tarjetas (AccionesIaHelper::cargar_en_mensajes()):
+        // para quien confirma con el dedo, esa tarjeta todavía no existe. La auto-ejecución del agente
+        // (misión foto-sucursal-y-asistente-configurable) es la excepción: confirma DENTRO del turno
+        // que la propone, con el mensaje 'pendiente' a propósito, así que salta esta sola guarda.
+        if ($exige_mensaje_listo && $mensaje->estado !== 'listo') {
+
+            throw new AccionIaException(404, self::MENSAJE_NO_ENCONTRADA);
+        }
+    }
+
+    /**
+     * Ejecuta la carga por el helper de su tipo, que es el que la armó.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  callable  $num_expense_resolver
+     * @return array  resultado {texto, ruta}
+     *
+     * @throws AccionIaException
+     */
+    protected static function ejecutar_por_tipo(ContextoDeCargaIa $contexto, AiMessageAction $accion, $num_expense_resolver) {
+
+        switch ($accion->tipo) {
+
+            case AiMessageAction::TIPO_GASTO:
+                return PropuestaGastoIaHelper::ejecutar($contexto, $accion, $num_expense_resolver);
+
+            case AiMessageAction::TIPO_PAGO:
+                return PropuestaPagoIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_TAREA_NUEVA:
+                return PropuestaTareaIaHelper::ejecutar_tarea_nueva($contexto, $accion);
+
+            case AiMessageAction::TIPO_TAREA_EDITAR:
+                return PropuestaTareaIaHelper::ejecutar_cambios($contexto, $accion);
+
+            case AiMessageAction::TIPO_TAREA_COMPLETAR:
+                return PropuestaTareaIaHelper::ejecutar_marcar_hecha($contexto, $accion, $num_expense_resolver);
+
+            case AiMessageAction::TIPO_COMBO:
+                return PropuestaComboIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_OFERTA:
+                return PropuestaOfertaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_COMPRA_CON_FACTURA:
+                return PropuestaCompraConFacturaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_FOTO_SUCURSAL:
+                return PropuestaFotoSucursalIaHelper::ejecutar($contexto, $accion);
+        }
+
+        throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');
+    }
+
+    /**
+     * Respuesta de un resultado de negocio, con lo que tiene que quedar guardado escrito ANTES de
+     * armarla y afuera de la transacción ya revertida.
+     *
+     * @param  int  $accion_id
+     * @param  AccionIaException  $e
+     * @return array
+     */
+    protected static function respuesta_de_negocio($accion_id, AccionIaException $e) {
+
+        if ($e->status === 404) {
+
+            return self::respuesta(404, ['message' => $e->getMessage()]);
+        }
+
+        if (!is_null($e->estado_a_persistir)) {
+
+            // Solo si sigue guardada como propuesta: nunca se pisa un estado ya resuelto.
+            AiMessageAction::where('id', (int) $accion_id)
+                            ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                            ->update([
+                                'estado'      => $e->estado_a_persistir,
+                                'resuelta_at' => Carbon::now(),
+                            ]);
+        }
+
+        if ($e->status === 422) {
+
+            self::guardar_error($accion_id, $e->getMessage());
+
+            return self::respuesta(422, [
+                'message' => $e->getMessage(),
+                'model'   => AiMessageAction::find((int) $accion_id),
+            ]);
+        }
+
+        return self::respuesta(409, [
+            'code'    => 'accion_resuelta',
+            'message' => $e->getMessage(),
+            'model'   => AiMessageAction::find((int) $accion_id),
+        ]);
+    }
+
+    /**
+     * Guarda el último error de un intento de confirmar en la tarjeta que sigue propuesta. Protegido:
+     * si esta escritura falla, la respuesta igual sale (el error ya se logueó o se devuelve).
+     *
+     * @param  int  $accion_id
+     * @param  string  $mensaje
+     * @return void
+     */
+    protected static function guardar_error($accion_id, $mensaje) {
+
+        try {
+
+            AiMessageAction::where('id', (int) $accion_id)
+                            ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                            ->update(['error_mensaje' => mb_substr((string) $mensaje, 0, 5000)]);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('EjecutorAccionesIaHelper: no se pudo guardar el error_mensaje de la tarjeta', [
+                'ai_message_action_id' => (int) $accion_id,
+                'error'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * @param  int  $status
+     * @param  array  $body
+     * @return array
+     */
+    protected static function respuesta($status, array $body) {
+
+        return [
+            'status' => (int) $status,
+            'body'   => $body,
+        ];
+    }
+}

@@ -201,6 +201,18 @@ class Attach_Payment_Methods_Test extends TestCase
     }
 
     /**
+     * Un reparto cuyo ÚNICO renglón apunta a un método que no existe no rompe (nada de 500), pero
+     * desde la tanda 2 de la misión vender-lista-obligatoria (18/9/2026, ítem A7) tampoco crea la
+     * venta: el loop de `attach_payment_methods()` saltearía ese renglón y la venta de contado
+     * quedaría "cobrada" sin ningún método y sin caja, que es exactamente el estado que esa tanda
+     * cerró. `SaleController::store()` la rechaza antes de la transacción con 422
+     * `sin_metodo_de_pago` (`PaymentMethodHelper::validar_venta_nueva()`).
+     *
+     * Hasta esa tanda este test esperaba 201 con cero métodos adjuntos: era el "no rompe" a secas.
+     * El comportamiento que se conserva es el que le da nombre —no hay excepción ni 500—; lo que
+     * cambia es que el error ahora se dice en vez de guardarse. El caso "un renglón inválido y
+     * otro válido adjunta el válido" sigue fijado arriba, en un_metodo_sin_id_no_descarta_los_siguientes.
+     *
      * @group sales
      * @test
      */
@@ -229,11 +241,17 @@ class Attach_Payment_Methods_Test extends TestCase
             ],
         ]), $article);
 
-        $response = $this->post('api/sale', $data);
-        $response->assertStatus(201);
-        $this->assertNotEquals(500, $response->getStatusCode());
+        $ventas_antes = Sale::where('user_id', $user->id)->count();
 
-        $sale = Sale::orderBy('id', 'DESC')->first();
-        $this->assertEquals(0, $sale->current_acount_payment_methods()->count());
+        $response = $this->post('api/sale', $data);
+        $this->assertNotEquals(500, $response->getStatusCode());
+        $response->assertStatus(422);
+        $this->assertTrue((bool) $response->json('sin_metodo_de_pago'), 'El rechazo tiene que ser el de método de pago, no otro 422.');
+
+        $this->assertEquals(
+            $ventas_antes,
+            Sale::where('user_id', $user->id)->count(),
+            'Una venta de contado sin ningún método válido no se tiene que crear.'
+        );
     }
 }

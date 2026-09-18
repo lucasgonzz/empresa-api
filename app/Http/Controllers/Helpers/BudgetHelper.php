@@ -4,11 +4,15 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
+use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\SaleController;
@@ -44,7 +48,30 @@ class BudgetHelper {
 	static function saveSale($budget, $previus_articles) {
 		if (is_null($budget->sale)) {
 	        $ct = new Controller();
-	        $sale = Sale::create([
+
+	        /*
+	         * Lo que la venta nacida de un presupuesto se lleva IGUAL que una venta de VENDER
+	         * (tanda 2 de la mision vender-lista-obligatoria, 18/9/2026, item A3). Hasta hoy este
+	         * INSERT dejaba en el default de la columna tres cosas que `SaleController::store()`
+	         * si resuelve:
+	         *
+	         *  - `seller_id`: quedaba null, asi que la venta no tenia vendedor y no habia comision
+	         *    por este camino, aunque el cliente tuviera vendedor asignado. Se resuelve con la
+	         *    MISMA regla que el alta (`SaleHelper::get_seller_id_desde()`: cliente → empleado
+	         *    que confirma → 0), y mas abajo se crea la comision como hace `attachProperies()`.
+	         *    Un presupuesto no elige vendedor, por eso el primer argumento va en null.
+	         *  - `terminada_at`: quedaba null con `terminada = 1`. Mismo criterio que el alta
+	         *    (`SaleHelper::get_terminada()` / `get_terminada_at()`): sin la extension
+	         *    `check_sales` la venta nace terminada y fechada ahora; con ella nace `to_check`,
+	         *    sin terminar y sin fecha. Un presupuesto no tiene fecha de entrega.
+	         *  - `valor_dolar`: no se copiaba del presupuesto; la venta perdia la cotizacion con la
+	         *    que se preciaron sus renglones.
+	         */
+	        $to_check = UserHelper::hasExtencion('check_sales') ? 1 : 0;
+
+	        $employee_id = SaleHelper::getEmployeeId();
+
+	        $sale = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
 	            'num' 					=> $ct->num('sales'),
 	            'user_id' 				=> UserHelper::userId(),
 	            'client_id' 			=> $budget->client_id,
@@ -52,7 +79,9 @@ class BudgetHelper {
 	            'observations' 			=> $budget->observations,
 	            'total' 				=> $budget->total,
 	            'address_id' 			=> $budget->address_id,
-	            'moneda_id' 			=> $budget->moneda_id,
+	            // Pesos si el presupuesto no tiene moneda (item A6, 18/9/2026): `sales.moneda_id` es
+	            // nullable y con null ninguna cotizacion aplica. Mismo default que SaleController.
+	            'moneda_id' 			=> $budget->moneda_id ? $budget->moneda_id : 1,
 	            'discounts_in_services'	=> $budget->discounts_in_services,
 	            'surchages_in_services'	=> $budget->surchages_in_services,
 	            // La venta que nace del presupuesto se lleva la opcion: sus articulos ya vienen con
@@ -64,25 +93,117 @@ class BudgetHelper {
             	// Misma semántica que en SaleController: si no viene definido en el presupuesto, descontar stock por defecto.
             	'discount_stock'        => !is_null($budget->discount_stock) ? ($budget->discount_stock ? 1 : 0) : 1,
             	'iva_aplicado'          => !is_null($budget->iva_aplicado) ? ($budget->iva_aplicado ? 1 : 0) : 1,
-            	'employee_id'           => SaleHelper::getEmployeeId(),
+            	'employee_id'           => $employee_id,
+            	'seller_id'             => SaleHelper::get_seller_id_desde(null, $budget->client_id, $employee_id),
+            	'valor_dolar'           => $budget->valor_dolar,
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
-	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
-	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
-                'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
-	        ]);
+	            'to_check'				=> $to_check,
+	            'terminada'				=> SaleHelper::get_terminada($to_check, null),
+	            'terminada_at'			=> SaleHelper::get_terminada_at($to_check, null),
+	            /*
+	             * 🔴 NO se arrastra el `omitir_en_cuenta_corriente` del presupuesto, a proposito.
+	             *
+	             * Desde la tanda 2 de la mision vender-lista-obligatoria (18/9/2026, item A4) el
+	             * presupuesto lo tiene guardado de verdad (`BudgetController` lo persiste; hasta
+	             * entonces llegaba siempre el 0 del default). Pero la confirmacion desde el listado
+	             * (`POST api/budget/{id}/confirmar`) no trae ningun dato de cobro y el presupuesto
+	             * tampoco lo tiene: si la venta naciera omitida, seria una venta de contado SIN metodo
+	             * de pago ni movimiento de caja --justo el estado que `SaleController::store()` rechaza
+	             * con el 422 `sin_metodo_de_pago`-- y la plata no quedaria registrada en ningun lado.
+	             * Contra eso, la deuda en la cuenta corriente es el mal menor: el cobro se registra
+	             * despues como pago, y es como funciono siempre.
+	             *
+	             * Honrar el tilde al confirmar necesita que la confirmacion pida el metodo de pago (o
+	             * que la venta guardada desde VENDER con el presupuesto cargado quede ligada a el, cosa
+	             * que hoy no pasa: el POST de Vender no manda budget_id). Es una decision de producto
+	             * que el informe de la mision le deja a Lucas; si se toma, esto cambia junto con el
+	             * test `Presupuestos/8_Omitir_cuenta_corriente_Test`.
+	             *
+	             * Quien lee este campo es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
+	             * (`save_current_acount && !omitir_en_cuenta_corriente`), desde `create_current_acount()`
+	             * mas abajo: `get_guardar_cuenta_corriente()` decide solo `save_current_acount`.
+	             */
+                'omitir_en_cuenta_corriente'        => 0,
+	        /*
+	         * El monto del total forzado viaja del presupuesto a la venta (mision
+	         * forzar-total-por-monto, 17/9/2026).
+	         *
+	         * 🔴 VA JUNTO CON `total`, EN LA MISMA LINEA CONCEPTUAL. El total del presupuesto ya es
+	         * el forzado; si la venta se llevara el total pero no el monto, nadie podria volver a
+	         * explicar de donde sale ese numero: el comprobante no tendria renglon de ajuste, el
+	         * prorrateo de AFIP facturaria el total sin forzar y cualquier recalculo del back
+	         * (`getTotalSale()` al confirmar una venta chequeada) pisaria el total con la suma
+	         * pelada de los renglones.
+	         *
+	         * ⚠️ Y ENTRA POR LA GUARDA DE ESQUEMA. Confirmar un presupuesto no es un caso borde: es
+	         * mostrador normal, y es el MISMO circuito que `develop` tapo el 16/9 con la guarda de
+	         * `budget_combo`. En la ventana en la que el codigo esta y la columna no, este
+	         * `$budget->forzar_total_monto` devuelve null sin error —el atributo no existe— y ese
+	         * null viaja igual al INSERT, que revienta con `Unknown column`. Ver
+	         * `ForzarTotalEsquemaHelper`.
+	         */
+	        ], $budget->forzar_total_monto, 'sales'));
 	        Self::attachSaleArticles($sale, $budget, $previus_articles);
 
 	        Self::attachSaleServices($sale, $budget);
 
 	        Self::attachSalePromocionVinotecas($sale, $budget);
 
+	        Self::attachSaleCombos($sale, $budget);
+
 	        Self::attachSaleDiscountsAndSurchages($sale, $budget);
+
+	        /*
+	            🔴 EL `sub_total` DE LA VENTA NACIDA DE UN PRESUPUESTO (mision forzar-total-por-monto,
+	            17/9/2026).
+
+	            Hasta hoy `saveSale()` NO escribia esta columna: `sales.sub_total` se escribe solo en
+	            `SaleController` (alta y actualizacion), desde el request de VENDER. Una venta nacida
+	            de un presupuesto quedaba con `sub_total` en null, y nadie se enteraba porque nadie lo
+	            leia.
+
+	            Lo leen los comprobantes, y esta mision los hizo leerlo de verdad. Con null adentro,
+	            el ticket de 80mm arranca `total_sale` en 0 e imprime "Total $0", despues
+	            "Ajuste -$12   $-12" y despues "Total sin descuentos: $-12"; y la factura A/B imprime
+	            "Total Original: $0". O sea: tres renglones sin sentido en EL comprobante del caso de
+	            uso, justo en el camino que esta misma mision habilito al arrastrar el monto del
+	            presupuesto a la venta.
+
+	            Se calcula con `SaleHelper::get_sub_total()`, que suma los renglones ya adjuntados
+	            —articulos, combos, promociones y servicios, con el descuento por linea aplicado— y
+	            NO aplica ni descuentos ni recargos de venta ni el forzado. Es exactamente la misma
+	            definicion que manda VENDER en el alta, que es lo que hace que el desglose del
+	            comprobante cierre: sub_total menos los renglones del medio da el total.
+
+	            ⚠️ Va DESPUES de adjuntar los cuatro tipos de item: antes, la venta todavia no tiene
+	            renglones y la suma daria 0.
+	        */
+	        $sale->sub_total = SaleHelper::get_sub_total($sale);
+	        $sale->save();
 
 	        if (!$sale->to_check) {
 	        	SaleHelper::create_current_acount($sale);
+
+	        	/*
+	        	 * La comision del vendedor, en el mismo orden que `SaleHelper::attachProperies()`
+	        	 * para una venta de VENDER: despues del movimiento de cuenta corriente, porque el
+	        	 * motor de Fenix pregunta por `$sale->current_acount` y el estado de la comision
+	        	 * (`comisiones\Helper::get_status()`) depende de si la venta entro a la cuenta.
+	        	 * Hasta hoy (item A3) no se llamaba, y como ademas `seller_id` quedaba null, un
+	        	 * presupuesto confirmado nunca generaba comision. Sin vendedor (0) es un no-op.
+	        	 */
+	        	SaleHelper::crear_comision($sale);
 	        }
 
 	        SaleTotalesHelper::set_total_cost($sale);
+
+	        /*
+	         * La ganancia de la venta se persiste igual que en el camino normal
+	         * (`SaleHelper::updateOrCreate()`: set_total_cost y enseguida set_sale_ganancia). Hasta
+	         * el 17/9/2026 acá solo se llamaba a set_total_cost, asi que TODA venta nacida de un
+	         * presupuesto se quedaba con `sales.ganancia` en NULL hasta que algo la tocara.
+	         */
+	        SaleHelper::set_sale_ganancia($sale);
 
 
 	        $sale->load('articles');
@@ -93,20 +214,31 @@ class BudgetHelper {
 		}
 	}
 
+	/**
+	 * La lista de precios con la que nace la venta al confirmar: la del presupuesto, o la del
+	 * cliente, o ninguna.
+	 *
+	 * ⚠️ Un presupuesto viejo sin lista —guardado antes de la mision vender-lista-obligatoria
+	 * (17/9/2026), o de una cuenta que no trabaja con listas— confirma con null A PROPOSITO, y aca
+	 * no se le exige lista: sus renglones ya se preciaron asi cuando se guardo
+	 * (`article_budget.price` viaja tal cual a `article_sale.price` en attachSaleArticles()), y
+	 * ponerle una lista ahora diria que la venta se cobro con precios que nadie aplico. La
+	 * obligatoriedad vive en el alta y en la edicion (`BudgetController` + `PriceTypeHelper`), que
+	 * es donde se eligen los precios.
+	 *
+	 * 🔴 Y el 0 se lee como "ninguna" en las DOS puntas, presupuesto y cliente, con el mismo
+	 * resolvedor que usa el alta: `clients.price_type_id` nace en 0 desde el form generico de
+	 * clientes (`src/models/client.js`, `ClientController` lo guarda pelado) y un presupuesto viejo
+	 * puede traer 0 por el mismo camino. Hasta el 17/9/2026 esto preguntaba `!is_null` y un 0
+	 * pasaba como si fuera una lista: la venta nacia con `price_type_id = 0`, que ningun lector
+	 * distingue de "sin lista" pero que tampoco cae al cliente.
+	 *
+	 * @param  \App\Models\Budget  $budget
+	 * @return int|null
+	 */
 	static function get_price_type_id($budget) {
 
-		if (!is_null($budget->price_type_id)) {
-			return $budget->price_type_id;
-		}
-
-		$client = $budget->client;
-		
-		if (!is_null($client) 
-			&& !is_null($client->price_type_id)) {
-
-			return $client->price_type_id;
-		}
-		return null;
+		return PriceTypeHelper::resolver_price_type_id_para_guardar($budget->price_type_id, $budget->client);
 	}
 
 	static function get_guardar_cuenta_corriente($budget) {
@@ -130,10 +262,20 @@ class BudgetHelper {
 			
 			$cost = $article->pivot->cost;
 			$price = $article->pivot->price;
-        	$ganancia = (float)$price - (float)$cost;
-			
+			$amount = $article->pivot->amount;
+
+			/*
+			 * 🔴 `article_sale.cost` es UNITARIO y `article_sale.ganancia` es el TOTAL de la linea:
+			 * la convencion la fijan SaleHelper::attachArticle(), SaleTotalesHelper::set_total_cost()
+			 * y ContabilidadRepository::costo_mercaderia_vendida(). Hasta el 17/9/2026 acá se
+			 * guardaba (price − cost) SIN multiplicar por la cantidad, asi que TODA venta nacida de
+			 * un presupuesto tenia la ganancia de linea dividida por la cantidad. Y el presupuesto
+			 * es el camino dominante de las ventas en ferretotal.
+			 */
+        	$ganancia = ((float)$price - (float)$cost) * (float)$amount;
+
 			$sale->articles()->attach($article->id, [
-				'amount'			=> $article->pivot->amount,
+				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $price,
 				'cost'	    		=> $cost,
@@ -171,6 +313,83 @@ class BudgetHelper {
 			if ((bool) $sale->discount_stock) {
 				PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo_array);
 			}
+		}
+	}
+
+	/**
+	 * Pasa los combos del presupuesto a la venta que nace al confirmarlo
+	 * (mision combos-y-rangos-de-precio, 16/9/2026).
+	 *
+	 * 🔴 ACA ES DONDE EL MOLDE DE `promocion_vinoteca` NO SE COPIA, y no es un detalle de estilo.
+	 * `attachSalePromocionVinotecas()` descuenta el stock de la promo MISMA
+	 * (`promocion_vinotecas.stock`), porque una promo de vinoteca es un articulo virtual con stock
+	 * propio. Un combo no tiene stock: es una receta. Lo que se descuenta es el stock de CADA
+	 * articulo componente, multiplicado por la cantidad de combos.
+	 *
+	 * Ese descuento ya existe y es el mismo que usa VENDER: `sale\ComboHelper::discount_articles_stock()`,
+	 * llamado desde `SaleHelper::attachCombos()`. Se reusa tal cual —no se escribe un descuento
+	 * nuevo— justamente para que confirmar un presupuesto y guardar una venta muevan el stock de la
+	 * misma manera. Dos implementaciones del mismo descuento es la receta para que la auditoria de
+	 * stock no cierre por un lado y si por el otro.
+	 *
+	 * El helper espera el renglon del combo TAL COMO LLEGA DE VENDER, o sea un array con
+	 * `articles[].pivot.amount`, no un modelo Eloquent. Por eso se traduce acá: es el unico lugar
+	 * donde el combo viene de la base (relacion `combos.articles` del presupuesto) en vez de venir
+	 * del payload.
+	 *
+	 * El gate de `discount_stock` NO se repite acá: `discount_articles_stock()` ya mira
+	 * `!$sale->to_check && !$sale->checked && (bool)$sale->discount_stock`. Duplicarlo afuera es
+	 * pedir que un dia los dos chequeos se desincronicen.
+	 *
+	 * `$previus_combos` va en null a proposito: la venta se acaba de crear en `saveSale()`, asi que
+	 * no hay cantidad previa contra la cual calcular una diferencia.
+	 *
+	 * 🔴 Los combos salen por `ComboEsquemaHelper` y no por `$budget->combos`: en un cliente que
+	 * todavia no corrio la migracion de `budget_combo`, tocar la relacion aca dejaria sin poder
+	 * CONFIRMAR ningun presupuesto, que es lo que le da la venta al comercio.
+	 *
+	 * @param  \App\Models\Sale    $sale
+	 * @param  \App\Models\Budget  $budget
+	 * @return void
+	 */
+	static function attachSaleCombos($sale, $budget) {
+
+		foreach (ComboEsquemaHelper::combos_del_presupuesto($budget) as $combo) {
+
+			/*
+				`created_at` a mano, igual que su gemelo `SaleHelper::attachCombos()`
+				(SaleHelper.php:1304). `Sale::combos()` NO declara `withTimestamps()`, asi que
+				Eloquent no escribe la columna solo: los combos que entraban por confirmacion de
+				presupuesto quedaban con `combo_sale.created_at` en NULL y los que entraban por
+				VENDER no. Dos filas de la misma tabla, una fechada y la otra no, segun por que
+				puerta entro la venta.
+			*/
+			$sale->combos()->attach($combo->id, [
+				'amount'			=> $combo->pivot->amount,
+				'price'	    		=> $combo->pivot->price,
+				'created_at'		=> Carbon::now(),
+			]);
+
+			$articles_array = [];
+
+			foreach ($combo->articles as $article) {
+
+				$articles_array[] = [
+					'id'		=> $article->id,
+					'pivot'		=> [
+						'amount'	=> $article->pivot->amount,
+					],
+				];
+			}
+
+			$combo_array = [
+				'id'		=> $combo->id,
+				'name'		=> $combo->name,
+				'amount'	=> $combo->pivot->amount,
+				'articles'	=> $articles_array,
+			];
+
+			ComboHelper::discount_articles_stock($sale, $combo_array, null);
 		}
 	}
 
@@ -263,6 +482,16 @@ class BudgetHelper {
 		$budget->load('services');
 
 		/*
+			🔴 El `load('combos')` va adentro de la guarda y no afuera: `load()` dispara la consulta
+			en el acto, asi que en un cliente que todavia no corrio la migracion de `budget_combo`
+			esta linea sola tumbaba el alta y el update de CUALQUIER presupuesto, tuviera combos o
+			no. Preguntar despues no sirve: la consulta ya salio.
+		*/
+		if (ComboEsquemaHelper::hay_tabla()) {
+			$budget->load('combos');
+		}
+
+		/*
 			🔴 LA GUARDA QUE NO SE PUEDE SIMPLIFICAR: con `aplicar_recargos_directo_a_items`
 			activo, el precio que viaja en el pivot YA TIENE EL RECARGO ADENTRO.
 
@@ -311,6 +540,41 @@ class BudgetHelper {
 			$total += $total_article;
 		}
 
+		/*
+			Combos (mision combos-y-rangos-de-precio, 16/9/2026).
+
+			🔴 ESTE BUCLE ES EL QUE CIERRA EL 500. Hasta hoy un combo cargado en VENDER con "guardar
+			como presupuesto" tildado viajaba adentro del `total` del payload pero se descartaba de
+			las claves que el back leia: `getTotal()` no lo encontraba, la diferencia se pasaba del
+			margen de 3 de `BudgetController::store()` y el guardado moria con "El total del
+			presupuesto no corresponde con los productos ingresados". El vendedor no veia "el combo
+			no se guardo": veia un total descuadrado que no explicaba nada.
+
+			La regla que aplica es EXACTAMENTE la de los otros tres buckets, ni mas ni menos: los
+			descuentos siempre, los recargos solo si `$aplicar_surchages`. Con
+			`aplicar_recargos_directo_a_items` activo el precio del pivot YA TRAE el recargo adentro
+			y volver a sumarlo lo aplicaria dos veces —el mismo bug, en el mismo lugar, para otro
+			tipo de item—. Ver el comentario largo de arriba de `$aplicar_surchages`.
+
+			El bucket entra por `ComboEsquemaHelper`: sin la tabla `budget_combo` es un bucket
+			vacio, que es exactamente lo que vale para un cliente que todavia no puede tener ningun
+			combo presupuestado.
+		*/
+		foreach (ComboEsquemaHelper::combos_del_presupuesto($budget) as $combo) {
+			$total_combo = Self::totalArticle($combo);
+
+			foreach ($budget->discounts as $discount) {
+				$total_combo -= $discount->pivot->percentage * $total_combo / 100;
+			}
+			if ($aplicar_surchages) {
+				foreach ($budget->surchages as $surchage) {
+					$total_combo += $surchage->pivot->percentage * $total_combo / 100;
+				}
+			}
+
+			$total += $total_combo;
+		}
+
 		foreach ($budget->services as $service) {
 			$total_service = Self::totalArticle($service);
 
@@ -328,6 +592,28 @@ class BudgetHelper {
 
 			$total += $total_service;
 		}
+
+		/*
+			EL TOTAL FORZADO, ULTIMO Y SOBRE EL TOTAL COMPLETO (mision forzar-total-por-monto,
+			17/9/2026). Mismo lugar y mismo motivo que en `SaleHelper::getTotalSale()`: el monto es
+			la diferencia contra el total que vio el vendedor en pantalla, asi que aplicarlo antes
+			de los descuentos y recargos haria que esos porcentajes cayeran tambien sobre el.
+
+			🔴 ESTA LINEA ES LA QUE DEJA GUARDAR UN PRESUPUESTO CON EL TOTAL FORZADO. Los dos
+			llamadores de arriba —`BudgetController::store()` y `::duplicate()`— comparan lo que
+			devuelve este metodo contra `budgets.total` y cortan con "El total del presupuesto no
+			corresponde con los productos ingresados" si difieren en mas de 3. Con un total forzado,
+			`budgets.total` ES el forzado; sin sumar el monto aca, la diferencia seria exactamente
+			el monto del forzado y el guardado moriria con un 500 que no nombra la causa. Es el
+			mismo defecto que ya tuvieron los combos (ver el bucle de combos, mas arriba) y el
+			recargo directo a items: un bucket que entra en el `total` del payload pero no en esta
+			cuenta.
+
+			Y ademas hace que la cuenta corriente reciba el numero correcto: `saveCurrentAcount()`
+			usa este mismo metodo para el `debe` del presupuesto.
+		*/
+		$total = SaleHelper::aplicar_forzar_total_monto($budget, $total);
+
 		return $total;
 	}
 
@@ -380,7 +666,21 @@ class BudgetHelper {
 			
 			$cost = SaleHelper::getCost($budget, $article);
 
-			$price_type_personalizado_id = isset($article['pivot']) && isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
+			/*
+			 * La lista por linea (rangos por cantidad), plano primero y despues en `pivot`
+			 * (mision vender-lista-obligatoria, 17/9/2026). Hasta hoy se leia SOLO de `pivot`, y el
+			 * alta desde VENDER (`vender_presupuestos.js::crear()`) manda el articulo plano, con la
+			 * clave en la raiz: la lista por linea se perdia al guardar el presupuesto. En la
+			 * actualizacion y en el form generico viaja bajo `pivot`, con el 0 con que nacen los
+			 * items de VENDER, y ese 0 se guardaba tal cual: al confirmar llegaba a `article_sale`,
+			 * donde `SaleHelper::get_price_type_personalizado()` nunca escribe un 0. Se normaliza
+			 * con ESE mismo helper (0 y '' son null) para que las dos tablas digan lo mismo.
+			 */
+			$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article);
+
+			if (is_null($price_type_personalizado_id) && isset($article['pivot']) && is_array($article['pivot'])) {
+				$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article['pivot']);
+			}
 			
 			if ($article['status'] == 'inactive' && $id > 0) {
 				$art = Article::find($article['id']);
@@ -460,7 +760,67 @@ class BudgetHelper {
 									'amount' 	=> $amount,
 									'price' 	=> $price,
 								]);
-		}		
+		}
+	}
+
+	/**
+	 * Adjunta los combos del payload al presupuesto
+	 * (mision combos-y-rangos-de-precio, 16/9/2026).
+	 *
+	 * Forma que espera, calcada de `get_promocion_vinotecas()` de la SPA:
+	 *
+	 *     combos: [ { id: <combo_id>, pivot: { amount: <cantidad>, price: <precio unitario> } } ]
+	 *
+	 * 🔴 LA CLAVE AUSENTE NO ES LO MISMO QUE LA CLAVE VACIA, y la diferencia es a proposito:
+	 *
+	 * - `combos: []` (presente y vacia) = el usuario saco todos los combos → se hace el detach.
+	 * - clave ausente (null) = el que manda el request NO SABE de combos → no se toca nada.
+	 *
+	 * Los otros tres helpers de este archivo detachan siempre y despues hacen `foreach` sin
+	 * chequear null, asi que con la clave ausente revientan (Laravel convierte el warning de
+	 * `foreach (null)` en ErrorException). Acá no se copia esa parte por dos motivos concretos:
+	 *
+	 * 1. Una empresa-spa vieja contra esta API nueva no manda `combos`. Tiene que poder guardar un
+	 *    presupuesto igual, no llevarse un 500.
+	 * 2. `BudgetController::update()` lo pegan DOS frentes: VENDER (`vender_presupuestos.js`) y el
+	 *    form generico del modulo Presupuestos. Si alguno de los dos no maneja combos, detachar por
+	 *    las dudas le borraria al vendedor los combos del presupuesto sin decirle nada. Es
+	 *    exactamente el criterio que este mismo archivo ya aplica con `name_vender_personalizado`
+	 *    en `attachArticles()`: lo que el payload no nombra, no se pisa.
+	 *
+	 * 🔴 Y ANTES QUE TODO ESO, la guarda de esquema. Sin la tabla `budget_combo` no hay ni donde
+	 * detachar ni donde adjuntar: `$budget->combos()->detach()` es un DELETE contra una tabla que
+	 * no existe y se lleva puesta el alta entera del presupuesto. Se corta primero y el presupuesto
+	 * se guarda sin combos, que es lo unico que ese cliente puede tener hasta que migre. Si el
+	 * payload traia combos, se pierden en silencio: es la unica salida posible —no hay tabla donde
+	 * escribirlos— y es preferible a un 500 que le impide guardar.
+	 *
+	 * @param  \App\Models\Budget  $budget
+	 * @param  array|null          $combos
+	 * @return void
+	 */
+	static function attachCombos($budget, $combos) {
+
+		if (!ComboEsquemaHelper::hay_tabla()) {
+			return;
+		}
+
+		if (!is_array($combos)) {
+			return;
+		}
+
+		$budget->combos()->detach();
+
+		foreach ($combos as $combo) {
+
+			$amount = $combo['pivot']['amount'];
+			$price = $combo['pivot']['price'];
+
+			$budget->combos()->attach($combo['id'], [
+									'amount' 	=> $amount,
+									'price' 	=> $price,
+								]);
+		}
 	}
 
 }

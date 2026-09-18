@@ -392,6 +392,49 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
     }
 
     /**
+     * Test 7 -- misión mp-zipnova-seed-local (17/9/2026): las integraciones de Mercado Pago y de
+     * Zipnova de la demo (`conectar_mercado_pago_desde_env()` / `conectar_zipnova_desde_env()`
+     * de `DemoSetupHelper`) también se conectan solas en una corrida local, no solo dentro de
+     * `DemoSetupHelper::run()`.
+     *
+     * Mismo motivo que el Test 6 para escanear código fuente en vez de correr `migrate:fresh
+     * --seed`: es lento y no entra en esta suite. Lo que este test fija es la mitad que
+     * `DemoSetupMercadoPagoDesdeEnvTest`/`DemoSetupZipnovaDesdeEnvTest` no pueden ver -- esos dos
+     * prueban las funciones en aislamiento y que `run()` las llame bien, pero nada los obliga a
+     * enterarse si el día de mañana alguien borra la llamada del lado de `DatabaseSeeder`. Sin
+     * este test, esa regresión queda en verde: los dos archivos de arriba invocan las funciones
+     * por reflexión, no leyendo `DatabaseSeeder`.
+     *
+     * @return void
+     */
+    public function test_conectar_integraciones_desde_env_se_dispara_en_la_corrida_local_y_en_la_demo()
+    {
+        $seeder = base_path('database/seeders/DatabaseSeeder.php');
+        $helper = base_path('app/Http/Controllers/Helpers/DemoSetupHelper.php');
+
+        foreach (['conectar_mercado_pago_desde_env', 'conectar_zipnova_desde_env'] as $metodo) {
+
+            $en_local = $this->apariciones_vivas($seeder, $metodo);
+            $en_demo  = $this->apariciones_vivas($helper, $metodo);
+
+            $this->assertCount(
+                1,
+                $en_local,
+                'DatabaseSeeder tiene que llamar a `'.$metodo.'` exactamente una vez: sin esa '
+                    .'llamada un `migrate:fresh --seed` en local deja la tienda sin poder cobrar o '
+                    .'cotizar envios, mientras que una demo recien armada si puede.'
+            );
+
+            $this->assertCount(
+                2,
+                $en_demo,
+                'DemoSetupHelper tiene que declarar y llamar a `'.$metodo.'` -- la definicion del '
+                    .'metodo mas la llamada dentro de run() son dos apariciones vivas.'
+            );
+        }
+    }
+
+    /**
      * Ubica un simbolo VIVO (no comentado) en un archivo del repo y devuelve, por cada aparicion,
      * la linea y la profundidad de llaves en la que esta.
      *

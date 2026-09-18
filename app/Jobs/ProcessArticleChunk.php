@@ -53,6 +53,13 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $precios_incluyen_iva = false;
 
+    /**
+     * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026): cuando el provider_code
+     * de una fila matchea más de un artículo, quedarse con el que además coincide en
+     * nombre. Viaja hasta ProcessRow, que es quien llama a find_with_index().
+     */
+    protected $desempatar_por_nombre = false;
+
     // public $timeout = 5; // 30 minutos por chunk, ajustable
     public $timeout = 1800; // 30 minutos por chunk, ajustable
     public $tries = 1;
@@ -86,7 +93,15 @@ class ProcessArticleChunk implements ShouldQueue
              * vienen con IVA adentro. Va último y con default para no romper los jobs que ya
              * estuvieran encolados y serializados sin esta clave.
              */
-            $precios_incluyen_iva = false
+            $precios_incluyen_iva = false,
+
+            /*
+             * Misión `desempate-por-nombre-codigo-repetido` (9/9/2026). Va último y con
+             * default por la misma razón que los tres de arriba: los jobs que ya estén
+             * encolados y serializados sin esta clave se deserializan igual y corren con
+             * el comportamiento de siempre.
+             */
+            $desempatar_por_nombre = false
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -113,6 +128,7 @@ class ProcessArticleChunk implements ShouldQueue
         $this->interpretacion_punto                                 = $interpretacion_punto;
         $this->filas_repetidas_del_archivo                          = $filas_repetidas_del_archivo;
         $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
+        $this->desempatar_por_nombre                                = $desempatar_por_nombre;
 
         $this->observations = '';
 
@@ -434,6 +450,7 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->interpretacion_punto,
                 $this->filas_repetidas_del_archivo,
                 $this->precios_incluyen_iva,
+                $this->desempatar_por_nombre,
             );
 
         } catch (\Throwable $e) {

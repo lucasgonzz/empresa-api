@@ -1129,39 +1129,78 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
-     * Agregarle un MONTO a un descuento, sin tocar el porcentaje, tambien es editarlo a mano.
+     * Cambiarle el MONTO a un descuento que no tiene porcentaje tambien es editarlo a mano.
      *
-     * El formulario expone Porcentaje y Monto como dos inputs independientes. Mirando solo el
-     * porcentaje, esta edicion no quedaba marcada: la propagacion siguiente borraba el monto que
-     * tipeo una persona, sin contarlo entre los editados y sin ofrecer el tilde.
+     * El invariante que este test protege es el mismo de siempre, y es el que importa: **un dato
+     * que tipeo una persona no se pierde en una propagacion posterior**. El mecanismo tambien es el
+     * mismo: `ArticleDiscountController::update()` mira el MONTO ademas del porcentaje para poner
+     * la marca `editado_a_mano`. Sin esa mitad de la condicion, la propagacion siguiente le borra
+     * el monto tipeado sin contarlo entre los editados y sin ofrecer el tilde.
      *
-     * No movia plata —con porcentaje presente el monto es inerte en el calculo del costo— pero era
-     * un dato de una persona y se perdia en silencio. Lo encontro la sexta verificacion.
+     * 🔴 QUE CAMBIO Y POR QUE, para que dentro de un mes no parezca que alguien aflojo un test.
+     *
+     * Hasta el 17/9/2026 este mismo test recorria el camino "agregarle un monto a un descuento que
+     * YA tiene porcentaje" (PUT con `percentage = 10` y `amount = 500` sobre una fila que tenia
+     * solo el 10%). Ese camino **ya no existe**: la mision `sincronizar-descuentos-proveedor` sumo
+     * la regla de que una fila lleva solo porcentaje O solo monto, nunca los dos, y la API la
+     * rechaza con 422 (`DescuentoRecargoExcluyenteHelper`).
+     *
+     * Decision de Lucas de ese dia, textual: *"una fila nunca puede tener los dos"*, tambien al
+     * editar. El fundamento: cuando una fila tiene los dos, `ArticlePricesHelper::aplicar_descuentos()`
+     * usa el porcentaje e IGNORA el monto, asi que dejar la regla solo en el alta mantendria el
+     * agujero abierto por edicion y se seguirian guardando montos fantasma.
+     *
+     * Asi que el caso se reemplaza por otro que cubre el MISMO riesgo por un camino que la regla
+     * nueva si permite: una fila con solo monto, a la que se le cambia el monto.
+     *
+     * ⚠️ La fila de partida es la que deja una COMPRA con bonificacion en pesos, porque es la unica
+     * forma real de tener un descuento tagueado con monto y sin marca: la ficha del proveedor solo
+     * tiene porcentajes. Eso la deja protegida dos veces (por `origen` y por la marca), asi que el
+     * assert que hace el trabajo de fondo es el de `editado_a_mano`: es el unico que se pone rojo
+     * si alguien saca la mitad del monto de la condicion de `update()`.
      *
      * @test
      */
-    public function agregar_un_monto_sin_tocar_el_porcentaje_tambien_marca_la_edicion()
+    public function cambiar_el_monto_de_un_descuento_sin_porcentaje_tambien_marca_la_edicion()
     {
         $this->set_preferencia(1);
 
         $provider = $this->proveedor_de_la_suite();
         $descuento_proveedor = ProviderDiscount::create(['provider_id' => $provider->id, 'percentage' => 10]);
 
-        $article = $this->articulo_con_descuento_de($provider, 'zz Monto agregado', 10);
+        $article = $this->articulo_con_descuento_de($provider, 'zz Monto editado', 10);
 
-        $descuento = $this->descuentos_tagueados($article->id)->first();
+        /* Lo que deja NewProviderOrderHelper al confirmar una compra con bonificacion en pesos. */
+        $de_la_compra = ArticleDiscount::create([
+            'article_id'  => $article->id,
+            'provider_id' => $provider->id,
+            'percentage'  => null,
+            'amount'      => 500,
+            'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+            'origen'      => ArticleDiscount::ORIGEN_COMPRA,
+        ]);
 
-        /* Le agrega un monto y deja el porcentaje como estaba. */
-        $this->putJson('api/article-discount/'.$descuento->id, [
-            'percentage'     => 10,
-            'amount'         => 500,
+        $this->assertEquals(
+            0,
+            (int) ArticleDiscount::find($de_la_compra->id)->editado_a_mano,
+            'Precondicion: el descuento que dejo la compra no nace marcado.'
+        );
+
+        /*
+         * Una persona le corrige el monto negociado. El porcentaje sigue vacio en los dos lados, o
+         * sea que lo UNICO que cambia es el monto: si `update()` mirara solo el porcentaje, esta
+         * edicion pasaria sin marca.
+         */
+        $this->putJson('api/article-discount/'.$de_la_compra->id, [
+            'percentage'     => null,
+            'amount'         => 700,
             'show_in_online' => 0,
         ])->assertStatus(200);
 
         $this->assertEquals(
             1,
-            (int) ArticleDiscount::find($descuento->id)->editado_a_mano,
-            'Agregar un monto es editar el descuento, aunque el porcentaje no se haya tocado.'
+            (int) ArticleDiscount::find($de_la_compra->id)->editado_a_mano,
+            'Cambiar el monto es editar el descuento, aunque el porcentaje no se haya tocado.'
         );
 
         $this->cambiar_descuento_del_proveedor($descuento_proveedor, 5);
@@ -1170,12 +1209,12 @@ class Propagar_Descuentos_Proveedor_Test extends EmpresaTestCase
         $this->putJson('api/provider/'.$provider->id.'/propagar-descuentos', [])
                 ->assertStatus(200);
 
-        $vigente = ArticleDiscount::find($descuento->id);
+        $vigente = ArticleDiscount::find($de_la_compra->id);
 
         $this->assertNotNull($vigente, 'El descuento editado no se borra sin el tilde.');
 
         $this->assertEqualsWithDelta(
-            500,
+            700,
             (float) $vigente->amount,
             self::DELTA,
             'Y el monto que tipeo la persona sigue ahi.'

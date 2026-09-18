@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PdfColumnProfile;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -69,6 +71,14 @@ class PdfColumnProfileController extends Controller
             'user_id' => $this->userId(),
             'model_name' => $request->model_name,
             'name' => $request->name,
+            /**
+             * `columns` es json NOT NULL sin default (migración 2026_03_25_101000) y la app ya no la
+             * usa: las columnas viven en el pivot pdf_column_option_profile. Sin este valor el
+             * INSERT revienta con "Field 'columns' doesn't have a default value" (strict mode fijo
+             * en config/database.php) y ningún perfil se puede crear por la API. Mismo valor que
+             * usan los seeders (PdfColumnProfileSeeder y hermanos).
+             */
+            'columns' => [],
             'is_default' => (bool) $request->is_default,
             'is_default_whatsapp' => (bool) $request->input('is_default_whatsapp', false),
             'is_default_whatsapp_afip' => (bool) $request->input('is_default_whatsapp_afip', false),
@@ -91,6 +101,11 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => (bool) $request->input('show_totals_on_each_page', false),
             'show_comissions' => (bool) $request->input('show_comissions', false),
             'show_total_costs' => (bool) $request->input('show_total_costs', false),
+            /**
+             * Flag para mostrar/ocultar las observaciones del cliente (clients.description)
+             * debajo del header. Default true para compatibilidad con perfiles existentes.
+             */
+            'show_client_description' => (bool) $request->input('show_client_description', true),
             /**
              * Texto libre del pie de página; null si no se envía.
              */
@@ -121,6 +136,12 @@ class PdfColumnProfileController extends Controller
              * llega como string JSON en vez de array.
              */
             'header_layout' => $this->normalize_header_layout($request->input('header_layout')),
+            /**
+             * Diseño del encabezado del PDF del catálogo de artículos (JSON). Null = sin diseño,
+             * el catálogo se imprime como siempre. normalize() acepta array o string JSON y deja
+             * el esquema exacto (ver PdfColumnProfile::$casts).
+             */
+            'catalog_header_layout' => CatalogHeaderLayoutHelper::normalize($request->input('catalog_header_layout')),
         ]);
 
         GeneralHelper::attachModels(
@@ -192,6 +213,7 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page',
             'show_comissions',
             'show_total_costs',
+            'show_client_description',
             'footer_text',
             'show_total_in_footer',
             'discount_display_mode',
@@ -199,6 +221,7 @@ class PdfColumnProfileController extends Controller
             'header_image_url',
             'table_header_font_size',
             'header_layout',
+            'catalog_header_layout',
         ]);
 
         /**
@@ -228,6 +251,14 @@ class PdfColumnProfileController extends Controller
          */
         if (array_key_exists('header_layout', $fillable)) {
             $fillable['header_layout'] = $this->normalize_header_layout($fillable['header_layout']);
+        }
+
+        /**
+         * catalog_header_layout: mismo criterio que header_layout. Solo se toca si el PUT lo
+         * menciona (un update que solo cambia el nombre no lo pisa); null lo borra.
+         */
+        if (array_key_exists('catalog_header_layout', $fillable)) {
+            $fillable['catalog_header_layout'] = CatalogHeaderLayoutHelper::normalize($fillable['catalog_header_layout']);
         }
 
         $model->update($fillable);
@@ -298,6 +329,29 @@ class PdfColumnProfileController extends Controller
         }
 
         return response()->json(['model' => $this->fullModel('PdfColumnProfile', $new_model->id)], 201);
+    }
+
+    /**
+     * Lo que necesita el diseñador del encabezado del catálogo al abrirse: los datos del negocio
+     * que se pueden arrastrar como renglones (con su valor actual), el logo y el nombre del
+     * negocio para la previsualización, y el diseño por defecto para un perfil que todavía no
+     * tiene uno. GET api/pdf-column-profiles/catalog-header-sources.
+     *
+     * El usuario es el dueño (UserHelper::getFullModel(): trae afip_information.iva_condition y
+     * addresses), no el empleado autenticado: los datos del encabezado son del negocio.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function catalog_header_sources()
+    {
+        $user = UserHelper::getFullModel();
+
+        return response()->json([
+            'sources'        => CatalogHeaderLayoutHelper::sources_for_user($user),
+            'logo_url'       => (! is_null($user) && $user->image_url) ? $user->image_url : null,
+            'company_name'   => ! is_null($user) ? (string) $user->company_name : '',
+            'default_layout' => CatalogHeaderLayoutHelper::default_for_user($user),
+        ], 200);
     }
 
     /**
@@ -401,9 +455,11 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => 'mostrar totales en cada hoja',
             'show_comissions' => 'mostrar comisiones',
             'show_total_costs' => 'mostrar total costos',
+            'show_client_description' => 'mostrar observaciones del cliente',
             'footer_text' => 'pie de página',
             'show_total_in_footer' => 'mostrar total en el pie',
             'table_header_font_size' => 'tamaño de letra del encabezado de columnas',
+            'catalog_header_layout' => 'diseño del encabezado del catálogo',
             'pdf_column_options' => 'opciones de columnas',
             'pdf_column_options.*.id' => 'opción de columna',
             'pdf_column_options.*.pivot.visible' => 'visible',
@@ -440,9 +496,12 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
             'show_comissions' => ['sometimes', 'boolean'],
             'show_total_costs' => ['sometimes', 'boolean'],
+            'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
+            /** Sin tipo: puede llegar array o string JSON; CatalogHeaderLayoutHelper::normalize() resuelve. */
+            'catalog_header_layout' => ['sometimes', 'nullable'],
             'pdf_column_options' => ['required', 'array', 'min:1'],
             'pdf_column_options.*.id' => [
                 'required',
@@ -487,9 +546,12 @@ class PdfColumnProfileController extends Controller
             'show_totals_on_each_page' => ['sometimes', 'boolean'],
             'show_comissions' => ['sometimes', 'boolean'],
             'show_total_costs' => ['sometimes', 'boolean'],
+            'show_client_description' => ['sometimes', 'boolean'],
             'footer_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'show_total_in_footer' => ['sometimes', 'boolean'],
             'table_header_font_size' => ['sometimes', 'nullable', 'integer', 'min:4', 'max:24'],
+            /** Sin tipo: puede llegar array o string JSON; CatalogHeaderLayoutHelper::normalize() resuelve. */
+            'catalog_header_layout' => ['sometimes', 'nullable'],
             'pdf_column_options' => ['sometimes', 'array'],
             'pdf_column_options.*.id' => [
                 'required_with:pdf_column_options',
