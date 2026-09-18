@@ -322,16 +322,19 @@ class Registro_de_procesos_Test extends EmpresaTestCase
         $this->putJson('/api/background-processes/' . $mio->id . '/visto')->assertStatus(200);
         $this->assertNotNull(BackgroundProcess::find($mio->id)->visto_at);
 
-        // Y desaparece de los recientes.
+        // Y desaparece de los recientes (se mira por id: la base del slot puede tener otros
+        // procesos del mismo dueño, de corridas anteriores o de una verificación a mano).
         $listado = $this->getJson('/api/background-processes');
-        $this->assertSame([], $listado->json('recientes'));
-        $this->assertSame([], $listado->json('activos'));
+        $this->assertNotContains($mio->id, collect($listado->json('recientes'))->pluck('id')->all());
+        $this->assertNotContains($mio->id, collect($listado->json('activos'))->pluck('id')->all());
 
         // "Limpiar": marca todos los terminados del comercio, no los ajenos.
         $otro = BackgroundProcessHelper::iniciar($this->user_id, 'exportacion', 'Otra');
         BackgroundProcessHelper::fallar($otro, 'x');
         BackgroundProcessHelper::completar($ajeno);
-        $this->putJson('/api/background-processes/vistos')->assertStatus(200)->assertJson(['marcados' => 1]);
+        $marcados = (int) $this->putJson('/api/background-processes/vistos')->assertStatus(200)->json('marcados');
+        $this->assertGreaterThanOrEqual(1, $marcados);
+        $this->assertNotNull(BackgroundProcess::find($otro->id)->visto_at);
         $this->assertNull(BackgroundProcess::find($ajeno->id)->visto_at);
     }
 

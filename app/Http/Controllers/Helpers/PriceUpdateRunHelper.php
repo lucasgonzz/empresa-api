@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Models\BackgroundProcess;
 use App\Models\PriceUpdateRun;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -36,9 +37,12 @@ class PriceUpdateRunHelper
      * @param  int         $user_id
      * @param  string      $origen
      * @param  string|null $origen_detalle
+     * @param  int|null    $proceso_pendiente_id  Registro visible abierto en `pendiente` al
+     *                                            encolar (ver ProcessSetFinalPrices::__construct);
+     *                                            se retoma en vez de abrir otro.
      * @return \App\Models\PriceUpdateRun
      */
-    public static function abrir($user_id, $origen = 'otro', $origen_detalle = null)
+    public static function abrir($user_id, $origen = 'otro', $origen_detalle = null, $proceso_pendiente_id = null)
     {
         $run = PriceUpdateRun::create([
             'user_id'          => $user_id,
@@ -61,13 +65,27 @@ class PriceUpdateRunHelper
          * arranca sin total y con la barra indeterminada. El helper nunca tira: si el registro
          * falla, la corrida sigue igual.
          */
-        BackgroundProcessHelper::iniciar($user_id, 'recalculo_precios', 'Recálculo de precios', [
+        $opciones = [
             'referencia' => $run,
             'unidad'     => 'lotes',
             'etapa'      => 'Preparando los artículos',
             'detalle'    => self::detalle_del_origen($run),
             'resultado'  => ['origen_texto' => $run->origen_texto],
-        ]);
+        ];
+
+        /*
+         * Si el productor ya lo anunció al encolar (ProcessSetFinalPrices::__construct), acá
+         * solo se lo retoma: se le cuelga la corrida como referencia y pasa a en_proceso. Si
+         * no (PriceTypeHelper, o un job encolado antes de este cambio), se abre recién ahora.
+         */
+        $pendiente = is_null($proceso_pendiente_id) ? null : BackgroundProcess::find((int) $proceso_pendiente_id);
+
+        if (!is_null($pendiente) && !$pendiente->esta_terminado()) {
+            $opciones['forzar_broadcast'] = true;
+            BackgroundProcessHelper::avanzar($pendiente, null, $opciones);
+        } else {
+            BackgroundProcessHelper::iniciar($user_id, 'recalculo_precios', 'Recálculo de precios', $opciones);
+        }
 
         return $run;
     }

@@ -537,10 +537,17 @@ class BackgroundProcessHelper
                 ];
             }
 
-            // Cualquier otro modelo: se devuelve tal cual (son tablas chicas de estado).
+            /*
+             * Cualquier otro modelo: solo sus columnas escalares y cortas. Los registros de
+             * estado de un análisis de Excel o de un escaneo de factura llevan longText con el
+             * payload y el resultado entero (y `codigos_proveedor`, que la migración dice que
+             * no se expone al frontend); el detalle de la SPA no los muestra, y mientras el
+             * proceso corre vuelve a pedir este endpoint a cada hito. Mandarlos era bajar el
+             * JSON completo de la corrida para tirarlo.
+             */
             $modelo = $clase::find($proceso->referencia_id);
 
-            return is_null($modelo) ? null : ['modelo' => $modelo];
+            return is_null($modelo) ? null : ['modelo' => self::atributos_cortos($modelo)];
         } catch (\Throwable $e) {
             self::loguear('referencia_para_detalle', $e, ['proceso' => $proceso->id]);
 
@@ -579,6 +586,20 @@ class BackgroundProcessHelper
             $cambios['resultado_json'] = self::codificar_resultado(
                 array_merge($proceso->resultado(), $opciones['resultado'])
             );
+        }
+
+        /*
+         * La referencia puede llegar DESPUÉS de abrir: un proceso que se anuncia en `pendiente`
+         * al encolar (el recálculo de precios, desde el constructor del job) todavía no tiene
+         * su registro propio; se le cuelga cuando el job lo crea.
+         */
+        if (($opciones['referencia'] ?? null) instanceof Model) {
+            $cambios['referencia_type'] = get_class($opciones['referencia']);
+            $cambios['referencia_id']   = $opciones['referencia']->getKey();
+        }
+
+        if (array_key_exists('auth_user_id', $opciones)) {
+            $cambios['auth_user_id'] = self::entero_o_null($opciones['auth_user_id']);
         }
 
         return $cambios;
@@ -739,6 +760,30 @@ class BackgroundProcessHelper
         }
 
         return json_encode($resultado, JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Atributos escalares de un modelo, con los textos largos afuera (ver referencia_para_detalle).
+     *
+     * @param  \Illuminate\Database\Eloquent\Model $modelo
+     * @return array
+     */
+    protected static function atributos_cortos(Model $modelo)
+    {
+        $cortos = [];
+
+        foreach ($modelo->getAttributes() as $clave => $valor) {
+            if (is_null($valor) || is_bool($valor) || is_int($valor) || is_float($valor)) {
+                $cortos[$clave] = $valor;
+                continue;
+            }
+
+            if (is_string($valor) && strlen($valor) <= 300) {
+                $cortos[$clave] = $valor;
+            }
+        }
+
+        return $cortos;
     }
 
     /**

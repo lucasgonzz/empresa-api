@@ -5,6 +5,7 @@ namespace App\Http\Controllers\CommonLaravel;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Jobs\ProcessDeleteModelsJob;
 use App\Models\Article;
@@ -115,12 +116,33 @@ class DeleteController extends Controller
          * Más de 20 registros: se encola y se notifica al usuario solicitante al finalizar.
          */
         if (count($resolved_models_id) > DeleteModelsHelper::BACKGROUND_THRESHOLD) {
+            /*
+             * El registro visible del borrado nace ACA, en el request (mision
+             * procesos-en-segundo-plano): en el shared hosting el worker pasa una vez por
+             * minuto, y hasta entonces el usuario no veria ningun proceso. El job lo retoma
+             * por id.
+             */
+            $proceso = BackgroundProcessHelper::iniciar(
+                $owner_user_id,
+                'eliminacion_masiva',
+                'Eliminación de ' . DeleteModelsHelper::get_model_label($model_name),
+                [
+                    'auth_user_id' => $auth_user_id,
+                    'total'        => count($resolved_models_id),
+                    'unidad'       => 'registros',
+                    'detalle'      => count($resolved_models_id) . ' ' . DeleteModelsHelper::get_model_label($model_name),
+                    'status'       => 'pendiente',
+                    'etapa'        => 'En espera del procesador',
+                ]
+            );
+
             ProcessDeleteModelsJob::dispatch(
                 $model_name,
                 $resolved_models_id,
                 $owner_user_id,
                 $auth_user_id,
-                $used_filters
+                $used_filters,
+                is_null($proceso) ? null : $proceso->id
             );
 
             Log::info('DeleteController: eliminacion masiva encolada', [

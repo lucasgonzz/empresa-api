@@ -42,6 +42,15 @@ class RollbackArticleImportHistory implements ShouldQueue
     protected $owner_user_id;
 
     /**
+     * La PERSONA que pidió el rollback (dueño o empleado), para el registro visible de
+     * procesos. Null para los jobs encolados antes de este cambio: en ese caso se muestra el
+     * dueño.
+     *
+     * @var int|null
+     */
+    protected $auth_user_id = null;
+
+    /**
      * Máximo tiempo permitido para ejecutar el rollback.
      *
      * @var int
@@ -86,10 +95,11 @@ class RollbackArticleImportHistory implements ShouldQueue
      * @param int $import_history_id
      * @param int $owner_user_id Id del usuario autenticado que dispara el rollback.
      */
-    public function __construct(int $import_history_id, int $owner_user_id)
+    public function __construct(int $import_history_id, int $owner_user_id, $auth_user_id = null)
     {
         $this->import_history_id = $import_history_id;
         $this->owner_user_id = $owner_user_id;
+        $this->auth_user_id = is_null($auth_user_id) ? null : (int) $auth_user_id;
     }
 
     /**
@@ -536,7 +546,7 @@ class RollbackArticleImportHistory implements ShouldQueue
             }
 
             BackgroundProcessHelper::iniciar($import_history->user_id, 'rollback_importacion', 'Reversión de una importación', [
-                'auth_user_id' => $this->owner_user_id,
+                'auth_user_id' => is_null($this->auth_user_id) ? $this->owner_user_id : $this->auth_user_id,
                 'referencia'   => $import_history,
                 'detalle'      => implode(' · ', $partes),
                 'etapa'        => 'Revirtiendo los artículos',

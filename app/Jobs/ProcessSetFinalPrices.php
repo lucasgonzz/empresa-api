@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
+use App\Models\PriceUpdateRun;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
 use App\Models\Article;
 use Illuminate\Bus\Queueable;
@@ -12,6 +14,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Jobs\ProcessChunkSetFinalPrices;
@@ -30,6 +33,20 @@ class ProcessSetFinalPrices implements ShouldQueue
     public $user_id, $from_model_id, $model_id, $from_dolar, $origen, $origen_detalle;
 
     /**
+     * Id del registro visible (background_processes) abierto en `pendiente` al encolar.
+     *
+     * Se abre en el constructor y no en handle() a propósito: `dispatch()` construye el job en
+     * el request, así que el usuario ve "Recálculo de precios · en espera" en el momento en que
+     * guardó el proveedor, y no cuando el worker lo levanta —en el shared hosting eso es hasta
+     * un minuto después—. Viaja serializado con el job; handle() se lo pasa a
+     * PriceUpdateRunHelper::abrir(), que lo retoma y le cuelga la corrida. Es público y con
+     * default por compatibilidad con los jobs ya encolados antes de este cambio.
+     *
+     * @var int|null
+     */
+    public $background_process_id = null;
+
+    /**
      * $origen y $origen_detalle van AL FINAL de la firma y con default a propósito: así los
      * llamados que ya existen siguen andando sin tocarlos, y los que quieran contar por qué
      * se recalcularon los precios lo agregan de a uno.
@@ -44,6 +61,56 @@ class ProcessSetFinalPrices implements ShouldQueue
         $this->origen = $origen;
         $this->origen_detalle = $origen_detalle;
 
+        $this->anunciar_en_pendiente();
+    }
+
+    /**
+     * Abre el registro visible en `pendiente` (ver $background_process_id). Nunca tira: el
+     * helper atrapa todo, y si el registro no se pudo crear el recálculo sale igual y se
+     * anuncia recién cuando arranca.
+     *
+     * `auth_user_id` se resuelve acá porque es el único momento en que hay sesión: en el
+     * worker `Auth::check()` da false y queda null. `UserHelper::userId(false)` devuelve la
+     * PERSONA (dueño o empleado), no el dueño.
+     *
+     * @return void
+     */
+    protected function anunciar_en_pendiente()
+    {
+        try {
+            $auth_user_id = Auth::check() ? UserHelper::userId(false) : null;
+
+            $proceso = BackgroundProcessHelper::iniciar($this->user_id, 'recalculo_precios', 'Recálculo de precios', [
+                'auth_user_id' => $auth_user_id,
+                'unidad'       => 'lotes',
+                'status'       => 'pendiente',
+                'etapa'        => 'En espera del procesador',
+                'detalle'      => $this->detalle_del_origen(),
+            ]);
+
+            $this->background_process_id = is_null($proceso) ? null : (int) $proceso->id;
+        } catch (\Throwable $e) {
+            Log::warning('ProcessSetFinalPrices: no se pudo anunciar el recálculo (sale igual): ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * El mismo texto que después arma PriceUpdateRunHelper::detalle_del_origen(), pero antes
+     * de que exista la corrida: se instancia un PriceUpdateRun sin guardar solo para leer su
+     * accessor `origen_texto`, que es donde vive la traducción del origen.
+     *
+     * @return string
+     */
+    protected function detalle_del_origen()
+    {
+        $run = new PriceUpdateRun(['origen' => $this->origen]);
+        $detalle = (string) $run->origen_texto;
+
+        if (!is_null($this->origen_detalle) && trim((string) $this->origen_detalle) !== '') {
+            $detalle .= ' · ' . trim((string) $this->origen_detalle);
+        }
+
+        return $detalle;
     }
 
 
@@ -91,7 +158,7 @@ class ProcessSetFinalPrices implements ShouldQueue
              * corrida abierta del usuario hacía que dos productores compartieran contador y
              * flag, y el que terminaba primero cerraba por el otro con números parciales.
              */
-            $run = PriceUpdateRunHelper::abrir($this->user_id, $this->origen, $this->origen_detalle);
+            $run = PriceUpdateRunHelper::abrir($this->user_id, $this->origen, $this->origen_detalle, $this->background_process_id);
 
             /*
              * 🔴 Un finalizador ACA, antes del bucle, además del de siempre que va al final.

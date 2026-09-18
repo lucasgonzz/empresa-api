@@ -32,7 +32,7 @@ class MasiveUpdateHelper
      */
     public static function create_pending_update($owner_user_id, $auth_user_id, $model_name, $from_filter, $criteria)
     {
-        return MasiveUpdate::create([
+        $masive_update = MasiveUpdate::create([
             'user_id' => (int) $owner_user_id,
             'employee_id' => (int) $auth_user_id,
             'model_name' => $model_name,
@@ -41,6 +41,27 @@ class MasiveUpdateHelper
             'from_filter' => (bool) $from_filter,
             'criteria_json' => json_encode($criteria),
         ]);
+
+        /*
+         * El registro visible nace ACÁ, en el request, y no cuando el worker levanta el job:
+         * en el shared hosting el worker pasa una vez por minuto, y hasta entonces el usuario
+         * que acaba de apretar "Actualizar" no vería ningún proceso. process_update() lo
+         * retoma por referencia y le pone el total cuando resuelve los modelos.
+         */
+        BackgroundProcessHelper::iniciar(
+            $masive_update->user_id,
+            'actualizacion_masiva',
+            'Actualización masiva de ' . DeleteModelsHelper::get_model_label($model_name),
+            [
+                'auth_user_id' => $masive_update->employee_id,
+                'referencia'   => $masive_update,
+                'unidad'       => 'registros',
+                'status'       => 'pendiente',
+                'etapa'        => 'En espera del procesador',
+            ]
+        );
+
+        return $masive_update;
     }
 
     /**
@@ -52,7 +73,7 @@ class MasiveUpdateHelper
      */
     public static function create_pending_revert(MasiveUpdate $parent_masive_update, $auth_user_id)
     {
-        return MasiveUpdate::create([
+        $revert_masive_update = MasiveUpdate::create([
             'user_id' => (int) $parent_masive_update->user_id,
             'employee_id' => (int) $auth_user_id,
             'model_name' => $parent_masive_update->model_name,
@@ -64,6 +85,23 @@ class MasiveUpdateHelper
                 'revert_of_masive_update_id' => $parent_masive_update->id,
             ]),
         ]);
+
+        // Mismo motivo que en create_pending_update: que se vea desde que se pidió.
+        BackgroundProcessHelper::iniciar(
+            $revert_masive_update->user_id,
+            'reversion_masiva',
+            'Reversión de una actualización masiva',
+            [
+                'auth_user_id' => $revert_masive_update->employee_id,
+                'referencia'   => $revert_masive_update,
+                'unidad'       => 'registros',
+                'status'       => 'pendiente',
+                'etapa'        => 'En espera del procesador',
+                'detalle'      => 'Actualización masiva de ' . DeleteModelsHelper::get_model_label($parent_masive_update->model_name) . ' #' . $parent_masive_update->id,
+            ]
+        );
+
+        return $revert_masive_update;
     }
 
     /**
@@ -161,17 +199,14 @@ class MasiveUpdateHelper
          * que desapareció sin explicación. El total ya se conoce (los modelos están
          * resueltos), así que la barra arranca medible.
          */
-        $proceso = BackgroundProcessHelper::iniciar(
-            $masive_update->user_id,
+        $proceso = self::retomar_o_abrir_proceso(
+            $masive_update,
             'actualizacion_masiva',
             'Actualización masiva de ' . DeleteModelsHelper::get_model_label($model_name),
             [
-                'auth_user_id' => $masive_update->employee_id,
-                'referencia'   => $masive_update,
-                'total'        => count($models),
-                'unidad'       => 'registros',
-                'detalle'      => count($models) . ' ' . DeleteModelsHelper::get_model_label($model_name),
-                'etapa'        => 'Aplicando los cambios',
+                'total'   => count($models),
+                'detalle' => count($models) . ' ' . DeleteModelsHelper::get_model_label($model_name),
+                'etapa'   => 'Aplicando los cambios',
             ]
         );
 
@@ -347,17 +382,14 @@ class MasiveUpdateHelper
          * total son los registros que la masiva original tocó: el pivot para artículos, la
          * lista guardada en JSON para el resto. Los loops de abajo avanzan sobre esta fila.
          */
-        BackgroundProcessHelper::iniciar(
-            $revert_masive_update->user_id,
+        self::retomar_o_abrir_proceso(
+            $revert_masive_update,
             'reversion_masiva',
             'Reversión de una actualización masiva',
             [
-                'auth_user_id' => $revert_masive_update->employee_id,
-                'referencia'   => $revert_masive_update,
-                'total'        => self::cantidad_de_registros_a_revertir($parent_masive_update),
-                'unidad'       => 'registros',
-                'detalle'      => 'Actualización masiva de ' . DeleteModelsHelper::get_model_label($parent_masive_update->model_name) . ' #' . $parent_masive_update->id,
-                'etapa'        => 'Restaurando los valores anteriores',
+                'total'   => self::cantidad_de_registros_a_revertir($parent_masive_update),
+                'detalle' => 'Actualización masiva de ' . DeleteModelsHelper::get_model_label($parent_masive_update->model_name) . ' #' . $parent_masive_update->id,
+                'etapa'   => 'Restaurando los valores anteriores',
             ]
         );
 
@@ -380,6 +412,38 @@ class MasiveUpdateHelper
             'afectados' => (int) $revert_masive_update->affected_count,
             'cambios'   => (int) $revert_masive_update->changes_count,
         ]);
+    }
+
+    /**
+     * El registro visible de la masiva, ya en `en_proceso` y con su total.
+     *
+     * Lo normal es que exista desde create_pending_update()/create_pending_revert() (nació en
+     * el request, en `pendiente`) y acá solo se lo retome; si no existe —una masiva encolada
+     * antes de este cambio, o un registro que no se pudo crear—, se abre recién ahora. En los
+     * dos casos el resultado es el mismo: una fila en_proceso con el total, la etapa y el
+     * detalle, sobre la que avanzan los loops.
+     *
+     * @param \App\Models\MasiveUpdate $masive_update
+     * @param string $tipo
+     * @param string $titulo
+     * @param array  $opciones  total, detalle, etapa.
+     * @return \App\Models\BackgroundProcess|null
+     */
+    protected static function retomar_o_abrir_proceso(MasiveUpdate $masive_update, $tipo, $titulo, array $opciones)
+    {
+        $proceso = BackgroundProcessHelper::por_referencia($masive_update);
+
+        if (!is_null($proceso)) {
+            $opciones['forzar_broadcast'] = true;
+
+            return BackgroundProcessHelper::avanzar($proceso, 0, $opciones);
+        }
+
+        return BackgroundProcessHelper::iniciar($masive_update->user_id, $tipo, $titulo, array_merge($opciones, [
+            'auth_user_id' => $masive_update->employee_id,
+            'referencia'   => $masive_update,
+            'unidad'       => 'registros',
+        ]));
     }
 
     /**

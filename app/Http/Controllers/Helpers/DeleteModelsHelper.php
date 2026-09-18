@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Models\BackgroundProcess;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use App\Services\Filter\FilterHistoryService;
@@ -319,25 +320,40 @@ class DeleteModelsHelper
         $models_id,
         $owner_user_id,
         $auth_user_id,
-        $used_filters
+        $used_filters,
+        $background_process_id = null
     ) {
         /*
-         * Se abre antes de cualquier cosa que pueda tirar (incluido el usuario que no existe,
-         * justo abajo): así cualquier salida por el catch del job encuentra la fila y la deja
-         * en fallo con su motivo, en vez de un borrado que desapareció sin explicación.
+         * Se resuelve antes de cualquier cosa que pueda tirar (incluido el usuario que no
+         * existe, justo abajo): así cualquier salida por el catch del job encuentra la fila y
+         * la deja en fallo con su motivo, en vez de un borrado que desapareció sin explicación.
+         *
+         * Lo normal es que la fila exista desde DeleteController (nació en `pendiente` al
+         * encolar) y acá solo pase a en_proceso; si no llegó id (job encolado antes de este
+         * cambio) se abre recién ahora.
          */
-        self::$proceso_en_curso = BackgroundProcessHelper::iniciar(
-            $owner_user_id,
-            'eliminacion_masiva',
-            'Eliminación de ' . self::get_model_label($model_name),
-            [
-                'auth_user_id' => $auth_user_id,
-                'total'        => count($models_id),
-                'unidad'       => 'registros',
-                'detalle'      => count($models_id) . ' ' . self::get_model_label($model_name),
-                'etapa'        => 'Eliminando',
-            ]
-        );
+        $pendiente = is_null($background_process_id) ? null : BackgroundProcess::find((int) $background_process_id);
+
+        if (!is_null($pendiente) && !$pendiente->esta_terminado()) {
+            self::$proceso_en_curso = BackgroundProcessHelper::avanzar($pendiente, 0, [
+                'total'            => count($models_id),
+                'etapa'            => 'Eliminando',
+                'forzar_broadcast' => true,
+            ]);
+        } else {
+            self::$proceso_en_curso = BackgroundProcessHelper::iniciar(
+                $owner_user_id,
+                'eliminacion_masiva',
+                'Eliminación de ' . self::get_model_label($model_name),
+                [
+                    'auth_user_id' => $auth_user_id,
+                    'total'        => count($models_id),
+                    'unidad'       => 'registros',
+                    'detalle'      => count($models_id) . ' ' . self::get_model_label($model_name),
+                    'etapa'        => 'Eliminando',
+                ]
+            );
+        }
 
         if (!self::setup_auth_context($auth_user_id)) {
             throw new Exception('Usuario autenticado no encontrado para procesar la eliminación');

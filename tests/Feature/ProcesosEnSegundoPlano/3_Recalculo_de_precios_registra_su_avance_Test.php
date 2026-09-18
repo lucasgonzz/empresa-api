@@ -13,6 +13,8 @@ use App\Models\Article;
 use App\Models\BackgroundProcess;
 use App\Models\PriceUpdateRun;
 use App\Models\Provider;
+use Illuminate\Support\Facades\Queue;
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Notification;
 use Tests\EmpresaTestCase;
@@ -286,5 +288,69 @@ class Recalculo_de_precios_registra_su_avance_Test extends EmpresaTestCase
         $this->assertSame(1, (int) $proceso->procesados);
         $this->assertSame(100, (int) $proceso->porcentaje);
         $this->assertStringContainsString('Mayorista', $proceso->detalle);
+    }
+    /** @test */
+    public function el_recalculo_por_proveedor_se_anuncia_al_encolar_con_el_nombre_del_proveedor_y_el_job_lo_retoma()
+    {
+        Notification::fake();
+        Event::fake([BackgroundProcessUpdated::class]);
+        Queue::fake();
+
+        $proveedor = Provider::create(['name' => 'zz Proveedor anunciado', 'user_id' => $this->user_id]);
+        $this->crear_articulo('zz Articulo anunciado', $proveedor->id);
+
+        $ids_previos = BackgroundProcess::where('user_id', $this->user_id)->pluck('id')->toArray();
+
+        /*
+         * El camino REAL de producción: guardar un proveedor pasa por GeneralHelper, que es
+         * quien tiene que poner el nombre del proveedor en el detalle. Antes el test le pasaba
+         * el nombre a mano al job y probaba lo que producción no hacía.
+         */
+        GeneralHelper::checkNewValuesForArticlesPrices($this, 0, 1, 'provider_id', $proveedor->id);
+
+        // Con la cola falsa el job no corrió: lo que existe es lo que se anunció al encolar.
+        $pendiente = BackgroundProcess::where('user_id', $this->user_id)
+            ->whereNotIn('id', $ids_previos)
+            ->where('tipo', 'recalculo_precios')
+            ->first();
+
+        $this->assertNotNull($pendiente, 'Encolar el recálculo no anunció ningún proceso.');
+        $this->assertSame(BackgroundProcess::STATUS_PENDIENTE, $pendiente->status);
+        $this->assertStringContainsString($proveedor->name, $pendiente->detalle);
+        $this->assertSame($this->user_id, (int) $pendiente->auth_user_id, 'quién lo lanzó es la persona logueada');
+        $this->assertNull($pendiente->referencia_id, 'todavía no hay corrida a la que apuntar');
+
+        // Ahora corre el job tal como lo encoló GeneralHelper: retoma el pendiente, no abre otro.
+        $jobs = Queue::pushed(ProcessSetFinalPrices::class);
+        $this->assertCount(1, $jobs);
+        $job = $jobs->first();
+        $this->assertSame($pendiente->id, (int) $job->background_process_id);
+
+        $job->handle();
+
+        /*
+         * El productor encoló los lotes y los dos finalizadores en la cola falsa: se corren a
+         * mano en el orden en que los procesaría el worker (lotes primero; el finalizador que
+         * cierra es el que encuentra todo hecho).
+         */
+        Queue::pushed(ProcessChunkSetFinalPrices::class)->each(function ($chunk) {
+            $chunk->handle();
+        });
+        Queue::pushed(FinalizeSetFinalPrices::class)->each(function ($finalizador) {
+            $finalizador->handle();
+        });
+
+        $procesos = BackgroundProcess::where('user_id', $this->user_id)
+            ->whereNotIn('id', $ids_previos)
+            ->where('tipo', 'recalculo_precios')
+            ->get();
+
+        $this->assertCount(1, $procesos, 'El job abrió un segundo registro en vez de retomar el pendiente.');
+
+        $proceso = $procesos->first();
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $proceso->status);
+        $this->assertSame(PriceUpdateRun::class, $proceso->referencia_type);
+        $this->assertNotNull($proceso->referencia_id);
+        $this->assertStringContainsString($proveedor->name, $proceso->detalle);
     }
 }

@@ -12,7 +12,9 @@ use App\Models\Article;
 use App\Models\BackgroundProcess;
 use App\Models\MasiveUpdate;
 use App\Models\Provider;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Notification;
 use Tests\EmpresaTestCase;
 
@@ -156,11 +158,14 @@ class Masiva_y_eliminacion_registran_su_avance_Test extends EmpresaTestCase
             'update_form' => [],
         ]);
 
-        /* La fila abierta como la deja process_update() antes de tocar nada. */
-        $proceso = BackgroundProcessHelper::iniciar($this->user_id, 'actualizacion_masiva', 'Actualización masiva de artículos', [
-            'referencia' => $masive_update,
-            'total'      => 1,
-        ]);
+        /*
+         * create_pending_update() ya anunció la fila en `pendiente` (nace en el request, no
+         * cuando el worker levanta el job): es la que mark_failed() tiene que cerrar.
+         */
+        $proceso = BackgroundProcessHelper::por_referencia($masive_update);
+        $this->assertNotNull($proceso, 'Encolar la masiva no anunció ningún proceso.');
+        $this->assertSame(BackgroundProcess::STATUS_PENDIENTE, $proceso->status);
+        $this->assertSame('En espera del procesador', $proceso->etapa);
 
         MasiveUpdateHelper::mark_failed($masive_update, 'No se permitio actualizar 3500 registros');
 
@@ -293,5 +298,66 @@ class Masiva_y_eliminacion_registran_su_avance_Test extends EmpresaTestCase
         /* failed() en un proceso fresco (sin el estático) lo encuentra igual y no lo pisa. */
         $job->failed(new \Exception('otro motivo'));
         $this->assertStringContainsString('Usuario autenticado no encontrado', BackgroundProcess::find($proceso->id)->error_message);
+    }
+
+    /** @test */
+    public function la_eliminacion_por_el_endpoint_se_anuncia_al_encolar_y_el_job_retoma_la_misma_fila()
+    {
+        Notification::fake();
+        Event::fake([BackgroundProcessUpdated::class]);
+        Queue::fake();
+
+        $ids = [
+            $this->crear_articulo('zz Procesos eliminar endpoint 1')->id,
+            $this->crear_articulo('zz Procesos eliminar endpoint 2')->id,
+        ];
+
+        $antes = (int) BackgroundProcess::where('user_id', $this->user_id)->where('tipo', 'eliminacion_masiva')->max('id');
+
+        $this->putJson('api/delete/article', [
+            'from_filter' => 0,
+            'models_id'   => $ids,
+        ])->assertStatus(200);
+
+        /*
+         * Con la cola falsa el job no corrió: lo que existe es lo que el controller anunció al
+         * encolar, en `pendiente`. Es lo que el usuario ve en el minuto que el worker del shared
+         * hosting tarda en levantar el job.
+         */
+        $pendiente = BackgroundProcess::where('user_id', $this->user_id)
+            ->where('tipo', 'eliminacion_masiva')
+            ->where('id', '>', $antes)
+            ->first();
+
+        $this->assertNotNull($pendiente, 'Encolar el borrado no anunció ningún proceso.');
+        $this->assertSame(BackgroundProcess::STATUS_PENDIENTE, $pendiente->status);
+        $this->assertSame(2, (int) $pendiente->total);
+        $this->assertSame($this->user_id, (int) $pendiente->auth_user_id);
+
+        /*
+         * El job, tal como lo encoló el controller, corre en el worker (contexto de consola,
+         * como en producción: adentro del request el guard de Sanctum no tiene loginUsingId).
+         * Tiene que retomar la MISMA fila, no abrir otra.
+         */
+        $jobs = Queue::pushed(ProcessDeleteModelsJob::class);
+        $this->assertCount(1, $jobs);
+
+        /*
+         * El request de arriba dejó al guard de Sanctum (RequestGuard) como guard activo, y
+         * setup_auth_context() usa loginUsingId(), que solo tiene el SessionGuard `web`: es
+         * exactamente el guard que hay en el worker. Se vuelve a ese antes de correr el job.
+         */
+        Auth::shouldUse('web');
+        $jobs->first()->handle();
+
+        $procesos = BackgroundProcess::where('user_id', $this->user_id)
+            ->where('tipo', 'eliminacion_masiva')
+            ->where('id', '>', $antes)
+            ->get();
+
+        $this->assertCount(1, $procesos, 'El endpoint y el job abrieron filas distintas.');
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $procesos->first()->status, 'Motivo: ' . $procesos->first()->error_message);
+        $this->assertSame(2, (int) $procesos->first()->total);
+        $this->assertSame(2, (int) $procesos->first()->resultado()['eliminados']);
     }
 }
