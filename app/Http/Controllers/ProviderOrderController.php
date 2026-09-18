@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
@@ -308,6 +309,27 @@ class ProviderOrderController extends Controller
                 'import_status_id'  => $import_status->id,
             ]);
 
+            /*
+             * Registro visible del proceso (misión procesos-en-segundo-plano, 18/9/2026). Nace en
+             * `pendiente` porque acá solo se encola: ProcessProviderOrderArticleImport lo pasa a
+             * `en_proceso` con su primer aviso de avance. El total va en FILAS y no en los
+             * "chunks lógicos" del ImportStatus, porque lo que el job cuenta al avanzar son filas
+             * (ver avanzar_progreso() del job), y la barra tiene que medir lo mismo que se cuenta.
+             *
+             * Si el dispatch de abajo falla, el catch pasa por ImportFailureHandler::registrar(),
+             * que cierra esta fila en `fallo` por referencia al ImportStatus. Y el helper nunca
+             * tira: una falla acá no puede dejar al usuario sin su importación.
+             */
+            BackgroundProcessHelper::iniciar($user->id, 'importacion_compra', 'Importación de artículos de una compra', [
+                'auth_user_id' => $this->userId(false),
+                'referencia'   => $import_status,
+                'total'        => max(1, (int) $finish_row - (int) $start_row + 1),
+                'unidad'       => 'filas',
+                'status'       => 'pendiente',
+                'etapa'        => 'En espera del procesador',
+                'detalle'      => $this->detalle_del_proceso_de_importacion($provider_order),
+            ]);
+
             ProcessProviderOrderArticleImport::dispatch(
                 $columns,
                 $start_row,
@@ -358,6 +380,41 @@ class ProviderOrderController extends Controller
         }
 
         return response(null, 200);
+    }
+
+    /**
+     * Texto corto para la píldora y el modal de procesos: "Compra N° 123 · Proveedor Bulonera".
+     * Si la compra no tiene número propio se usa el id, y si no hay proveedor queda solo la
+     * compra. Nunca tira: es presentación, y esto corre antes del dispatch de una importación
+     * que no puede quedar sin encolar por un nombre que no se pudo leer.
+     *
+     * @param  \App\Models\ProviderOrder $provider_order
+     * @return string|null
+     */
+    protected function detalle_del_proceso_de_importacion($provider_order)
+    {
+        try {
+            $numero = trim((string) $provider_order->num) !== ''
+                ? 'N° ' . trim((string) $provider_order->num)
+                : '#' . $provider_order->id;
+
+            $partes = ['Compra ' . $numero];
+
+            $provider = $provider_order->provider;
+
+            if (!is_null($provider) && trim((string) $provider->name) !== '') {
+                $partes[] = 'Proveedor ' . trim((string) $provider->name);
+            }
+
+            return implode(' · ', $partes);
+        } catch (\Throwable $e) {
+            Log::warning('ProviderOrderController: no se pudo armar el detalle del proceso en segundo plano.', [
+                'provider_order_id' => isset($provider_order->id) ? $provider_order->id : null,
+                'error'             => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     /**

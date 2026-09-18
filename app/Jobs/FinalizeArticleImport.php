@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
@@ -113,6 +114,14 @@ class FinalizeArticleImport implements ShouldQueue
 
         $import_history->save();
 
+        /*
+         * Registro visible del proceso (misión procesos-en-segundo-plano): se cierra acá, en el
+         * único punto donde una importación termina bien, y antes de la notificación para que la
+         * píldora y el aviso no se contradigan. El camino de fallo lo cierra ImportFailureHandler;
+         * cuando este job corta arriba por import_esta_cerrado(), ya no hay nada que cerrar.
+         */
+        $this->completar_proceso_en_segundo_plano();
+
         ArticleImportHelper::enviar_notificacion($user, $import_history);
 
         Log::info('Se envio notificacion');
@@ -155,6 +164,50 @@ class FinalizeArticleImport implements ShouldQueue
         );
 
         $this->generar_embeddings_de_lo_importado();
+    }
+
+    /**
+     * Cierra el registro visible del proceso con los números finales.
+     *
+     * Los números salen del ImportStatus releído ENTERO (el select del handle() trae solo los
+     * contadores de lotes) y no del ImportHistory: es la misma fila que alimentó cada avance, así
+     * que el cierre no puede decir algo distinto de lo que decía el último lote. Se busca por
+     * referencia, como en los chunks, porque este job tampoco arrastra el id de la fila.
+     *
+     * Es idempotente del lado del helper: este job se reintenta hasta 120 veces y un segundo
+     * `completar()` sobre una fila cerrada no hace nada. Y nunca tira: una importación que ya
+     * terminó no puede quedar sin cerrar por un problema de presentación.
+     *
+     * @return void
+     */
+    protected function completar_proceso_en_segundo_plano()
+    {
+        try {
+            $import_status = ImportStatus::find($this->import_status_id);
+
+            if (is_null($import_status)) {
+                return;
+            }
+
+            $proceso = BackgroundProcessHelper::por_referencia($import_status);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            BackgroundProcessHelper::completar($proceso, [
+                'filas_procesadas' => (int) $import_status->filas_procesadas,
+                'creados'          => (int) $import_status->created_models,
+                'actualizados'     => (int) $import_status->updated_models,
+                'coincidencias'    => (int) $import_status->articles_match,
+                'repetidos'        => (int) $import_status->articles_repetidos,
+            ], 'Terminado');
+        } catch (\Throwable $e) {
+            Log::warning('FinalizeArticleImport: no se pudo cerrar el proceso en segundo plano (la importación terminó igual).', [
+                'import_status_id' => $this->import_status_id,
+                'error'            => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

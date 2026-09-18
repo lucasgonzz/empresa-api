@@ -3,11 +3,13 @@
 namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
+use App\Models\Provider;
 use Illuminate\Bus\Batch;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
@@ -589,6 +591,74 @@ class InitExcelImport
             'status' => 'pendiente',
             'provider_id' => $this->provider_id,
         ]);
+
+        /*
+         * Registro visible del proceso (misión procesos-en-segundo-plano, 18/9/2026): la fila que
+         * la SPA muestra en la píldora de arriba a la derecha y en el modal de procesos.
+         *
+         * Nace en `pendiente` y no en `en_proceso` porque acá solo se ENCOLAN los lotes: hasta que
+         * un worker levante el primero, nadie está trabajando en esta importación (en el shared
+         * hosting eso puede tardar minutos). El primer chunk la pasa a `en_proceso`.
+         *
+         * El id de esta fila no viaja por los jobs a propósito: cada chunk la recupera con
+         * `BackgroundProcessHelper::por_referencia($import_status)`, que es lo que permite que un
+         * job encolado antes de este cambio (sin la fila) siga corriendo igual. Y el helper nunca
+         * tira: si el registro falla, el usuario pierde una barrita, no la importación.
+         */
+        BackgroundProcessHelper::iniciar($this->user->id, 'importacion_articulos', 'Importación de artículos', [
+            'auth_user_id' => $this->auth_user_id,
+            'referencia'   => $this->import_status,
+            'total'        => $this->total_chunks,
+            'unidad'       => 'lotes',
+            'status'       => 'pendiente',
+            'etapa'        => 'En espera del procesador',
+            'detalle'      => $this->armar_detalle_del_proceso(),
+        ]);
+    }
+
+    /**
+     * Texto corto que acompaña al título en la píldora y en el modal de procesos:
+     * "Proveedor Bulonera · 4.500 filas", o solo "4.500 filas" si la importación no eligió
+     * proveedor. Las filas son las del rango pedido (finish_row - start_row + 1), que a esta
+     * altura ya está recortado al tamaño real del archivo.
+     *
+     * Nunca tira: es presentación, y una excepción acá tumbaría la importación entera antes de
+     * arrancar por un nombre de proveedor que no se pudo leer.
+     *
+     * @return string|null
+     */
+    protected function armar_detalle_del_proceso()
+    {
+        try {
+            $partes = [];
+
+            /*
+             * provider_id llega crudo del request: puede ser un id, null, '' o el string 'null'
+             * (el mismo caso que ya contempla crear_import_history()). Solo se busca el nombre
+             * cuando es un entero positivo.
+             */
+            if (is_numeric($this->provider_id) && (int) $this->provider_id > 0) {
+                $provider = Provider::find((int) $this->provider_id);
+
+                if (!is_null($provider) && trim((string) $provider->name) !== '') {
+                    $partes[] = 'Proveedor ' . trim((string) $provider->name);
+                }
+            }
+
+            $filas = max(1, (int) $this->finish_row - (int) $this->start_row + 1);
+
+            $partes[] = $filas === 1
+                ? '1 fila'
+                : number_format($filas, 0, ',', '.') . ' filas';
+
+            return implode(' · ', $partes);
+        } catch (\Throwable $e) {
+            Log::warning('InitExcelImport: no se pudo armar el detalle del proceso en segundo plano.', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     function crear_import_history()

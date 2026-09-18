@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Models\User;
@@ -110,6 +111,25 @@ class ImportFailureHandler
                     $import_status->status        = 'fallo';
                     $import_status->error_message = $mensaje_humano;
                     $import_status->save();
+                }
+
+                /*
+                 * Registro visible del proceso (misión procesos-en-segundo-plano): se cierra en
+                 * `fallo` con el MISMO mensaje humano que acaba de leer la tarjeta de importación,
+                 * para que las dos no se contradigan. Se busca por referencia al ImportStatus
+                 * porque los dos flujos que pasan por acá (artículos y compra) lo tienen.
+                 *
+                 * Va afuera del `if` de arriba a propósito: si el watchdog ya había marcado el
+                 * ImportStatus, el proceso igual tiene que cerrarse. Y no hace falta cuidar el
+                 * doble llamado (catch del handle() + failed() del job): `fallar()` es
+                 * idempotente y no pisa un cierre anterior.
+                 */
+                if (!is_null($import_status)) {
+                    $proceso = BackgroundProcessHelper::por_referencia($import_status);
+
+                    if (!is_null($proceso)) {
+                        BackgroundProcessHelper::fallar($proceso, $mensaje_humano);
+                    }
                 }
             }
 
