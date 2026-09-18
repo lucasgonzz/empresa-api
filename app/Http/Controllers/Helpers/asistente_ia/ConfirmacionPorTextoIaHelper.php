@@ -92,6 +92,49 @@ class ConfirmacionPorTextoIaHelper
     }
 
     /**
+     * Auto-ejecuta en el acto una tarjeta que el agente acaba de proponer, cuando el dueño está en
+     * modo "resuelto" (misión foto-sucursal-y-asistente-configurable, 17/9/2026).
+     *
+     * 🔴 A DIFERENCIA DE confirmar(), NO PASA POR rechazo(): la guarda del "mismo turno" y la del
+     * "otro canal" existen para la confirmación que pide la PERSONA, y acá la decisión ya la tomó el
+     * dueño al elegir "resuelto". Esta confirmación es DELIBERADAMENTE en el mismo turno, con el
+     * assistant todavía 'pendiente', así que usa EjecutorAccionesIaHelper::confirmar_en_el_turno()
+     * (que salta la guarda de mensaje 'listo'). Lo que sí se mantiene es autenticar a la persona: los
+     * helpers de plata leen la sesión, y esto corre adentro del job sin request.
+     *
+     * Solo la llama HerramientasDeCarga tras crear una tarjeta cuyo tipo está en AUTO_CONFIRMABLES,
+     * que hoy es únicamente la foto de sucursal (inocua y reversible). Devuelve el resultado ejecutado
+     * para que la IA le diga a la persona "ya la asigné" en vez de "te dejé la tarjeta".
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  mixed  $accion_id  tarjeta_id que devolvió la propuesta.
+     * @return array
+     */
+    public static function confirmar_del_agente(AiConversation $conversation, $accion_id)
+    {
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $persona = $contexto->persona;
+
+        if (is_null($persona)) {
+
+            return RespuestaDeCargaIa::error('No pude identificar tu usuario para registrar la carga.');
+        }
+
+        $resultado = self::autenticado_como($persona, function () use ($conversation, $accion_id, $persona, $contexto) {
+
+            return EjecutorAccionesIaHelper::confirmar_en_el_turno($conversation, $accion_id, $persona, function () use ($contexto) {
+
+                $controller = new Controller();
+
+                return $controller->num('expenses', $contexto->owner_id);
+            });
+        });
+
+        return self::traducir($resultado, (int) $accion_id);
+    }
+
+    /**
      * Cancela una carga propuesta en un turno anterior: el equivalente del botón Cancelar.
      *
      * No necesita autenticar a nadie (no escribe nada más que el estado de la tarjeta), pero sí la
