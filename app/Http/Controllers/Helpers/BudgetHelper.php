@@ -152,6 +152,21 @@ class BudgetHelper {
 		}
 	}
 
+	/**
+	 * La lista de precios con la que nace la venta al confirmar: la del presupuesto, o la del
+	 * cliente, o ninguna.
+	 *
+	 * ⚠️ Un presupuesto viejo sin lista —guardado antes de la mision vender-lista-obligatoria
+	 * (17/9/2026), o de una cuenta que no trabaja con listas— confirma con null A PROPOSITO, y aca
+	 * no se le exige lista: sus renglones ya se preciaron asi cuando se guardo
+	 * (`budget_article.price` viaja tal cual a `article_sale.price` en attachSaleArticles()), y
+	 * ponerle una lista ahora diria que la venta se cobro con precios que nadie aplico. La
+	 * obligatoriedad vive en el alta y en la edicion (`BudgetController` + `PriceTypeHelper`), que
+	 * es donde se eligen los precios.
+	 *
+	 * @param  \App\Models\Budget  $budget
+	 * @return int|null
+	 */
 	static function get_price_type_id($budget) {
 
 		if (!is_null($budget->price_type_id)) {
