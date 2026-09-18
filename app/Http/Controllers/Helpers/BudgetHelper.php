@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
@@ -152,20 +153,31 @@ class BudgetHelper {
 		}
 	}
 
+	/**
+	 * La lista de precios con la que nace la venta al confirmar: la del presupuesto, o la del
+	 * cliente, o ninguna.
+	 *
+	 * ⚠️ Un presupuesto viejo sin lista —guardado antes de la mision vender-lista-obligatoria
+	 * (17/9/2026), o de una cuenta que no trabaja con listas— confirma con null A PROPOSITO, y aca
+	 * no se le exige lista: sus renglones ya se preciaron asi cuando se guardo
+	 * (`article_budget.price` viaja tal cual a `article_sale.price` en attachSaleArticles()), y
+	 * ponerle una lista ahora diria que la venta se cobro con precios que nadie aplico. La
+	 * obligatoriedad vive en el alta y en la edicion (`BudgetController` + `PriceTypeHelper`), que
+	 * es donde se eligen los precios.
+	 *
+	 * 🔴 Y el 0 se lee como "ninguna" en las DOS puntas, presupuesto y cliente, con el mismo
+	 * resolvedor que usa el alta: `clients.price_type_id` nace en 0 desde el form generico de
+	 * clientes (`src/models/client.js`, `ClientController` lo guarda pelado) y un presupuesto viejo
+	 * puede traer 0 por el mismo camino. Hasta el 17/9/2026 esto preguntaba `!is_null` y un 0
+	 * pasaba como si fuera una lista: la venta nacia con `price_type_id = 0`, que ningun lector
+	 * distingue de "sin lista" pero que tampoco cae al cliente.
+	 *
+	 * @param  \App\Models\Budget  $budget
+	 * @return int|null
+	 */
 	static function get_price_type_id($budget) {
 
-		if (!is_null($budget->price_type_id)) {
-			return $budget->price_type_id;
-		}
-
-		$client = $budget->client;
-		
-		if (!is_null($client) 
-			&& !is_null($client->price_type_id)) {
-
-			return $client->price_type_id;
-		}
-		return null;
+		return PriceTypeHelper::resolver_price_type_id_para_guardar($budget->price_type_id, $budget->client);
 	}
 
 	static function get_guardar_cuenta_corriente($budget) {
@@ -593,7 +605,21 @@ class BudgetHelper {
 			
 			$cost = SaleHelper::getCost($budget, $article);
 
-			$price_type_personalizado_id = isset($article['pivot']) && isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
+			/*
+			 * La lista por linea (rangos por cantidad), plano primero y despues en `pivot`
+			 * (mision vender-lista-obligatoria, 17/9/2026). Hasta hoy se leia SOLO de `pivot`, y el
+			 * alta desde VENDER (`vender_presupuestos.js::crear()`) manda el articulo plano, con la
+			 * clave en la raiz: la lista por linea se perdia al guardar el presupuesto. En la
+			 * actualizacion y en el form generico viaja bajo `pivot`, con el 0 con que nacen los
+			 * items de VENDER, y ese 0 se guardaba tal cual: al confirmar llegaba a `article_sale`,
+			 * donde `SaleHelper::get_price_type_personalizado()` nunca escribe un 0. Se normaliza
+			 * con ESE mismo helper (0 y '' son null) para que las dos tablas digan lo mismo.
+			 */
+			$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article);
+
+			if (is_null($price_type_personalizado_id) && isset($article['pivot']) && is_array($article['pivot'])) {
+				$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article['pivot']);
+			}
 			
 			if ($article['status'] == 'inactive' && $id > 0) {
 				$art = Article::find($article['id']);

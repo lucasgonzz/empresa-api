@@ -7,11 +7,13 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\Budget\BudgetDuplicarHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
 use App\Models\Budget;
+use App\Models\Client;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -56,6 +58,33 @@ class BudgetController extends Controller
 
     public function store(Request $request) {
 
+        /*
+         * Lista de precios obligatoria (misión vender-lista-obligatoria, 17/9/2026): el mismo 422
+         * que `SaleController::store()`, con el mismo resolvedor. Va ANTES de la transacción para
+         * que un rechazo no consuma número de presupuesto ni deje nada que revertir. Un presupuesto
+         * de VENDER lleva cliente siempre, así que la lista del cliente rescata antes de llegar al
+         * rechazo; el 422 queda para el cliente que tampoco tiene lista. Por qué se rechaza y no se
+         * completa con la lista por defecto: docblock de PriceTypeHelper (los renglones ya vienen
+         * preciados por el front y `attachArticles()` los persiste tal cual).
+         *
+         * `Client::find()` sin trashed, igual que la relación `Budget::client()` que después lee
+         * `BudgetHelper::get_price_type_id()` al confirmar: el alta y la confirmación miran al
+         * mismo cliente.
+         */
+        $client_del_presupuesto = $request->client_id ? Client::find($request->client_id) : null;
+
+        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_del_presupuesto);
+
+        if (is_null($price_type_id) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
+
+            Log::info('store budget: rechazado sin lista de precios (user_id '.$this->userId().', client_id '.$request->client_id.').');
+
+            return response()->json([
+                'message'               => PriceTypeHelper::mensaje_sin_lista_presupuesto(),
+                'sin_lista_de_precios'  => true,
+            ], 422);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -66,7 +95,8 @@ class BudgetController extends Controller
                 'start_at'                  => $request->start_at,
                 'finish_at'                 => $request->finish_at,
                 'observations'              => $request->observations,
-                'price_type_id'             => $request->price_type_id,
+                // Ya resuelta y validada antes de la transacción: request → cliente → null (o 422).
+                'price_type_id'             => $price_type_id,
                 'sale_status_id'            => $request->sale_status_id,
                 'discount_stock'            => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 'iva_aplicado'              => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
@@ -239,6 +269,38 @@ class BudgetController extends Controller
         }
 
         /*
+            Lista de precios obligatoria (mision vender-lista-obligatoria, 17/9/2026). Mismo patron
+            que `SaleController::update()` y que `aplicar_recargos_directo_a_items` mas abajo: SOLO
+            si el request manda la clave. La SPA anterior no manda `price_type_id` en el PUT de
+            presupuestos (`vender_presupuestos.js::actualizar()` recien lo manda desde esta mision),
+            asi que a secas cualquier edicion desde esa SPA dejaria el presupuesto sin lista y la
+            venta que nace al confirmarlo saldria con la del cliente o con ninguna. Clave ausente =
+            se preserva lo guardado.
+
+            Clave presente y en null (o en 0, que se lee como null: ver PriceTypeHelper) con la
+            cuenta trabajando con listas = 422 ANTES de escribir nada. Este metodo no abre
+            transaccion, asi que el orden importa: despues del save() ya no hay vuelta atras.
+        */
+        $actualizar_price_type_id = $request->exists('price_type_id');
+
+        $price_type_id_nuevo = null;
+
+        if ($actualizar_price_type_id) {
+
+            $price_type_id_nuevo = PriceTypeHelper::normalizar_price_type_id($request->price_type_id);
+
+            if (is_null($price_type_id_nuevo) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
+
+                Log::info('update budget id '.$id.': rechazado sin lista de precios.');
+
+                return response()->json([
+                    'message'               => PriceTypeHelper::mensaje_sin_lista_presupuesto(),
+                    'sin_lista_de_precios'  => true,
+                ], 422);
+            }
+        }
+
+        /*
             Se lee el estado GUARDADO antes de pisarlo con el del request: es lo que despues permite
             saber si el estado cambio de verdad en este update.
         */
@@ -270,6 +332,10 @@ class BudgetController extends Controller
         }
         $model->budget_status_id          = $request->budget_status_id;
         $model->address_id                = $request->address_id;
+        // Misma guarda que en SaleController::update(): sin la clave, la lista guardada no se toca.
+        if ($actualizar_price_type_id) {
+            $model->price_type_id         = $price_type_id_nuevo;
+        }
         // $model->omitir_en_cuenta_corriente                = $request->omitir_en_cuenta_corriente;
 
         $model->surchages_in_services     = $request->surchages_in_services;

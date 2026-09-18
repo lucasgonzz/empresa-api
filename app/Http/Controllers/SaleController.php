@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
@@ -44,6 +45,7 @@ use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
+use App\Models\Client;
 use App\Models\SaleDeliveryInfo;
 use App\Models\SaleSenderInfo;
 use App\Models\CurrentAcount;
@@ -228,6 +230,37 @@ class SaleController extends Controller
         }
 
         /*
+         * Lista de precios obligatoria (misión vender-lista-obligatoria, 17/9/2026). Tercer 422
+         * temprano del método, con el mismo criterio que los dos de arriba: la SPA es guarda de UX
+         * y la autoridad es este rechazo, porque un POST directo, una PWA con el bundle viejo o una
+         * venta offline encolada llegan igual hasta acá. Va ANTES del candado y de la transacción:
+         * un rechazo no toca la base ni consume número de venta.
+         *
+         * Se RECHAZA en vez de completar con una lista por defecto, y el porqué está en el docblock
+         * de PriceTypeHelper: attachArticle() persiste el `price_vender` que mandó el front, así
+         * que el back no tiene forma de volver a preciar los renglones con la lista que elegiría.
+         * Lo único que se completa es la lista del cliente —lo que el front hubiera usado para
+         * preciar, y lo que este método ya hacía después del create—, y por eso el cliente se
+         * carga acá, antes de decidir.
+         *
+         * `withTrashed()` para leer al cliente igual que `Sale::client()`: el rescate anterior
+         * pasaba por esa relación y copiaba la lista aunque el cliente estuviera borrado.
+         */
+        $client_de_la_venta = $request->client_id ? Client::withTrashed()->find($request->client_id) : null;
+
+        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_de_la_venta);
+
+        if (is_null($price_type_id) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
+
+            Log::info('store sale: rechazada sin lista de precios (user_id '.$this->userId().', client_id '.$request->client_id.').');
+
+            return response()->json([
+                'message'               => PriceTypeHelper::mensaje_sin_lista(),
+                'sin_lista_de_precios'  => true,
+            ], 422);
+        }
+
+        /*
          * 🔴 Candado por comercio mientras se crea la venta (auditoría de stock, 5/9/2026).
          *
          * venta_ya_cread() mira si hay una venta igual de los últimos 5 segundos, pero dos requests
@@ -280,7 +313,8 @@ class SaleController extends Controller
                 'afip_information_id'               => $request->afip_information_id,
                 'save_current_acount'               => $request->save_current_acount,
                 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
-                'price_type_id'                     => $request->price_type_id,
+                // Ya resuelta y validada antes de la transacción: request → cliente → null (o 422).
+                'price_type_id'                     => $price_type_id,
                 'discounts_in_services'             => $request->discounts_in_services,
                 'surchages_in_services'             => $request->surchages_in_services,
                 'employee_id'                       => SaleHelper::getEmployeeId($request),
@@ -334,12 +368,7 @@ class SaleController extends Controller
              */
             ], SaleHelper::normalized_forzar_total_monto($request), 'sales'));
 
-            if (is_null($model->price_type_id)) {
-                if (!is_null($model->client) && !is_null($model->client->price_type_id)) {
-                    $model->price_type_id = $model->client->price_type_id;
-                    $model->save();
-                }
-            }
+            // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
             SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
 
@@ -477,6 +506,39 @@ class SaleController extends Controller
         }
 
         /*
+         * Lista de precios obligatoria (misión vender-lista-obligatoria, 17/9/2026). SOLO si el
+         * request manda la clave, con el mismo `exists()` que `omitir_en_cuenta_corriente` más
+         * abajo y por el mismo motivo: la SPA anterior no manda `price_type_id` en el PUT, y a
+         * secas cualquier venta editada desde esa SPA perdería su lista sin que nadie la tocara.
+         * Clave ausente = se preserva lo guardado.
+         *
+         * Clave presente y en null (o en 0, que se lee como null: ver PriceTypeHelper) en una
+         * cuenta que trabaja con listas = 422, ANTES de abrir la transacción como los otros 4xx
+         * tempranos de este método, para que no haya nada que revertir. No se completa con la
+         * lista del cliente ni con la por defecto: los renglones ya vienen preciados por el front
+         * y ponerles una lista ahora diría que se cobraron con precios que nadie aplicó. La
+         * asignación va adentro, junto a las otras.
+         */
+        $actualizar_price_type_id = $request->exists('price_type_id');
+
+        $price_type_id_nuevo = null;
+
+        if ($actualizar_price_type_id) {
+
+            $price_type_id_nuevo = PriceTypeHelper::normalizar_price_type_id($request->price_type_id);
+
+            if (is_null($price_type_id_nuevo) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
+
+                Log::info('update sale id '.$id.': rechazado sin lista de precios.');
+
+                return response()->json([
+                    'message'               => PriceTypeHelper::mensaje_sin_lista(),
+                    'sin_lista_de_precios'  => true,
+                ], 422);
+            }
+        }
+
+        /*
          * Se lee ANTES de abrir la transacción, y no adentro, por el candado de más abajo: en
          * REPEATABLE READ la primera lectura de la transacción fija la foto de la base, y esta
          * lectura (User + extensiones) era la primera. Ver el comentario del lockForUpdate.
@@ -579,6 +641,14 @@ class SaleController extends Controller
                 $model->omitir_en_cuenta_corriente = $request->omitir_en_cuenta_corriente;
             }
 
+            /*
+                Misma guarda que omitir_en_cuenta_corriente: sin la clave, la lista guardada no se
+                toca. El valor ya está normalizado y validado antes de la transacción (ver arriba).
+            */
+            if ($actualizar_price_type_id) {
+                $model->price_type_id = $price_type_id_nuevo;
+            }
+
             $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
             
             $model->seller_id                           = $request->seller_id;
@@ -617,22 +687,44 @@ class SaleController extends Controller
 
             $model->fecha_entrega                       = $request->fecha_entrega;
             
-            $model->aplicar_recargos_directo_a_items    = $request->aplicar_recargos_directo_a_items;
+            /*
+                Se PRESERVA el valor guardado si el request no trae la clave, igual que
+                `BudgetController::update()` y a diferencia de como estaba hasta el 17/9/2026
+                (asignado pelado). La SPA anterior a marzo de 2026 no manda esta clave en el PUT,
+                y con la asignacion pelada la venta quedaba con el flag en null y los precios del
+                pivot todavia recargados: al confirmar una venta chequeada (`update_total_sale`),
+                al puntuar (`PuntosBaseHelper`) y al facturar (`AfipItemCalculator`) el recargo se
+                sumaba DOS veces. Una SPA que no manda la clave no puede cambiar el comportamiento
+                de la venta: misma clase de bug que `omitir_en_cuenta_corriente` (San Cayetano).
+            */
+            $model->aplicar_recargos_directo_a_items    = !is_null($request->aplicar_recargos_directo_a_items)
+                                                            ? $request->aplicar_recargos_directo_a_items
+                                                            : $model->aplicar_recargos_directo_a_items;
             $model->sale_status_id                      = $request->sale_status_id;
 
             /*
              * discount_stock solo puede activarse, nunca desactivarse una vez que ya fue activado.
              * Si ya estaba en 1 (ya se descontó stock), ignoramos el valor enviado por el front.
+             *
+             * Y si el request NO trae la clave, se preserva lo guardado (hasta el 17/9/2026 acá
+             * caía a 1): la ausencia de la clave ACTIVABA el descuento de stock de una venta que no
+             * lo hacía, y con `$se_activando_discount_stock` de más abajo se descontaba el renglón
+             * entero. Una SPA que no manda la clave no puede cambiar el comportamiento de la venta;
+             * mismo patrón que `BudgetController::update()`.
              */
             if (!$old_discount_stock) {
-                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : 1;
+                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
             }
             
             /*
              * iva_aplicado puede activarse y desactivarse libremente en una actualización.
-             * Si no viene en el request, se preserva el comportamiento por defecto (1).
+             * Si no viene en el request, se preserva LO GUARDADO (hasta el 17/9/2026 acá caía a 1
+             * aunque el comentario dijera "se preserva"): una venta con iva_aplicado = 0 editada
+             * desde una SPA que no manda la clave pasaba a 1, y `PuntosBaseHelper` la lee para la
+             * base de puntos. La columna nació con default 1, así que preservar nunca deja un null.
+             * Mismo patrón que `BudgetController::update()`.
              */
-            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1;
+            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
 
             /*
              * Flag para indicar que discount_stock se activa por primera vez en esta actualización.
