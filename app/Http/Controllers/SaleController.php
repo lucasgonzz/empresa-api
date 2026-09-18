@@ -687,22 +687,44 @@ class SaleController extends Controller
 
             $model->fecha_entrega                       = $request->fecha_entrega;
             
-            $model->aplicar_recargos_directo_a_items    = $request->aplicar_recargos_directo_a_items;
+            /*
+                Se PRESERVA el valor guardado si el request no trae la clave, igual que
+                `BudgetController::update()` y a diferencia de como estaba hasta el 17/9/2026
+                (asignado pelado). La SPA anterior a marzo de 2026 no manda esta clave en el PUT,
+                y con la asignacion pelada la venta quedaba con el flag en null y los precios del
+                pivot todavia recargados: al confirmar una venta chequeada (`update_total_sale`),
+                al puntuar (`PuntosBaseHelper`) y al facturar (`AfipItemCalculator`) el recargo se
+                sumaba DOS veces. Una SPA que no manda la clave no puede cambiar el comportamiento
+                de la venta: misma clase de bug que `omitir_en_cuenta_corriente` (San Cayetano).
+            */
+            $model->aplicar_recargos_directo_a_items    = !is_null($request->aplicar_recargos_directo_a_items)
+                                                            ? $request->aplicar_recargos_directo_a_items
+                                                            : $model->aplicar_recargos_directo_a_items;
             $model->sale_status_id                      = $request->sale_status_id;
 
             /*
              * discount_stock solo puede activarse, nunca desactivarse una vez que ya fue activado.
              * Si ya estaba en 1 (ya se descontó stock), ignoramos el valor enviado por el front.
+             *
+             * Y si el request NO trae la clave, se preserva lo guardado (hasta el 17/9/2026 acá
+             * caía a 1): la ausencia de la clave ACTIVABA el descuento de stock de una venta que no
+             * lo hacía, y con `$se_activando_discount_stock` de más abajo se descontaba el renglón
+             * entero. Una SPA que no manda la clave no puede cambiar el comportamiento de la venta;
+             * mismo patrón que `BudgetController::update()`.
              */
             if (!$old_discount_stock) {
-                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : 1;
+                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
             }
             
             /*
              * iva_aplicado puede activarse y desactivarse libremente en una actualización.
-             * Si no viene en el request, se preserva el comportamiento por defecto (1).
+             * Si no viene en el request, se preserva LO GUARDADO (hasta el 17/9/2026 acá caía a 1
+             * aunque el comentario dijera "se preserva"): una venta con iva_aplicado = 0 editada
+             * desde una SPA que no manda la clave pasaba a 1, y `PuntosBaseHelper` la lee para la
+             * base de puntos. La columna nació con default 1, así que preservar nunca deja un null.
+             * Mismo patrón que `BudgetController::update()`.
              */
-            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1;
+            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
 
             /*
              * Flag para indicar que discount_stock se activa por primera vez en esta actualización.
