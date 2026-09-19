@@ -4,9 +4,11 @@ namespace Tests\Feature\ChatIa;
 
 use App\Events\BackgroundProcessUpdated;
 use App\Events\ChatIaMensajeActualizado;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\CategoriaImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionIaException;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
+use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenCategoriaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Jobs\ProcessCategoryImagesJob;
@@ -169,7 +171,8 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
      */
     protected function png()
     {
-        return (string) (new ImageManager())->canvas(64, 48, '#c0392b')->encode('png');
+        // 400x300: por encima de ProcessCategoryImagesJob::MIN_LADO_PX, para que la candidata llegue a la visión.
+        return (string) (new ImageManager())->canvas(400, 300, '#c0392b')->encode('png');
     }
 
     /**
@@ -198,7 +201,8 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
         $cuerpo = json_decode($request->body(), true);
 
         foreach ((array) ($cuerpo['messages'][0]['content'] ?? []) as $bloque) {
-            if (($bloque['type'] ?? '') === 'text' && preg_match('/CATEGORÍA DEL COMERCIO: (.+)/u', (string) $bloque['text'], $m)) {
+            // El nombre viaja entre comillas (delimitado a propósito); se lee sin ellas.
+            if (($bloque['type'] ?? '') === 'text' && preg_match('/CATEGORÍA DEL COMERCIO: "?([^"\n]+)"?/u', (string) $bloque['text'], $m)) {
                 return trim($m[1]);
             }
         }
@@ -213,9 +217,9 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
      * @param  array $veredicto_por_categoria  nombre => 'usar' | 'dudosa' | 'descartar' | 'caido'
      * @return void
      */
-    protected function falsear_red(array $veredicto_por_categoria)
+    protected function falsear_red(array $veredicto_por_categoria, $png = null)
     {
-        $png = $this->png();
+        $png = is_null($png) ? $this->png() : $png;
 
         Http::fake(function ($request) use ($png, $veredicto_por_categoria) {
             $url = $request->url();
@@ -512,7 +516,7 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
         $this->assertSame(
             "Terminé de buscar imágenes para las categorías.\n"
             . "Asigné imagen a 1: Bazar.\n"
-            . "Para Ferretería encontré una imagen pero no estoy seguro de que corresponda: mirá la tarjeta de abajo y decime si la uso.",
+            . "Para Ferretería encontré una imagen pero no estoy seguro de que corresponda: mirá la tarjeta de abajo y, si te sirve, tocá Usar esta imagen.",
             $mensaje->contenido
         );
         $this->assertNotNull($conversation->fresh()->last_message_at);
@@ -556,6 +560,152 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
     }
 
     /** @test */
+    public function con_alcance_sin_imagen_el_job_saltea_la_que_ya_tiene_imagen_cuando_llega()
+    {
+        Event::fake([ChatIaMensajeActualizado::class, BackgroundProcessUpdated::class]);
+        $this->falsear_red(['Bazar' => 'usar', 'Ferretería' => 'usar']);
+
+        list($bazar, $ferreteria) = $this->categorias();
+        list($conversation) = $this->conversacion();
+
+        // Entre la tarjeta y el worker, alguien le cargó una imagen a mano a Ferretería.
+        $ferreteria->image_url = 'https://ejemplo.test/storage/a-mano.webp';
+        $ferreteria->save();
+
+        $this->job($bazar, $ferreteria, $conversation)->handle();
+
+        $this->assertSame('https://ejemplo.test/storage/a-mano.webp', $ferreteria->fresh()->image_url, 'Con alcance sin_imagen no se pisa la que ya tiene.');
+        $this->assertNotNull($bazar->fresh()->image_url);
+
+        Http::assertNotSent(function ($request) {
+            return strpos($request->url(), 'googleapis.com/customsearch') !== false
+                && strpos(urldecode((string) parse_url($request->url(), PHP_URL_QUERY)), 'Ferreter') !== false;
+        });
+
+        $mensaje = AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'assistant')->orderBy('id', 'DESC')->first();
+        $this->assertStringContainsString('Ferretería ya tenía imagen cuando llegué, así que la dejé como estaba.', $mensaje->contenido);
+    }
+
+    /** @test */
+    public function una_tanda_que_reemplaza_imagenes_cargadas_deja_tarjeta_aunque_el_dueno_este_en_resuelto()
+    {
+        Queue::fake();
+        Event::fake([BackgroundProcessUpdated::class]);
+
+        $this->comercio->agente_confianza = 'resuelto';
+        $this->comercio->save();
+
+        $this->categorias();
+        list($conversation, $assistant) = $this->conversacion();
+
+        // Pinturas ya tiene imagen: 'todas' la reemplazaría.
+        $resultado = HerramientasDeCarga::ejecutar('proponer_imagenes_para_categorias', ['alcance' => 'todas'], $conversation, $assistant);
+        $respuesta = json_decode($resultado['content'], true);
+
+        $this->assertTrue($respuesta['ok'], $resultado['content']);
+        $this->assertTrue($respuesta['requiere_confirmacion']);
+        $this->assertSame(['Pinturas'], $respuesta['reemplaza_la_imagen_de']);
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $accion->estado_guardado(), 'Reemplazar no es inocuo: no se auto-confirma ni en resuelto.');
+        $this->assertTrue($accion->datos['reemplaza_existentes']);
+        $this->assertSame('Se reemplaza la imagen de', $accion->presentacion['renglones'][2]['etiqueta']);
+        $this->assertSame('Pinturas', $accion->presentacion['renglones'][2]['valor']);
+        Queue::assertNothingPushed();
+    }
+
+    /** @test */
+    public function sin_cuota_disponible_no_se_propone_ni_se_encola()
+    {
+        Queue::fake();
+
+        $this->categorias();
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->comercio->google_cuota = 5;
+        $this->comercio->save();
+        GeocoderCounter::create(['user_id' => $this->comercio->id, 'counter' => 5]);
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $respuesta = PropuestaImagenesCategoriasIaHelper::proponer($contexto, $assistant, []);
+        $this->assertFalse($respuesta['ok']);
+        $this->assertSame(PropuestaImagenesCategoriasIaHelper::MENSAJE_SIN_CUOTA, $respuesta['error']);
+        Queue::assertNothingPushed();
+    }
+
+    /** @test */
+    public function una_candidata_mas_chica_que_el_piso_se_descarta_sin_llamar_a_la_vision()
+    {
+        Event::fake([ChatIaMensajeActualizado::class, BackgroundProcessUpdated::class]);
+        $this->falsear_red(['Bazar' => 'usar', 'Ferretería' => 'usar'], (string) (new ImageManager())->canvas(120, 120, '#c0392b')->encode('png'));
+
+        list($bazar, $ferreteria) = $this->categorias();
+        list($conversation) = $this->conversacion();
+
+        $this->job($bazar, $ferreteria, $conversation)->handle();
+
+        $this->assertNull($bazar->fresh()->image_url, 'Un thumbnail de 120 px no puede terminar como imagen de la categoría.');
+        $this->assertNull($ferreteria->fresh()->image_url);
+        Http::assertNotSent(function ($request) {
+            return strpos($request->url(), 'api.anthropic.com') !== false;
+        });
+    }
+
+    /** @test */
+    public function no_usarla_borra_la_candidata_del_disco()
+    {
+        Event::fake([ChatIaMensajeActualizado::class, BackgroundProcessUpdated::class]);
+        $this->falsear_red(['Bazar' => 'dudosa', 'Ferretería' => 'descartar']);
+
+        list($bazar, $ferreteria) = $this->categorias();
+        list($conversation) = $this->conversacion();
+
+        $this->job($bazar, $ferreteria, $conversation)->handle();
+
+        $tarjeta = AiMessageAction::where('ai_conversation_id', $conversation->id)->where('tipo', 'imagen_categoria')->first();
+        $this->assertNotNull($tarjeta);
+        $ruta = storage_path('app/public/' . $tarjeta->datos['archivo']);
+        $this->assertFileExists($ruta);
+
+        $resultado = EjecutorAccionesIaHelper::cancelar($conversation, $tarjeta->id);
+
+        $this->assertSame(200, $resultado['status']);
+        $this->assertSame(AiMessageAction::ESTADO_CANCELADA, $tarjeta->fresh()->estado_guardado());
+        $this->assertFileDoesNotExist($ruta);
+    }
+
+    /** @test */
+    public function el_job_retoma_el_registro_que_le_pasaron_por_id_y_no_el_ultimo_activo()
+    {
+        Event::fake([ChatIaMensajeActualizado::class, BackgroundProcessUpdated::class]);
+        $this->falsear_red(['Bazar' => 'usar', 'Ferretería' => 'usar']);
+
+        list($bazar, $ferreteria) = $this->categorias();
+        list($conversation) = $this->conversacion();
+
+        // Dos tandas encoladas seguidas: la del job es la primera; la segunda es más nueva.
+        $propio = BackgroundProcessHelper::iniciar($this->comercio->id, 'imagenes_categorias', 'Imágenes de categorías', ['status' => 'pendiente', 'etapa' => 'En espera del procesador', 'total' => 2]);
+        $otro   = BackgroundProcessHelper::iniciar($this->comercio->id, 'imagenes_categorias', 'Imágenes de categorías', ['status' => 'pendiente', 'etapa' => 'En espera del procesador', 'total' => 7]);
+
+        $job = new ProcessCategoryImagesJob(
+            (int) $this->comercio->id,
+            (int) $this->comercio->id,
+            (int) $conversation->id,
+            [['id' => $bazar->id, 'buscar_como' => null], ['id' => $ferreteria->id, 'buscar_como' => null]],
+            'KEY-DE-PRUEBA',
+            'CX-DE-PRUEBA',
+            10,
+            'sin_imagen',
+            (int) $propio->id
+        );
+        $job->handle();
+
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $propio->fresh()->status, 'Retomó el suyo.');
+        $this->assertSame(BackgroundProcess::STATUS_PENDIENTE, $otro->fresh()->status, 'El de la otra tanda sigue esperando a su worker.');
+    }
+
+    /** @test */
     public function la_primera_busqueda_pide_fondo_blanco_y_la_segunda_no()
     {
         Event::fake([ChatIaMensajeActualizado::class, BackgroundProcessUpdated::class]);
@@ -572,28 +722,28 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
             return $p;
         };
 
-        /* q1 de Ferretería: con imgDominantColor=white y el sufijo. */
+        /* q1 de Ferretería: "productos de <nombre> fondo blanco" con imgDominantColor=white. */
         Http::assertSent(function ($request) use ($parametros) {
             $p = $parametros($request);
 
             return strpos($request->url(), 'googleapis.com/customsearch') !== false
-                && ($p['q'] ?? '') === 'Ferretería producto fondo blanco'
+                && ($p['q'] ?? '') === 'productos de Ferretería fondo blanco'
                 && ($p['imgDominantColor'] ?? '') === 'white';
         });
 
-        /* q2 de Ferretería (q1 no dio `usar`): el nombre pelado y sin el parámetro. */
+        /* q2 de Ferretería (q1 no dio `usar`): "<nombre> productos", sin el parámetro de color. */
         Http::assertSent(function ($request) use ($parametros) {
             $p = $parametros($request);
 
             return strpos($request->url(), 'googleapis.com/customsearch') !== false
-                && ($p['q'] ?? '') === 'Ferretería'
+                && ($p['q'] ?? '') === 'Ferretería productos'
                 && !array_key_exists('imgDominantColor', $p);
         });
 
         /* Bazar resolvió en q1: nunca hubo q2 para Bazar. */
         Http::assertNotSent(function ($request) use ($parametros) {
             return strpos($request->url(), 'googleapis.com/customsearch') !== false
-                && ($parametros($request)['q'] ?? '') === 'Bazar';
+                && ($parametros($request)['q'] ?? '') === 'Bazar productos';
         });
 
         /* Y la cuota se movió una vez por búsqueda hecha: 1 de Bazar + 2 de Ferretería. */

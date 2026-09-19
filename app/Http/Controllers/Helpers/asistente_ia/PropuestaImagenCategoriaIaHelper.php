@@ -159,4 +159,27 @@ class PropuestaImagenCategoriaIaHelper
             'texto'  => 'Ver categorías',
         ];
     }
+
+    /**
+     * "No usarla": la candidata que la tarjeta tenía preparada en disco se borra. Best-effort y
+     * después de que la tarjeta ya quedó cancelada (lo llama EjecutorAccionesIaHelper::cancelar
+     * afuera de su transacción): un archivo que no se deja borrar no deshace la cancelación, y la
+     * purga de tres días lo agarra después. El nombre se valida con ruta_de_candidata(): nunca se
+     * borra algo que no sea un `catcand_<uuid>.webp`.
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return bool  true si se borró un archivo.
+     */
+    public static function al_cancelar(AiMessageAction $accion)
+    {
+        $datos = is_array($accion->datos) ? $accion->datos : [];
+
+        $ruta = CategoriaImagenHelper::ruta_de_candidata(isset($datos['archivo']) ? $datos['archivo'] : '');
+
+        if (is_null($ruta) || !is_file($ruta)) {
+            return false;
+        }
+
+        return (bool) @unlink($ruta);
+    }
 }

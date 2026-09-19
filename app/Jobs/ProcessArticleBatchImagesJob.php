@@ -72,6 +72,15 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
     protected $batch_uuid = '';
 
     /**
+     * @var int|null Id del registro visible que abrió ImagenesAutomaticasHelper::encolar() en
+     * `pendiente`. Con él el job retoma ESE registro y no "el último activo del tipo": con dos lotes
+     * seguidos del mismo comercio, el último activo era el del otro lote, y el propio quedaba
+     * "En espera del procesador" hasta que cerrar_colgados lo daba por muerto. Null (un job encolado
+     * antes de este cambio, o un despacho que no pasó por el helper) → se cae al último activo.
+     */
+    protected $background_process_id = null;
+
+    /**
      * @param array  $article_ids    IDs de los artículos a procesar.
      * @param int    $user_id        ID del usuario dueño.
      * @param string $google_api_key Clave de Google Custom Search API.
@@ -85,7 +94,8 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         string $google_api_key,
         string $cx,
         int $google_cuota,
-        $batch_uuid = ''
+        $batch_uuid = '',
+        $background_process_id = null
     ) {
         $this->article_ids   = $article_ids;
         $this->user_id       = $user_id;
@@ -93,6 +103,7 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         $this->cx            = $cx;
         $this->google_cuota  = $google_cuota;
         $this->batch_uuid    = (string) $batch_uuid;
+        $this->background_process_id = is_null($background_process_id) ? null : (int) $background_process_id;
     }
 
     /**
@@ -782,7 +793,20 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      */
     private function retomar_o_abrir_proceso_visible(array $opciones)
     {
-        $pendiente = $this->proceso_visible_abierto();
+        $pendiente = null;
+
+        // Primero el registro que abrió quien encoló (por id); si no vino o ya no está pendiente,
+        // el último activo del tipo, como antes.
+        if (!is_null($this->background_process_id)) {
+            $pendiente = BackgroundProcess::where('user_id', $this->user_id)
+                ->where('id', $this->background_process_id)
+                ->where('tipo', 'imagenes_automaticas')
+                ->first();
+        }
+
+        if (is_null($pendiente) || $pendiente->status !== BackgroundProcess::STATUS_PENDIENTE) {
+            $pendiente = $this->proceso_visible_abierto();
+        }
 
         if (!is_null($pendiente) && $pendiente->status === BackgroundProcess::STATUS_PENDIENTE) {
             $opciones['forzar_broadcast'] = true;

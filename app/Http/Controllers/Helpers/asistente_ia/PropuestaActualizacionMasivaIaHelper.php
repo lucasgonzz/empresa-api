@@ -252,16 +252,58 @@ class PropuestaActualizacionMasivaIaHelper
 
         $auth_user_id = !is_null($persona) ? (int) $persona->id : (int) $contexto->conversation->auth_user_id;
 
-        $resultado = MasiveUpdateHelper::encolar_actualizacion(
-            'article',
-            true,
-            $filter_form,
-            $update_form,
-            [],
-            $contexto->owner_id,
-            $auth_user_id,
-            self::filtro_de_imagen($imagen)
-        );
+        /*
+         * 🔴 LA CANTIDAD SE RE-CUENTA ANTES DE ENCOLAR Y SE COMPARA CON LA QUE VIO LA PERSONA. La
+         * tarjeta decía "214 artículos" cuando se propuso; si entre la tarjeta y el clic entraron
+         * artículos que cumplen el filtro (una importación, una carga), la persona estaría
+         * confirmando otra cosa. Con más de un 10 % (y más de 3) de diferencia se corta y se pide
+         * de nuevo: es un conteo, no una masiva, y evita el "confirmé 214 y tocó 400".
+         */
+        $estimado = isset($datos['total_estimado']) ? (int) $datos['total_estimado'] : 0;
+        $fresco   = FiltroDeArticulosIaHelper::contar($contexto->owner_id, $filter_form, $imagen);
+
+        if ($estimado > 0 && abs($fresco - $estimado) > max(3, (int) ceil($estimado * 0.10))) {
+
+            throw new AccionIaException(422, 'Cambió la cantidad de artículos que cumplen el filtro (eran ' . $estimado . ', ahora son ' . $fresco . '): pedímelo de nuevo para ver la cantidad actual.');
+        }
+
+        /*
+         * Con al menos un filtro de columna, se encola por el MISMO camino que la pantalla
+         * (SearchController::search + ColumnFiltersHelper), y el filtro de imagen —que no es una
+         * columna— se aplica sobre lo resuelto. Con SOLO el filtro de imagen no hay columna que
+         * acote el search, y "traer el catálogo entero con withAll() para filtrarlo en PHP" en el
+         * request del clic es un OOM en un catálogo grande (chequeo 2 de la misión): en ese caso los
+         * ids se resuelven en SQL (whereDoesntHave/whereHas) y se encolan como selección, con el
+         * criterio legible en el historial.
+         */
+        if (!count($filter_form) && !is_null($imagen)) {
+
+            $ids = FiltroDeArticulosIaHelper::ids($contexto->owner_id, [], $imagen);
+
+            $resultado = MasiveUpdateHelper::encolar_actualizacion(
+                'article',
+                false,
+                [],
+                $update_form,
+                $ids,
+                $contexto->owner_id,
+                $auth_user_id,
+                null,
+                [['key' => 'imagen', 'operator' => $imagen, 'value' => true, 'type' => 'imagen']]
+            );
+        } else {
+
+            $resultado = MasiveUpdateHelper::encolar_actualizacion(
+                'article',
+                true,
+                $filter_form,
+                $update_form,
+                [],
+                $contexto->owner_id,
+                $auth_user_id,
+                self::filtro_de_imagen($imagen)
+            );
+        }
 
         if ((int) $resultado['status'] !== 200) {
 

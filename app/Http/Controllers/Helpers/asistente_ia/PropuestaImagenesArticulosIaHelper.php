@@ -33,6 +33,8 @@ class PropuestaImagenesArticulosIaHelper
     /** Tope de artículos por tanda, el mismo que la masiva. */
     const TOPE = 3000;
 
+    const MENSAJE_SIN_CUOTA = 'No quedan búsquedas de imágenes por hoy: la cuota diaria de Google ya se usó. Pedímelo de nuevo mañana.';
+
     /** Cuántas búsquedas de Google puede consumir un artículo (código de barras + nombre). */
     const BUSQUEDAS_POR_ARTICULO = 2;
 
@@ -97,6 +99,11 @@ class PropuestaImagenesArticulosIaHelper
         }
 
         $cuota = ImagenesAutomaticasHelper::cuota_de($contexto->owner);
+
+        if ((int) $cuota['disponibles'] <= 0) {
+
+            return RespuestaDeCargaIa::error(self::MENSAJE_SIN_CUOTA);
+        }
 
         $renglones = [
             ['etiqueta' => 'Artículos', 'valor' => self::detalle_de_articulos($a_procesar, $parametros['orden'], $parametros['limite'], $imagen)],
@@ -193,6 +200,14 @@ class PropuestaImagenesArticulosIaHelper
         if (count($ids) > self::TOPE) {
 
             throw new AccionIaException(422, 'Son ' . count($ids) . ' artículos y el tope de una tanda es ' . self::TOPE . '. Pedímelo de nuevo con un filtro más acotado.');
+        }
+
+        // Se re-mira la cuota al confirmar: la tarjeta pudo quedar propuesta a la mañana y el lote
+        // del listado gastar las búsquedas del día en el medio. Encolar con cuota cero es decir
+        // "mandé a buscar" y que el job termine al toque con todo sin procesar.
+        if ((int) ImagenesAutomaticasHelper::cuota_de($contexto->owner)['disponibles'] <= 0) {
+
+            throw new AccionIaException(422, self::MENSAJE_SIN_CUOTA);
         }
 
         $persona = $contexto->persona;

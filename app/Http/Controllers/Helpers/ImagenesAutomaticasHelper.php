@@ -139,7 +139,8 @@ class ImagenesAutomaticasHelper
             $credenciales['api_key'],
             $credenciales['cx'],
             $credenciales['cuota'],
-            $batch_uuid
+            $batch_uuid,
+            is_null($proceso) ? null : (int) $proceso->id
         )->afterCommit();
 
         return [

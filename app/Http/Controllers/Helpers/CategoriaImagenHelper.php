@@ -40,8 +40,23 @@ class CategoriaImagenHelper
      */
     public static function asignar(Category $categoria, $url_publica)
     {
+        $anterior = trim((string) $categoria->image_url);
+
         $categoria->image_url = (string) $url_publica;
         $categoria->save();
+
+        /*
+         * La imagen que había NO se borra del disco: reemplazar solo pasa con la confirmación de la
+         * persona (alcance "todas"), y si se arrepiente, el archivo anterior sigue ahí para volver a
+         * cargarlo desde el ABM. Queda el rastro de cuál era, que es lo que hace posible volver.
+         */
+        if ($anterior !== '' && $anterior !== (string) $url_publica) {
+            Log::warning('CategoriaImagenHelper: imagen de categoría reemplazada desde el asistente.', [
+                'category_id' => (int) $categoria->id,
+                'anterior'    => $anterior,
+                'nueva'       => (string) $url_publica,
+            ]);
+        }
 
         if (!env('USA_TIENDA_NUBE', false)) {
             return;

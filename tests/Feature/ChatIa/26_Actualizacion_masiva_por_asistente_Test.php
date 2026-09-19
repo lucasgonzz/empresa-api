@@ -452,6 +452,77 @@ class Actualizacion_masiva_por_asistente_Test extends TestCase
      * @group chat-ia
      * @test
      */
+    public function con_solo_el_filtro_de_imagen_los_ids_se_resuelven_en_sql_y_el_historial_dice_el_criterio()
+    {
+        $this->dar_extension();
+
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        // Solo "sin imagen", sin ninguna columna: la pantalla no llega a este caso (exige una
+        // columna) y el asistente lo resuelve en SQL, no trayendo el catálogo entero con withAll().
+        $respuesta = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input_del_margen([
+            'filtros' => [['campo' => 'imagen', 'operador' => 'en_blanco']],
+        ]));
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        Image::create(['imageable_id' => $this->de_la_bulonera[1]->id, 'imageable_type' => 'article', 'hosting_url' => 'https://ejemplo.test/p26.webp']);
+
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        Queue::fake();
+        Event::fake([BackgroundProcessUpdated::class]);
+        $this->actuar_como($this->comercio);
+
+        $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar')->assertStatus(200);
+
+        $masiva = MasiveUpdate::where('user_id', $this->comercio->id)->orderBy('id', 'DESC')->first();
+        $criteria = json_decode($masiva->criteria_json, true);
+
+        $this->assertFalse($masiva->from_filter, 'Sin columna, la selección va por ids resueltos en SQL.');
+        $this->assertEqualsCanonicalizing([(int) $this->de_la_bulonera[0]->id, (int) $this->de_pinturas->id], $criteria['resolved_models_id'], 'Todos los sin imagen del comercio; la tuerca con imagen no.');
+        $this->assertSame([['key' => 'imagen', 'operator' => 'en_blanco', 'value' => true, 'type' => 'imagen']], $criteria['used_filters'], 'El historial dice el criterio, no "Seleccion manual".');
+    }
+
+    /**
+     * @group chat-ia
+     * @test
+     */
+    public function si_la_cantidad_cambio_mucho_entre_la_tarjeta_y_el_clic_se_pide_de_nuevo()
+    {
+        $this->dar_extension();
+
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $respuesta = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input_del_margen());
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame(2, AiMessageAction::find($respuesta['tarjeta_id'])->datos['total_estimado']);
+
+        // Entre la tarjeta y el clic entran 6 artículos más de la bulonera: de 2 a 8.
+        for ($i = 0; $i < 6; $i++) {
+            $this->articulo(['name' => 'zz-p26 nuevo ' . $i, 'provider_id' => $this->bulonera->id]);
+        }
+
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        Queue::fake();
+        $this->actuar_como($this->comercio);
+
+        $confirmacion = $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $respuesta['tarjeta_id'] . '/confirmar');
+
+        $confirmacion->assertStatus(422);
+        $this->assertSame('Cambió la cantidad de artículos que cumplen el filtro (eran 2, ahora son 8): pedímelo de nuevo para ver la cantidad actual.', $confirmacion->json('model.error_mensaje'));
+        Queue::assertNothingPushed();
+        $this->assertSame(0, MasiveUpdate::where('user_id', $this->comercio->id)->count());
+    }
+
+    /**
+     * @group chat-ia
+     * @test
+     */
     public function un_empleado_sin_article_update_no_puede_proponer_ni_confirmar()
     {
         list($conversation_del_dueno, $assistant_del_dueno) = $this->conversacion();

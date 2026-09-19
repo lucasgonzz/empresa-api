@@ -354,6 +354,12 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
             '"El fondo no es blanco del todo, es una mesa de madera." Ejemplo malo (no hacer esto):',
             '"The background appears to be wooden."',
             '',
+            'Los nombres son los rubros de un comercio argentino: "Bazar" es menaje de cocina, mesa y',
+            'hogar (ollas, vasos, platos, fuentes), no ropa, no un mercado ni un local; "Librería" es',
+            'artículos de papelería y escolares; "Limpieza" son productos de limpieza; "Jardín" son',
+            'herramientas, macetas y muebles de jardín, no un jardín. Una imagen de un local, una',
+            'fachada, una calle o una escena de uso no representa la categoría.',
+            '',
             'REGLA ANTI-COMPLACENCIA (la más importante, no la relajes): "confianza" es "high" solo',
             'si estás seguro de las tres cosas a la vez (representa, fondo blanco, calidad). Si',
             'dudás de alguna, bajá a "medium": la persona va a decidir mirando la imagen, y eso es',
@@ -370,8 +376,16 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
      */
     protected function build_user_prompt_categoria(string $nombre_categoria): string
     {
+        /*
+         * El nombre lo escribió el comercio y viaja adentro del prompt: se aplana a una sola línea
+         * y va entre comillas, para que un nombre con saltos de línea no pueda colar instrucciones
+         * ni romper el formato. Es del propio dueño, pero es gratis y evita un JSON inválido.
+         */
+        $nombre = trim((string) preg_replace('/\s+/u', ' ', str_replace('"', "'", (string) $nombre_categoria)));
+        $nombre = mb_substr($nombre, 0, 120);
+
         return implode("\n", [
-            'CATEGORÍA DEL COMERCIO: '.($nombre_categoria !== '' ? $nombre_categoria : '(sin nombre)'),
+            'CATEGORÍA DEL COMERCIO: "'.($nombre !== '' ? $nombre : '(sin nombre)').'"',
             '',
             '¿Esta imagen sirve como imagen de esa categoría? Respondé solo con el JSON indicado.',
         ]);

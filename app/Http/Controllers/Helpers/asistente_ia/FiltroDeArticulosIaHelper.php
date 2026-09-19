@@ -92,6 +92,28 @@ class FiltroDeArticulosIaHelper
         'precio_pausado'              => ['columna' => 'precio_pausado',                 'tipo' => 'checkbox', 'etiqueta' => 'Precio pausado'],
         'es_insumo'                   => ['columna' => 'es_insumo',                      'tipo' => 'checkbox', 'etiqueta' => 'Es insumo'],
         'aplica_margen_del_proveedor' => ['columna' => 'apply_provider_percentage_gain', 'tipo' => 'checkbox', 'etiqueta' => 'Aplica margen del proveedor'],
+        /*
+         * El resto de las columnas por las que la lupa del listado filtra (src/models/article.js),
+         * para que "todos los filtros que ya se pueden hacer desde la interfaz" sea literal: lo que
+         * se edita como text/number/checkbox se filtra con el mismo tipo. Las relaciones por select
+         * (IVA, unidad de medida, bodega, cepa) no entran: se filtran por id y a la IA le llegan por
+         * nombre; si hacen falta, se suman como `relacion` con su modelo.
+         */
+        'sku'                         => ['columna' => 'sku',                            'tipo' => 'text',     'etiqueta' => 'SKU'],
+        'plu'                         => ['columna' => 'plu',                            'tipo' => 'text',     'etiqueta' => 'PLU'],
+        'descripcion'                 => ['columna' => 'descripcion',                    'tipo' => 'textarea', 'etiqueta' => 'Descripción'],
+        'titulo_seo'                  => ['columna' => 'seo_title',                      'tipo' => 'text',     'etiqueta' => 'Título para SEO'],
+        'precio_promocional'          => ['columna' => 'precio_promocional',             'tipo' => 'number',   'etiqueta' => 'Precio promocional'],
+        'margen_de_ganancia_blanco'   => ['columna' => 'percentage_gain_blanco',         'tipo' => 'number',   'etiqueta' => 'Margen de ganancia blanco'],
+        'precio_final_blanco'         => ['columna' => 'final_price_blanco',             'tipo' => 'number',   'etiqueta' => 'Precio final blanco'],
+        'costo_real'                  => ['columna' => 'costo_real',                     'tipo' => 'number',   'etiqueta' => 'Costo real'],
+        'medida'                      => ['columna' => 'medida',                         'tipo' => 'number',   'etiqueta' => 'Medida'],
+        'unidades_individuales'       => ['columna' => 'unidades_individuales',          'tipo' => 'number',   'etiqueta' => 'Unidades individuales'],
+        'aplicar_iva'                 => ['columna' => 'aplicar_iva',                    'tipo' => 'checkbox', 'etiqueta' => 'Aplicar IVA'],
+        'costo_en_dolares'            => ['columna' => 'cost_in_dollars',                'tipo' => 'checkbox', 'etiqueta' => 'Costo en dólares'],
+        'disponible_tienda_nube'      => ['columna' => 'disponible_tienda_nube',         'tipo' => 'checkbox', 'etiqueta' => 'Disponible en Tienda Nube'],
+        'en_mercado_libre'            => ['columna' => 'mercado_libre',                  'tipo' => 'checkbox', 'etiqueta' => 'En Mercado Libre'],
+        'omitir_en_lista_pdf'         => ['columna' => 'omitir_en_lista_pdf',            'tipo' => 'checkbox', 'etiqueta' => 'Omitir en lista PDF'],
         'imagen'                      => ['columna' => null,                             'tipo' => 'imagen',   'etiqueta' => 'Imagen'],
     ];
 

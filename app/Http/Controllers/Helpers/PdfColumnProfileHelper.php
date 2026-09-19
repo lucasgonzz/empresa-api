@@ -336,6 +336,42 @@ class PdfColumnProfileHelper
                 }
             }
 
+            /*
+             * (3) Las que PUEDEN ajustar texto según el catálogo (el nombre del artículo, típicamente)
+             * bajan del default hasta ANCHO_MINIMO_CON_AJUSTE_MM, y se les prende el ajuste: en vez
+             * de cortarse, el texto pasa a dos o tres renglones. Es lo que hace que un diseño con
+             * todas las columnas en su ancho por defecto igual pueda recibir una columna más sin
+             * que la persona tenga que decir a mano qué achicar (chequeo 1 de la misión: "un
+             * diseño con todo en default no se achica solo"). Las fijadas en este pedido no se tocan.
+             */
+            if ($faltante > 0) {
+                $candidatas = [];
+
+                foreach ($visibles as $indice => $fila) {
+                    if ($fila['allow_wrap_content'] && (int) $fila['ancho_mm'] > self::ANCHO_MINIMO_CON_AJUSTE_MM && !isset($fijadas[(int) $fila['option_id']])) {
+                        $candidatas[] = $indice;
+                    }
+                }
+
+                usort($candidatas, function ($a, $b) use ($visibles) {
+                    return $visibles[$b]['ancho_mm'] <=> $visibles[$a]['ancho_mm'];
+                });
+
+                foreach ($candidatas as $indice) {
+                    if ($faltante <= 0) {
+                        break;
+                    }
+
+                    $antes = (int) $visibles[$indice]['ancho_mm'];
+
+                    $faltante = self::achicar($visibles, $indice, self::ANCHO_MINIMO_CON_AJUSTE_MM, $faltante, $ajustes);
+
+                    if ((int) $visibles[$indice]['ancho_mm'] < $antes) {
+                        $visibles[$indice]['ajusta_texto'] = true;
+                    }
+                }
+            }
+
             if ($faltante > 0) {
                 $mas_ancha = null;
 

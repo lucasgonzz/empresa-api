@@ -457,7 +457,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'consultar_categorias_sin_imagen',
-                'description'  => 'Devuelve cuántas categorías tiene el negocio, cuáles no tienen imagen (con cuántos artículos tiene cada una) y cuántas búsquedas de imágenes quedan disponibles hoy en la cuota diaria de Google. Usala antes de proponer_imagenes_para_categorias, y cuando te pregunten qué categorías están sin imagen.',
+                'description'  => 'Devuelve cuántas categorías tiene el negocio, cuáles no tienen imagen (con cuántos artículos tiene cada una) y cuántas búsquedas de imágenes quedan disponibles hoy en la cuota diaria de Google. Usala antes de proponer_imagenes_para_categorias, y cuando te pregunten qué categorías están sin imagen. Si la persona ya te pidió que asignes las imágenes, después de consultar llamá a proponer_imagenes_para_categorias en la misma vuelta: no le preguntes si mandás la búsqueda.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => new \stdClass(),
@@ -956,6 +956,17 @@ class HerramientasDeCarga
             return $respuesta;
         }
 
+        /*
+         * Una propuesta de un tipo auto-confirmable puede pedir igual la confirmación de la persona
+         * cuando ESTA tanda no es inocua: hoy, imágenes de categorías que van a REEMPLAZAR imágenes ya
+         * cargadas (PropuestaImagenesCategoriasIaHelper marca `requiere_confirmacion`). El tipo dice
+         * "en general se puede"; la propuesta dice "esta vez no". Se respeta la propuesta.
+         */
+        if (!empty($respuesta['requiere_confirmacion'])) {
+
+            return $respuesta;
+        }
+
         $owner = $contexto->owner;
 
         // Solo "resuelto" auto-ejecuta; "cauteloso" (y cualquier otro valor, o dueño nulo) deja la
@@ -1052,7 +1063,7 @@ class HerramientasDeCarga
     {
         return [
             'type'        => 'array',
-            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Lista vacía = sin filtro.',
+            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Lista vacía = sin filtro.',
             'items'       => [
                 'type'       => 'object',
                 'properties' => [

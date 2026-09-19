@@ -48,6 +48,8 @@ class PropuestaImagenesCategoriasIaHelper
     /** Búsquedas que puede usar una categoría (q1 con fondo blanco y q2 sin filtro). */
     const BUSQUEDAS_POR_CATEGORIA = 2;
 
+    const MENSAJE_SIN_CUOTA = 'No quedan búsquedas de imágenes por hoy: la cuota diaria de Google ya se usó. Pedímelo de nuevo mañana.';
+
     const AVISO = 'Cada categoría usa hasta 2 búsquedas de la cuota diaria de Google. Las que no me convenzan te las voy a mostrar acá para que decidas.';
 
     /**
@@ -139,36 +141,105 @@ class PropuestaImagenesCategoriasIaHelper
 
         $cuota = self::cuota_de($contexto->owner);
 
+        if ((int) $cuota['disponibles'] <= 0) {
+            return RespuestaDeCargaIa::error(self::MENSAJE_SIN_CUOTA);
+        }
+
         $nombres = [];
 
         foreach ($seleccion as $item) {
             $nombres[] = $item['nombre'];
         }
 
+        /*
+         * 🔴 Reemplazar una imagen que ya está cargada NO es inocuo: la foto que el negocio eligió
+         * a mano se pisa y no vuelve sola. Por eso, si la selección incluye categorías que ya tienen
+         * imagen (alcance 'todas', o una nombrada que ya la tiene), la tarjeta se marca como
+         * "requiere confirmación" y HerramientasDeCarga no la auto-confirma ni en "resuelto": la
+         * persona ve cuáles se van a reemplazar y decide con el botón. Lo que solo llena huecos
+         * sigue yendo directo.
+         */
+        $con_imagen = self::nombres_con_imagen($contexto->owner_id, $seleccion);
+
         $renglones = [
             ['etiqueta' => 'Categorías', 'valor' => count($seleccion).' ('.$descripcion.')'],
             ['etiqueta' => 'Cuáles', 'valor' => self::lista_de_nombres($nombres)],
-            ['etiqueta' => 'Búsquedas disponibles hoy', 'valor' => $cuota['disponibles'].' de '.$cuota['cuota']],
         ];
+
+        if (count($con_imagen)) {
+            $renglones[] = ['etiqueta' => 'Se reemplaza la imagen de', 'valor' => self::lista_de_nombres($con_imagen)];
+        }
+
+        $renglones[] = ['etiqueta' => 'Búsquedas disponibles hoy', 'valor' => $cuota['disponibles'].' de '.$cuota['cuota']];
+
+        $aviso = count($con_imagen)
+            ? self::AVISO.' Las que ya tienen imagen la van a perder si encuentro otra: por eso te pido que confirmes.'
+            : self::AVISO;
 
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             self::TIPO,
             self::CLAVE,
-            ['categorias' => $seleccion, 'alcance' => $alcance],
-            ['titulo' => 'Imágenes para categorías', 'renglones' => $renglones, 'aviso' => self::AVISO],
+            ['categorias' => $seleccion, 'alcance' => $alcance, 'reemplaza_existentes' => count($con_imagen) > 0],
+            ['titulo' => 'Imágenes para categorías', 'renglones' => $renglones, 'aviso' => $aviso],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
+
+        $extra = [
+            'busquedas_disponibles_hoy' => $cuota['disponibles'],
+            'cuota_diaria'              => $cuota['cuota'],
+        ];
+
+        if (count($con_imagen)) {
+            $extra['requiere_confirmacion'] = true;
+            $extra['reemplaza_la_imagen_de'] = $con_imagen;
+            $extra['nota'] = 'Esta tanda reemplaza imágenes que ya están cargadas: queda la tarjeta para que la persona confirme, aunque su confianza esté en "resuelto". No digas que ya la mandaste.';
+        }
 
         return AccionesIaHelper::respuesta_de_propuesta(
             $creada,
             'Imágenes para '.count($seleccion).' categorías ('.$descripcion.')',
-            [
-                'busquedas_disponibles_hoy' => $cuota['disponibles'],
-                'cuota_diaria'              => $cuota['cuota'],
-            ]
+            $extra
         );
+    }
+
+    /**
+     * Los nombres de las categorías de la selección que YA tienen imagen cargada (las que una
+     * tanda reemplazaría), en el orden de la selección.
+     *
+     * @param  int    $owner_id
+     * @param  array  $seleccion  [['id', 'nombre', 'buscar_como'], ...]
+     * @return array<int, string>
+     */
+    protected static function nombres_con_imagen($owner_id, array $seleccion)
+    {
+        $ids = [];
+
+        foreach ($seleccion as $item) {
+            $ids[] = (int) $item['id'];
+        }
+
+        if (!count($ids)) {
+            return [];
+        }
+
+        $con_imagen = Category::where('user_id', $owner_id)
+            ->whereIn('id', $ids)
+            ->whereNotNull('image_url')
+            ->where('image_url', '!=', '')
+            ->pluck('id')
+            ->all();
+
+        $nombres = [];
+
+        foreach ($seleccion as $item) {
+            if (in_array((int) $item['id'], $con_imagen, true)) {
+                $nombres[] = $item['nombre'];
+            }
+        }
+
+        return $nombres;
     }
 
     /**
@@ -215,11 +286,20 @@ class PropuestaImagenesCategoriasIaHelper
             throw new AccionIaException(422, 'No pude identificar la cuenta. Pedímelo de nuevo.');
         }
 
+        // Se re-mira la cuota al confirmar: la tarjeta pudo quedar propuesta a la mañana y el
+        // lote del listado gastar las búsquedas del día en el medio. Encolar con cuota cero es
+        // decirle "mandé a buscar" y que el job termine al toque con todo en sin_cuota.
+        if ((int) self::cuota_de($contexto->owner)['disponibles'] <= 0) {
+            throw new AccionIaException(422, self::MENSAJE_SIN_CUOTA);
+        }
+
         $credenciales = self::credenciales($contexto->owner);
+
+        $alcance = isset($datos['alcance']) && $datos['alcance'] === 'todas' ? 'todas' : 'sin_imagen';
 
         $total = count($categorias);
 
-        BackgroundProcessHelper::iniciar($contexto->owner_id, ProcessCategoryImagesJob::TIPO_PROCESO, ProcessCategoryImagesJob::TITULO_PROCESO, [
+        $proceso = BackgroundProcessHelper::iniciar($contexto->owner_id, ProcessCategoryImagesJob::TIPO_PROCESO, ProcessCategoryImagesJob::TITULO_PROCESO, [
             'auth_user_id' => is_null($contexto->persona) ? null : (int) $contexto->persona->id,
             'total'        => $total,
             'unidad'       => 'categorías',
@@ -244,7 +324,9 @@ class PropuestaImagenesCategoriasIaHelper
             $categorias,
             (string) $credenciales['api_key'],
             (string) $credenciales['cx'],
-            (int) $credenciales['cuota']
+            (int) $credenciales['cuota'],
+            $alcance,
+            is_null($proceso) ? null : (int) $proceso->id
         )->afterCommit();
 
         return [
@@ -256,9 +338,10 @@ class PropuestaImagenesCategoriasIaHelper
     /**
      * Las categorías que la persona nombró, resueltas por nombre contra las del dueño.
      *
-     * Coincidencia exacta (sin distinguir mayúsculas) gana; si no, LIKE %nombre%: una sola → esa;
-     * varias → `faltan` con las opciones; ninguna → error. Se resuelve acá y no en el helper de
-     * filtros de A para no depender del orden en que terminan los dos constructores.
+     * Usa FiltroDeArticulosIaHelper::resolver_relacion, que es la MISMA resolución que aplica el
+     * filtro de artículos y la masiva ("categoría = Tornillos"): coincidencia exacta gana, LIKE
+     * con los comodines escapados, una sola → esa, varias → `faltan` con las opciones, ninguna →
+     * error. Un solo criterio para "a qué categoría te referís" en todo el asistente.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array              $pedidas  [{nombre, buscar_como}]
@@ -279,29 +362,10 @@ class PropuestaImagenesCategoriasIaHelper
                 continue;
             }
 
-            $candidatas = Category::where('user_id', $contexto->owner_id)
-                ->where('name', 'LIKE', '%'.$nombre.'%')
-                ->orderBy('name')
-                ->get();
+            $elegida = FiltroDeArticulosIaHelper::resolver_relacion($contexto->owner_id, 'categoria', $nombre);
 
-            $exactas = $candidatas->filter(function ($categoria) use ($nombre) {
-                return mb_strtolower(trim((string) $categoria->name)) === mb_strtolower($nombre);
-            })->values();
-
-            if (count($exactas) === 1) {
-                $elegida = $exactas[0];
-            } elseif (count($candidatas) === 1) {
-                $elegida = $candidatas[0];
-            } elseif (count($candidatas) === 0) {
-                return RespuestaDeCargaIa::error('No encontré ninguna categoría que se llame "'.$nombre.'".');
-            } else {
-                $opciones = [];
-
-                foreach ($candidatas as $categoria) {
-                    $opciones[] = ['id' => (int) $categoria->id, 'nombre' => (string) $categoria->name];
-                }
-
-                return RespuestaDeCargaIa::faltan(['a cuál categoría te referís con "'.$nombre.'"'], ['categorias' => $opciones]);
+            if (RespuestaDeCargaIa::es_negativa($elegida)) {
+                return $elegida;
             }
 
             $buscar_como = EntradaDeCargaIa::texto($pedida, 'buscar_como');

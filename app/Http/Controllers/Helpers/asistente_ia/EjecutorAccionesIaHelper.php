@@ -182,7 +182,21 @@ class EjecutorAccionesIaHelper {
             return self::respuesta_de_negocio($accion_id, $e);
         }
 
-        return self::respuesta(200, ['model' => AiMessageAction::find((int) $accion_id)]);
+        $accion = AiMessageAction::find((int) $accion_id);
+
+        /*
+         * Lo que una tarjeta dejó preparado en disco y ya no va a usar se limpia ACÁ, después de
+         * la transacción y sin poder voltear la cancelación (best-effort). Hoy es una sola: la
+         * candidata `catcand_*.webp` de "Imagen para la categoría X" (misión
+         * asistente-masivas-imagenes-y-remito). Sin esto el archivo vivía hasta la próxima purga,
+         * que solo corre cuando alguien vuelve a pedir imágenes de categorías.
+         */
+        if (!is_null($accion) && (string) $accion->tipo === AiMessageAction::TIPO_IMAGEN_CATEGORIA) {
+
+            PropuestaImagenCategoriaIaHelper::al_cancelar($accion);
+        }
+
+        return self::respuesta(200, ['model' => $accion]);
     }
 
     /**

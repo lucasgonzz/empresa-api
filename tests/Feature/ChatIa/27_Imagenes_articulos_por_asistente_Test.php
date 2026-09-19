@@ -208,6 +208,30 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
      * @group chat-ia
      * @test
      */
+    public function sin_busquedas_disponibles_hoy_no_se_propone_ni_se_encola()
+    {
+        // La cuota del día ya se usó entera (el botón del listado, por ejemplo).
+        GeocoderCounter::create(['user_id' => $this->comercio->id, 'counter' => 10]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        Queue::fake();
+
+        $resultado = HerramientasDeCarga::ejecutar('proponer_imagenes_para_articulos', [
+            'filtros' => [['campo' => 'proveedor', 'operador' => 'igual', 'valor' => 'Bulonera P27']],
+        ], $conversation, $assistant);
+
+        $contenido = json_decode($resultado['content'], true);
+        $this->assertFalse($contenido['ok'], $resultado['content']);
+        $this->assertSame(PropuestaImagenesArticulosIaHelper::MENSAJE_SIN_CUOTA, $contenido['error']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+        Queue::assertNothingPushed();
+    }
+
+    /**
+     * @group chat-ia
+     * @test
+     */
     public function en_cauteloso_queda_la_tarjeta_propuesta_con_los_renglones_del_contrato_y_no_encola_nada()
     {
         $this->comercio->agente_confianza = 'cauteloso';

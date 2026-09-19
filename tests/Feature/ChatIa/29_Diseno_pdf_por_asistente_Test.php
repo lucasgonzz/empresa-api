@@ -196,19 +196,38 @@ class Diseno_pdf_por_asistente_Test extends TestCase
     }
 
     /** @test */
-    public function un_empleado_sin_admin_no_consulta_ni_propone()
+    public function un_empleado_sin_admin_puede_consultar_pero_no_proponer()
     {
         $profile = $this->sin_precios();
         list($conversation, $assistant) = $this->conversacion($this->empleado);
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
 
+        // Leer qué columnas tiene un remito no cambia nada: no exige dueño (el ABM lo muestra igual).
         $respuesta = PropuestaDisenoPdfIaHelper::consultar($contexto, 'venta');
-        $this->assertFalse($respuesta['ok']);
-        $this->assertSame(PropuestaDisenoPdfIaHelper::MENSAJE_SIN_PERMISO, $respuesta['error']);
+        $this->assertTrue($respuesta['ok']);
+        $this->assertSame('Sin Precios', $respuesta['disenos'][0]['nombre']);
 
+        // Cambiarlo, sí.
         $respuesta = PropuestaDisenoPdfIaHelper::proponer($contexto, $assistant, $this->agregar_categoria($profile));
         $this->assertFalse($respuesta['ok']);
         $this->assertSame(PropuestaDisenoPdfIaHelper::MENSAJE_SIN_PERMISO, $respuesta['error']);
+    }
+
+    /** @test */
+    public function sin_posicion_no_se_asume_al_final_se_pregunta()
+    {
+        $profile = $this->sin_precios();
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $respuesta = PropuestaDisenoPdfIaHelper::proponer($contexto, $assistant, [
+            'diseno_id' => $profile->id,
+            'agregar'   => [['columna' => 'Categoria del articulo']],
+        ]);
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame(['dónde va Categoria del articulo: al final, al principio, antes o después de cuál columna'], $respuesta['faltan']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
     }
 
     /** @test */
@@ -345,6 +364,45 @@ class Diseno_pdf_por_asistente_Test extends TestCase
         $this->assertSame(2, $pivot['Nombre del artículo']['order']);
         $this->assertSame(132, $pivot['Nombre del artículo']['width']);
         $this->assertSame(3, $pivot['Cantidad']['order']);
+    }
+
+    /** @test */
+    public function con_todo_en_su_ancho_por_defecto_la_que_ajusta_texto_baja_del_default_y_se_le_prende_el_ajuste()
+    {
+        // Hoja angosta (150 mm útiles) con todas las columnas en su ancho por defecto y el nombre
+        // SIN ajuste: 8 + 15 + 30 + 72 + 15 = 140. Categoria (35) no entra: faltan 25.
+        $profile = $this->sin_precios(false);
+        $profile->update(['printable_width_mm' => 160, 'margin_mm' => 5]);
+        PdfColumnProfileSeederHelper::assign_profile_options($profile, 'sale', [
+            'Índice de fila', 'Número de artículo', 'Código de barras', 'Nombre del artículo', 'Cantidad',
+        ]);
+        $profile = $profile->fresh();
+        $this->assertSame(72, $this->pivot($profile)['Nombre del artículo']['width']);
+
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $respuesta = PropuestaDisenoPdfIaHelper::proponer($contexto, $assistant, [
+            'diseno_id' => $profile->id,
+            'agregar'   => [['columna' => 'Categoria del articulo', 'posicion' => 'al_final']],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+        $renglones = [];
+        foreach ($accion->presentacion['renglones'] as $renglon) {
+            $renglones[$renglon['etiqueta']] = $renglon['valor'];
+        }
+        $this->assertSame('Nombre del artículo de 72 a 47 mm', $renglones['Se achica']);
+
+        PropuestaDisenoPdfIaHelper::ejecutar($contexto, $accion);
+
+        $pivot = $this->pivot($profile);
+        $this->assertSame(47, $pivot['Nombre del artículo']['width']);
+        $this->assertTrue($pivot['Nombre del artículo']['wrap_content'], 'Al bajar del default se le prende el ajuste de texto: el nombre pasa a dos renglones en vez de cortarse.');
+        $this->assertTrue($pivot['Categoria del articulo']['visible']);
+        $this->assertSame(150, 8 + 15 + 30 + 47 + 15 + 35);
     }
 
     /** @test */

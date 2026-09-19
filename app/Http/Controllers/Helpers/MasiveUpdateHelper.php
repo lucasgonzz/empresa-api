@@ -95,9 +95,11 @@ class MasiveUpdateHelper
      * @param  int  $owner_id
      * @param  int  $auth_user_id
      * @param  callable|null  $filtro_extra
+     * @param  array|null  $used_filters_manual  Solo sin $from_filter: el criterio legible que
+     *                                           reemplaza a "Seleccion manual" en el historial.
      * @return array  ['status' => 200|422, 'body' => array]
      */
-    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null)
+    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null, $used_filters_manual = null)
     {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
@@ -143,11 +145,16 @@ class MasiveUpdateHelper
             foreach ($models_id as $id) {
                 $models[] = $formated_model_name::find($id);
             }
-            $used_filters = [
-                [
-                    'key'       => 'Seleccion manual'
-                ],
-            ];
+            // Una selección que resolvió el asistente por un criterio que no es una columna
+            // (los artículos sin imagen) deja ese criterio legible en el historial en vez de
+            // "Seleccion manual", que es lo que se guarda cuando la persona tildó de a uno.
+            $used_filters = is_array($used_filters_manual) && count($used_filters_manual)
+                ? $used_filters_manual
+                : [
+                    [
+                        'key'       => 'Seleccion manual'
+                    ],
+                ];
         }
 
         if (count($models) >= 3000) {

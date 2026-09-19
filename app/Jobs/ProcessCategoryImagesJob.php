@@ -33,8 +33,9 @@ use Illuminate\Support\Str;
  * Por categoría, en orden:
  *   1. Si el contador del día llegó a la cuota → la categoría (y las que siguen) van a
  *      `sin_cuota` y el loop corta. Es el mismo contador que usan los artículos.
- *   2. q1 = "<buscar_como|nombre> producto fondo blanco" con `imgDominantColor = white`;
- *      q2 = "<buscar_como|nombre>" sin extras, solo si q1 no dio `usar`.
+ *   2. q1 = "productos de <nombre> fondo blanco" con `imgDominantColor = white`;
+ *      q2 = "<nombre> productos" sin extras, solo si q1 no dio `usar`. Con buscar_como, el
+ *      texto de la persona va tal cual (q1 le suma "fondo blanco").
  *   3. Por candidata (máximo MAX_CANDIDATAS_POR_QUERY): prefiltro de texto → descarga y recorte
  *      (renombrada a `catcand_<uuid>.webp`, para poder purgarla) → veredicto por visión.
  *      `usar` asigna y borra el resto; `dudosa` guarda la PRIMERA (archivo + url + motivo) y
@@ -61,8 +62,19 @@ class ProcessCategoryImagesJob implements ShouldQueue
     /** @var int 30 minutos, igual que el job de artículos: cada candidata es una llamada de visión. */
     public $timeout = 1800;
 
-    /** Máximo de candidatas de Google que se evalúan por query. */
-    const MAX_CANDIDATAS_POR_QUERY = 3;
+    /**
+     * Máximo de candidatas de Google que se evalúan por query. Son 5 y no 3 (lo que usa el job
+     * de artículos) porque el piso de tamaño de abajo descarta gratis los thumbnails, que en una
+     * búsqueda de rubro suelen ser la mitad de los resultados bajables: con 3, dos o tres
+     * categorías por corrida se quedaban sin ninguna candidata que llegara a la visión.
+     */
+    const MAX_CANDIDATAS_POR_QUERY = 5;
+
+    /**
+     * Lado menor mínimo, en píxeles, para que una candidata llegue a la visión. 250 deja pasar
+     * cualquier foto de producto real y deja afuera los thumbnails de Google (100-160 px).
+     */
+    const MIN_LADO_PX = 250;
 
     /** Tipo del registro visible (contrato §5). La constante de la SPA está en tipos.js. */
     const TIPO_PROCESO = 'imagenes_categorias';
@@ -98,6 +110,21 @@ class ProcessCategoryImagesJob implements ShouldQueue
     protected $google_cuota;
 
     /**
+     * @var string 'sin_imagen' | 'todas'. Con 'sin_imagen' una categoría que al momento de
+     * procesarla YA tiene imagen (alguien la cargó a mano entre la tarjeta y el worker) se saltea
+     * en vez de pisarla. Default 'sin_imagen': un job encolado antes de este cambio se deserializa
+     * sin la property y toma el camino que no reemplaza nada.
+     */
+    protected $alcance = 'sin_imagen';
+
+    /**
+     * @var int|null Id del registro visible que abrió quien encoló (pendiente). Con él se retoma
+     * ESE registro y no "el último activo del tipo", que con dos tandas seguidas del mismo dueño
+     * era el de la otra tanda. Null (job viejo) → se cae al último activo, como antes.
+     */
+    protected $background_process_id = null;
+
+    /**
      * @param int         $owner_id
      * @param int|null    $auth_user_id
      * @param int         $ai_conversation_id
@@ -105,6 +132,8 @@ class ProcessCategoryImagesJob implements ShouldQueue
      * @param string      $google_api_key
      * @param string      $cx
      * @param int         $google_cuota
+     * @param string      $alcance                'sin_imagen' | 'todas' (ver la property).
+     * @param int|null    $background_process_id  El registro visible pendiente que abrió el encolado.
      */
     public function __construct(
         int $owner_id,
@@ -113,7 +142,9 @@ class ProcessCategoryImagesJob implements ShouldQueue
         array $categorias,
         string $google_api_key,
         string $cx,
-        int $google_cuota
+        int $google_cuota,
+        $alcance = 'sin_imagen',
+        $background_process_id = null
     ) {
         $this->owner_id           = $owner_id;
         $this->user_id            = $owner_id;
@@ -123,6 +154,8 @@ class ProcessCategoryImagesJob implements ShouldQueue
         $this->google_api_key     = $google_api_key;
         $this->cx                 = $cx;
         $this->google_cuota       = $google_cuota;
+        $this->alcance            = $alcance === 'todas' ? 'todas' : 'sin_imagen';
+        $this->background_process_id = is_null($background_process_id) ? null : (int) $background_process_id;
     }
 
     /**
@@ -159,6 +192,7 @@ class ProcessCategoryImagesJob implements ShouldQueue
         $asignadas     = [];
         $sin_resultado = [];
         $sin_cuota     = [];
+        $ya_tenian     = [];
 
         /** Una por categoría dudosa: category_id, nombre, archivo, url, motivo, buscar_como. */
         $dudosas = [];
@@ -183,6 +217,20 @@ class ProcessCategoryImagesJob implements ShouldQueue
             }
 
             $buscar_como = isset($pedido['buscar_como']) ? trim((string) $pedido['buscar_como']) : '';
+
+            /*
+             * Con alcance 'sin_imagen' la tanda es "llenar huecos": si la categoría ya tiene imagen
+             * cuando el worker llega (la cargaron a mano entre la tarjeta y ahora, o dos tandas se
+             * pisaron), NO se reemplaza. Se cuenta aparte y el cierre lo dice.
+             */
+            if ($this->alcance === 'sin_imagen' && trim((string) $categoria->image_url) !== '') {
+                $ya_tenian[] = $categoria->name;
+
+                Log::info('[ImagenesCategorias] La categoría ya tiene imagen; con alcance sin_imagen se saltea.', [
+                    'category_id' => (int) $categoria->id,
+                ]);
+                continue;
+            }
 
             if ($counter->counter >= $this->google_cuota) {
                 // Esta y todas las que siguen: no hay con qué buscar hasta mañana.
@@ -227,7 +275,7 @@ class ProcessCategoryImagesJob implements ShouldQueue
 
         Log::info('[ImagenesCategorias] Finalizado.', array_merge(['owner_id' => $this->owner_id], $resultado_final));
 
-        $this->escribir_cierre_en_la_conversacion($asignadas, $dudosas, $sin_resultado, $sin_cuota);
+        $this->escribir_cierre_en_la_conversacion($asignadas, $dudosas, $sin_resultado, $sin_cuota, $ya_tenian);
     }
 
     /**
@@ -263,11 +311,24 @@ class ProcessCategoryImagesJob implements ShouldQueue
 
         /*
          * q1 pide fondo blanco a Google (imgDominantColor) además de decirlo en el texto; q2 es
-         * el término pelado, por si el filtro de color deja afuera la única foto buena del rubro.
+         * el término sin el filtro de color, por si ese filtro deja afuera la única foto buena
+         * del rubro.
+         *
+         * 🔴 EL NOMBRE DE LA CATEGORÍA NO VA PELADO: va como "productos de <nombre>". Medido el
+         * 19/9/2026 con la primera versión ("<nombre> producto fondo blanco" / "<nombre>"): para
+         * "Bazar" Google devolvió fachadas de bazares, logos y calles; para "Jardín", fotos de
+         * jardines reales — la visión las descartó todas (bien) y las dos categorías quedaron sin
+         * imagen. El nombre de una categoría es un RUBRO, no un producto, y buscado solo trae el
+         * lugar o la escena; "productos de <rubro>" trae los artículos que se venden en ese rubro,
+         * que es lo que una imagen de categoría tiene que mostrar. Cuando la persona dijo cómo
+         * buscar (buscar_como), su texto va tal cual: ya eligió ella el término.
          */
+        $base_q1 = $buscar_como !== '' ? $termino : 'productos de '.$termino;
+        $base_q2 = $buscar_como !== '' ? $termino : $termino.' productos';
+
         $queries = [
-            ['query' => $termino.' producto fondo blanco', 'extras' => ['imgDominantColor' => 'white']],
-            ['query' => $termino, 'extras' => []],
+            ['query' => $base_q1.' fondo blanco', 'extras' => ['imgDominantColor' => 'white']],
+            ['query' => $base_q2, 'extras' => []],
         ];
 
         /** La primera dudosa de esta categoría (archivo, url, motivo), o null. */
@@ -418,6 +479,33 @@ class ProcessCategoryImagesJob implements ShouldQueue
             return null;
         }
 
+        /*
+         * 🔴 PISO DE TAMAÑO ANTES DE GASTAR UNA LLAMADA DE VISIÓN. Medido el 19/9/2026 con la
+         * primera corrida real: cuando el link directo no se deja bajar (403 de Shutterstock y
+         * parecidos) el fallback al thumbnail de Google devuelve imágenes de 100-160 px, y la
+         * visión las dio por "usar" igual — una de 109 px con marca de agua de un banco de
+         * imágenes quedó como imagen de la categoría Bazar. Una imagen de categoría se ve en la
+         * portada de la tienda: abajo de MIN_LADO_PX no sirve aunque sea "correcta", y la visión
+         * no mide píxeles. Se descarta acá, gratis, y sigue la próxima candidata.
+         */
+        $dimensiones = @getimagesizefromstring($binario);
+        $lado_menor  = is_array($dimensiones) ? min((int) $dimensiones[0], (int) $dimensiones[1]) : 0;
+
+        if ($lado_menor < self::MIN_LADO_PX) {
+            Log::info(sprintf(
+                '[ImagenesCategorias] Categoría #%d, candidata %d: descartada sin analizar, muy chica (%dx%d, el mínimo es %d px).',
+                $categoria->id,
+                $posicion,
+                is_array($dimensiones) ? (int) $dimensiones[0] : 0,
+                is_array($dimensiones) ? (int) $dimensiones[1] : 0,
+                self::MIN_LADO_PX
+            ));
+
+            $this->borrar_archivo($candidata['archivo']);
+
+            return null;
+        }
+
         $validacion = $validador->validar_para_categoria($binario, (string) $categoria->name, $this->owner_id, (int) $categoria->id);
 
         Log::info(sprintf(
@@ -489,7 +577,20 @@ class ProcessCategoryImagesJob implements ShouldQueue
      */
     protected function retomar_o_abrir_proceso_visible(array $opciones)
     {
-        $pendiente = BackgroundProcessHelper::ultimo_activo($this->owner_id, self::TIPO_PROCESO);
+        $pendiente = null;
+
+        // Primero el registro que abrió quien encoló (por id); recién si no vino o ya no está
+        // activo, el último activo del tipo (jobs encolados antes de que viajara el id).
+        if (!is_null($this->background_process_id)) {
+            $pendiente = BackgroundProcess::where('user_id', $this->owner_id)
+                ->where('id', $this->background_process_id)
+                ->where('tipo', self::TIPO_PROCESO)
+                ->first();
+        }
+
+        if (is_null($pendiente) || $pendiente->status !== BackgroundProcess::STATUS_PENDIENTE) {
+            $pendiente = BackgroundProcessHelper::ultimo_activo($this->owner_id, self::TIPO_PROCESO);
+        }
 
         if (!is_null($pendiente) && $pendiente->status === BackgroundProcess::STATUS_PENDIENTE) {
             $opciones['forzar_broadcast'] = true;
@@ -532,7 +633,7 @@ class ProcessCategoryImagesJob implements ShouldQueue
      * @param  array $sin_cuota
      * @return void
      */
-    protected function escribir_cierre_en_la_conversacion(array $asignadas, array $dudosas, array $sin_resultado, array $sin_cuota)
+    protected function escribir_cierre_en_la_conversacion(array $asignadas, array $dudosas, array $sin_resultado, array $sin_cuota, array $ya_tenian = [])
     {
         try {
             $conversation = AiConversation::where('id', $this->ai_conversation_id)
@@ -554,7 +655,7 @@ class ProcessCategoryImagesJob implements ShouldQueue
                 'tipo'                 => AiMessage::TIPO_TEXTO,
                 'estado'               => 'listo',
                 'acciones_habilitadas' => true,
-                'contenido'            => $this->texto_de_cierre($asignadas, $dudosas, $sin_resultado, $sin_cuota),
+                'contenido'            => $this->texto_de_cierre($asignadas, $dudosas, $sin_resultado, $sin_cuota, $ya_tenian),
             ]);
 
             $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
@@ -611,7 +712,7 @@ class ProcessCategoryImagesJob implements ShouldQueue
      * @param  array $sin_cuota
      * @return string
      */
-    public function texto_de_cierre(array $asignadas, array $dudosas, array $sin_resultado, array $sin_cuota)
+    public function texto_de_cierre(array $asignadas, array $dudosas, array $sin_resultado, array $sin_cuota, array $ya_tenian = [])
     {
         $renglones = ['Terminé de buscar imágenes para las categorías.'];
 
@@ -627,8 +728,8 @@ class ProcessCategoryImagesJob implements ShouldQueue
             }
 
             $renglones[] = count($dudosas) === 1
-                ? 'Para '.$nombres[0].' encontré una imagen pero no estoy seguro de que corresponda: mirá la tarjeta de abajo y decime si la uso.'
-                : 'Para '.$this->lista_de_nombres($nombres).' encontré una imagen pero no estoy seguro de que corresponda: mirá las tarjetas de abajo y decime si las uso.';
+                ? 'Para '.$nombres[0].' encontré una imagen pero no estoy seguro de que corresponda: mirá la tarjeta de abajo y, si te sirve, tocá Usar esta imagen.'
+                : 'Para '.$this->lista_de_nombres($nombres).' encontré una imagen pero no estoy seguro de que corresponda: mirá las tarjetas de abajo y tocá Usar esta imagen en las que te sirvan.';
         }
 
         if (count($sin_resultado)) {
@@ -641,6 +742,12 @@ class ProcessCategoryImagesJob implements ShouldQueue
             $renglones[] = count($sin_cuota) === 1
                 ? 'Me quedé sin búsquedas por hoy para 1 categoría ('.$sin_cuota[0].'): pedímelo de nuevo mañana.'
                 : 'Me quedé sin búsquedas por hoy para '.count($sin_cuota).' categorías ('.$this->lista_de_nombres($sin_cuota, ', ').'): pedímelo de nuevo mañana.';
+        }
+
+        if (count($ya_tenian)) {
+            $renglones[] = count($ya_tenian) === 1
+                ? $ya_tenian[0].' ya tenía imagen cuando llegué, así que la dejé como estaba.'
+                : $this->lista_de_nombres($ya_tenian).' ya tenían imagen cuando llegué, así que las dejé como estaban.';
         }
 
         return implode("\n", $renglones);

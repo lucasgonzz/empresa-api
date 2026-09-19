@@ -46,10 +46,12 @@ class PropuestaDisenoPdfIaHelper
      */
     public static function consultar(ContextoDeCargaIa $contexto, $tipo = null)
     {
-        if (!PermisosIaHelper::es_admin($contexto->persona)) {
-            return RespuestaDeCargaIa::error(self::MENSAJE_SIN_PERMISO);
-        }
-
+        /*
+         * Sin gate de dueño a propósito: leer qué columnas tiene un remito no cambia nada (el
+         * ABM lo muestra a cualquiera que entre), y la persona puede estar preguntando "¿qué
+         * columnas tiene el remito?" sin querer tocarlo. Lo que sí exige dueño es proponer() y
+         * ejecutar(), que escriben.
+         */
         $tipo = is_null($tipo) ? '' : trim((string) $tipo);
 
         if ($tipo !== '' && !isset(self::TIPOS[$tipo])) {
@@ -318,8 +320,13 @@ class PropuestaDisenoPdfIaHelper
 
             $posicion = EntradaDeCargaIa::texto($pedido, 'posicion');
 
+            /*
+             * 🔴 Sin posición NO se asume "al final": se pregunta. Lucas lo pidió así ("el agente
+             * le preguntaría ¿en qué lugar querés que te aparezca?"), y el prompt lo dice, pero
+             * si la IA se lo saltea el sistema tiene que frenarla: acá es donde se frena.
+             */
             if ($posicion === '') {
-                $posicion = 'al_final';
+                return RespuestaDeCargaIa::faltan(['dónde va '.$columna->name.': al final, al principio, antes o después de cuál columna']);
             }
 
             if (!in_array($posicion, PdfColumnProfileHelper::POSICIONES, true)) {

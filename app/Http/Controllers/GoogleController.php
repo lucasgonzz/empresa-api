@@ -34,6 +34,11 @@ class GoogleController extends Controller
 
         $owner = User::find($this->userId());
 
+        // Sin dueño resuelto no hay con qué buscar (ni key, ni cuota): antes del helper tipado.
+        if (is_null($owner)) {
+            return response()->json(['message' => 'No se pudo identificar la cuenta.'], 422);
+        }
+
         $encolado = ImagenesAutomaticasHelper::encolar($owner, $request->article_ids, $this->userId(false));
 
         /*
