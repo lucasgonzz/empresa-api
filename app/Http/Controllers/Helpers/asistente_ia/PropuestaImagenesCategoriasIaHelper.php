@@ -4,14 +4,13 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\CategoriaImagenHelper;
+use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
 use App\Jobs\ProcessCategoryImagesJob;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\BackgroundProcess;
 use App\Models\Category;
-use App\Models\GeocoderCounter;
 use App\Models\User;
-use Carbon\Carbon;
 
 /**
  * Mandar a buscar imágenes para las categorías del comercio, desde el asistente (misión
@@ -26,12 +25,9 @@ use Carbon\Carbon;
  * El tipo es el literal 'imagenes_categorias': la constante AiMessageAction::TIPO_IMAGENES_CATEGORIAS
  * con ese valor la declara el constructor A de esta misión.
  *
- * ⚠️ RESPALDO DE CREDENCIALES Y CUOTA. El plan pone la key/cx/cuota y el conteo del día en
- * ImagenesAutomaticasHelper::credenciales() / cuota_de() (constructor A). Como ese helper no
- * existía cuando se escribió esto, acá hay dos métodos protegidos con la misma lógica que
- * GoogleController::batch_assign_images (key del owner o config, cx fijo, cuota default 10,
- * contador GeocoderCounter del día). Cuando exista el de A, estos dos se reemplazan por una
- * llamada a él (queda anotado en el informe de la misión).
+ * La key, el cx, la cuota diaria y el contador del día salen de ImagenesAutomaticasHelper
+ * (credenciales() / cuota_de()): es el MISMO lugar del que sale el lote de imágenes de artículos y
+ * el botón del listado, así que la cuota se cuenta de una sola forma para las tres puertas.
  */
 class PropuestaImagenesCategoriasIaHelper
 {
@@ -51,12 +47,6 @@ class PropuestaImagenesCategoriasIaHelper
 
     /** Búsquedas que puede usar una categoría (q1 con fondo blanco y q2 sin filtro). */
     const BUSQUEDAS_POR_CATEGORIA = 2;
-
-    /** Motor de búsqueda personalizado: el mismo que usa GoogleController. */
-    const CX = 'c442e5f346f314951';
-
-    /** Cuota diaria si el dueño no tiene una propia (users.google_cuota). */
-    const CUOTA_POR_DEFECTO = 10;
 
     const AVISO = 'Cada categoría usa hasta 2 búsquedas de la cuota diaria de Google. Las que no me convenzan te las voy a mostrar acá para que decidas.';
 
@@ -238,6 +228,15 @@ class PropuestaImagenesCategoriasIaHelper
             'etapa'        => 'En espera del procesador',
         ]);
 
+        /*
+         * 🔴 `afterCommit()` EXPLÍCITO, el mismo motivo que ImagenesAutomaticasHelper::encolar(): esto
+         * corre adentro de la transacción de EjecutorAccionesIaHelper (el clic en Confirmar o la
+         * auto-confirmación del agente), y con la cola en redis (el VPS) un worker libre puede tomar
+         * el job ANTES del commit, no encontrar el registro `pendiente` que se acaba de abrir y abrir
+         * otro, dejando el primero colgado hasta que el listado lo dé por muerto. El default de config
+         * no alcanza: `after_commit` es true solo en la conexión `database`; en `redis` está en false.
+         * Sin transacción abierta despacha en el acto, igual que siempre.
+         */
         ProcessCategoryImagesJob::dispatch(
             (int) $contexto->owner_id,
             is_null($contexto->persona) ? null : (int) $contexto->persona->id,
@@ -246,7 +245,7 @@ class PropuestaImagenesCategoriasIaHelper
             (string) $credenciales['api_key'],
             (string) $credenciales['cx'],
             (int) $credenciales['cuota']
-        );
+        )->afterCommit();
 
         return [
             'texto' => 'Mandé a buscar imágenes para '.$total.' '.($total === 1 ? 'categoría' : 'categorías').'. Cuando termine te escribo acá con el resultado, y en el sistema te aparece el proceso.',
@@ -322,51 +321,33 @@ class PropuestaImagenesCategoriasIaHelper
     }
 
     /**
-     * Cuota diaria de búsquedas del dueño y cuántas van hoy (respaldo de
-     * ImagenesAutomaticasHelper::cuota_de, ver el docblock de la clase).
+     * Cuota diaria de búsquedas del dueño y cuántas van hoy. Delega en ImagenesAutomaticasHelper
+     * (la misma cuenta que usa el lote de artículos y el botón del listado); sin dueño resuelto no
+     * hay nada que contar y se contesta cero, que es lo que hace que consultar() diga "sin cuota".
      *
      * @param  \App\Models\User|null  $owner
      * @return array  ['cuota' => int, 'usadas_hoy' => int, 'disponibles' => int]
      */
     protected static function cuota_de($owner)
     {
-        $cuota = (!is_null($owner) && $owner->google_cuota) ? (int) $owner->google_cuota : self::CUOTA_POR_DEFECTO;
-
-        $usadas = 0;
-
-        if (!is_null($owner)) {
-            $counter = GeocoderCounter::where('user_id', $owner->id)
-                ->whereDate('created_at', Carbon::today())
-                ->first();
-
-            $usadas = is_null($counter) ? 0 : (int) $counter->counter;
+        if (is_null($owner)) {
+            return ['cuota' => 0, 'usadas_hoy' => 0, 'disponibles' => 0];
         }
 
-        return [
-            'cuota'       => $cuota,
-            'usadas_hoy'  => $usadas,
-            'disponibles' => max(0, $cuota - $usadas),
-        ];
+        return ImagenesAutomaticasHelper::cuota_de($owner);
     }
 
     /**
-     * Key, cx y cuota con las que se despacha el job (respaldo de
-     * ImagenesAutomaticasHelper::credenciales, misma lógica que GoogleController::batch_assign_images).
+     * Key, cx y cuota con las que se despacha el job: exactamente las mismas que el lote de
+     * artículos (ImagenesAutomaticasHelper::credenciales). Si algún día cambia el cx o la cuota por
+     * defecto, cambia en un solo lugar para las tres puertas.
      *
      * @param  \App\Models\User  $owner
      * @return array  ['api_key' => string, 'cx' => string, 'cuota' => int]
      */
     protected static function credenciales(User $owner)
     {
-        $api_key = $owner->google_custom_search_api_key
-            ? (string) $owner->google_custom_search_api_key
-            : (string) config('services.google_search.api_key');
-
-        return [
-            'api_key' => $api_key,
-            'cx'      => self::CX,
-            'cuota'   => $owner->google_cuota ? (int) $owner->google_cuota : self::CUOTA_POR_DEFECTO,
-        ];
+        return ImagenesAutomaticasHelper::credenciales($owner);
     }
 
     /**
