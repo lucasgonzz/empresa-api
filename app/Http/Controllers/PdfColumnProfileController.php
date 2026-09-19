@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
+use App\Http\Controllers\Helpers\PdfColumnProfileHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\PdfColumnProfile;
 use Illuminate\Http\Request;
@@ -691,11 +692,12 @@ class PdfColumnProfileController extends Controller
     protected function get_available_width_mm_for_columns(int $printable_width_mm, int $margin_mm): int
     {
         /**
-         * Se descuentan ambos márgenes laterales para evitar desbordes.
+         * La regla vive en PdfColumnProfileHelper::ancho_disponible_mm() (misión
+         * asistente-masivas-imagenes-y-remito): es la MISMA que usa el asistente al acomodar
+         * las columnas de un diseño, y tiene que haber una sola. Se descuentan ambos márgenes
+         * laterales para evitar desbordes.
          */
-        $available_width_mm = $printable_width_mm - ($margin_mm * 2);
-
-        return $available_width_mm > 0 ? $available_width_mm : 0;
+        return PdfColumnProfileHelper::ancho_disponible_mm($printable_width_mm, $margin_mm);
     }
 
     /**
