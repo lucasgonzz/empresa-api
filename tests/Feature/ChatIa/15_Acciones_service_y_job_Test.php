@@ -278,7 +278,8 @@ class Acciones_service_y_job_Test extends TestCase
 
         $prompt = Http::recorded()[0][0]->data()['system'][0]['text'];
 
-        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda'] as $lo_que_se_carga) {
+        // Misión asistente-masivas-imagenes-y-remito (19/9/2026): las tres cargas nuevas también.
+        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda', 'imágenes para las categorías', 'actualización masiva de artículos', 'diseño de PDF'] as $lo_que_se_carga) {
             $this->assertStringContainsString(
                 $lo_que_se_carga,
                 $prompt,
@@ -683,10 +684,28 @@ class Acciones_service_y_job_Test extends TestCase
 
         // El inventario: 10 de la misión asistente-ia-acciones + proponer_combo y proponer_oferta
         // (agente-ia-mano-derecha, 16/9/2026) + proponer_foto_sucursal
-        // (foto-sucursal-y-asistente-configurable, 17/9/2026). El número se toca SOLO cuando se
+        // (foto-sucursal-y-asistente-configurable, 17/9/2026) + las 7 de
+        // asistente-masivas-imagenes-y-remito (19/9/2026: consultar_categorias_sin_imagen,
+        // proponer_imagenes_para_categorias, contar_articulos_por_filtro,
+        // proponer_imagenes_para_articulos, proponer_actualizacion_masiva, consultar_disenos_de_pdf,
+        // proponer_cambio_en_diseno_pdf). El número se toca SOLO cuando se
         // agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es
         // que algo se declaró (o se borró) de más.
-        $this->assertCount(13, HerramientasDeCarga::definiciones());
+        $this->assertCount(20, HerramientasDeCarga::definiciones());
+
+        // Y las siete nuevas van al FINAL y en este orden: son el prefijo del caché de prompt.
+        $this->assertSame(
+            [
+                'consultar_categorias_sin_imagen',
+                'proponer_imagenes_para_categorias',
+                'contar_articulos_por_filtro',
+                'proponer_imagenes_para_articulos',
+                'proponer_actualizacion_masiva',
+                'consultar_disenos_de_pdf',
+                'proponer_cambio_en_diseno_pdf',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 13)
+        );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {
             $this->assertStringContainsString(

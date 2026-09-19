@@ -7,10 +7,15 @@ use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FiltroDeArticulosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
@@ -24,6 +29,9 @@ use Illuminate\Support\Facades\Log;
  * Las herramientas de carga del asistente de IA (misión asistente-ia-acciones, §3.3 del plan): cinco
  * lecturas nuevas y cinco propuestas que arman tarjetas para que la persona confirme. La misión
  * agente-ia-mano-derecha (16/9/2026) le sumó dos propuestas más: proponer_combo y proponer_oferta.
+ * La misión asistente-masivas-imagenes-y-remito (19/9/2026) sumó siete al FINAL del array: las
+ * imágenes de categorías y de artículos por filtro, el conteo por filtro, la actualización masiva y
+ * los diseños de PDF. Van al final porque el orden es parte del caché de prompt (ver build_tools()).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
  * Claude ve) y el despacho (el `case` de ejecutar(), lo que corre al llamarla). Es la misma regla que
@@ -45,14 +53,26 @@ class HerramientasDeCarga
      * Los tipos de tarjeta que el modo "resuelto" auto-confirma tras proponerlos (misión
      * foto-sucursal-y-asistente-configurable, 17/9/2026).
      *
-     * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. Hoy es únicamente la foto de una sucursal: no toca plata
-     * ni borra nada, y se deshace desde el ABM. Todo lo que mueve plata (gastos, pagos, compras,
-     * combos, ofertas) NUNCA se auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la
-     * persona. Antes de sumar un tipo acá, tiene que cumplir las dos condiciones.
+     * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. La foto de una sucursal (se deshace desde el ABM), mandar
+     * a buscar imágenes para categorías o artículos (una imagen se saca desde la ficha; la búsqueda
+     * en sí no toca nada más) y cambiar las columnas de un diseño de PDF (se vuelve a cambiar desde
+     * ABM > Impresión). Todo lo que mueve plata (gastos, pagos, compras, combos, ofertas) NUNCA se
+     * auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la persona.
+     *
+     * 🔴 LA ACTUALIZACIÓN MASIVA NO ESTÁ NI VA A ESTAR ACÁ. Reescribe precios, márgenes, stock o
+     * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
+     * que ver cuántos alcanza y confirmar (decisión de Lucas, misión asistente-masivas-imagenes-y-
+     * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(), y el test 26 fija
+     * las dos cosas. Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
      *
      * @var array<int, string>
      */
-    const AUTO_CONFIRMABLES = [AiMessageAction::TIPO_FOTO_SUCURSAL];
+    const AUTO_CONFIRMABLES = [
+        AiMessageAction::TIPO_FOTO_SUCURSAL,
+        AiMessageAction::TIPO_IMAGENES_CATEGORIAS,
+        AiMessageAction::TIPO_IMAGENES_ARTICULOS,
+        AiMessageAction::TIPO_DISENO_PDF,
+    ];
 
     /**
      * Definiciones con su input_schema para la API de Anthropic.
@@ -431,6 +451,211 @@ class HerramientasDeCarga
                     'required'   => [],
                 ],
             ],
+            /*
+             * Misión asistente-masivas-imagenes-y-remito (19/9/2026). Siete herramientas, en este
+             * orden, SIEMPRE al final: el orden del array es el prefijo del caché de prompt.
+             */
+            [
+                'name'         => 'consultar_categorias_sin_imagen',
+                'description'  => 'Devuelve cuántas categorías tiene el negocio, cuáles no tienen imagen (con cuántos artículos tiene cada una) y cuántas búsquedas de imágenes quedan disponibles hoy en la cuota diaria de Google. Usala antes de proponer_imagenes_para_categorias, y cuando te pregunten qué categorías están sin imagen.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_imagenes_para_categorias',
+                'description'  => 'Manda a buscar en internet una imagen con fondo blanco (estilo tienda online) para cada categoría sin imagen, o solo para las categorías que nombres. Solo la puede usar el dueño. La búsqueda corre en segundo plano: la imagen que pasa la verificación se asigna sola; la dudosa vuelve a esta conversación como una tarjeta con la imagen para que la persona decida; la que no se encuentra se informa. Cada categoría usa hasta 2 búsquedas de la cuota diaria de Google. Con la confianza en "resuelto" la mando en el acto y avisá que la mandaste; con "cauteloso" queda una tarjeta para confirmar. Nunca digas que las imágenes ya están: cuando termine, vos mismo vas a escribir en esta conversación con el resultado. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'alcance'     => [
+                            'type'        => 'string',
+                            'enum'        => ['sin_imagen', 'todas'],
+                            'description' => 'sin_imagen (default): solo las categorías que no tienen imagen. todas: también las que ya tienen, si la persona lo pide.',
+                        ],
+                        'categorias'  => [
+                            'type'        => 'array',
+                            'description' => 'Solo estas categorías, por su nombre. Si no lo mandás, van todas las del alcance.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'nombre'      => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre de la categoría, como lo dijo la persona.',
+                                    ],
+                                    'buscar_como' => [
+                                        'type'        => 'string',
+                                        'description' => 'Con qué texto buscar la imagen, si la persona pidió otro nombre ("buscala como artículos de bazar").',
+                                    ],
+                                ],
+                                'required'   => ['nombre'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'contar_articulos_por_filtro',
+                'description'  => 'Cuenta cuántos artículos activos cumplen un filtro (todos los filtros a la vez) y devuelve los primeros nombres como muestra. Usala SIEMPRE antes de proponer_actualizacion_masiva o proponer_imagenes_para_articulos, para decirle a la persona cuántos artículos alcanza. Sin filtros cuenta el catálogo entero. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N (nunca los últimos). Los proveedores, categorías, subcategorías y marcas van por su NOMBRE, no por id: si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'filtros'         => self::esquema_de_filtros(),
+                        'solo_sin_imagen' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para contar solo los que no tienen imagen. Si no lo mandás, se cuentan todos.',
+                        ],
+                        'orden'           => self::esquema_de_orden(),
+                        'limite'          => self::esquema_de_limite(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_imagenes_para_articulos',
+                'description'  => 'Manda a buscar en internet una imagen para cada artículo que cumpla el filtro (los mismos filtros que contar_articulos_por_filtro). Por defecto saltea los que ya tienen imagen (solo_sin_imagen true); mandalo en false solo si la persona dice que también los que ya tienen. La búsqueda corre en segundo plano y le aparece a la persona en el sistema cuando termina; cada artículo usa hasta 2 búsquedas de la cuota diaria de Google y lo que no entra hoy queda sin procesar. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N. Con la confianza en "resuelto" la mando en el acto y avisá que la mandaste; con "cauteloso" queda una tarjeta para confirmar. Nunca digas que las imágenes ya están. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'filtros'         => self::esquema_de_filtros(),
+                        'solo_sin_imagen' => [
+                            'type'        => 'boolean',
+                            'description' => 'true (default) saltea los artículos que ya tienen imagen. false los incluye.',
+                        ],
+                        'orden'           => self::esquema_de_orden(),
+                        'limite'          => self::esquema_de_limite(),
+                        'reemplaza_a'     => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_actualizacion_masiva',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'filtros'     => self::esquema_de_filtros(),
+                        'cambios'     => [
+                            'type'        => 'array',
+                            'description' => 'Los cambios que se aplican a cada artículo alcanzado, uno por fila.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'campo'     => [
+                                        'type'        => 'string',
+                                        'enum'        => [
+                                            'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
+                                            'proveedor', 'categoria', 'sub_categoria', 'marca',
+                                            'iva', 'unidad_de_medida',
+                                            'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
+                                        ],
+                                    ],
+                                    'operacion' => [
+                                        'type'        => 'string',
+                                        'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
+                                        'description' => 'Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
+                                    ],
+                                    'valor'     => [
+                                        'type'        => ['number', 'string'],
+                                        'description' => 'El valor a setear, el porcentaje a subir o bajar, o el nombre a asignar. No va con activar ni desactivar.',
+                                    ],
+                                    'redondear' => [
+                                        'type'        => 'boolean',
+                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero.',
+                                    ],
+                                ],
+                                'required'   => ['campo', 'operacion'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['filtros', 'cambios'],
+                ],
+            ],
+            [
+                'name'         => 'consultar_disenos_de_pdf',
+                'description'  => 'Devuelve los diseños de PDF del negocio (con los que se imprimen remitos, facturas, presupuestos y el catálogo de artículos): de cada uno su nombre, tipo, si es el predeterminado, la hoja, el ancho disponible, la suma de anchos, y las columnas visibles en orden con su ancho en mm; y aparte las columnas que se pueden agregar, con su ancho por defecto. Usala antes de proponer_cambio_en_diseno_pdf, y cuando te pregunten qué columnas tiene un remito o un PDF.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tipo' => [
+                            'type'        => 'string',
+                            'enum'        => ['venta', 'articulos'],
+                            'description' => 'venta: los diseños de comprobantes (remitos, facturas, presupuestos). articulos: los del catálogo de artículos. Sin tipo trae todos.',
+                        ],
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_cambio_en_diseno_pdf',
+                'description'  => 'Cambia las columnas de un diseño de PDF: agrega columnas en una posición, saca columnas o cambia anchos. Solo la puede usar el dueño. Conseguí el diseno_id y los nombres de columna con consultar_disenos_de_pdf. Si la persona no dijo DÓNDE va la columna nueva (al final, al principio, antes o después de cuál), preguntale antes de llamar. Cuando los anchos no entran, la herramienta acomoda sola (achica la columna que ajusta texto, como el nombre del artículo) y te dice qué achicó: contáselo a la persona. Con la confianza en "resuelto" aplico el cambio en el acto y avisá que quedó; con "cauteloso" queda una tarjeta para confirmar. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'diseno_id'   => [
+                            'type'        => 'integer',
+                            'description' => 'Id del diseño, de consultar_disenos_de_pdf.',
+                        ],
+                        'agregar'     => [
+                            'type'        => 'array',
+                            'description' => 'Columnas a agregar, con su posición.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'columna'               => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre de la columna, de las disponibles que devolvió consultar_disenos_de_pdf.',
+                                    ],
+                                    'posicion'              => [
+                                        'type' => 'string',
+                                        'enum' => ['al_final', 'al_principio', 'despues_de', 'antes_de'],
+                                    ],
+                                    'columna_de_referencia' => [
+                                        'type'        => 'string',
+                                        'description' => 'Obligatoria con despues_de y antes_de: la columna al lado de la cual va.',
+                                    ],
+                                    'ancho_mm'              => [
+                                        'type'        => 'number',
+                                        'description' => 'Ancho en milímetros. Si no lo mandás se usa el ancho por defecto de la columna.',
+                                    ],
+                                ],
+                                'required'   => ['columna', 'posicion'],
+                            ],
+                        ],
+                        'quitar'      => [
+                            'type'        => 'array',
+                            'description' => 'Nombres de las columnas a sacar del diseño.',
+                            'items'       => [
+                                'type' => 'string',
+                            ],
+                        ],
+                        'anchos'      => [
+                            'type'        => 'array',
+                            'description' => 'Columnas a las que se les fija un ancho nuevo.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'columna'  => [
+                                        'type' => 'string',
+                                    ],
+                                    'ancho_mm' => [
+                                        'type' => 'number',
+                                    ],
+                                ],
+                                'required'   => ['columna', 'ancho_mm'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['diseno_id'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -631,6 +856,47 @@ class HerramientasDeCarga
                     PropuestaFotoSucursalIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
 
+            /*
+             * Misión asistente-masivas-imagenes-y-remito. Las de categorías y de diseño de PDF las
+             * implementa el constructor B (contrato §6); acá solo se wirean por nombre y firma.
+             */
+            case 'consultar_categorias_sin_imagen':
+                return self::resultado(PropuestaImagenesCategoriasIaHelper::consultar($contexto));
+
+            case 'proponer_imagenes_para_categorias':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaImagenesCategoriasIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            case 'contar_articulos_por_filtro':
+                return self::resultado(FiltroDeArticulosIaHelper::contar_para_la_ia($contexto->owner_id, $input));
+
+            case 'proponer_imagenes_para_articulos':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaImagenesArticulosIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: la masiva SIEMPRE deja tarjeta (ver AUTO_CONFIRMABLES).
+            case 'proponer_actualizacion_masiva':
+                return self::resultado(PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant_message, $input));
+
+            case 'consultar_disenos_de_pdf':
+                return self::resultado(PropuestaDisenoPdfIaHelper::consultar($contexto, EntradaDeCargaIa::valor($input, 'tipo')));
+
+            case 'proponer_cambio_en_diseno_pdf':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaDisenoPdfIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
 
@@ -770,6 +1036,68 @@ class HerramientasDeCarga
                 ],
             ],
             'required'   => ['cada', 'unidad'],
+        ];
+    }
+
+    /**
+     * Esquema de `filtros`, compartido por contar_articulos_por_filtro, proponer_imagenes_para_articulos
+     * y proponer_actualizacion_masiva (misión asistente-masivas-imagenes-y-remito). Los campos son
+     * los de FiltroDeArticulosIaHelper::CAMPOS: el enum se arma desde ahí para que un campo nuevo no
+     * quede declarado en un lado y no en el otro. La lista es una constante, así que el orden del
+     * enum es estable entre llamadas (caché de prompt).
+     *
+     * @return array
+     */
+    protected static function esquema_de_filtros(): array
+    {
+        return [
+            'type'        => 'array',
+            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Lista vacía = sin filtro.',
+            'items'       => [
+                'type'       => 'object',
+                'properties' => [
+                    'campo'    => [
+                        'type' => 'string',
+                        'enum' => array_keys(FiltroDeArticulosIaHelper::CAMPOS),
+                    ],
+                    'operador' => [
+                        'type' => 'string',
+                        'enum' => ['igual', 'contiene', 'mayor', 'menor', 'desde', 'hasta', 'en_blanco', 'no_en_blanco'],
+                    ],
+                    'valor'    => [
+                        'type'        => ['string', 'number'],
+                        'description' => 'El nombre, el texto, el número, la fecha AAAA-MM-DD o si/no. No va con en_blanco ni no_en_blanco.',
+                    ],
+                ],
+                'required'   => ['campo', 'operador'],
+            ],
+        ];
+    }
+
+    /**
+     * Esquema de `orden` (misión asistente-masivas-imagenes-y-remito).
+     *
+     * @return array
+     */
+    protected static function esquema_de_orden(): array
+    {
+        return [
+            'type'        => 'string',
+            'enum'        => [FiltroDeArticulosIaHelper::ORDEN_PRIMEROS_CREADOS, FiltroDeArticulosIaHelper::ORDEN_ULTIMOS_CREADOS],
+            'description' => 'primeros_creados (default): del más viejo al más nuevo por fecha de alta ("los primeros N del inventario"). ultimos_creados: del más nuevo al más viejo.',
+        ];
+    }
+
+    /**
+     * Esquema de `limite` (misión asistente-masivas-imagenes-y-remito).
+     *
+     * @return array
+     */
+    protected static function esquema_de_limite(): array
+    {
+        return [
+            'type'        => 'integer',
+            'description' => 'Cuántos artículos como máximo, en el orden pedido ("los primeros 100" = orden primeros_creados, limite 100). Sin límite van todos los que cumplen el filtro.',
         ];
     }
 

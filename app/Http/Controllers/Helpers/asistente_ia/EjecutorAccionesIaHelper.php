@@ -302,6 +302,25 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_FOTO_SUCURSAL:
                 return PropuestaFotoSucursalIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-masivas-imagenes-y-remito (19/9/2026). Las de categorías y de diseño
+             * de PDF las implementa el constructor B (contrato §6); acá solo se despachan por tipo.
+             */
+            case AiMessageAction::TIPO_IMAGENES_CATEGORIAS:
+                return PropuestaImagenesCategoriasIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_IMAGEN_CATEGORIA:
+                return PropuestaImagenCategoriaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_IMAGENES_ARTICULOS:
+                return PropuestaImagenesArticulosIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_ACTUALIZACION_MASIVA:
+                return PropuestaActualizacionMasivaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_DISENO_PDF:
+                return PropuestaDisenoPdfIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');
