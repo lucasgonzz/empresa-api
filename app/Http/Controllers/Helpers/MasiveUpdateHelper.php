@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Http\Controllers\Stock\StockMovementController;
+use App\Jobs\ProcessMasiveUpdateJob;
 use App\Models\Article;
 use App\Models\MasiveUpdate;
 use App\Models\User;
@@ -62,6 +63,164 @@ class MasiveUpdateHelper
         );
 
         return $masive_update;
+    }
+
+    /**
+     * Encola una actualización masiva: resuelve los registros alcanzados, guarda la masiva
+     * pendiente con su criterio (incluido `resolved_models_id`) y despacha el job.
+     *
+     * Es el cuerpo que tenía UpdateController::update() (misión asistente-masivas-imagenes-y-remito,
+     * 19/9/2026), movido acá para que la pantalla y el asistente encolen por EL MISMO camino: mismo
+     * guard de "al menos un filtro efectivo", mismo tope de 3000, misma `criteria_json`, mismo
+     * historial y misma reversión. El controller solo traduce el request y la respuesta:
+     * `response()->json($r['body'], $r['status'])`. Ninguna respuesta observable del endpoint cambia.
+     *
+     * La resolución por filtro pasa por SearchController::search() vía Request::create, igual que
+     * resolve_models_from_criteria(): ese search resuelve el dueño por Auth, así que quien llama
+     * tiene que estar autenticado (la pantalla lo está por el request; el asistente confirma en el
+     * request del clic o con la persona puesta en Auth por ConfirmacionPorTextoIaHelper).
+     *
+     * `$filtro_extra` es para lo que no es un filtro de columna (hoy, "imagen en blanco" del
+     * asistente: las imágenes viven en otra tabla). Recibe la colección resuelta por el search y
+     * devuelve `['models' => iterable, 'used_filter' => array|null]`; el `used_filter` se suma a
+     * los del search ANTES del guard de filtros efectivos —"los artículos sin imagen" es un
+     * criterio de filtrado tan válido como una columna— y queda en el historial como
+     * `['key' => 'imagen', 'operator' => 'en_blanco', 'value' => true, 'type' => 'imagen']`.
+     *
+     * @param  string  $model_name  Nombre snake_case del modelo de la ruta ('article').
+     * @param  bool  $from_filter
+     * @param  array|null  $filter_form  Filtros de columna (solo con $from_filter).
+     * @param  array|null  $update_form  [{type, key, value, round}]
+     * @param  array|null  $models_id  Selección manual (solo sin $from_filter).
+     * @param  int  $owner_id
+     * @param  int  $auth_user_id
+     * @param  callable|null  $filtro_extra
+     * @return array  ['status' => 200|422, 'body' => array]
+     */
+    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null)
+    {
+        $models = [];
+        $formated_model_name = GeneralHelper::getModelName($model_name);
+        $from_filter = (boolean) $from_filter;
+        $models_id = is_array($models_id) ? $models_id : [];
+        // Un filter_form ausente entra al search como lista vacía (sin filtros efectivos → 422),
+        // no como null: con null search() devolvería un JsonResponse en vez del array.
+        $filter_form = is_array($filter_form) ? $filter_form : [];
+
+        if ($from_filter) {
+            $request = Request::create('/', 'PUT', [
+                'filter_form' => $filter_form,
+            ]);
+            $search_ct = new SearchController();
+            $res = $search_ct->search($request, $model_name, $filter_form, 0, true);
+            $models = $res['models'];
+            $used_filters = $res['used_filters'];
+
+            if (is_callable($filtro_extra)) {
+                $filtrado = call_user_func($filtro_extra, $models);
+                $models = isset($filtrado['models']) ? $filtrado['models'] : [];
+                if (!empty($filtrado['used_filter']) && is_array($filtrado['used_filter'])) {
+                    $used_filters[] = $filtrado['used_filter'];
+                }
+            }
+
+            $effective_filters = array_filter($used_filters, function ($filter) {
+                return isset($filter['operator']) && $filter['operator'] != 'order_by';
+            });
+            if (count($effective_filters) == 0) {
+                Log::info('Se interrumpio actualizacion: filtros vacios o no restrictivos (solo order_by).');
+                return self::respuesta_de_encolado(422, [
+                    'message' => 'No se permite actualizar por filtro si no hay criterios de filtrado.',
+                ]);
+            }
+        } else {
+            if (count($models_id) == 0) {
+                Log::info('Se interrumpio actualizacion: seleccion manual sin models_id.');
+                return self::respuesta_de_encolado(422, [
+                    'message' => 'No se permite actualizar sin selección de registros.',
+                ]);
+            }
+            foreach ($models_id as $id) {
+                $models[] = $formated_model_name::find($id);
+            }
+            $used_filters = [
+                [
+                    'key'       => 'Seleccion manual'
+                ],
+            ];
+        }
+
+        if (count($models) >= 3000) {
+            Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);
+            return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar '.count($models).' registros']);
+        }
+
+        $resolved_models_id = [];
+        foreach ($models as $model) {
+            if ($model && isset($model->id)) {
+                $resolved_models_id[] = $model->id;
+            }
+        }
+
+        if (count($resolved_models_id) == 0) {
+            return self::respuesta_de_encolado(422, [
+                'message' => 'No hay registros para actualizar',
+            ]);
+        }
+
+        $criteria = [
+            'from_filter' => $from_filter,
+            'used_filters' => $used_filters,
+            'update_form' => $update_form,
+            'models_id' => $from_filter ? [] : $models_id,
+            'resolved_models_id' => $resolved_models_id,
+            'filter_form' => $from_filter ? $filter_form : [],
+        ];
+
+        $masive_update = self::create_pending_update(
+            $owner_id,
+            $auth_user_id,
+            $model_name,
+            $from_filter,
+            $criteria
+        );
+
+        /*
+         * 🔴 `afterCommit()` EXPLÍCITO, mismo criterio que RunProviderOrderScanJob en
+         * ProviderOrderScanAltaHelper. Desde la pantalla esto corre sin transacción y despacha de
+         * inmediato, igual que siempre. Desde el asistente la cadena es EjecutorAccionesIaHelper →
+         * DB::transaction → PropuestaActualizacionMasivaIaHelper::ejecutar → acá: sin esto, un
+         * worker libre (redis, en el VPS) puede tomar el job ANTES del commit, no encontrar la
+         * masiva (ProcessMasiveUpdateJob: "registro no encontrado") y la actualización que la
+         * persona confirmó no corre nunca, sin ningún error que lo delate. El default de config
+         * no alcanza: `after_commit` es true solo en la conexión `database`, en `redis` es false.
+         */
+        ProcessMasiveUpdateJob::dispatch($masive_update->id)->afterCommit();
+
+        Log::info('UpdateController: actualizacion masiva encolada', [
+            'masive_update_id' => $masive_update->id,
+            'model_name' => $model_name,
+            'records_count' => count($resolved_models_id),
+        ]);
+
+        return self::respuesta_de_encolado(200, [
+            'message' => 'La actualización masiva se está procesando en segundo plano',
+            'masive_update_id' => $masive_update->id,
+            'queued_count' => count($resolved_models_id),
+        ]);
+    }
+
+    /**
+     * @param  int  $status
+     * @param  array  $body
+     * @return array
+     */
+    protected static function respuesta_de_encolado($status, array $body)
+    {
+        return [
+            'status' => (int) $status,
+            'body'   => $body,
+        ];
     }
 
     /**
