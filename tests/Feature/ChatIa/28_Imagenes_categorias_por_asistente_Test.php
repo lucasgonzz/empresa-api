@@ -399,6 +399,51 @@ class Imagenes_categorias_por_asistente_Test extends TestCase
     }
 
     /** @test */
+    public function una_categoria_nombrada_que_ya_tiene_imagen_se_reemplaza_de_punta_a_punta()
+    {
+        Event::fake([ChatIaMensajeActualizado::class, BackgroundProcessUpdated::class]);
+        $this->falsear_red(['Pinturas' => 'usar']);
+
+        list(, , $pinturas) = $this->categorias();
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        /* La persona la nombra: la tarjeta promete el reemplazo y exige confirmación. */
+        $respuesta = PropuestaImagenesCategoriasIaHelper::proponer($contexto, $assistant, ['categorias' => [['nombre' => 'Pinturas']]]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue($respuesta['requiere_confirmacion']);
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+        $this->assertSame('todas', $accion->datos['alcance'], 'Nombrada = se procesa aunque tenga imagen: el alcance que viaja es todas.');
+
+        /* Al confirmar, el job sale con ese alcance... */
+        Queue::fake();
+        PropuestaImagenesCategoriasIaHelper::ejecutar($contexto, $accion);
+
+        $despachado = null;
+        Queue::assertPushed(ProcessCategoryImagesJob::class, function ($job) use (&$despachado) {
+            $despachado = $job;
+
+            return true;
+        });
+
+        $alcance = new \ReflectionProperty($despachado, 'alcance');
+        $alcance->setAccessible(true);
+        $this->assertSame('todas', $alcance->getValue($despachado));
+
+        /* ...y corrido, reemplaza la imagen en vez de saltearla ("ya tenía imagen"). */
+        $despachado->handle();
+
+        $pinturas->refresh();
+        $this->assertNotSame('https://ejemplo.test/storage/pinturas.webp', $pinturas->image_url, 'La imagen tenía que reemplazarse.');
+        $this->assertStringEndsWith('.webp', basename((string) parse_url($pinturas->image_url, PHP_URL_PATH)));
+
+        $mensaje = AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'assistant')->orderBy('id', 'DESC')->first();
+        $this->assertStringContainsString('Asigné imagen a 1: Pinturas.', $mensaje->contenido);
+        $this->assertStringNotContainsString('ya tenía imagen', $mensaje->contenido);
+    }
+
+    /** @test */
     public function ejecutar_encola_el_job_con_las_categorias_y_deja_el_registro_visible_pendiente()
     {
         Queue::fake();

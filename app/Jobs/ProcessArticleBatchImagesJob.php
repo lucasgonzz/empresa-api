@@ -768,6 +768,20 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      */
     private function proceso_visible_abierto()
     {
+        // Primero el registro de ESTA corrida (por id, si sigue activo); con dos lotes seguidos del
+        // mismo comercio, "el último activo del tipo" podía ser el del otro lote.
+        if (!is_null($this->background_process_id)) {
+            $propio = BackgroundProcess::where('user_id', $this->user_id)
+                ->where('id', $this->background_process_id)
+                ->where('tipo', 'imagenes_automaticas')
+                ->whereIn('status', [BackgroundProcess::STATUS_PENDIENTE, BackgroundProcess::STATUS_EN_PROCESO])
+                ->first();
+
+            if (!is_null($propio)) {
+                return $propio;
+            }
+        }
+
         return BackgroundProcessHelper::ultimo_activo($this->user_id, 'imagenes_automaticas');
     }
 

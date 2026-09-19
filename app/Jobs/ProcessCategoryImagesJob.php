@@ -293,7 +293,31 @@ class ProcessCategoryImagesJob implements ShouldQueue
             ? $e->getMessage()
             : 'El proceso se interrumpió sin dejar traza (probable falta de memoria, timeout o worker reiniciado).';
 
-        BackgroundProcessHelper::fallar(BackgroundProcessHelper::ultimo_activo($this->owner_id, self::TIPO_PROCESO), $motivo);
+        BackgroundProcessHelper::fallar($this->proceso_visible_abierto(), $motivo);
+    }
+
+    /**
+     * El registro visible de ESTA corrida para failed(): el que vino por id si sigue activo, y si
+     * no, el último activo del tipo (jobs encolados antes de que viajara el id). Con dos tandas
+     * seguidas del mismo comercio, cerrar "el último activo" podía marcar como fallida la otra.
+     *
+     * @return \App\Models\BackgroundProcess|null
+     */
+    protected function proceso_visible_abierto()
+    {
+        if (!is_null($this->background_process_id)) {
+            $propio = BackgroundProcess::where('user_id', $this->owner_id)
+                ->where('id', $this->background_process_id)
+                ->where('tipo', self::TIPO_PROCESO)
+                ->whereIn('status', [BackgroundProcess::STATUS_PENDIENTE, BackgroundProcess::STATUS_EN_PROCESO])
+                ->first();
+
+            if (!is_null($propio)) {
+                return $propio;
+            }
+        }
+
+        return BackgroundProcessHelper::ultimo_activo($this->owner_id, self::TIPO_PROCESO);
     }
 
     /**

@@ -116,6 +116,15 @@ class PropuestaImagenesCategoriasIaHelper
                 return $seleccion;
             }
 
+            /*
+             * Una categoría NOMBRADA se procesa aunque ya tenga imagen ("buscá una nueva para
+             * Pinturas"): la persona la pidió por su nombre, no "las que no tienen". Por eso el
+             * alcance que viaja al job es 'todas' — con 'sin_imagen' el job la saltearía al llegar
+             * y la tarjeta habría prometido un reemplazo que nunca pasa (lo encontró el revisor de
+             * merge). Si alguna ya tiene imagen, más abajo la tarjeta lo dice y exige confirmación.
+             */
+            $alcance = 'todas';
+
             $descripcion = count($seleccion) === 1 ? 'la que me pediste' : 'las que me pediste';
         } else {
             $seleccion = [];
