@@ -62,6 +62,19 @@ class AiMessageAction extends Model
      */
     const TIPO_FOTO_SUCURSAL = 'foto_sucursal';
 
+    /*
+     * Misión asistente-masivas-imagenes-y-remito (19/9/2026): el asistente opera el catálogo en lote
+     * y los diseños de PDF. Desde acá la foto de sucursal ya NO es la única auto-confirmable: mandar
+     * a buscar imágenes (categorías y artículos) y cambiar un diseño de PDF son cargas inocuas y
+     * reversibles y también entran en HerramientasDeCarga::AUTO_CONFIRMABLES. La actualización
+     * masiva NUNCA: siempre la confirma la persona, esté en la confianza que esté.
+     */
+    const TIPO_IMAGENES_CATEGORIAS  = 'imagenes_categorias';
+    const TIPO_IMAGEN_CATEGORIA     = 'imagen_categoria';
+    const TIPO_IMAGENES_ARTICULOS   = 'imagenes_articulos';
+    const TIPO_ACTUALIZACION_MASIVA = 'actualizacion_masiva';
+    const TIPO_DISENO_PDF           = 'diseno_pdf';
+
     protected $guarded = [];
 
     /**
