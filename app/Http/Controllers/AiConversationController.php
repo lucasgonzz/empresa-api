@@ -5,10 +5,12 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -269,6 +271,23 @@ class AiConversationController extends Controller
 
         $conversation->last_message_at = now();
         $conversation->save();
+
+        /*
+         * Corte por tope del plan (misión foto-sucursal-y-asistente-configurable): si el negocio ya
+         * superó el tope de su plan este mes, se contesta con el texto de límite SIN gastar una
+         * llamada a la API. El assistant nace 'listo' y no se despacha ni el job de respuesta ni el
+         * de título. Sin tope configurado, estado()['supero'] es false y todo sigue como siempre.
+         */
+        if (TopeDeTokensHelper::estado(User::find($conversation->user_id))['supero']) {
+            $assistant_message->contenido = TopeDeTokensHelper::MENSAJE_LIMITE;
+            $assistant_message->estado = 'listo';
+            $assistant_message->save();
+
+            return response()->json([
+                'user_message'      => $user_message,
+                'assistant_message' => $assistant_message,
+            ], 201);
+        }
 
         /*
          * Red de seguridad del encolado (arreglo post-chequeo): si dispatch()

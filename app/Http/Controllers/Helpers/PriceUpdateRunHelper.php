@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Models\BackgroundProcess;
 use App\Models\PriceUpdateRun;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -36,11 +37,14 @@ class PriceUpdateRunHelper
      * @param  int         $user_id
      * @param  string      $origen
      * @param  string|null $origen_detalle
+     * @param  int|null    $proceso_pendiente_id  Registro visible abierto en `pendiente` al
+     *                                            encolar (ver ProcessSetFinalPrices::__construct);
+     *                                            se retoma en vez de abrir otro.
      * @return \App\Models\PriceUpdateRun
      */
-    public static function abrir($user_id, $origen = 'otro', $origen_detalle = null)
+    public static function abrir($user_id, $origen = 'otro', $origen_detalle = null, $proceso_pendiente_id = null)
     {
-        return PriceUpdateRun::create([
+        $run = PriceUpdateRun::create([
             'user_id'          => $user_id,
             'origen'           => $origen,
             'origen_detalle'   => $origen_detalle,
@@ -51,6 +55,57 @@ class PriceUpdateRunHelper
             'articles_updated' => 0,
             'started_at'       => Carbon::now(),
         ]);
+
+        /*
+         * El registro visible para el usuario (misión procesos-en-segundo-plano, 18/9/2026)
+         * nace junto con la corrida, acá y no en el productor: abrir() es el único punto por el
+         * que pasan las dos puertas (ProcessSetFinalPrices y PriceTypeHelper), así que un
+         * recálculo que arranque por cualquiera de las dos aparece en la píldora. El total en
+         * lotes todavía no se conoce —lo fija el productor cuando termina de encolar—, por eso
+         * arranca sin total y con la barra indeterminada. El helper nunca tira: si el registro
+         * falla, la corrida sigue igual.
+         */
+        $opciones = [
+            'referencia' => $run,
+            'unidad'     => 'lotes',
+            'etapa'      => 'Preparando los artículos',
+            'detalle'    => self::detalle_del_origen($run),
+            'resultado'  => ['origen_texto' => $run->origen_texto],
+        ];
+
+        /*
+         * Si el productor ya lo anunció al encolar (ProcessSetFinalPrices::__construct), acá
+         * solo se lo retoma: se le cuelga la corrida como referencia y pasa a en_proceso. Si
+         * no (PriceTypeHelper, o un job encolado antes de este cambio), se abre recién ahora.
+         */
+        $pendiente = is_null($proceso_pendiente_id) ? null : BackgroundProcess::find((int) $proceso_pendiente_id);
+
+        if (!is_null($pendiente) && !$pendiente->esta_terminado()) {
+            $opciones['forzar_broadcast'] = true;
+            BackgroundProcessHelper::avanzar($pendiente, null, $opciones);
+        } else {
+            BackgroundProcessHelper::iniciar($user_id, 'recalculo_precios', 'Recálculo de precios', $opciones);
+        }
+
+        return $run;
+    }
+
+    /**
+     * Lo que lee el usuario debajo del título en la píldora: el origen traducido y, si lo hay,
+     * el detalle ("Se recalcularon por un cambio en un proveedor · Bulonera").
+     *
+     * @param  \App\Models\PriceUpdateRun $run
+     * @return string
+     */
+    protected static function detalle_del_origen($run)
+    {
+        $detalle = (string) $run->origen_texto;
+
+        if (!is_null($run->origen_detalle) && trim((string) $run->origen_detalle) !== '') {
+            $detalle .= ' · ' . trim((string) $run->origen_detalle);
+        }
+
+        return $detalle;
     }
 
     /**
@@ -70,6 +125,14 @@ class PriceUpdateRunHelper
         $run->chunks_encolados = 1;
         $run->finished_at      = Carbon::now();
         $run->save();
+
+        // Cierra también en la píldora: sin artículos no es un error, es un proceso que terminó
+        // sin nada que cambiar, y la etapa se lo dice al usuario.
+        BackgroundProcessHelper::completar(
+            BackgroundProcessHelper::por_referencia($run),
+            ['articulos_actualizados' => 0, 'proveedores' => 0],
+            'Sin cambios'
+        );
     }
 
     /**
@@ -100,6 +163,12 @@ class PriceUpdateRunHelper
             return ['detalle' => $detalle, 'avisar' => true];
         }
 
+        /*
+         * Declarada afuera del try: el catch la necesita para cerrar también el registro
+         * visible, y si el find() mismo tiró, queda en null y no hay nada que cerrar.
+         */
+        $run = null;
+
         try {
             $run = PriceUpdateRun::find($price_update_run_id);
 
@@ -127,6 +196,18 @@ class PriceUpdateRunHelper
             $run->error_detalle = $detalle;
             $run->finished_at   = Carbon::now();
             $run->save();
+
+            /*
+             * El registro visible cae junto con la corrida, y SOLO acá: los dos returns de
+             * arriba son corridas que ya estaban cerradas (por este mismo camino o por el
+             * finalizador), y cerrarlas de nuevo en la píldora pisaría un "Terminado" legítimo
+             * con un "Falló". fallar() es idempotente de todas formas, pero la regla de quién
+             * cierra se decide acá, no en el helper.
+             */
+            BackgroundProcessHelper::fallar(
+                BackgroundProcessHelper::por_referencia($run),
+                self::mensaje_para_el_registro($detalle)
+            );
         } catch (\Throwable $e) {
             /*
              * 🔴 Que no se pueda guardar el motivo no puede costarle el aviso al usuario.
@@ -141,9 +222,34 @@ class PriceUpdateRunHelper
             ]);
 
             self::cerrar_sin_guardar_el_motivo($price_update_run_id);
+
+            /*
+             * La corrida se cerró igual (sin motivo), así que la píldora también tiene que
+             * dejar de decir "en proceso". Si el find() fue lo que tiró, $run es null y
+             * por_referencia() devuelve null: no hay registro que cerrar.
+             */
+            if (!is_null($run)) {
+                BackgroundProcessHelper::fallar(
+                    BackgroundProcessHelper::por_referencia($run),
+                    self::mensaje_para_el_registro($detalle)
+                );
+            }
         }
 
         return ['detalle' => $detalle, 'avisar' => true];
+    }
+
+    /**
+     * Texto del error para el registro visible. El detalle ya viene recortado y sin SQL; lo
+     * único que se agrega es un texto fijo cuando no hay ninguno, porque una fila en "fallo"
+     * sin motivo deja al usuario sin nada que leer.
+     *
+     * @param  string|null $detalle
+     * @return string
+     */
+    protected static function mensaje_para_el_registro($detalle)
+    {
+        return is_null($detalle) ? 'El recálculo de precios se interrumpió y quedó incompleto.' : $detalle;
     }
 
     /**

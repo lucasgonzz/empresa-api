@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
+use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\GeneralHelper as AppGeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -17,6 +18,9 @@ require __DIR__.'/../CommonLaravel/fpdf/fpdf.php';
  * PDF tabular de artículos con diseño tipo catálogo moderno.
  *
  * Características visuales:
+ *  - Encabezado opcional diseñado por el usuario (catalog_header_layout del perfil): logo del
+ *    negocio, nombre del negocio y renglones de datos en dos columnas, en todas las hojas o solo
+ *    en la primera. Sin diseño, el PDF sale exactamente como antes.
  *  - Barra de título gris con esquinas redondeadas y nombre del catálogo.
  *  - Encabezado de columnas con fondo azul oscuro y texto blanco.
  *  - Filas alternadas (azul muy claro / blanco) para facilitar la lectura.
@@ -95,6 +99,34 @@ class ArticleTablePdf extends fpdf
          * Se resuelve una sola vez para evitar conversión repetida en cada página.
          */
         $this->header_image_fpdf_path = AppGeneralHelper::pdf_image_path($pdf_column_profile->header_image_url);
+
+        /**
+         * Diseño del encabezado del catálogo (logo, nombre y datos del negocio), ya normalizado.
+         * Null = perfil sin diseño: no se dibuja nada nuevo y el PDF queda como siempre.
+         */
+        $this->catalog_header_layout = CatalogHeaderLayoutHelper::normalize($pdf_column_profile->catalog_header_layout);
+
+        /** Ruta local para FPDF del logo del negocio (users.image_url); null si no hay o no se pudo resolver. */
+        $this->logo_fpdf_path = null;
+
+        /**
+         * Renglones de cada columna ya resueltos contra los datos ACTUALES del negocio.
+         * Se resuelven una sola vez acá y no en Header(): Header() corre en cada página.
+         */
+        $this->catalog_rows = ['izquierda' => [], 'derecha' => []];
+
+        if (! is_null($this->catalog_header_layout)) {
+            if ($this->catalog_header_layout['logo']['show'] && ! is_null($this->user)) {
+                /** Solo se resuelve (puede implicar bajar y convertir la imagen) si el logo se va a dibujar. */
+                $this->logo_fpdf_path = AppGeneralHelper::pdf_image_path($this->user->image_url);
+            }
+
+            $catalog_sources = CatalogHeaderLayoutHelper::sources_for_user($this->user);
+            $this->catalog_rows = [
+                'izquierda' => CatalogHeaderLayoutHelper::resolve_rows($this->catalog_header_layout['izquierda'], $this->user, $catalog_sources),
+                'derecha'   => CatalogHeaderLayoutHelper::resolve_rows($this->catalog_header_layout['derecha'], $this->user, $catalog_sources),
+            ];
+        }
 
         /** Margen horizontal del PDF en mm (por defecto 5 mm). */
         $this->margin_mm = (int) ($pdf_column_profile->margin_mm ?? 5);
@@ -255,10 +287,20 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
-     * Convierte texto UTF-8 al encoding esperado por FPDF en celdas sin utf8_decode automático.
+     * Convierte texto UTF-8 al encoding que FPDF usa para MEDIR: GetStringWidth() y split_lines()
+     * cuentan bytes contra la tabla de anchos de la fuente (un byte por carácter en Latin-1) y
+     * no decodifican solos.
+     *
+     * 🔴 NO se le pasa a Cell(): el Cell() del fpdf.php del proyecto hace utf8_decode() solo, y
+     * decodificar dos veces convierte cada acento en "?" — medido el 18/9/2026: el pie "precios
+     * sujetos a modificación" salía "modificaci?n" en producción. Y el MultiCell() de ese mismo
+     * fpdf.php NO se usa en esta clase (ver print_multi_cell()): corta las líneas iterando bytes
+     * del texto que recibe y después delega en Cell(), así que con UTF-8 crudo mide cada acento
+     * como dos caracteres y con texto decodificado imprime "?". No hay forma de pasarle algo que
+     * mida bien e imprima bien a la vez.
      *
      * @param  string  $text  Texto en UTF-8.
-     * @return string         Texto listo para MultiCell / NbLines.
+     * @return string         Texto listo para GetStringWidth / split_lines.
      */
     private function pdf_text($text)
     {
@@ -392,7 +434,7 @@ class ArticleTablePdf extends fpdf
             $content_height = max(1, $lines) * $cell_line_height;
             $cell_y = $start_y + ($row_height - $content_height) / 2;
             $this->SetXY($x, $cell_y);
-            $this->MultiCell($width, $cell_line_height, $this->pdf_text($text), 0, $text_align, false);
+            $this->print_multi_cell($width, $cell_line_height, $text, $text_align);
             return;
         }
 
@@ -405,10 +447,12 @@ class ArticleTablePdf extends fpdf
     // ── Cabecera de página ────────────────────────────────────────────────────
 
     /**
-     * Cabecera de página: imagen opcional del perfil, barra de título del catálogo
-     * y fila de encabezados de columna con fondo azul.
+     * Cabecera de página: imagen opcional del perfil, bloque de encabezado diseñado por el usuario
+     * (logo, nombre y datos del negocio; opcional), barra de título del catálogo y fila de
+     * encabezados de columna con fondo azul.
      *
-     * Es invocada automáticamente por FPDF al inicio de cada página.
+     * Es invocada automáticamente por FPDF al inicio de cada página. PageNo() acá adentro ya es
+     * la página nueva: _beginpage() incrementa page antes de llamar a Header().
      */
     public function Header()
     {
@@ -419,8 +463,23 @@ class ArticleTablePdf extends fpdf
         $this->page_table_top_y = null;
         $this->page_table_bottom_y = null;
 
-        // Imagen de cabecera configurada en el perfil (opcional)
-        if ($this->header_image_fpdf_path && is_file($this->header_image_fpdf_path)) {
+        /**
+         * Imagen de cabecera configurada en el perfil (opcional). Sin diseño de encabezado sale en
+         * todas las páginas, como siempre. Con diseño, comparte la regla del logo
+         * (catalog_header_layout.logo.pages): para el usuario las dos son "las imágenes del
+         * encabezado" y en el diseñador ve una sola opción, "Logo e imagen de cabecera", que
+         * decide si salen en todas las hojas o solo en la primera. Separarlas obligaría a explicar
+         * dos reglas para lo que él percibe como una sola cosa.
+         */
+        $banner_visible = $this->header_image_fpdf_path && is_file($this->header_image_fpdf_path);
+        if ($banner_visible && ! is_null($this->catalog_header_layout)) {
+            $banner_visible = CatalogHeaderLayoutHelper::element_visible_on_page(
+                $this->catalog_header_layout['logo']['pages'],
+                $this->PageNo()
+            );
+        }
+
+        if ($banner_visible) {
             try {
                 $header_dims = $this->get_header_image_dimensions_mm();
                 if ($header_dims) {
@@ -438,6 +497,11 @@ class ArticleTablePdf extends fpdf
             }
         }
 
+        // Bloque diseñado por el usuario: logo, nombre y datos del negocio (solo si el perfil tiene diseño)
+        if (! is_null($this->catalog_header_layout)) {
+            $this->print_catalog_header_block();
+        }
+
         // Barra de título gris con esquinas redondeadas
         $this->print_catalog_title_bar();
 
@@ -445,6 +509,219 @@ class ArticleTablePdf extends fpdf
         if (count($this->profile_columns)) {
             $this->print_styled_table_header($this->profile_columns);
         }
+    }
+
+    // ── Bloque de encabezado diseñado por el usuario ──────────────────────────
+
+    /** Alto de línea de los renglones del encabezado, en mm (Arial 8). */
+    const CATALOG_HEADER_ROW_LINE_HEIGHT_MM = 4;
+
+    /** Alto de la línea del nombre del negocio, en mm (Arial B 12). */
+    const CATALOG_HEADER_COMPANY_LINE_HEIGHT_MM = 6;
+
+    /** Separación entre el logo y la columna izquierda, y entre el bloque y la barra de título, en mm. */
+    const CATALOG_HEADER_GAP_MM = 3;
+
+    /** Fracción del ancho útil donde termina la columna izquierda y donde arranca la derecha. */
+    const CATALOG_HEADER_LEFT_COLUMN_END = 0.58;
+    const CATALOG_HEADER_RIGHT_COLUMN_START = 0.60;
+
+    /**
+     * Dibuja el bloque diseñado por el usuario: logo a la izquierda, nombre del negocio y
+     * renglones de la columna izquierda a su lado, renglones de la columna derecha alineados a
+     * la derecha. Cada elemento respeta su regla de páginas (logo.pages / rows_pages); si en
+     * esta hoja no hay nada visible, no dibuja nada y no mueve y.
+     *
+     * Deja y debajo del bloque más CATALOG_HEADER_GAP_MM, x en start_x y el color de texto
+     * restaurado, listo para print_catalog_title_bar().
+     *
+     * @return void
+     */
+    private function print_catalog_header_block()
+    {
+        $layout = $this->catalog_header_layout;
+        $page_no = $this->PageNo();
+
+        /** Medidas del logo para esta hoja; null si no se dibuja (oculto, sin archivo o no va en esta página). */
+        $logo_dims = null;
+        if ($layout['logo']['show']
+            && $this->logo_fpdf_path
+            && is_file($this->logo_fpdf_path)
+            && CatalogHeaderLayoutHelper::element_visible_on_page($layout['logo']['pages'], $page_no)) {
+            $logo_dims = CatalogHeaderLayoutHelper::logo_box_dimensions_mm($this->logo_fpdf_path, $layout['logo']['size_mm']);
+        }
+
+        /** El nombre del negocio va con la misma regla de páginas que los renglones. */
+        $rows_visible = CatalogHeaderLayoutHelper::element_visible_on_page($layout['rows_pages'], $page_no);
+        $company_name = ! is_null($this->user) ? trim((string) $this->user->company_name) : '';
+        $company_visible = $layout['company_name']['show'] && $rows_visible && $company_name !== '';
+        $left_rows = $rows_visible ? $this->catalog_rows['izquierda'] : [];
+        $right_rows = $rows_visible ? $this->catalog_rows['derecha'] : [];
+
+        if (is_null($logo_dims) && ! $company_visible && ! count($left_rows) && ! count($right_rows)) {
+            return;
+        }
+
+        $block_top_y = $this->y;
+        $usable_width = $this->table_right_x - $this->start_x;
+
+        /** Fin vertical del logo y arranque horizontal de la columna izquierda (a la derecha del logo si lo hay). */
+        $logo_bottom_y = $block_top_y;
+        $left_x = $this->start_x;
+
+        if (! is_null($logo_dims)) {
+            try {
+                $this->Image($this->logo_fpdf_path, $this->start_x, $block_top_y, $logo_dims['width'], $logo_dims['height']);
+                $logo_bottom_y = $block_top_y + $logo_dims['height'];
+                $left_x = $this->start_x + $logo_dims['width'] + self::CATALOG_HEADER_GAP_MM;
+            } catch (\Exception $e) {
+                // Igual que el banner: si FPDF no puede leer el archivo, el logo se omite y el bloque sigue.
+            }
+        }
+
+        $left_width = max(0, ($this->start_x + $usable_width * self::CATALOG_HEADER_LEFT_COLUMN_END) - $left_x);
+        $right_x = $this->start_x + $usable_width * self::CATALOG_HEADER_RIGHT_COLUMN_START;
+        $right_width = max(0, $this->table_right_x - $right_x);
+
+        $this->SetTextColor(...self::COLOR_TEXT_DARK);
+
+        // Columna izquierda: nombre del negocio y renglones
+        $y = $block_top_y;
+        if ($company_visible && $left_width > 0) {
+            $this->SetFont('Arial', 'B', 12);
+            $this->SetXY($left_x, $y);
+            // Cell() del FPDF del proyecto ya aplica utf8_decode(); truncate_text_to_width() mide con la fuente activa.
+            $this->Cell($left_width, self::CATALOG_HEADER_COMPANY_LINE_HEIGHT_MM, $this->truncate_text_to_width($company_name, $left_width), 0, 0, 'L');
+            $y += self::CATALOG_HEADER_COMPANY_LINE_HEIGHT_MM;
+        }
+        foreach ($left_rows as $row) {
+            $y = $this->print_catalog_header_row($left_x, $y, $left_width, $row, 'L');
+        }
+        $left_bottom_y = $y;
+
+        // Columna derecha: renglones alineados a la derecha
+        $y = $block_top_y;
+        foreach ($right_rows as $row) {
+            $y = $this->print_catalog_header_row($right_x, $y, $right_width, $row, 'R');
+        }
+        $right_bottom_y = $y;
+
+        $this->y = max($logo_bottom_y, $left_bottom_y, $right_bottom_y) + self::CATALOG_HEADER_GAP_MM;
+        $this->x = $this->start_x;
+        $this->SetTextColor(...self::COLOR_TEXT_DARK);
+    }
+
+    /**
+     * Imprime un renglón "Título: valor" (título en negrita, valor en regular) dentro de una
+     * columna del bloque de encabezado y devuelve la Y donde termina.
+     *
+     * Columna izquierda: el título va en una Cell del ancho justo y el valor a su lado con
+     * MultiCell, que envuelve debajo si no entra; si el título solo se comería más de la mitad
+     * de la columna, va en su propia línea y el valor abajo. Columna derecha: título y valor en
+     * una sola línea alineada a la derecha cuando entran; si no, cada uno en su MultiCell 'R'.
+     * Un renglón sin título imprime solo el valor; uno sin valor, solo el título (sin los dos puntos).
+     *
+     * Encoding: Cell() del FPDF del proyecto hace utf8_decode() solo, así que recibe el texto
+     * UTF-8 tal cual; los textos de varias líneas van por print_multi_cell(), que corta sobre el
+     * texto decodificado e imprime cada línea con Cell(). La que NO decodifica es
+     * GetStringWidth(): mide sobre pdf_text(). Ver el docblock de pdf_text().
+     *
+     * @param  float   $x      Borde izquierdo de la columna.
+     * @param  float   $y      Y donde arranca el renglón.
+     * @param  float   $width  Ancho de la columna en mm.
+     * @param  array   $row    Renglón ya resuelto (title, value).
+     * @param  string  $align  'L' o 'R'.
+     * @return float           Y donde termina el renglón.
+     */
+    private function print_catalog_header_row($x, $y, $width, array $row, $align)
+    {
+        if ($width <= 0) {
+            return $y;
+        }
+
+        $line_height = self::CATALOG_HEADER_ROW_LINE_HEIGHT_MM;
+        $title = trim((string) ($row['title'] ?? ''));
+        $value = trim((string) ($row['value'] ?? ''));
+
+        if ($title === '' && $value === '') {
+            return $y;
+        }
+
+        /** Sin valor, el título se imprime solo y sin los dos puntos. */
+        $label = ($title !== '' && $value !== '') ? $title.': ' : $title;
+
+        /** Anchos de texto medidos con cada fuente (GetStringWidth no decodifica: se mide sobre pdf_text). */
+        $label_text_width = 0;
+        if ($label !== '') {
+            $this->SetFont('Arial', 'B', 8);
+            $label_text_width = $this->GetStringWidth($this->pdf_text($label));
+        }
+        $value_text_width = 0;
+        if ($value !== '') {
+            $this->SetFont('Arial', '', 8);
+            $value_text_width = $this->GetStringWidth($this->pdf_text($value));
+        }
+
+        if ($align === 'R') {
+            if ($label !== '' && $value !== '' && ($label_text_width + $value_text_width + 3 * $this->cMargin) <= $width) {
+                // Una sola línea: el valor pegado al borde derecho y el título justo a su izquierda.
+                $this->SetFont('Arial', '', 8);
+                $this->SetXY($x, $y);
+                $this->Cell($width, $line_height, $value, 0, 0, 'R');
+
+                $this->SetFont('Arial', 'B', 8);
+                $this->SetXY($x, $y);
+                $this->Cell($width - $value_text_width - $this->cMargin, $line_height, $label, 0, 0, 'R');
+
+                return $y + $line_height;
+            }
+
+            if ($label !== '') {
+                $this->SetFont('Arial', 'B', 8);
+                $this->SetXY($x, $y);
+                $this->print_multi_cell($width, $line_height, $label, 'R');
+                $y = $this->y;
+            }
+            if ($value !== '') {
+                $this->SetFont('Arial', '', 8);
+                $this->SetXY($x, $y);
+                $this->print_multi_cell($width, $line_height, $value, 'R');
+                $y = $this->y;
+            }
+
+            return $y;
+        }
+
+        /** Columna izquierda. */
+        $value_x = $x;
+        $value_width = $width;
+
+        if ($label !== '') {
+            $this->SetFont('Arial', 'B', 8);
+            $this->SetXY($x, $y);
+
+            /** Ancho de la celda del título: el texto más el margen interno, para que el valor arranque pegado. */
+            $label_cell_width = $label_text_width + $this->cMargin;
+
+            if ($value === '' || $label_cell_width > $width * 0.5) {
+                // Título solo, o demasiado largo para compartir la línea: ocupa su propia línea (envuelve si hace falta).
+                $this->print_multi_cell($width, $line_height, $label, 'L');
+                $y = $this->y;
+            } else {
+                $this->Cell($label_cell_width, $line_height, $label, 0, 0, 'L');
+                $value_x = $x + $label_cell_width;
+                $value_width = $width - $label_cell_width;
+            }
+        }
+
+        if ($value !== '') {
+            $this->SetFont('Arial', '', 8);
+            $this->SetXY($value_x, $y);
+            $this->print_multi_cell($value_width, $line_height, $value, 'L');
+            $y = $this->y;
+        }
+
+        return $y;
     }
 
     /**
@@ -927,7 +1204,7 @@ class ArticleTablePdf extends fpdf
 
         $this->y = 297 - self::BOTTOM_MARGIN_MM - self::FOOTER_TEXT_HEIGHT_MM;
         $this->x = $this->start_x;
-        $this->MultiCell($usable_width, 4, $this->pdf_text($this->footer_text), 0, 'L', false);
+        $this->print_multi_cell($usable_width, 4, $this->footer_text, 'L');
     }
 
     // ── Utilidades ────────────────────────────────────────────────────────────
@@ -1125,14 +1402,31 @@ class ArticleTablePdf extends fpdf
     }
 
     /**
-     * Calcula cuántas líneas ocupará un texto dentro de un ancho de celda dado.
-     * Usado para estimar la altura de filas con wrap_content activo.
+     * Cantidad de líneas que ocupa un texto en un ancho dado con la fuente activa.
      *
-     * @param  int     $w    Ancho de la celda en mm.
-     * @param  string  $txt  Texto a medir.
-     * @return int           Cantidad de líneas necesarias (mínimo 1).
+     * @param  float   $w    Ancho de la celda en mm (0 = hasta el margen derecho).
+     * @param  string  $txt  Texto en UTF-8.
+     * @return int
      */
     private function NbLines($w, $txt)
+    {
+        return count($this->split_lines($w, $txt));
+    }
+
+    /**
+     * Corta un texto UTF-8 en las líneas que imprimiría FPDF en un ancho dado, con la fuente
+     * activa. Mismo algoritmo de corte que el MultiCell() de FPDF (corta en el último espacio
+     * que entra; una palabra más larga que el ancho se parte por caracteres; "\n" fuerza línea),
+     * pero sobre el texto DECODIFICADO (Latin-1, un byte por carácter), que es lo que hace que la
+     * medida coincida con lo que Cell() imprime después de su propio utf8_decode().
+     *
+     * Devuelve las líneas en Latin-1: print_multi_cell() las vuelve a UTF-8 antes de imprimir.
+     *
+     * @param  float   $w    Ancho de la celda en mm (0 = hasta el margen derecho).
+     * @param  string  $txt  Texto en UTF-8.
+     * @return array<int, string>  Líneas en Latin-1, al menos una (vacía si el texto es vacío).
+     */
+    private function split_lines($w, $txt)
     {
         /** Referencia al mapa de anchos de caracteres de la fuente activa en FPDF. */
         $cw = &$this->CurrentFont['cw'];
@@ -1150,21 +1444,21 @@ class ArticleTablePdf extends fpdf
             $nb--;
         }
 
+        $lines = [];
         $sep = -1;
         $i = 0;
         $j = 0;
         $l = 0;
-        $nl = 1;
 
         while ($i < $nb) {
             $c = $s[$i];
 
             if ($c == "\n") {
+                $lines[] = substr($s, $j, $i - $j);
                 $i++;
                 $sep = -1;
                 $j = $i;
                 $l = 0;
-                $nl++;
                 continue;
             }
 
@@ -1179,19 +1473,49 @@ class ArticleTablePdf extends fpdf
                     if ($i == $j) {
                         $i++;
                     }
+                    $lines[] = substr($s, $j, $i - $j);
                 } else {
+                    $lines[] = substr($s, $j, $sep - $j);
                     $i = $sep + 1;
                 }
                 $sep = -1;
                 $j = $i;
                 $l = 0;
-                $nl++;
             } else {
                 $i++;
             }
         }
 
-        return $nl;
+        /** Última línea (o la única, o vacía si el texto es vacío). */
+        $lines[] = substr($s, $j, $i - $j);
+
+        return $lines;
+    }
+
+    /**
+     * Imprime un texto UTF-8 en varias líneas, como MultiCell(), pero cortando sobre el texto
+     * decodificado (split_lines()) e imprimiendo cada línea con Cell(), que decodifica una sola
+     * vez. Es el reemplazo del MultiCell() del fpdf.php del proyecto para esta clase: ese
+     * MultiCell() corta iterando bytes del texto que recibe y después delega en Cell() —
+     * con UTF-8 crudo mide cada acento como dos caracteres (corta antes de tiempo y desencaja
+     * con NbLines(), que es lo que fija el alto de la fila: la última línea quedaba tapada por la
+     * fila siguiente), y con texto ya decodificado imprime "?" en cada acento. Medido el 18/9/2026.
+     *
+     * Deja el cursor como MultiCell(): y debajo de la última línea, x en el margen izquierdo.
+     *
+     * @param  float   $w      Ancho de la celda en mm.
+     * @param  float   $h      Alto de cada línea en mm.
+     * @param  string  $txt    Texto en UTF-8.
+     * @param  string  $align  'L', 'C' o 'R'.
+     * @return void
+     */
+    private function print_multi_cell($w, $h, $txt, $align = 'L')
+    {
+        foreach ($this->split_lines($w, $txt) as $line) {
+            $this->Cell($w, $h, utf8_encode($line), 0, 2, $align, false);
+        }
+
+        $this->x = $this->lMargin;
     }
 
     /**

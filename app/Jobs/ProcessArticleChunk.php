@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ArticleImport;
@@ -188,6 +189,15 @@ class ProcessArticleChunk implements ShouldQueue
             */
             $this->set_import_history_status_at_chunk_start();
             $this->set_import_status_at_chunk_start();
+
+            /*
+             * Registro visible del proceso (misión procesos-en-segundo-plano): el primer lote lo
+             * saca de `pendiente`. Va DESPUÉS de las escrituras propias del flujo y nunca en el
+             * medio: es presentación, y el helper no puede tirar.
+             */
+            $this->avanzar_proceso_en_segundo_plano(null, [
+                'etapa' => 'Lote ' . (int) $this->chunk_number . ' de ' . (int) $this->import_status->total_chunks,
+            ]);
 
             // Notifico inmediatamente para que el usuario vea el status sin esperar a que termine el chunk
             $this->notificar_import_status();
@@ -484,7 +494,11 @@ class ProcessArticleChunk implements ShouldQueue
             ]);
 
         // Traigo el estado actualizado y seteo status correctamente (luego de incrementar contadores)
-        $import_status = ImportStatus::select('id', 'processed_chunks', 'total_chunks', 'status')
+        $import_status = ImportStatus::select(
+                'id', 'processed_chunks', 'total_chunks', 'status',
+                /* Los contadores van en la misma query: los lee el registro de procesos, más abajo. */
+                'filas_procesadas', 'created_models', 'updated_models', 'articles_match', 'articles_repetidos'
+            )
             ->find($this->import_status_id);
 
         if ($import_status) {
@@ -499,11 +513,63 @@ class ProcessArticleChunk implements ShouldQueue
                     'status' => $new_status,
                 ]);
             }
+
+            /*
+             * Registro visible del proceso: los lotes hechos y los parciales que ya se sumaron
+             * arriba de forma atómica (por eso se leen de la fila y no de $this->import_result:
+             * son los acumulados de TODOS los lotes, no los de este). Al llegar al último lote el
+             * helper fuerza el broadcast; en el medio hace throttle solo.
+             */
+            $this->avanzar_proceso_en_segundo_plano((int) $import_status->processed_chunks, [
+                'etapa'     => 'Lote ' . (int) $import_status->processed_chunks . ' de ' . (int) $import_status->total_chunks,
+                'resultado' => [
+                    'filas_procesadas' => (int) $import_status->filas_procesadas,
+                    'creados'          => (int) $import_status->created_models,
+                    'actualizados'     => (int) $import_status->updated_models,
+                    'coincidencias'    => (int) $import_status->articles_match,
+                    'repetidos'        => (int) $import_status->articles_repetidos,
+                ],
+            ]);
         }
 
         $fin = microtime(true);
         $dur = $fin - $inicio;
         $this->add_observation('update_import_status en ' . number_format($dur, 2, '.', '') . ' seg');
+    }
+
+    /**
+     * Escribe el avance en el registro visible de procesos (misión procesos-en-segundo-plano).
+     *
+     * La fila se busca por referencia al ImportStatus en cada llamada y no se guarda en el job a
+     * propósito: el job viaja serializado por la cola, y un id guardado en una propiedad quedaría
+     * rancio —o directamente no existiría, para los jobs que ya estaban encolados antes de este
+     * cambio—. Si no hay fila, no pasa nada: la importación es la misma con o sin registro.
+     *
+     * El helper ya atrapa todo adentro; el try/catch de acá cubre lo que queda (la búsqueda por
+     * referencia y el armado de las opciones), para que ninguna falla de presentación pueda caer
+     * en el catch del handle() y marcar la importación como fallida.
+     *
+     * @param  int|null $procesados  Lotes hechos hasta ahora (null = no tocar el contador).
+     * @param  array    $opciones    etapa, resultado, etc. (ver BackgroundProcessHelper::avanzar()).
+     * @return void
+     */
+    private function avanzar_proceso_en_segundo_plano($procesados, array $opciones)
+    {
+        try {
+            $proceso = BackgroundProcessHelper::por_referencia($this->import_status);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            BackgroundProcessHelper::avanzar($proceso, $procesados, $opciones);
+        } catch (\Throwable $e) {
+            Log::warning('ProcessArticleChunk: no se pudo registrar el avance del proceso en segundo plano (la importación sigue).', [
+                'import_status_id' => $this->import_status_id,
+                'chunk_number'     => $this->chunk_number,
+                'error'            => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -570,13 +636,38 @@ class ProcessArticleChunk implements ShouldQueue
     }
 
 
+    /**
+     * Avisa a la SPA (canal `import_status.{owner_id}`) que el ImportStatus cambió.
+     *
+     * 🔴 El broadcast va envuelto en su propio try/catch, aunque lo obvio sería dejarlo caer en
+     * el try del handle() como todo lo demás. `ImportStatusUpdated` es ShouldBroadcastNow: habla
+     * con Pusher en el momento, y un timeout, un 502 o el límite de payload tiran una excepción
+     * acá adentro. Hasta el 18/9/2026 esa excepción subía al catch del handle(), que marcaba la
+     * importación en `fallo` y cortaba la chain: una importación entera volteada por un aviso
+     * que no salió, con el trabajo del lote ya hecho en la base.
+     *
+     * Es el criterio de `InstantBroadcastChannel`: un aviso perdido es aceptable —la SPA vuelve a
+     * pedir el estado al reconectar y el registro de procesos pollea mientras la conexión esté
+     * caída—; una importación volteada por el aviso, no. Se loguea como warning, no como error,
+     * porque no hay nada que reparar en la importación.
+     *
+     * @return void
+     */
     function notificar_import_status() {
-        broadcast(
-            new ImportStatusUpdated(
-                $this->import_status->id,
-                $this->user->id
-            )
-        );
+        try {
+            broadcast(
+                new ImportStatusUpdated(
+                    $this->import_status->id,
+                    $this->user->id
+                )
+            );
+        } catch (\Throwable $e) {
+            Log::warning('ProcessArticleChunk: falló el broadcast de ImportStatusUpdated (la importación sigue).', [
+                'import_status_id' => $this->import_status_id,
+                'chunk_number'     => $this->chunk_number,
+                'error'            => $e->getMessage(),
+            ]);
+        }
         // $this->user->notifyNow(new ImportStatusNotification($this->import_status->id, $this->user->id));
     }
 

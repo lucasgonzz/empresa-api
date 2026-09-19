@@ -31,6 +31,7 @@ class CategoryController extends Controller
             'num'                   => $this->num('categories'),
             'name'                  => $request->name,
             'image_url'             => $request->image_url,
+            'descripcion'           => $request->descripcion,
             'percentage_gain'       => $request->percentage_gain,
             'show_in_pdf_personalizado'       => $request->show_in_pdf_personalizado,
             'user_id'               => $this->userId(),
@@ -60,6 +61,7 @@ class CategoryController extends Controller
 
         $model->name                = $request->name;
         $model->image_url           = $request->image_url;
+        $model->descripcion         = $request->descripcion;
         $model->percentage_gain     = $request->percentage_gain;
         $model->show_in_pdf_personalizado     = $request->show_in_pdf_personalizado;
         

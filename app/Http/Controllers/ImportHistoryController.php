@@ -91,7 +91,7 @@ class ImportHistoryController extends Controller
          * historial) para que el guard del job compare dos valores de
          * origen distinto y no sea una comparacion tautologica.
          */
-        RollbackArticleImportHistory::dispatch($import_history->id, $this->userId());
+        RollbackArticleImportHistory::dispatch($import_history->id, $this->userId(), $this->userId(false));
 
         return response()->json([
             'queued' => true,

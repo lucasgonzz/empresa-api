@@ -15,6 +15,8 @@ use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeleteSaleHelper;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
+use App\Http\Controllers\Helpers\PaymentMethodHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleChartHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SaleModificationsHelper;
@@ -44,6 +46,7 @@ use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Http\Controllers\Pdf\SaleTicketRaw;
 use App\Http\Controllers\SellerCommissionController;
 use App\Models\AfipTicket;
+use App\Models\Client;
 use App\Models\SaleDeliveryInfo;
 use App\Models\SaleSenderInfo;
 use App\Models\CurrentAcount;
@@ -228,6 +231,56 @@ class SaleController extends Controller
         }
 
         /*
+         * Lista de precios obligatoria (misión vender-lista-obligatoria, 17/9/2026). Tercer 422
+         * temprano del método, con el mismo criterio que los dos de arriba: la SPA es guarda de UX
+         * y la autoridad es este rechazo, porque un POST directo, una PWA con el bundle viejo o una
+         * venta offline encolada llegan igual hasta acá. Va ANTES del candado y de la transacción:
+         * un rechazo no toca la base ni consume número de venta.
+         *
+         * Se RECHAZA en vez de completar con una lista por defecto, y el porqué está en el docblock
+         * de PriceTypeHelper: attachArticle() persiste el `price_vender` que mandó el front, así
+         * que el back no tiene forma de volver a preciar los renglones con la lista que elegiría.
+         * Lo único que se completa es la lista del cliente —lo que el front hubiera usado para
+         * preciar, y lo que este método ya hacía después del create—, y por eso el cliente se
+         * carga acá, antes de decidir.
+         *
+         * `withTrashed()` para leer al cliente igual que `Sale::client()`: el rescate anterior
+         * pasaba por esa relación y copiaba la lista aunque el cliente estuviera borrado.
+         */
+        $client_de_la_venta = $request->client_id ? Client::withTrashed()->find($request->client_id) : null;
+
+        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_de_la_venta);
+
+        if (is_null($price_type_id) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
+
+            Log::info('store sale: rechazada sin lista de precios (user_id '.$this->userId().', client_id '.$request->client_id.').');
+
+            return response()->json([
+                'message'               => PriceTypeHelper::mensaje_sin_lista(),
+                'sin_lista_de_precios'  => true,
+            ], 422);
+        }
+
+        /*
+         * Método de pago obligatorio en la venta de contado (tanda 2 de la misma misión,
+         * 18/9/2026). Cuarto 422 temprano, con el mismo criterio que los tres de arriba: la SPA es
+         * guarda de UX (`chequeos/payment_methods.js`, que estuvo apagado del 4/3/2026 a la tanda
+         * 1) y la autoridad es este rechazo. Hasta hoy una venta de contado con el select en
+         * "Seleccione método de pago" (valor 0) se guardaba "cobrada" sin método y sin movimiento
+         * de caja, sin error en ningún lado. La regla entera —qué es de contado, qué es un método
+         * válido, y por qué un request que no habla del cobro no se rechaza— vive en el docblock
+         * de PaymentMethodHelper.
+         */
+        $error_metodo_de_pago = PaymentMethodHelper::validar_venta_nueva($request);
+
+        if (!is_null($error_metodo_de_pago)) {
+
+            Log::info('store sale: rechazada sin metodo de pago (user_id '.$this->userId().', client_id '.$request->client_id.').');
+
+            return response()->json($error_metodo_de_pago, 422);
+        }
+
+        /*
          * 🔴 Candado por comercio mientras se crea la venta (auditoría de stock, 5/9/2026).
          *
          * venta_ya_cread() mira si hay una venta igual de los últimos 5 segundos, pero dos requests
@@ -278,9 +331,20 @@ class SaleController extends Controller
                 'address_id'                        => $request->address_id,
                 'current_acount_payment_method_id'  => SaleHelper::getCurrentAcountPaymentMethodId($request),
                 'afip_information_id'               => $request->afip_information_id,
-                'save_current_acount'               => $request->save_current_acount,
+                /*
+                 * Default 1 si la clave no viaja (tanda 2 de la misión vender-lista-obligatoria,
+                 * 18/9/2026, ítem A8), igual que `CreateSaleOrderHelper::createSale()`. La SPA lo
+                 * manda siempre (arranca en 1), pero hasta hoy un request sin la clave insertaba
+                 * null en una columna NOT NULL con default 1 y el alta moría con un 500 que no
+                 * nombraba la causa —o, en una base sin modo estricto, dejaba la venta del cliente
+                 * fuera de su cuenta corriente (`va_a_volver_a_la_cuenta_corriente()` lee este
+                 * flag)—. La semántica que ya tenía la columna es "a la cuenta corriente salvo que
+                 * alguien diga que no": el default la respeta.
+                 */
+                'save_current_acount'               => SaleHelper::get_save_current_acount_de_venta_nueva($request),
                 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
-                'price_type_id'                     => $request->price_type_id,
+                // Ya resuelta y validada antes de la transacción: request → cliente → null (o 422).
+                'price_type_id'                     => $price_type_id,
                 'discounts_in_services'             => $request->discounts_in_services,
                 'surchages_in_services'             => $request->surchages_in_services,
                 'employee_id'                       => SaleHelper::getEmployeeId($request),
@@ -307,6 +371,14 @@ class SaleController extends Controller
                 'discount_stock'                    => !is_null($request->discount_stock) ? $request->discount_stock : 1,
                 // Si no se envía el campo, se asume true (comportamiento por defecto: precios con IVA).
                 'iva_aplicado'                      => !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1,
+                /*
+                 * `descuento` es el PORCENTAJE legacy del "forzar total" viejo, y se deja como está
+                 * a propósito (auditoría del 17/9/2026, ítem A8 de la tanda 2): hoy ningún
+                 * componente de VENDER lo commitea con valor (`limpiar_vender.js` lo deja en null)
+                 * y `update()` no lo toca, así que `round(null)` = 0 es el único valor que llega
+                 * por acá. `getTotalSale()` lo sigue aplicando para las ventas viejas que lo
+                 * tienen. El forzado vigente es `forzar_total_monto`, más abajo.
+                 */
                 'descuento'                         => round($request->descuento, 2, PHP_ROUND_HALF_UP),
                 'user_id'                           => $this->userId(),
                 // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
@@ -334,12 +406,7 @@ class SaleController extends Controller
              */
             ], SaleHelper::normalized_forzar_total_monto($request), 'sales'));
 
-            if (is_null($model->price_type_id)) {
-                if (!is_null($model->client) && !is_null($model->client->price_type_id)) {
-                    $model->price_type_id = $model->client->price_type_id;
-                    $model->save();
-                }
-            }
+            // El rescate de la lista del cliente que vivía acá pasó a PriceTypeHelper::resolver_price_type_id_para_guardar(), antes de la transacción.
 
             SaleHelper::check_guardad_cuenta_corriente_despues_de_facturar($model, $this);
 
@@ -477,6 +544,57 @@ class SaleController extends Controller
         }
 
         /*
+         * Lista de precios obligatoria (misión vender-lista-obligatoria, 17/9/2026). SOLO si el
+         * request manda la clave, con el mismo `exists()` que `omitir_en_cuenta_corriente` más
+         * abajo y por el mismo motivo: la SPA anterior no manda `price_type_id` en el PUT, y a
+         * secas cualquier venta editada desde esa SPA perdería su lista sin que nadie la tocara.
+         * Clave ausente = se preserva lo guardado.
+         *
+         * Clave presente y en null (o en 0, que se lee como null: ver PriceTypeHelper) en una
+         * cuenta que trabaja con listas = 422, ANTES de abrir la transacción como los otros 4xx
+         * tempranos de este método, para que no haya nada que revertir. No se completa con la
+         * lista del cliente ni con la por defecto: los renglones ya vienen preciados por el front
+         * y ponerles una lista ahora diría que se cobraron con precios que nadie aplicó. La
+         * asignación va adentro, junto a las otras.
+         */
+        $actualizar_price_type_id = $request->exists('price_type_id');
+
+        $price_type_id_nuevo = null;
+
+        if ($actualizar_price_type_id) {
+
+            $price_type_id_nuevo = PriceTypeHelper::normalizar_price_type_id($request->price_type_id);
+
+            if (is_null($price_type_id_nuevo) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
+
+                Log::info('update sale id '.$id.': rechazado sin lista de precios.');
+
+                return response()->json([
+                    'message'               => PriceTypeHelper::mensaje_sin_lista(),
+                    'sin_lista_de_precios'  => true,
+                ], 422);
+            }
+        }
+
+        /*
+         * Método de pago obligatorio, lado edición (tanda 2, 18/9/2026). En el update el cobro se
+         * rehace desde cero —`attachSelectedPaymentMethods()` hace detach y vuelve a adjuntar lo
+         * que traiga el PUT—, así que un PUT de una venta de contado con el select en el
+         * placeholder la dejaría cobrada con nada. Mismo 422 y misma regla que en store(), ANTES
+         * de la transacción. Solo opina si el PUT habla del cobro (la SPA manda las dos claves
+         * siempre); "de contado" se mira sobre lo que la venta va a tener después del update. Ver
+         * PaymentMethodHelper.
+         */
+        $error_metodo_de_pago = PaymentMethodHelper::validar_venta_actualizada($request, $sale_a_actualizar);
+
+        if (!is_null($error_metodo_de_pago)) {
+
+            Log::info('update sale id '.$id.': rechazado sin metodo de pago.');
+
+            return response()->json($error_metodo_de_pago, 422);
+        }
+
+        /*
          * Se lee ANTES de abrir la transacción, y no adentro, por el candado de más abajo: en
          * REPEATABLE READ la primera lectura de la transacción fija la foto de la base, y esta
          * lectura (User + extensiones) era la primera. Ver el comentario del lockForUpdate.
@@ -579,6 +697,14 @@ class SaleController extends Controller
                 $model->omitir_en_cuenta_corriente = $request->omitir_en_cuenta_corriente;
             }
 
+            /*
+                Misma guarda que omitir_en_cuenta_corriente: sin la clave, la lista guardada no se
+                toca. El valor ya está normalizado y validado antes de la transacción (ver arriba).
+            */
+            if ($actualizar_price_type_id) {
+                $model->price_type_id = $price_type_id_nuevo;
+            }
+
             $model->numero_orden_de_compra              = $request->numero_orden_de_compra;
             
             $model->seller_id                           = $request->seller_id;
@@ -617,22 +743,44 @@ class SaleController extends Controller
 
             $model->fecha_entrega                       = $request->fecha_entrega;
             
-            $model->aplicar_recargos_directo_a_items    = $request->aplicar_recargos_directo_a_items;
+            /*
+                Se PRESERVA el valor guardado si el request no trae la clave, igual que
+                `BudgetController::update()` y a diferencia de como estaba hasta el 17/9/2026
+                (asignado pelado). La SPA anterior a marzo de 2026 no manda esta clave en el PUT,
+                y con la asignacion pelada la venta quedaba con el flag en null y los precios del
+                pivot todavia recargados: al confirmar una venta chequeada (`update_total_sale`),
+                al puntuar (`PuntosBaseHelper`) y al facturar (`AfipItemCalculator`) el recargo se
+                sumaba DOS veces. Una SPA que no manda la clave no puede cambiar el comportamiento
+                de la venta: misma clase de bug que `omitir_en_cuenta_corriente` (San Cayetano).
+            */
+            $model->aplicar_recargos_directo_a_items    = !is_null($request->aplicar_recargos_directo_a_items)
+                                                            ? $request->aplicar_recargos_directo_a_items
+                                                            : $model->aplicar_recargos_directo_a_items;
             $model->sale_status_id                      = $request->sale_status_id;
 
             /*
              * discount_stock solo puede activarse, nunca desactivarse una vez que ya fue activado.
              * Si ya estaba en 1 (ya se descontó stock), ignoramos el valor enviado por el front.
+             *
+             * Y si el request NO trae la clave, se preserva lo guardado (hasta el 17/9/2026 acá
+             * caía a 1): la ausencia de la clave ACTIVABA el descuento de stock de una venta que no
+             * lo hacía, y con `$se_activando_discount_stock` de más abajo se descontaba el renglón
+             * entero. Una SPA que no manda la clave no puede cambiar el comportamiento de la venta;
+             * mismo patrón que `BudgetController::update()`.
              */
             if (!$old_discount_stock) {
-                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : 1;
+                $model->discount_stock = !is_null($request->discount_stock) ? $request->discount_stock : $model->discount_stock;
             }
             
             /*
              * iva_aplicado puede activarse y desactivarse libremente en una actualización.
-             * Si no viene en el request, se preserva el comportamiento por defecto (1).
+             * Si no viene en el request, se preserva LO GUARDADO (hasta el 17/9/2026 acá caía a 1
+             * aunque el comentario dijera "se preserva"): una venta con iva_aplicado = 0 editada
+             * desde una SPA que no manda la clave pasaba a 1, y `PuntosBaseHelper` la lee para la
+             * base de puntos. La columna nació con default 1, así que preservar nunca deja un null.
+             * Mismo patrón que `BudgetController::update()`.
              */
-            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : 1;
+            $model->iva_aplicado = !is_null($request->iva_aplicado) ? $request->iva_aplicado : $model->iva_aplicado;
 
             /*
              * Flag para indicar que discount_stock se activa por primera vez en esta actualización.
@@ -644,9 +792,19 @@ class SaleController extends Controller
             // Array de descripciones del cálculo del precio final, serializado como JSON desde el frontend
             $model->price_description                   = $request->price_description;
 
-            /** Sin extensión no se altera send_mail (no borrar histórico en ventas ya marcadas). */
-            if ($can_enviar_mail_a_clientes) {
-                $model->send_mail = !is_null($request->send_mail) ? (bool) $request->send_mail : false;
+            /*
+                Sin extensión no se altera send_mail (no borrar histórico en ventas ya marcadas).
+
+                Y SOLO si el request manda la clave (tanda 2 de la misión vender-lista-obligatoria,
+                18/9/2026, ítem A8): hasta hoy la ausencia de la clave lo ponía en false, o sea que
+                el "no borrar histórico" del comentario de arriba valía para la cuenta sin extensión
+                pero no para la que sí la tiene y edita desde una SPA anterior a abril de 2026,
+                que no manda `send_mail`. Mismo patrón que `omitir_en_cuenta_corriente` y
+                `dias_alerta_venta_no_cobrada_personalizado` en este mismo método: clave ausente =
+                se preserva; presente (también en null) = se asigna.
+            */
+            if ($can_enviar_mail_a_clientes && $request->exists('send_mail')) {
+                $model->send_mail = (bool) $request->send_mail;
             }
             // Log detallado de acciones en vender serializado desde frontend.
             $model->log                                 = $request->log;
@@ -657,8 +815,29 @@ class SaleController extends Controller
             }
 
             // $model->valor_dolar                         = $request->valor_dolar;
-            
-            $model->employee_id                         = SaleHelper::getEmployeeId($request);
+
+            /*
+                🔴 EDITAR NO CAMBIA EL EMPLEADO DE LA VENTA, salvo que el PUT mande explícitamente
+                un `employee_id` mayor a cero (tanda 2 de la misión vender-lista-obligatoria,
+                18/9/2026, ítem A5).
+
+                Hasta hoy acá se llamaba a `SaleHelper::getEmployeeId($request)`, que es el
+                resolvedor del ALTA: sin `employee_id` en el request (o con 0) devuelve el empleado
+                LOGUEADO, y para el dueño devuelve null. Eso está bien para crear —el que vende es
+                el que está sentado— pero en la edición significaba que una venta del DUEÑO
+                (`employee_id` null) editada por un empleado quedaba a nombre del empleado: la SPA
+                restauraba `employee_id` solo si era truthy (`previus_sale/index.js`), así que
+                mandaba el empleado logueado, y las comisiones y los reportes por empleado se
+                movían sin que nadie lo pidiera.
+
+                Con esta regla: PUT sin la clave, con null o con 0 → queda el empleado guardado
+                (null incluido); PUT con un id → se reasigna. La SPA vieja manda el empleado
+                logueado (> 0) y sigue reasignando como hoy; la SPA nueva manda el de la venta.
+                Compatible en las dos direcciones.
+            */
+            $model->employee_id                         = (int) $request->employee_id > 0
+                                                            ? (int) $request->employee_id
+                                                            : $model->employee_id;
             
             $model->updated_at                          = Carbon::now();
             

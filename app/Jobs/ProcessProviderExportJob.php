@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Exports\ProviderExport;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Http\Controllers\Helpers\jobs\BackgroundJobFailureHandler;
 use App\Jobs\Concerns\InstrumentaMemoria;
@@ -79,6 +80,15 @@ class ProcessProviderExportJob implements ShouldQueue
     public function handle()
     {
         $export_history = ExportHistory::find($this->export_history_id);
+
+        /*
+         * El registro visible nació en `pendiente` cuando se creó el historial (en el request);
+         * acá recién lo levanta un worker y pasa a en_proceso. Si el historial no existe
+         * (despacho viejo), por_referencia() da null y el helper no hace nada.
+         */
+        BackgroundProcessHelper::avanzar(BackgroundProcessHelper::por_referencia($export_history), null, [
+            'etapa' => 'Generando el archivo',
+        ]);
 
         try {
             // Best effort: subir memory_limit del worker si viene bajo, y cortar temprano si ya arrancamos al tope.

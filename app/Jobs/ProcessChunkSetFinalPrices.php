@@ -3,8 +3,10 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
 use App\Models\Article;
+use App\Models\PriceUpdateRun;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -136,5 +138,45 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
         DB::table('price_update_runs')
             ->where('id', $this->price_update_run_id)
             ->update(['processed_chunks' => DB::raw('processed_chunks + 1')]);
+
+        $this->avanzar_el_registro_visible();
+    }
+
+    /**
+     * Suma este lote en el registro que ve el usuario (misión procesos-en-segundo-plano).
+     *
+     * incrementar() y no avanzar(): los chunks de una corrida corren en paralelo en varios
+     * workers, y dos que terminan a la vez no pueden leer-y-escribir el contador sin pisarse.
+     * El total del registro lo fija el productor cuando termina de encolar; este lote no lo
+     * toca. La etapa se arma con los contadores FRESCOS de la corrida, leídos después del
+     * incremento atómico de arriba: total_chunks puede seguir en 0 si el productor todavía
+     * está encolando, y ahí "Lote 3 de 0" sería mentira, así que se deja "Recalculando".
+     *
+     * @return void
+     */
+    protected function avanzar_el_registro_visible()
+    {
+        try {
+            $run = PriceUpdateRun::find($this->price_update_run_id);
+
+            if (is_null($run)) {
+                return;
+            }
+
+            $etapa = (int) $run->total_chunks > 0
+                ? 'Lote ' . min((int) $run->processed_chunks, (int) $run->total_chunks) . ' de ' . (int) $run->total_chunks
+                : 'Recalculando';
+
+            BackgroundProcessHelper::incrementar(BackgroundProcessHelper::por_referencia($run), 1, [
+                'etapa' => $etapa,
+            ]);
+        } catch (\Throwable $e) {
+            // Misma regla que el helper: el registro visible nunca voltea al lote. El chunk ya
+            // quedó contado en price_update_runs; lo único que se pierde es un cuadro de la barra.
+            Log::warning('ProcessChunkSetFinalPrices: no se pudo avanzar el registro visible', [
+                'price_update_run_id' => $this->price_update_run_id,
+                'error'               => $e->getMessage(),
+            ]);
+        }
     }
 }

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\ImportStatusUpdated;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ProviderOrderArticleImport;
 use App\Models\ImportHistory;
@@ -106,6 +107,14 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
             Excel::import($importer, $this->archivo_excel_path);
 
             $this->marcar_completado($importer);
+
+            /*
+             * Registro visible del proceso: se cierra después de que el ImportStatus tiene los
+             * contadores finales (los lee de ahí) y antes del aviso, para que la píldora y la
+             * tarjeta de importación no se contradigan.
+             */
+            $this->completar_proceso_en_segundo_plano();
+
             $this->notificar();
 
         } catch (Throwable $e) {
@@ -154,13 +163,23 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
     {
         $rango = ' (filas ' . $this->start_row . '–' . $this->finish_row . ')';
 
+        $mensaje_humano = 'La importación de la compra falló' . $rango . '. Motivo: ' . ImportHelper::formatImportErrorMessage($e);
+
         ImportFailureHandler::registrar(
             $this->import_history_id,
             $this->import_status_id,
             isset($this->user->id) ? $this->user->id : null,
-            'La importación de la compra falló' . $rango . '. Motivo: ' . ImportHelper::formatImportErrorMessage($e),
+            $mensaje_humano,
             $this->armar_detalle_tecnico($e)
         );
+
+        /*
+         * Registro visible del proceso: registrar() ya lo cierra por referencia al ImportStatus,
+         * pero se vuelve a cerrar acá para el caso en que registrar() salga temprano por su
+         * idempotencia (el ImportHistory ya resuelto por el watchdog, que no siempre tiene el
+         * ImportStatus a mano). `fallar()` es idempotente: el que llega segundo no pisa nada.
+         */
+        $this->fallar_proceso_en_segundo_plano($mensaje_humano);
     }
 
     /**
@@ -246,6 +265,120 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
             ]);
 
         $this->notificar();
+
+        /* Registro visible del proceso: después de las escrituras propias del flujo, nunca en el medio. */
+        $this->avanzar_proceso_en_segundo_plano();
+    }
+
+    /**
+     * Escribe el avance en el registro visible de procesos (misión procesos-en-segundo-plano).
+     *
+     * Las filas hechas se leen del ImportStatus recién incrementado y no del argumento del
+     * callback: son las acumuladas de toda la corrida, que es lo que mide la barra. La fila del
+     * proceso se busca por referencia en cada llamada, no se guarda en el job (viaja serializado
+     * por la cola y un id guardado quedaría rancio). Los creados/actualizados no se conocen hasta
+     * el final (attach_articles corre una sola vez sobre el conjunto completo), así que en el
+     * medio solo viajan las filas; el cierre trae los cuatro números.
+     *
+     * Nunca tira: es presentación, y una excepción acá caería en el catch del handle() y marcaría
+     * la importación como fallida por una barrita.
+     *
+     * @return void
+     */
+    private function avanzar_proceso_en_segundo_plano()
+    {
+        try {
+            $import_status = ImportStatus::select('id', 'filas_procesadas')->find($this->import_status_id);
+
+            if (is_null($import_status)) {
+                return;
+            }
+
+            $proceso = BackgroundProcessHelper::por_referencia($import_status);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            $filas = (int) $import_status->filas_procesadas;
+
+            BackgroundProcessHelper::avanzar($proceso, $filas, [
+                'etapa'     => 'Fila ' . number_format($filas, 0, ',', '.') . ' de ' . number_format((int) $proceso->total, 0, ',', '.'),
+                'resultado' => ['filas_procesadas' => $filas],
+            ]);
+        } catch (Throwable $e) {
+            Log::warning('ProcessProviderOrderArticleImport: no se pudo registrar el avance del proceso en segundo plano (la importación sigue).', [
+                'import_status_id' => $this->import_status_id,
+                'error'            => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso con los contadores finales del ImportStatus (que
+     * marcar_completado() acaba de escribir). Idempotente del lado del helper y nunca tira.
+     *
+     * @return void
+     */
+    private function completar_proceso_en_segundo_plano()
+    {
+        try {
+            $import_status = ImportStatus::find($this->import_status_id);
+
+            if (is_null($import_status)) {
+                return;
+            }
+
+            $proceso = BackgroundProcessHelper::por_referencia($import_status);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            BackgroundProcessHelper::completar($proceso, [
+                'filas_procesadas' => (int) $import_status->filas_procesadas,
+                'creados'          => (int) $import_status->created_models,
+                'actualizados'     => (int) $import_status->updated_models,
+                'coincidencias'    => (int) $import_status->articles_match,
+            ], 'Terminado');
+        } catch (Throwable $e) {
+            Log::warning('ProcessProviderOrderArticleImport: no se pudo cerrar el proceso en segundo plano (la importación terminó igual).', [
+                'import_status_id' => $this->import_status_id,
+                'error'            => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra el registro visible del proceso en `fallo` con el mensaje que ve el usuario. Se
+     * llama desde marcar_fallo(), que corre desde el catch del handle() Y desde failed(): el
+     * helper es idempotente, así que el segundo no pisa al primero. Nunca tira.
+     *
+     * @param  string $mensaje_humano
+     * @return void
+     */
+    private function fallar_proceso_en_segundo_plano($mensaje_humano)
+    {
+        try {
+            $import_status = ImportStatus::select('id')->find($this->import_status_id);
+
+            if (is_null($import_status)) {
+                return;
+            }
+
+            $proceso = BackgroundProcessHelper::por_referencia($import_status);
+
+            if (is_null($proceso)) {
+                return;
+            }
+
+            BackgroundProcessHelper::fallar($proceso, $mensaje_humano);
+        } catch (Throwable $e) {
+            Log::warning('ProcessProviderOrderArticleImport: no se pudo marcar el fallo del proceso en segundo plano.', [
+                'import_status_id' => $this->import_status_id,
+                'error'            => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

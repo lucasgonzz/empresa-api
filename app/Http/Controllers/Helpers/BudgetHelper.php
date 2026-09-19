@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
@@ -47,6 +48,29 @@ class BudgetHelper {
 	static function saveSale($budget, $previus_articles) {
 		if (is_null($budget->sale)) {
 	        $ct = new Controller();
+
+	        /*
+	         * Lo que la venta nacida de un presupuesto se lleva IGUAL que una venta de VENDER
+	         * (tanda 2 de la mision vender-lista-obligatoria, 18/9/2026, item A3). Hasta hoy este
+	         * INSERT dejaba en el default de la columna tres cosas que `SaleController::store()`
+	         * si resuelve:
+	         *
+	         *  - `seller_id`: quedaba null, asi que la venta no tenia vendedor y no habia comision
+	         *    por este camino, aunque el cliente tuviera vendedor asignado. Se resuelve con la
+	         *    MISMA regla que el alta (`SaleHelper::get_seller_id_desde()`: cliente → empleado
+	         *    que confirma → 0), y mas abajo se crea la comision como hace `attachProperies()`.
+	         *    Un presupuesto no elige vendedor, por eso el primer argumento va en null.
+	         *  - `terminada_at`: quedaba null con `terminada = 1`. Mismo criterio que el alta
+	         *    (`SaleHelper::get_terminada()` / `get_terminada_at()`): sin la extension
+	         *    `check_sales` la venta nace terminada y fechada ahora; con ella nace `to_check`,
+	         *    sin terminar y sin fecha. Un presupuesto no tiene fecha de entrega.
+	         *  - `valor_dolar`: no se copiaba del presupuesto; la venta perdia la cotizacion con la
+	         *    que se preciaron sus renglones.
+	         */
+	        $to_check = UserHelper::hasExtencion('check_sales') ? 1 : 0;
+
+	        $employee_id = SaleHelper::getEmployeeId();
+
 	        $sale = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
 	            'num' 					=> $ct->num('sales'),
 	            'user_id' 				=> UserHelper::userId(),
@@ -55,7 +79,9 @@ class BudgetHelper {
 	            'observations' 			=> $budget->observations,
 	            'total' 				=> $budget->total,
 	            'address_id' 			=> $budget->address_id,
-	            'moneda_id' 			=> $budget->moneda_id,
+	            // Pesos si el presupuesto no tiene moneda (item A6, 18/9/2026): `sales.moneda_id` es
+	            // nullable y con null ninguna cotizacion aplica. Mismo default que SaleController.
+	            'moneda_id' 			=> $budget->moneda_id ? $budget->moneda_id : 1,
 	            'discounts_in_services'	=> $budget->discounts_in_services,
 	            'surchages_in_services'	=> $budget->surchages_in_services,
 	            // La venta que nace del presupuesto se lleva la opcion: sus articulos ya vienen con
@@ -67,11 +93,30 @@ class BudgetHelper {
             	// Misma semántica que en SaleController: si no viene definido en el presupuesto, descontar stock por defecto.
             	'discount_stock'        => !is_null($budget->discount_stock) ? ($budget->discount_stock ? 1 : 0) : 1,
             	'iva_aplicado'          => !is_null($budget->iva_aplicado) ? ($budget->iva_aplicado ? 1 : 0) : 1,
-            	'employee_id'           => SaleHelper::getEmployeeId(),
+            	'employee_id'           => $employee_id,
+            	'seller_id'             => SaleHelper::get_seller_id_desde(null, $budget->client_id, $employee_id),
+            	'valor_dolar'           => $budget->valor_dolar,
 	            'save_current_acount' 	=> Self::get_guardar_cuenta_corriente($budget),
-	            'to_check'				=> UserHelper::hasExtencion('check_sales') ? 1 : 0,
-	            'terminada'				=> UserHelper::hasExtencion('check_sales') ? 0 : 1,
-                'omitir_en_cuenta_corriente'        => $budget->omitir_en_cuenta_corriente,
+	            'to_check'				=> $to_check,
+	            'terminada'				=> SaleHelper::get_terminada($to_check, null),
+	            'terminada_at'			=> SaleHelper::get_terminada_at($to_check, null),
+	            /*
+	             * 🔴 Un presupuesto NO se puede omitir de la cuenta corriente: la venta que nace al
+	             * confirmarlo va SIEMPRE a la cuenta del cliente (decision de Lucas, 18/9/2026,
+	             * tanda 3 de la mision vender-lista-obligatoria). `BudgetController` guarda 0 en el
+	             * alta y la edicion, la SPA manda 0 y deshabilita el toggle en modo presupuesto, y
+	             * aca se escribe 0 sin mirar el presupuesto (un 1 viejo no cambia nada).
+	             *
+	             * El motivo de fondo: la confirmacion desde el listado no trae ningun dato de cobro,
+	             * y una venta de contado sin metodo de pago ni movimiento de caja es justo el estado
+	             * que `SaleController::store()` rechaza con el 422 `sin_metodo_de_pago`. La deuda en
+	             * la cuenta corriente se cancela despues, registrando el pago.
+	             *
+	             * Quien lee este campo es `SaleHelper::va_a_volver_a_la_cuenta_corriente()`
+	             * (`save_current_acount && !omitir_en_cuenta_corriente`), desde `create_current_acount()`
+	             * mas abajo: `get_guardar_cuenta_corriente()` decide solo `save_current_acount`.
+	             */
+                'omitir_en_cuenta_corriente'        => 0,
 	        /*
 	         * El monto del total forzado viaja del presupuesto a la venta (mision
 	         * forzar-total-por-monto, 17/9/2026).
@@ -131,6 +176,16 @@ class BudgetHelper {
 
 	        if (!$sale->to_check) {
 	        	SaleHelper::create_current_acount($sale);
+
+	        	/*
+	        	 * La comision del vendedor, en el mismo orden que `SaleHelper::attachProperies()`
+	        	 * para una venta de VENDER: despues del movimiento de cuenta corriente, porque el
+	        	 * motor de Fenix pregunta por `$sale->current_acount` y el estado de la comision
+	        	 * (`comisiones\Helper::get_status()`) depende de si la venta entro a la cuenta.
+	        	 * Hasta hoy (item A3) no se llamaba, y como ademas `seller_id` quedaba null, un
+	        	 * presupuesto confirmado nunca generaba comision. Sin vendedor (0) es un no-op.
+	        	 */
+	        	SaleHelper::crear_comision($sale);
 	        }
 
 	        SaleTotalesHelper::set_total_cost($sale);
@@ -152,20 +207,31 @@ class BudgetHelper {
 		}
 	}
 
+	/**
+	 * La lista de precios con la que nace la venta al confirmar: la del presupuesto, o la del
+	 * cliente, o ninguna.
+	 *
+	 * ⚠️ Un presupuesto viejo sin lista —guardado antes de la mision vender-lista-obligatoria
+	 * (17/9/2026), o de una cuenta que no trabaja con listas— confirma con null A PROPOSITO, y aca
+	 * no se le exige lista: sus renglones ya se preciaron asi cuando se guardo
+	 * (`article_budget.price` viaja tal cual a `article_sale.price` en attachSaleArticles()), y
+	 * ponerle una lista ahora diria que la venta se cobro con precios que nadie aplico. La
+	 * obligatoriedad vive en el alta y en la edicion (`BudgetController` + `PriceTypeHelper`), que
+	 * es donde se eligen los precios.
+	 *
+	 * 🔴 Y el 0 se lee como "ninguna" en las DOS puntas, presupuesto y cliente, con el mismo
+	 * resolvedor que usa el alta: `clients.price_type_id` nace en 0 desde el form generico de
+	 * clientes (`src/models/client.js`, `ClientController` lo guarda pelado) y un presupuesto viejo
+	 * puede traer 0 por el mismo camino. Hasta el 17/9/2026 esto preguntaba `!is_null` y un 0
+	 * pasaba como si fuera una lista: la venta nacia con `price_type_id = 0`, que ningun lector
+	 * distingue de "sin lista" pero que tampoco cae al cliente.
+	 *
+	 * @param  \App\Models\Budget  $budget
+	 * @return int|null
+	 */
 	static function get_price_type_id($budget) {
 
-		if (!is_null($budget->price_type_id)) {
-			return $budget->price_type_id;
-		}
-
-		$client = $budget->client;
-		
-		if (!is_null($client) 
-			&& !is_null($client->price_type_id)) {
-
-			return $client->price_type_id;
-		}
-		return null;
+		return PriceTypeHelper::resolver_price_type_id_para_guardar($budget->price_type_id, $budget->client);
 	}
 
 	static function get_guardar_cuenta_corriente($budget) {
@@ -593,7 +659,21 @@ class BudgetHelper {
 			
 			$cost = SaleHelper::getCost($budget, $article);
 
-			$price_type_personalizado_id = isset($article['pivot']) && isset($article['pivot']['price_type_personalizado_id']) ? $article['pivot']['price_type_personalizado_id'] : null;
+			/*
+			 * La lista por linea (rangos por cantidad), plano primero y despues en `pivot`
+			 * (mision vender-lista-obligatoria, 17/9/2026). Hasta hoy se leia SOLO de `pivot`, y el
+			 * alta desde VENDER (`vender_presupuestos.js::crear()`) manda el articulo plano, con la
+			 * clave en la raiz: la lista por linea se perdia al guardar el presupuesto. En la
+			 * actualizacion y en el form generico viaja bajo `pivot`, con el 0 con que nacen los
+			 * items de VENDER, y ese 0 se guardaba tal cual: al confirmar llegaba a `article_sale`,
+			 * donde `SaleHelper::get_price_type_personalizado()` nunca escribe un 0. Se normaliza
+			 * con ESE mismo helper (0 y '' son null) para que las dos tablas digan lo mismo.
+			 */
+			$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article);
+
+			if (is_null($price_type_personalizado_id) && isset($article['pivot']) && is_array($article['pivot'])) {
+				$price_type_personalizado_id = SaleHelper::get_price_type_personalizado($article['pivot']);
+			}
 			
 			if ($article['status'] == 'inactive' && $id > 0) {
 				$art = Article::find($article['id']);

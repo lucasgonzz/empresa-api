@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
+use App\Models\BackgroundProcess;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use App\Services\Filter\FilterHistoryService;
@@ -19,6 +20,23 @@ class DeleteModelsHelper
     const BACKGROUND_THRESHOLD = 1;
 
     /**
+     * El registro visible (misión procesos-en-segundo-plano, 18/9/2026) del borrado que está
+     * corriendo en este worker.
+     *
+     * Es estático y no un parámetro porque la eliminación masiva no tiene modelo propio al que
+     * apuntar con `por_referencia()`, y son tres los lugares que lo necesitan sin poder
+     * pasárselo entre sí: process_background_delete() lo abre y lo cierra, process_delete() lo
+     * avanza dentro de su foreach (sin cambiarle la firma, que también usa el camino
+     * síncrono), y el catch de ProcessDeleteModelsJob lo cierra en fallo DESPUÉS de que el
+     * finally de acá ya corrió. Un worker procesa un job a la vez, así que nunca hay dos
+     * borrados compartiendo esta propiedad; y cada process_background_delete() la pisa al
+     * arrancar, así que un valor viejo no sobrevive a un job que murió sin cerrarlo.
+     *
+     * @var \App\Models\BackgroundProcess|null
+     */
+    protected static $proceso_en_curso = null;
+
+    /**
      * Devuelve una etiqueta legible del modelo para mensajes al usuario.
      *
      * @param string $model_name
@@ -26,8 +44,21 @@ class DeleteModelsHelper
      */
     public static function get_model_label($model_name)
     {
-        if ($model_name == 'article') {
-            return 'artículos';
+        /*
+         * Los tres modelos que hoy pasan por la eliminación masiva, la actualización masiva y
+         * las exportaciones. Hasta la misión procesos-en-segundo-plano (18/9/2026) sólo estaba
+         * "artículos" y el resto salía crudo ("Exportación de client"); ahora este texto va
+         * también en el título de la píldora, que el usuario lee todo el tiempo.
+         */
+        switch ($model_name) {
+            case 'article':
+                return 'artículos';
+            case 'client':
+                return 'clientes';
+            case 'provider':
+                return 'proveedores';
+            case 'sale':
+                return 'ventas';
         }
 
         return $model_name;
@@ -98,8 +129,22 @@ class DeleteModelsHelper
             config(['app.suppress_delete_notifications' => true]);
         }
 
+        /**
+         * Registros recorridos, para el avance del registro visible. Solo cuenta en el camino
+         * en segundo plano: el síncrono (el listado con pocos registros) no abre proceso.
+         */
+        $recorridos = 0;
+
         try {
             foreach ($models_id as $model_id) {
+                $recorridos++;
+
+                if ($suppress_per_model_notifications && $recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
+                    BackgroundProcessHelper::avanzar(self::$proceso_en_curso, $recorridos, [
+                        'resultado' => ['eliminados' => $deleted_count],
+                    ]);
+                }
+
                 /** Instancia del modelo a eliminar. */
                 $model = $formated_model_name::find($model_id);
 
@@ -275,8 +320,41 @@ class DeleteModelsHelper
         $models_id,
         $owner_user_id,
         $auth_user_id,
-        $used_filters
+        $used_filters,
+        $background_process_id = null
     ) {
+        /*
+         * Se resuelve antes de cualquier cosa que pueda tirar (incluido el usuario que no
+         * existe, justo abajo): así cualquier salida por el catch del job encuentra la fila y
+         * la deja en fallo con su motivo, en vez de un borrado que desapareció sin explicación.
+         *
+         * Lo normal es que la fila exista desde DeleteController (nació en `pendiente` al
+         * encolar) y acá solo pase a en_proceso; si no llegó id (job encolado antes de este
+         * cambio) se abre recién ahora.
+         */
+        $pendiente = is_null($background_process_id) ? null : BackgroundProcess::find((int) $background_process_id);
+
+        if (!is_null($pendiente) && !$pendiente->esta_terminado()) {
+            self::$proceso_en_curso = BackgroundProcessHelper::avanzar($pendiente, 0, [
+                'total'            => count($models_id),
+                'etapa'            => 'Eliminando',
+                'forzar_broadcast' => true,
+            ]);
+        } else {
+            self::$proceso_en_curso = BackgroundProcessHelper::iniciar(
+                $owner_user_id,
+                'eliminacion_masiva',
+                'Eliminación de ' . self::get_model_label($model_name),
+                [
+                    'auth_user_id' => $auth_user_id,
+                    'total'        => count($models_id),
+                    'unidad'       => 'registros',
+                    'detalle'      => count($models_id) . ' ' . self::get_model_label($model_name),
+                    'etapa'        => 'Eliminando',
+                ]
+            );
+        }
+
         if (!self::setup_auth_context($auth_user_id)) {
             throw new Exception('Usuario autenticado no encontrado para procesar la eliminación');
         }
@@ -295,6 +373,11 @@ class DeleteModelsHelper
                 );
             }
 
+            BackgroundProcessHelper::completar(self::$proceso_en_curso, [
+                'eliminados' => (int) $result['deleted_count'],
+            ]);
+            self::$proceso_en_curso = null;
+
             self::notify_result(
                 $owner_user_id,
                 $auth_user_id,
@@ -305,5 +388,37 @@ class DeleteModelsHelper
         } finally {
             self::clear_auth_context();
         }
+    }
+
+    /**
+     * Cierra en fallo el registro visible del borrado que estaba corriendo. Lo llama el catch
+     * de ProcessDeleteModelsJob, que es el único que ve la excepción: el finally de
+     * process_background_delete() corre antes que ese catch y no sabe si hubo error.
+     *
+     * Si no había proceso abierto (o ya se cerró bien), no hace nada: el helper tolera null y
+     * fallar() es idempotente.
+     *
+     * @param string   $error_message
+     * @param int|null $owner_user_id  Dueño del comercio, para buscar la fila cuando el estático
+     *                                 está vacío (failed() en un proceso fresco).
+     * @return void
+     */
+    public static function fallar_proceso_en_curso($error_message, $owner_user_id = null)
+    {
+        $proceso = self::$proceso_en_curso;
+
+        /*
+         * Sin proceso en memoria y con dueño conocido: es el failed() del job corriendo en un
+         * proceso FRESCO (OOM, timeout, worker reiniciado), donde la propiedad estática nació
+         * vacía. Se toma el borrado abierto más nuevo del comercio; si ya se cerró (bien o
+         * mal), activos() no lo devuelve y no se toca nada.
+         */
+        if (is_null($proceso) && !is_null($owner_user_id)) {
+            $proceso = BackgroundProcessHelper::ultimo_activo($owner_user_id, 'eliminacion_masiva');
+        }
+
+        BackgroundProcessHelper::fallar($proceso, (string) $error_message);
+
+        self::$proceso_en_curso = null;
     }
 }

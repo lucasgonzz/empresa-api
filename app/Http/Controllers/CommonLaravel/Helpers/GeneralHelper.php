@@ -124,7 +124,9 @@ class GeneralHelper {
             if (!is_null($from_model_id)) {
                 
                 // El origen viaja hasta el modal: el usuario ve por que se le movieron los precios.
-                ProcessSetFinalPrices::dispatch(UserHelper::userId(), $from_model_id, $model_id, false, 'proveedor');
+                // Y el nombre del proveedor, si es por proveedor: sin el, la pildora de procesos
+                // en segundo plano decia "por un cambio en un proveedor" sin decir cual.
+                ProcessSetFinalPrices::dispatch(UserHelper::userId(), $from_model_id, $model_id, false, 'proveedor', self::nombre_del_proveedor($from_model_id, $model_id));
 
             } else {
                 
@@ -135,6 +137,28 @@ class GeneralHelper {
             // $instance->sendUpdateModelsNotification('article', false);
         } else {
             Log::info('No hubo cambios en el proveedor');
+        }
+    }
+
+    /**
+     * Nombre del proveedor que dispara un recalculo de precios, para el detalle del proceso.
+     * Null si el recalculo no es por proveedor o el proveedor no existe. Nunca tira.
+     *
+     * @param  string|null $from_model_id  Columna por la que se filtran los articulos ('provider_id').
+     * @param  int|null    $model_id
+     * @return string|null
+     */
+    static function nombre_del_proveedor($from_model_id, $model_id) {
+        try {
+            if ($from_model_id !== 'provider_id' || is_null($model_id)) {
+                return null;
+            }
+
+            $provider = \App\Models\Provider::find($model_id);
+
+            return is_null($provider) ? null : (string) $provider->name;
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 

@@ -32,7 +32,7 @@ class MasiveUpdateHelper
      */
     public static function create_pending_update($owner_user_id, $auth_user_id, $model_name, $from_filter, $criteria)
     {
-        return MasiveUpdate::create([
+        $masive_update = MasiveUpdate::create([
             'user_id' => (int) $owner_user_id,
             'employee_id' => (int) $auth_user_id,
             'model_name' => $model_name,
@@ -41,6 +41,27 @@ class MasiveUpdateHelper
             'from_filter' => (bool) $from_filter,
             'criteria_json' => json_encode($criteria),
         ]);
+
+        /*
+         * El registro visible nace ACÁ, en el request, y no cuando el worker levanta el job:
+         * en el shared hosting el worker pasa una vez por minuto, y hasta entonces el usuario
+         * que acaba de apretar "Actualizar" no vería ningún proceso. process_update() lo
+         * retoma por referencia y le pone el total cuando resuelve los modelos.
+         */
+        BackgroundProcessHelper::iniciar(
+            $masive_update->user_id,
+            'actualizacion_masiva',
+            'Actualización masiva de ' . DeleteModelsHelper::get_model_label($model_name),
+            [
+                'auth_user_id' => $masive_update->employee_id,
+                'referencia'   => $masive_update,
+                'unidad'       => 'registros',
+                'status'       => 'pendiente',
+                'etapa'        => 'En espera del procesador',
+            ]
+        );
+
+        return $masive_update;
     }
 
     /**
@@ -52,7 +73,7 @@ class MasiveUpdateHelper
      */
     public static function create_pending_revert(MasiveUpdate $parent_masive_update, $auth_user_id)
     {
-        return MasiveUpdate::create([
+        $revert_masive_update = MasiveUpdate::create([
             'user_id' => (int) $parent_masive_update->user_id,
             'employee_id' => (int) $auth_user_id,
             'model_name' => $parent_masive_update->model_name,
@@ -64,6 +85,23 @@ class MasiveUpdateHelper
                 'revert_of_masive_update_id' => $parent_masive_update->id,
             ]),
         ]);
+
+        // Mismo motivo que en create_pending_update: que se vea desde que se pidió.
+        BackgroundProcessHelper::iniciar(
+            $revert_masive_update->user_id,
+            'reversion_masiva',
+            'Reversión de una actualización masiva',
+            [
+                'auth_user_id' => $revert_masive_update->employee_id,
+                'referencia'   => $revert_masive_update,
+                'unidad'       => 'registros',
+                'status'       => 'pendiente',
+                'etapa'        => 'En espera del procesador',
+                'detalle'      => 'Actualización masiva de ' . DeleteModelsHelper::get_model_label($parent_masive_update->model_name) . ' #' . $parent_masive_update->id,
+            ]
+        );
+
+        return $revert_masive_update;
     }
 
     /**
@@ -152,14 +190,36 @@ class MasiveUpdateHelper
         $models = $resolved['models'];
         $used_filters = $resolved['used_filters'];
 
+        $model_name = $masive_update->model_name;
+
+        /*
+         * El registro visible (misión procesos-en-segundo-plano, 18/9/2026) se abre ANTES del
+         * tope de 3000 a propósito: si la masiva se rechaza por tamaño, mark_failed() lo
+         * encuentra por referencia y el usuario ve "falló" con el motivo, en vez de una masiva
+         * que desapareció sin explicación. El total ya se conoce (los modelos están
+         * resueltos), así que la barra arranca medible.
+         */
+        $proceso = self::retomar_o_abrir_proceso(
+            $masive_update,
+            'actualizacion_masiva',
+            'Actualización masiva de ' . DeleteModelsHelper::get_model_label($model_name),
+            [
+                'total'   => count($models),
+                'detalle' => count($models) . ' ' . DeleteModelsHelper::get_model_label($model_name),
+                'etapa'   => 'Aplicando los cambios',
+            ]
+        );
+
         if (count($models) >= 3000) {
             throw new Exception('No se permitio actualizar ' . count($models) . ' registros');
         }
 
-        $model_name = $masive_update->model_name;
         $affected_count = 0;
         $changes_count = 0;
         $non_article_items = [];
+
+        /** Modelos recorridos hasta ahora, para el avance del registro visible. */
+        $recorridos = 0;
 
         /*
          * Usuario del comercio, resuelto UNA sola vez para toda la masiva.
@@ -172,6 +232,10 @@ class MasiveUpdateHelper
         $user_del_comercio = $model_name == 'article' ? User::find($masive_update->user_id) : null;
 
         foreach ($models as $model) {
+            // Se cuenta ANTES del continue: un modelo nulo también es un registro recorrido, y
+            // si no la barra quedaba por debajo del total hasta que completar() la corrigiera.
+            $recorridos++;
+
             if (!$model) {
                 continue;
             }
@@ -251,6 +315,18 @@ class MasiveUpdateHelper
                 }
                 $affected_count++;
             }
+
+            /*
+             * Avance del registro visible cada CADA_CUANTAS_UNIDADES modelos y no en cada uno:
+             * cada llamada es un UPDATE, y en una masiva de 3000 serían 3000 escrituras de
+             * más. El broadcast lo regula el helper. Los números parciales viajan para que el
+             * detalle del modal ya muestre algo mientras corre.
+             */
+            if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
+                BackgroundProcessHelper::avanzar($proceso, $recorridos, [
+                    'resultado' => ['afectados' => $affected_count, 'cambios' => $changes_count],
+                ]);
+            }
         }
 
         $criteria['used_filters_resolved'] = $used_filters;
@@ -263,6 +339,13 @@ class MasiveUpdateHelper
         $masive_update->status = 'completed';
         $masive_update->error_message = null;
         $masive_update->save();
+
+        // Los mismos números que acaba de guardar la masiva: el detalle del modal y el
+        // historial dicen lo mismo.
+        BackgroundProcessHelper::completar($proceso, [
+            'afectados' => $affected_count,
+            'cambios'   => $changes_count,
+        ]);
 
         if ($model_name == 'article') {
             FilterHistoryService::log_action([
@@ -295,6 +378,23 @@ class MasiveUpdateHelper
         $revert_masive_update->status = 'processing';
         $revert_masive_update->save();
 
+        /*
+         * El registro visible de la reversión apunta a la masiva DE REVERSIÓN (la hija), que
+         * es la que tiene status propio y la que mark_failed() recibe si algo se rompe. El
+         * total son los registros que la masiva original tocó: el pivot para artículos, la
+         * lista guardada en JSON para el resto. Los loops de abajo avanzan sobre esta fila.
+         */
+        self::retomar_o_abrir_proceso(
+            $revert_masive_update,
+            'reversion_masiva',
+            'Reversión de una actualización masiva',
+            [
+                'total'   => self::cantidad_de_registros_a_revertir($parent_masive_update),
+                'detalle' => 'Actualización masiva de ' . DeleteModelsHelper::get_model_label($parent_masive_update->model_name) . ' #' . $parent_masive_update->id,
+                'etapa'   => 'Restaurando los valores anteriores',
+            ]
+        );
+
         if ($parent_masive_update->model_name != 'article') {
             self::revert_non_article_items($revert_masive_update, $parent_masive_update);
         } else {
@@ -309,6 +409,60 @@ class MasiveUpdateHelper
         $revert_masive_update->changes_count = $parent_masive_update->changes_count;
         $revert_masive_update->status = 'completed';
         $revert_masive_update->save();
+
+        BackgroundProcessHelper::completar(BackgroundProcessHelper::por_referencia($revert_masive_update), [
+            'afectados' => (int) $revert_masive_update->affected_count,
+            'cambios'   => (int) $revert_masive_update->changes_count,
+        ]);
+    }
+
+    /**
+     * El registro visible de la masiva, ya en `en_proceso` y con su total.
+     *
+     * Lo normal es que exista desde create_pending_update()/create_pending_revert() (nació en
+     * el request, en `pendiente`) y acá solo se lo retome; si no existe —una masiva encolada
+     * antes de este cambio, o un registro que no se pudo crear—, se abre recién ahora. En los
+     * dos casos el resultado es el mismo: una fila en_proceso con el total, la etapa y el
+     * detalle, sobre la que avanzan los loops.
+     *
+     * @param \App\Models\MasiveUpdate $masive_update
+     * @param string $tipo
+     * @param string $titulo
+     * @param array  $opciones  total, detalle, etapa.
+     * @return \App\Models\BackgroundProcess|null
+     */
+    protected static function retomar_o_abrir_proceso(MasiveUpdate $masive_update, $tipo, $titulo, array $opciones)
+    {
+        $proceso = BackgroundProcessHelper::por_referencia($masive_update);
+
+        if (!is_null($proceso)) {
+            $opciones['forzar_broadcast'] = true;
+
+            return BackgroundProcessHelper::avanzar($proceso, 0, $opciones);
+        }
+
+        return BackgroundProcessHelper::iniciar($masive_update->user_id, $tipo, $titulo, array_merge($opciones, [
+            'auth_user_id' => $masive_update->employee_id,
+            'referencia'   => $masive_update,
+            'unidad'       => 'registros',
+        ]));
+    }
+
+    /**
+     * Cuántos registros va a recorrer la reversión: el total de la barra del registro visible.
+     *
+     * @param \App\Models\MasiveUpdate $parent_masive_update
+     * @return int
+     */
+    protected static function cantidad_de_registros_a_revertir(MasiveUpdate $parent_masive_update)
+    {
+        if ($parent_masive_update->model_name == 'article') {
+            return (int) $parent_masive_update->articles()->count();
+        }
+
+        $items = json_decode($parent_masive_update->non_article_items_json, true);
+
+        return is_array($items) ? count($items) : 0;
     }
 
     /**
@@ -617,7 +771,19 @@ class MasiveUpdateHelper
         /* Mismo motivo que en process_update(): resuelto una vez, cero queries por articulo. */
         $user_del_comercio = User::find($parent_masive_update->user_id);
 
+        /* El registro visible de la reversión, buscado una vez; el avance va cada CADA_CUANTAS_UNIDADES. */
+        $proceso = BackgroundProcessHelper::por_referencia($revert_masive_update);
+        $recorridos = 0;
+
         foreach ($parent_masive_update->articles as $article) {
+            // Se cuenta antes de cualquier continue: un pivot ilegible o un artículo borrado
+            // también son registros recorridos para la barra.
+            $recorridos++;
+
+            if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
+                BackgroundProcessHelper::avanzar($proceso, $recorridos);
+            }
+
             $changes = json_decode($article->pivot->changes_json, true);
             if (!is_array($changes)) {
                 continue;
@@ -762,7 +928,17 @@ class MasiveUpdateHelper
 
         $formated_model_name = GeneralHelper::getModelName($parent_masive_update->model_name);
 
+        /* Mismo avance que en el camino de artículos. */
+        $proceso = BackgroundProcessHelper::por_referencia($revert_masive_update);
+        $recorridos = 0;
+
         foreach ($items as $item) {
+            $recorridos++;
+
+            if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
+                BackgroundProcessHelper::avanzar($proceso, $recorridos);
+            }
+
             if (!isset($item['model_id']) || !isset($item['changes'])) {
                 continue;
             }
@@ -819,6 +995,16 @@ class MasiveUpdateHelper
         $masive_update->status = 'failed';
         $masive_update->error_message = $error_message;
         $masive_update->save();
+
+        /*
+         * Cierra el registro visible con el mismo motivo. Si la masiva reventó antes de que
+         * process_update() llegara a abrirlo, por_referencia() devuelve null y el helper no
+         * hace nada: no hay fila que cerrar.
+         */
+        BackgroundProcessHelper::fallar(
+            BackgroundProcessHelper::por_referencia($masive_update),
+            (string) $error_message
+        );
     }
 
     /**

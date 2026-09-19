@@ -4,15 +4,66 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Jobs\FinalizeSetFinalPrices;
 use App\Jobs\ProcessChunkSetFinalPrices;
 use App\Models\PriceType;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Dos cosas viven acá: el recálculo de precios cuando cambia una lista (los cuatro métodos de
+ * arriba, que usa `PriceTypeController`) y, desde la misión vender-lista-obligatoria (17/9/2026),
+ * la regla "toda venta y todo presupuesto llevan lista de precios" (los métodos de abajo, que usan
+ * `SaleController` y `BudgetController` en el alta y en la edición). La SPA tiene su copia de esa
+ * regla en `src/mixins/vender/price_types.js::requiere_lista_de_precios()`, y los dos lados
+ * tienen que decir lo mismo.
+ *
+ * EL CASO REAL de la regla: Trama (`trama2`, v4.0.23), cuenta con `users.listas_de_precio = 1`
+ * donde TODO el margen vive en las listas y el precio base del artículo es costo + IVA. Cuando la
+ * SPA no lograba resolver la lista —catálogo de `price_type` que no llegó, `limpiar_vender()` que
+ * la dejó en null—, mandaba `price_type_id: null`, el back lo guardaba tal cual y la venta salía a
+ * costo, sin un solo error en ningún lado. Medido: 24 ventas de mostrador en 60 días, $77.809 de
+ * margen perdido, ganancia ≈ $0.
+ *
+ * 🔴 POR QUÉ SE RECHAZA Y NO SE COMPLETA CON UNA LISTA POR DEFECTO — es lo primero que alguien va
+ * a querer "simplificar", y no se puede: `SaleHelper::attachArticle()` persiste en
+ * `article_sale.price` el `price_vender` que mandó el front, y `BudgetHelper::attachArticles()`
+ * hace lo mismo con `article_budget.price`. Los renglones llegan YA PRECIADOS por la SPA; el back
+ * no tiene ningún camino para volver a preciarlos con la lista que elegiría. Si acá se pusiera la
+ * lista por defecto (la de mayor `position`, como hace `ArticlePricesHelper::resolver_precio_de_venta()`),
+ * la venta quedaría diciendo "lista General" con renglones cobrados a precio base: peor que la
+ * venta sin lista, porque además mentiría. Lo único que sí se completa es la lista del cliente,
+ * porque es exactamente la que el front hubiera usado para preciar (presupuesto → cliente → mayor
+ * position) y es lo que `SaleController::store()` ya hacía después del create.
+ *
+ * 🔴 POR QUÉ EL CERO ES NULL: golonorte (`listas_de_precio = 0`, extensión
+ * `lista_de_precios_por_categoria`) manda `sales.price_type_id` en null o en 0 —2.068 y 309 ventas
+ * en 30 días, respectivamente— y lleva la lista POR LÍNEA en `article_sale.price_type_personalizado_id`.
+ * Un 0 no es una lista: es "ninguna" escrito de otra forma, y se lee así en el alta y en la
+ * edición. Esas cuentas no llegan al rechazo porque la regla se ancla en `users.listas_de_precio`,
+ * no en la extensión ni en que existan listas.
+ *
+ * 🔴 POR QUÉ LA EXTENSIÓN DE RANGOS QUEDA AFUERA: con `lista_de_precios_por_rango_de_cantidad_vendida`
+ * la lista se decide por la cantidad vendida de cada renglón y el front NO setea lista de venta a
+ * propósito (`price_types.js::setPriceType()` corta ahí). Exigirla sería rechazar todas las ventas
+ * de esas cuentas.
+ *
+ * Y una cuenta con el flag prendido pero SIN ninguna `PriceType` cargada no tiene qué elegir:
+ * tampoco se le exige (es el estado de una cuenta recién configurada, antes de cargar la primera).
+ */
 class PriceTypeHelper {
-	
+
+	/**
+	 * Slug de la extensión que decide la lista por cantidad vendida. Mismo string que usa la SPA
+	 * en `price_types.js` y `category\SetPriceTypesHelper` de este repo.
+	 *
+	 * @var string
+	 */
+	const EXTENCION_RANGOS = 'lista_de_precios_por_rango_de_cantidad_vendida';
+
 	/**
 	 * Verifica cambios en recargos y dispara recálculo global cuando corresponde.
 	 *
@@ -141,6 +192,16 @@ class PriceTypeHelper {
 				'chunks_encolados' => 1,
 			]);
 
+		/*
+		 * Mismo tratamiento que ProcessSetFinalPrices: recién acá el registro visible conoce
+		 * su total en lotes. Los procesados los suman los chunks con incrementar(), asi que
+		 * este punto no los toca (con una cola inline ya sumaron todos antes de esta linea).
+		 */
+		BackgroundProcessHelper::avanzar(BackgroundProcessHelper::por_referencia($run), null, [
+			'total' => count($article_chunks),
+			'etapa' => 'Recalculando',
+		]);
+
 		Log::info('Se encolo el recalculo de precios de '.count($article_ids).' articulos');
 
 		/*
@@ -151,5 +212,153 @@ class PriceTypeHelper {
 		dispatch(new FinalizeSetFinalPrices($user_id, $run->id));
 	}
 
+	/*
+	 * ------------------------------------------------------------------------------------------
+	 * Lista de precios obligatoria en ventas y presupuestos (misión vender-lista-obligatoria,
+	 * 17/9/2026). El porqué de cada decisión está en el docblock de la clase.
+	 * ------------------------------------------------------------------------------------------
+	 */
 
+	/**
+	 * Si a esta cuenta hay que exigirle lista de precios en cada venta y presupuesto.
+	 *
+	 * Las tres condiciones, en orden de costo: el flag del dueño (sin query si el modelo ya
+	 * vino), la extensión de rangos (una query sobre el pivote si la relación no está cargada) y
+	 * que exista al menos una lista del dueño (una query). Cualquiera que falle corta.
+	 *
+	 * @param  \App\Models\User|null  $user  Dueño o empleado; se resuelve al dueño. Null = el autenticado.
+	 * @return bool
+	 */
+	static function requiere_lista_de_precios($user = null) {
+
+		$owner = self::owner_de($user);
+
+		if (is_null($owner)) {
+			return false;
+		}
+
+		if (!UserHelper::uses_listas_de_precio($owner)) {
+			return false;
+		}
+
+		if (UserHelper::hasExtencion(self::EXTENCION_RANGOS, $owner)) {
+			return false;
+		}
+
+		return PriceType::where('user_id', $owner->id)->exists();
+	}
+
+	/**
+	 * Un `price_type_id` tal como llega del request, convertido a lo único que puede ser: un id
+	 * entero positivo, o null.
+	 *
+	 * null, '' y 0/'0' son "ninguna lista" (ver el docblock de la clase por el 0 de golonorte);
+	 * lo no numérico y lo negativo también, porque no hay lista que se llame así. No se tira
+	 * ninguna excepción a propósito: el que llama decide si el null es un rechazo o un valor
+	 * válido según la cuenta.
+	 *
+	 * @param  mixed  $valor
+	 * @return int|null
+	 */
+	static function normalizar_price_type_id($valor) {
+
+		if (is_null($valor) || is_bool($valor) || is_array($valor) || is_object($valor)) {
+			return null;
+		}
+
+		if (!is_numeric($valor)) {
+			return null;
+		}
+
+		$id = (int) $valor;
+
+		if ($id <= 0) {
+			return null;
+		}
+
+		return $id;
+	}
+
+	/**
+	 * La lista con la que se guarda un alta: la del request, o la del cliente, o ninguna.
+	 *
+	 * La lista del cliente es el ÚNICO default que se aplica, y por qué se puede aplicar está en
+	 * el docblock de la clase: es la que el front usa para preciar cuando hay cliente con lista,
+	 * así que los renglones ya vienen cobrados con ella. Un cliente con `price_type_id` en 0
+	 * cuenta como cliente sin lista.
+	 *
+	 * @param  mixed                    $price_type_id_del_request
+	 * @param  \App\Models\Client|null  $client                     El cliente de la venta o del presupuesto, ya cargado; null si es de mostrador.
+	 * @return int|null
+	 */
+	static function resolver_price_type_id_para_guardar($price_type_id_del_request, $client) {
+
+		$price_type_id = self::normalizar_price_type_id($price_type_id_del_request);
+
+		if (!is_null($price_type_id)) {
+			return $price_type_id;
+		}
+
+		if (!is_null($client)) {
+			return self::normalizar_price_type_id($client->price_type_id);
+		}
+
+		return null;
+	}
+
+	/**
+	 * El texto del 422 para una venta. Es lo que ve el vendedor, también con la SPA anterior (que
+	 * muestra `err.response.data.message` en su catch genérico): por eso dice "recargá la página",
+	 * que es a la vez lo que destraba el catálogo de listas que no llegó y lo que trae el bundle
+	 * nuevo.
+	 *
+	 * @return string
+	 */
+	static function mensaje_sin_lista() {
+		return self::armar_mensaje_sin_lista('la venta');
+	}
+
+	/**
+	 * El mismo texto, para un presupuesto.
+	 *
+	 * @return string
+	 */
+	static function mensaje_sin_lista_presupuesto() {
+		return self::armar_mensaje_sin_lista('el presupuesto');
+	}
+
+	/**
+	 * @param  string  $documento  'la venta' o 'el presupuesto'.
+	 * @return string
+	 */
+	protected static function armar_mensaje_sin_lista($documento) {
+		return 'Esta cuenta trabaja con listas de precios y '.$documento.' no tiene ninguna. '
+			.'Elegí una lista de precios; si no aparece ninguna, recargá la página.';
+	}
+
+	/**
+	 * El dueño de la cuenta a partir de cualquier usuario: el mismo criterio que
+	 * `UserHelper::uses_listas_de_precio()`, porque el flag, las extensiones y las listas
+	 * cuelgan todas del dueño y un empleado no tiene ninguna de las tres.
+	 *
+	 * @param  \App\Models\User|null  $user  Null = el autenticado, resuelto al dueño por UserHelper.
+	 * @return \App\Models\User|null
+	 */
+	protected static function owner_de($user) {
+
+		$candidate = $user ?? UserHelper::user(true);
+
+		if (is_null($candidate)) {
+			return null;
+		}
+
+		if ($candidate->owner_id) {
+
+			$owner = $candidate->owner ?? User::find($candidate->owner_id);
+
+			return $owner ? $owner : null;
+		}
+
+		return $candidate;
+	}
 }

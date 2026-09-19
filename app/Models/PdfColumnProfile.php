@@ -101,6 +101,33 @@ class PdfColumnProfile extends Model
          */
         'header_layout' => 'array',
         /**
+         * Diseño del encabezado del PDF del catálogo de artículos (perfiles con model_name
+         * 'article'). Null = sin diseño: el catálogo se imprime como siempre (banner opcional,
+         * barra de título y columnas), sin logo ni datos del negocio.
+         *
+         * Es una columna aparte de header_layout a propósito: aquélla guarda el esquema
+         * emisor/receptor de los PDF de venta (AfipPdfHelper), y un perfil puede cambiar de
+         * model_name por update(); compartir columna dejaría al render de venta leyendo un
+         * esquema ajeno.
+         *
+         * Esquema (lo que persiste CatalogHeaderLayoutHelper::normalize(); claves fijas, nada más):
+         * {
+         *   "logo":         { "show": true, "pages": "all", "size_mm": 25 },
+         *   "company_name": { "show": true },
+         *   "rows_pages":   "all",
+         *   "izquierda":    [ { "title": "Teléfono", "value": "11 5555-5555", "source": "telefono" } ],
+         *   "derecha":      [ { "title": "Horario",  "value": "Lun a Vie 9 a 18", "source": null } ]
+         * }
+         *
+         * - logo.pages y rows_pages: 'all' (todas las hojas) o 'first' (solo la primera).
+         * - logo.size_mm: entero entre 10 y 60 (lado mayor del logo, proporción real).
+         * - Renglones: hasta 15 por columna; title hasta 60 caracteres, value hasta 200.
+         *   source es una clave de CatalogHeaderLayoutHelper::SOURCE_LABELS (el valor se
+         *   reemplaza por el dato actual del negocio al imprimir) o null (renglón libre).
+         * - Lo que la SPA usa para el drag & drop (uid, etc.) no se persiste.
+         */
+        'catalog_header_layout' => 'array',
+        /**
          * Flag para mostrar u ocultar las observaciones del cliente (clients.description)
          * en el PDF de venta. Default true: mantiene el comportamiento legacy (se imprimen
          * siempre que el cliente tenga observaciones cargadas).

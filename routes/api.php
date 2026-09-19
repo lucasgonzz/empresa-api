@@ -93,6 +93,19 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // UserController@update con id = "set-impresora".
     Route::put('user/set-impresora', 'UserController@set_impresora');
 
+    // Configuración del asistente de IA y consumo del plan, POR DUEÑO (misión
+    // foto-sucursal-y-asistente-configurable). Mismo gate que el chat: la extensión asistente_ia
+    // y solo el dueño (solo_el_dueno_ia); auth:sanctum ya lo pone el grupo de arriba.
+    // 🔴 `user/asistente-config` va ANTES de `user/{id}` por la misma trampa del orden que
+    // set-chat-ia-preferencias: son dos segmentos y abajo del comodín el PUT caería en
+    // UserController@update con id = "asistente-config". `mi-consumo-ia` no tiene ese problema
+    // (es de un solo segmento propio), pero comparte el mismo gate, así que va en el mismo grupo.
+    Route::middleware(['check_extencion_empresa:asistente_ia', 'solo_el_dueno_ia'])->group(function () {
+        Route::get('user/asistente-config', 'AsistenteConfigController@show');
+        Route::put('user/asistente-config', 'AsistenteConfigController@update');
+        Route::get('mi-consumo-ia', 'AsistenteConfigController@mi_consumo');
+    });
+
     // Agente de impresion: lo que consume el SPA. El agente en si tiene su propio grupo mas abajo,
     // fuera de sanctum, porque es un programa y no una persona con sesion.
     Route::post('print-agents/codigo', 'PrintAgentController@codigo');
@@ -799,6 +812,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('pdf-column-options/{id}', 'PdfColumnOptionController@show');
     // Duplica un perfil de diseño de PDF con toda su configuración y columnas (pivots).
     Route::post('pdf-column-profiles/{id}/duplicate', 'PdfColumnProfileController@duplicate');
+    // Datos del negocio, logo, nombre y diseño por defecto para el diseñador del encabezado del
+    // catálogo de artículos. Va ANTES del resource: si no, el GET lo captura show/{id} con
+    // id = "catalog-header-sources" y responde 404.
+    Route::get('pdf-column-profiles/catalog-header-sources', 'PdfColumnProfileController@catalog_header_sources');
     Route::resource('pdf-column-profiles', 'PdfColumnProfileController');
 
     Route::get('etiqueta-medidas', 'EtiquetaMedidaController@index');
@@ -898,6 +915,17 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::resource('tag', 'TagController');
 
     Route::get('import-status', 'ImportStatusController@index');
+
+    /*
+     * Procesos en segundo plano del comercio (misión procesos-en-segundo-plano, 18/9/2026):
+     * la píldora de arriba a la derecha, el modal y el detalle. `vistos` va ANTES de `{id}`
+     * a propósito, aunque hoy no choquen: si algún día la de `{id}` se vuelve un resource, el
+     * literal tiene que seguir ganando.
+     */
+    Route::get('background-processes', 'BackgroundProcessController@index');
+    Route::put('background-processes/vistos', 'BackgroundProcessController@vistos');
+    Route::get('background-processes/{id}', 'BackgroundProcessController@show');
+    Route::put('background-processes/{id}/visto', 'BackgroundProcessController@visto');
 
 
     /*
@@ -1245,6 +1273,15 @@ Route::middleware('admin.api.key')
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
+        // Contacto del dueño (misión aviso-de-actualizacion-al-cliente): el admin necesita su
+        // casilla para mandarle el mail con las novedades cuando le actualiza el sistema. Hoy el
+        // único endpoint del canal que devuelve `email` es mostrador/duenos, que filtra por la
+        // extensión `asistente_ia` y por eso devuelve vacío para la mayoría de los clientes;
+        // branding y mensualidad-info no lo traen.
+        // Solo lee: no escribe nada ni despacha jobs. Y devuelve UN solo campo, `contacto.email`:
+        // el nombre y el teléfono el admin ya los tiene en `clients`, y esta ruta responde sin
+        // validar el header mientras ADMIN_SYNC_REQUIRE_API_KEY siga apagado.
+        Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
@@ -1292,6 +1329,12 @@ Route::middleware('admin.api.key')
         // tiene cargada: la mayoría todavía no tiene ADMIN_API_INBOUND_KEY en su .env y un 401
         // duro dejaría la recolección rota en casi todos. Ver el docblock de rechazo_por_clave().
         Route::get('consumo-ia', 'AdminSync\\ConsumoIaController@index');
+        // El plan de IA que el admin le asigna a este cliente (misión
+        // foto-sucursal-y-asistente-configurable): el admin maneja los paquetes y su precio, y
+        // pushea acá el nombre y los dos topes. Guarda en el dueño. Como el canal de WhatsApp y
+        // consumo-ia, valida X-Admin-Api-Key ADENTRO del controlador (require_api_key está apagado
+        // en producción) porque ESCRIBE el plan del cliente. Idempotente; 409 si no hay dueño resoluble.
+        Route::put('plan-ia', 'AdminSync\\PlanIaController@update');
     });
 
 // El informe del mostrador abierto desde el link que llegó por WhatsApp (misión

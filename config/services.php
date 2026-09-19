@@ -93,6 +93,16 @@ return [
     'anthropic' => [
         'api_key'    => env('ANTHROPIC_API_KEY'),
         'model'      => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+        /*
+         * Los dos modelos que elige la preferencia "cómo piensa" del agente (misión
+         * foto-sucursal-y-asistente-configurable, 17/9/2026). `model_agil` cae por defecto al
+         * `ANTHROPIC_MODEL` de siempre: un negocio en 'agil' (el default) usa exactamente el modelo
+         * actual, sin cambiar nada. `model_profundo` es el modelo caro, para el que elige "piensa a
+         * fondo". El service elige entre los dos por `users.agente_pensamiento`; los ids NO se
+         * hardcodean en el service, salen de acá y se pueden mover por .env.
+         */
+        'model_agil'     => env('ANTHROPIC_MODEL_AGIL', env('ANTHROPIC_MODEL', 'claude-sonnet-5')),
+        'model_profundo' => env('ANTHROPIC_MODEL_PROFUNDO', 'claude-opus-5'),
         'ca_bundle'  => env('ANTHROPIC_CAINFO'),
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],

@@ -67,10 +67,17 @@ class InventoryPerformanceHelper {
 	 * optimizacion-vps-fase1, 4.0.24). `index()` ya no encola nada (misión
 	 * reporte-inventario-manual, 15/9/2026): es de sólo lectura.
 	 *
-	 * @param  int  $user_id
+	 * `$auth_user_id` es quién lo pidió (misión procesos-en-segundo-plano, 18/9/2026): el botón
+	 * del modal lo pasa y el reporte aparece en la píldora de procesos de ese usuario; el comando
+	 * nocturno no pasa nada y el job no registra nada, porque un reporte que corre solo a las
+	 * 04:00 es ruido para el dueño, no un proceso que esté esperando. Opcional con default null
+	 * para que el comando y cualquier otro llamador sigan igual que antes.
+	 *
+	 * @param  int       $user_id
+	 * @param  int|null  $auth_user_id  Usuario que apretó el botón; null = lo disparó el scheduler.
 	 * @return bool true si se encoló; false si ya había una generación en curso y no se encoló otra.
 	 */
-	static function encolar_generacion($user_id) {
+	static function encolar_generacion($user_id, $auth_user_id = null) {
 
 		// El TTL es una red de seguridad por si el worker muere sin liberar el candado.
 		if (! Cache::add(self::llave_generando($user_id), true, Carbon::now()->addMinutes(self::MINUTOS_DEL_CANDADO))) {
@@ -78,7 +85,7 @@ class InventoryPerformanceHelper {
 			return false;
 		}
 
-		ProcessInventoryPerformanceJob::dispatch($user_id);
+		ProcessInventoryPerformanceJob::dispatch($user_id, $auth_user_id);
 
 		return true;
 	}

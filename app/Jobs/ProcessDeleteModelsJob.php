@@ -3,7 +3,6 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
-use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -65,6 +64,15 @@ class ProcessDeleteModelsJob implements ShouldQueue
     protected $used_filters;
 
     /**
+     * Registro visible abierto en `pendiente` por DeleteController al encolar (misión
+     * procesos-en-segundo-plano). Null para los jobs encolados antes de este cambio: el helper
+     * abre uno al arrancar.
+     *
+     * @var int|null
+     */
+    protected $background_process_id = null;
+
+    /**
      * Crea el job de eliminación masiva en segundo plano.
      *
      * @param string $model_name
@@ -73,13 +81,14 @@ class ProcessDeleteModelsJob implements ShouldQueue
      * @param int $auth_user_id
      * @param array $used_filters
      */
-    public function __construct($model_name, $models_id, $owner_user_id, $auth_user_id, $used_filters = [])
+    public function __construct($model_name, $models_id, $owner_user_id, $auth_user_id, $used_filters = [], $background_process_id = null)
     {
         $this->model_name = $model_name;
         $this->models_id = $models_id;
         $this->owner_user_id = (int) $owner_user_id;
         $this->auth_user_id = (int) $auth_user_id;
         $this->used_filters = is_array($used_filters) ? $used_filters : [];
+        $this->background_process_id = is_null($background_process_id) ? null : (int) $background_process_id;
     }
 
     /**
@@ -95,9 +104,10 @@ class ProcessDeleteModelsJob implements ShouldQueue
                 $this->models_id,
                 $this->owner_user_id,
                 $this->auth_user_id,
-                $this->used_filters
+                $this->used_filters,
+                $this->background_process_id
             );
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('ProcessDeleteModelsJob: error', [
                 'model_name' => $this->model_name,
                 'owner_user_id' => $this->owner_user_id,
@@ -105,6 +115,10 @@ class ProcessDeleteModelsJob implements ShouldQueue
                 'records_count' => count($this->models_id),
                 'message' => $e->getMessage(),
             ]);
+
+            // El registro visible cae con el mismo motivo que el aviso (ver el docblock de
+            // DeleteModelsHelper::$proceso_en_curso para por qué llega hasta acá).
+            DeleteModelsHelper::fallar_proceso_en_curso($e->getMessage(), $this->owner_user_id);
 
             DeleteModelsHelper::notify_result(
                 $this->owner_user_id,
@@ -115,5 +129,21 @@ class ProcessDeleteModelsJob implements ShouldQueue
                 $e->getMessage()
             );
         }
+    }
+
+    /**
+     * Cubre lo que el catch de arriba no ve: un \Error (que no es Exception) o una muerte sin
+     * catch (OOM, timeout, worker reiniciado), donde Laravel llama a failed() en un proceso
+     * fresco. Sólo cierra el registro visible; el aviso al usuario de ese camino ya no existía
+     * antes de esta misión y no se agrega acá. Idempotente: si el catch ya lo cerró, no pasa nada.
+     *
+     * @param  \Throwable $e
+     * @return void
+     */
+    public function failed($e)
+    {
+        $motivo = !is_null($e) ? $e->getMessage() : 'El proceso se interrumpió sin dejar traza.';
+
+        DeleteModelsHelper::fallar_proceso_en_curso($motivo, $this->owner_user_id);
     }
 }

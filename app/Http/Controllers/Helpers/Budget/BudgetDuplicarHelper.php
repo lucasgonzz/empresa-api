@@ -85,7 +85,9 @@ class BudgetDuplicarHelper {
             */
             'moneda_id'                 => $source->moneda_id,
             'valor_dolar'               => $source->valor_dolar,
-            'omitir_en_cuenta_corriente' => $source->omitir_en_cuenta_corriente,
+            // Un presupuesto no se puede omitir de la cuenta corriente (decision de Lucas,
+            // 18/9/2026): el duplicado nace en 0 aunque el origen tenga un 1 viejo.
+            'omitir_en_cuenta_corriente' => 0,
             'employee_id'               => $controller->userId(false),
             'user_id'                   => $controller->userId(),
         ], $source->forzar_total_monto, 'budgets'));
