@@ -79,6 +79,21 @@ class SessionLockController extends Controller
         $bloquear = $request->boolean('bloquear_pestanas_duplicadas');
 
         $owner->bloquear_pestanas_duplicadas = $bloquear;
+
+        /*
+         * Al APAGAR el modo estricto, normalizamos el session_id del owner sacándole el sufijo
+         * ":tabId" si lo tiene. Sin esto, la pestaña que en este momento tiene el candado tomado
+         * (guardado como "sessionId:tabId" mientras el modo estaba prendido) queda espuriamente
+         * bloqueada en su próximo chequeo: AuthHelper::checkUserLastActivity() va a componer un
+         * candado SIN sufijo (porque $estricto ya es false acá) y no va a matchear contra el
+         * valor con sufijo que quedó guardado, aunque sea exactamente la misma pestaña de la
+         * misma sesión. No se toca `last_activity` ni se cierra ninguna sesión: es solo un
+         * cambio de formato del mismo candado, para que quede consistente con el modo nuevo.
+         */
+        if (! $bloquear && $owner->session_id !== null && strpos($owner->session_id, ':') !== false) {
+            $owner->session_id = explode(':', $owner->session_id, 2)[0];
+        }
+
         $owner->save();
 
         Log::info('AdminSync session-lock OK', [
