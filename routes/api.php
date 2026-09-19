@@ -80,6 +80,11 @@ Route::middleware(['auth:sanctum'])->group(function() {
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
+    // Candado de sesión por pestaña (misión candado-sesion-por-pestana, 19/9/2026): la pestaña
+    // nueva que perdió el candado estricto (get_user() respondió 403 con
+    // misma_sesion_otra_pestana: true) lo reclama sin volver a pedir credenciales -ya hay
+    // sesión Laravel válida por la cookie de este mismo navegador-.
+    Route::post('session-lock/forzar-pestana', 'CommonLaravel\AuthController@forzar_pestana');
     // Preferencias de UI del chat con el asistente de IA (misión chat-ia-y-modulo-ia). Misma
     // familia que set-dark-mode: es una preferencia POR PERSONA (Auth::user()) y va acá, fuera
     // del gate de la extensión — el gate protege los DATOS del chat, no una coordenada de pantalla.
@@ -1290,6 +1295,12 @@ Route::middleware('admin.api.key')
         // CERRADO del emisor: la semana llega YA RESUELTA y acá solo se guarda y se lee.
         // Idempotente: el push llega por job encolado y puede repetirse con el mismo contenido.
         Route::put('business-hours', 'AdminSync\\BusinessHoursController@update');
+        // Candado de sesión por pestaña (misión candado-sesion-por-pestana, 19/9/2026): el toggle
+        // que Lucas prende por cliente desde el admin (ClientSessionLockSyncService), mismo
+        // patrón que business-hours (idempotente, guarda en el owner). 404 legítimo si este
+        // cliente todavía no actualizó a la versión con este endpoint -el admin lo trata igual
+        // que el 404 de business-hours, nunca como error que bloquee el guardado del admin-.
+        Route::put('session-lock', 'AdminSync\\SessionLockController@update');
         // Reemision/revocacion del token de ingreso a la demo (grupo 233, prompt 05). Va dentro
         // de este grupo con admin.api.key para que quede protegida sola el dia que Lucas prenda
         // el flag services.admin_api.require_api_key (hoy sigue apagado).

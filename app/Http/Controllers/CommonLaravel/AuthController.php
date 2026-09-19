@@ -501,7 +501,99 @@ class AuthController extends Controller
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
-        return response()->json(['user' => null], 403);
+
+        /**
+         * 🔴 Misión candado-sesion-por-pestana (19/9/2026): antes de devolver el 403 plano, se
+         * distingue el motivo real. `Auth::check()` acá SIEMPRE es true -si no lo fuera, el
+         * middleware `auth:sanctum` del grupo de rutas ya habría cortado antes de llegar a este
+         * método-, así que el 403 de abajo nunca significa "sin sesión": significa "el candado
+         * de sesión única lo tiene otra pestaña o dispositivo".
+         *
+         * Cuando la fila que tiene tomado el candado es la MISMA sesión Laravel (mismo
+         * navegador, otra pestaña -ver AuthHelper::es_misma_sesion_otra_pestana()-), el frontend
+         * no tiene ninguna contraseña que pedir de nuevo: por eso viaja la clave nueva y
+         * opcional `misma_sesion_otra_pestana`, que un consumidor viejo de este endpoint
+         * simplemente ignora.
+         */
+        $response = ['user' => null];
+        if ($this->es_misma_sesion_otra_pestana()) {
+            $response['misma_sesion_otra_pestana'] = true;
+        }
+        return response()->json($response, 403);
+    }
+
+    /**
+     * ¿El candado que rechazó el `get_user()` de arriba pertenece a este MISMO navegador (otra
+     * pestaña), y no a un dispositivo distinto? Delega a AuthHelper con el mismo patrón
+     * defensivo (`class_exists`/`method_exists`) que `checkUserLastActivity()` de más abajo,
+     * porque este controller es compartido entre proyectos y no todos tienen AuthHelper con
+     * este método.
+     *
+     * @return bool
+     */
+    function es_misma_sesion_otra_pestana() {
+        if (class_exists('App\Http\Controllers\Helpers\AuthHelper')) {
+            $auth_helper = new \App\Http\Controllers\Helpers\AuthHelper();
+            if (method_exists($auth_helper, 'es_misma_sesion_otra_pestana')) {
+                $user = Auth()->user();
+                if ($user) {
+                    return $auth_helper->es_misma_sesion_otra_pestana($user);
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Pestaña nueva del mismo navegador, ya logueado, que perdió el candado estricto de
+     * sesión (owner con `bloquear_pestanas_duplicadas` activo) reclama la sesión para sí.
+     *
+     * Distinto de `login_forzado()`: acá NO hay contraseña que pedir -la cookie de Laravel ya
+     * demostró quién es, `auth:sanctum` ya autenticó el request antes de llegar acá-, así que
+     * no se vuelve a correr `Auth::attempt()`. El mecanismo para "ganar" el candado es el mismo
+     * que ya usa `login_forzado()`: liberar lo que tiene tomado la otra pestaña
+     * (`removeUserLastActivity()`) y volver a correr `checkUserLastActivity()`, que en la
+     * siguiente vuelta entra por la rama de "candado libre" y guarda el `X-Tab-Id` de ESTA
+     * pestaña (mandado por el mismo interceptor de axios que ya viaja en todas las requests).
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse Misma forma que login()/login_forzado().
+     */
+    function forzar_pestana(Request $request) {
+        $login = false;
+        $user = null;
+        $user_last_activity = false;
+        $user_last_activity_wait_minutes = 0;
+
+        $auth_user = Auth()->user();
+
+        if ($auth_user) {
+            $this->removeUserLastActivity($auth_user);
+
+            if ($this->checkUserLastActivity()) {
+                /**
+                 * Avisa a la pestaña vieja que se cierra -mismo broadcast y mismo canal privado
+                 * que ya usa login_forzado() para expulsar al dispositivo anterior-.
+                 */
+                $auth_user->notify(new SessionForcedLogoutNotification());
+
+                $user = $this->procesar_login();
+                $login = true;
+                Log::info("Usuario {$user->name}, doc: {$user->doc_number} tomo esta pestaña expulsando la otra, desde: ".$request->header('referer'));
+            }
+        }
+
+        if ($user) {
+            $user->skip_offline_articles_sync = false;
+            $user->master_login_mode = null;
+        }
+
+        return response()->json([
+            'login'                 => $login,
+            'user'                  => $user,
+            'user_last_activity'    => $user_last_activity,
+            'user_last_activity_wait_minutes' => $user_last_activity_wait_minutes,
+        ], 200);
     }
 
     /**
