@@ -816,6 +816,34 @@ class Recolector_caja_Test extends MostradorTestCase
     }
 
     /**
+     * Misión cheques-endoso-y-bancos (21/9/2026): un recibido endosado EN UN GASTO
+     * (`endosado_en_expense_id`) ya no está en cartera, igual que uno endosado a un proveedor. El
+     * recolector lo tiene que dejar afuera de lo que entra: si contara, la proyección de la semana le
+     * inventaría al dueño plata de un cheque que ya entregó.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function un_cheque_endosado_en_un_gasto_no_cuenta_como_en_cartera()
+    {
+        $this->caja('Efectivo', 1, true, [[100000, null]]);
+        $norte = $this->cliente('Ferretería Norte');
+
+        $en_cartera = $this->cheque('recibido', 2, 30000, ['client_id' => $norte->id, 'banco' => 'Nación', 'numero' => '2001']);
+        $this->cheque('recibido', 3, 45000, ['client_id' => $norte->id, 'banco' => 'Nación', 'numero' => '2002', 'endosado_en_expense_id' => 1, 'fecha_endoso' => now()]);
+        $this->cheque('recibido', 4, 55000, ['client_id' => $norte->id, 'banco' => 'Nación', 'numero' => '2003', 'endosado_a_provider_id' => 1, 'fecha_endoso' => now()]);
+
+        $h = $this->recolectar();
+
+        $this->assertSame([
+            ['cheque_id' => $en_cartera, 'cliente' => 'Ferretería Norte', 'banco' => 'Nación', 'numero' => '2001', 'monto' => 30000.0, 'fecha_pago' => $this->dia(2), 'dias_para_cobrar' => 2],
+        ], $h['a_cobrar']['cheques_proximos']);
+
+        $this->assertSame(30000.0, $h['a_cobrar']['total_cheques_proximos']);
+        $this->assertSame(30000.0, $h['proyeccion']['entra']);
+    }
+
+    /**
      * @group mostrador
      * @test
      */

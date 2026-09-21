@@ -5,13 +5,12 @@ namespace App\Http\Controllers;
 use App\Exports\ChequesFilteredExport;
 use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
-use App\Http\Controllers\Helpers\CurrentAcountPagoHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CurrentAcountPagoAltaHelper;
 use App\Models\Cheque;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Models\CreditAccount;
-use App\Models\CurrentAcount;
-use App\Models\CurrentAcountCurrentAcountPaymentMethod;
+use App\Models\CurrentAcountPaymentMethod;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 
@@ -221,7 +220,7 @@ class ChequeController extends Controller
         $problemas = ChequeHelper::problemas_de_endoso_en_payload([
             [
                 'cheque_id'                        => (int) $request->cheque_id,
-                'current_acount_payment_method_id' => 1,
+                'current_acount_payment_method_id' => $this->metodo_de_pago_cheque_id(),
                 'amount'                           => !is_null($cheque) ? $cheque->amount : null,
             ],
         ], $this->userId());
@@ -251,10 +250,16 @@ class ChequeController extends Controller
     }
 
     /**
-     * El pago al proveedor que deja registrado el endoso. La fila de método de pago es la misma que
-     * armaría la pantalla de pago a proveedor eligiendo "Endosar un cheque recibido": método 1
-     * (Cheque), `cheque_id` del origen y su monto. attachPaymentMethods → attach_payment_methods →
+     * El pago al proveedor que deja registrado el endoso, por CurrentAcountPagoAltaHelper::registrar():
+     * el MISMO alta que `POST current-acount/pago` y que el asistente. La fila de método de pago es la
+     * que armaría la pantalla de pago a proveedor eligiendo "Endosar un cheque recibido": método
+     * Cheque, `cheque_id` del origen y su monto. attachPaymentMethods → attach_payment_methods →
      * ChequeHelper::crear_cheque ve el `cheque_id` y endosa.
+     *
+     * Hasta el 21/9/2026 este método armaba el pago a mano y terminaba con
+     * `$credit_account->saldo = $pago->saldo` SIN save(): el botón nunca actualizó el saldo de la
+     * cuenta corriente del proveedor. Por registrar() pasa por update_credit_account_saldo() como
+     * cualquier otro pago (lo fija el test de paridad 4_Endosar_desde_el_modulo_Test).
      *
      * @param  \App\Models\Cheque  $cheque
      * @param  int  $provider_id
@@ -265,10 +270,11 @@ class ChequeController extends Controller
 
         $payment_methods = [
             [
-                'current_acount_payment_method_id' => 1,
+                'current_acount_payment_method_id' => $this->metodo_de_pago_cheque_id(),
                 'amount'                           => $cheque->amount,
                 'cheque_id'                        => $cheque->id,
                 'cheque_banco_id'                  => $cheque->cheque_banco_id,
+                'caja_id'                          => 0,
 
                 'numero'                           => $cheque->numero,
                 'banco'                            => $cheque->banco,
@@ -278,31 +284,35 @@ class ChequeController extends Controller
             ],
         ];
 
-        $num_receipt = CurrentAcountHelper::getNumReceipt();
-
-        $pago = CurrentAcount::create([
-            'haber'                             => $cheque->amount,
-            'description'                       => null,
-            'status'                            => 'pago_from_client',
-            'user_id'                           => $this->userId(),
-            'employee_id'                       => $this->userId(false),
-            'num_receipt'                       => $num_receipt,
-            'detalle'                           => 'Pago N°'.$num_receipt,
-            'provider_id'                       => $provider_id,
-            'created_at'                        => Carbon::now(),
-            'credit_account_id'                 => $credit_account->id,
+        return CurrentAcountPagoAltaHelper::registrar([
+            'credit_account_id'              => $credit_account->id,
+            'model_name'                     => 'provider',
+            'model_id'                       => $provider_id,
+            'current_acount_payment_methods' => $payment_methods,
+            'haber'                          => $cheque->amount,
+            'description'                    => null,
+            'numero_orden_de_compra'         => null,
+            'is_provisorio'                  => 0,
+            'current_date'                   => 1,
+            'created_at'                     => null,
+            'to_pay'                         => null,
+            'payment_plan_cuota'             => null,
         ]);
+    }
 
-        CurrentAcountPagoHelper::attachPaymentMethods($pago, $payment_methods);
-        $pago->saldo = CurrentAcountHelper::getSaldo($credit_account->id, $pago) - $pago->haber;
-        $pago->save();
+    /**
+     * El id del método de pago de tipo cheque del catálogo (el 1, "Cheque", sembrado fijo), resuelto
+     * por su tipo y no escrito a mano.
+     *
+     * @return int
+     */
+    protected function metodo_de_pago_cheque_id() {
 
-        $pago_helper = new CurrentAcountPagoHelper($credit_account->id, 'provider', $pago->provider_id, $pago);
-        $pago_helper->init();
+        $metodo = CurrentAcountPaymentMethod::whereHas('type', function ($q) {
+            $q->where('slug', 'cheque');
+        })->orderBy('id')->first();
 
-        $credit_account->saldo = $pago->saldo;
-
-        return $pago;
+        return !is_null($metodo) ? (int) $metodo->id : 1;
     }
 
     /**

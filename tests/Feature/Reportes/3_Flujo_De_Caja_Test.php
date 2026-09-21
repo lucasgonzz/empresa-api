@@ -435,6 +435,55 @@ class Flujo_De_Caja_Test extends EmpresaTestCase
     }
 
     /**
+     * Misión cheques-endoso-y-bancos (21/9/2026) — un cheque recibido endosado EN UN GASTO
+     * (`endosado_en_expense_id`) ya no está en cartera y NO aparece en `cheques_diferidos`, igual
+     * que uno endosado a un proveedor. Mismo molde que el test 4 (cheques a mano, rango exclusivo:
+     * octubre de 2021, borrados en el `finally`). El que sigue en cartera sí aparece, para que el
+     * test no pase con la lista vacía.
+     *
+     * @group reportes
+     * @test
+     */
+    public function un_cheque_endosado_en_un_gasto_no_aparece_en_los_cheques_diferidos()
+    {
+        $this->fijar_reloj_en('2021-10-10 10:00:00');
+
+        $cliente = $this->resolver_cliente_por_nombre(TestingFerreteriaSeeder::CLIENTE_CC);
+        $usuario = $this->usuario_de_testing();
+
+        $base = [
+            'fecha_emision' => '2021-10-10',
+            'fecha_pago'    => '2021-10-25',
+            'tipo'          => 'recibido',
+            'client_id'     => $cliente->id,
+            'user_id'       => $usuario->id,
+            'estado_manual' => null,
+        ];
+
+        $en_cartera = Cheque::create($base + ['numero' => 'CH-TEST-3-EN-CARTERA', 'banco' => 'Banco de Pruebas', 'amount' => 11111.11]);
+        $en_gasto = Cheque::create($base + ['numero' => 'CH-TEST-3-EN-GASTO', 'banco' => 'Banco de Pruebas', 'amount' => 22222.22, 'endosado_en_expense_id' => 1, 'fecha_endoso' => '2021-10-10 10:00:00']);
+        $a_proveedor = Cheque::create($base + ['numero' => 'CH-TEST-3-A-PROVEEDOR', 'banco' => 'Banco de Pruebas', 'amount' => 33333.33, 'endosado_a_provider_id' => 1, 'fecha_endoso' => '2021-10-10 10:00:00']);
+
+        try {
+            $flujo = $this->pedir_flujo_caja('2021-10-01', '2021-10-31');
+            $diferidos = $flujo['plata_en_transito']['cheques_diferidos'];
+
+            $total_del_25 = null;
+
+            foreach ($diferidos as $fila) {
+                if ($fila['fecha'] === '2021-10-25') {
+                    $total_del_25 = (float) $fila['total'];
+                }
+            }
+
+            $this->assertNotNull($total_del_25, 'El cheque en cartera tenía que aparecer en cheques_diferidos. Cuerpo: '.json_encode($diferidos));
+            $this->assertEqualsWithDelta(11111.11, $total_del_25, self::DELTA, 'Solo el cheque en cartera suma: ni el endosado en un gasto ni el endosado a un proveedor.');
+        } finally {
+            Cheque::whereIn('id', [$en_cartera->id, $en_gasto->id, $a_proveedor->id])->delete();
+        }
+    }
+
+    /**
      * Test 5 — Negocio sin cajas con liquidación configurada (solo `CAJA_EFECTIVO`, que en el fixture
      * no tiene `dias_liquidacion`/`comision_porcentaje`): la plata en tránsito da cero y el reporte
      * funciona igual, sin romperse. Es el test de compatibilidad de la prueba manual: los clientes
