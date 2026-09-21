@@ -1584,7 +1584,14 @@ class SaleController extends Controller
             return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
         }
 
-        $ancho_mm = (int) $request->input('ancho_mm', 80);
+        /*
+         * Acotado a un rango real de comandera (20-120mm). Sin este clamp, un ancho_mm
+         * absurdo (un bug del front, o un request directo al endpoint) llega crudo hasta
+         * el canvas de GD del helper y puede pedir un lienzo de gigabytes -- un fatal de
+         * memoria que ni el try/catch del helper puede atrapar. Hallazgo de la revision
+         * independiente de la mision ticket-2-logo-header, 21/9/2026.
+         */
+        $ancho_mm = max(20, min(120, (int) $request->input('ancho_mm', 80)));
         $user = UserHelper::getFullModel();
         $logo_url = AfipPdfHelper::resolve_logo_url($sale->address, $user);
 
