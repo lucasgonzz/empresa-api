@@ -239,6 +239,8 @@ class CatalogoDeEscrituraIaHelper
      *   operaciones                   → null = las tres que tengan ruta; o la lista permitida.
      *   solo_lectura                  → columnas que el sistema calcula y la pantalla no deja
      *                                   tipear, aunque el controller las lea.
+     *   de_sistema_editables          → columnas de sistema que ESTA pantalla sí edita (la fecha
+     *                                   de un gasto es created_at). Opcional.
      *   claves_de_pantalla            → claves que la SPA manda siempre y el controller itera.
      *   ruta                          → pantalla donde ver lo registrado ({name, params, texto},
      *                                   la forma que lee AccionCard.vue), o null.
@@ -792,6 +794,8 @@ class CatalogoDeEscrituraIaHelper
             'descripcion'        => 'Los gastos ya cargados (pantalla Gastos). Para cargar uno nuevo está proponer_gasto. Se ubican por su número.',
             'operaciones'        => [self::OP_EDICION, self::OP_BAJA],
             'solo_lectura'       => ['caja_id', 'current_acount_payment_method_id', 'moneda_id', 'expense_category_id'],
+            // La pantalla de Gastos edita la fecha del gasto, que es created_at.
+            'de_sistema_editables' => ['created_at'],
             'claves_de_pantalla' => [],
             'ruta'               => ['name' => 'expense', 'params' => [], 'texto' => 'Ver en Gastos'],
             'aviso_de_baja'      => 'Se borra el gasto. La plata que salió de la caja NO se compensa: eso se hace desde la pantalla de Gastos.',
@@ -1629,9 +1633,11 @@ class CatalogoDeEscrituraIaHelper
         $campos = [];
         $no_la_lee = [];
 
+        $de_sistema_editables = isset($curada['de_sistema_editables']) ? $curada['de_sistema_editables'] : [];
+
         foreach ($columnas as $columna => $meta) {
 
-            if (in_array($columna, self::COLUMNAS_DE_SISTEMA, true)) {
+            if (in_array($columna, self::COLUMNAS_DE_SISTEMA, true) && !in_array($columna, $de_sistema_editables, true)) {
 
                 continue;
             }
@@ -1781,7 +1787,14 @@ class CatalogoDeEscrituraIaHelper
 
                 if (is_array($relacion) && isset($relacion['columna_id'], $relacion['tabla'], $relacion['campo']) && $relacion['columna_id'] === $columna) {
 
-                    return ['tabla' => $relacion['tabla'], 'campo' => $relacion['campo']];
+                    // Verificada contra el esquema: una relación declarada a una columna que no
+                    // existe (addresses.name) rompería la búsqueda por nombre.
+                    if (Schema::hasTable($relacion['tabla']) && Schema::hasColumn($relacion['tabla'], $relacion['campo'])) {
+
+                        return ['tabla' => $relacion['tabla'], 'campo' => $relacion['campo']];
+                    }
+
+                    break;
                 }
             }
         }
