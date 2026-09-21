@@ -933,12 +933,14 @@ class NewProviderOrderHelper {
 
     function actualizar_current_acount($current_acount) {
 
-        
+
         $current_acount->debe = $this->provider_order->total;
 
         $saldo = CurrentAcountHelper::getSaldo($this->credit_account->id, $current_acount) + $this->provider_order->total;
 
         $current_acount->saldo = $saldo;
+
+        $current_acount->detalle = $this->provider_order->detalle_current_acount();
 
         $current_acount->save();
 
@@ -978,7 +980,7 @@ class NewProviderOrderHelper {
     function crear_current_acount() {
 
         $current_acount = CurrentAcount::create([
-            'detalle'           => 'Pedido N°'.$this->provider_order->num,
+            'detalle'           => $this->provider_order->detalle_current_acount(),
             'debe'              => $this->provider_order->total,
             'status'            => 'sin_pagar',
             'user_id'           => UserHelper::userId(),

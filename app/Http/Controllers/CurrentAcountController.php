@@ -52,6 +52,7 @@ class CurrentAcountController extends Controller
                         ->with('pagado_por')
                         ->with('cheques')
                         ->with('sale.afip_ticket')
+                        ->with('provider_order.provider_order_afip_tickets')
                         ->orderBy('created_at', 'DESC')
                         // ->get();
                         ->get()

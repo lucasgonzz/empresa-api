@@ -106,4 +106,16 @@ class ProviderOrder extends Model
 
         return $result;
     }
+
+    /**
+     * El texto que identifica esta compra en un movimiento de cuenta corriente del proveedor.
+     * Si el proveedor le puso su propio numero al comprobante de esta compra, va entre parentesis.
+     */
+    function detalle_current_acount() {
+        $detalle = 'Compra N°'.$this->num;
+        if (!empty($this->numero_comprobante)) {
+            $detalle .= ' ('.$this->numero_comprobante.')';
+        }
+        return $detalle;
+    }
 }
