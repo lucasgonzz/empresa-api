@@ -938,6 +938,16 @@ class CatalogoDeEscrituraIaHelper
     ];
 
     /**
+     * Obligatorios que la tabla no declara (la columna admite null) pero sin los cuales la fila no
+     * sirve: `[entidad => [columnas]]`. Un cupón sin código no se puede usar en la tienda.
+     *
+     * @var array<string, array<int, string>>
+     */
+    const OBLIGATORIOS_CURADOS = [
+        'cupon' => ['code'],
+    ];
+
+    /**
      * Relaciones por convención que no se resuelven con Str::plural del prefijo.
      *
      * @var array<string, array<string, string>>
@@ -1658,6 +1668,11 @@ class CatalogoDeEscrituraIaHelper
             if (isset(self::TIPOS_CURADOS[$entidad][$columna])) {
 
                 $campos[$columna]['tipo'] = self::TIPOS_CURADOS[$entidad][$columna];
+            }
+
+            if (isset(self::OBLIGATORIOS_CURADOS[$entidad]) && in_array($columna, self::OBLIGATORIOS_CURADOS[$entidad], true)) {
+
+                $campos[$columna]['obligatorio'] = true;
             }
         }
 
