@@ -124,6 +124,12 @@ class Worker_de_cola_segun_hosting_Test extends TestCase
      * Sin esto, un if mal cerrado que dejara la mitad del schedule adentro pasaria los tres
      * tests de arriba sin que nadie se entere.
      *
+     * 🔴 Desde la misión colas-excel-asistente (21/9/2026) la diferencia pasó de UN comando de
+     * cola a DOS ('default' y 'excel', las dos solo en shared): sigue siendo exactamente lo mismo
+     * que este test protege -- que lo único que cambia entre shared y VPS es cola de trabajo, no
+     * schedule de negocio -- solo que ahora son dos comandos en vez de uno. El count subió a
+     * propósito, no es un ajuste para tapar una regresión.
+     *
      * @return void
      */
     public function test_el_resto_del_schedule_no_depende_del_hosting()
@@ -137,17 +143,19 @@ class Worker_de_cola_segun_hosting_Test extends TestCase
         $solo_en_shared = array_values(array_diff($en_shared, $en_vps));
 
         $this->assertCount(
-            1,
+            2,
             $solo_en_shared,
-            'Lo unico que puede cambiar entre shared y VPS es el worker de cola. Cambio de mas: '
+            'Lo unico que puede cambiar entre shared y VPS son los dos workers de cola (default y excel). Cambio de mas: '
                 . implode(' | ', $solo_en_shared)
         );
 
-        $this->assertStringContainsString(
-            self::COMANDO_DE_COLA,
-            $solo_en_shared[0],
-            'La unica diferencia entre los dos hostings tiene que ser el comando de cola.'
-        );
+        foreach ($solo_en_shared as $comando) {
+            $this->assertStringContainsString(
+                self::COMANDO_DE_COLA,
+                $comando,
+                'Las dos diferencias entre los dos hostings tienen que ser comandos de cola, y esta no lo es: ' . $comando
+            );
+        }
 
         $this->assertEmpty(
             array_diff($en_vps, $en_shared),

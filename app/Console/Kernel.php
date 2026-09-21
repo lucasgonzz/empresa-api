@@ -34,7 +34,7 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // Procesa la cola de jobs hasta vaciarla (reemplaza cron directo de queue:work).
+        // Procesa la cola de jobs hasta vaciarla (reemplaza cron directo de queue:work.
         // Nota: no usar ['--stop-when-empty' => true]; Laravel lo serializa como --stop-when-empty="1"
         // y Symfony rechaza ese flag (no acepta valor), el worker falla sin procesar jobs.
         // withoutOverlapping(75) previene que el scheduler arranque un segundo worker en paralelo
@@ -53,10 +53,43 @@ class Kernel extends ConsoleKernel
         // instancia que ya tenga otro consumidor de la cola, sin depender de que VPS esté declarada
         // — es lo que se va a setear en false en las instancias del VPS. Default true: el shared
         // hosting, donde este worker es lo ÚNICO que procesa la cola, sigue igual.
+        //
+        // Dos colas, no una (misión colas-excel-asistente, 21/9/2026): 'default' (asistente de IA,
+        // sync a Tienda Nube/Meli, notificaciones — todo lo liviano) y 'excel' (import/export de
+        // catálogo: ProcessArticleChunk, los export de artículos/proveedores/clientes, etc. — jobs
+        // con timeout de 600 a 3600 segundos). Antes de este cambio, un Excel grande retenía el
+        // único worker y el asistente esperaba detrás (documentado desde el 17/9 en el docblock de
+        // RunExcelAnalysisJob, sin resolver hasta ahora). Los jobs pesados eligen su cola seteando
+        // la propiedad $queue en su propio constructor (uno por clase, en app/Jobs/) — 🔴 NO con un
+        // método viaQueue(): ese hook de Laravel solo existe para event listeners en cola
+        // (Illuminate\Events\Dispatcher), nunca se invoca para Jobs despachados con dispatch(),
+        // Bus::chain() ni Bus::batch() — un primer intento con viaQueue() quedó como código muerto
+        // hasta que el chequeo de esta misma misión lo encontró leyendo Illuminate\Bus\Dispatcher
+        // (pushCommandToQueue() lee $command->queue directamente) y verificándolo con tinker contra
+        // el Laravel real instalado. Acá solo hace falta el segundo consumidor.
+        //
+        // 🔴 Las DOS líneas llevan runInBackground(): sin eso, la primera bloquea el proceso de
+        // schedule:run entero (síncrono) hasta vaciar 'default', incluido cualquier job largo que
+        // quedara ahí por error — y de paso retrasaba el arranque de la segunda línea. Con
+        // runInBackground() en las dos, arrancan en paralelo cada minuto y ninguna bloquea al resto
+        // del schedule. Es un cambio de comportamiento real de la línea que ya existía, no solo un
+        // agregado — está pensado a propósito, no es un descuido.
+        //
+        // En el VPS esto no se agenda (la condición de abajo da false): el $queue de cada job queda
+        // en null con VPS=true, así que todo sigue yendo a 'default', la única cola que el
+        // supervisor de cada cliente ya consume hoy. Separar también ahí requeriría tocar la config
+        // de supervisor de 21+ clientes en producción — cambio de infraestructura aparte, fuera del
+        // alcance de esta misión.
         if (! config('app.VPS') && config('queue.scheduler_worker')) {
             $schedule->command('queue:work --stop-when-empty')
                 ->everyMinute()
-                ->withoutOverlapping(75);
+                ->withoutOverlapping(75)
+                ->runInBackground();
+
+            $schedule->command('queue:work --queue=excel --stop-when-empty')
+                ->everyMinute()
+                ->withoutOverlapping(75)
+                ->runInBackground();
         }
 
         // Usuario dueño de la instancia (config app.USER_ID) con extensiones cargadas.
