@@ -36,6 +36,43 @@ class EjecutorAccionesIaHelper {
 
     const MENSAJE_DESCARTADA = 'Esta tarjeta quedó descartada.';
 
+    const MENSAJE_EN_CURSO = 'Esta tarjeta se está registrando en este momento.';
+
+    /**
+     * 🔴 LAS CARGAS QUE SE EJECUTAN CON LA TRANSACCIÓN DEL EJECUTOR YA CERRADA (misión
+     * asistente-omnisciente, 21/9/2026; arreglo de los hallazgos 🔴 2 y 🔴 3 del chequeo
+     * adversarial).
+     *
+     * Las cuatro son las que llaman al MISMO controller que atiende la pantalla, y esos
+     * controllers tienen adentro efectos que NO se pueden deshacer con un rollback:
+     *
+     *   - `CategoryController` (alta, edición y baja de categorías y subcategorías) llama
+     *     SÍNCRONO a Tienda Nube. Con la transacción del ejecutor abierta, un rollback posterior
+     *     dejaba la categoría creada allá y no acá; en la baja, borrada allá y viva acá. Y la
+     *     transacción quedaba abierta, con el candado tomado, todo lo que tardara ese HTTP.
+     *   - `SaleController::store()` abre su propia transacción, y al terminar suelta el
+     *     `RELEASE_LOCK` del candado anti-duplicados, despacha `SendSaleWhatsappJob` y emite el
+     *     evento de la demo. Anidado adentro de la transacción del ejecutor, su `DB::commit()`
+     *     sólo decrementaba el contador (`ManagesTransactions`: el commit real es el del de
+     *     afuera): el candado se soltaba y los jobs salían ANTES de que la venta existiera para
+     *     nadie más. El escenario que abre es el que el candado existe para cerrar: el dueño
+     *     confirma desde el chat mientras se guarda la misma venta desde Vender, el request de la
+     *     pantalla toma el candado libre, no ve la venta sin comitear y la duplica (le pasó a
+     *     Panchito; está escrito en el docblock del candado).
+     *
+     * El resto de los tipos —gasto, pago, tareas, combo, oferta, compra con factura, foto de
+     * sucursal, imágenes, masiva, PDF— queda EXACTAMENTE como estaba: una sola transacción que
+     * envuelve el candado, la ejecución y el cierre de la tarjeta.
+     *
+     * @var array<int, string>
+     */
+    const TIPOS_DE_DOS_ETAPAS = [
+        AiMessageAction::TIPO_ALTA,
+        AiMessageAction::TIPO_EDICION,
+        AiMessageAction::TIPO_BAJA,
+        AiMessageAction::TIPO_VENTA,
+    ];
+
     /**
      * Ejecuta la carga de la tarjeta y la deja 'confirmada' con su resultado.
      *
@@ -56,6 +93,11 @@ class EjecutorAccionesIaHelper {
      * 🔴 Adentro del try de la escritura no hay broadcast ni notificación: un aviso que falla después
      * de que la carga quedó bien volvería 500 algo que ya está registrado (clase "el aviso que voltea
      * la operación que ya terminó").
+     *
+     * 🔴 Y HAY UN SEGUNDO CAMINO, para las cargas que llaman al controller de la pantalla (el ABM
+     * genérico y la venta): ésas se ejecutan con la transacción ya cerrada, en dos etapas. Todo
+     * está en TIPOS_DE_DOS_ETAPAS y en ejecutar_en_dos_etapas(). Lo de este docblock vale tal cual
+     * para todas las demás.
      *
      * @param  \App\Models\AiConversation  $conversation  Conversación de la persona autenticada.
      * @param  int  $accion_id
@@ -111,6 +153,11 @@ class EjecutorAccionesIaHelper {
 
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation, $persona);
 
+        if (self::es_de_dos_etapas($conversation, $accion_id)) {
+
+            return self::ejecutar_en_dos_etapas($contexto, $conversation, $accion_id, $num_expense_resolver, $exige_mensaje_listo);
+        }
+
         try {
 
             DB::transaction(function () use ($contexto, $conversation, $accion_id, $num_expense_resolver, $exige_mensaje_listo) {
@@ -150,6 +197,203 @@ class EjecutorAccionesIaHelper {
     }
 
     /**
+     * true si esta tarjeta es de las que se ejecutan en dos etapas (ver TIPOS_DE_DOS_ETAPAS).
+     *
+     * Lee el tipo sin candado a propósito: es sólo para elegir el camino, y el camino elegido
+     * vuelve a bloquear y a verificar la fila antes de tocar nada. El tipo de una tarjeta, además,
+     * no cambia nunca después de creada.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @return bool
+     */
+    protected static function es_de_dos_etapas(AiConversation $conversation, $accion_id) {
+
+        $tipo = AiMessageAction::where('id', (int) $accion_id)
+                                ->where('ai_conversation_id', $conversation->id)
+                                ->value('tipo');
+
+        return in_array((string) $tipo, self::TIPOS_DE_DOS_ETAPAS, true);
+    }
+
+    /**
+     * La confirmación de una carga que llama al controller de la pantalla: primero se RESERVA la
+     * tarjeta en una transacción corta, y recién después, con esa transacción ya cerrada, se
+     * ejecuta.
+     *
+     * 🔴 POR QUÉ NO ALCANZA CON LA TRANSACCIÓN ÚNICA DE ejecutar_confirmacion(). Ver el docblock
+     * de TIPOS_DE_DOS_ETAPAS: adentro de esos controllers hay un HTTP síncrono a Tienda Nube, un
+     * `RELEASE_LOCK`, un job y un evento. Nada de eso se revierte con un rollback, y el
+     * `DB::commit()` de `SaleController` anidado ni siquiera comitea: sólo baja el contador. Con
+     * la transacción del ejecutor cerrada, cada controller vuelve a correr en las mismas
+     * condiciones en las que corre cuando lo llama la pantalla, que es su comportamiento probado.
+     *
+     * 🔴 EL CANDADO CONTRA EL SEGUNDO CLIC SIGUE EXISTIENDO, y es lo único que reemplaza al
+     * `lockForUpdate` sostenido: la etapa 1 marca la fila 'en_curso' y la comitea. El segundo clic
+     * entra, espera el candado de fila hasta ese commit, la ve 'en_curso' y sale por 409 sin
+     * ejecutar nada — el mismo 409 que daba antes viendo 'confirmada'.
+     *
+     * 🔴 LO QUE SE PIERDE, DICHO EN VOZ ALTA: ya no hay una transacción que envuelva la ejecución
+     * entera, así que un controller que escriba a medias y tire después deja lo que alcanzó a
+     * escribir. Es exactamente lo que pasa cuando esa misma carga entra por la pantalla, y es
+     * preferible a lo otro: que un rollback nuestro borre de este lado algo que ya salió del
+     * sistema. Los rechazos (permisos, tenencia, validación, límite de crédito) cortan ANTES de
+     * escribir, y ésos siguen sin dejar nada.
+     *
+     * Si el proceso muere entre la reserva y el cierre (un OOM, no una excepción: eso lo agarra el
+     * catch), la tarjeta queda 'en_curso' y no se puede volver a confirmar. No se resucita sola a
+     * propósito: no hay forma de saber si la carga llegó a escribirse, y reintentarla a ciegas es
+     * duplicar una venta. La salida es pedirle la carga de nuevo al asistente, que arma otra
+     * tarjeta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $accion_id
+     * @param  callable  $num_expense_resolver
+     * @param  bool  $exige_mensaje_listo
+     * @return array  ['status' => int, 'body' => array]
+     */
+    protected static function ejecutar_en_dos_etapas(ContextoDeCargaIa $contexto, AiConversation $conversation, $accion_id, $num_expense_resolver, $exige_mensaje_listo) {
+
+        /* Etapa 1: reservar. Transacción corta, y adentro sólo la fila de la tarjeta. */
+        try {
+
+            DB::transaction(function () use ($conversation, $accion_id, $exige_mensaje_listo) {
+
+                $accion = self::bloquear($conversation, $accion_id);
+
+                self::verificar_que_siga_propuesta($accion, $exige_mensaje_listo);
+
+                $accion->estado = AiMessageAction::ESTADO_EN_CURSO;
+                $accion->error_mensaje = null;
+                $accion->save();
+            });
+
+        } catch (AccionIaException $e) {
+
+            return self::respuesta_de_negocio($accion_id, $e);
+
+        } catch (\Throwable $e) {
+
+            Log::error('EjecutorAccionesIaHelper: falló la reserva de una tarjeta del asistente', [
+                'ai_message_action_id' => (int) $accion_id,
+                'ai_conversation_id'   => (int) $conversation->id,
+                'error'                => $e->getMessage(),
+            ]);
+
+            self::guardar_error($accion_id, self::MENSAJE_ERROR_GENERICO);
+
+            return self::respuesta(500, ['message' => self::MENSAJE_ERROR_GENERICO]);
+        }
+
+        /* Etapa 2: ejecutar, ya sin ninguna transacción abierta por este ejecutor. */
+        $accion = AiMessageAction::find((int) $accion_id);
+
+        try {
+
+            $resultado = self::ejecutar_por_tipo($contexto, $accion, $num_expense_resolver);
+
+        } catch (AccionIaException $e) {
+
+            // Antes de la respuesta: respuesta_de_negocio() escribe sobre la fila que sigue
+            // 'propuesta' (el error_mensaje y el paso a 'vencida'), así que la reserva se suelta
+            // primero. Es el mismo motivo por el que esas escrituras viven afuera de la
+            // transacción: lo que tiene que sobrevivir al fracaso no puede depender de ella.
+            self::soltar_la_reserva($accion_id);
+
+            return self::respuesta_de_negocio($accion_id, $e);
+
+        } catch (\Throwable $e) {
+
+            Log::error('EjecutorAccionesIaHelper: falló la confirmación de una tarjeta del asistente', [
+                'ai_message_action_id' => (int) $accion_id,
+                'ai_conversation_id'   => (int) $conversation->id,
+                'error'                => $e->getMessage(),
+            ]);
+
+            self::soltar_la_reserva($accion_id);
+
+            self::guardar_error($accion_id, self::MENSAJE_ERROR_GENERICO);
+
+            return self::respuesta(500, ['message' => self::MENSAJE_ERROR_GENERICO]);
+        }
+
+        self::cerrar_la_reserva($accion_id, $resultado);
+
+        return self::respuesta(200, ['model' => AiMessageAction::find((int) $accion_id)]);
+    }
+
+    /**
+     * Devuelve a 'propuesta' la tarjeta reservada cuya ejecución falló: la persona la puede volver
+     * a confirmar, igual que antes de este camino. Protegida, como guardar_error(): si esta
+     * escritura falla, la respuesta con el motivo tiene que salir igual.
+     *
+     * @param  int  $accion_id
+     * @return void
+     */
+    protected static function soltar_la_reserva($accion_id) {
+
+        try {
+
+            AiMessageAction::where('id', (int) $accion_id)
+                            ->where('estado', AiMessageAction::ESTADO_EN_CURSO)
+                            ->update(['estado' => AiMessageAction::ESTADO_PROPUESTA]);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('EjecutorAccionesIaHelper: no se pudo devolver a propuesta una tarjeta en curso', [
+                'ai_message_action_id' => (int) $accion_id,
+                'error'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Cierra la tarjeta reservada como 'confirmada' con su resultado. Se relee con el estado en el
+     * where para no pisar nada que no sea la reserva de esta corrida, y se guarda por el modelo
+     * para que el `resultado` pase por el cast 'object' igual que en el camino de una sola
+     * transacción.
+     *
+     * Si acá falla algo, la carga YA se ejecutó: se loguea y la tarjeta queda 'en_curso', pero no
+     * se revierte nada de lo que el controller escribió.
+     *
+     * @param  int  $accion_id
+     * @param  array  $resultado
+     * @return void
+     */
+    protected static function cerrar_la_reserva($accion_id, array $resultado) {
+
+        try {
+
+            $accion = AiMessageAction::where('id', (int) $accion_id)
+                                        ->where('estado', AiMessageAction::ESTADO_EN_CURSO)
+                                        ->first();
+
+            if (is_null($accion)) {
+
+                Log::warning('EjecutorAccionesIaHelper: la tarjeta ya no estaba en curso al cerrarla', [
+                    'ai_message_action_id' => (int) $accion_id,
+                ]);
+
+                return;
+            }
+
+            $accion->estado = AiMessageAction::ESTADO_CONFIRMADA;
+            $accion->resultado = $resultado;
+            $accion->resuelta_at = Carbon::now();
+            $accion->error_mensaje = null;
+            $accion->save();
+
+        } catch (\Throwable $e) {
+
+            Log::error('EjecutorAccionesIaHelper: la carga se ejecutó pero no se pudo cerrar la tarjeta', [
+                'ai_message_action_id' => (int) $accion_id,
+                'error'                => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Deja la tarjeta 'cancelada', con el mismo candado que confirmar(): una cancelación y una
      * confirmación simultáneas no pueden terminar las dos bien.
      *
@@ -182,7 +426,21 @@ class EjecutorAccionesIaHelper {
             return self::respuesta_de_negocio($accion_id, $e);
         }
 
-        return self::respuesta(200, ['model' => AiMessageAction::find((int) $accion_id)]);
+        $accion = AiMessageAction::find((int) $accion_id);
+
+        /*
+         * Lo que una tarjeta dejó preparado en disco y ya no va a usar se limpia ACÁ, después de
+         * la transacción y sin poder voltear la cancelación (best-effort). Hoy es una sola: la
+         * candidata `catcand_*.webp` de "Imagen para la categoría X" (misión
+         * asistente-masivas-imagenes-y-remito). Sin esto el archivo vivía hasta la próxima purga,
+         * que solo corre cuando alguien vuelve a pedir imágenes de categorías.
+         */
+        if (!is_null($accion) && (string) $accion->tipo === AiMessageAction::TIPO_IMAGEN_CATEGORIA) {
+
+            PropuestaImagenCategoriaIaHelper::al_cancelar($accion);
+        }
+
+        return self::respuesta(200, ['model' => $accion]);
     }
 
     /**
@@ -232,6 +490,13 @@ class EjecutorAccionesIaHelper {
      * @throws AccionIaException
      */
     protected static function verificar_que_siga_propuesta(AiMessageAction $accion, $exige_mensaje_listo = true) {
+
+        if ($accion->estado_guardado() === AiMessageAction::ESTADO_EN_CURSO) {
+
+            // El segundo clic de una carga de dos etapas, mientras la primera todavía corre. Mismo
+            // 409 de siempre, con el motivo real: no está resuelta, está registrándose.
+            throw new AccionIaException(409, self::MENSAJE_EN_CURSO);
+        }
 
         if ($accion->estado_guardado() !== AiMessageAction::ESTADO_PROPUESTA) {
 
@@ -302,6 +567,42 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_FOTO_SUCURSAL:
                 return PropuestaFotoSucursalIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-masivas-imagenes-y-remito (19/9/2026). Las de categorías y de diseño
+             * de PDF las implementa el constructor B (contrato §6); acá solo se despachan por tipo.
+             */
+            case AiMessageAction::TIPO_IMAGENES_CATEGORIAS:
+                return PropuestaImagenesCategoriasIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_IMAGEN_CATEGORIA:
+                return PropuestaImagenCategoriaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_IMAGENES_ARTICULOS:
+                return PropuestaImagenesArticulosIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_ACTUALIZACION_MASIVA:
+                return PropuestaActualizacionMasivaIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_DISENO_PDF:
+                return PropuestaDisenoPdfIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-omnisciente (21/9/2026). Las tres genéricas van al ejecutor que llama
+             * al controller de la pantalla; la venta la ejecuta el constructor C por SaleController::store
+             * (contrato §4). Ninguna pasa por la auto-confirmación.
+             */
+            case AiMessageAction::TIPO_ALTA:
+            case AiMessageAction::TIPO_EDICION:
+            case AiMessageAction::TIPO_BAJA:
+                return EjecutorGenericoIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_VENTA:
+                return PropuestaVentaIaHelper::ejecutar($contexto, $accion);
+
+            // Misión cheques-endoso-y-bancos (21/9/2026).
+            case AiMessageAction::TIPO_UNIFICAR_BANCOS:
+                return PropuestaBancosChequesIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

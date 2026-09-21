@@ -104,7 +104,8 @@ class ChequesFilteredExport implements FromCollection, WithHeadings, ShouldAutoS
             optional($cheque->provider)->name ?? '',
             optional($cheque->endosado_desde_client)->name ?? '',
             optional($cheque->endosado_a_provider)->name ?? '',
-            $cheque->banco,
+            // El banco del catálogo si el cheque lo tiene; si no, el texto libre de siempre.
+            !is_null($cheque->cheque_banco) ? $cheque->cheque_banco->name : $cheque->banco,
             $cheque->amount,
             $cheque->notes,
             $this->format_date($cheque->fecha_emision),

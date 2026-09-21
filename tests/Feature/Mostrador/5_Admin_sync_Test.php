@@ -488,6 +488,110 @@ class Admin_sync_Test extends MostradorTestCase
     }
 
     /**
+     * lista.items ahora admite article_id/imagen_url opcionales (misión
+     * mostrador-fotos-y-modales): un artículo válido se acepta y viaja tal cual; un id que
+     * no es entero o una imagen que no es http(s) se rechazan con la ruta exacta. El resto
+     * de las listas del sistema (que no hablan de artículos) sigue sin necesitar ninguna de
+     * las dos claves.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function lista_acepta_article_id_e_imagen_url_opcionales_y_rechaza_lo_invalido()
+    {
+        $reporte = $this->reporte_con_hechos();
+
+        // bloques[4] es el `lista` de contenido_valido().
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][4]['items'][0]['article_id'] = 7;
+        $contenido['bloques'][4]['items'][0]['imagen_url'] = 'https://api.test/storage/articulo.webp';
+
+        $this->depositar($reporte, $contenido)->assertStatus(200);
+        $this->assertSame(7, $reporte->fresh()->contenido['bloques'][4]['items'][0]['article_id']);
+        $this->assertSame('https://api.test/storage/articulo.webp', $reporte->fresh()->contenido['bloques'][4]['items'][0]['imagen_url']);
+
+        // article_id que no es entero.
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][4]['items'][0]['article_id'] = '7';
+
+        $respuesta = $this->depositar($reporte, $contenido);
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('bloques[4].items[0].article_id', implode("\n", $respuesta->json('errores')));
+
+        // imagen_url que no es http(s).
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][4]['items'][0]['imagen_url'] = 'javascript:alert(1)';
+
+        $respuesta = $this->depositar($reporte, $contenido);
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('bloques[4].items[0].imagen_url', implode("\n", $respuesta->json('errores')));
+    }
+
+    /**
+     * Bloque nuevo `clientes` (misión mostrador-fotos-y-modales), hermano de `articulos`
+     * para "clientes que más deben": client_id entero, nombre, y las opcionales
+     * linea_1/linea_2/deuda/tono. Rechaza sin client_id entero, con más ítems que el tope,
+     * y con una clave desconocida. Y, a propósito, acepta un client_id que no es de este
+     * dueño: es de solo lectura (igual que articulos.article_id) y no pasa por
+     * clientes_ajenos() — el que scopea por dueño es GET client/{id} al abrir el modal.
+     *
+     * @group mostrador
+     * @test
+     */
+    public function bloque_clientes_acepta_lo_valido_y_rechaza_lo_que_no_cumple_el_formato()
+    {
+        $reporte = $this->reporte_con_hechos();
+
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][] = [
+            'tipo'   => 'clientes',
+            'titulo' => 'Quiénes más deben',
+            'items'  => [
+                ['client_id' => 5, 'nombre' => 'Distribuidora Norte', 'linea_1' => '41 días sin pagar', 'deuda' => '$ 412.000', 'tono' => 'alerta'],
+            ],
+        ];
+
+        $this->depositar($reporte, $contenido)->assertStatus(200);
+        $reporte->refresh();
+        $this->assertSame('clientes', $reporte->contenido['bloques'][8]['tipo']);
+        $this->assertSame(5, $reporte->contenido['bloques'][8]['items'][0]['client_id']);
+        $this->assertSame('$ 412.000', $reporte->contenido['bloques'][8]['items'][0]['deuda']);
+
+        // client_id que no es entero.
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][] = ['tipo' => 'clientes', 'items' => [['client_id' => '5', 'nombre' => 'Norte']]];
+
+        $respuesta = $this->depositar($reporte, $contenido);
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('bloques[8].items[0].client_id', implode("\n", $respuesta->json('errores')));
+
+        // Más ítems que el tope (10).
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][] = [
+            'tipo'  => 'clientes',
+            'items' => array_fill(0, 11, ['client_id' => 1, 'nombre' => 'x']),
+        ];
+
+        $respuesta = $this->depositar($reporte, $contenido);
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('bloques[8].items: tiene que tener entre 1 y 10', implode("\n", $respuesta->json('errores')));
+
+        // Clave desconocida.
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][] = ['tipo' => 'clientes', 'items' => [['client_id' => 1, 'nombre' => 'x', 'telefono' => '123']]];
+
+        $respuesta = $this->depositar($reporte, $contenido);
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString('bloques[8].items[0].telefono: clave desconocida', implode("\n", $respuesta->json('errores')));
+
+        // Un client_id que no es de este dueño (ni existe): se acepta en el formato.
+        $contenido = $this->contenido_valido();
+        $contenido['bloques'][] = ['tipo' => 'clientes', 'items' => [['client_id' => 999999999, 'nombre' => 'Ajeno']]];
+
+        $this->depositar($reporte, $contenido)->assertStatus(200);
+    }
+
+    /**
      * @group mostrador
      * @test
      */

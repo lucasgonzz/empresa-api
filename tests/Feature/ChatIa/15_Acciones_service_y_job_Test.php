@@ -68,6 +68,11 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_stock_por_deposito',
         'que_puedo_consultar',
         'consultar_datos',
+        // Misión asistente-omnisciente (21/9/2026): las cuatro de lectura sin límites, al final.
+        'resumir_datos',
+        'consultar_resumen_de_ventas',
+        'consultar_reporte_contable',
+        'mostrar_imagenes_de_articulos',
     ];
 
     /** @var User */
@@ -278,7 +283,8 @@ class Acciones_service_y_job_Test extends TestCase
 
         $prompt = Http::recorded()[0][0]->data()['system'][0]['text'];
 
-        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda'] as $lo_que_se_carga) {
+        // Misión asistente-masivas-imagenes-y-remito (19/9/2026): las tres cargas nuevas también.
+        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda', 'imágenes para las categorías', 'actualización masiva de artículos', 'diseño de PDF'] as $lo_que_se_carga) {
             $this->assertStringContainsString(
                 $lo_que_se_carga,
                 $prompt,
@@ -683,10 +689,53 @@ class Acciones_service_y_job_Test extends TestCase
 
         // El inventario: 10 de la misión asistente-ia-acciones + proponer_combo y proponer_oferta
         // (agente-ia-mano-derecha, 16/9/2026) + proponer_foto_sucursal
-        // (foto-sucursal-y-asistente-configurable, 17/9/2026). El número se toca SOLO cuando se
-        // agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es
-        // que algo se declaró (o se borró) de más.
-        $this->assertCount(13, HerramientasDeCarga::definiciones());
+        // (foto-sucursal-y-asistente-configurable, 17/9/2026) + las 7 de
+        // asistente-masivas-imagenes-y-remito (19/9/2026: consultar_categorias_sin_imagen,
+        // proponer_imagenes_para_categorias, contar_articulos_por_filtro,
+        // proponer_imagenes_para_articulos, proponer_actualizacion_masiva, consultar_disenos_de_pdf,
+        // proponer_cambio_en_diseno_pdf) + las 2 de cheques-endoso-y-bancos (21/9/2026:
+        // consultar_bancos_de_cheques, proponer_unificar_bancos_de_cheques) + las 5 de
+        // asistente-omnisciente (21/9/2026: que_puedo_cargar, proponer_alta, proponer_edicion,
+        // proponer_baja, proponer_venta). El número se toca SOLO cuando se agrega o se saca una
+        // herramienta a propósito: si se mueve sin que nadie lo haya pedido, es que algo se
+        // declaró (o se borró) de más.
+        $this->assertCount(27, HerramientasDeCarga::definiciones());
+
+        // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
+        // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
+        $this->assertSame(
+            [
+                'consultar_categorias_sin_imagen',
+                'proponer_imagenes_para_categorias',
+                'contar_articulos_por_filtro',
+                'proponer_imagenes_para_articulos',
+                'proponer_actualizacion_masiva',
+                'consultar_disenos_de_pdf',
+                'proponer_cambio_en_diseno_pdf',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 13, 7)
+        );
+
+        // ...las dos de cheques-endoso-y-bancos después de ellas...
+        $this->assertSame(
+            [
+                'consultar_bancos_de_cheques',
+                'proponer_unificar_bancos_de_cheques',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 20, 2)
+        );
+
+        // ...y las cinco de asistente-omnisciente al final.
+        $this->assertSame(
+            [
+                'que_puedo_cargar',
+                'proponer_alta',
+                'proponer_edicion',
+                'proponer_baja',
+                'proponer_venta',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 22)
+        );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {
             $this->assertStringContainsString(

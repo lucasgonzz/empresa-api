@@ -1711,6 +1711,21 @@ class ArticleHelper {
         }
     }
 
+    /**
+     * La primera imagen del articulo, tal como quedo guardada.
+     *
+     * ⚠️ HASTA EL 21/9/2026 ESTA FUNCION DEVOLVIA UNA URL ROTA EN PRODUCCION: reprocesaba la
+     * hosting_url insertando "public/" y terminaba en `"public/https://..."` o en
+     * `.../public/public/storage/...` (404). Por eso la mision asistente-omnisciente escribio
+     * primera_imagen_publica() al lado, que es la que usa el asistente. El mismo dia, y en
+     * paralelo, la mision del logo del Ticket 2.0 saco ese reprocesado de aca (ver el comentario
+     * de adentro): las dos ahora devuelven lo mismo para una URL guardada por ImageController.
+     *
+     * primera_imagen_publica() se queda igual y sigue siendo la que usa el asistente: normaliza
+     * ademas las formas que esta no cubre (una ruta relativa, un data:, una URL de otro host) y
+     * garantiza que lo que sale es absoluto o null, que es lo que necesita quien la manda afuera
+     * del sistema (Meta rechaza cualquier otra cosa).
+     */
     static function getFirstImage($article) {
         if (count($article->images) >= 1) {
             $first_image = $article->images[0]->hosting_url;
@@ -1719,14 +1734,47 @@ class ArticleHelper {
                     $first_image = $image->hosting_url;
                 }
             }
-            if (config('app.APP_ENV') == 'production') {
-                $position = strpos($first_image, 'storage');
-                $first = substr($first_image, 0, $position);
-                $end = substr($first_image, $position);
-                return $first.'public/'.$end;
-            }
+            // hosting_url ya es la URL publica final: ImageController la arma con
+            // ApiUrlHelper::storage(), que es el unico lugar que decide si corresponde /public
+            // segun VPS/APP_ENV (grupos 230 y 237). Reprocesarla aca con otra regla (antes:
+            // insertar "public/" antes de "storage" si APP_ENV era exactamente "production")
+            // duplicaba el segmento en instalaciones que ya lo tenian (.../public/public/storage/...,
+            // 404) y lo agregaba de mas en las que no lo necesitaban. No volver a tocarla.
             return $first_image;
         }
         return null;
+    }
+
+    /**
+     * La foto que representa al articulo, como URL publica ABSOLUTA y lista para usarse afuera
+     * del sistema: la miniatura del chat del asistente, la imagen que el admin le manda al dueno
+     * por WhatsApp y la ficha de una mencion.
+     *
+     * Elige la misma imagen que getFirstImage() --la marcada con `first`, o la primera-- y resuelve
+     * la URL con ApiUrlHelper::url_publica_de_imagen(), que es el unico lugar del repo que sabe
+     * cuando esta instalacion sirve desde `/public` y cuando desde la raiz. Devuelve null cuando el
+     * articulo no tiene foto o cuando la que tiene no da para armar una URL.
+     *
+     * 🔴 POR QUE ES UNA FUNCION NUEVA Y NO UN ARREGLO DE getFirstImage(). Esa funcion la sigue
+     * consumiendo el Mostrador (`Services/Mostrador/RecolectorBase.php:392`), que esta en
+     * produccion y no es de esta mision. Se arregla el llamador del asistente, que es el que le
+     * muestra la foto al dueno, y se deja la vieja quieta hasta que alguien mida de que depende su
+     * salida actual. La regla de eleccion esta copiada a proposito: es el precio de no tocarla.
+     * Cuando el Mostrador migre tambien, getFirstImage() se borra y la copia se va con ella.
+     *
+     * @param  \App\Models\Article  $article  Con la relacion `images` cargada.
+     * @return string|null
+     */
+    static function primera_imagen_publica($article) {
+        if (count($article->images) < 1) {
+            return null;
+        }
+        $hosting_url = $article->images[0]->hosting_url;
+        foreach ($article->images as $image) {
+            if ($image->first != 0) {
+                $hosting_url = $image->hosting_url;
+            }
+        }
+        return ApiUrlHelper::url_publica_de_imagen($hosting_url);
     }
 }

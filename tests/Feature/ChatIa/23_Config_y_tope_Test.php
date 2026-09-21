@@ -229,13 +229,29 @@ class Config_y_tope_Test extends TestCase
         Queue::assertNotPushed(ResponderMensajeChatIaJob::class);
     }
 
-    /** @test */
-    public function el_service_elige_el_modelo_por_la_preferencia_del_dueno()
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public function provider_pensamiento_y_modelo(): array
+    {
+        return [
+            'agil (default del sistema)' => ['agil', 'modelo-agil-test'],
+            'equilibrado'                => ['equilibrado', 'modelo-equilibrado-test'],
+            'profundo'                   => ['profundo', 'modelo-profundo-test'],
+        ];
+    }
+
+    /**
+     * @test
+     * @dataProvider provider_pensamiento_y_modelo
+     */
+    public function el_service_elige_el_modelo_por_la_preferencia_del_dueno($pensamiento, $modelo_esperado)
     {
         config([
-            'services.anthropic.api_key'        => 'clave-de-prueba',
-            'services.anthropic.model_agil'     => 'modelo-agil-test',
-            'services.anthropic.model_profundo' => 'modelo-profundo-test',
+            'services.anthropic.api_key'           => 'clave-de-prueba',
+            'services.anthropic.model_agil'        => 'modelo-agil-test',
+            'services.anthropic.model_equilibrado' => 'modelo-equilibrado-test',
+            'services.anthropic.model_profundo'    => 'modelo-profundo-test',
         ]);
 
         Http::fake([
@@ -247,16 +263,16 @@ class Config_y_tope_Test extends TestCase
             ], 200),
         ]);
 
-        $this->comercio->agente_pensamiento = 'profundo';
+        $this->comercio->agente_pensamiento = $pensamiento;
         $this->comercio->save();
 
         list($conversation, $assistant) = $this->conversacion_con_pendiente();
 
         (new AsistenteIaService())->responder($conversation, $assistant);
 
-        Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) use ($modelo_esperado) {
             $body = json_decode($request->body(), true);
-            return isset($body['model']) && $body['model'] === 'modelo-profundo-test';
+            return isset($body['model']) && $body['model'] === $modelo_esperado;
         });
     }
 

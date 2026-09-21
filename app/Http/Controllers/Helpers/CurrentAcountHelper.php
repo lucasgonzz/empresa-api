@@ -774,7 +774,11 @@ class CurrentAcountHelper {
                 $current_acount->detalle = 'Presupuesto N°'.Self::getNum('budgets', $current_acount->budget_id ,'num');
             }
             if (!is_null($current_acount->provider_order_id)) {
-                $current_acount->detalle = 'Pedido N°'.Self::getNum('provider_orders', $current_acount->provider_order_id ,'num');
+                // No lleva el numero de comprobante del proveedor (ver ProviderOrder::detalle_current_acount())
+                // porque acá no está cargado el modelo completo, solo el num vía getNum() -- y esta
+                // función hoy no tiene ningún llamador vivo (comentada en CurrentAcountController.php),
+                // así que no vale la pena pagar una query extra por un dato que nadie ve todavía.
+                $current_acount->detalle = 'Compra N°'.Self::getNum('provider_orders', $current_acount->provider_order_id ,'num');
             }
             if (!is_null($current_acount->order_production_id)) {
                 $current_acount->detalle = 'Orden de produccion N°'.Self::getNum('order_productions', $current_acount->order_production_id ,'num');

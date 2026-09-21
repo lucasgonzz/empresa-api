@@ -283,7 +283,7 @@ class ProviderOrderHelper {
 
 	static function createCurrentAcount($provider_order, $total) {
 		$current_acount = CurrentAcount::create([
-			'detalle' 			=> 'Pedido N°'.$provider_order->num,
+			'detalle' 			=> $provider_order->detalle_current_acount(),
 			'debe'				=> $total,
 			'status' 			=> 'sin_pagar',
 			'user_id'			=> UserHelper::userId(),

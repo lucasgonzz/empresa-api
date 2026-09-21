@@ -66,7 +66,10 @@ class FichaArticuloIaHelper
         return [
             'id'                => (int) $article->id,
             'nombre'            => (string) $article->name,
-            'imagen_url'        => ArticleHelper::getFirstImage($article),
+            // primera_imagen_publica() y no getFirstImage(): la vieja devuelve una URL rota en
+            // produccion (ver su docblock y el de ApiUrlHelper::url_publica_de_imagen()), y esta
+            // tarjeta de hover la pinta un <img> de la SPA.
+            'imagen_url'        => ArticleHelper::primera_imagen_publica($article),
             'codigo'            => self::codigo($article),
             'precio'            => self::precio($article),
             'proveedor'         => is_null($article->provider) ? null : (string) $article->provider->name,

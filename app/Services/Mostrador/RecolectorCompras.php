@@ -248,6 +248,7 @@ class RecolectorCompras extends RecolectorBase
         }
 
         $nombres_articulos = $this->nombres_de_articulos($article_ids);
+        $imagenes = $this->imagenes_de($article_ids);
         $nombres_otros = $this->nombres_de_proveedores(array_merge($otros_provider_ids, $provider_ids));
         $fechas_ultimo_costo = $this->fechas_de_ultimo_costo($owner, $pares_titular);
 
@@ -284,6 +285,7 @@ class RecolectorCompras extends RecolectorBase
                     'ultimo_costo'       => $this->monto($linea['costo_proveedor_titular']),
                     'ultimo_costo_fecha' => isset($fechas_ultimo_costo[$clave_par]) ? $fechas_ultimo_costo[$clave_par] : null,
                     'mejor_precio_otro_proveedor' => $mejor_precio,
+                    'imagen_url'         => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
                 ];
             }
 
@@ -369,6 +371,7 @@ class RecolectorCompras extends RecolectorBase
 
         $lineas = array_slice($this->ordenar_lineas($lineas), 0, self::TOPE_LISTA);
         $nombres = $this->nombres_de_articulos(array_column($lineas, 'article_id'));
+        $imagenes = $this->imagenes_de(array_column($lineas, 'article_id'));
 
         $lista = [];
 
@@ -380,6 +383,7 @@ class RecolectorCompras extends RecolectorBase
                 'nombre'         => isset($nombres[$article_id]) ? $nombres[$article_id] : 'Artículo #' . $article_id,
                 'stock'          => (float) $linea['stock_global'],
                 'cobertura_dias' => is_null($linea['cobertura_dias']) ? null : round((float) $linea['cobertura_dias'], 1),
+                'imagen_url'     => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
         }
 
@@ -513,14 +517,18 @@ class RecolectorCompras extends RecolectorBase
             ->limit(self::TOPE_LISTA)
             ->get();
 
+        $imagenes = $this->imagenes_de($filas->pluck('article_id')->all());
         $lista = [];
 
         foreach ($filas as $fila) {
+            $article_id = (int) $fila->article_id;
+
             $lista[] = [
-                'article_id'            => (int) $fila->article_id,
+                'article_id'            => $article_id,
                 'nombre'                => (string) $fila->nombre,
                 'vistas_tienda_7d'      => (int) $fila->vistas,
                 'consultas_whatsapp_7d' => null,
+                'imagen_url'            => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
         }
 

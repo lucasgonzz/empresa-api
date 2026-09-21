@@ -329,7 +329,7 @@ class SemillaHelper
             $credit_account = $this->credit_account_para('provider', $provider_id);
 
             $current_acount = CurrentAcount::create([
-                'detalle'            => 'Pedido N°'.$order->num,
+                'detalle'            => $order->detalle_current_acount(),
                 'debe'               => $monto,
                 'status'             => 'sin_pagar',
                 'user_id'            => config('semilla.user_id'),

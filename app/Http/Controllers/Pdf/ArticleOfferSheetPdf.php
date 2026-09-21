@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\ArticlePdf as ArticlePdfTemplate;
@@ -438,7 +439,15 @@ class ArticleOfferSheetPdf extends fpdf
     }
 
     /**
-     * Resuelve ruta o URL usable por FPDF para la primera imagen (webp → jpg en storage si hace falta).
+     * Resuelve una ruta LOCAL usable por FPDF para la primera imagen del artículo, o null.
+     *
+     * Delega en GeneralHelper::pdf_image_path(), que convierte la imagen a jpg cuando hace falta y
+     * nunca devuelve una URL sin verificar: si la imagen no se puede leer (URL caída, archivo
+     * corrupto), devuelve null y print_first_image() se salta la imagen de ese artículo. Antes
+     * este método convertía a mano y, si esa conversión fallaba, devolvía la URL original de la
+     * imagen sin convertir -- FPDF no sabe parsear ese formato, así que Image() tiraba una
+     * excepción sin catch que abortaba el PDF ENTERO (los artículos con imagen sana incluidos).
+     * Es lo que le pasaba a La Martina: "Unsupported image type" en producción, 19/9/2026.
      *
      * @param \App\Models\Article $article
      * @return string|null
@@ -452,33 +461,7 @@ class ArticleOfferSheetPdf extends fpdf
             $img_url = $article->images[0]->hosting_url;
         }
 
-        if (is_null($img_url) || $img_url === '') {
-            return null;
-        }
-
-        $array_name = basename(parse_url($img_url, PHP_URL_PATH) ?: $img_url);
-        $base_name = explode('.', $array_name)[0];
-        $extension = strtolower(pathinfo($array_name, PATHINFO_EXTENSION));
-        $jpg_file_url = storage_path('app/public/'.$base_name.'.jpg');
-
-        if ($extension === 'webp') {
-            if (!file_exists($jpg_file_url)) {
-                try {
-                    $image = @imagecreatefromwebp($img_url);
-                    if ($image !== false) {
-                        imagejpeg($image, $jpg_file_url, 100);
-                        imagedestroy($image);
-                    } else {
-                        return $img_url;
-                    }
-                } catch (\Exception $e) {
-                    return $img_url;
-                }
-            }
-            return $jpg_file_url;
-        }
-
-        return $img_url;
+        return GeneralHelper::pdf_image_path($img_url);
     }
 
     /**

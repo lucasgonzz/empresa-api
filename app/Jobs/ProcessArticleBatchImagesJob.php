@@ -7,10 +7,12 @@ use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\Article;
 use App\Models\ArticleImageSearchAttempt;
+use App\Models\BackgroundProcess;
 use App\Models\GeocoderCounter;
 use App\Models\Image;
 use App\Services\ArticleImageValidationService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
+use App\Services\Traits\BusquedaDeImagenesEnGoogle;
 use App\Services\Traits\GoogleSearchHelpers;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
@@ -25,7 +27,7 @@ use Intervention\Image\ImageManager;
 
 class ProcessArticleBatchImagesJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, GoogleSearchHelpers;
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels, GoogleSearchHelpers, BusquedaDeImagenesEnGoogle;
 
     /** @var int Intentos máximos antes de marcar el job como fallido. */
     public $tries = 1;
@@ -70,6 +72,15 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
     protected $batch_uuid = '';
 
     /**
+     * @var int|null Id del registro visible que abrió ImagenesAutomaticasHelper::encolar() en
+     * `pendiente`. Con él el job retoma ESE registro y no "el último activo del tipo": con dos lotes
+     * seguidos del mismo comercio, el último activo era el del otro lote, y el propio quedaba
+     * "En espera del procesador" hasta que cerrar_colgados lo daba por muerto. Null (un job encolado
+     * antes de este cambio, o un despacho que no pasó por el helper) → se cae al último activo.
+     */
+    protected $background_process_id = null;
+
+    /**
      * @param array  $article_ids    IDs de los artículos a procesar.
      * @param int    $user_id        ID del usuario dueño.
      * @param string $google_api_key Clave de Google Custom Search API.
@@ -83,7 +94,8 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         string $google_api_key,
         string $cx,
         int $google_cuota,
-        $batch_uuid = ''
+        $batch_uuid = '',
+        $background_process_id = null
     ) {
         $this->article_ids   = $article_ids;
         $this->user_id       = $user_id;
@@ -91,6 +103,7 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         $this->cx            = $cx;
         $this->google_cuota  = $google_cuota;
         $this->batch_uuid    = (string) $batch_uuid;
+        $this->background_process_id = is_null($background_process_id) ? null : (int) $background_process_id;
     }
 
     /**
@@ -158,7 +171,7 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
          * y failed() lo busca por tipo y dueño (ver proceso_visible_abierto()).
          */
         $total_articulos = count($this->article_ids);
-        $proceso = BackgroundProcessHelper::iniciar($this->user_id, 'imagenes_automaticas', 'Imágenes automáticas', [
+        $proceso = $this->retomar_o_abrir_proceso_visible([
             'total'   => $total_articulos,
             'unidad'  => 'artículos',
             'detalle' => $total_articulos . ' artículos',
@@ -755,28 +768,67 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
      */
     private function proceso_visible_abierto()
     {
+        // Primero el registro de ESTA corrida (por id, si sigue activo); con dos lotes seguidos del
+        // mismo comercio, "el último activo del tipo" podía ser el del otro lote.
+        if (!is_null($this->background_process_id)) {
+            $propio = BackgroundProcess::where('user_id', $this->user_id)
+                ->where('id', $this->background_process_id)
+                ->where('tipo', 'imagenes_automaticas')
+                ->whereIn('status', [BackgroundProcess::STATUS_PENDIENTE, BackgroundProcess::STATUS_EN_PROCESO])
+                ->first();
+
+            if (!is_null($propio)) {
+                return $propio;
+            }
+        }
+
         return BackgroundProcessHelper::ultimo_activo($this->user_id, 'imagenes_automaticas');
     }
 
     /**
-     * Obtiene o crea el GeocoderCounter del día para el usuario.
+     * El registro visible de esta corrida, ya en `en_proceso` y con su total (misión
+     * asistente-masivas-imagenes-y-remito, 19/9/2026).
      *
-     * @return GeocoderCounter
+     * Desde esa misión el proceso nace `pendiente` al ENCOLAR (ImagenesAutomaticasHelper::encolar,
+     * camino de la pantalla y del asistente), para que el usuario lo vea al toque en la píldora
+     * aunque el worker tarde en levantarlo. Acá se lo retoma: el primer avance lo pasa a
+     * `en_proceso` y le arranca el reloj (BackgroundProcessHelper::aplicar_avance). Si no hay
+     * ninguno `pendiente` —un lote encolado antes de ese cambio, o un despacho que no pasó por
+     * el helper—, se abre recién ahora, como siempre. Mismo criterio que
+     * MasiveUpdateHelper::retomar_o_abrir_proceso, pero por tipo y dueño: este job no tiene
+     * modelo propio al que referenciar.
+     *
+     * 🔴 Solo se retoma uno en `pendiente`, no uno `en_proceso`: dos lotes del mismo comercio
+     * corriendo a la vez son dos procesos, y pisar el de otro worker dejaría una barra que
+     * avanza el doble de rápido y un cierre que le corta la corrida al otro.
+     *
+     * @param  array $opciones  total, unidad, detalle, etapa.
+     * @return \App\Models\BackgroundProcess|null
      */
-    private function get_or_create_counter(): GeocoderCounter
+    private function retomar_o_abrir_proceso_visible(array $opciones)
     {
-        $counter = GeocoderCounter::where('user_id', $this->user_id)
-            ->whereDate('created_at', Carbon::today())
-            ->first();
+        $pendiente = null;
 
-        if (!$counter) {
-            $counter = GeocoderCounter::create([
-                'counter' => 0,
-                'user_id' => $this->user_id,
-            ]);
+        // Primero el registro que abrió quien encoló (por id); si no vino o ya no está pendiente,
+        // el último activo del tipo, como antes.
+        if (!is_null($this->background_process_id)) {
+            $pendiente = BackgroundProcess::where('user_id', $this->user_id)
+                ->where('id', $this->background_process_id)
+                ->where('tipo', 'imagenes_automaticas')
+                ->first();
         }
 
-        return $counter;
+        if (is_null($pendiente) || $pendiente->status !== BackgroundProcess::STATUS_PENDIENTE) {
+            $pendiente = $this->proceso_visible_abierto();
+        }
+
+        if (!is_null($pendiente) && $pendiente->status === BackgroundProcess::STATUS_PENDIENTE) {
+            $opciones['forzar_broadcast'] = true;
+
+            return BackgroundProcessHelper::avanzar($pendiente, 0, $opciones);
+        }
+
+        return BackgroundProcessHelper::iniciar($this->user_id, 'imagenes_automaticas', 'Imágenes automáticas', $opciones);
     }
 
     /**
@@ -814,157 +866,6 @@ class ProcessArticleBatchImagesJob implements ShouldQueue
         }
 
         return $queries;
-    }
-
-    /**
-     * Ejecuta una búsqueda de imágenes en Google Custom Search e incrementa el contador diario.
-     * Usa el cliente HTTP de Laravel (Guzzle) en lugar de file_get_contents para mayor
-     * compatibilidad con HTTPS en entornos Windows/WAMP.
-     *
-     * @param string          $query   Término de búsqueda.
-     * @param GeocoderCounter $counter Contador de búsquedas del día.
-     * @return array Estructura con items, api_error y total_results.
-     */
-    private function fetch_google_image_results(string $query, GeocoderCounter $counter): array
-    {
-        // El contador NO se incrementa aca arriba, que es donde estaba y donde parece natural
-        // ponerlo: un error de la API le descontaba busquedas al cliente sin haber consultado nada.
-        // El 4/8/2026, con el bug del referrer (prompt 01), un solo batch le quemo 4 busquedas de 10
-        // sin traer una sola imagen, y cada reintento le comia otras tantas. Google tampoco cobra
-        // una request que rechaza por restriccion de referrer ni una que falla por conexion.
-        // El consumo se registra abajo, en el unico camino que llego a buscar de verdad.
-        try {
-            // google_api_http() y no google_http(): la key de Custom Search tiene restriccion por
-            // referrer HTTP y sin el header Google responde "Requests from referer <empty> are
-            // blocked". El User-Agent de aca no lo pisa: son claves distintas del mismo array.
-            $http_response = $this->google_api_http()
-                ->timeout(15)
-                ->withHeaders(['User-Agent' => 'Mozilla/5.0'])
-                ->get('https://www.googleapis.com/customsearch/v1', [
-                    'key'        => $this->google_api_key,
-                    'cx'         => $this->cx,
-                    'searchType' => 'image',
-                    'q'          => $query,
-                ]);
-        } catch (\Exception $e) {
-            return [
-                'items'         => null,
-                'api_error'     => 'Error de conexión: '.$e->getMessage(),
-                'total_results' => null,
-            ];
-        }
-
-        $body = $http_response->json();
-
-        if (!$http_response->successful()) {
-            $error_message = isset($body['error']['message'])
-                ? $body['error']['message']
-                : 'HTTP '.$http_response->status();
-
-            return [
-                'items'         => null,
-                'api_error'     => $error_message,
-                'total_results' => null,
-            ];
-        }
-
-        if (isset($body['error'])) {
-            return [
-                'items'         => $body['items'] ?? [],
-                'api_error'     => $body['error']['message'] ?? json_encode($body['error']),
-                'total_results' => isset($body['searchInformation']['totalResults'])
-                    ? (int) $body['searchInformation']['totalResults']
-                    : 0,
-            ];
-        }
-
-        $this->consumir_cuota($counter);
-
-        return [
-            'items'         => $body['items'] ?? [],
-            'api_error'     => null,
-            'total_results' => isset($body['searchInformation']['totalResults'])
-                ? (int) $body['searchInformation']['totalResults']
-                : 0,
-        ];
-    }
-
-    /**
-     * Descuenta una busqueda de la cuota diaria del usuario.
-     *
-     * Se llama SOLO desde el camino exitoso de `fetch_google_image_results`, y a proposito tambien
-     * cuando la busqueda no encontro ninguna imagen: Google la cobro igual, porque la query se
-     * ejecuto y devolvio cero resultados. El criterio es "¿llego a haber busqueda?", no "¿sirvio de
-     * algo?" — es la parte contraintuitiva y es justo donde alguien va a querer "corregirlo".
-     *
-     * @param GeocoderCounter $counter Contador de busquedas del dia.
-     * @return void
-     */
-    private function consumir_cuota(GeocoderCounter $counter)
-    {
-        $counter->counter += 1;
-        $counter->save();
-    }
-
-    /**
-     * Descarga una imagen por URL, la recorta a cuadrado 1:1 centrado y la guarda como .webp.
-     *
-     * Antes devolvía directamente la URL pública o null (grupo 201, prompt 03: pasa a devolver
-     * un array para distinguir un fallo de descarga HTTP de un fallo de procesamiento de
-     * Intervention, y para poder reportar el http_status en el diagnóstico de intentos).
-     *
-     * @param string $image_url URL de la imagen a descargar.
-     * @return array {
-     *     url:         string|null,       URL pública del archivo guardado, o null si falló.
-     *     failure:     'http'|'format'|null,  motivo del fallo (null si tuvo éxito).
-     *     http_status: int|null,          status HTTP de la descarga, si se llegó a tener respuesta.
-     * }
-     */
-    private function download_crop_and_save(string $image_url): array
-    {
-        $http_status = null;
-
-        try {
-            $http_response = $this->google_http()
-                ->timeout(8)
-                ->withHeaders(['User-Agent' => 'Mozilla/5.0'])
-                ->get($image_url);
-
-            $http_status = $http_response->status();
-
-            if (!$http_response->successful()) {
-                return ['url' => null, 'failure' => 'http', 'http_status' => $http_status];
-            }
-
-            $image_data = $http_response->body();
-        } catch (\Exception $e) {
-            return ['url' => null, 'failure' => 'http', 'http_status' => null];
-        }
-
-        if ($image_data === '' || $image_data === null) {
-            return ['url' => null, 'failure' => 'http', 'http_status' => $http_status];
-        }
-
-        try {
-            $manager = new ImageManager();
-            $img     = $manager->make($image_data);
-
-            $w    = $img->width();
-            $h    = $img->height();
-            $size = min($w, $h);
-            $x    = (int)(($w - $size) / 2);
-            $y    = (int)(($h - $size) / 2);
-            $img->crop($size, $size, $x, $y);
-
-            $filename = time().rand(1, 100000).'.webp';
-            $img->save(storage_path().'/app/public/'.$filename);
-        } catch (\Exception $e) {
-            return ['url' => null, 'failure' => 'format', 'http_status' => $http_status];
-        }
-
-        // URL publica del archivo, centralizada en ApiUrlHelper (unico lugar que sabe si
-        // corresponde agregar "/public" segun VPS/APP_ENV; ver grupo 230, prompt 01).
-        return ['url' => ApiUrlHelper::storage($filename), 'failure' => null, 'http_status' => $http_status];
     }
 
     /**

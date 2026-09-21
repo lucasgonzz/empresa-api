@@ -34,9 +34,11 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
 use App\Http\Controllers\Helpers\Devoluciones\ValidarDevolucionHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
+use App\Http\Controllers\Helpers\sale\SaleTicketRasterHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Jobs\SendSaleWhatsappJob;
 use App\Services\SaleWhatsappSenderService;
+use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Http\Controllers\Pdf\EtiquetaEnvioPdf;
 use App\Http\Controllers\Pdf\NewSalePdf;
 use App\Http\Controllers\Pdf\SaleAfipTicketPdf;
@@ -1557,6 +1559,56 @@ class SaleController extends Controller
         );
 
         return response()->json(['model' => $this->fullModel('Sale', $sale_id)], 200);
+    }
+
+    /**
+     * Bytes ESC/POS (`GS v 0`) del logo del negocio para el header del Ticket 2.0.
+     *
+     * Mismo criterio de resolución que el logo del PDF: `AfipPdfHelper::resolve_logo_url()`
+     * (sucursal de la venta primero, negocio como fallback) — es el único lugar del código
+     * que decide de dónde sale el logo, no se duplica ese if acá. La conversión a bitmap la
+     * hace `SaleTicketRasterHelper`, en el backend, porque el navegador no puede leer los
+     * píxeles de una imagen de otro origen sin CORS habilitado.
+     *
+     * @param int|string $sale_id Id de la venta del usuario autenticado.
+     * @param Request $request Query: ancho_mm (opcional, default 80).
+     * @return \Illuminate\Http\JsonResponse {has_logo: false} o {has_logo: true, raster_base64}.
+     */
+    function ticket_logo_raster($sale_id, Request $request)
+    {
+        $sale = Sale::where('user_id', $this->userId())
+            ->where('id', $sale_id)
+            ->first();
+
+        if (is_null($sale)) {
+            return response()->json(['error' => true, 'message' => 'Venta no encontrada'], 404);
+        }
+
+        /*
+         * Acotado a un rango real de comandera (20-120mm). Sin este clamp, un ancho_mm
+         * absurdo (un bug del front, o un request directo al endpoint) llega crudo hasta
+         * el canvas de GD del helper y puede pedir un lienzo de gigabytes -- un fatal de
+         * memoria que ni el try/catch del helper puede atrapar. Hallazgo de la revision
+         * independiente de la mision ticket-2-logo-header, 21/9/2026.
+         */
+        $ancho_mm = max(20, min(120, (int) $request->input('ancho_mm', 80)));
+        $user = UserHelper::getFullModel();
+        $logo_url = AfipPdfHelper::resolve_logo_url($sale->address, $user);
+
+        if (is_null($logo_url)) {
+            return response()->json(['has_logo' => false]);
+        }
+
+        $raster = SaleTicketRasterHelper::build_ticket_logo_raster($logo_url, $ancho_mm);
+
+        if (is_null($raster)) {
+            return response()->json(['has_logo' => false]);
+        }
+
+        return response()->json([
+            'has_logo' => true,
+            'raster_base64' => base64_encode($raster),
+        ]);
     }
 
     /**

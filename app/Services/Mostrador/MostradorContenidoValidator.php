@@ -20,10 +20,11 @@ namespace App\Services\Mostrador;
  *     {"tipo": "cifras",    "items": [{etiqueta, valor, detalle?, variacion?, tono?}]}   ≤ 6
  *     {"tipo": "seccion",   "titulo"}
  *     {"tipo": "parrafo",   "texto"}
- *     {"tipo": "lista",     "titulo?", "items": [{texto, tono?}]}                        ≤ 15
+ *     {"tipo": "lista",     "titulo?", "items": [{texto, tono?, article_id?, imagen_url?}]}  ≤ 15
  *     {"tipo": "tabla",     "titulo?", "columnas": [..], "filas": [[..]]}     ≤ 8 × 30
  *     {"tipo": "articulos", "titulo?", "items": [{article_id, nombre, imagen_url?, linea_1?, linea_2?, tono?}]}  ≤ 12
  *     {"tipo": "acciones",  "titulo?", "items": [{texto, tipo, client_id?}]}             ≤ 8
+ *     {"tipo": "clientes",  "titulo?", "items": [{client_id, nombre, linea_1?, linea_2?, deuda?, tono?}]}  ≤ 10
  *   ]}
  *
  * `client_id` (misión mostrador-caja-vencimientos) es opcional y solo va en acciones de
@@ -32,6 +33,21 @@ namespace App\Services\Mostrador;
  * un contenido viejo sigue siendo válido. Que ese cliente sea del negocio del informe
  * no se puede saber acá (el validador no conoce al dueño): lo chequea
  * AdminSync\MostradorController::depositar() con client_ids().
+ *
+ * `article_id`/`imagen_url` en `lista` y el bloque `clientes` (misión
+ * mostrador-fotos-y-modales, 21/9/2026) son de solo lectura: abren el modal del artículo
+ * o del cliente, o amplían la foto — no disparan ninguna acción. Por eso NO pasan por
+ * client_ids()/clientes_ajenos(): ese chequeo de tenencia es solo para lo que puede
+ * ACCIONAR sobre otra persona (mandar un WhatsApp), no para una referencia de lectura,
+ * exactamente el mismo criterio que ya regía para `articulos.article_id`.
+ *
+ * 🔴 Y esta vez el chequeo de tenencia no se puede delegar en el endpoint que abre cada
+ * modal: `GET article/{id}` y `GET client/{id}` salen de `Controller::fullModel()`, que
+ * busca por id PELADO, sin `where('user_id', ...)` — así es en todo el sistema, no algo
+ * de estas dos rutas. La SPA lo tapa del lado del cliente (AbrirArticuloDesdeInforme.vue /
+ * AbrirClienteDesdeInforme.vue comparan el `user_id` del modelo traído contra el dueño de
+ * la sesión antes de mostrarlo), así que un id mal copiado por la skill no muestra el
+ * artículo o el cliente de otro negocio de la base compartida — solo un toast de error.
  *
  * validar() devuelve la lista de errores legibles (vacía = válido); el controlador
  * la convierte en el 422 con `errores[]`.
@@ -46,7 +62,7 @@ class MostradorContenidoValidator
     const MAX_BLOQUES = 40;
 
     /** Tipos de bloque. */
-    const TIPOS = ['resumen', 'cifras', 'seccion', 'parrafo', 'lista', 'tabla', 'articulos', 'acciones'];
+    const TIPOS = ['resumen', 'cifras', 'seccion', 'parrafo', 'lista', 'tabla', 'articulos', 'acciones', 'clientes'];
 
     /** Tonos. */
     const TONOS = ['ok', 'alerta', 'neutro'];
@@ -69,6 +85,9 @@ class MostradorContenidoValidator
     const MAX_CELDA     = 120;
     const MAX_NOMBRE_ARTICULO = 200;
     const MAX_LINEA_ARTICULO  = 120;
+    const MAX_NOMBRE_CLIENTE  = 200;
+    const MAX_LINEA_CLIENTE   = 120;
+    const MAX_DEUDA           = 40;
 
     /** Topes de ítems. */
     const MAX_CIFRAS    = 6;
@@ -77,6 +96,7 @@ class MostradorContenidoValidator
     const MAX_FILAS     = 30;
     const MAX_ARTICULOS = 12;
     const MAX_ACCIONES  = 8;
+    const MAX_CLIENTES  = 10;
 
     /** @var array<int, string> Errores acumulados de la validación en curso */
     protected $errores = [];
@@ -221,9 +241,17 @@ class MostradorContenidoValidator
                 $this->solo_claves($bloque, ['tipo', 'titulo', 'items'], $ruta);
                 $this->texto_opcional($bloque, 'titulo', self::MAX_TITULO, $ruta);
                 $this->items($bloque, $ruta, self::MAX_LISTA, function ($item, $ruta_item) {
-                    $this->solo_claves($item, ['texto', 'tono'], $ruta_item);
+                    // article_id/imagen_url (misión mostrador-fotos-y-modales, 21/9/2026): un
+                    // ítem de lista puede referenciar un artículo (p. ej. "volvió a venderse" o
+                    // "se quedó sin stock"), y ahí la SPA dibuja su miniatura y lo hace
+                    // clickeable. Las dos son opcionales: una lista que no habla de artículos
+                    // (la libreta de la Agenda, búsquedas sin resultado) sigue siendo válida sin
+                    // ellas.
+                    $this->solo_claves($item, ['texto', 'tono', 'article_id', 'imagen_url'], $ruta_item);
                     $this->texto_obligatorio($item, 'texto', self::MAX_ITEM_TEXTO, $ruta_item);
                     $this->tono($item, $ruta_item);
+                    $this->article_id_opcional($item, $ruta_item);
+                    $this->imagen_url($item, $ruta_item);
                 });
                 break;
 
@@ -265,6 +293,24 @@ class MostradorContenidoValidator
                     }
 
                     $this->client_id($item, $tipo_accion, $ruta_item);
+                });
+                break;
+
+            case 'clientes':
+                $this->solo_claves($bloque, ['tipo', 'titulo', 'items'], $ruta);
+                $this->texto_opcional($bloque, 'titulo', self::MAX_TITULO, $ruta);
+                $this->items($bloque, $ruta, self::MAX_CLIENTES, function ($item, $ruta_item) {
+                    $this->solo_claves($item, ['client_id', 'nombre', 'linea_1', 'linea_2', 'deuda', 'tono'], $ruta_item);
+
+                    if (!isset($item['client_id']) || !is_int($item['client_id']) || $item['client_id'] <= 0) {
+                        $this->error($ruta_item . '.client_id', 'tiene que ser un entero positivo');
+                    }
+
+                    $this->texto_obligatorio($item, 'nombre', self::MAX_NOMBRE_CLIENTE, $ruta_item);
+                    $this->texto_opcional($item, 'linea_1', self::MAX_LINEA_CLIENTE, $ruta_item);
+                    $this->texto_opcional($item, 'linea_2', self::MAX_LINEA_CLIENTE, $ruta_item);
+                    $this->texto_opcional($item, 'deuda', self::MAX_DEUDA, $ruta_item);
+                    $this->tono($item, $ruta_item);
                 });
                 break;
         }
@@ -455,6 +501,27 @@ class MostradorContenidoValidator
 
         if (!$es_http) {
             $this->error($ruta . '.imagen_url', 'tiene que ser una URL http(s) o null');
+        }
+    }
+
+    /**
+     * `article_id` opcional (puede faltar o ser null) de un ítem de `lista`: si viene, un
+     * entero positivo. A diferencia del de `articulos`, acá no es obligatorio — una lista
+     * puede mezclar ítems que hablan de un artículo con ítems que no (o no hablar de
+     * ninguno).
+     *
+     * @param array $objeto
+     * @param string $ruta
+     * @return void
+     */
+    protected function article_id_opcional(array $objeto, string $ruta)
+    {
+        if (!array_key_exists('article_id', $objeto) || is_null($objeto['article_id'])) {
+            return;
+        }
+
+        if (!is_int($objeto['article_id']) || $objeto['article_id'] <= 0) {
+            $this->error($ruta . '.article_id', 'tiene que ser un entero positivo, o null');
         }
     }
 

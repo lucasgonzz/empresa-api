@@ -490,7 +490,7 @@ class ReportesMesSeeder extends Seeder
 
         // Débito en cuenta corriente del proveedor (mismo criterio que createCurrentAcount, con getSaldo actual)
         $current_acount = CurrentAcount::create([
-            'detalle'             => 'Pedido N°' . $order->num,
+            'detalle'             => $order->detalle_current_acount(),
             'debe'                => $monto,
             'status'              => 'sin_pagar',
             'user_id'             => config('app.USER_ID'),

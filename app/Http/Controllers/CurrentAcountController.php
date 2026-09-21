@@ -6,6 +6,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -34,6 +35,7 @@ use App\Models\Seller;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -52,6 +54,7 @@ class CurrentAcountController extends Controller
                         ->with('pagado_por')
                         ->with('cheques')
                         ->with('sale.afip_ticket')
+                        ->with('provider_order.provider_order_afip_tickets')
                         ->orderBy('created_at', 'DESC')
                         // ->get();
                         ->get()
@@ -98,14 +101,37 @@ class CurrentAcountController extends Controller
         }
 
         /*
+         * Los endosos de la fila de pago (misión cheques-endoso-y-bancos, 21/9/2026): una fila de
+         * tipo cheque con `cheque_id` endosa ese cheque recibido en vez de crear uno nuevo. Se
+         * valida ACA, por el mismo motivo que las cajas: el cheque se marca adentro de
+         * attachPaymentMethods(), con el pago ya creado, y una fila que no se puede endosar tiene
+         * que frenar antes de escribir nada. Y solo en un pago a PROVEEDOR: un cobro a un cliente
+         * no cambia el cheque de manos.
+         */
+        if ($request->model_name != 'provider' && ChequeHelper::payload_pide_endoso($request->current_acount_payment_methods)) {
+
+            return response()->json([
+                'message' => 'Un cheque recibido se endosa en un pago a un proveedor o en un gasto, no en un cobro a un cliente.',
+            ], 422);
+        }
+
+        $problemas_de_endoso = ChequeHelper::problemas_de_endoso_en_payload($request->current_acount_payment_methods, $this->userId());
+
+        if (count($problemas_de_endoso)) {
+
+            return response()->json([
+                'message' => implode('. ', $problemas_de_endoso).'.',
+            ], 422);
+        }
+
+        /*
          * El alta en sí (el create, los métodos de pago con sus movimientos de caja, el saldo, la
          * imputación contra los débitos y la cuota) vive en CurrentAcountPagoAltaHelper::registrar()
          * desde la misión asistente-ia-acciones (15/9/2026), junto con get_haber(): el asistente de
          * IA registra pagos por el MISMO camino, adentro de su propia transacción. Acá queda lo que
          * es del HTTP: la prevalidación de cajas de arriba, armar las 12 claves que el alta le leía
          * al request, la notificación y la respuesta. El payload y las respuestas de
-         * `POST api/current-acount/pago` no cambiaron, y esta pantalla sigue sin transacción
-         * (hallazgo 5 del informe del 21/8/2026, fuera de alcance).
+         * `POST api/current-acount/pago` no cambiaron.
          */
         $datos = [];
 
@@ -115,7 +141,21 @@ class CurrentAcountController extends Controller
             $datos[$clave] = $request->{$clave};
         }
 
-        $pago = CurrentAcountPagoAltaHelper::registrar($datos);
+        /*
+         * El alta va adentro de una transacción (misión cheques-endoso-y-bancos, 21/9/2026).
+         * registrar() está pensado para que el llamador decida la transacción —el asistente ya lo
+         * llama adentro de la suya— y hasta acá la pantalla era el único camino que no la abría:
+         * el hallazgo 5 del informe del 21/8/2026 ("la pantalla sigue sin transacción"). Lo que lo
+         * volvió urgente es el endoso: un cheque que otra request endosó entre la prevalidación y
+         * attachPaymentMethods() corta con una excepción con el pago YA creado, y sin transacción
+         * ese pago quedaba huérfano, sin métodos ni imputación. Con esto, para este camino, el
+         * hallazgo queda cerrado. La notificación y los certificados de retención siguen afuera,
+         * como estaban: no son del circuito de la plata.
+         */
+        $pago = DB::transaction(function () use ($datos) {
+
+            return CurrentAcountPagoAltaHelper::registrar($datos);
+        });
 
         /*
          * Los certificados de las filas de medio de pago que son RETENCIONES. Va despues del alta

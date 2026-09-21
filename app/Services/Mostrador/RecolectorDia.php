@@ -130,6 +130,24 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
+     * EL CONJUNTO DE VENTAS DE RENDIMIENTO, EXPUESTO PARA EL ASISTENTE (misión
+     * asistente-omnisciente, 21/9/2026). `consultar_resumen_de_ventas` tiene que dar EL MISMO
+     * número que el reporte de Rendimiento y que el informe del mostrador, y la única forma de
+     * garantizarlo es que los tres lean el mismo builder: este método delega en consulta_ventas()
+     * sin tocar el criterio (ni la fecha, ni la moneda, ni las consolidaciones). Si alguna vez
+     * cambia consulta_ventas(), cambian los tres juntos, que es la idea.
+     *
+     * @param User $owner
+     * @param Carbon $desde Primer día del rango (se usa la parte fecha)
+     * @param Carbon $hasta Último día del rango (se usa la parte fecha)
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function ventas_del_periodo(User $owner, Carbon $desde, Carbon $hasta)
+    {
+        return $this->consulta_ventas($owner, $desde, $hasta);
+    }
+
+    /**
      * Subconsulta con los ids de las ventas del rango (ver consulta_ventas), para acotar
      * article_purchases al MISMO conjunto de ventas que los totales.
      *
@@ -604,6 +622,7 @@ class RecolectorDia extends RecolectorBase
             ->havingRaw('MAX(article_purchases.created_at) <= ?', [$limite])
             ->get();
 
+        $imagenes = $this->imagenes_de($previas->pluck('article_id')->all());
         $lista = [];
 
         foreach ($previas as $fila) {
@@ -614,6 +633,7 @@ class RecolectorDia extends RecolectorBase
                 'nombre'           => (string) $fila->nombre,
                 'dias_sin_venderse' => Carbon::parse($fila->ultima)->startOfDay()->diffInDays($inicio),
                 'cantidad'         => isset($cantidad_por_articulo[$article_id]) ? $cantidad_por_articulo[$article_id] : 0.0,
+                'imagen_url'       => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
         }
 
@@ -650,6 +670,8 @@ class RecolectorDia extends RecolectorBase
             ->limit(self::TOPE_LISTA)
             ->get(['id', 'name', 'stock', 'stock_min']);
 
+        $imagenes = $this->imagenes_de($filas->pluck('id')->all());
+
         foreach ($filas as $fila) {
             $en_cero_global[(int) $fila->id] = true;
 
@@ -659,6 +681,7 @@ class RecolectorDia extends RecolectorBase
                 'stock'        => (float) ($fila->stock ?: 0),
                 'stock_minimo' => is_null($fila->stock_min) ? null : (int) $fila->stock_min,
                 'sucursal'     => null,
+                'imagen_url'   => isset($imagenes[(int) $fila->id]) ? $imagenes[(int) $fila->id] : null,
             ];
         }
 
@@ -683,6 +706,8 @@ class RecolectorDia extends RecolectorBase
             ->limit(self::TOPE_LISTA - count($lista))
             ->get(['articles.id', 'articles.name', 'address_article.amount', 'address_article.stock_min', 'addresses.street']);
 
+        $imagenes_sucursal = $this->imagenes_de($por_sucursal->pluck('id')->all());
+
         foreach ($por_sucursal as $fila) {
             $lista[] = [
                 'article_id'   => (int) $fila->id,
@@ -690,6 +715,7 @@ class RecolectorDia extends RecolectorBase
                 'stock'        => (float) ($fila->amount ?: 0),
                 'stock_minimo' => is_null($fila->stock_min) ? null : (int) $fila->stock_min,
                 'sucursal'     => (string) $fila->street,
+                'imagen_url'   => isset($imagenes_sucursal[(int) $fila->id]) ? $imagenes_sucursal[(int) $fila->id] : null,
             ];
         }
 

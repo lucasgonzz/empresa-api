@@ -7,13 +7,22 @@ use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FiltroDeArticulosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaGenericaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
 use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -24,6 +33,13 @@ use Illuminate\Support\Facades\Log;
  * Las herramientas de carga del asistente de IA (misión asistente-ia-acciones, §3.3 del plan): cinco
  * lecturas nuevas y cinco propuestas que arman tarjetas para que la persona confirme. La misión
  * agente-ia-mano-derecha (16/9/2026) le sumó dos propuestas más: proponer_combo y proponer_oferta.
+ * La misión asistente-masivas-imagenes-y-remito (19/9/2026) sumó siete al FINAL del array: las
+ * imágenes de categorías y de artículos por filtro, el conteo por filtro, la actualización masiva y
+ * los diseños de PDF. La misión cheques-endoso-y-bancos (21/9/2026) sumó dos más al final:
+ * consultar y unificar los bancos de los cheques. La misión asistente-omnisciente (21/9/2026)
+ * sumó cinco más después de esas: el ABM genérico (que_puedo_cargar, proponer_alta,
+ * proponer_edicion, proponer_baja) y proponer_venta. Van al final porque el orden es parte
+ * del caché de prompt (ver build_tools()).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
  * Claude ve) y el despacho (el `case` de ejecutar(), lo que corre al llamarla). Es la misma regla que
@@ -45,14 +61,33 @@ class HerramientasDeCarga
      * Los tipos de tarjeta que el modo "resuelto" auto-confirma tras proponerlos (misión
      * foto-sucursal-y-asistente-configurable, 17/9/2026).
      *
-     * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. Hoy es únicamente la foto de una sucursal: no toca plata
-     * ni borra nada, y se deshace desde el ABM. Todo lo que mueve plata (gastos, pagos, compras,
-     * combos, ofertas) NUNCA se auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la
-     * persona. Antes de sumar un tipo acá, tiene que cumplir las dos condiciones.
+     * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. La foto de una sucursal (se deshace desde el ABM), mandar
+     * a buscar imágenes para categorías o artículos (una imagen se saca desde la ficha; la búsqueda
+     * en sí no toca nada más) y cambiar las columnas de un diseño de PDF (se vuelve a cambiar desde
+     * ABM > Impresión). Todo lo que mueve plata (gastos, pagos, compras, combos, ofertas) NUNCA se
+     * auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la persona.
+     *
+     * 🔴 LA ACTUALIZACIÓN MASIVA NO ESTÁ NI VA A ESTAR ACÁ. Reescribe precios, márgenes, stock o
+     * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
+     * que ver cuántos alcanza y confirmar (decisión de Lucas, misión asistente-masivas-imagenes-y-
+     * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(), y el test 26 fija
+     * las dos cosas. Lo mismo para unificar los bancos de los cheques (misión
+     * cheques-endoso-y-bancos): toca N cheques de un saque y decide a qué banco va cada texto.
+     * Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
+     *
+     * 🔴 TAMPOCO ENTRAN LAS GENÉRICAS (alta, edicion, baja) NI LA VENTA (misión asistente-omnisciente,
+     * 21/9/2026): crean, cambian o borran datos del negocio por el controller de la pantalla, y una
+     * baja no se deshace. Sus `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), y el
+     * test 36 fija las dos cosas.
      *
      * @var array<int, string>
      */
-    const AUTO_CONFIRMABLES = [AiMessageAction::TIPO_FOTO_SUCURSAL];
+    const AUTO_CONFIRMABLES = [
+        AiMessageAction::TIPO_FOTO_SUCURSAL,
+        AiMessageAction::TIPO_IMAGENES_CATEGORIAS,
+        AiMessageAction::TIPO_IMAGENES_ARTICULOS,
+        AiMessageAction::TIPO_DISENO_PDF,
+    ];
 
     /**
      * Definiciones con su input_schema para la API de Anthropic.
@@ -431,6 +466,418 @@ class HerramientasDeCarga
                     'required'   => [],
                 ],
             ],
+            /*
+             * Misión asistente-masivas-imagenes-y-remito (19/9/2026). Siete herramientas, en este
+             * orden, SIEMPRE al final: el orden del array es el prefijo del caché de prompt.
+             */
+            [
+                'name'         => 'consultar_categorias_sin_imagen',
+                'description'  => 'Devuelve cuántas categorías tiene el negocio, cuáles no tienen imagen (con cuántos artículos tiene cada una) y cuántas búsquedas de imágenes quedan disponibles hoy en la cuota diaria de Google. Usala antes de proponer_imagenes_para_categorias, y cuando te pregunten qué categorías están sin imagen. Si la persona ya te pidió que asignes las imágenes, después de consultar llamá a proponer_imagenes_para_categorias en la misma vuelta: no le preguntes si mandás la búsqueda.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_imagenes_para_categorias',
+                'description'  => 'Manda a buscar en internet una imagen con fondo blanco (estilo tienda online) para cada categoría sin imagen, o solo para las categorías que nombres. Solo la puede usar el dueño. La búsqueda corre en segundo plano: la imagen que pasa la verificación se asigna sola; la dudosa vuelve a esta conversación como una tarjeta con la imagen para que la persona decida; la que no se encuentra se informa. Cada categoría usa hasta 2 búsquedas de la cuota diaria de Google. Con la confianza en "resuelto" la mando en el acto y avisá que la mandaste; con "cauteloso" queda una tarjeta para confirmar. Nunca digas que las imágenes ya están: cuando termine, vos mismo vas a escribir en esta conversación con el resultado. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'alcance'     => [
+                            'type'        => 'string',
+                            'enum'        => ['sin_imagen', 'todas'],
+                            'description' => 'sin_imagen (default): solo las categorías que no tienen imagen. todas: también las que ya tienen, si la persona lo pide.',
+                        ],
+                        'categorias'  => [
+                            'type'        => 'array',
+                            'description' => 'Solo estas categorías, por su nombre. Si no lo mandás, van todas las del alcance.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'nombre'      => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre de la categoría, como lo dijo la persona.',
+                                    ],
+                                    'buscar_como' => [
+                                        'type'        => 'string',
+                                        'description' => 'Con qué texto buscar la imagen, si la persona pidió otro nombre ("buscala como artículos de bazar").',
+                                    ],
+                                ],
+                                'required'   => ['nombre'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'contar_articulos_por_filtro',
+                'description'  => 'Cuenta cuántos artículos activos cumplen un filtro (todos los filtros a la vez) y devuelve los primeros nombres como muestra. Usala SIEMPRE antes de proponer_actualizacion_masiva o proponer_imagenes_para_articulos, para decirle a la persona cuántos artículos alcanza. Sin filtros cuenta el catálogo entero. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N (nunca los últimos). Los proveedores, categorías, subcategorías y marcas van por su NOMBRE, no por id: si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'filtros'         => self::esquema_de_filtros(),
+                        'solo_sin_imagen' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para contar solo los que no tienen imagen. Si no lo mandás, se cuentan todos.',
+                        ],
+                        'orden'           => self::esquema_de_orden(),
+                        'limite'          => self::esquema_de_limite(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_imagenes_para_articulos',
+                'description'  => 'Manda a buscar en internet una imagen para cada artículo que cumpla el filtro (los mismos filtros que contar_articulos_por_filtro). Por defecto saltea los que ya tienen imagen (solo_sin_imagen true); mandalo en false solo si la persona dice que también los que ya tienen. La búsqueda corre en segundo plano y le aparece a la persona en el sistema cuando termina; cada artículo usa hasta 2 búsquedas de la cuota diaria de Google y lo que no entra hoy queda sin procesar. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N. Con la confianza en "resuelto" la mando en el acto y avisá que la mandaste; con "cauteloso" queda una tarjeta para confirmar. Nunca digas que las imágenes ya están. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'filtros'         => self::esquema_de_filtros(),
+                        'solo_sin_imagen' => [
+                            'type'        => 'boolean',
+                            'description' => 'true (default) saltea los artículos que ya tienen imagen. false los incluye, y a esos se les AGREGA una imagen más (no se reemplaza la que tienen), igual que el botón del listado.',
+                        ],
+                        'orden'           => self::esquema_de_orden(),
+                        'limite'          => self::esquema_de_limite(),
+                        'reemplaza_a'     => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_actualizacion_masiva',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'filtros'     => self::esquema_de_filtros(),
+                        'cambios'     => [
+                            'type'        => 'array',
+                            'description' => 'Los cambios que se aplican a cada artículo alcanzado, uno por fila.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'campo'     => [
+                                        'type'        => 'string',
+                                        'enum'        => [
+                                            'margen_de_ganancia', 'precio_manual', 'costo', 'stock', 'precio_promocional', 'margen_de_ganancia_blanco',
+                                            'proveedor', 'categoria', 'sub_categoria', 'marca',
+                                            'iva', 'unidad_de_medida',
+                                            'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
+                                        ],
+                                    ],
+                                    'operacion' => [
+                                        'type'        => 'string',
+                                        'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
+                                        'description' => 'Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
+                                    ],
+                                    'valor'     => [
+                                        'type'        => ['number', 'string'],
+                                        'description' => 'El valor a setear, el porcentaje a subir o bajar, o el nombre a asignar. No va con activar ni desactivar.',
+                                    ],
+                                    'redondear' => [
+                                        'type'        => 'boolean',
+                                        'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero.',
+                                    ],
+                                ],
+                                'required'   => ['campo', 'operacion'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['filtros', 'cambios'],
+                ],
+            ],
+            [
+                'name'         => 'consultar_disenos_de_pdf',
+                'description'  => 'Devuelve los diseños de PDF del negocio (con los que se imprimen remitos, facturas, presupuestos y el catálogo de artículos): de cada uno su nombre, tipo, si es el predeterminado, la hoja, el ancho disponible, la suma de anchos, y las columnas visibles en orden con su ancho en mm; y aparte las columnas que se pueden agregar, con su ancho por defecto. Usala antes de proponer_cambio_en_diseno_pdf, y cuando te pregunten qué columnas tiene un remito o un PDF.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'tipo' => [
+                            'type'        => 'string',
+                            'enum'        => ['venta', 'articulos'],
+                            'description' => 'venta: los diseños de comprobantes (remitos, facturas, presupuestos). articulos: los del catálogo de artículos. Sin tipo trae todos.',
+                        ],
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_cambio_en_diseno_pdf',
+                'description'  => 'Cambia las columnas de un diseño de PDF: agrega columnas en una posición, saca columnas o cambia anchos. Solo la puede usar el dueño. Conseguí el diseno_id y los nombres de columna con consultar_disenos_de_pdf. Si la persona no dijo DÓNDE va la columna nueva (al final, al principio, antes o después de cuál), preguntale antes de llamar. Cuando los anchos no entran, la herramienta acomoda sola (achica la columna que ajusta texto, como el nombre del artículo) y te dice qué achicó: contáselo a la persona. Con la confianza en "resuelto" aplico el cambio en el acto y avisá que quedó; con "cauteloso" queda una tarjeta para confirmar. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'diseno_id'   => [
+                            'type'        => 'integer',
+                            'description' => 'Id del diseño, de consultar_disenos_de_pdf.',
+                        ],
+                        'agregar'     => [
+                            'type'        => 'array',
+                            'description' => 'Columnas a agregar, con su posición.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'columna'               => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre de la columna, de las disponibles que devolvió consultar_disenos_de_pdf.',
+                                    ],
+                                    'posicion'              => [
+                                        'type' => 'string',
+                                        'enum' => ['al_final', 'al_principio', 'despues_de', 'antes_de'],
+                                    ],
+                                    'columna_de_referencia' => [
+                                        'type'        => 'string',
+                                        'description' => 'Obligatoria con despues_de y antes_de: la columna al lado de la cual va.',
+                                    ],
+                                    'ancho_mm'              => [
+                                        'type'        => 'number',
+                                        'description' => 'Ancho en milímetros. Si no lo mandás se usa el ancho por defecto de la columna.',
+                                    ],
+                                ],
+                                'required'   => ['columna', 'posicion'],
+                            ],
+                        ],
+                        'quitar'      => [
+                            'type'        => 'array',
+                            'description' => 'Nombres de las columnas a sacar del diseño.',
+                            'items'       => [
+                                'type' => 'string',
+                            ],
+                        ],
+                        'anchos'      => [
+                            'type'        => 'array',
+                            'description' => 'Columnas a las que se les fija un ancho nuevo.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'columna'  => [
+                                        'type' => 'string',
+                                    ],
+                                    'ancho_mm' => [
+                                        'type' => 'number',
+                                    ],
+                                ],
+                                'required'   => ['columna', 'ancho_mm'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['diseno_id'],
+                ],
+            ],
+            /*
+             * Misión cheques-endoso-y-bancos (21/9/2026): el catálogo de bancos de cheques arranca
+             * vacío y los cheques viejos tienen el banco como texto libre. Estas dos lo unifican.
+             */
+            [
+                'name'         => 'consultar_bancos_de_cheques',
+                'description'  => 'Devuelve los bancos de cheques que el negocio ya tiene en su catálogo (con cuántos cheques tiene cada uno) y los textos distintos que los cheques tienen escritos como banco y todavía no están unificados a ningún banco del catálogo, con cuántos cheques tiene cada texto. Usala antes de proponer_unificar_bancos_de_cheques, y cuando te pregunten qué bancos hay o cuántos cheques faltan unificar.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_unificar_bancos_de_cheques',
+                'description'  => 'Unifica los bancos de los cheques: por cada banco, un nombre prolijo y la lista de textos (tal cual los devolvió consultar_bancos_de_cheques) que son ese banco. Al confirmar, crea en el catálogo los bancos que no existan (si ya hay uno con ese nombre lo reusa) y les asigna ese banco a todos los cheques de esos textos; el texto escrito en cada cheque no se borra. Agrupá vos los textos que claramente son el mismo banco ("Bco Nacion", "banco nación" y "BNA" son Banco Nación) y usá el nombre oficial y prolijo; si un texto es ambiguo, preguntá antes. Un texto va a un solo banco. SIEMPRE queda tarjeta para confirmar, nunca se aplica sola, esté como esté tu confianza. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'grupos'      => [
+                            'type'        => 'array',
+                            'description' => 'Un elemento por banco.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'banco'  => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre prolijo del banco, como va a quedar en el catálogo (ej. "Banco Nación").',
+                                    ],
+                                    'textos' => [
+                                        'type'        => 'array',
+                                        'description' => 'Los textos de consultar_bancos_de_cheques que son este banco, tal cual vinieron.',
+                                        'items'       => [
+                                            'type' => 'string',
+                                        ],
+                                    ],
+                                ],
+                                'required'   => ['banco', 'textos'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['grupos'],
+                ],
+            ],
+            /*
+             * Misión asistente-omnisciente (21/9/2026). Cinco herramientas, en este orden, SIEMPRE
+             * al final: el ABM genérico (catálogo, alta, edición, baja) y la venta. El catálogo de
+             * entidades y campos va bajo demanda en que_puedo_cargar y NO en el enum del esquema:
+             * el bloque de definiciones viaja entero en cada vuelta y es el prefijo del caché.
+             */
+            [
+                'name'         => 'que_puedo_cargar',
+                'description'  => 'Devuelve qué entidades del sistema podés crear, editar o borrar con proponer_alta, proponer_edicion y proponer_baja (las de ABM, Clientes, Proveedores y Artículos: categorías, subcategorías, marcas, listas de precio, descuentos, sucursales, vendedores, clientes, proveedores, artículos y más), y con una entidad, sus campos: nombre, tipo, si es obligatorio, en qué operaciones se acepta y cómo se ubica un registro. Llamala ANTES de proponer, y usá sus claves tal cual: un campo que no está acá no existe, no lo inventes. NO es para gastos, pagos, tareas, combos, ofertas, compras con factura ni ventas nuevas: esas tienen su propia herramienta.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'entidad' => [
+                            'type'        => 'string',
+                            'description' => 'La entidad (como la devuelve la lista: provider, client, article, category...). Sin entidad trae la lista de todas.',
+                        ],
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_alta',
+                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'entidad'     => [
+                            'type'        => 'string',
+                            'description' => 'La entidad, como la devuelve que_puedo_cargar.',
+                        ],
+                        'datos'       => [
+                            'type'                 => 'object',
+                            'description'          => 'Los campos del registro nuevo: las claves son los campos de que_puedo_cargar para esa entidad y los valores lo que dijo la persona (texto, número, si/no, AAAA-MM-DD, o el nombre de la relación).',
+                            'additionalProperties' => true,
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['entidad', 'datos'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_edicion',
+                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme: NO cambia nada. Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'entidad'     => [
+                            'type'        => 'string',
+                            'description' => 'La entidad, como la devuelve que_puedo_cargar.',
+                        ],
+                        'registro'    => [
+                            'type'        => ['string', 'integer'],
+                            'description' => 'El nombre del registro tal como lo dijo la persona, o su id si otra herramienta lo devolvió. Para ventas y gastos, su número.',
+                        ],
+                        'cambios'     => [
+                            'type'                 => 'object',
+                            'description'          => 'Solo los campos que cambian: las claves son los campos de que_puedo_cargar y los valores, los nuevos.',
+                            'additionalProperties' => true,
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['entidad', 'registro', 'cambios'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_baja',
+                'description'  => 'Arma la tarjeta para BORRAR un registro de una entidad de que_puedo_cargar (o anular una venta, o borrar un gasto o una tarea), para que la persona la confirme: NO borra nada. Se ubica igual que en proponer_edicion. La tarjeta dice qué se borra y qué pasa con lo que dependía de eso; contáselo a la persona. NUNCA se borra sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'entidad'     => [
+                            'type'        => 'string',
+                            'description' => 'La entidad, como la devuelve que_puedo_cargar.',
+                        ],
+                        'registro'    => [
+                            'type'        => ['string', 'integer'],
+                            'description' => 'El nombre del registro, o su id si otra herramienta lo devolvió. Para ventas y gastos, su número.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['entidad', 'registro'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_venta',
+                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'items'                => [
+                            'type'        => 'array',
+                            'description' => 'Los renglones de la venta, uno por artículo.',
+                            'minItems'    => 1,
+                            'maxItems'    => 50,
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'articulo'        => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                                    ],
+                                    'articulo_id'     => [
+                                        'type'        => 'integer',
+                                        'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                                    ],
+                                    'cantidad'        => [
+                                        'type'        => 'number',
+                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                    ],
+                                    'precio_unitario' => [
+                                        'type'        => 'number',
+                                        'description' => 'Solo si la persona dictó un precio distinto al de la lista. Mayor a 0.',
+                                    ],
+                                ],
+                                'required'   => ['cantidad'],
+                            ],
+                        ],
+                        'cliente'              => [
+                            'type'        => ['string', 'integer'],
+                            'description' => 'Nombre del cliente (o su id si otra herramienta lo devolvió). Sin cliente es una venta al contado.',
+                        ],
+                        'cobro'                => [
+                            'type'        => 'string',
+                            'enum'        => ['contado', 'cuenta_corriente'],
+                            'description' => 'Cómo se cobra. Sin cliente solo puede ser contado.',
+                        ],
+                        'metodo_de_pago'       => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del método de pago, como en la pantalla de Vender (Efectivo, Transferencia...). Obligatorio con cobro contado.',
+                        ],
+                        'caja'                 => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la caja a la que entra la plata. Si no lo mandás se usa la caja por defecto del método.',
+                        ],
+                        'lista_de_precios'     => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la lista de precios, solo si la persona pidió una distinta a la del cliente.',
+                        ],
+                        'tipo_de_venta'        => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del tipo de venta, solo si el negocio tiene varios cargados (con varios y sin decirlo, la respuesta trae "faltan" con los nombres para que preguntes cuál).',
+                        ],
+                        'descuento_porcentaje' => [
+                            'type'        => 'number',
+                            'description' => 'Descuento sobre el total, en porcentaje (0 a 100).',
+                        ],
+                        'observaciones'        => [
+                            'type' => 'string',
+                        ],
+                        'sucursal'             => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                        ],
+                        'fecha_entrega'        => [
+                            'type'        => 'string',
+                            'description' => 'AAAA-MM-DD, solo si la persona dijo una fecha de entrega.',
+                        ],
+                        'reemplaza_a'          => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['items'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -631,6 +1078,96 @@ class HerramientasDeCarga
                     PropuestaFotoSucursalIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
 
+            /*
+             * Misión asistente-masivas-imagenes-y-remito. Las de categorías y de diseño de PDF las
+             * implementa el constructor B (contrato §6); acá solo se wirean por nombre y firma.
+             */
+            case 'consultar_categorias_sin_imagen':
+                return self::resultado(PropuestaImagenesCategoriasIaHelper::consultar($contexto));
+
+            case 'proponer_imagenes_para_categorias':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaImagenesCategoriasIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            case 'contar_articulos_por_filtro':
+                return self::resultado(FiltroDeArticulosIaHelper::contar_para_la_ia($contexto->owner_id, $input));
+
+            case 'proponer_imagenes_para_articulos':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaImagenesArticulosIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: la masiva SIEMPRE deja tarjeta (ver AUTO_CONFIRMABLES).
+            case 'proponer_actualizacion_masiva':
+                return self::resultado(PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant_message, $input));
+
+            case 'consultar_disenos_de_pdf':
+                return self::resultado(PropuestaDisenoPdfIaHelper::consultar($contexto, EntradaDeCargaIa::valor($input, 'tipo')));
+
+            case 'proponer_cambio_en_diseno_pdf':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaDisenoPdfIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            // Misión cheques-endoso-y-bancos (21/9/2026).
+            case 'consultar_bancos_de_cheques':
+                return self::resultado(PropuestaBancosChequesIaHelper::consultar($contexto));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: unificar bancos SIEMPRE deja tarjeta (ver AUTO_CONFIRMABLES).
+            case 'proponer_unificar_bancos_de_cheques':
+                return self::resultado(PropuestaBancosChequesIaHelper::proponer($contexto, $assistant_message, $input));
+
+
+            /*
+             * Misión asistente-omnisciente (21/9/2026). 🔴 Las cuatro propuestas van SIN
+             * quizas_auto_confirmar(), a propósito: crear, cambiar o borrar datos del negocio, y
+             * vender, lo confirma siempre la persona (ver AUTO_CONFIRMABLES). La venta la implementa
+             * el constructor C (contrato §4); acá solo se wirea por nombre y firma.
+             */
+            case 'que_puedo_cargar':
+                return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad')));
+
+            case 'proponer_alta':
+                return self::resultado(PropuestaGenericaIaHelper::proponer_alta(
+                    $contexto,
+                    $assistant_message,
+                    EntradaDeCargaIa::valor($input, 'entidad'),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
+                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                ));
+
+            case 'proponer_edicion':
+                return self::resultado(PropuestaGenericaIaHelper::proponer_edicion(
+                    $contexto,
+                    $assistant_message,
+                    EntradaDeCargaIa::valor($input, 'entidad'),
+                    EntradaDeCargaIa::valor($input, 'registro'),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
+                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                ));
+
+            case 'proponer_baja':
+                return self::resultado(PropuestaGenericaIaHelper::proponer_baja(
+                    $contexto,
+                    $assistant_message,
+                    EntradaDeCargaIa::valor($input, 'entidad'),
+                    EntradaDeCargaIa::valor($input, 'registro'),
+                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                ));
+
+            case 'proponer_venta':
+                return self::resultado(PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a')));
+
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
 
@@ -642,6 +1179,38 @@ class HerramientasDeCarga
             'content'  => 'Tool desconocida: '.$tool_name,
             'is_error' => true,
         ];
+    }
+
+    /**
+     * `datos` y `cambios` de las genéricas llegan como objeto JSON (array asociativo); cualquier
+     * otra cosa —un string, una lista, nada— se trata como "sin campos" y la propuesta contesta
+     * con lo que falta.
+     *
+     * @param  mixed  $valor
+     * @return array
+     */
+    protected static function objeto_como_array($valor): array
+    {
+        if ($valor instanceof \stdClass) {
+
+            $valor = (array) $valor;
+        }
+
+        if (!is_array($valor)) {
+
+            return [];
+        }
+
+        // Una lista ([["campo", "valor"]]) no es un objeto: se descarta entera.
+        foreach (array_keys($valor) as $clave) {
+
+            if (!is_string($clave)) {
+
+                return [];
+            }
+        }
+
+        return $valor;
     }
 
     /**
@@ -686,6 +1255,17 @@ class HerramientasDeCarga
         $tipo = isset($respuesta['tipo']) ? (string) $respuesta['tipo'] : '';
 
         if (!in_array($tipo, self::AUTO_CONFIRMABLES, true)) {
+
+            return $respuesta;
+        }
+
+        /*
+         * Una propuesta de un tipo auto-confirmable puede pedir igual la confirmación de la persona
+         * cuando ESTA tanda no es inocua: hoy, imágenes de categorías que van a REEMPLAZAR imágenes ya
+         * cargadas (PropuestaImagenesCategoriasIaHelper marca `requiere_confirmacion`). El tipo dice
+         * "en general se puede"; la propuesta dice "esta vez no". Se respeta la propuesta.
+         */
+        if (!empty($respuesta['requiere_confirmacion'])) {
 
             return $respuesta;
         }
@@ -770,6 +1350,68 @@ class HerramientasDeCarga
                 ],
             ],
             'required'   => ['cada', 'unidad'],
+        ];
+    }
+
+    /**
+     * Esquema de `filtros`, compartido por contar_articulos_por_filtro, proponer_imagenes_para_articulos
+     * y proponer_actualizacion_masiva (misión asistente-masivas-imagenes-y-remito). Los campos son
+     * los de FiltroDeArticulosIaHelper::CAMPOS: el enum se arma desde ahí para que un campo nuevo no
+     * quede declarado en un lado y no en el otro. La lista es una constante, así que el orden del
+     * enum es estable entre llamadas (caché de prompt).
+     *
+     * @return array
+     */
+    protected static function esquema_de_filtros(): array
+    {
+        return [
+            'type'        => 'array',
+            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Lista vacía = sin filtro.',
+            'items'       => [
+                'type'       => 'object',
+                'properties' => [
+                    'campo'    => [
+                        'type' => 'string',
+                        'enum' => array_keys(FiltroDeArticulosIaHelper::CAMPOS),
+                    ],
+                    'operador' => [
+                        'type' => 'string',
+                        'enum' => ['igual', 'contiene', 'mayor', 'menor', 'desde', 'hasta', 'en_blanco', 'no_en_blanco'],
+                    ],
+                    'valor'    => [
+                        'type'        => ['string', 'number'],
+                        'description' => 'El nombre, el texto, el número, la fecha AAAA-MM-DD o si/no. No va con en_blanco ni no_en_blanco.',
+                    ],
+                ],
+                'required'   => ['campo', 'operador'],
+            ],
+        ];
+    }
+
+    /**
+     * Esquema de `orden` (misión asistente-masivas-imagenes-y-remito).
+     *
+     * @return array
+     */
+    protected static function esquema_de_orden(): array
+    {
+        return [
+            'type'        => 'string',
+            'enum'        => [FiltroDeArticulosIaHelper::ORDEN_PRIMEROS_CREADOS, FiltroDeArticulosIaHelper::ORDEN_ULTIMOS_CREADOS],
+            'description' => 'primeros_creados (default): del más viejo al más nuevo por fecha de alta ("los primeros N del inventario"). ultimos_creados: del más nuevo al más viejo.',
+        ];
+    }
+
+    /**
+     * Esquema de `limite` (misión asistente-masivas-imagenes-y-remito).
+     *
+     * @return array
+     */
+    protected static function esquema_de_limite(): array
+    {
+        return [
+            'type'        => 'integer',
+            'description' => 'Cuántos artículos como máximo, en el orden pedido ("los primeros 100" = orden primeros_creados, limite 100). Sin límite van todos los que cumplen el filtro.',
         ];
     }
 

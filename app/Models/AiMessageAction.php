@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Model;
  *
  * estado:
  * - 'propuesta': se puede confirmar o cancelar.
+ * - 'en_curso': se está ejecutando en este momento; no se puede confirmar ni cancelar (ver abajo).
  * - 'confirmada': se ejecutó; `resultado` trae el texto y la ruta.
  * - 'cancelada': la persona tocó Cancelar.
  * - 'reemplazada': una corrección posterior armó otra tarjeta para la misma carga.
@@ -31,6 +32,23 @@ class AiMessageAction extends Model
     const HORAS_VENCIMIENTO = 24;
 
     const ESTADO_PROPUESTA   = 'propuesta';
+
+    /**
+     * La tarjeta se está ejecutando AHORA (misión asistente-omnisciente, 21/9/2026).
+     *
+     * Es el candado contra el segundo clic de las cargas que se ejecutan con la transacción del
+     * ejecutor ya cerrada —el ABM genérico y la venta, ver EjecutorAccionesIaHelper::
+     * ejecutar_en_dos_etapas()—. Para las demás no existe: ahí el candado sigue siendo el
+     * `lockForUpdate` sostenido por la transacción que envuelve toda la ejecución.
+     *
+     * Es un estado de paso, de los segundos que tarda la carga: si sale bien queda 'confirmada' y
+     * si falla vuelve a 'propuesta' con su `error_mensaje`, igual que antes. La SPA no lo conoce y
+     * no necesita conocerlo: AccionCard.vue pinta como "cerrada" —sin botones— cualquier estado
+     * que no sea 'propuesta' ni 'confirmada', que es exactamente lo que corresponde mientras la
+     * carga corre.
+     */
+    const ESTADO_EN_CURSO    = 'en_curso';
+
     const ESTADO_CONFIRMADA  = 'confirmada';
     const ESTADO_CANCELADA   = 'cancelada';
     const ESTADO_REEMPLAZADA = 'reemplazada';
@@ -61,6 +79,39 @@ class AiMessageAction extends Model
      * (HerramientasDeCarga::AUTO_CONFIRMABLES).
      */
     const TIPO_FOTO_SUCURSAL = 'foto_sucursal';
+
+    /*
+     * Misión asistente-masivas-imagenes-y-remito (19/9/2026): el asistente opera el catálogo en lote
+     * y los diseños de PDF. Desde acá la foto de sucursal ya NO es la única auto-confirmable: mandar
+     * a buscar imágenes (categorías y artículos) y cambiar un diseño de PDF son cargas inocuas y
+     * reversibles y también entran en HerramientasDeCarga::AUTO_CONFIRMABLES. La actualización
+     * masiva NUNCA: siempre la confirma la persona, esté en la confianza que esté.
+     */
+    const TIPO_IMAGENES_CATEGORIAS  = 'imagenes_categorias';
+    const TIPO_IMAGEN_CATEGORIA     = 'imagen_categoria';
+    const TIPO_IMAGENES_ARTICULOS   = 'imagenes_articulos';
+    const TIPO_ACTUALIZACION_MASIVA = 'actualizacion_masiva';
+    const TIPO_DISENO_PDF           = 'diseno_pdf';
+
+    /*
+     * Misión asistente-omnisciente (21/9/2026): el ABM genérico y la venta. Un alta, una edición o
+     * una baja de cualquier entidad del catálogo de escritura (CatalogoDeEscrituraIaHelper) que se
+     * ejecuta llamando al MISMO controller que usa la pantalla, y una venta por el camino de Vender
+     * (PropuestaVentaIaHelper). 🔴 NINGUNO de los cuatro se auto-confirma, esté la confianza como
+     * esté: crear, cambiar o borrar datos del negocio lo confirma siempre la persona.
+     */
+    const TIPO_ALTA    = 'alta';
+    const TIPO_EDICION = 'edicion';
+    const TIPO_BAJA    = 'baja';
+    const TIPO_VENTA   = 'venta';
+
+    /**
+     * Unificar los bancos de los cheques (misión cheques-endoso-y-bancos, 21/9/2026): crear los
+     * bancos del catálogo a partir de los textos libres y asignárselos a los cheques. Es masiva
+     * (toca N cheques) y NO entra en HerramientasDeCarga::AUTO_CONFIRMABLES: siempre la confirma la
+     * persona.
+     */
+    const TIPO_UNIFICAR_BANCOS = 'unificar_bancos_cheques';
 
     protected $guarded = [];
 

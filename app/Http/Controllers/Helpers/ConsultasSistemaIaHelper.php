@@ -83,6 +83,11 @@ class ConsultasSistemaIaHelper
             ->limit(self::MAX_RESULTS)
             ->get(['id', 'name', 'bar_code', 'provider_code', 'price', 'final_price', 'stock']);
 
+        // Misión asistente-omnisciente (21/9/2026): si el artículo tiene foto, en UNA consulta para
+        // todo el lote. Es lo que le permite al modelo ofrecer mostrarla (mostrar_imagenes_de_articulos)
+        // o decir que no hay, sin adivinar.
+        $con_imagen = self::articulos_con_imagen($articles->pluck('id')->all());
+
         // Aplanamos a un array simple y legible para Claude.
         $result = [];
         foreach ($articles as $article) {
@@ -92,10 +97,45 @@ class ConsultasSistemaIaHelper
                 'codigo'        => (string) ($article->bar_code ?? $article->provider_code ?? ''),
                 'precio'        => $article->final_price !== null ? (float) $article->final_price : (float) $article->price,
                 'stock'         => $article->stock !== null ? (float) $article->stock : 0,
+                'tiene_imagen'  => isset($con_imagen[(int) $article->id]),
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Qué artículos de un lote tienen al menos una imagen, en UNA consulta.
+     *
+     * 🔴 El `imageable_type` es el alias del morph map ('article', ver
+     * AppServiceProvider::boot() → Relation::enforceMorphMap), no la clase: con la clase entera la
+     * consulta no matchea ninguna fila y todo artículo aparece sin foto. Es exactamente lo que
+     * consulta la relación Article::images().
+     *
+     * @param  array<int, int>  $article_ids
+     * @return array<int, bool>  id => true, solo los que tienen imagen
+     */
+    protected static function articulos_con_imagen(array $article_ids): array
+    {
+        $article_ids = array_values(array_unique(array_filter(array_map('intval', $article_ids))));
+
+        if (empty($article_ids)) {
+            return [];
+        }
+
+        $con_imagen = [];
+
+        $ids = DB::table('images')
+            ->where('imageable_type', 'article')
+            ->whereIn('imageable_id', $article_ids)
+            ->distinct()
+            ->pluck('imageable_id');
+
+        foreach ($ids as $id) {
+            $con_imagen[(int) $id] = true;
+        }
+
+        return $con_imagen;
     }
 
     /**
@@ -487,35 +527,89 @@ class ConsultasSistemaIaHelper
     }
 
     /**
-     * Artículos más vendidos del dueño en los últimos N días, con las
-     * unidades vendidas. Excluye ventas borradas (soft delete de sales).
+     * Artículos más vendidos del dueño en una ventana, con las unidades vendidas. Excluye ventas
+     * borradas (soft delete de sales) y, desde la misión asistente-omnisciente (21/9/2026), las
+     * ventas contenedoras de consolidación AFIP —el mismo criterio que quien_compro_un_articulo():
+     * sin él, una consolidación suma las mismas unidades que las ventas que agrupa—.
      *
      * Los ítems de venta viven en la tabla pivot article_purchases
-     * (article_id, sale_id, amount); se agrupan por artículo sumando cantidades.
+     * (article_id, sale_id, amount, price); se agrupan por artículo sumando cantidades.
      *
-     * @param  int  $owner_id  Id del dueño (articles.user_id / sales.user_id).
-     * @param  int  $dias      Ventana de días hacia atrás.
+     * Misión asistente-omnisciente: `desde`/`hasta` mandan si vienen (inclusivos, por día, sobre la
+     * fecha del renglón, que es la de la venta); si no, la ventana de `dias`. Cada fila suma
+     * `articulo_id`, `total_en_pesos` y `unidades_sin_precio` con el MISMO criterio de precio que
+     * quien_compro_un_articulo(): `article_purchases.price` se llena solo cuando la venta es en pesos
+     * (ArticlePurchaseHelper::set_costo_y_price), así que un renglón con `price IS NULL` no vale
+     * cero pesos —no entra al total y se cuenta aparte—. Y `tiene_imagen`, en una consulta para el
+     * lote. `total_vendido` conserva su nombre: es el contrato del canal "sistema:" de admin-api.
+     *
+     * @param  int          $owner_id  Id del dueño (articles.user_id / sales.user_id).
+     * @param  int          $dias      Ventana de días hacia atrás (si no hay desde/hasta).
+     * @param  string|null  $desde     AAAA-MM-DD inclusive; manda sobre `dias`.
+     * @param  string|null  $hasta     AAAA-MM-DD inclusive; manda sobre `dias`.
+     * @param  int          $limite    0 = MAX_RESULTS.
      * @return array<int, array<string, mixed>>
      */
-    public static function mas_vendidos(int $owner_id, int $dias = 30): array
+    public static function mas_vendidos(int $owner_id, int $dias = 30, $desde = null, $hasta = null, int $limite = 0): array
     {
-        $top = DB::table('article_purchases')
+        $limite = self::limite_pedido($limite);
+
+        $query = DB::table('article_purchases')
             ->join('articles', 'article_purchases.article_id', '=', 'articles.id')
             ->join('sales', 'article_purchases.sale_id', '=', 'sales.id')
             ->where('articles.user_id', $owner_id)
-            ->where('article_purchases.created_at', '>=', now()->subDays($dias))
             ->whereNull('sales.deleted_at')
-            ->select('articles.name as nombre', DB::raw('SUM(article_purchases.amount) as total_vendido'))
+            ->where(function ($q) {
+                $q->whereNull('sales.is_consolidacion_facturacion')
+                    ->orWhere('sales.is_consolidacion_facturacion', 0);
+            });
+
+        $dia_desde = self::dia_del_input($desde);
+        $dia_hasta = self::dia_del_input($hasta);
+
+        if (! is_null($dia_desde) || ! is_null($dia_hasta)) {
+            // Rango explícito: semiabierto por día, que es lo mismo que DATE(created_at) BETWEEN
+            // con el índice usable.
+            if (! is_null($dia_desde)) {
+                $query->where('article_purchases.created_at', '>=', $dia_desde . ' 00:00:00');
+            }
+
+            if (! is_null($dia_hasta)) {
+                $query->where('article_purchases.created_at', '<', date('Y-m-d', strtotime($dia_hasta . ' +1 day')) . ' 00:00:00');
+            }
+        } else {
+            $query->where('article_purchases.created_at', '>=', now()->subDays($dias));
+        }
+
+        $top = $query
+            ->select(
+                'articles.id as articulo_id',
+                'articles.name as nombre',
+                DB::raw('SUM(article_purchases.amount) as total_vendido'),
+                /*
+                 * 🔴 UN RENGLÓN SIN PRECIO NO VALE CERO PESOS: no entra al total y se cuenta aparte
+                 * (ver el docblock y quien_compro_un_articulo()).
+                 */
+                DB::raw('COALESCE(SUM(CASE WHEN article_purchases.price IS NOT NULL THEN article_purchases.amount * article_purchases.price ELSE 0 END), 0) as total_en_pesos'),
+                DB::raw('COALESCE(SUM(CASE WHEN article_purchases.price IS NULL THEN article_purchases.amount ELSE 0 END), 0) as unidades_sin_precio')
+            )
             ->groupBy('articles.id', 'articles.name')
             ->orderByDesc('total_vendido')
-            ->limit(self::MAX_RESULTS)
+            ->orderBy('articles.id')
+            ->limit($limite)
             ->get();
+
+        $con_imagen = self::articulos_con_imagen($top->pluck('articulo_id')->all());
 
         $result = [];
         foreach ($top as $row) {
             $result[] = [
-                'nombre'        => (string) $row->nombre,
-                'total_vendido' => (float) $row->total_vendido,
+                'nombre'              => (string) $row->nombre,
+                'total_vendido'       => (float) $row->total_vendido,
+                'articulo_id'         => (int) $row->articulo_id,
+                'total_en_pesos'      => round((float) $row->total_en_pesos, 2),
+                'unidades_sin_precio' => (float) $row->unidades_sin_precio,
+                'tiene_imagen'        => isset($con_imagen[(int) $row->articulo_id]),
             ];
         }
 

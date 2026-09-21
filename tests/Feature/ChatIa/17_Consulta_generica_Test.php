@@ -92,7 +92,16 @@ class Consulta_generica_Test extends TestCase
     }
 
     /**
-     * Una entidad fuera de la whitelist no se consulta, y la respuesta dice cuáles sí.
+     * Una entidad fuera del catálogo no se consulta, y la respuesta dice cuáles sí.
+     *
+     * Misión asistente-omnisciente (21/9/2026): el catálogo pasó a derivarse del esquema y dos de
+     * las exclusiones que este test fijaba cambiaron A PROPÓSITO. `current_acount` estaba afuera
+     * porque el buscador de la pantalla exigía `scopeWithAll()`; el motor nuevo consulta con
+     * `DB::table()` y no lo necesita, así que ENTRA (con descripción curada). `movimiento_caja`
+     * estaba afuera por no tener `user_id`; ahora existe `movimiento_de_caja`, scopeada por su caja
+     * (el nombre viejo sigue sin existir). `user` y `article_purchase` siguen afuera: `users` no
+     * tiene `user_id` (los empleados van por `empleado`, con columnas estrictas) y
+     * `article_purchases` tampoco (los renglones van por `renglon_de_venta`, sobre `article_sale`).
      *
      * @group chat-ia
      * @test
@@ -105,9 +114,10 @@ class Consulta_generica_Test extends TestCase
         $this->assertArrayHasKey('entidades_validas', $resultado);
         $this->assertArrayNotHasKey('registros', $resultado);
 
-        // Y las que el criterio dejó afuera a propósito siguen afuera.
-        $this->assertFalse(CatalogoDeDatosIaHelper::acepta('movimiento_caja'), 'movimiento_cajas no tiene user_id.');
-        $this->assertFalse(CatalogoDeDatosIaHelper::acepta('current_acount'), 'CurrentAcount no tiene scopeWithAll().');
+        // Las que siguen afuera, y las dos que entraron con el motor nuevo (ver el docblock).
+        $this->assertFalse(CatalogoDeDatosIaHelper::acepta('movimiento_caja'), 'El nombre viejo no existe: la entidad es movimiento_de_caja.');
+        $this->assertTrue(CatalogoDeDatosIaHelper::acepta('movimiento_de_caja'), 'Scopeada por su caja.');
+        $this->assertTrue(CatalogoDeDatosIaHelper::acepta('current_acount'), 'Ya no depende de scopeWithAll().');
         $this->assertFalse(CatalogoDeDatosIaHelper::acepta('user'));
         $this->assertFalse(CatalogoDeDatosIaHelper::acepta('article_purchase'));
     }
