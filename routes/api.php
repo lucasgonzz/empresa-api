@@ -385,6 +385,7 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 
     Route::put('sale/{sale_id}/delivery-info', 'SaleController@update_delivery_info');
+    Route::get('sale/{sale_id}/ticket-2-logo', 'SaleController@ticket_logo_raster');
     Route::post('sale/{sale_id}/send-client-mail', 'SaleController@send_client_mail');
     Route::post('sale/send-client-mail-bulk', 'SaleController@send_client_mail_bulk');
     Route::put('sale/{sale_id}/etiqueta-sender', 'SaleController@update_etiqueta_sender');
