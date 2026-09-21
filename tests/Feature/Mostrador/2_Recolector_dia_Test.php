@@ -313,6 +313,38 @@ class Recolector_dia_Test extends MostradorTestCase
     }
 
     /**
+     * `imagen_url` sale de ArticleHelper::getFirstImage(), a través del morph map
+     * 'article' que fuerza AppServiceProvider::boot() — no alcanza con que la clave
+     * exista en null: tiene que resolver una foto real de punta a punta cuando el
+     * artículo la tiene, en mas_vendidos (el caso puntual que reportó Lucas: la foto no
+     * aparecía en "Lo más vendido") y en volvieron_a_venderse (misión
+     * mostrador-fotos-y-modales, 21/9/2026, que le sumó imagen_url a esta lista).
+     *
+     * @group mostrador
+     * @test
+     */
+    public function mas_vendidos_y_volvio_a_venderse_traen_la_foto_real_si_el_articulo_tiene_una()
+    {
+        $this->sembrar_el_dia();
+        $this->imagen_de($this->s['destornillador'], 'https://cdn.test.local/storage/destornillador.webp');
+
+        $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
+        $a = $h['articulos'];
+
+        // Destornillador es el más vendido (4 unidades) y también el único que volvió
+        // a venderse (tras 80 días): las dos listas tienen que traer la misma foto.
+        $this->assertSame($this->s['destornillador']->id, $a['mas_vendidos'][0]['article_id']);
+        $this->assertSame('https://cdn.test.local/storage/destornillador.webp', $a['mas_vendidos'][0]['imagen_url']);
+
+        $this->assertCount(1, $a['volvieron_a_venderse']);
+        $this->assertSame($this->s['destornillador']->id, $a['volvieron_a_venderse'][0]['article_id']);
+        $this->assertSame('https://cdn.test.local/storage/destornillador.webp', $a['volvieron_a_venderse'][0]['imagen_url']);
+
+        // Pinza no tiene foto: sigue viajando null, no un string vacío ni un error.
+        $this->assertNull($a['mas_vendidos'][2]['imagen_url']);
+    }
+
+    /**
      * @group mostrador
      * @test
      */
@@ -340,7 +372,7 @@ class Recolector_dia_Test extends MostradorTestCase
         $this->assertEquals(4.0, $a['volvieron_a_venderse'][0]['cantidad']);
 
         $this->assertSame([
-            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 5, 'sucursal' => null],
+            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 5, 'sucursal' => null, 'imagen_url' => null],
         ], $a['quedaron_sin_stock']);
 
         // Martillo (0 < 5) y Cuchara (4 < 5).
@@ -458,8 +490,8 @@ class Recolector_dia_Test extends MostradorTestCase
         $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
 
         $this->assertSame([
-            ['article_id' => $martillo->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 4, 'sucursal' => null],
-            ['article_id' => $pinza->id, 'nombre' => 'Pinza', 'stock' => 0.0, 'stock_minimo' => 3, 'sucursal' => 'Norte'],
+            ['article_id' => $martillo->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 4, 'sucursal' => null, 'imagen_url' => null],
+            ['article_id' => $pinza->id, 'nombre' => 'Pinza', 'stock' => 0.0, 'stock_minimo' => 3, 'sucursal' => 'Norte', 'imagen_url' => null],
         ], $h['articulos']['quedaron_sin_stock']);
     }
 

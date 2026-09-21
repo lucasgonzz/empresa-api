@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\contabilidad;
 
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Cheque;
 use App\Models\MovimientoCaja;
@@ -578,8 +579,8 @@ class FlujoCajaHelper
      * prompt). Estados exactos replicados de `ChequeController::index()` (única fuente de verdad
      * de estos estados en el sistema, no se inventan acá):
      * - `estado_manual = 'cobrado'` o `'rechazado'` → estado final, se excluye.
-     * - `endosado_a_provider_id` no nulo → el cheque ya salió de la cartera (fue endosado a un
-     *   proveedor), se excluye.
+     * - endosado (a un proveedor o en un gasto, ver ChequeHelper::sin_endosar()) → el cheque ya
+     *   salió de la cartera, se excluye.
      * - `fecha_pago` es la fecha a partir de la cual el cheque es cobrable (no hay una columna de
      *   "vencimiento" separada en el modelo); se toma como la fecha de vencimiento de este
      *   calendario. Solo se listan los que todavía están en el futuro respecto de hoy.
@@ -625,14 +626,20 @@ class FlujoCajaHelper
     {
         $hoy = Carbon::today()->toDateString();
 
-        return Cheque::query()
-            ->where('user_id', $user_id)
-            ->where('tipo', 'recibido')
-            ->whereNull('endosado_a_provider_id')
+        /*
+         * "No endosado" lo decide ChequeHelper::sin_endosar(), no un whereNull escrito acá: desde
+         * la misión cheques-endoso-y-bancos (21/9/2026) un recibido sale de cartera por DOS columnas
+         * (endosado a un proveedor, o endosado en un gasto), y este reporte miraba solo la primera.
+         */
+        $q = Cheque::query()
+            ->where('cheques.user_id', $user_id)
+            ->where('cheques.tipo', 'recibido')
             ->where(function ($sub) {
-                $sub->whereNull('estado_manual')->orWhereNotIn('estado_manual', ['cobrado', 'rechazado']);
+                $sub->whereNull('cheques.estado_manual')->orWhereNotIn('cheques.estado_manual', ['cobrado', 'rechazado']);
             })
-            ->whereDate('fecha_pago', '>', $hoy);
+            ->whereDate('cheques.fecha_pago', '>', $hoy);
+
+        return ChequeHelper::sin_endosar($q);
     }
 
     /**
