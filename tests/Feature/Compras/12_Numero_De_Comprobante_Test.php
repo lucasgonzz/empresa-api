@@ -2,8 +2,10 @@
 
 namespace Tests\Feature\Compras;
 
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\ProviderOrder;
+use App\Models\ProviderOrderAfipTicket;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 
 /**
@@ -52,6 +54,11 @@ class Numero_De_Comprobante_Test extends ComprasTestCase
     protected function tearDown(): void
     {
         foreach ($this->compras_creadas as $compra_id) {
+
+            // Defensivo: el test 4 cuelga un ProviderOrderAfipTicket de la compra a mano (sin pasar
+            // por el modo de facturacion). No tiene FK con cascada, asi que si no se borra acá
+            // explícitamente queda huérfano para siempre en el fixture compartido.
+            ProviderOrderAfipTicket::where('provider_order_id', $compra_id)->delete();
 
             CurrentAcount::where('provider_order_id', $compra_id)->delete();
 
@@ -238,6 +245,81 @@ class Numero_De_Comprobante_Test extends ComprasTestCase
             'Compra N°'.$order->num.' (REM-0099)',
             $current_acount_despues->detalle,
             'al editar la compra agregandole el comprobante, el detalle del movimiento existente se actualiza'
+        );
+    }
+
+    /**
+     * Test 4 — el endpoint que arma el listado de la cuenta corriente manda `provider_order` con
+     * sus facturas ARCA, para que el SPA pueda pintar el badge verde (`List.vue::facturas_arca_de()`).
+     *
+     * Nace de un hallazgo de la verificación de interfaz (21/9/2026): hay DOS controllers con
+     * nombres casi idénticos — `CurrentAcountController` (que sí tiene un método `index()`, pero su
+     * ruta está COMENTADA en `routes/api.php:603`) y `CreditAccountController` (cuya ruta SÍ está
+     * activa, `routes/api.php:604`, con una firma de parámetros distinta:
+     * `{credit_account_id}/{cantidad_movimientos}`, no `{model_name}/{model_id}/{months_ago}`). El
+     * primer intento de este cambio agregó el eager-load de `provider_order.provider_order_afip_tickets`
+     * al controller equivocado (código muerto): el dato quedaba bien en la base y el backend lo leía
+     * bien por Tinker contra el modelo directo, pero el endpoint real que consume el SPA nunca lo
+     * mandaba — silencioso, sin error, el badge simplemente no tenía con qué pintarse. Este test
+     * pega al endpoint real (mismo que usa `common/current-acounts/Index.vue`) para que un cambio
+     * futuro que rompa este eager-load (en cualquiera de los dos controllers) lo agarre PHPUnit y no
+     * dependa de que alguien lo note mirando la pantalla.
+     *
+     * @group compras
+     * @test
+     */
+    public function el_endpoint_de_la_cuenta_corriente_manda_las_facturas_arca_de_la_compra()
+    {
+        $this->set_condicion_iva('RRII');
+
+        $escenario = $this->crear_compra_del_escenario();
+
+        $order = $escenario['order'];
+
+        // El ticket se cuelga directo por Eloquent, sin pasar por el modo de facturacion: lo único
+        // que este test verifica es que el endpoint DE LISTADO lo entregue anidado, no cómo se creó.
+        $ticket = ProviderOrderAfipTicket::create([
+            'provider_order_id' => $order->id,
+            'code'               => '0001-00004567',
+            'issued_at'          => now(),
+            'total'              => 1210,
+            'total_iva'          => 210,
+        ]);
+
+        $credit_account = CreditAccount::where('model_name', 'provider')
+                                        ->where('model_id', $order->provider_id)
+                                        ->where('moneda_id', $order->moneda_id)
+                                        ->first();
+
+        $this->assertNotNull(
+            $credit_account,
+            'guard: la compra tiene que haber generado (o reusado) la credit_account del proveedor en esa moneda'
+        );
+
+        $response = $this->getJson('api/current-acount/'.$credit_account->id.'/50');
+
+        $response->assertStatus(200);
+
+        $movimiento = collect($response->json('models'))->firstWhere('provider_order_id', $order->id);
+
+        $this->assertNotNull(
+            $movimiento,
+            'el movimiento de esta compra tiene que estar en la respuesta del endpoint de listado'
+        );
+
+        $this->assertArrayHasKey(
+            'provider_order',
+            $movimiento,
+            'el endpoint tiene que mandar la compra anidada (eager-load), no solo el provider_order_id suelto'
+        );
+
+        $this->assertNotNull($movimiento['provider_order']);
+
+        $codigos = collect($movimiento['provider_order']['provider_order_afip_tickets'])->pluck('code');
+
+        $this->assertTrue(
+            $codigos->contains('0001-00004567'),
+            'el ticket ARCA cargado en la compra tiene que venir en provider_order.provider_order_afip_tickets'
         );
     }
 }

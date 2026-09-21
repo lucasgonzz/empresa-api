@@ -21,6 +21,7 @@ class CreditAccountController extends Controller
                             ->with('pagado_por')
                             ->with('cheques')
                             ->with('sale.afip_tickets', 'afip_ticket')
+                            ->with('provider_order.provider_order_afip_tickets')
                             // ->get();
                             ->get();
 
