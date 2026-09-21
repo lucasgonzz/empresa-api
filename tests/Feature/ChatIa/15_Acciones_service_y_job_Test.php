@@ -693,12 +693,14 @@ class Acciones_service_y_job_Test extends TestCase
         // asistente-masivas-imagenes-y-remito (19/9/2026: consultar_categorias_sin_imagen,
         // proponer_imagenes_para_categorias, contar_articulos_por_filtro,
         // proponer_imagenes_para_articulos, proponer_actualizacion_masiva, consultar_disenos_de_pdf,
-        // proponer_cambio_en_diseno_pdf). El número se toca SOLO cuando se
-        // agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es
-        // que algo se declaró (o se borró) de más.
-        $this->assertCount(20, HerramientasDeCarga::definiciones());
+        // proponer_cambio_en_diseno_pdf) + las 5 de asistente-omnisciente (21/9/2026:
+        // que_puedo_cargar, proponer_alta, proponer_edicion, proponer_baja, proponer_venta). El
+        // número se toca SOLO cuando se agrega o se saca una herramienta a propósito: si se mueve
+        // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
+        $this->assertCount(25, HerramientasDeCarga::definiciones());
 
-        // Y las siete nuevas van al FINAL y en este orden: son el prefijo del caché de prompt.
+        // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
+        // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
         $this->assertSame(
             [
                 'consultar_categorias_sin_imagen',
@@ -709,7 +711,19 @@ class Acciones_service_y_job_Test extends TestCase
                 'consultar_disenos_de_pdf',
                 'proponer_cambio_en_diseno_pdf',
             ],
-            array_slice(HerramientasDeCarga::nombres(), 13)
+            array_slice(HerramientasDeCarga::nombres(), 13, 7)
+        );
+
+        // ...y las cinco de asistente-omnisciente después de ellas.
+        $this->assertSame(
+            [
+                'que_puedo_cargar',
+                'proponer_alta',
+                'proponer_edicion',
+                'proponer_baja',
+                'proponer_venta',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 20)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

@@ -804,6 +804,10 @@ class HerramientasDeCarga
                             'type'        => 'string',
                             'description' => 'Nombre de la lista de precios, solo si la persona pidió una distinta a la del cliente.',
                         ],
+                        'tipo_de_venta'        => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del tipo de venta, solo si el negocio tiene varios cargados (con varios y sin decirlo, la respuesta trae "faltan" con los nombres para que preguntes cuál).',
+                        ],
                         'descuento_porcentaje' => [
                             'type'        => 'number',
                             'description' => 'Descuento sobre el total, en porcentaje (0 a 100).',

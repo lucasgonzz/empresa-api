@@ -338,6 +338,11 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
         // Las claves que ArticleController::store() itera sin guarda.
         $this->assertSame([], $tarjeta->datos['payload']['tags']);
         $this->assertSame([], $tarjeta->datos['payload']['price_types']);
+        // Los sí/no que la persona no dijo van como nace la ficha (src/models/article.js), no como
+        // el default de la columna: "aplica el margen del proveedor" apagado, "publicado" prendido.
+        $this->assertSame(0, $tarjeta->datos['payload']['apply_provider_percentage_gain']);
+        $this->assertSame(1, $tarjeta->datos['payload']['online']);
+        $this->assertSame(0, $tarjeta->datos['payload']['es_insumo']);
 
         $confirmacion = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
 

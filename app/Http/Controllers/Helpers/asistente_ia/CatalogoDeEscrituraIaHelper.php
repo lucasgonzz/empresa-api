@@ -242,6 +242,10 @@ class CatalogoDeEscrituraIaHelper
      *   de_sistema_editables          → columnas de sistema que ESTA pantalla sí edita (la fecha
      *                                   de un gasto es created_at). Opcional.
      *   claves_de_pantalla            → claves que la SPA manda siempre y el controller itera.
+     *   defaults_de_pantalla          → valor con el que la SPA manda un sí/no que la persona no
+     *                                   tocó, cuando NO coincide con el default de la columna
+     *                                   (src/models/<modelo>.js). Opcional; el resto va con el
+     *                                   default de la columna, o 0.
      *   ruta                          → pantalla donde ver lo registrado ({name, params, texto},
      *                                   la forma que lee AccionCard.vue), o null.
      *   aviso_de_baja / aviso_de_alta → texto fijo de la tarjeta.
@@ -272,6 +276,8 @@ class CatalogoDeEscrituraIaHelper
                 'provider_price_list_id', 'cost_in_dollars', 'provider_cost_in_dollars', 'percentage_gain_blanco', 'costo_mano_de_obra',
             ],
             'claves_de_pantalla' => ['price_types' => [], 'tags' => [], 'price_type_monedas' => [], 'addresses' => [], 'childrens' => []],
+            // La ficha nace con "aplica el margen del proveedor" APAGADO aunque la columna tenga default 1.
+            'defaults_de_pantalla' => ['apply_provider_percentage_gain' => 0],
             'ruta'               => ['name' => 'article', 'params' => [], 'texto' => 'Ver en el Listado'],
             'aviso_de_baja'      => 'El artículo va a la papelera (se puede restaurar desde ABM > Papelera). Si está publicado en Tienda Nube, también se saca de ahí.',
             'aviso_de_alta'      => null,
@@ -356,6 +362,8 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => ['apply_percentage_on_existing_articles'],
             'claves_de_pantalla' => ['categories' => [], 'sub_categories' => [], 'childrens' => []],
+            // El formulario nace con "incluir en la lista de precios de Excel" prendido (la columna no tiene default).
+            'defaults_de_pantalla' => ['incluir_en_lista_de_precios_de_excel' => 1],
             'ruta'               => ['name' => 'abm', 'params' => ['view' => 'precios', 'sub_view' => 'tipos-de-precio'], 'texto' => 'Ver en ABM'],
             'aviso_de_baja'      => 'Se borra la lista y los artículos dejan de tener precio en ella.',
             'aviso_de_alta'      => 'Si la cuenta usa listas de precio, los precios de los artículos se recalculan en segundo plano.',
@@ -482,6 +490,8 @@ class CatalogoDeEscrituraIaHelper
             'operaciones'        => null,
             'solo_lectura'       => [],
             'claves_de_pantalla' => ['categories' => []],
+            // El formulario nace con "comisión al cobrar la venta" apagada aunque la columna tenga default 1.
+            'defaults_de_pantalla' => ['commission_after_pay_sale' => 0],
             'ruta'               => ['name' => 'client', 'params' => ['view' => 'vendedores'], 'texto' => 'Ver en Vendedores'],
             'aviso_de_baja'      => 'Los clientes y las ventas que lo tenían asignado quedan sin vendedor.',
             'aviso_de_alta'      => null,
@@ -2073,16 +2083,29 @@ class CatalogoDeEscrituraIaHelper
             return $entidad;
         }
 
-        // Alias por etiqueta: "proveedores", "proveedor", "categoría"...
+        // Alias por etiqueta, sin acentos: "proveedores", "proveedor", "categoría", "articulos"...
+        $sin_acentos = self::sin_acentos($entidad);
+
         foreach (self::ENTIDADES as $nombre => $curada) {
 
-            if (in_array($entidad, [mb_strtolower($curada['etiqueta']), mb_strtolower($curada['singular'])], true)) {
+            $etiquetas = [self::sin_acentos(mb_strtolower($curada['etiqueta'])), self::sin_acentos(mb_strtolower($curada['singular']))];
+
+            if (in_array($sin_acentos, $etiquetas, true)) {
 
                 return $nombre;
             }
         }
 
         return $entidad;
+    }
+
+    /**
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function sin_acentos(string $texto): string
+    {
+        return strtr($texto, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ñ' => 'n', 'ü' => 'u']);
     }
 
     /**

@@ -347,6 +347,8 @@ class Catalogo_de_escritura_Test extends EmpresaTestCase
         $this->assertSame('provider', Catalogo::normalizar_entidad('Proveedores'));
         $this->assertSame('provider', Catalogo::normalizar_entidad('proveedor'));
         $this->assertSame('category', Catalogo::normalizar_entidad('categoría'));
+        $this->assertSame('category', Catalogo::normalizar_entidad('categorias'));
+        $this->assertSame('article', Catalogo::normalizar_entidad('Artículos'));
         $this->assertSame('sub_category', Catalogo::normalizar_entidad('sub-category'));
         $this->assertSame('provider', Catalogo::que_puedo_cargar('proveedores')['entidad']);
 

@@ -490,7 +490,7 @@ class Guardas_de_las_cargas_genericas_Test extends EmpresaTestCase
         // proponer_venta con el input_schema del contrato §4.
         $venta = $definiciones['proponer_venta']['input_schema'];
         $this->assertSame(['items'], $venta['required']);
-        foreach (['items', 'cliente', 'cobro', 'metodo_de_pago', 'caja', 'lista_de_precios', 'descuento_porcentaje', 'observaciones', 'sucursal', 'fecha_entrega', 'reemplaza_a'] as $propiedad) {
+        foreach (['items', 'cliente', 'cobro', 'metodo_de_pago', 'caja', 'lista_de_precios', 'tipo_de_venta', 'descuento_porcentaje', 'observaciones', 'sucursal', 'fecha_entrega', 'reemplaza_a'] as $propiedad) {
             $this->assertArrayHasKey($propiedad, $venta['properties'], $propiedad);
         }
         $this->assertSame(['contado', 'cuenta_corriente'], $venta['properties']['cobro']['enum']);

@@ -837,8 +837,9 @@ class PropuestaGenericaIaHelper
     // -------------------------------------------------------------------------------------------
 
     /**
-     * El payload del alta: lo pedido, más los sí/no que la pantalla manda siempre (0, o el default
-     * de la columna), más las claves de pantalla (`price_types: []`...).
+     * El payload del alta: lo pedido, más los sí/no que la pantalla manda siempre (con el valor
+     * con el que nace el formulario si está curado, si no el default de la columna, si no 0), más
+     * las claves de pantalla (`price_types: []`...).
      *
      * @param  array  $declaracion
      * @param  array  $pedidos
@@ -848,6 +849,8 @@ class PropuestaGenericaIaHelper
     {
         $payload = $pedidos;
 
+        $defaults = isset($declaracion['defaults_de_pantalla']) ? $declaracion['defaults_de_pantalla'] : [];
+
         foreach ($declaracion['campos'] as $columna => $campo) {
 
             if (array_key_exists($columna, $payload) || !in_array(Catalogo::OP_ALTA, $campo['operaciones'], true)) {
@@ -855,7 +858,11 @@ class PropuestaGenericaIaHelper
                 continue;
             }
 
-            if ($campo['tipo'] === 'checkbox') {
+            if (array_key_exists($columna, $defaults)) {
+
+                $payload[$columna] = $defaults[$columna];
+
+            } elseif ($campo['tipo'] === 'checkbox') {
 
                 $payload[$columna] = is_null($campo['default']) ? 0 : (int) $campo['default'];
             }
