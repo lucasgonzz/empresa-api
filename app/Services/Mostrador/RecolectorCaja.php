@@ -2,6 +2,7 @@
 
 namespace App\Services\Mostrador;
 
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\agenda\AgendaHelper;
 use App\Http\Controllers\Helpers\caja\CajaLiquidacionHelper;
 use App\Http\Controllers\Helpers\contabilidad\FlujoCajaHelper;
@@ -549,22 +550,24 @@ class RecolectorCaja extends RecolectorBase
     }
 
     /**
-     * Cheques recibidos que siguen en mano: sin marca manual (cobrado o rechazado) y sin endosar
-     * a un proveedor. Es la partición de ChequeController::index(), incluido que un endoso se
-     * reconoce por un endosado_a_provider_id cargado (ni null ni 0).
+     * Cheques recibidos que siguen en mano: sin marca manual (cobrado o rechazado) y sin endosar.
+     * Es la partición de ChequeController::index().
+     *
+     * "Sin endosar" lo decide ChequeHelper::sin_endosar() y no una condición escrita acá: desde la
+     * misión cheques-endoso-y-bancos (21/9/2026) un recibido sale de cartera por DOS columnas
+     * (endosado a un proveedor, o endosado en un gasto), y este informe repetía la primera a mano.
      *
      * @param User $owner
      * @return \Illuminate\Database\Query\Builder
      */
     protected function consulta_cheques_recibidos(User $owner)
     {
-        return DB::table('cheques')
+        $q = DB::table('cheques')
             ->where('cheques.user_id', $owner->id)
             ->where('cheques.tipo', 'recibido')
-            ->whereNull('cheques.estado_manual')
-            ->where(function ($q) {
-                $q->whereNull('cheques.endosado_a_provider_id')->orWhere('cheques.endosado_a_provider_id', 0);
-            });
+            ->whereNull('cheques.estado_manual');
+
+        return ChequeHelper::sin_endosar($q);
     }
 
     /**

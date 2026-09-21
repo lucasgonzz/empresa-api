@@ -6,6 +6,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -94,6 +95,30 @@ class CurrentAcountController extends Controller
 
             return response()->json([
                 'message' => 'Las siguientes cajas nunca se abrieron: '.implode(', ', $cajas_sin_apertura).'. Hay que abrirlas para poder registrar el pago.',
+            ], 422);
+        }
+
+        /*
+         * Los endosos de la fila de pago (misión cheques-endoso-y-bancos, 21/9/2026): una fila de
+         * tipo cheque con `cheque_id` endosa ese cheque recibido en vez de crear uno nuevo. Se
+         * valida ACA, por el mismo motivo que las cajas: el cheque se marca adentro de
+         * attachPaymentMethods(), con el pago ya creado, y una fila que no se puede endosar tiene
+         * que frenar antes de escribir nada. Y solo en un pago a PROVEEDOR: un cobro a un cliente
+         * no cambia el cheque de manos.
+         */
+        if ($request->model_name != 'provider' && ChequeHelper::payload_pide_endoso($request->current_acount_payment_methods)) {
+
+            return response()->json([
+                'message' => 'Un cheque recibido se endosa en un pago a un proveedor o en un gasto, no en un cobro a un cliente.',
+            ], 422);
+        }
+
+        $problemas_de_endoso = ChequeHelper::problemas_de_endoso_en_payload($request->current_acount_payment_methods, $this->userId());
+
+        if (count($problemas_de_endoso)) {
+
+            return response()->json([
+                'message' => implode('. ', $problemas_de_endoso).'.',
             ], 422);
         }
 
