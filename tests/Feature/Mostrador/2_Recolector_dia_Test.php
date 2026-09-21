@@ -340,7 +340,7 @@ class Recolector_dia_Test extends MostradorTestCase
         $this->assertEquals(4.0, $a['volvieron_a_venderse'][0]['cantidad']);
 
         $this->assertSame([
-            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 5, 'sucursal' => null],
+            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 5, 'sucursal' => null, 'imagen_url' => null],
         ], $a['quedaron_sin_stock']);
 
         // Martillo (0 < 5) y Cuchara (4 < 5).
@@ -458,8 +458,8 @@ class Recolector_dia_Test extends MostradorTestCase
         $h = (new RecolectorDia())->recolectar($this->comercio, $this->ayer);
 
         $this->assertSame([
-            ['article_id' => $martillo->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 4, 'sucursal' => null],
-            ['article_id' => $pinza->id, 'nombre' => 'Pinza', 'stock' => 0.0, 'stock_minimo' => 3, 'sucursal' => 'Norte'],
+            ['article_id' => $martillo->id, 'nombre' => 'Martillo', 'stock' => 0.0, 'stock_minimo' => 4, 'sucursal' => null, 'imagen_url' => null],
+            ['article_id' => $pinza->id, 'nombre' => 'Pinza', 'stock' => 0.0, 'stock_minimo' => 3, 'sucursal' => 'Norte', 'imagen_url' => null],
         ], $h['articulos']['quedaron_sin_stock']);
     }
 
