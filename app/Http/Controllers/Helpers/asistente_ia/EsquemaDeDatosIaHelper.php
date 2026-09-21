@@ -97,6 +97,45 @@ class EsquemaDeDatosIaHelper
     const COLUMNAS_SENSIBLES = '/pass|token|secret|api_key|clave|embedding|cert|private|credential|_key$|^key$|hash|cookie|session|access_|refresh|bypass|verification/i';
 
     /**
+     * LA CUARTA LISTA NEGRA: columna => por qué no sale, pero SOLO en esa tabla.
+     *
+     * Existe para no ablandar `COLUMNAS_SENSIBLES`, que se aplica a las ciento y pico de tablas:
+     * hacer que atrape `_client_id` o `username` allá afuera se llevaría puestas decenas de
+     * columnas legítimas. Cuando una tabla concreta tiene una columna concreta que no matchea el
+     * regex y aun así no tiene que salir, se nombra acá.
+     *
+     * `online_configurations` (revisada columna por columna el 21/9/2026 contra
+     * `information_schema`, 77 columnas): el regex ya atrapa TODOS los secretos de verdad —
+     * `mail_password` (pass), `google_client_secret` (secret), `mp_access_token` y
+     * `zippin_access_token` (access_), `mp_refresh_token` y `zippin_refresh_token` (token/refresh),
+     * `mp_public_key` (_key$) y los tres `*_token_expires_at` (token)—. Lo que se le escapa son
+     * las cuatro de abajo: ninguna es un secreto, pero son la otra mitad de un par de credenciales
+     * o el identificador de una cuenta de un tercero, y ninguna le contesta nada a un comerciante.
+     *
+     * @var array<string, array<string, string>>
+     */
+    const COLUMNAS_EXCLUIDAS_POR_TABLA = [
+        'online_configurations' => [
+            'mail_username'     => 'usuario del SMTP: es la otra mitad de mail_password, que ya no sale',
+            'google_client_id'  => 'mitad publica de la credencial de Google, no le contesta nada a un comerciante',
+            'mp_user_id'        => 'identificador de la cuenta de Mercado Pago, no es un dato del negocio',
+            'zippin_account_id' => 'identificador de la cuenta de Zipnova, no es un dato del negocio',
+        ],
+        'afip_tickets' => [
+            /*
+             * Estas no se filtran por sensibles sino por TAMAÑO: son el XML crudo que va y viene
+             * con ARCA y los detalles serializados. Una sola fila puede pesar más que la página
+             * entera de veinte registros. Igual quedan afuera por `solo_campos`; están acá para que
+             * no entren si alguien alguna vez saca esa lista.
+             */
+            'request'                        => 'XML crudo del pedido a ARCA: enorme y sin valor para el dueño',
+            'response'                       => 'XML crudo de la respuesta de ARCA: enorme y sin valor para el dueño',
+            'iva_detalle_enviado_json'       => 'detalle de IVA serializado (longtext)',
+            'importe_personalizado_ivas_json' => 'importes personalizados serializados (longtext)',
+        ],
+    ];
+
+    /**
      * LA LISTA NEGRA DE TABLAS: tabla => por qué no es un dato del negocio.
      *
      * Revisadas una por una contra `SELECT DISTINCT table_name FROM information_schema.columns
@@ -153,7 +192,6 @@ class EsquemaDeDatosIaHelper
         'user_configurations'                => 'preferencias de la cuenta (anchos de panel, flags de pantalla)',
         'filter_histories'                   => 'historial de filtros usados (preferencia de pantalla)',
         'etiqueta_medidas'                   => 'medidas de impresion de etiquetas: se siembran solas al crear la cuenta, no las carga nadie',
-        'online_configurations'              => 'configuracion de la tienda: credenciales SMTP y de plataformas mezcladas con sesenta flags de pantalla',
         'permission_beta_user'               => 'permisos (pivot sin contenido)',
         'permission_empresa_user'            => 'permisos (pivot sin contenido)',
         'permission_user'                    => 'permisos (pivot sin contenido)',
@@ -328,7 +366,7 @@ class EsquemaDeDatosIaHelper
         'tienda online' => [
             'orders', 'article_order', 'buyers', 'carts', 'cupons', 'delivery_zones', 'delivery_days',
             'payment_methods', 'messages', 'questions', 'calls', 'titles', 'schedules', 'envios', 'meli_orders',
-            'meli_buyers', 'tienda_nube_orders', 'business_hours_configs',
+            'meli_buyers', 'tienda_nube_orders', 'business_hours_configs', 'online_configurations',
         ],
         'facturacion' => ['afip_information', 'retenciones_sufridas'],
         'produccion' => [
@@ -368,6 +406,47 @@ class EsquemaDeDatosIaHelper
                 'cliente'   => ['tabla' => 'clients',   'columna_id' => 'client_id',   'campo' => 'name'],
                 'proveedor' => ['tabla' => 'providers', 'columna_id' => 'provider_id', 'campo' => 'name'],
             ],
+        ],
+        /*
+         * LA CONFIGURACIÓN DE LA TIENDA ONLINE, que hasta el 21/9/2026 estaba en TABLAS_EXCLUIDAS
+         * entera con el motivo "credenciales SMTP y de plataformas mezcladas con sesenta flags de
+         * pantalla". Las credenciales ya las filtra COLUMNAS_SENSIBLES —se revisó columna por
+         * columna, está el detalle en COLUMNAS_EXCLUIDAS_POR_TABLA— y los flags no son "de
+         * pantalla": son la pantalla que el dueño abre para decidir cómo vende. "¿Está pausada mi
+         * tienda?", "¿pido registro para comprar?", "¿tengo Mercado Pago andando?" son preguntas de
+         * todos los días y la respuesta estaba acá adentro.
+         *
+         * Se curan los que se preguntan; los otros sesenta quedan como campos_adicionales y se
+         * piden por nombre.
+         */
+        'online_configuration' => [
+            'etiqueta'    => 'configuracion de la tienda online',
+            'descripcion' => 'Como esta configurada la tienda online del negocio: si esta pausada, que lista de precios publica, si muestra articulos sin stock, si pide registro para comprar, si tiene envio a domicilio o retiro por local, y que medios (Mercado Pago, Zipnova, Google) estan habilitados. Es una sola fila por negocio. Las credenciales (contraseñas, tokens y claves de Mercado Pago, Zipnova, Google y el SMTP) NO salen por aca: solo se puede saber si cada integracion esta habilitada o no.',
+            'campos'      => [
+                'pausar_tienda_online'          => ['tipo' => 'checkbox', 'etiqueta' => 'la tienda esta pausada'],
+                'mostrar_catalogo'              => ['tipo' => 'checkbox', 'etiqueta' => 'muestra el catalogo'],
+                'tipo_de_precio'                => ['tipo' => 'text',     'etiqueta' => 'que precio publica'],
+                'online_price_surchage'         => ['tipo' => 'number',   'etiqueta' => 'recargo sobre el precio publicado, en porcentaje'],
+                'show_articles_without_stock'   => ['tipo' => 'checkbox', 'etiqueta' => 'muestra articulos sin stock'],
+                'show_articles_without_images'  => ['tipo' => 'checkbox', 'etiqueta' => 'muestra articulos sin foto'],
+                'stock_null_equal_0'            => ['tipo' => 'checkbox', 'etiqueta' => 'el stock vacio cuenta como cero'],
+                'register_to_buy'               => ['tipo' => 'checkbox', 'etiqueta' => 'pide registrarse para comprar'],
+                'has_delivery'                  => ['tipo' => 'checkbox', 'etiqueta' => 'tiene envio a domicilio'],
+                'retiro_por_local'              => ['tipo' => 'checkbox', 'etiqueta' => 'tiene retiro por el local'],
+                'usar_cupones'                  => ['tipo' => 'checkbox', 'etiqueta' => 'usa cupones de descuento'],
+                'save_sale_after_finish_order'  => ['tipo' => 'checkbox', 'etiqueta' => 'genera la venta al confirmarse el pedido'],
+                'mp_enabled'                    => ['tipo' => 'checkbox', 'etiqueta' => 'Mercado Pago habilitado'],
+                'zippin_enabled'                => ['tipo' => 'checkbox', 'etiqueta' => 'Zipnova (envios) habilitado'],
+                'google_login_enabled'          => ['tipo' => 'checkbox', 'etiqueta' => 'ingreso con Google habilitado'],
+                'mail_enabled'                  => ['tipo' => 'checkbox', 'etiqueta' => 'envio de mails habilitado'],
+                'notificar_pedido_al_negocio'   => ['tipo' => 'checkbox', 'etiqueta' => 'avisa al negocio cuando entra un pedido'],
+                'notificar_pedido_al_cliente'   => ['tipo' => 'checkbox', 'etiqueta' => 'avisa al cliente cuando entra su pedido'],
+                'mail_notificacion_pedidos'     => ['tipo' => 'text',     'etiqueta' => 'a que casilla llegan los avisos de pedidos'],
+                'instagram'                     => ['tipo' => 'text',     'etiqueta' => 'instagram del negocio'],
+                'facebook'                      => ['tipo' => 'text',     'etiqueta' => 'facebook del negocio'],
+                'created_at'                    => ['tipo' => 'date',     'etiqueta' => 'fecha de alta'],
+            ],
+            'relaciones'  => [],
         ],
     ];
 
@@ -601,6 +680,86 @@ class EsquemaDeDatosIaHelper
             ],
             'condiciones_fijas' => [],
             'etiquetas' => ['ingreso' => 'ingreso', 'egreso' => 'egreso', 'saldo' => 'saldo de la caja despues del movimiento'],
+        ],
+        'apertura_caja' => [
+            'tabla'       => 'apertura_cajas',
+            'etiqueta'    => 'aperturas y cierres de caja (arqueos)',
+            'descripcion' => 'Cada vez que se abrio y se cerro una caja, con el saldo con el que se abrio, el que quedo al cerrar y los ingresos y egresos del turno. Es la tabla para "como cerro la caja ayer", "con cuanto abrimos" y para los arqueos. Una fila con `cerrada_at` vacio es una caja que todavia esta abierta. `nombre_caja` y `moneda_id` vienen de la caja. Para el detalle de cada movimiento va movimiento_de_caja.',
+            'modulo'      => 'caja y tesoreria',
+            'padre'       => ['tabla' => 'cajas', 'columna_local' => 'caja_id', 'columna_padre' => 'id', 'entidad' => 'caja'],
+            'campos_del_padre' => [
+                'nombre_caja' => ['columna' => 'cajas.name',      'tipo' => 'text',   'etiqueta' => 'nombre de la caja'],
+                'moneda_id'   => ['columna' => 'cajas.moneda_id', 'tipo' => 'search', 'etiqueta' => 'moneda de la caja'],
+            ],
+            'condiciones_fijas' => [],
+            'etiquetas' => [
+                'saldo_apertura'       => 'saldo con el que se abrio',
+                'saldo_cierre'         => 'saldo con el que se cerro (vacio si sigue abierta)',
+                'cerrada_at'           => 'cuando se cerro (vacio si sigue abierta)',
+                'total_ingresos'       => 'ingresos del turno',
+                'total_egresos'        => 'egresos del turno',
+                'apertura_employee_id' => 'empleado que la abrio',
+                'cierre_employee_id'   => 'empleado que la cerro',
+            ],
+        ],
+        /*
+         * LAS FACTURAS EMITIDAS. La tabla se llama `afip_tickets` pero el dueño dice "factura", así
+         * que la entidad se llama como él la nombra.
+         *
+         * 🔴 EL SCOPE VA POR `sale_id` → `sales.user_id`, y eso deja algo afuera a propósito: una
+         * fila de `afip_tickets` puede colgar de una VENTA (`sale_id`) o de una NOTA DE CRÉDITO
+         * (`nota_credito_id` / `sale_nota_credito_id`), y el join de una entidad hija es uno solo.
+         * Con el join por `sale_id`, las notas de crédito emitidas —que tienen `sale_id` en NULL—
+         * no aparecen en esta entidad. Es la decisión honesta: la alternativa era un scope con OR
+         * sobre dos padres, que ninguna otra hija tiene y que rompería el `count()` y la
+         * paginación. Las devoluciones se leen por `renglon_de_nota_de_credito` y por
+         * `current_acount`, y la descripción lo dice para que el modelo no afirme "no emitiste
+         * ninguna nota de crédito" mirando acá.
+         *
+         * `solo_campos` recorta 43 columnas a las que le contestan algo a un comerciante: quedan
+         * afuera el XML crudo de ARCA (`request` / `response`), los detalles serializados y los
+         * `*_enviado` del armado del pedido. Y `moneda_id` NO se declara: en esta tabla es un
+         * varchar con el código de AFIP ('PES'), no el moneda_id del sistema — declararlo haría que
+         * `tiene_moneda()` diera true y que el aviso de otra moneda comparara texto contra ids.
+         * La moneda legible es `moneda`.
+         */
+        'factura' => [
+            'tabla'       => 'afip_tickets',
+            'etiqueta'    => 'facturas emitidas (comprobantes de AFIP/ARCA)',
+            'descripcion' => 'Cada comprobante electronico emitido: tipo y letra, punto de venta, numero, fecha, importe total, IVA, CAE con su vencimiento y el resultado que devolvio ARCA (A = aprobado, R = rechazado). Es la tabla para "cuantas facturas emiti", "que factura le hice a este cliente" y "hay alguna rechazada". `fecha_venta`, `numero_venta` y `client_id` vienen de la venta. ⚠️ Solo trae los comprobantes atados a una VENTA: las notas de credito emitidas cuelgan de la nota y no aparecen aca, asi que no digas que no se emitio ninguna mirando esta entidad.',
+            'modulo'      => 'facturacion',
+            'padre'       => ['tabla' => 'sales', 'columna_local' => 'sale_id', 'columna_padre' => 'id', 'entidad' => 'sale'],
+            'campos_del_padre' => [
+                'fecha_venta'  => ['columna' => 'sales.created_at', 'tipo' => 'date',   'etiqueta' => 'fecha de la venta'],
+                'numero_venta' => ['columna' => 'sales.num',        'tipo' => 'number', 'etiqueta' => 'numero de la venta'],
+                'client_id'    => ['columna' => 'sales.client_id',  'tipo' => 'search', 'etiqueta' => 'cliente'],
+            ],
+            'solo_campos' => [
+                'sale_id', 'afip_fecha_emision', 'cbte_tipo', 'cbte_letra', 'punto_venta', 'cbte_numero',
+                'importe_total', 'importe_iva', 'total_a_facturar', 'cae', 'cae_expired_at', 'resultado',
+                'cuit_cliente', 'iva_cliente', 'cuit_negocio', 'moneda', 'moneda_cotizacion', 'created_at',
+            ],
+            'condiciones_fijas' => [
+                ['sql' => 'afip_tickets.deleted_at IS NULL', 'texto' => 'solo comprobantes no anulados'],
+            ],
+            'etiquetas' => [
+                'afip_fecha_emision' => 'fecha de emision',
+                'cbte_tipo'          => 'tipo de comprobante',
+                'cbte_letra'         => 'letra del comprobante (A, B, C)',
+                'punto_venta'        => 'punto de venta',
+                'cbte_numero'        => 'numero del comprobante',
+                'importe_total'      => 'importe total facturado',
+                'importe_iva'        => 'IVA del comprobante',
+                'total_a_facturar'  => 'total que se mando a facturar',
+                'cae'                => 'CAE que devolvio ARCA',
+                'cae_expired_at'     => 'vencimiento del CAE',
+                'resultado'          => 'resultado de ARCA (A aprobado, R rechazado)',
+                'cuit_cliente'       => 'CUIT del cliente',
+                'iva_cliente'        => 'condicion de IVA del cliente',
+                'cuit_negocio'       => 'CUIT del negocio que emitio',
+                'moneda'             => 'moneda del comprobante, como la nombra AFIP (PES, DOL)',
+                'moneda_cotizacion'  => 'cotizacion usada',
+            ],
         ],
         'empleado' => [
             'tabla'       => 'users',
@@ -876,7 +1035,7 @@ class EsquemaDeDatosIaHelper
         $relaciones = [];
 
         foreach ($columnas[$tabla] as $columna => $info) {
-            if (! self::columna_visible($columna)) {
+            if (! self::columna_visible($columna, $tabla)) {
                 continue;
             }
 
@@ -950,9 +1109,13 @@ class EsquemaDeDatosIaHelper
      * @param  string  $columna
      * @return bool
      */
-    protected static function columna_visible(string $columna): bool
+    protected static function columna_visible(string $columna, string $tabla = ''): bool
     {
         if ($columna === 'user_id' || $columna === 'id') {
+            return false;
+        }
+
+        if ($tabla !== '' && isset(self::COLUMNAS_EXCLUIDAS_POR_TABLA[$tabla][$columna])) {
             return false;
         }
 
@@ -1269,7 +1432,7 @@ class EsquemaDeDatosIaHelper
         }
 
         foreach ($columnas[$tabla] as $columna => $info) {
-            if (! self::columna_visible($columna) || isset($campos[$columna])) {
+            if (! self::columna_visible($columna, $tabla) || isset($campos[$columna])) {
                 continue;
             }
 

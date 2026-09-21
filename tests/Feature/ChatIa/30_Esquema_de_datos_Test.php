@@ -5,6 +5,7 @@ namespace Tests\Feature\ChatIa;
 use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EsquemaDeDatosIaHelper;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -165,15 +166,134 @@ class Esquema_de_datos_Test extends TestCase
         }
 
         // Lo que la misión nombró explícitamente como afuera.
-        foreach (['ai_conversation', 'mercado_libre_token', 'user_configuration', 'company_performance', 'online_configuration', 'whatsapp_bot_config'] as $afuera) {
+        foreach (['ai_conversation', 'mercado_libre_token', 'user_configuration', 'company_performance', 'whatsapp_bot_config'] as $afuera) {
             $this->assertFalse(EsquemaDeDatosIaHelper::existe($afuera), $afuera);
         }
 
+        /*
+         * `online_configuration` estaba en esta lista y pasó a la de abajo el 21/9/2026. Se había
+         * excluido entera por "credenciales SMTP y de plataformas mezcladas con flags de pantalla",
+         * pero las credenciales ya las filtra COLUMNAS_SENSIBLES y los flags son la pantalla que el
+         * dueño abre para decidir cómo vende. Lo que se revisó columna por columna está en
+         * COLUMNAS_EXCLUIDAS_POR_TABLA; acá abajo se verifica que ni una credencial salga.
+         */
         // Y lo que la misión nombró como adentro, con su módulo.
-        foreach (['cheque' => 'caja y tesoreria', 'payment_plan' => 'ventas', 'movimiento_entre_caja' => 'caja y tesoreria', 'stock_movement' => 'stock', 'whatsapp_chat' => 'clientes', 'payment_method' => 'tienda online', 'current_acount' => 'clientes'] as $adentro => $modulo) {
+        foreach (['cheque' => 'caja y tesoreria', 'payment_plan' => 'ventas', 'movimiento_entre_caja' => 'caja y tesoreria', 'stock_movement' => 'stock', 'whatsapp_chat' => 'clientes', 'payment_method' => 'tienda online', 'current_acount' => 'clientes', 'online_configuration' => 'tienda online'] as $adentro => $modulo) {
             $this->assertTrue(EsquemaDeDatosIaHelper::existe($adentro), $adentro);
             $this->assertEquals($modulo, EsquemaDeDatosIaHelper::declaracion($adentro)['modulo'], $adentro);
         }
+    }
+
+    /**
+     * 🔴 LA CONFIGURACIÓN DE LA TIENDA ENTRA, PERO NINGUNA CREDENCIAL SALE.
+     *
+     * `online_configurations` tiene mezcladas las credenciales de Mercado Pago, Zipnova, Google y
+     * el SMTP con los flags que el dueño maneja. Entró como entidad normal el 21/9/2026 y esta es
+     * la aserción que lo sostiene: se listan las columnas reales de la tabla y se verifica, una por
+     * una, que ninguna que huela a credencial haya llegado a la declaración.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_configuracion_de_la_tienda_entra_sin_una_sola_credencial()
+    {
+        $declaracion = EsquemaDeDatosIaHelper::declaracion('online_configuration');
+
+        $this->assertNotNull($declaracion);
+        $this->assertTrue($declaracion['curada']);
+
+        // Lo que sí tiene que estar: lo que el dueño pregunta.
+        foreach (['pausar_tienda_online', 'register_to_buy', 'has_delivery', 'mp_enabled', 'zippin_enabled'] as $campo) {
+            $this->assertArrayHasKey($campo, $declaracion['campos'], $campo . ': es la pantalla que el dueño toca.');
+            $this->assertContains($campo, $declaracion['campos_por_defecto'], $campo);
+        }
+
+        // Y lo que NO puede estar, nombrado una por una (no por regex: el regex es lo que se está
+        // verificando).
+        $prohibidas = [
+            'mail_password', 'mail_username', 'google_client_id', 'google_client_secret',
+            'mp_user_id', 'mp_public_key', 'mp_access_token', 'mp_refresh_token', 'mp_token_expires_at',
+            'zippin_account_id', 'zippin_access_token', 'zippin_refresh_token', 'zippin_token_expires_at',
+        ];
+
+        foreach ($prohibidas as $campo) {
+            $this->assertArrayNotHasKey($campo, $declaracion['campos'], $campo . ': es una credencial (o la mitad de una) y no sale.');
+        }
+
+        /*
+         * Y la red de seguridad: CUALQUIER columna real de la tabla cuyo nombre huela a credencial
+         * tiene que estar afuera, incluidas las que agregue una migración futura. Si mañana alguien
+         * suma `tiendanube_api_key` o `correo_argentino_user`, esto lo denuncia.
+         */
+        $columnas = DB::select('SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?', ['online_configurations']);
+
+        foreach ($columnas as $columna) {
+            $nombre = isset($columna->column_name) ? $columna->column_name : $columna->COLUMN_NAME;
+
+            if (preg_match('/pass|token|secret|_key|credential|client_id|account_id|username|_user_id$/i', $nombre) !== 1) {
+                continue;
+            }
+
+            $this->assertArrayNotHasKey(
+                $nombre,
+                $declaracion['campos'],
+                $nombre . ': huele a credencial y llegó a la declaración. Agregala a COLUMNAS_EXCLUIDAS_POR_TABLA, no ablandes el regex global.'
+            );
+        }
+    }
+
+    /**
+     * Las dos entidades hijas que se sumaron el 21/9/2026: los arqueos de caja y las facturas.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function los_arqueos_de_caja_y_las_facturas_emitidas_se_pueden_leer()
+    {
+        $apertura = EsquemaDeDatosIaHelper::declaracion('apertura_caja');
+
+        $this->assertNotNull($apertura, 'apertura_cajas no tiene user_id: va como hija de cajas.');
+        $this->assertEquals('apertura_cajas', $apertura['tabla']);
+        $this->assertEquals('cajas', $apertura['padre']['tabla']);
+        $this->assertEquals('caja y tesoreria', $apertura['modulo']);
+        $this->assertEquals('cajas.name', $apertura['campos']['nombre_caja']['columna']);
+        $this->assertTrue(EsquemaDeDatosIaHelper::tiene_moneda($apertura), 'La moneda sale de la caja.');
+
+        foreach (['saldo_apertura', 'saldo_cierre', 'cerrada_at', 'total_ingresos', 'total_egresos'] as $campo) {
+            $this->assertArrayHasKey($campo, $apertura['campos'], $campo);
+        }
+
+        $factura = EsquemaDeDatosIaHelper::declaracion('factura');
+
+        $this->assertNotNull($factura, 'afip_tickets no tiene user_id: va como hija de sales.');
+        $this->assertEquals('afip_tickets', $factura['tabla']);
+        $this->assertEquals('sales', $factura['padre']['tabla']);
+        $this->assertEquals('facturacion', $factura['modulo']);
+
+        foreach (['cae', 'resultado', 'importe_total', 'punto_venta', 'cbte_numero', 'afip_fecha_emision'] as $campo) {
+            $this->assertArrayHasKey($campo, $factura['campos'], $campo);
+        }
+
+        /*
+         * 🔴 El XML crudo de ARCA NO sale: `request` y `response` son un text por fila que se come
+         * la página entera, y los dos json serializados tampoco le contestan nada a nadie.
+         */
+        foreach (['request', 'response', 'iva_detalle_enviado_json', 'importe_personalizado_ivas_json'] as $campo) {
+            $this->assertArrayNotHasKey($campo, $factura['campos'], $campo . ': es ruido de la integración, no un dato del negocio.');
+        }
+
+        /*
+         * Y `moneda_id` NO se declara: en esta tabla es un varchar con el código de AFIP, no el
+         * moneda_id del sistema. Si entrara, `tiene_moneda()` daría true y el aviso de otra moneda
+         * compararía texto contra ids de moneda.
+         */
+        $this->assertArrayNotHasKey('moneda_id', $factura['campos'], 'En afip_tickets moneda_id es el código de AFIP, no el del sistema.');
+        $this->assertFalse(EsquemaDeDatosIaHelper::tiene_moneda($factura));
+        $this->assertArrayHasKey('moneda', $factura['campos'], 'La moneda legible es `moneda`.');
+
+        // La descripción avisa que las notas de crédito emitidas no cuelgan de una venta y por eso
+        // no están acá: es lo que impide que el modelo conteste "no emitiste ninguna".
+        $this->assertStringContainsString('notas de credito', $factura['descripcion']);
     }
 
     /**
