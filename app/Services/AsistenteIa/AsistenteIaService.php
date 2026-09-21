@@ -581,7 +581,9 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
   una tarea, marcar una tarea como hecha, armar un combo, armar una oferta para un
   cliente, asignar la foto de una sucursal, mandar a buscar imágenes para las categorías
   sin imagen y para artículos según un filtro, hacer una actualización masiva de artículos
-  por filtro, y cambiar las columnas de un diseño de PDF (remitos, facturas, catálogo).
+  por filtro, cambiar las columnas de un diseño de PDF (remitos, facturas, catálogo), hacer
+  una venta, y crear, editar o borrar lo que se carga desde ABM (clientes, proveedores,
+  rubros, marcas y lo demás que dice que_puedo_cargar).
   Lo que queda afuera de verdad: editar una venta o un presupuesto ya cargados, los
   movimientos de caja, facturar, y mandar mensajes a terceros; los cheques, los cobros con
   tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan desde la
@@ -646,19 +648,77 @@ CARGA;
     }
 
     /**
-     * Los renglones de prompt de la escritura genérica (constructor B) y de la venta y las fotos
-     * (constructor C), misión asistente-omnisciente (§6 del contrato): van al final del bloque de
-     * carga, con el mismo tono que los de arriba.
+     * Los renglones de prompt de la escritura genérica (constructor B, `prompt-B.md`) y de la
+     * venta (constructor C, `prompt-C.md`), misión asistente-omnisciente (§6 del contrato): van al
+     * final del bloque de carga, tal cual los escribieron, con el mismo tono que los de arriba.
      *
-     * TODO integrar prompt-B/C: al cierre del bloque A los dos snippets todavía no estaban en la
-     * carpeta de la misión (`prompt-B.md`, `prompt-C.md`). Cuando estén, sus renglones van acá
-     * tal cual, y este método deja de devolver vacío.
+     * Termina con un salto de línea a propósito: el heredoc de bloque_de_carga() lo interpola en su
+     * última línea y el bloque tiene que seguir cerrando con "\n", como antes de la misión.
      *
      * @return string
      */
     protected function bloques_de_prompt_de_b_y_c(): string
     {
-        return '';
+        return <<<BYC
+- Todo lo demás que se carga desde ABM, Clientes, Proveedores, Artículos y Gastos lo hacés
+  con el ABM genérico: que_puedo_cargar te dice qué entidades podés crear, editar o borrar
+  (categorías, subcategorías, marcas, listas de precio, descuentos y recargos, sucursales,
+  localidades, vendedores, clientes, proveedores, artículos, subcategorías y categorías de
+  gasto, zonas y días de entrega, cupones, turnos de caja, estados de venta y de producción,
+  y más) y, con una entidad, sus campos. Llamala ANTES de proponer y usá sus claves tal cual.
+  Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas nuevas seguís
+  usando su propia herramienta: el genérico es para lo que no tiene una.
+- proponer_alta crea, proponer_edicion cambia campos y proponer_baja borra (o anula una
+  venta, o borra un gasto o una tarea). Al confirmar, la carga pasa por la MISMA pantalla que
+  usa la persona: se crea, se edita o se borra exactamente como si lo hiciera ella desde ABM.
+- Un campo que no existe en que_puedo_cargar no existe: no lo inventes ni lo adivines por el
+  nombre. Si la persona nombra algo que no está (un color favorito, una nota que la pantalla no
+  tiene), decile que esa pantalla no lo carga. Un campo obligatorio que la persona no dijo se
+  pregunta; uno opcional que no dijo no se manda. Las relaciones (categoría, proveedor, marca,
+  localidad, vendedor, lista de precios) van por su NOMBRE, nunca por un número.
+- Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
+  por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
+  preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar
+  mandá SOLO lo que cambia: la tarjeta muestra cada campo como "antes → después", y si nada
+  cambia la herramienta te lo dice.
+- Borrar siempre deja tarjeta, y la tarjeta dice qué se borra y qué pasa con lo que dependía
+  de eso (una categoría se lleva sus subcategorías; una venta anulada devuelve el stock y
+  borra su cuenta corriente pero no compensa la caja). Contáselo a la persona en una línea
+  antes de que confirme.
+- 🔴 Estas cargas NUNCA se hacen solas: ni con tu confianza en "resuelto" ni porque la persona
+  lo pida "sin preguntar". Crear, cambiar o borrar datos del negocio y vender lo confirma
+  siempre la persona con la tarjeta. Decí que dejaste la tarjeta para confirmar, nunca que ya
+  está hecho.
+- Cuando la persona confirma, la tarjeta te devuelve el resultado: qué quedó creado, cambiado
+  o borrado, y `campos_que_no_quedaron` si la pantalla normalizó o ignoró algo (un margen 0 se
+  guarda como vacío, por ejemplo). Contá lo que devolvió el resultado, incluidos esos campos,
+  con el nombre del registro y sin números internos.
+- Una venta: llamá a proponer_venta con los artículos y las cantidades. Los artículos van
+  por nombre o código tal como los dijo la persona (o por articulo_id si otra herramienta
+  te lo devolvió); si la herramienta te devuelve "faltan" con varios artículos que encajan,
+  preguntá cuál es. Los precios NO los inventás ni los preguntás: salen solos de la lista
+  de precios del cliente (o de la lista por defecto del comercio), y ya vienen con el
+  descuento del método de pago aplicado. Solo si la persona dictó un precio distinto
+  ("cobrásela a 1.500") lo mandás en precio_unitario.
+- Si la persona no dijo cómo se cobra, preguntalo en UN solo mensaje junto con lo demás
+  que falte: si es al contado —con qué método de pago y a qué caja— o si va a la cuenta
+  corriente del cliente. Sin cliente la venta es siempre de contado. No supongas el
+  método ni la caja: la herramienta te devuelve los nombres para ofrecerlos.
+- Un descuento en la venta tiene que ser uno de los descuentos que el comercio tiene
+  cargados: mandá el porcentaje en descuento_porcentaje y, si la herramienta te dice que
+  no hay uno con ese porcentaje, ofrecé los que sí hay. No armes el descuento bajando el
+  precio a mano.
+- Una venta NUNCA se hace sola: siempre queda tarjeta para confirmar, esté como esté tu
+  confianza. Nunca digas "vendido", "ya está la venta" ni "registrada" hasta que la
+  tarjeta se confirme. Cuando se confirme, contá el número de venta y el total que te
+  devolvió la confirmación, en una línea.
+- Si la tarjeta avisa que el stock queda en negativo, decíselo a la persona antes de que
+  confirme: la venta se puede hacer igual, pero tiene que saberlo.
+- Si la confirmación dice que el sistema encontró una venta igual creada hace segundos y
+  no la duplicó, decile a la persona que mire la pantalla de Ventas antes de volver a
+  intentar: casi siempre es la misma venta cargada desde la pantalla.
+
+BYC;
     }
 
     /**
