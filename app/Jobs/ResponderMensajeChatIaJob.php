@@ -158,6 +158,13 @@ class ResponderMensajeChatIaJob implements ShouldQueue
              * el dueño recarga la pantalla y siguen ahí.
              */
             $message->menciones = $service->menciones();
+            /*
+             * Misión asistente-omnisciente (§3): los adjuntos —las fotos de los artículos que el
+             * dueño pidió ver— salen del tool_result de `mostrar_imagenes_de_articulos` y los
+             * recolecta el servicio en el mismo loop, así que se guardan acá, junto a las menciones
+             * y por el mismo motivo: fuera del loop ya no existen.
+             */
+            $message->adjuntos = $service->adjuntos();
             $message->save();
         } catch (\Throwable $e) {
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [

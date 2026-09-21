@@ -257,13 +257,17 @@ class RecolectorTienda extends RecolectorBase
             ->limit(self::TOPE_LISTA)
             ->get();
 
+        $imagenes_carrito = $this->imagenes_de($carrito->pluck('article_id')->all());
         $mas_agregados = [];
 
         foreach ($carrito as $fila) {
+            $article_id = (int) $fila->article_id;
+
             $mas_agregados[] = [
-                'article_id' => (int) $fila->article_id,
+                'article_id' => $article_id,
                 'nombre'     => (string) $fila->nombre,
                 'veces'      => (int) $fila->veces,
+                'imagen_url' => isset($imagenes_carrito[$article_id]) ? $imagenes_carrito[$article_id] : null,
             ];
         }
 
@@ -282,13 +286,17 @@ class RecolectorTienda extends RecolectorBase
             ->limit(self::TOPE_LISTA)
             ->get();
 
+        $imagenes_sin_stock = $this->imagenes_de($sin_stock->pluck('article_id')->all());
         $vistos_sin_stock = [];
 
         foreach ($sin_stock as $fila) {
+            $article_id = (int) $fila->article_id;
+
             $vistos_sin_stock[] = [
-                'article_id' => (int) $fila->article_id,
+                'article_id' => $article_id,
                 'nombre'     => (string) $fila->nombre,
                 'vistas'     => (int) $fila->vistas,
+                'imagen_url' => isset($imagenes_sin_stock[$article_id]) ? $imagenes_sin_stock[$article_id] : null,
             ];
         }
 
@@ -646,6 +654,7 @@ class RecolectorTienda extends RecolectorBase
             return (int) $id;
         })->all();
 
+        $imagenes = $this->imagenes_de($article_ids);
         $comprado_en_tienda = $this->comprado_en_la_tienda($owner, $buyer_ids, $article_ids, $desde);
 
         // Compras del ERP del cliente asociado, posteriores al inicio de la ventana.
@@ -693,6 +702,7 @@ class RecolectorTienda extends RecolectorBase
                 'vistas'          => (int) $fila->vistas,
                 'tiempo_seg'      => (int) round($fila->dwell_total / 1000),
                 'precio'          => $this->monto($fila->precio),
+                'imagen_url'      => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
 
             if (count($lista) >= self::TOPE_LISTA) {

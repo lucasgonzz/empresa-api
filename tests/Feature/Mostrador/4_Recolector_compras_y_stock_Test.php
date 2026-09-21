@@ -127,6 +127,7 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
             'ultimo_costo'       => 50.0,
             'ultimo_costo_fecha' => $this->hoy->copy()->subDays(20)->format('Y-m-d'),
             'mejor_precio_otro_proveedor' => ['provider_id' => $beta->id, 'nombre' => 'Beta', 'costo' => 40.0],
+            'imagen_url'         => null,
         ], $proveedor['articulos'][0]);
 
         $this->assertSame($cinta->id, $proveedor['articulos'][1]['article_id']);
@@ -137,7 +138,7 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         $this->assertNull($proveedor['articulos'][1]['mejor_precio_otro_proveedor']);
 
         $this->assertSame([
-            ['article_id' => $rulo->id, 'nombre' => 'Rulo', 'stock' => 0.0, 'cobertura_dias' => null],
+            ['article_id' => $rulo->id, 'nombre' => 'Rulo', 'stock' => 0.0, 'cobertura_dias' => null, 'imagen_url' => null],
         ], $h['sin_proveedor']);
 
         $this->assertSame([
@@ -147,7 +148,7 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
         ], $h['contexto_financiero']);
 
         $this->assertSame([
-            ['article_id' => $rulo->id, 'nombre' => 'Rulo', 'vistas_tienda_7d' => 2, 'consultas_whatsapp_7d' => null],
+            ['article_id' => $rulo->id, 'nombre' => 'Rulo', 'vistas_tienda_7d' => 2, 'consultas_whatsapp_7d' => null, 'imagen_url' => null],
         ], $h['demanda_sin_stock']);
     }
 
@@ -242,6 +243,7 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
             'hacia'      => ['address_id' => $norte->id, 'nombre' => 'Norte', 'stock' => 2.0, 'velocidad_diaria' => 0.5, 'cobertura_dias' => 4.0],
             'cantidad'   => 8.0,
             'prioridad'  => 1,
+            'imagen_url' => null,
         ], $h['movimientos_sugeridos'][0]);
 
         $this->assertSame([
@@ -251,6 +253,7 @@ class Recolector_compras_y_stock_Test extends MostradorTestCase
             'hacia'      => ['address_id' => $norte->id, 'nombre' => 'Norte', 'stock' => 0.0, 'velocidad_diaria' => 0.0, 'cobertura_dias' => null],
             'cantidad'   => 5.0,
             'prioridad'  => 2,
+            'imagen_url' => null,
         ], $h['movimientos_sugeridos'][1]);
 
         // Sin rotación, por valor a costo EN PESOS: taladro (240.000), amoladora (75.000),

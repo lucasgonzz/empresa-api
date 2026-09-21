@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseHelper;
@@ -67,6 +68,22 @@ class ExpenseController extends Controller
 
             return response()->json([
                 'message' => 'Las siguientes cajas nunca se abrieron: '.implode(', ', $cajas_sin_apertura).'. Hay que abrirlas para poder registrar el gasto.',
+            ], 422);
+        }
+
+        /*
+         * Los endosos de la fila de pago (misión cheques-endoso-y-bancos, 21/9/2026): una fila de
+         * tipo cheque con `cheque_id` endosa ese cheque recibido en el gasto en vez de crear uno
+         * nuevo. Misma razón que las cajas: el cheque se marca adentro de la transacción de
+         * ExpenseHelper::crear(), y una fila que no se puede endosar tiene que frenar acá, con un
+         * 422 que nombre el cheque, y no con un 500 desde adentro del alta.
+         */
+        $problemas_de_endoso = ChequeHelper::problemas_de_endoso_en_payload($request->payment_methods, $this->userId());
+
+        if (count($problemas_de_endoso)) {
+
+            return response()->json([
+                'message' => implode('. ', $problemas_de_endoso).'.',
             ], 422);
         }
 

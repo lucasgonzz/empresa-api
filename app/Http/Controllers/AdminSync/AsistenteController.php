@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
@@ -371,6 +372,11 @@ class AsistenteController extends Controller
      * admin no tiene por qué poder leer las conversaciones que el dueño tiene abiertas en la
      * pantalla del sistema.
      *
+     * `adjuntos` (misión asistente-omnisciente, contrato §2): las imágenes que la respuesta lleva
+     * colgadas, como `[{tipo, url, texto}]` —sin `articulo_id`, que el admin no necesita—. El admin
+     * manda primero el texto y después una imagen por adjunto con `texto` de epígrafe. Siempre
+     * lista: un admin viejo ignora la clave, y un admin nuevo con `[]` no manda ninguna imagen.
+     *
      * @param  Request  $request
      * @param  int  $id
      * @return JsonResponse  200 · 401 · 403 · 404 · 409 sin dueño resuelto
@@ -406,6 +412,7 @@ class AsistenteController extends Controller
             'contenido'          => is_null($mensaje->contenido) ? null : (string) $mensaje->contenido,
             'error_mensaje'      => is_null($mensaje->error_mensaje) ? null : (string) $mensaje->error_mensaje,
             'ai_conversation_id' => (int) $mensaje->ai_conversation_id,
+            'adjuntos'           => AdjuntosIaHelper::para_el_admin($mensaje->adjuntos),
         ], 200);
     }
 

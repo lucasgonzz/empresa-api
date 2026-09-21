@@ -95,11 +95,15 @@ class Consultas_helper_Test extends TestCase
         $this->assertNotContains('Tornillo P2 ajeno', $nombres, 'Un artículo de otro dueño jamás puede aparecer.');
         $this->assertNotContains('Tornillo P2 inactivo', $nombres, 'Los artículos inactivos quedan afuera.');
 
-        // El shape que consumen el endpoint y las tools: claves y tipos exactos.
+        // El shape que consumen el endpoint y las tools: claves y tipos exactos. Misión
+        // asistente-omnisciente (21/9/2026): se suma `tiene_imagen` al final, a propósito — es lo
+        // que le permite al asistente ofrecer la foto o decir que no hay. Una clave más al final no
+        // le cambia nada al canal "sistema:" de admin-api, que lee por nombre.
         $primera = $resultado[0];
-        $this->assertEquals(['id', 'nombre', 'codigo', 'precio', 'stock'], array_keys($primera));
+        $this->assertEquals(['id', 'nombre', 'codigo', 'precio', 'stock', 'tiene_imagen'], array_keys($primera));
         $this->assertIsInt($primera['id']);
         $this->assertIsFloat($primera['precio']);
+        $this->assertIsBool($primera['tiene_imagen']);
     }
 
     /**

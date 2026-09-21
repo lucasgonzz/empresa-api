@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use Illuminate\Database\Eloquent\Model;
 
@@ -26,6 +27,11 @@ use Illuminate\Database\Eloquent\Model;
  * `menciones` (misión agente-ia-mano-derecha): los clientes y artículos que la
  * respuesta nombró, con el literal exacto con que los nombró, para que la SPA
  * los pinte clickeables. Ver MencionesIaHelper.
+ *
+ * `adjuntos` (misión asistente-omnisciente): las imágenes que la respuesta lleva
+ * colgadas —hoy, las fotos de los artículos que el dueño pidió ver—, para que la
+ * SPA las pinte debajo del texto y el admin las mande por WhatsApp. Ver
+ * AdjuntosIaHelper. Solo los mensajes del asistente las tienen con contenido.
  *
  * `canal` (misión asistente-por-whatsapp): 'sistema' (el panel del chat, el
  * default de la columna y lo que era todo hasta hoy) | 'whatsapp' (el dueño
@@ -75,9 +81,12 @@ class AiMessage extends Model
      * resolvió el refresh() de AiConversationController::store(), acá resuelto sin una consulta de
      * más en el camino caliente del POST.
      *
+     * `adjuntos` va por la misma razón y con el mismo contrato (§1 de asistente-omnisciente:
+     * siempre lista, nunca null y nunca ausente).
+     *
      * @var array<int, string>
      */
-    protected $appends = ['menciones'];
+    protected $appends = ['menciones', 'adjuntos'];
 
     /**
      * Las menciones SIEMPRE como lista (contrato §1: si no hay va `[]`, nunca null y nunca
@@ -117,6 +126,42 @@ class AiMessage extends Model
         $this->attributes['menciones'] = empty($menciones)
             ? null
             : json_encode($menciones, JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Los adjuntos SIEMPRE como lista (misión asistente-omnisciente, contrato §1: si no hay va
+     * `[]`, nunca null y nunca ausente), con la forma exacta que la SPA y el admin saben pintar.
+     *
+     * Misma disciplina que `menciones`, y por los mismos motivos: es un accessor y no un cast
+     * porque un mensaje viaja por TRES lugares y con el accessor no hay una cuarta punta que se
+     * pueda olvidar; y lee de $attributes y NO del argumento porque, por el append, Laravel lo
+     * llama una segunda vez con null.
+     *
+     * @param  mixed  $valor  Ignorado a propósito (ver getMencionesAttribute).
+     * @return array<int, array<string, mixed>>
+     */
+    public function getAdjuntosAttribute($valor = null)
+    {
+        $crudo = array_key_exists('adjuntos', $this->attributes) ? $this->attributes['adjuntos'] : null;
+
+        return AdjuntosIaHelper::normalizar($crudo);
+    }
+
+    /**
+     * Guarda los adjuntos como JSON, ya normalizados (lo que no cumple el contrato no entra a la
+     * columna). Una lista vacía se guarda como null: es lo mismo que "no tiene" y deja la columna
+     * igual a la de todos los mensajes anteriores a la misión.
+     *
+     * @param  mixed  $valor
+     * @return void
+     */
+    public function setAdjuntosAttribute($valor)
+    {
+        $adjuntos = AdjuntosIaHelper::normalizar($valor);
+
+        $this->attributes['adjuntos'] = empty($adjuntos)
+            ? null
+            : json_encode($adjuntos, JSON_UNESCAPED_UNICODE);
     }
 
     /**
