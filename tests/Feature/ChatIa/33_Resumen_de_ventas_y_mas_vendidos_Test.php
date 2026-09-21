@@ -370,7 +370,10 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
         $this->assertStringContainsString('resumir_datos', $solo_lectura);
         $this->assertStringContainsString('consultar_resumen_de_ventas', $solo_lectura);
         $this->assertStringContainsString('mostrar_imagenes_de_articulos', $solo_lectura);
-        $this->assertStringContainsString('no escribas la URL', $solo_lectura);
+        // La regla de las fotos se endureció el 21/9/2026 (commit 99c547ec): además de no escribir
+        // la URL, ahora tiene prohibido afirmar que un artículo no tiene foto sin haber llamado.
+        $this->assertStringContainsString('no escribís la URL', $solo_lectura);
+        $this->assertStringContainsString('NUNCA digas que un', $solo_lectura);
         $this->assertStringContainsString('que_puedo_consultar cubre', $solo_lectura);
 
         $con_carga = $service->build_system_prompt($conversation, $this->comercio, true);
