@@ -34,7 +34,7 @@ class RecursosInicialesController extends Controller
      *
      * COMO SE ARMO: se cruzo la lista de `empresa-spa/src/mixins/call_methods.js` (79 modelos)
      * contra las rutas de `routes/api.php` y contra la firma y el cuerpo del `index()` de cada
-     * controller. Entraron los 71 cuyo `index()` no recibe parametros, no lee `request()`, no
+     * controller. Entraron los 72 cuyo `index()` no recibe parametros, no lee `request()`, no
      * pagina y devuelve la clave `models`. Los 8 que quedaron afuera estan al pie de esta clase,
      * con el motivo de cada uno.
      *
@@ -63,6 +63,7 @@ class RecursosInicialesController extends Controller
         'category'                               => 'App\Http\Controllers\CategoryController',
         'category_price_type_range'              => 'App\Http\Controllers\CategoryPriceTypeRangeController',
         'cepa'                                   => 'App\Http\Controllers\CepaController',
+        'cheque_banco'                           => 'App\Http\Controllers\ChequeBancoController',
         'client_reputation'                      => 'App\Http\Controllers\ClientReputationController',
         'commission'                             => 'App\Http\Controllers\CommissionController',
         'concepto_movimiento_caja'               => 'App\Http\Controllers\ConceptoMovimientoCajaController',
@@ -178,7 +179,7 @@ class RecursosInicialesController extends Controller
         // amplificacion. Lo levanto la verificacion independiente de la mision.
         //
         // `array_unique` alcanza porque la whitelist se compara exacto: dos nombres distintos nunca
-        // resuelven al mismo controller. El tope de 200 es holgado --la whitelist tiene 71-- y esta
+        // resuelven al mismo controller. El tope de 200 es holgado --la whitelist tiene 72-- y esta
         // para que un array gigante de basura no cueste ni siquiera el recorrido.
         $pedidos = array_slice(array_unique($pedidos, SORT_REGULAR), 0, 200);
 
