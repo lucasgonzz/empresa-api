@@ -54,6 +54,34 @@ class Esquema_de_datos_Test extends TestCase
             $this->assertContains($declaracion['modulo'], array_merge(array_keys(EsquemaDeDatosIaHelper::MODULOS), ['otros']), $entidad);
 
             foreach ($declaracion['campos'] as $campo => $definicion) {
+                $this->assertContains($definicion['tipo'], ['text', 'textarea', 'number', 'date', 'checkbox', 'search'], $entidad . '.' . $campo);
+
+                /*
+                 * Un campo es una de dos cosas, y ninguna otra: una columna real calificada, o un
+                 * campo CALCULADO con su expresión SQL declarada (misión asistente-omnisciente,
+                 * 21/9/2026: `importe` y compañía, que son la plata de un renglón).
+                 */
+                if (isset($definicion['calculado'])) {
+                    $this->assertTrue($definicion['calculado'], $entidad . '.' . $campo . ': `calculado` va en true o no va.');
+                    $this->assertArrayNotHasKey('columna', $definicion, $entidad . '.' . $campo . ': un calculado no tiene columna.');
+                    $this->assertNotEmpty($definicion['expresion'], $entidad . '.' . $campo . ': un calculado sin expresión.');
+                    $this->assertEquals('number', $definicion['tipo'], $entidad . '.' . $campo . ': los calculados son numéricos.');
+
+                    // Y su expresión habla de columnas reales de tablas reales, no de nombres sueltos.
+                    preg_match_all('/([a-z_]+)\.([a-z_]+)/', $definicion['expresion'], $usadas, PREG_SET_ORDER);
+
+                    $this->assertNotEmpty($usadas, $entidad . '.' . $campo . ': la expresión no nombra ninguna columna calificada.');
+
+                    foreach ($usadas as $usada) {
+                        $this->assertTrue(
+                            Schema::hasColumn($usada[1], $usada[2]),
+                            $entidad . '.' . $campo . ': ' . $usada[0] . ' de la expresión no es una columna real.'
+                        );
+                    }
+
+                    continue;
+                }
+
                 $partes = explode('.', $definicion['columna']);
 
                 $this->assertCount(2, $partes, $entidad . '.' . $campo . ': la columna tiene que ir calificada.');
@@ -61,7 +89,6 @@ class Esquema_de_datos_Test extends TestCase
                     Schema::hasColumn($partes[0], $partes[1]),
                     $entidad . '.' . $campo . ': ' . $definicion['columna'] . ' no es una columna real.'
                 );
-                $this->assertContains($definicion['tipo'], ['text', 'textarea', 'number', 'date', 'checkbox', 'search'], $entidad . '.' . $campo);
             }
 
             foreach ($declaracion['relaciones'] as $clave => $relacion) {
