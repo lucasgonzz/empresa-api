@@ -159,9 +159,10 @@ class AsistenteIaService
 
     /**
      * El modelo con el que se corre el loop, elegido por la preferencia "cómo piensa" del DUEÑO
-     * (misión foto-sucursal-y-asistente-configurable, 17/9/2026): `profundo` usa el modelo caro
-     * (services.anthropic.model_profundo) y cualquier otro valor —incluido el default `agil` y una
-     * columna nula— usa el económico (services.anthropic.model_agil).
+     * (misión foto-sucursal-y-asistente-configurable, 17/9/2026 — corrida a tres niveles el
+     * 21/9/2026): `profundo` usa el modelo caro (services.anthropic.model_profundo), `equilibrado`
+     * usa el intermedio (services.anthropic.model_equilibrado) y cualquier otro valor —incluido el
+     * default `agil` y una columna nula— usa el económico (services.anthropic.model_agil).
      *
      * 🔴 LOS IDS NO SE HARDCODEAN ACÁ: salen de config/services.php, que es donde se pueden mover
      * por .env. Si el modelo preferido viniera vacío (config mal armada), cae al
@@ -176,8 +177,14 @@ class AsistenteIaService
     {
         $pensamiento = is_null($owner) ? '' : (string) $owner->agente_pensamiento;
 
-        $preferido = $pensamiento === 'profundo'
-            ? (string) config('services.anthropic.model_profundo')
+        /* PHP 7.4: sin match(). 'agil' y cualquier valor no reconocido caen al mismo default de siempre. */
+        $modelos_por_pensamiento = [
+            'profundo'    => (string) config('services.anthropic.model_profundo'),
+            'equilibrado' => (string) config('services.anthropic.model_equilibrado'),
+        ];
+
+        $preferido = isset($modelos_por_pensamiento[$pensamiento])
+            ? $modelos_por_pensamiento[$pensamiento]
             : (string) config('services.anthropic.model_agil');
 
         if ($preferido !== '') {
