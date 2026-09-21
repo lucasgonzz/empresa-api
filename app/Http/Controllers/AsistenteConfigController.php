@@ -27,7 +27,7 @@ class AsistenteConfigController extends Controller
     const CONFIANZAS = ['cauteloso', 'resuelto'];
 
     /** Valores válidos de `agente_pensamiento`. */
-    const PENSAMIENTOS = ['agil', 'profundo'];
+    const PENSAMIENTOS = ['agil', 'equilibrado', 'profundo'];
 
     /** Default de la confianza (coincide con el default de la columna). */
     const CONFIANZA_POR_DEFECTO = 'resuelto';
