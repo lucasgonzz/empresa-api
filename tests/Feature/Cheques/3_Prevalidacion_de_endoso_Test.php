@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\Cheques;
 
+use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Models\Cheque;
 use App\Models\CurrentAcount;
 use App\Models\Expense;
+use App\Models\MovimientoCaja;
 use App\Models\User;
 use Carbon\Carbon;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -194,6 +196,128 @@ class Prevalidacion_de_endoso_Test extends ChequesTestCase
         $fila['current_acount_payment_method_id'] = $efectivo->id;
 
         $this->pago_rechazado([$fila], 'El cheque N° 5010 está en una fila que no es de tipo cheque', $recibido);
+    }
+
+    /**
+     * Un endoso no mueve plata de ninguna caja, así que la fila tiene que venir sin caja destino.
+     * El ABM de "caja por defecto por método de pago" le propone una al método Cheque, y una fila
+     * de tipo cheque con caja SÍ genera movimiento: con `cheque_id` se rechaza antes de escribir.
+     *
+     * @test
+     */
+    public function una_fila_de_endoso_con_caja_destino_se_rechaza()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente con caja ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '5015']);
+
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+
+        $fila = $this->fila_de_pago($this->claves_de_endoso($recibido));
+        $fila['caja_id'] = $caja->id;
+
+        $this->pago_rechazado([$fila], 'El cheque N° 5015 se endosa sin caja', $recibido);
+
+        // El gasto, igual.
+        $movimientos_antes = $this->max_id_movimiento_caja();
+
+        $fila_gasto = $this->fila_de_gasto($this->claves_de_endoso($recibido));
+        $fila_gasto['caja_id'] = $caja->id;
+
+        $response = $this->postJson('api/expense', $this->payload_de_gasto([$fila_gasto]));
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('El cheque N° 5015 se endosa sin caja', $response->json('message'));
+        $this->assertEquals(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count());
+
+        // Y sin caja (0), el mismo pago pasa: lo que molesta es la caja, no la fila.
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor sin caja ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta, [$this->fila_de_pago($this->claves_de_endoso($recibido))]));
+
+        $response->assertStatus(201);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $response->json('current_acount.id');
+        $this->assertEquals(0, MovimientoCaja::where('id', '>', $movimientos_antes)->count(), 'Un endoso nunca mueve caja.');
+    }
+
+    /**
+     * Un `cheque_id` que no es un número ('12abc') es "sin cheque" en las TRES puertas: la
+     * prevalidación, el alta y el botón. Con un `(int)` pelado en el alta, '12abc' pasaba la
+     * prevalidación como fila normal y adentro se volvía el cheque 12, endosándolo sin que nadie
+     * lo hubiera validado.
+     *
+     * @test
+     */
+    public function un_cheque_id_que_no_es_numero_es_sin_cheque_en_las_tres_puertas()
+    {
+        list($cliente, $cuenta_cliente) = $this->cliente_con_cuenta('Cliente cast ' . uniqid());
+        $recibido = $this->cobrar_con_cheque($cliente, $cuenta_cliente, ['numero' => '5016']);
+
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor cast ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $basura = (string) $recibido->id . 'abc';
+
+        $this->assertEquals(0, ChequeHelper::cheque_id_de(['cheque_id' => $basura]));
+        $this->assertEquals(0, ChequeHelper::cheque_id_de(['cheque_id' => '0']));
+        $this->assertEquals(0, ChequeHelper::cheque_id_de(['cheque_id' => -3]));
+        $this->assertEquals(0, ChequeHelper::cheque_id_de([]));
+        $this->assertEquals($recibido->id, ChequeHelper::cheque_id_de(['cheque_id' => (string) $recibido->id]));
+
+        $antes = $recibido->fresh()->toArray();
+
+        // El alta lo trata como cheque NUEVO: nace uno emitido y el recibido no se toca.
+        $fila = $this->fila_de_pago(['cheque_id' => $basura, 'numero' => '5017', 'banco' => 'Banco Nuevo', 'fecha_emision' => Carbon::today()->format('Y-m-d'), 'fecha_pago' => Carbon::today()->addDays(10)->format('Y-m-d')]);
+
+        $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta, [$fila]));
+
+        $response->assertStatus(201);
+        $pago_id = (int) $response->json('current_acount.id');
+        $this->cobros_cc_creados_por_escenarios[] = $pago_id;
+
+        $this->assertEquals($antes, $recibido->fresh()->toArray(), 'El cheque 5016 no se tenía que tocar.');
+        $this->assertCount(0, $this->copias_de($recibido));
+
+        $nacido = Cheque::where('current_acount_id', $pago_id)->first();
+
+        $this->assertNotNull($nacido);
+        $this->assertEquals('5017', $nacido->numero);
+        $this->assertNull($nacido->endosado_desde_cheque_id);
+
+        // El botón, igual: un id que no es número es "no existe".
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $basura, 'provider_id' => $proveedor->id]);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('no existe o no es de tu cuenta', $response->json('message'));
+        $this->assertEquals($antes, $recibido->fresh()->toArray());
+    }
+
+    /**
+     * Un cheque SIN fecha de pago se puede endosar: ChequeController::index() lo lista igual
+     * (Carbon::parse(null) es AHORA, así que cae en "pendientes") y vencido() lo deja pasar, así
+     * que el select tiene que ofrecerlo en vez de esconder un cheque que el módulo sí muestra.
+     *
+     * @test
+     */
+    public function un_cheque_sin_fecha_de_pago_se_puede_endosar()
+    {
+        $sin_fecha = $this->cheque_a_mano(['numero' => '5018', 'fecha_pago' => null]);
+
+        $this->assertContains($sin_fecha->id, $this->ids_disponibles_para_endosar());
+        $this->assertEquals('recibido.pendientes', $this->solapa_de($sin_fecha->id));
+        $this->assertEquals([], ChequeHelper::problemas_de_endoso($sin_fecha, $this->dueno->id));
+
+        list($proveedor, $cuenta) = $this->proveedor_con_cuenta('Proveedor sin fecha ' . uniqid(), self::DEUDA_PROVEEDOR);
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => $sin_fecha->id, 'provider_id' => $proveedor->id]);
+
+        $response->assertStatus(200);
+
+        $copia = $this->copias_de($sin_fecha)->first();
+
+        $this->assertNotNull($copia);
+        $this->cobros_cc_creados_por_escenarios[] = (int) $copia->current_acount_id;
+        $this->assertEquals($proveedor->id, $sin_fecha->fresh()->endosado_a_provider_id);
+        $this->assertNotContains($sin_fecha->id, $this->ids_disponibles_para_endosar());
     }
 
     /**
