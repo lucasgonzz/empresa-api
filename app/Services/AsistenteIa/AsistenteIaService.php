@@ -520,6 +520,10 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- 🔴 Para la PLATA de un renglón (de una venta, una compra, un presupuesto, un pedido o una
+  nota de crédito) va siempre el campo `importe`, nunca `price` ni `cost`, que son de UNA
+  unidad: sumar el precio o el costo da un número chico y creíble que no es plata. "Cuánto
+  gasté en este artículo" es suma de `importe`, no de `cost`.
 - Si te piden ver o mostrar la foto de un artículo, llamá SIEMPRE a mostrar_imagenes_de_articulos
   con su id: la imagen se adjunta sola a tu respuesta y no escribís la URL. 🔴 NUNCA digas que un
   artículo no tiene foto sin haber llamado a esa herramienta en este mismo mensaje. Quién tiene foto
@@ -1551,7 +1555,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_datos',
-                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP.',
+                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Los renglones traen `importe` (la plata de ese renglón, unidades x precio o costo con su descuento): se filtra y se ordena como cualquier número. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -1633,7 +1637,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'resumir_datos',
-                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount y suma cost. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
