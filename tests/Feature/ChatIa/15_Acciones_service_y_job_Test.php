@@ -688,12 +688,13 @@ class Acciones_service_y_job_Test extends TestCase
         // asistente-masivas-imagenes-y-remito (19/9/2026: consultar_categorias_sin_imagen,
         // proponer_imagenes_para_categorias, contar_articulos_por_filtro,
         // proponer_imagenes_para_articulos, proponer_actualizacion_masiva, consultar_disenos_de_pdf,
-        // proponer_cambio_en_diseno_pdf). El número se toca SOLO cuando se
-        // agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya pedido, es
-        // que algo se declaró (o se borró) de más.
-        $this->assertCount(20, HerramientasDeCarga::definiciones());
+        // proponer_cambio_en_diseno_pdf) + las 2 de cheques-endoso-y-bancos (21/9/2026:
+        // consultar_bancos_de_cheques, proponer_unificar_bancos_de_cheques). El número se toca SOLO
+        // cuando se agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya
+        // pedido, es que algo se declaró (o se borró) de más.
+        $this->assertCount(22, HerramientasDeCarga::definiciones());
 
-        // Y las siete nuevas van al FINAL y en este orden: son el prefijo del caché de prompt.
+        // Y las nueve nuevas van al FINAL y en este orden: son el prefijo del caché de prompt.
         $this->assertSame(
             [
                 'consultar_categorias_sin_imagen',
@@ -703,6 +704,8 @@ class Acciones_service_y_job_Test extends TestCase
                 'proponer_actualizacion_masiva',
                 'consultar_disenos_de_pdf',
                 'proponer_cambio_en_diseno_pdf',
+                'consultar_bancos_de_cheques',
+                'proponer_unificar_bancos_de_cheques',
             ],
             array_slice(HerramientasDeCarga::nombres(), 13)
         );

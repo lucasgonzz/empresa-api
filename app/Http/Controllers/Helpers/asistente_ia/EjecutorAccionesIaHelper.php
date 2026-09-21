@@ -335,6 +335,10 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_DISENO_PDF:
                 return PropuestaDisenoPdfIaHelper::ejecutar($contexto, $accion);
+
+            // Misión cheques-endoso-y-bancos (21/9/2026).
+            case AiMessageAction::TIPO_UNIFICAR_BANCOS:
+                return PropuestaBancosChequesIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');
