@@ -75,11 +75,18 @@ class Numero_De_Comprobante_Test extends ComprasTestCase
         $rosario = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
 
         $defaults = [
-            'provider_id'    => $rosario->id,
-            'update_prices'  => 0,
-            'update_stock'   => 0,
-            'total_with_iva' => 0,
-            'articles'       => [
+            'provider_id'      => $rosario->id,
+            'update_prices'    => 0,
+            'update_stock'     => 0,
+            'total_with_iva'   => 0,
+            // 'sin factura' y no el 'automatico' de payload_compra(): lo que se prueba acá es el
+            // TEXTO del movimiento de cuenta corriente, no el circuito de facturación. En
+            // 'automatico' el artículo del fixture (con iva_id) dispara ModoFacturacionHelper y
+            // deja un ProviderOrderAfipTicket + su desglose de alícuotas colgando, que este
+            // tearDown() no limpia (los tres no tienen FK con cascada). Con 'sin factura' no se
+            // genera ningún ticket, así que no hay nada que limpiar de más.
+            'modo_facturacion' => 'sin factura',
+            'articles'         => [
                 $this->item('Marco para cama', 100, 5, ['update_provider' => 0]),
             ],
         ];
