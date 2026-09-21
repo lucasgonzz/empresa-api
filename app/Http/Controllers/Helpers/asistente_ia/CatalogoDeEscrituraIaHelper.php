@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -983,6 +984,35 @@ class CatalogoDeEscrituraIaHelper
     /** @var array<string, array<int, string>> Claves del request que lee cada método, por 'Clase@metodo'. */
     protected static $leidos = [];
 
+    /** @var array<string, array<int, array>> Tablas que referencian a cada entidad, cacheadas por proceso. */
+    protected static $referencias = [];
+
+    /**
+     * Tope de filas ESTIMADAS (information_schema.tables.table_rows) de una tabla para contarle las
+     * referencias cuando la columna no está indexada.
+     *
+     * Existe porque casi ninguna de estas columnas tiene índice: de las quince tablas que
+     * referencian a `price_type_id`, una sola lo tiene (medido el 21/9/2026 sobre el esquema). Un
+     * COUNT sobre una columna sin índice es un scan de la tabla entera, y hay tablas de un cliente
+     * grande que no se pueden escanear adentro del request que propone la tarjeta. Con este tope,
+     * el peor caso de una tabla es escanear 200.000 filas; las que se pasan no se cuentan y el
+     * aviso lo dice con "puede haber más".
+     */
+    const TOPE_DE_FILAS_SIN_INDICE = 200000;
+
+    /** Tope de tablas a las que se les cuentan referencias, de la más chica a la más grande. */
+    const TOPE_DE_TABLAS_A_CONTAR = 15;
+
+    /** Cuántas referencias se nombran en el aviso antes de agrupar el resto. */
+    const TOPE_DE_REFERENCIAS_EN_EL_AVISO = 3;
+
+    /**
+     * Cómo se nombran las tablas que no son una entidad del catálogo. Una fila de
+     * `category_price_type` es una referencia colgada de verdad, pero el nombre de la tabla no le
+     * dice nada a nadie: todas se suman en una sola entrada con esta etiqueta.
+     */
+    const ETIQUETA_INNOMBRABLE = 'vínculos internos';
+
     // -------------------------------------------------------------------------------------------
     // API pública
     // -------------------------------------------------------------------------------------------
@@ -1082,6 +1112,164 @@ class CatalogoDeEscrituraIaHelper
             'params' => count($ruta['params']) ? $ruta['params'] : new \stdClass(),
             'texto'  => $ruta['texto'],
         ];
+    }
+
+    /**
+     * El aviso de una baja: lo que dice la declaración, más si la baja es DEFINITIVA, más cuántas
+     * filas del dueño van a quedar apuntando a un registro que ya no existe.
+     *
+     * 🔴 POR QUÉ ESTO NO ES DECORACIÓN (hallazgo 🔴 4 del chequeo adversarial, 21/9/2026). Borrar
+     * una lista de precios es un DELETE de verdad —`PriceType` no usa SoftDeletes— y
+     * `PriceTypeController::destroy()` sólo desengancha los artículos: los clientes que tenían esa
+     * lista quedan con un `price_type_id` que no apunta a nada, sin vuelta atrás. Es la misma clase
+     * de dato huérfano que ya tumbó el listado de artículos, y hay una migración
+     * (`2026_09_18_120000_normalizar_price_type_id_cero_en_clients`) que existe justamente para
+     * limpiar ese destrozo. La tarjeta lo presentaba como una baja cualquiera, con un aviso que
+     * hablaba sólo de los artículos.
+     *
+     * La cuenta es genérica (sale del esquema, no de una lista por entidad) y sólo se paga cuando
+     * la baja es definitiva: si la entidad usa SoftDeletes la fila sigue existiendo y nadie queda
+     * colgado, así que no hay nada que contar.
+     *
+     * @param  array  $declaracion
+     * @param  object|array  $fila  La fila que se va a borrar (se usa su id).
+     * @param  int  $owner_id
+     * @return string  El aviso completo, o '' si no hay nada que decir.
+     */
+    public static function aviso_de_baja(array $declaracion, $fila, $owner_id): string
+    {
+        $partes = [];
+
+        if (!is_null($declaracion['aviso_de_baja'])) {
+
+            $partes[] = $declaracion['aviso_de_baja'];
+        }
+
+        if (!$declaracion['baja_definitiva']) {
+
+            return implode(' ', $partes);
+        }
+
+        $partes[] = 'Esta baja es DEFINITIVA: no va a la papelera y no se puede deshacer.';
+
+        $fila = (object) $fila;
+
+        $id = isset($fila->id) ? (int) $fila->id : 0;
+
+        $colgadas = self::referencias_que_quedan_colgadas($declaracion, $id, (int) $owner_id);
+
+        if (count($colgadas['referencias'])) {
+
+            $femenino = $declaracion['genero'] === 'f';
+
+            $partes[] = self::enumerar($colgadas['referencias'])
+                . ($femenino ? ' la tienen asignada y van a quedar sin ella' : ' lo tienen asignado y van a quedar sin él')
+                . ($colgadas['hay_sin_contar'] ? ' (puede haber más)' : '')
+                . '.';
+        }
+
+        return implode(' ', $partes);
+    }
+
+    /**
+     * Cuántas filas del dueño apuntan a este registro, tabla por tabla, leyendo el esquema: toda
+     * tabla que tenga una columna `<entidad>_id`.
+     *
+     * Lo que se cuenta y lo que no:
+     *   - Se saltean las filas ya borradas (`deleted_at`), que no quedan colgadas de nada.
+     *   - Se scopea por `user_id` donde la tabla lo tenga. Donde no (las tablas pivote), se cuenta
+     *     por el id solo: ese id ya se verificó que es del dueño, así que lo que lo referencia es
+     *     suyo.
+     *   - No se cuentan las tablas grandes sin índice en esa columna (ver TOPE_DE_FILAS_SIN_INDICE):
+     *     serían un scan entero adentro del request que propone la tarjeta. Cuando se saltea alguna,
+     *     `hay_sin_contar` queda en true y el aviso lo dice.
+     *
+     * @param  array  $declaracion
+     * @param  int  $id
+     * @param  int  $owner_id
+     * @return array{referencias: array<int, array{tabla: string, etiqueta: string, cantidad: int}>, hay_sin_contar: bool}
+     */
+    public static function referencias_que_quedan_colgadas(array $declaracion, int $id, int $owner_id): array
+    {
+        $vacio = ['referencias' => [], 'hay_sin_contar' => false];
+
+        if ($id <= 0) {
+
+            return $vacio;
+        }
+
+        $columna = $declaracion['entidad'].'_id';
+
+        $candidatas = self::tablas_que_referencian($columna);
+
+        $referencias = [];
+        $hay_sin_contar = false;
+        $contadas = 0;
+
+        foreach ($candidatas as $candidata) {
+
+            if ($contadas >= self::TOPE_DE_TABLAS_A_CONTAR) {
+
+                $hay_sin_contar = true;
+
+                break;
+            }
+
+            if (!$candidata['indexada'] && $candidata['filas'] > self::TOPE_DE_FILAS_SIN_INDICE) {
+
+                $hay_sin_contar = true;
+
+                continue;
+            }
+
+            $contadas++;
+
+            try {
+
+                $consulta = DB::table($candidata['tabla'])->where($columna, $id);
+
+                if ($candidata['tiene_user_id']) {
+
+                    $consulta->where('user_id', $owner_id);
+                }
+
+                if ($candidata['tiene_deleted_at']) {
+
+                    $consulta->whereNull('deleted_at');
+                }
+
+                $cantidad = (int) $consulta->count();
+
+            } catch (\Throwable $e) {
+
+                // Una tabla que no se puede contar no puede voltear la propuesta de una baja.
+                Log::warning('CatalogoDeEscrituraIaHelper: no se pudieron contar las referencias', [
+                    'tabla'   => $candidata['tabla'],
+                    'columna' => $columna,
+                    'error'   => $e->getMessage(),
+                ]);
+
+                $hay_sin_contar = true;
+
+                continue;
+            }
+
+            if ($cantidad > 0) {
+
+                $referencias[] = [
+                    'tabla'    => $candidata['tabla'],
+                    'etiqueta' => self::etiqueta_de_tabla($candidata['tabla']),
+                    'cantidad' => $cantidad,
+                ];
+            }
+        }
+
+        usort($referencias, function ($a, $b) {
+
+            return $b['cantidad'] - $a['cantidad'];
+        });
+
+        return ['referencias' => self::agrupar_las_innombrables($referencias), 'hay_sin_contar' => $hay_sin_contar];
     }
 
     /**
@@ -1270,6 +1458,7 @@ class CatalogoDeEscrituraIaHelper
         self::$rutas = null;
         self::$leidos = [];
         self::$no_resueltas = [];
+        self::$referencias = [];
     }
 
     // -------------------------------------------------------------------------------------------
@@ -1512,6 +1701,16 @@ class CatalogoDeEscrituraIaHelper
             $declaracion['columna_numero'] = isset($columnas_por_tabla[$tabla]['num']) ? 'num' : null;
             $declaracion['tiene_deleted_at'] = isset($columnas_por_tabla[$tabla]['deleted_at']);
 
+            /*
+             * 🔴 SI LA BAJA ES DEFINITIVA O VA A LA PAPELERA, Y NO SE DEDUCE DE LA TABLA. Lo decide
+             * el MODELO: `destroy()` llama a `delete()`, y `delete()` sólo marca `deleted_at` si el
+             * modelo usa el trait SoftDeletes. `PriceType` no lo usa (es el único de su familia), y
+             * su `destroy()` hace un DELETE de verdad: los clientes que tenían esa lista quedan con
+             * un `price_type_id` que no existe. Sin esta marca, la tarjeta de baja de una lista de
+             * precios se presenta igual que la de un artículo, que sí es reversible.
+             */
+            $declaracion['baja_definitiva'] = !self::usa_soft_deletes($entidad, $declaracion['tiene_deleted_at']);
+
             list($campos, $no_la_lee) = self::campos_de($entidad, $curada, $columnas_por_tabla[$tabla], $operaciones);
 
             $declaracion['campos'] = $campos;
@@ -1573,6 +1772,224 @@ class CatalogoDeEscrituraIaHelper
         self::$rutas = $rutas;
 
         return $rutas;
+    }
+
+    /**
+     * true si el modelo de la entidad usa SoftDeletes, o sea si su `destroy()` manda la fila a la
+     * papelera en vez de borrarla.
+     *
+     * Se mira el TRAIT del modelo y no la columna `deleted_at`: una tabla puede tener la columna de
+     * una migración vieja y el modelo no usar el trait, y ahí el `delete()` borra igual. Si la
+     * clase no existe (entidad sin modelo Eloquent), se cae a la columna, que es lo único que hay.
+     *
+     * @param  string  $entidad
+     * @param  bool  $tiene_deleted_at
+     * @return bool
+     */
+    protected static function usa_soft_deletes(string $entidad, bool $tiene_deleted_at): bool
+    {
+        $clase = GeneralHelper::getModelName($entidad);
+
+        if (!class_exists($clase)) {
+
+            return $tiene_deleted_at;
+        }
+
+        return in_array('Illuminate\Database\Eloquent\SoftDeletes', class_uses_recursive($clase), true);
+    }
+
+    /**
+     * Las tablas que tienen una columna `<entidad>_id`, con lo que hace falta para decidir si se
+     * les puede contar: si la columna está indexada (primera columna de algún índice), cuántas
+     * filas tienen estimadas, y si tienen `user_id` y `deleted_at`. Ordenadas de la más chica a la
+     * más grande, para que el tope de tablas corte por las caras.
+     *
+     * Cuatro consultas a information_schema, cacheadas por proceso: una tarjeta de baja las paga
+     * una sola vez aunque se proponga varias veces en la misma conversación.
+     *
+     * @param  string  $columna
+     * @return array<int, array{tabla: string, indexada: bool, filas: int, tiene_user_id: bool, tiene_deleted_at: bool}>
+     */
+    protected static function tablas_que_referencian(string $columna): array
+    {
+        if (isset(self::$referencias[$columna])) {
+
+            return self::$referencias[$columna];
+        }
+
+        $tablas = [];
+
+        /*
+         * Sin pluck(): information_schema devuelve las claves en MAYÚSCULAS en MySQL 8 (medido el
+         * 21/9/2026: `pluck('table_name')` tira "Undefined property: stdClass::$table_name"), así
+         * que cada fila se normaliza a minúsculas antes de leerla. Es lo mismo que ya hacía
+         * columnas_de_tablas().
+         */
+        foreach (DB::table('information_schema.columns')
+                    ->select('table_name')
+                    ->whereRaw('table_schema = DATABASE()')
+                    ->where('column_name', $columna)
+                    ->get() as $fila) {
+
+            $fila = (object) array_change_key_case((array) $fila, CASE_LOWER);
+
+            $tablas[] = (string) $fila->table_name;
+        }
+
+        $tablas = array_values(array_unique($tablas));
+
+        if (!count($tablas)) {
+
+            self::$referencias[$columna] = [];
+
+            return [];
+        }
+
+        $indexadas = [];
+
+        foreach (DB::table('information_schema.statistics')
+                    ->whereRaw('table_schema = DATABASE()')
+                    ->where('column_name', $columna)
+                    ->where('seq_in_index', 1)
+                    ->whereIn('table_name', $tablas)
+                    ->get() as $fila) {
+
+            $fila = (object) array_change_key_case((array) $fila, CASE_LOWER);
+
+            $indexadas[$fila->table_name] = true;
+        }
+
+        $filas_por_tabla = [];
+
+        foreach (DB::table('information_schema.tables')
+                    ->whereRaw('table_schema = DATABASE()')
+                    ->whereIn('table_name', $tablas)
+                    ->get() as $fila) {
+
+            $fila = (object) array_change_key_case((array) $fila, CASE_LOWER);
+
+            $filas_por_tabla[$fila->table_name] = (int) $fila->table_rows;
+        }
+
+        $propias = [];
+
+        foreach (DB::table('information_schema.columns')
+                    ->whereRaw('table_schema = DATABASE()')
+                    ->whereIn('table_name', $tablas)
+                    ->whereIn('column_name', ['user_id', 'deleted_at'])
+                    ->get() as $fila) {
+
+            $fila = (object) array_change_key_case((array) $fila, CASE_LOWER);
+
+            $propias[$fila->table_name][$fila->column_name] = true;
+        }
+
+        $candidatas = [];
+
+        foreach ($tablas as $tabla) {
+
+            $candidatas[] = [
+                'tabla'            => $tabla,
+                'indexada'         => isset($indexadas[$tabla]),
+                'filas'            => isset($filas_por_tabla[$tabla]) ? $filas_por_tabla[$tabla] : 0,
+                'tiene_user_id'    => isset($propias[$tabla]['user_id']),
+                'tiene_deleted_at' => isset($propias[$tabla]['deleted_at']),
+            ];
+        }
+
+        usort($candidatas, function ($a, $b) {
+
+            return $a['filas'] - $b['filas'];
+        });
+
+        self::$referencias[$columna] = $candidatas;
+
+        return $candidatas;
+    }
+
+    /**
+     * Cómo se nombra una tabla en el aviso: la etiqueta de su entidad si es una del catálogo
+     * ("clientes", "artículos"), y si no, "vínculos internos" — una fila de `category_price_type`
+     * es una referencia colgada de verdad, pero el nombre de la tabla no le dice nada a nadie.
+     *
+     * @param  string  $tabla
+     * @return string
+     */
+    protected static function etiqueta_de_tabla(string $tabla): string
+    {
+        foreach (self::catalogo() as $declaracion) {
+
+            if ($declaracion['tabla'] === $tabla) {
+
+                return $declaracion['etiqueta'];
+            }
+        }
+
+        return self::ETIQUETA_INNOMBRABLE;
+    }
+
+    /**
+     * Las tablas sin nombre propio se suman en UNA sola entrada al final. Sin esto el aviso dice
+     * "25 vínculos internos, 10 vínculos internos y 10 vínculos internos", que fue lo que salió la
+     * primera vez que se corrió esto sobre la base de testing.
+     *
+     * @param  array<int, array{tabla: string, etiqueta: string, cantidad: int}>  $referencias
+     * @return array<int, array{tabla: string, etiqueta: string, cantidad: int}>
+     */
+    protected static function agrupar_las_innombrables(array $referencias): array
+    {
+        $nombradas = [];
+        $sueltas = 0;
+
+        foreach ($referencias as $referencia) {
+
+            if ($referencia['etiqueta'] === self::ETIQUETA_INNOMBRABLE) {
+
+                $sueltas += $referencia['cantidad'];
+
+                continue;
+            }
+
+            $nombradas[] = $referencia;
+        }
+
+        if ($sueltas > 0) {
+
+            $nombradas[] = ['tabla' => '', 'etiqueta' => self::ETIQUETA_INNOMBRABLE, 'cantidad' => $sueltas];
+        }
+
+        return $nombradas;
+    }
+
+    /**
+     * "30 clientes", "30 clientes y 12 artículos", "30 clientes, 12 artículos y 4 vínculos
+     * internos" — con el tope de TOPE_DE_REFERENCIAS_EN_EL_AVISO.
+     *
+     * @param  array<int, array{etiqueta: string, cantidad: int}>  $referencias
+     * @return string
+     */
+    protected static function enumerar(array $referencias): string
+    {
+        $partes = [];
+
+        foreach ($referencias as $referencia) {
+
+            if (count($partes) >= self::TOPE_DE_REFERENCIAS_EN_EL_AVISO) {
+
+                break;
+            }
+
+            $partes[] = $referencia['cantidad'].' '.$referencia['etiqueta'];
+        }
+
+        if (count($partes) === 1) {
+
+            return $partes[0];
+        }
+
+        $ultima = array_pop($partes);
+
+        return implode(', ', $partes).' y '.$ultima;
     }
 
     /**

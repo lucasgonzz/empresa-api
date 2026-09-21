@@ -269,9 +269,19 @@ class PropuestaGenericaIaHelper
 
         $nombre = Catalogo::nombre_de_fila($declaracion['entidad'], $fila);
 
-        $aviso = is_null($declaracion['aviso_de_baja'])
-            ? 'Se borra del sistema. Lo que dependa de esto puede dejar de verse.'
-            : $declaracion['aviso_de_baja'];
+        /*
+         * El aviso de una baja lo arma el catálogo: el texto fijo de la entidad, más si la baja es
+         * DEFINITIVA (el modelo no usa SoftDeletes), más cuántas filas del dueño van a quedar
+         * apuntando a un registro que ya no existe. Ver Catalogo::aviso_de_baja(): es el arreglo
+         * del 🔴 4 del chequeo adversarial, donde borrar una lista de precios dejaba 30 clientes
+         * con un `price_type_id` inexistente mientras la tarjeta lo contaba como algo reversible.
+         */
+        $aviso = Catalogo::aviso_de_baja($declaracion, $fila, $contexto->owner_id);
+
+        if ($aviso === '') {
+
+            $aviso = 'Se borra del sistema. Lo que dependa de esto puede dejar de verse.';
+        }
 
         $creada = AccionesIaHelper::crear(
             $contexto,
