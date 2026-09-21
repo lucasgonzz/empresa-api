@@ -68,6 +68,11 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_stock_por_deposito',
         'que_puedo_consultar',
         'consultar_datos',
+        // Misión asistente-omnisciente (21/9/2026): las cuatro de lectura sin límites, al final.
+        'resumir_datos',
+        'consultar_resumen_de_ventas',
+        'consultar_reporte_contable',
+        'mostrar_imagenes_de_articulos',
     ];
 
     /** @var User */
