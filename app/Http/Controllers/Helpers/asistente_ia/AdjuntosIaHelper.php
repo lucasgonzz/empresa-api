@@ -90,7 +90,16 @@ class AdjuntosIaHelper
 
                 $article = $modelos[$id];
 
-                $url = ArticleHelper::getFirstImage($article);
+                /*
+                 * 🔴 primera_imagen_publica() y NO getFirstImage(): la vieja, en `APP_ENV`
+                 * production, devuelve `"public/https://..."` cuando la URL guardada no tiene la
+                 * palabra `storage` adentro, y `.../public/public/storage/...` cuando si la tiene.
+                 * Lo primero lo rechaza es_url_absoluta() y el asistente le dice al dueno "no
+                 * tiene foto cargada" teniendo la foto; lo segundo pasa el filtro y termina en una
+                 * imagen rota en el chat y en una URL 404 mandada a Meta. Y no se ve en los tests
+                 * porque esa rama solo corre con APP_ENV=production (ver 41_Foto_del_articulo_en_produccion_Test).
+                 */
+                $url = ArticleHelper::primera_imagen_publica($article);
 
                 $tiene_imagen = is_string($url) && self::es_url_absoluta($url);
 

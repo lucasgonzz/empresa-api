@@ -1711,6 +1711,14 @@ class ArticleHelper {
         }
     }
 
+    /**
+     * 🔴 ESTA FUNCION DEVUELVE UNA URL ROTA EN PRODUCCION, Y POR ESO NO LA USA EL ASISTENTE.
+     * Para una URL sin la palabra `storage` adentro, `strpos` da false y el retorno es
+     * literalmente `"public/https://..."`; y para una URL que SI la tiene, le antepone otro
+     * `/public` al que ApiUrlHelper ya le puso al guardarla (`.../public/public/storage/...`).
+     * Queda como esta porque el Mostrador (`RecolectorBase::fotos_de_articulos`) la consume y
+     * cambiarla es otra mision: lo nuevo va por primera_imagen_publica(), abajo.
+     */
     static function getFirstImage($article) {
         if (count($article->images) >= 1) {
             $first_image = $article->images[0]->hosting_url;
@@ -1728,5 +1736,38 @@ class ArticleHelper {
             return $first_image;
         }
         return null;
+    }
+
+    /**
+     * La foto que representa al articulo, como URL publica ABSOLUTA y lista para usarse afuera
+     * del sistema: la miniatura del chat del asistente, la imagen que el admin le manda al dueno
+     * por WhatsApp y la ficha de una mencion.
+     *
+     * Elige la misma imagen que getFirstImage() --la marcada con `first`, o la primera-- y resuelve
+     * la URL con ApiUrlHelper::url_publica_de_imagen(), que es el unico lugar del repo que sabe
+     * cuando esta instalacion sirve desde `/public` y cuando desde la raiz. Devuelve null cuando el
+     * articulo no tiene foto o cuando la que tiene no da para armar una URL.
+     *
+     * 🔴 POR QUE ES UNA FUNCION NUEVA Y NO UN ARREGLO DE getFirstImage(). Esa funcion tiene hoy
+     * dos consumidores mas (la ficha de mencion y el Mostrador) y su salida rota viaja a pantallas
+     * que estan en produccion. Se arregla el llamador del asistente, que es el que muestra la foto
+     * al dueno, y se deja la vieja quieta hasta que alguien mida a que depende de su salida actual.
+     * La regla de eleccion esta copiada a proposito: es el precio de no tocarla. Cuando el
+     * Mostrador migre tambien, getFirstImage() se borra y la copia se va con ella.
+     *
+     * @param  \App\Models\Article  $article  Con la relacion `images` cargada.
+     * @return string|null
+     */
+    static function primera_imagen_publica($article) {
+        if (count($article->images) < 1) {
+            return null;
+        }
+        $hosting_url = $article->images[0]->hosting_url;
+        foreach ($article->images as $image) {
+            if ($image->first != 0) {
+                $hosting_url = $image->hosting_url;
+            }
+        }
+        return ApiUrlHelper::url_publica_de_imagen($hosting_url);
     }
 }
