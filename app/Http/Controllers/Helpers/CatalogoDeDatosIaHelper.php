@@ -433,6 +433,12 @@ class CatalogoDeDatosIaHelper
                 $fila['valores'] = $campo['valores'];
             }
 
+            // Un campo calculado se usa igual que cualquier otro; lo que cambia es que no se puede
+            // cargar ni editar, y que es el que hay que sumar cuando la pregunta es de plata.
+            if (isset($campo['calculado'])) {
+                $fila['calculado'] = 'se calcula por renglon; se filtra, se ordena y se suma como cualquier campo numerico, pero no se puede cargar ni editar';
+            }
+
             $campos[] = $fila;
         }
 
@@ -662,6 +668,24 @@ class CatalogoDeDatosIaHelper
 
         if (! isset($declaracion['campos'][$campo])) {
             return null;
+        }
+
+        /*
+         * 🔴 UN CAMPO CALCULADO devuelve su expresión, entre paréntesis, y con eso alcanza: este
+         * método es el único lugar por el que pasan el SELECT, el WHERE, el ORDER BY y el SUM()
+         * de la agregación, así que `importe` se proyecta, se filtra, se ordena y se suma como
+         * cualquier columna, sin una sola rama nueva en los consumidores.
+         *
+         * El filtro repite la expresión en el WHERE en vez de irse a HAVING: es lo más simple y,
+         * sobre todo, deja intactos el `count()` del total y la paginación, que son sobre la misma
+         * query sin agrupar.
+         *
+         * ⚠️ La expresión sale de EsquemaDeDatosIaHelper::HIJAS —una constante de este código—,
+         * nunca del input del modelo: lo que el modelo manda es el NOMBRE, que si no está declarado
+         * devuelve null acá y corta con error arriba.
+         */
+        if (isset($declaracion['campos'][$campo]['calculado'])) {
+            return '(' . $declaracion['campos'][$campo]['expresion'] . ')';
         }
 
         $partes = explode('.', $declaracion['campos'][$campo]['columna']);

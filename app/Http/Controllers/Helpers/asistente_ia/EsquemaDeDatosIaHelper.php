@@ -36,6 +36,35 @@ use Illuminate\Support\Str;
  * calificada (`fecha_venta` = `sales.created_at`). Están declaradas a mano porque el join no se
  * deriva de nada.
  *
+ * 🔴 LOS CAMPOS CALCULADOS: `importe`, y por qué existen.
+ *
+ * Un renglón guarda `amount` y `cost` (o `price`) por separado, y los dos son POR UNIDAD. La plata
+ * del renglón no es ninguna columna: es la multiplicación. Como `resumir_datos` solo sabía sumar
+ * columnas declaradas, la única columna de plata de un renglón de compra era el costo unitario, y
+ * "¿cuánto le gasté a este proveedor?" se contestaba con `SUM(cost)` — un número chico, creíble y
+ * falso. Medido el 21/9/2026 contra una conversación real: el asistente contestó $8.130 donde la
+ * verdad era $257.596,80.
+ *
+ * Un campo calculado se declara en `campos_calculados` con su `expresion` SQL y viaja como un campo
+ * `number` normal, con la marca `calculado`. A partir de ahí `consultar_datos` lo proyecta, lo
+ * filtra y lo ordena, y `resumir_datos` lo suma, lo promedia y lo rankea, sin que el modelo tenga
+ * que multiplicar nada. El filtro repite la expresión en el WHERE (no va a HAVING): así sigue
+ * valiendo el mismo `count()` y la misma paginación que cualquier otro campo.
+ *
+ * ⚠️ LA EXPRESIÓN SALE SIEMPRE DE ACÁ, de esta constante, nunca del input del modelo. Lo que el
+ * modelo manda es el NOMBRE del campo, que se busca en la declaración; si no está, corta con error.
+ *
+ * ⚠️ Y NO SE PUEDE ESCRIBIR: `CatalogoDeEscrituraIaHelper` arma sus campos recorriendo las columnas
+ * reales de `information_schema`, así que un campo calculado —que no es una columna— no entra ni
+ * por alta ni por edición. El test 40 lo verifica sobre las cinco entidades.
+ *
+ * 🔴 EL DESCUENTO NO SE INVENTÓ ACÁ. Cada expresión sigue la cuenta que ya hace el sistema para esa
+ * tabla, citada en el bloque de cada entidad. El descuento de renglón es un PORCENTAJE que se
+ * aplica sobre el bruto (`total -= total * discount / 100`), no está aplicado al precio guardado.
+ * Los descuentos y recargos del ENCABEZADO (la lista de Descuentos, los Recargos, `sales.descuento`
+ * y los del método de pago) no se prorratean al renglón, ni acá ni en `ResumenDeVentasIaHelper`: la
+ * suma de los renglones puede no dar el total del comprobante, y las descripciones lo dicen.
+ *
  * 🔴 SE CACHEA POR VERSIÓN DEL ESQUEMA. Derivar pega a `information_schema` (una consulta grande)
  * y la clave del caché lleva el nombre de la base y `count(*)` + `max(id)` de `migrations`: una
  * migración nueva invalida sola, y dos bases distintas (dos slots, dos clientes) no se pisan.
@@ -354,7 +383,7 @@ class EsquemaDeDatosIaHelper
         'renglon_de_venta' => [
             'tabla'       => 'article_sale',
             'etiqueta'    => 'renglones de venta (un articulo dentro de una venta)',
-            'descripcion' => 'Cada articulo vendido, con su cantidad, precio y costo al momento de la venta. Es la tabla para "que articulos le vendi a", "cuantas unidades de X vendi" y para agrupar con resumir_datos. Solo ventas reales (sin las contenedoras de consolidacion AFIP) y no borradas. `fecha_venta`, `numero_venta`, `client_id`, `employee_id`, `seller_id`, `address_id`, `terminada` y `moneda_id` vienen de la venta. Para el total vendido de un periodo va consultar_resumen_de_ventas, que es el mismo numero que Rendimiento.',
+            'descripcion' => 'Cada articulo vendido, con su cantidad, precio y costo al momento de la venta. Es la tabla para "que articulos le vendi a", "cuantas unidades de X vendi" y para agrupar con resumir_datos. Solo ventas reales (sin las contenedoras de consolidacion AFIP) y no borradas. `fecha_venta`, `numero_venta`, `client_id`, `employee_id`, `seller_id`, `address_id`, `terminada` y `moneda_id` vienen de la venta. 🔴 PARA PLATA VA `importe` (unidades x precio, con el descuento del renglon), NUNCA `price`, que es el precio de UNA unidad: sumar `price` da un numero chico que no es plata. Lo que costo lo vendido es `costo_total` y la diferencia es `ganancia_estimada`. La columna `ganancia` NO se usa (esta mal calculada). Para el total vendido de un periodo va consultar_resumen_de_ventas, que es el mismo numero que Rendimiento: los descuentos y recargos de la venta entera no se prorratean al renglon, asi que la suma de los renglones puede no dar ese total.',
             'modulo'      => 'ventas',
             'padre'       => ['tabla' => 'sales', 'columna_local' => 'sale_id', 'columna_padre' => 'id', 'entidad' => 'sale'],
             'campos_del_padre' => [
@@ -372,16 +401,54 @@ class EsquemaDeDatosIaHelper
                 ['sql' => 'sales.deleted_at IS NULL', 'texto' => 'solo ventas no borradas'],
             ],
             'etiquetas' => [
-                'name'   => 'nombre del articulo al momento de la venta',
-                'amount' => 'unidades vendidas',
-                'price'  => 'precio unitario cobrado',
-                'cost'   => 'costo unitario al momento de la venta',
+                'name'     => 'nombre del articulo al momento de la venta',
+                'amount'   => 'unidades vendidas',
+                'price'    => 'precio unitario cobrado (de UNA unidad: para plata va importe)',
+                'cost'     => 'costo unitario al momento de la venta (de UNA unidad: para plata va costo_total)',
+                'discount' => 'descuento del renglon, en porcentaje (ya aplicado en importe)',
+                'ganancia' => 'ganancia persistida del renglon: NO la uses, esta mal calculada (usa ganancia_estimada)',
+            ],
+            /*
+             * `total = price * amount`, y despues `total -= total * discount / 100`: la cuenta es
+             * la de SaleHelper::getTotalItem() (SaleHelper.php:2343-2357), la misma que la SPA hace
+             * al vender y la misma que ya usa ResumenDeVentasIaHelper.php:591 para "cuanto vendi"
+             * por articulo. El `price` guardado es BRUTO: `attachArticle` persiste el precio y el
+             * descuento por separado (SaleHelper.php:1264 y 1268).
+             *
+             * ⚠️ NO netea `returned_amount`: en getTotalItem() la resta de las devueltas esta
+             * comentada (SaleHelper.php:2345-2347), asi que el importe es lo facturado. Para
+             * devoluciones esta renglon_de_nota_de_credito.
+             *
+             * El costo va SIN descuento —el descuento es del precio, no de lo que costo la
+             * mercaderia—: es el `(tabla.cost * tabla.amount)` de
+             * CostoDeVentaHelper::expresion_costo_neto_de_linea() (CostoDeVentaHelper.php:364), el
+             * mismo de SaleTotalesHelper::set_total_cost() (SaleTotalesHelper.php:19).
+             *
+             * 🔴 `ganancia_estimada` se calcula, no se lee de la columna `ganancia`. Esa columna se
+             * llena con `(price - cost) * amount` sobre el precio BRUTO (SaleHelper.php:1258-1262),
+             * o sea ignora el descuento y queda sobrevaluada en toda linea que lo tenga; y en las
+             * filas viejas esta directamente rota (informes/20260917-saneo-ganancia-ventas.md).
+             * Se deja declarada como campo derivado con la etiqueta que avisa, y nada la suma.
+             */
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'article_sale.amount * COALESCE(article_sale.price, 0) * (1 - COALESCE(article_sale.discount, 0) / 100)',
+                    'etiqueta'  => 'importe del renglon en plata (unidades x precio unitario, con el descuento del renglon)',
+                ],
+                'costo_total' => [
+                    'expresion' => 'article_sale.amount * COALESCE(article_sale.cost, 0)',
+                    'etiqueta'  => 'costo total del renglon (unidades x costo unitario)',
+                ],
+                'ganancia_estimada' => [
+                    'expresion' => 'article_sale.amount * (COALESCE(article_sale.price, 0) * (1 - COALESCE(article_sale.discount, 0) / 100) - COALESCE(article_sale.cost, 0))',
+                    'etiqueta'  => 'ganancia estimada del renglon (importe menos costo_total)',
+                ],
             ],
         ],
         'renglon_de_compra' => [
             'tabla'       => 'article_provider_order',
             'etiqueta'    => 'renglones de compra (un articulo dentro de una compra a proveedor)',
-            'descripcion' => 'Cada articulo comprado a un proveedor, con su cantidad pedida y recibida y su costo. Es la tabla para "que le compro mas a este proveedor" (resumir_datos agrupando por article_id con filtro provider_id) y "cuanto pague por X". `fecha_compra`, `numero_compra`, `provider_id`, `provider_order_status_id` y `moneda_id` vienen de la compra. `cost_in_dollars` en 1 dice que el costo esta en dolares.',
+            'descripcion' => 'Cada articulo comprado a un proveedor, con su cantidad pedida y recibida y su costo. Es la tabla para "que le compro mas a este proveedor" (resumir_datos agrupando por article_id con filtro provider_id) y "cuanto pague por X". `fecha_compra`, `numero_compra`, `provider_id`, `provider_order_status_id` y `moneda_id` vienen de la compra. 🔴 PARA SABER CUANTO GASTASTE EN UN ARTICULO SUMA `importe` (unidades x costo unitario, con el descuento del renglon), NUNCA `cost`, que es el costo de UNA unidad: sumar `cost` da un numero chico y creible que no es plata. `cost_in_dollars` en 1 dice que ese costo esta en dolares y que su importe no es comparable con los de pesos.',
             'modulo'      => 'proveedores y compras',
             'padre'       => ['tabla' => 'provider_orders', 'columna_local' => 'provider_order_id', 'columna_padre' => 'id', 'entidad' => 'provider_order'],
             'campos_del_padre' => [
@@ -393,15 +460,46 @@ class EsquemaDeDatosIaHelper
             ],
             'condiciones_fijas' => [],
             'etiquetas' => [
-                'amount'   => 'unidades',
-                'received' => 'unidades recibidas',
-                'cost'     => 'costo unitario',
+                'amount'          => 'unidades pedidas',
+                'received'        => 'unidades recibidas',
+                'cost'            => 'costo unitario (de UNA unidad: para plata va importe)',
+                'discount'        => 'descuento del renglon, en porcentaje (ya aplicado en importe)',
+                'cost_in_dollars' => 'el costo de este renglon esta en dolares',
+            ],
+            /*
+             * `total = cost * cantidad`, y despues `total -= total * discount / 100`: la cuenta de
+             * NewProviderOrderHelper::get_total_article()
+             * (providerOrder/NewProviderOrderHelper.php:754 y 775-779).
+             *
+             * ⚠️ DOS DIFERENCIAS con el total que muestra la pantalla de la compra, a proposito:
+             *   - va sobre `amount` (la pedida) y no sobre la "cantidad efectiva", que es `received`
+             *     cuando la compra esta completada (NewProviderOrderHelper.php:750-752). Eso
+             *     necesita el estado de la compra y otro join; con `received` a mano en el campo,
+             *     el que quiera el recibido lo suma aparte;
+             *   - no multiplica por `articles.presentacion` (:766) ni convierte los dolares a pesos
+             *     (:731-748). Lo segundo se avisa: ver `bandera_en_dolares`.
+             */
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'article_provider_order.amount * COALESCE(article_provider_order.cost, 0) * (1 - COALESCE(article_provider_order.discount, 0) / 100)',
+                    'etiqueta'  => 'importe del renglon en plata (unidades pedidas x costo unitario, con el descuento del renglon)',
+                ],
+            ],
+            /*
+             * El costo de un renglon puede estar en dolares aunque la compra este en pesos: es una
+             * marca POR RENGLON, no la moneda del comprobante, asi que `en_otra_moneda` (que mira
+             * `moneda_id`) no la ve. Sin este aviso, un importe en dolares se suma con los pesos y
+             * nadie se entera.
+             */
+            'bandera_en_dolares' => [
+                'campo' => 'cost_in_dollars',
+                'aviso' => 'renglon(es) del conjunto tienen el costo en DOLARES (cost_in_dollars = 1) y su importe entro a la suma sin convertir: el total mezcla pesos con dolares. Filtra por cost_in_dollars (igual no) y volve a llamar, o pedi los dos grupos por separado.',
             ],
         ],
         'renglon_de_presupuesto' => [
             'tabla'       => 'article_budget',
             'etiqueta'    => 'renglones de presupuesto (un articulo dentro de un presupuesto)',
-            'descripcion' => 'Cada articulo presupuestado, con su cantidad y precio. `fecha_presupuesto`, `numero_presupuesto`, `client_id`, `budget_status_id` y `moneda_id` vienen del presupuesto.',
+            'descripcion' => 'Cada articulo presupuestado, con su cantidad y precio. `fecha_presupuesto`, `numero_presupuesto`, `client_id`, `budget_status_id` y `moneda_id` vienen del presupuesto. 🔴 Para plata va `importe` (unidades x precio, con la bonificacion del renglon), nunca `price`, que es el precio de UNA unidad. Aca el descuento del renglon se llama `bonus`; cuando el presupuesto se convierte en venta pasa a ser el `discount` del renglon de venta.',
             'modulo'      => 'ventas',
             'padre'       => ['tabla' => 'budgets', 'columna_local' => 'budget_id', 'columna_padre' => 'id', 'entidad' => 'budget'],
             'campos_del_padre' => [
@@ -412,12 +510,29 @@ class EsquemaDeDatosIaHelper
                 'moneda_id'          => ['columna' => 'budgets.moneda_id',        'tipo' => 'search', 'etiqueta' => 'moneda del presupuesto'],
             ],
             'condiciones_fijas' => [],
-            'etiquetas' => ['amount' => 'unidades', 'price' => 'precio unitario'],
+            'etiquetas' => [
+                'amount' => 'unidades',
+                'price'  => 'precio unitario (de UNA unidad: para plata va importe)',
+                'bonus'  => 'bonificacion del renglon, en porcentaje (ya aplicada en importe)',
+            ],
+            /*
+             * `total = price * amount`, y despues `total -= total * bonus / 100`: la cuenta de
+             * BudgetHelper::totalArticle() (BudgetHelper.php:613-620). Ojo que el descuento de
+             * renglon de un presupuesto NO se llama `discount` —esta tabla no tiene esa columna—
+             * sino `bonus`, y al convertirse en venta viaja al `discount` del renglon de venta
+             * (BudgetHelper.php:277).
+             */
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'article_budget.amount * COALESCE(article_budget.price, 0) * (1 - COALESCE(article_budget.bonus, 0) / 100)',
+                    'etiqueta'  => 'importe del renglon en plata (unidades x precio unitario, con la bonificacion del renglon)',
+                ],
+            ],
         ],
         'renglon_de_nota_de_credito' => [
             'tabla'       => 'article_current_acount',
             'etiqueta'    => 'renglones de nota de credito (un articulo devuelto)',
-            'descripcion' => 'Cada articulo devuelto en una nota de credito, con su cantidad y precio. Solo movimientos de cuenta corriente con estado nota_credito. `fecha_nota`, `client_id` y `moneda_id` vienen de la nota.',
+            'descripcion' => 'Cada articulo devuelto en una nota de credito, con su cantidad y precio. Solo movimientos de cuenta corriente con estado nota_credito. `fecha_nota`, `client_id` y `moneda_id` vienen de la nota. 🔴 Para plata va `importe` (unidades devueltas x precio, con el descuento del renglon), nunca `price`, que es el precio de UNA unidad. Es la tabla de las devoluciones: `renglon_de_venta` es lo facturado y no las netea.',
             'modulo'      => 'clientes',
             'padre'       => ['tabla' => 'current_acounts', 'columna_local' => 'current_acount_id', 'columna_padre' => 'id', 'entidad' => 'current_acount'],
             'campos_del_padre' => [
@@ -428,12 +543,28 @@ class EsquemaDeDatosIaHelper
             'condiciones_fijas' => [
                 ['sql' => "current_acounts.status = 'nota_credito'", 'texto' => 'solo notas de credito'],
             ],
-            'etiquetas' => ['amount' => 'unidades devueltas', 'price' => 'precio unitario'],
+            'etiquetas' => [
+                'amount'   => 'unidades devueltas',
+                'price'    => 'precio unitario (de UNA unidad: para plata va importe)',
+                'discount' => 'descuento del renglon, en porcentaje (ya aplicado en importe)',
+            ],
+            /*
+             * `total = amount * price`, y despues `total -= total * discount / 100`: la cuenta de
+             * NotaCreditoPdf.php:158-166. El renglon copia `price`, `cost` y `discount` del renglon
+             * de la venta original tal cual (CurrentAcountHelper::attachNotaCreditoArticles(),
+             * CurrentAcountHelper.php:331-334), asi que es la misma forma que renglon_de_venta.
+             */
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'article_current_acount.amount * COALESCE(article_current_acount.price, 0) * (1 - COALESCE(article_current_acount.discount, 0) / 100)',
+                    'etiqueta'  => 'importe devuelto en el renglon (unidades x precio unitario, con el descuento del renglon)',
+                ],
+            ],
         ],
         'renglon_de_pedido' => [
             'tabla'       => 'article_order',
             'etiqueta'    => 'renglones de pedido de la tienda online (un articulo dentro de un pedido)',
-            'descripcion' => 'Cada articulo de un pedido que entro por el ecommerce, con su cantidad y precio. `fecha_pedido`, `numero_pedido`, `buyer_id` y `order_status_id` vienen del pedido.',
+            'descripcion' => 'Cada articulo de un pedido que entro por el ecommerce, con su cantidad y precio. `fecha_pedido`, `numero_pedido`, `buyer_id` y `order_status_id` vienen del pedido. 🔴 Para plata va `importe` (unidades x precio), nunca `price`, que es el precio de UNA unidad. Estos renglones no tienen descuento propio: el del pedido vive en el encabezado y no se prorratea.',
             'modulo'      => 'tienda online',
             'padre'       => ['tabla' => 'orders', 'columna_local' => 'order_id', 'columna_padre' => 'id', 'entidad' => 'order'],
             'campos_del_padre' => [
@@ -443,7 +574,21 @@ class EsquemaDeDatosIaHelper
                 'order_status_id' => ['columna' => 'orders.order_status_id', 'tipo' => 'search', 'etiqueta' => 'estado del pedido'],
             ],
             'condiciones_fijas' => [],
-            'etiquetas' => ['amount' => 'unidades', 'price' => 'precio unitario'],
+            'etiquetas' => [
+                'amount' => 'unidades',
+                'price'  => 'precio unitario (de UNA unidad: para plata va importe)',
+            ],
+            /*
+             * `price * amount` y nada mas: la cuenta de OrderHelper::get_total()
+             * (OrderHelper.php:51-68). Esta tabla no tiene columna de descuento —el del pedido es
+             * del encabezado (`orders.payment_method_discount`)— asi que no hay factor que aplicar.
+             */
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'article_order.amount * COALESCE(article_order.price, 0)',
+                    'etiqueta'  => 'importe del renglon en plata (unidades x precio unitario)',
+                ],
+            ],
         ],
         'movimiento_de_caja' => [
             'tabla'       => 'movimiento_cajas',
@@ -1096,6 +1241,33 @@ class EsquemaDeDatosIaHelper
             }
         }
 
+        /*
+         * Los campos calculados van JUSTO DESPUÉS de los del padre, y eso no es cosmético: son los
+         * únicos campos de plata de un renglón, y `cerrar_declaracion()` corta los por defecto en
+         * TOPE_COLUMNAS_POR_DEFECTO. `article_sale` ya tenía treinta campos entre los del padre y
+         * los propios: declarados al final, `importe` no habría viajado sin pedirlo.
+         */
+        if (isset($hija['campos_calculados'])) {
+            foreach ($hija['campos_calculados'] as $nombre => $calculado) {
+                if (isset($campos[$nombre])) {
+                    /*
+                     * La tabla ya tiene una columna real con ese nombre: gana la real, porque es un
+                     * dato y esto es una cuenta. Es un error de programación de este archivo, no
+                     * algo que pueda pasar en runtime; el test 40 lo denuncia pidiendo que cada
+                     * campo calculado declarado esté y esté marcado `calculado`.
+                     */
+                    continue;
+                }
+
+                $campos[$nombre] = [
+                    'tipo'      => 'number',
+                    'etiqueta'  => $calculado['etiqueta'],
+                    'expresion' => $calculado['expresion'],
+                    'calculado' => true,
+                ];
+            }
+        }
+
         foreach ($columnas[$tabla] as $columna => $info) {
             if (! self::columna_visible($columna) || isset($campos[$columna])) {
                 continue;
@@ -1143,6 +1315,10 @@ class EsquemaDeDatosIaHelper
             'relaciones'        => $relaciones,
             'condiciones_fijas' => $hija['condiciones_fijas'],
         ];
+
+        if (isset($hija['bandera_en_dolares']) && isset($campos[$hija['bandera_en_dolares']['campo']])) {
+            $declaracion['bandera_en_dolares'] = $hija['bandera_en_dolares'];
+        }
 
         return self::cerrar_declaracion($declaracion);
     }
@@ -1207,6 +1383,31 @@ class EsquemaDeDatosIaHelper
     public static function tiene_moneda(array $declaracion): bool
     {
         return isset($declaracion['campos']['moneda_id']);
+    }
+
+    /**
+     * Si un campo `checkbox` de la entidad marca, POR REGISTRO, que su plata está en otra moneda
+     * (hoy solo `article_provider_order.cost_in_dollars`): la agregación avisa igual que con
+     * `moneda_id`, porque esa marca no es la moneda del comprobante y `en_otra_moneda` no la ve.
+     *
+     * @param  array  $declaracion
+     * @return array<string, string>|null
+     */
+    public static function bandera_en_dolares(array $declaracion)
+    {
+        return isset($declaracion['bandera_en_dolares']) ? $declaracion['bandera_en_dolares'] : null;
+    }
+
+    /**
+     * Si un campo de una declaración es calculado (una expresión SQL declarada acá, no una columna).
+     *
+     * @param  array   $declaracion
+     * @param  string  $campo
+     * @return bool
+     */
+    public static function es_calculado(array $declaracion, string $campo): bool
+    {
+        return isset($declaracion['campos'][$campo]['calculado']) && $declaracion['campos'][$campo]['calculado'] === true;
     }
 
     /**

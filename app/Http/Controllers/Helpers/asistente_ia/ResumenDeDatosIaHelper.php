@@ -12,8 +12,15 @@ use Illuminate\Support\Facades\DB;
  * Misión asistente-omnisciente (21/9/2026). Es la respuesta a la pregunta que originó la misión:
  * "¿qué producto le compro más a EL MAYORISTA DEL NORTE?" es `renglon_de_compra`, filtro
  * `provider_id contiene "mayorista del norte"`, agrupar por `article_id`, métricas `suma amount` y
- * `suma cost`. Hasta hoy `consultar_datos` paginaba filas y el modelo intentaba sumarlas a mano
+ * `suma importe`. Hasta hoy `consultar_datos` paginaba filas y el modelo intentaba sumarlas a mano
  * sobre una página de veinte, que es la forma más segura de contestar mal con cara de exactitud.
+ *
+ * 🔴 `suma importe`, NO `suma cost`. La segunda pregunta de esa misma conversación —"¿y en plata?"—
+ * se contestó con `SUM(cost)`, que suma COSTOS UNITARIOS: dio $8.130 donde la verdad era
+ * $257.596,80. Un renglón guarda las unidades y el costo de una unidad en columnas distintas y la
+ * plata no es ninguna de las dos, así que ahora el esquema declara `importe` como campo calculado
+ * (`amount * cost`, con el descuento del renglón) y esta agregación lo suma como a cualquier otro
+ * campo `number`. El detalle del mecanismo está en EsquemaDeDatosIaHelper.
  *
  * 🔴 MISMO CONJUNTO DE FILAS QUE consultar_datos: la consulta base (scope por dueño, condiciones
  * fijas, filtros traducidos) sale de CatalogoDeDatosIaHelper::consulta_base(). No hay una segunda
@@ -173,6 +180,12 @@ class ResumenDeDatosIaHelper
 
         if (! is_null($en_otra_moneda)) {
             $respuesta['en_otra_moneda'] = $en_otra_moneda;
+        }
+
+        $en_dolares = self::en_dolares_por_renglon($declaracion, $base['aplicados'], $query);
+
+        if (! is_null($en_dolares)) {
+            $respuesta['importe_en_dolares'] = $en_dolares;
         }
 
         return $respuesta;
@@ -577,6 +590,56 @@ class ResumenDeDatosIaHelper
         return [
             'registros' => $cuantos,
             'aviso'     => $cuantos . ' registro(s) del conjunto no estan en pesos y entraron a las sumas tal cual: no mezcles monedas. Filtra por moneda_id (igual "pesos" o igual "dolares") y volve a llamar.',
+        ];
+    }
+
+    /**
+     * EL OTRO AVISO DE MONEDA, el que `en_otra_moneda` no puede dar.
+     *
+     * 🔴 Un renglón de compra puede tener el costo en dólares AUNQUE LA COMPRA ESTÉ EN PESOS:
+     * `article_provider_order.cost_in_dollars` es una marca por renglón, no la moneda del
+     * comprobante, así que `moneda_id` sale limpio y la suma de `importe` mezcla igual. Sin esto,
+     * un importe en dólares entra a un total en pesos y nadie se entera — que es exactamente la
+     * clase de error que esta misión vino a cerrar.
+     *
+     * Mismo criterio que `en_otra_moneda`: si el modelo ya filtró por esa marca, no hay nada que
+     * avisar. El nombre de la columna sale de la declaración (una constante del esquema), nunca
+     * del input.
+     *
+     * @param  array  $declaracion
+     * @param  array  $aplicados
+     * @param  \Illuminate\Database\Query\Builder  $query
+     * @return array<string, mixed>|null
+     */
+    protected static function en_dolares_por_renglon(array $declaracion, array $aplicados, $query)
+    {
+        $bandera = EsquemaDeDatosIaHelper::bandera_en_dolares($declaracion);
+
+        if (is_null($bandera)) {
+            return null;
+        }
+
+        foreach ($aplicados as $filtro) {
+            if ($filtro['campo'] === $bandera['campo']) {
+                return null;
+            }
+        }
+
+        $col = CatalogoDeDatosIaHelper::columna_sql($declaracion, $bandera['campo']);
+
+        if (is_null($col)) {
+            return null;
+        }
+
+        $cuantos = (int) (clone $query)->whereRaw($col . ' = 1')->count();
+
+        if ($cuantos === 0) {
+            return null;
+        }
+
+        return [
+            'registros' => $cuantos,
+            'aviso'     => $cuantos . ' ' . $bandera['aviso'],
         ];
     }
 }
