@@ -39,9 +39,15 @@ namespace App\Services\Mostrador;
  * o del cliente, o amplían la foto — no disparan ninguna acción. Por eso NO pasan por
  * client_ids()/clientes_ajenos(): ese chequeo de tenencia es solo para lo que puede
  * ACCIONAR sobre otra persona (mandar un WhatsApp), no para una referencia de lectura,
- * exactamente el mismo criterio que ya regía para `articulos.article_id`. El endpoint que
- * abre cada modal (`GET article/{id}` / `GET client/{id}`) ya scopea por dueño como
- * cualquier otro.
+ * exactamente el mismo criterio que ya regía para `articulos.article_id`.
+ *
+ * 🔴 Y esta vez el chequeo de tenencia no se puede delegar en el endpoint que abre cada
+ * modal: `GET article/{id}` y `GET client/{id}` salen de `Controller::fullModel()`, que
+ * busca por id PELADO, sin `where('user_id', ...)` — así es en todo el sistema, no algo
+ * de estas dos rutas. La SPA lo tapa del lado del cliente (AbrirArticuloDesdeInforme.vue /
+ * AbrirClienteDesdeInforme.vue comparan el `user_id` del modelo traído contra el dueño de
+ * la sesión antes de mostrarlo), así que un id mal copiado por la skill no muestra el
+ * artículo o el cliente de otro negocio de la base compartida — solo un toast de error.
  *
  * validar() devuelve la lista de errores legibles (vacía = válido); el controlador
  * la convierte en el 422 con `errores[]`.
