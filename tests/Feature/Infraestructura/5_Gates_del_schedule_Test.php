@@ -163,6 +163,9 @@ class Gates_del_schedule_Test extends EmpresaTestCase
      * El interruptor nuevo solo puede afectar al worker de cola: el resto del schedule tiene que
      * ser idéntico con la variable en true y en false.
      *
+     * 🔴 Desde la misión colas-excel-asistente (21/9/2026) el worker de cola son DOS comandos
+     * ('default' y 'excel'), no uno — mismo criterio que 1_Worker_de_cola_segun_hosting_Test.
+     *
      * @return void
      */
     public function test_el_interruptor_del_worker_no_toca_ningun_otro_comando()
@@ -179,8 +182,10 @@ class Gates_del_schedule_Test extends EmpresaTestCase
 
         $solo_con = array_values(array_diff($con_worker, $sin_worker));
 
-        $this->assertCount(1, $solo_con, 'Solo puede diferir el worker de cola: ' . implode(' | ', $solo_con));
-        $this->assertStringContainsString('queue:work', $solo_con[0]);
+        $this->assertCount(2, $solo_con, 'Solo pueden diferir los dos workers de cola (default y excel): ' . implode(' | ', $solo_con));
+        foreach ($solo_con as $comando) {
+            $this->assertStringContainsString('queue:work', $comando);
+        }
         $this->assertEmpty(array_diff($sin_worker, $con_worker));
     }
 

@@ -250,12 +250,12 @@ class Recolector_tienda_Test extends MostradorTestCase
         $this->assertNull($mas_vistos[0]['imagen_url']);
 
         $this->assertSame([
-            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'veces' => 1],
-            ['article_id' => $this->s['pinza']->id, 'nombre' => 'Pinza', 'veces' => 1],
+            ['article_id' => $this->s['martillo']->id, 'nombre' => 'Martillo', 'veces' => 1, 'imagen_url' => null],
+            ['article_id' => $this->s['pinza']->id, 'nombre' => 'Pinza', 'veces' => 1, 'imagen_url' => null],
         ], $h['productos']['mas_agregados_al_carrito']);
 
         $this->assertSame([
-            ['article_id' => $this->s['cuchara']->id, 'nombre' => 'Cuchara', 'vistas' => 2],
+            ['article_id' => $this->s['cuchara']->id, 'nombre' => 'Cuchara', 'vistas' => 2, 'imagen_url' => null],
         ], $h['productos']['vistos_sin_stock']);
     }
 
@@ -433,6 +433,7 @@ class Recolector_tienda_Test extends MostradorTestCase
             'vistas'          => 3,
             'tiempo_seg'      => 60,
             'precio'          => 150.0,
+            'imagen_url'      => null,
         ]], $h['vieron_y_no_compraron']);
 
         $this->assertSame([[

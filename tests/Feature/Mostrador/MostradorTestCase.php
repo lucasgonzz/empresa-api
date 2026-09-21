@@ -163,6 +163,25 @@ abstract class MostradorTestCase extends TestCase
     }
 
     /**
+     * Una foto real para un artículo (misión mostrador-fotos-y-modales): pasa por el
+     * mismo camino que ArticleHelper::getFirstImage() — el morph type 'article' lo
+     * fuerza Relation::enforceMorphMap() en AppServiceProvider::boot(), así que no
+     * alcanza con crear la fila a mano con imageable_type = Article::class.
+     *
+     * @param \App\Models\Article $articulo
+     * @param string $hosting_url
+     * @return \App\Models\Image
+     */
+    protected function imagen_de($articulo, $hosting_url = 'https://cdn.test.local/storage/foto.webp')
+    {
+        return \App\Models\Image::create([
+            'hosting_url'    => $hosting_url,
+            'imageable_id'   => $articulo->id,
+            'imageable_type' => 'article',
+        ]);
+    }
+
+    /**
      * Un cliente del comercio.
      *
      * @param string $nombre

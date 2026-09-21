@@ -1727,12 +1727,12 @@ class ArticleHelper {
                     $first_image = $image->hosting_url;
                 }
             }
-            if (config('app.APP_ENV') == 'production') {
-                $position = strpos($first_image, 'storage');
-                $first = substr($first_image, 0, $position);
-                $end = substr($first_image, $position);
-                return $first.'public/'.$end;
-            }
+            // hosting_url ya es la URL publica final: ImageController la arma con
+            // ApiUrlHelper::storage(), que es el unico lugar que decide si corresponde /public
+            // segun VPS/APP_ENV (grupos 230 y 237). Reprocesarla aca con otra regla (antes:
+            // insertar "public/" antes de "storage" si APP_ENV era exactamente "production")
+            // duplicaba el segmento en instalaciones que ya lo tenian (.../public/public/storage/...,
+            // 404) y lo agregaba de mas en las que no lo necesitaban. No volver a tocarla.
             return $first_image;
         }
         return null;

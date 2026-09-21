@@ -622,6 +622,7 @@ class RecolectorDia extends RecolectorBase
             ->havingRaw('MAX(article_purchases.created_at) <= ?', [$limite])
             ->get();
 
+        $imagenes = $this->imagenes_de($previas->pluck('article_id')->all());
         $lista = [];
 
         foreach ($previas as $fila) {
@@ -632,6 +633,7 @@ class RecolectorDia extends RecolectorBase
                 'nombre'           => (string) $fila->nombre,
                 'dias_sin_venderse' => Carbon::parse($fila->ultima)->startOfDay()->diffInDays($inicio),
                 'cantidad'         => isset($cantidad_por_articulo[$article_id]) ? $cantidad_por_articulo[$article_id] : 0.0,
+                'imagen_url'       => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
         }
 
@@ -668,6 +670,8 @@ class RecolectorDia extends RecolectorBase
             ->limit(self::TOPE_LISTA)
             ->get(['id', 'name', 'stock', 'stock_min']);
 
+        $imagenes = $this->imagenes_de($filas->pluck('id')->all());
+
         foreach ($filas as $fila) {
             $en_cero_global[(int) $fila->id] = true;
 
@@ -677,6 +681,7 @@ class RecolectorDia extends RecolectorBase
                 'stock'        => (float) ($fila->stock ?: 0),
                 'stock_minimo' => is_null($fila->stock_min) ? null : (int) $fila->stock_min,
                 'sucursal'     => null,
+                'imagen_url'   => isset($imagenes[(int) $fila->id]) ? $imagenes[(int) $fila->id] : null,
             ];
         }
 
@@ -701,6 +706,8 @@ class RecolectorDia extends RecolectorBase
             ->limit(self::TOPE_LISTA - count($lista))
             ->get(['articles.id', 'articles.name', 'address_article.amount', 'address_article.stock_min', 'addresses.street']);
 
+        $imagenes_sucursal = $this->imagenes_de($por_sucursal->pluck('id')->all());
+
         foreach ($por_sucursal as $fila) {
             $lista[] = [
                 'article_id'   => (int) $fila->id,
@@ -708,6 +715,7 @@ class RecolectorDia extends RecolectorBase
                 'stock'        => (float) ($fila->amount ?: 0),
                 'stock_minimo' => is_null($fila->stock_min) ? null : (int) $fila->stock_min,
                 'sucursal'     => (string) $fila->street,
+                'imagen_url'   => isset($imagenes_sucursal[(int) $fila->id]) ? $imagenes_sucursal[(int) $fila->id] : null,
             ];
         }
 

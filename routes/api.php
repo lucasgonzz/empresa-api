@@ -293,6 +293,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
     // Concepto de movimientos de Caja
     Route::resource('concepto-movimiento-caja', 'ConceptoMovimientoCajaController');
 
+    // Bancos de cheques: el catálogo que reemplaza al texto libre del banco (misión
+    // cheques-endoso-y-bancos, 21/9/2026). También baja por recursos-iniciales.
+    Route::resource('cheque-banco', 'ChequeBancoController');
+
     // Override de liquidación/comisión por método de pago dentro de una caja (Grupo 223 · Prompt 01)
     // 'index' y 'show' se excluyen del resource porque comparten el mismo patrón de URI
     // (`{param}` único) y colisionarían entre sí; se define el listado filtrado por caja_id
@@ -625,6 +629,9 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     // CurrentAcounts Cheques
     Route::get('/cheque', 'ChequeController@index');
+    // Los cheques recibidos que se pueden endosar en un pago a proveedor o en un gasto (misión
+    // cheques-endoso-y-bancos, 21/9/2026). Va junto al resto del bloque, antes del DELETE con {id}.
+    Route::get('/cheque/disponibles-para-endosar', 'ChequeController@disponibles_para_endosar');
     Route::put('/cheque/cobrar', 'ChequeController@cobrar');
     Route::put('/cheque/pagar', 'ChequeController@pagar');
     Route::put('/cheque/rechazar', 'ChequeController@rechazar');

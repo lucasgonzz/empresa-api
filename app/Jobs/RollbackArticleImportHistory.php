@@ -100,6 +100,17 @@ class RollbackArticleImportHistory implements ShouldQueue
         $this->import_history_id = $import_history_id;
         $this->owner_user_id = $owner_user_id;
         $this->auth_user_id = is_null($auth_user_id) ? null : (int) $auth_user_id;
+
+        /*
+         * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel),
+         * para que un import o export grande no retenga el mismo worker. En el VPS, null: sigue
+         * en 'default', la única que el supervisor de cada cliente consume hoy.
+         *
+         * 🔴 Va en el constructor (propiedad pública $queue del trait Queueable), no como método
+         * viaQueue(): ese hook de Laravel es solo para event listeners en cola, nunca se invoca
+         * para Jobs.
+         */
+        $this->queue = config('app.VPS') ? null : 'excel';
     }
 
     /**

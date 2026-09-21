@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FiltroDeArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
@@ -34,9 +35,11 @@ use Illuminate\Support\Facades\Log;
  * agente-ia-mano-derecha (16/9/2026) le sumó dos propuestas más: proponer_combo y proponer_oferta.
  * La misión asistente-masivas-imagenes-y-remito (19/9/2026) sumó siete al FINAL del array: las
  * imágenes de categorías y de artículos por filtro, el conteo por filtro, la actualización masiva y
- * los diseños de PDF. Van al final porque el orden es parte del caché de prompt (ver build_tools()).
- * La misión asistente-omnisciente (21/9/2026) sumó cinco más, también al final: el ABM genérico
- * (que_puedo_cargar, proponer_alta, proponer_edicion, proponer_baja) y proponer_venta.
+ * los diseños de PDF. La misión cheques-endoso-y-bancos (21/9/2026) sumó dos más al final:
+ * consultar y unificar los bancos de los cheques. La misión asistente-omnisciente (21/9/2026)
+ * sumó cinco más después de esas: el ABM genérico (que_puedo_cargar, proponer_alta,
+ * proponer_edicion, proponer_baja) y proponer_venta. Van al final porque el orden es parte
+ * del caché de prompt (ver build_tools()).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
  * Claude ve) y el despacho (el `case` de ejecutar(), lo que corre al llamarla). Es la misma regla que
@@ -68,7 +71,9 @@ class HerramientasDeCarga
      * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
      * que ver cuántos alcanza y confirmar (decisión de Lucas, misión asistente-masivas-imagenes-y-
      * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(), y el test 26 fija
-     * las dos cosas. Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
+     * las dos cosas. Lo mismo para unificar los bancos de los cheques (misión
+     * cheques-endoso-y-bancos): toca N cheques de un saque y decide a qué banco va cada texto.
+     * Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
      *
      * 🔴 TAMPOCO ENTRAN LAS GENÉRICAS (alta, edicion, baja) NI LA VENTA (misión asistente-omnisciente,
      * 21/9/2026): crean, cambian o borran datos del negocio por el controller de la pantalla, y una
@@ -667,6 +672,51 @@ class HerramientasDeCarga
                 ],
             ],
             /*
+             * Misión cheques-endoso-y-bancos (21/9/2026): el catálogo de bancos de cheques arranca
+             * vacío y los cheques viejos tienen el banco como texto libre. Estas dos lo unifican.
+             */
+            [
+                'name'         => 'consultar_bancos_de_cheques',
+                'description'  => 'Devuelve los bancos de cheques que el negocio ya tiene en su catálogo (con cuántos cheques tiene cada uno) y los textos distintos que los cheques tienen escritos como banco y todavía no están unificados a ningún banco del catálogo, con cuántos cheques tiene cada texto. Usala antes de proponer_unificar_bancos_de_cheques, y cuando te pregunten qué bancos hay o cuántos cheques faltan unificar.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'proponer_unificar_bancos_de_cheques',
+                'description'  => 'Unifica los bancos de los cheques: por cada banco, un nombre prolijo y la lista de textos (tal cual los devolvió consultar_bancos_de_cheques) que son ese banco. Al confirmar, crea en el catálogo los bancos que no existan (si ya hay uno con ese nombre lo reusa) y les asigna ese banco a todos los cheques de esos textos; el texto escrito en cada cheque no se borra. Agrupá vos los textos que claramente son el mismo banco ("Bco Nacion", "banco nación" y "BNA" son Banco Nación) y usá el nombre oficial y prolijo; si un texto es ambiguo, preguntá antes. Un texto va a un solo banco. SIEMPRE queda tarjeta para confirmar, nunca se aplica sola, esté como esté tu confianza. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'grupos'      => [
+                            'type'        => 'array',
+                            'description' => 'Un elemento por banco.',
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'banco'  => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre prolijo del banco, como va a quedar en el catálogo (ej. "Banco Nación").',
+                                    ],
+                                    'textos' => [
+                                        'type'        => 'array',
+                                        'description' => 'Los textos de consultar_bancos_de_cheques que son este banco, tal cual vinieron.',
+                                        'items'       => [
+                                            'type' => 'string',
+                                        ],
+                                    ],
+                                ],
+                                'required'   => ['banco', 'textos'],
+                            ],
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['grupos'],
+                ],
+            ],
+            /*
              * Misión asistente-omnisciente (21/9/2026). Cinco herramientas, en este orden, SIEMPRE
              * al final: el ABM genérico (catálogo, alta, edición, baja) y la venta. El catálogo de
              * entidades y campos va bajo demanda en que_puedo_cargar y NO en el enum del esquema:
@@ -1068,6 +1118,15 @@ class HerramientasDeCarga
                     $assistant_message,
                     PropuestaDisenoPdfIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
+
+            // Misión cheques-endoso-y-bancos (21/9/2026).
+            case 'consultar_bancos_de_cheques':
+                return self::resultado(PropuestaBancosChequesIaHelper::consultar($contexto));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: unificar bancos SIEMPRE deja tarjeta (ver AUTO_CONFIRMABLES).
+            case 'proponer_unificar_bancos_de_cheques':
+                return self::resultado(PropuestaBancosChequesIaHelper::proponer($contexto, $assistant_message, $input));
+
 
             /*
              * Misión asistente-omnisciente (21/9/2026). 🔴 Las cuatro propuestas van SIN
