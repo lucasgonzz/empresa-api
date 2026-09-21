@@ -1748,12 +1748,12 @@ class ArticleHelper {
      * cuando esta instalacion sirve desde `/public` y cuando desde la raiz. Devuelve null cuando el
      * articulo no tiene foto o cuando la que tiene no da para armar una URL.
      *
-     * 🔴 POR QUE ES UNA FUNCION NUEVA Y NO UN ARREGLO DE getFirstImage(). Esa funcion tiene hoy
-     * dos consumidores mas (la ficha de mencion y el Mostrador) y su salida rota viaja a pantallas
-     * que estan en produccion. Se arregla el llamador del asistente, que es el que muestra la foto
-     * al dueno, y se deja la vieja quieta hasta que alguien mida a que depende de su salida actual.
-     * La regla de eleccion esta copiada a proposito: es el precio de no tocarla. Cuando el
-     * Mostrador migre tambien, getFirstImage() se borra y la copia se va con ella.
+     * 🔴 POR QUE ES UNA FUNCION NUEVA Y NO UN ARREGLO DE getFirstImage(). Esa funcion la sigue
+     * consumiendo el Mostrador (`Services/Mostrador/RecolectorBase.php:392`), que esta en
+     * produccion y no es de esta mision. Se arregla el llamador del asistente, que es el que le
+     * muestra la foto al dueno, y se deja la vieja quieta hasta que alguien mida de que depende su
+     * salida actual. La regla de eleccion esta copiada a proposito: es el precio de no tocarla.
+     * Cuando el Mostrador migre tambien, getFirstImage() se borra y la copia se va con ella.
      *
      * @param  \App\Models\Article  $article  Con la relacion `images` cargada.
      * @return string|null
