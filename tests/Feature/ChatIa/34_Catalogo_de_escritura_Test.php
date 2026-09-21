@@ -196,7 +196,8 @@ class Catalogo_de_escritura_Test extends EmpresaTestCase
 
             foreach ($declaracion['campos'] as $columna => $campo) {
                 $this->assertSame(0, preg_match(Catalogo::REGEX_SENSIBLES, $columna), $entidad . '.' . $columna . ' es sensible');
-                $this->assertNotContains($columna, Catalogo::COLUMNAS_DE_SISTEMA, $entidad . '.' . $columna);
+                $de_sistema_editables = isset($declaracion['de_sistema_editables']) ? $declaracion['de_sistema_editables'] : [];
+                $this->assertTrue(!in_array($columna, Catalogo::COLUMNAS_DE_SISTEMA, true) || in_array($columna, $de_sistema_editables, true), $entidad . '.' . $columna . ' es de sistema');
                 $this->assertNotContains($columna, $declaracion['solo_lectura'], $entidad . '.' . $columna . ' es solo lectura');
                 $this->assertContains($campo['tipo'], ['text', 'textarea', 'number', 'checkbox', 'date', 'search'], $entidad . '.' . $columna);
                 $this->assertNotEmpty($campo['operaciones'], $entidad . '.' . $columna . ' no la lee ninguna operación y se ofrece igual');
@@ -206,6 +207,11 @@ class Catalogo_de_escritura_Test extends EmpresaTestCase
 
         // Y el que sí tiene columnas sensibles se queda afuera entero.
         $this->assertArrayHasKey('payment_method', Catalogo::EXCLUIDAS);
+
+        // La única columna de sistema que una pantalla edita: la fecha de un gasto (created_at), solo al editar.
+        $this->assertSame([Catalogo::OP_EDICION], Catalogo::declaracion('expense')['campos']['created_at']['operaciones']);
+        $this->assertSame('date', Catalogo::declaracion('expense')['campos']['created_at']['tipo']);
+        $this->assertArrayNotHasKey('created_at', Catalogo::declaracion('provider')['campos']);
     }
 
     /**
