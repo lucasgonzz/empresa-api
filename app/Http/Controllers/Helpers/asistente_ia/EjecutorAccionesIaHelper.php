@@ -335,6 +335,19 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_DISENO_PDF:
                 return PropuestaDisenoPdfIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-omnisciente (21/9/2026). Las tres genéricas van al ejecutor que llama
+             * al controller de la pantalla; la venta la ejecuta el constructor C por SaleController::store
+             * (contrato §4). Ninguna pasa por la auto-confirmación.
+             */
+            case AiMessageAction::TIPO_ALTA:
+            case AiMessageAction::TIPO_EDICION:
+            case AiMessageAction::TIPO_BAJA:
+                return EjecutorGenericoIaHelper::ejecutar($contexto, $accion);
+
+            case AiMessageAction::TIPO_VENTA:
+                return PropuestaVentaIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

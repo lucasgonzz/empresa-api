@@ -75,6 +75,18 @@ class AiMessageAction extends Model
     const TIPO_ACTUALIZACION_MASIVA = 'actualizacion_masiva';
     const TIPO_DISENO_PDF           = 'diseno_pdf';
 
+    /*
+     * Misión asistente-omnisciente (21/9/2026): el ABM genérico y la venta. Un alta, una edición o
+     * una baja de cualquier entidad del catálogo de escritura (CatalogoDeEscrituraIaHelper) que se
+     * ejecuta llamando al MISMO controller que usa la pantalla, y una venta por el camino de Vender
+     * (PropuestaVentaIaHelper). 🔴 NINGUNO de los cuatro se auto-confirma, esté la confianza como
+     * esté: crear, cambiar o borrar datos del negocio lo confirma siempre la persona.
+     */
+    const TIPO_ALTA    = 'alta';
+    const TIPO_EDICION = 'edicion';
+    const TIPO_BAJA    = 'baja';
+    const TIPO_VENTA   = 'venta';
+
     protected $guarded = [];
 
     /**
