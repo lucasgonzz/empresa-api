@@ -163,8 +163,8 @@ class ContabilidadRepository
             ->soloVentasReales() // excluye ventas contenedoras de facturación
             ->where('sales.user_id', $user_id)
             ->where('sales.terminada', 1)
-            ->whereDate('sales.created_at', '>=', $desde)
-            ->whereDate('sales.created_at', '<=', $hasta);
+            ->where('sales.created_at', '>=', $desde)
+            ->where('sales.created_at', '<=', $hasta);
 
         // Joins del IVA declarado por venta. Ninguno multiplica filas (ver aplicar_joins_de_iva()),
         // así que el `count()` de `ventas_brutas_detalle()` sigue contando ventas, no comprobantes.
@@ -257,8 +257,8 @@ class ContabilidadRepository
             ->soloVentasReales()
             ->where('sales.user_id', $user_id)
             ->where('sales.terminada', 1)
-            ->whereDate('sales.created_at', '>=', $desde)
-            ->whereDate('sales.created_at', '<=', $hasta)
+            ->where('sales.created_at', '>=', $desde)
+            ->where('sales.created_at', '<=', $hasta)
             ->whereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('afip_tickets')
@@ -392,8 +392,8 @@ class ContabilidadRepository
             ->where('current_acounts.user_id', $user_id)
             ->where('current_acounts.status', 'nota_credito')
             ->whereNotNull('current_acounts.haber')
-            ->whereDate('current_acounts.created_at', '>=', $desde)
-            ->whereDate('current_acounts.created_at', '<=', $hasta);
+            ->where('current_acounts.created_at', '>=', $desde)
+            ->where('current_acounts.created_at', '<=', $hasta);
 
         self::aplicar_filtro_moneda_current_acount($query, $filtros);
 
@@ -519,8 +519,8 @@ class ContabilidadRepository
             ->join('article_sale', 'article_sale.sale_id', '=', 'sales.id')
             ->where('sales.user_id', $user_id)
             ->where('sales.terminada', 1)
-            ->whereDate('sales.created_at', '>=', $desde)
-            ->whereDate('sales.created_at', '<=', $hasta);
+            ->where('sales.created_at', '>=', $desde)
+            ->where('sales.created_at', '<=', $hasta);
 
         self::aplicar_filtro_moneda($query, $filtros, 'sales.moneda_id');
 
@@ -686,8 +686,8 @@ class ContabilidadRepository
             ->leftJoin('credit_accounts', 'credit_accounts.id', '=', 'current_acounts.credit_account_id')
             ->where('current_acounts.user_id', $user_id)
             ->where('current_acounts.status', 'nota_credito')
-            ->whereDate('current_acounts.created_at', '>=', $desde)
-            ->whereDate('current_acounts.created_at', '<=', $hasta);
+            ->where('current_acounts.created_at', '>=', $desde)
+            ->where('current_acounts.created_at', '<=', $hasta);
 
         self::aplicar_filtro_moneda_current_acount($query, $filtros);
 
@@ -821,8 +821,8 @@ class ContabilidadRepository
 
         $query = Expense::query()
             ->where('expenses.user_id', $user_id)
-            ->whereDate('expenses.created_at', '>=', $desde)
-            ->whereDate('expenses.created_at', '<=', $hasta)
+            ->where('expenses.created_at', '>=', $desde)
+            ->where('expenses.created_at', '<=', $hasta)
             ->whereNotIn('expenses.id', self::query_ids_expenses_comision());
 
         self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
@@ -886,8 +886,8 @@ class ContabilidadRepository
 
         $query = Expense::query()
             ->where('expenses.user_id', $user_id)
-            ->whereDate('expenses.created_at', '>=', $desde)
-            ->whereDate('expenses.created_at', '<=', $hasta)
+            ->where('expenses.created_at', '>=', $desde)
+            ->where('expenses.created_at', '<=', $hasta)
             ->whereIn('expenses.id', self::query_ids_expenses_comision());
 
         self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
@@ -913,8 +913,8 @@ class ContabilidadRepository
 
             $query = Expense::query()
                 ->where('expenses.user_id', $user_id)
-                ->whereDate('expenses.created_at', '>=', $desde)
-                ->whereDate('expenses.created_at', '<=', $hasta)
+                ->where('expenses.created_at', '>=', $desde)
+                ->where('expenses.created_at', '<=', $hasta)
                 ->whereIn('expenses.id', self::query_ids_expenses_comision());
 
             self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
@@ -1243,8 +1243,8 @@ class ContabilidadRepository
             ->where('current_acounts.user_id', $user_id)
             ->where('afip_tickets.resultado', 'A')
             ->whereNull('afip_tickets.importe_iva')
-            ->whereDate('afip_tickets.created_at', '>=', $desde)
-            ->whereDate('afip_tickets.created_at', '<=', $hasta)
+            ->where('afip_tickets.created_at', '>=', $desde)
+            ->where('afip_tickets.created_at', '<=', $hasta)
             ->count();
     }
 
@@ -1318,17 +1318,23 @@ class ContabilidadRepository
      * (fecha de emisión, consistente con `iva_debito`).
      *
      * @param  int $user_id
-     * @param  \Carbon\Carbon $desde
-     * @param  \Carbon\Carbon $hasta
+     * @param  \Carbon\Carbon|string $desde
+     * @param  \Carbon\Carbon|string $hasta
      * @return \Illuminate\Database\Eloquent\Builder
      */
     private static function query_iva_credito_compras($user_id, $desde, $hasta)
     {
+        // Los filtros de abajo comparan contra la columna cruda (sin `date()`, para no anular el
+        // índice), así que dependen de que `$hasta` traiga la hora del final del día. Hoy todos los
+        // llamadores ya la pasan por `rango()`, pero eso es una garantía del contexto: normalizar
+        // acá la vuelve local. `rango()` es idempotente, así que volver a llamarla no cambia nada.
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
         return ProviderOrderAfipTicket::query()
             ->where('user_id', $user_id)
             ->whereNotNull('total_iva')
-            ->whereDate('issued_at', '>=', $desde)
-            ->whereDate('issued_at', '<=', $hasta);
+            ->where('issued_at', '>=', $desde)
+            ->where('issued_at', '<=', $hasta);
     }
 
     /**
@@ -1338,17 +1344,21 @@ class ContabilidadRepository
      * tienen un campo de fecha de emisión separado).
      *
      * @param  int $user_id
-     * @param  \Carbon\Carbon $desde
-     * @param  \Carbon\Carbon $hasta
+     * @param  \Carbon\Carbon|string $desde
+     * @param  \Carbon\Carbon|string $hasta
      * @return \Illuminate\Database\Eloquent\Builder
      */
     private static function query_iva_credito_gastos($user_id, $desde, $hasta)
     {
+        // Ver el comentario de `query_iva_credito_compras()`: el rango se normaliza acá para que el
+        // filtro sobre la columna cruda no dependa de que el llamador ya lo haya hecho.
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
         return Expense::query()
             ->where('user_id', $user_id)
             ->whereNotNull('importe_iva')
-            ->whereDate('created_at', '>=', $desde)
-            ->whereDate('created_at', '<=', $hasta);
+            ->where('created_at', '>=', $desde)
+            ->where('created_at', '<=', $hasta);
     }
 
     /**
@@ -1447,8 +1457,8 @@ class ContabilidadRepository
 
         $row = ProviderOrderAfipTicket::query()
             ->where('user_id', $user_id)
-            ->whereDate('issued_at', '>=', $desde)
-            ->whereDate('issued_at', '<=', $hasta)
+            ->where('issued_at', '>=', $desde)
+            ->where('issued_at', '<=', $hasta)
             ->selectRaw('SUM(percepcion_iva) as iva, SUM(percepcion_iibb) as iibb')
             ->first();
 
@@ -1476,8 +1486,8 @@ class ContabilidadRepository
         $base = function () use ($user_id, $desde, $hasta) {
             return ProviderOrderAfipTicket::query()
                 ->where('user_id', $user_id)
-                ->whereDate('issued_at', '>=', $desde)
-                ->whereDate('issued_at', '<=', $hasta)
+                ->where('issued_at', '>=', $desde)
+                ->where('issued_at', '<=', $hasta)
                 ->where(function ($q) {
                     $q->where('percepcion_iva', '>', 0)->orWhere('percepcion_iibb', '>', 0);
                 });
@@ -1553,8 +1563,8 @@ class ContabilidadRepository
         $base = function () use ($user_id, $desde, $hasta) {
             return ProviderOrderAfipTicket::query()
                 ->where('user_id', $user_id)
-                ->whereDate('issued_at', '>=', $desde)
-                ->whereDate('issued_at', '<=', $hasta)
+                ->where('issued_at', '>=', $desde)
+                ->where('issued_at', '<=', $hasta)
                 ->where('percepcion_iva', '>', 0);
         };
 
@@ -1607,8 +1617,8 @@ class ContabilidadRepository
         $base = function () use ($user_id, $desde, $hasta) {
             return ProviderOrderAfipTicket::query()
                 ->where('user_id', $user_id)
-                ->whereDate('issued_at', '>=', $desde)
-                ->whereDate('issued_at', '<=', $hasta)
+                ->where('issued_at', '>=', $desde)
+                ->where('issued_at', '<=', $hasta)
                 ->where('percepcion_iibb', '>', 0);
         };
 
@@ -1878,13 +1888,17 @@ class ContabilidadRepository
      * o solo las vinculadas vía `article_sale_tax` si no).
      *
      * @param  int $user_id
-     * @param  \Carbon\Carbon $desde
-     * @param  \Carbon\Carbon $hasta
+     * @param  \Carbon\Carbon|string $desde
+     * @param  \Carbon\Carbon|string $hasta
      * @param  \App\Models\SaleTax $sale_tax
      * @return \Illuminate\Database\Query\Builder
      */
     private static function query_lineas_para_sale_tax($user_id, $desde, $hasta, $sale_tax)
     {
+        // Ver el comentario de `query_iva_credito_compras()`: el rango se normaliza acá para que el
+        // filtro sobre la columna cruda no dependa de que el llamador ya lo haya hecho.
+        list($desde, $hasta) = self::rango($desde, $hasta);
+
         $query = DB::table('article_sale')
             ->join('sales', 'sales.id', '=', 'article_sale.sale_id')
             ->where('sales.user_id', $user_id)
@@ -1896,8 +1910,8 @@ class ContabilidadRepository
                 $sub->whereNull('sales.is_consolidacion_facturacion')
                     ->orWhere('sales.is_consolidacion_facturacion', 0);
             })
-            ->whereDate('sales.created_at', '>=', $desde)
-            ->whereDate('sales.created_at', '<=', $hasta);
+            ->where('sales.created_at', '>=', $desde)
+            ->where('sales.created_at', '<=', $hasta);
 
         if (!$sale_tax->apply_to_all) {
             $query->whereIn('article_sale.article_id', function ($sub) use ($sale_tax) {
@@ -2022,8 +2036,8 @@ class ContabilidadRepository
             ->where(function ($q) {
                 $q->whereNull('sales.client_id')->orWhere('sales.omitir_en_cuenta_corriente', 1);
             })
-            ->whereDate('sales.created_at', '>=', $desde)
-            ->whereDate('sales.created_at', '<=', $hasta);
+            ->where('sales.created_at', '>=', $desde)
+            ->where('sales.created_at', '<=', $hasta);
 
         self::aplicar_filtro_moneda($query, $filtros, 'sales.moneda_id');
 
@@ -2069,8 +2083,8 @@ class ContabilidadRepository
             ->where('current_acounts.status', 'pago_from_client')
             ->whereNotNull('current_acounts.client_id')
             ->whereNotNull('current_acounts.haber')
-            ->whereDate('current_acounts.created_at', '>=', $desde)
-            ->whereDate('current_acounts.created_at', '<=', $hasta);
+            ->where('current_acounts.created_at', '>=', $desde)
+            ->where('current_acounts.created_at', '<=', $hasta);
 
         self::aplicar_filtro_moneda_current_acount($query, $filtros);
 
@@ -2178,8 +2192,8 @@ class ContabilidadRepository
             ->where('current_acounts.status', 'pago_from_client')
             ->whereNotNull('current_acounts.provider_id')
             ->whereNotNull('current_acounts.haber')
-            ->whereDate('current_acounts.created_at', '>=', $desde)
-            ->whereDate('current_acounts.created_at', '<=', $hasta);
+            ->where('current_acounts.created_at', '>=', $desde)
+            ->where('current_acounts.created_at', '<=', $hasta);
 
         self::aplicar_filtro_moneda_current_acount($query, $filtros);
 
@@ -2218,8 +2232,8 @@ class ContabilidadRepository
         $query = DB::table('provider_orders')
             ->where('user_id', $user_id)
             ->where('generate_current_acount', 0)
-            ->whereDate('created_at', '>=', $desde)
-            ->whereDate('created_at', '<=', $hasta);
+            ->where('created_at', '>=', $desde)
+            ->where('created_at', '<=', $hasta);
 
         if ($moneda_id === 2) {
             $query->where('moneda_id', 2);
@@ -2338,8 +2352,8 @@ class ContabilidadRepository
         $base = function () use ($user_id, $desde, $hasta, $filtros) {
             $query = Expense::query()
                 ->where('expenses.user_id', $user_id)
-                ->whereDate('expenses.created_at', '>=', $desde)
-                ->whereDate('expenses.created_at', '<=', $hasta);
+                ->where('expenses.created_at', '>=', $desde)
+                ->where('expenses.created_at', '<=', $hasta);
 
             self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
 
@@ -2432,8 +2446,8 @@ class ContabilidadRepository
         $base = function () use ($user_id, $desde, $hasta, $filtros) {
             $query = Expense::query()
                 ->where('expenses.user_id', $user_id)
-                ->whereDate('expenses.created_at', '>=', $desde)
-                ->whereDate('expenses.created_at', '<=', $hasta);
+                ->where('expenses.created_at', '>=', $desde)
+                ->where('expenses.created_at', '<=', $hasta);
 
             self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
 
@@ -2846,8 +2860,8 @@ class ContabilidadRepository
 
         $query = Expense::query()
             ->where('expenses.user_id', $user_id)
-            ->whereDate('expenses.created_at', '>=', $desde_carbon)
-            ->whereDate('expenses.created_at', '<=', $hasta_carbon);
+            ->where('expenses.created_at', '>=', $desde_carbon)
+            ->where('expenses.created_at', '<=', $hasta_carbon);
 
         self::aplicar_filtro_moneda($query, $filtros, 'expenses.moneda_id');
 
