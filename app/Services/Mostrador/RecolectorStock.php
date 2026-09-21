@@ -200,6 +200,7 @@ class RecolectorStock extends RecolectorBase
 
         $article_ids = array_column($top, 'article_id');
         $nombres_articulos = $this->nombres_de_articulos($article_ids);
+        $imagenes = $this->imagenes_de($article_ids);
         $stock_origen = $this->stock_en_origen($top);
 
         $lista = [];
@@ -227,6 +228,7 @@ class RecolectorStock extends RecolectorBase
                 ],
                 'cantidad'   => (float) $sugerencia['suggested_amount'],
                 'prioridad'  => $prioridad,
+                'imagen_url' => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
 
             $prioridad++;
@@ -364,6 +366,7 @@ class RecolectorStock extends RecolectorBase
         }
 
         $hoy = $fecha->copy()->startOfDay();
+        $imagenes = $this->imagenes_de($filas->pluck('id')->all());
         $lista = [];
 
         foreach ($filas as $fila) {
@@ -379,6 +382,7 @@ class RecolectorStock extends RecolectorBase
                 'stock_total'    => (float) $fila->stock,
                 'dias_sin_venta' => empty($referencia) ? null : Carbon::parse($referencia)->startOfDay()->diffInDays($hoy),
                 'valor_a_costo'  => $this->monto($fila->valor),
+                'imagen_url'     => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
         }
 
