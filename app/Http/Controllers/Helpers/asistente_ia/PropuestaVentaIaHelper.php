@@ -85,8 +85,9 @@ class PropuestaVentaIaHelper
 
     /**
      * Ruta de la SPA donde ver la venta registrada: `name: 'sale'` es `/ventas/:view?/:sub_view?`
-     * (src/router/index.js:113), y los params son los que usa el nav (`toSales()` de
-     * src/mixins/route_functions.js) para un admin.
+     * (src/router/index.js:113). Va sin params (`new \stdClass()`, como el gasto): la vista
+     * resuelve `view || 'todas'` y `sub_view || 'todos'` (`resolve_view_scope()` de
+     * src/mixins/sale.js), que es donde cae el nav para un admin.
      */
     const RUTA_VENTAS = 'sale';
 
@@ -374,7 +375,7 @@ class PropuestaVentaIaHelper
                 'texto'    => 'Venta N° ' . $numero . ' registrada',
                 'ruta'     => [
                     'name'   => self::RUTA_VENTAS,
-                    'params' => ['view' => 'todas', 'sub_view' => 'todos'],
+                    'params' => new \stdClass(),
                     'texto'  => 'Ver en Ventas',
                 ],
                 'venta_id' => isset($venta['id']) ? (int) $venta['id'] : 0,

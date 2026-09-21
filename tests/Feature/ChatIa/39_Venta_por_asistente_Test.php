@@ -439,8 +439,16 @@ class Venta_por_asistente_Test extends EmpresaTestCase
 
         $confirmar->assertStatus(200);
         $this->assertEquals('confirmada', $confirmar->json('model.estado'));
+
+        /*
+         * `resultado.ruta` es un OBJETO {name, params, texto}, no un string (contrato §1, anotado por
+         * D): AccionCard.vue lee `ruta.name` para el botón "Ver en Ventas". `params` viaja como `{}`
+         * (un stdClass vacío): decodificado es un array vacío.
+         */
         $this->assertEquals('sale', $confirmar->json('model.resultado.ruta.name'));
         $this->assertEquals('Ver en Ventas', $confirmar->json('model.resultado.ruta.texto'));
+        $this->assertSame([], $confirmar->json('model.resultado.ruta.params'));
+        $this->assertSame(['texto', 'ruta', 'venta_id', 'numero', 'total'], array_keys($confirmar->json('model.resultado')));
 
         $venta = Sale::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
 
