@@ -62,7 +62,7 @@ class Tools_de_lectura_Test extends TestCase
     }
 
     /**
-     * 🔴 LA ASERCIÓN DEL ARCHIVO: las quince tools declaradas se ejecutan de verdad.
+     * 🔴 LA ASERCIÓN DEL ARCHIVO: las diecinueve tools declaradas se ejecutan de verdad.
      *
      * @group chat-ia
      * @test
@@ -96,6 +96,16 @@ class Tools_de_lectura_Test extends TestCase
                 'orden'   => ['campo' => 'final_price', 'direccion' => 'DESC'],
                 'pagina'  => 1,
             ],
+            // Misión asistente-omnisciente (21/9/2026): las cuatro de lectura sin límites, al final.
+            'resumir_datos'                            => [
+                'entidad'     => 'renglon_de_compra',
+                'filtros'     => [['campo' => 'provider_id', 'operador' => 'contiene', 'valor' => 'tools B']],
+                'agrupar_por' => [['campo' => 'article_id']],
+                'metricas'    => [['funcion' => 'suma', 'campo' => 'amount'], ['funcion' => 'conteo']],
+            ],
+            'consultar_resumen_de_ventas'              => ['desde' => now()->subDays(7)->format('Y-m-d'), 'hasta' => now()->format('Y-m-d'), 'agrupar_por' => 'dia'],
+            'consultar_reporte_contable'               => ['reporte' => 'estado_resultados', 'desde' => now()->subDays(30)->format('Y-m-d'), 'hasta' => now()->format('Y-m-d')],
+            'mostrar_imagenes_de_articulos'            => ['articulo_ids' => [$articulo->id]],
         ];
 
         $nombres = $this->service->nombres_de_lectura();
@@ -209,14 +219,19 @@ class Tools_de_lectura_Test extends TestCase
     }
 
     /**
-     * El enum de entidades de las dos tools genéricas sale del catálogo, no de una lista escrita al
-     * lado: una entidad nueva aparece en el esquema sola, y no puede haber una declarada en la
-     * whitelist que el modelo no pueda nombrar.
+     * Las tools genéricas NO llevan enum de entidades, y la validación vive en el handler.
+     *
+     * Hasta la misión asistente-omnisciente (21/9/2026) este test afirmaba lo contrario: que el
+     * enum de `consultar_datos` y de `que_puedo_consultar` era exactamente la whitelist. Con el
+     * catálogo derivado del esquema son ciento y pico de nombres, y el enum pesaba más que el resto
+     * del bloque de definiciones —que viaja entero en cada vuelta del loop—. El enum se sacó a
+     * propósito; lo que se fija ahora es que el handler rechace una entidad inexistente con la
+     * lista, que es la validación que el enum hacía del lado de la API.
      *
      * @group chat-ia
      * @test
      */
-    public function el_esquema_de_las_tools_genericas_declara_exactamente_la_whitelist()
+    public function el_esquema_de_las_tools_genericas_no_lleva_enum_y_el_handler_valida_la_entidad()
     {
         $definiciones = [];
 
@@ -224,15 +239,25 @@ class Tools_de_lectura_Test extends TestCase
             $definiciones[$herramienta['name']] = $herramienta;
         }
 
-        $this->assertEquals(
-            CatalogoDeDatosIaHelper::entidades(),
-            $definiciones['consultar_datos']['input_schema']['properties']['entidad']['enum']
-        );
+        foreach (['consultar_datos', 'que_puedo_consultar', 'resumir_datos'] as $generica) {
+            $this->assertArrayNotHasKey(
+                'enum',
+                $definiciones[$generica]['input_schema']['properties']['entidad'],
+                $generica . ': el enum de entidades se sacó a propósito, no vuelve.'
+            );
+        }
 
-        $this->assertEquals(
-            CatalogoDeDatosIaHelper::entidades(),
-            $definiciones['que_puedo_consultar']['input_schema']['properties']['entidad']['enum']
-        );
+        $this->assertArrayHasKey('buscar', $definiciones['que_puedo_consultar']['input_schema']['properties']);
+        $this->assertArrayHasKey('campos', $definiciones['consultar_datos']['input_schema']['properties']);
+
+        $resultados = $this->service->execute_tool_calls([
+            ['type' => 'tool_use', 'id' => 'toolu_enum_01', 'name' => 'consultar_datos', 'input' => ['entidad' => 'facturas_de_marte']],
+        ], $this->conversation);
+
+        $datos = json_decode($resultados[0]['content'], true);
+
+        $this->assertArrayHasKey('error', $datos, 'Una entidad inexistente corta en el handler.');
+        $this->assertEquals(CatalogoDeDatosIaHelper::entidades(), $datos['entidades_validas']);
 
         // Y la definición que viaja a la API nunca lleva el handler, que es un Closure y no se
         // serializa a JSON.

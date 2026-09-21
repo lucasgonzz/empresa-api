@@ -7,9 +7,13 @@ use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -146,6 +150,20 @@ class AsistenteIaService
     protected $menciones = [];
 
     /**
+     * Los adjuntos (hoy, imágenes de artículos) que dejaron las tools de la respuesta que se está
+     * generando (misión asistente-omnisciente, §3 del contrato). Se juntan en execute_tool_calls()
+     * cuando un tool_result trae la clave `adjuntos_de_la_respuesta`, normalizados y recortados a
+     * AdjuntosIaHelper::MAX_ADJUNTOS.
+     *
+     * A diferencia de las menciones, NO se cruzan contra el texto: si el modelo llamó a
+     * mostrar_imagenes_de_articulos y después no dijo nada de la foto, la imagen viaja igual —la
+     * persona la pidió—. El job los guarda en `ai_messages.adjuntos` junto a las menciones.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    protected $adjuntos = [];
+
+    /**
      * true si hay clave de Anthropic configurada. No tener IA contratada no
      * es un error: sin clave, el job deja el mensaje en error amigable sin
      * salir a la red.
@@ -210,6 +228,7 @@ class AsistenteIaService
          */
         $this->candidatos_a_mencion = [];
         $this->menciones = [];
+        $this->adjuntos = [];
 
         $owner = User::find($conversation->user_id);
 
@@ -401,6 +420,18 @@ class AsistenteIaService
     }
 
     /**
+     * Los adjuntos de la última respuesta generada por responder(): `[{ tipo, url, texto, articulo_id }]`,
+     * ya normalizados (§1 del contrato). Vacío si no hubo, si el loop falló o si todavía no se
+     * llamó a responder().
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function adjuntos(): array
+    {
+        return $this->adjuntos;
+    }
+
+    /**
      * Texto del bloque 1 del system: identidad, tono, formato texto plano y
      * reglas de qué puede afirmar. Es el prefijo común a TODAS las
      * conversaciones (por eso es el que lleva cache_control).
@@ -486,6 +517,14 @@ Qué podés afirmar:
   la misma herramienta, hasta 100. Recién cuando ya no podés traer más, aclará que hay más
   y que es un tope de la consulta, no del negocio: no te disculpes por un límite que podés
   correr vos.
+- Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
+  consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
+  a mano las filas de una lista paginada: es una página, no el total.
+- Si te piden ver la foto de un artículo, llamá a mostrar_imagenes_de_articulos: la imagen se
+  adjunta sola a tu respuesta, no escribas la URL. Si el artículo no tiene foto, decilo.
+- que_puedo_consultar cubre prácticamente todo el sistema (ventas y sus renglones, compras,
+  caja, cheques, presupuestos, pedidos, producción, configuración). "No tengo acceso a eso"
+  se dice recién después de buscarlo ahí con `buscar`.
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
@@ -543,10 +582,10 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
   cliente, asignar la foto de una sucursal, mandar a buscar imágenes para las categorías
   sin imagen y para artículos según un filtro, hacer una actualización masiva de artículos
   por filtro, y cambiar las columnas de un diseño de PDF (remitos, facturas, catálogo).
-  Nada más: no anulás ni editás gastos o pagos,
-  no creás clientes, proveedores ni
-  subcategorías, no mandás mensajes, y los cheques, los cobros con tarjeta de crédito y los
-  cobros en otra moneda que la de la cuenta se cargan desde la pantalla.
+  Lo que queda afuera de verdad: editar una venta o un presupuesto ya cargados, los
+  movimientos de caja, facturar, y mandar mensajes a terceros; los cheques, los cobros con
+  tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan desde la
+  pantalla.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
   ni WhatsApp, y eso decíselo a la persona.
 - Vos nunca registrás nada: llamás a la herramienta proponer_ que corresponde y el sistema
@@ -602,8 +641,24 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
   tarjeta para confirmar, como todo lo demás. La actualización masiva SIEMPRE deja tarjeta.
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
   pasó con cada tarjeta. No las repitas.
-
+{$this->bloques_de_prompt_de_b_y_c()}
 CARGA;
+    }
+
+    /**
+     * Los renglones de prompt de la escritura genérica (constructor B) y de la venta y las fotos
+     * (constructor C), misión asistente-omnisciente (§6 del contrato): van al final del bloque de
+     * carga, con el mismo tono que los de arriba.
+     *
+     * TODO integrar prompt-B/C: al cierre del bloque A los dos snippets todavía no estaban en la
+     * carpeta de la misión (`prompt-B.md`, `prompt-C.md`). Cuando estén, sus renglones van acá
+     * tal cual, y este método deja de devolver vacío.
+     *
+     * @return string
+     */
+    protected function bloques_de_prompt_de_b_y_c(): string
+    {
+        return '';
     }
 
     /**
@@ -1183,20 +1238,33 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en los últimos días, con las unidades vendidas, según las VENTAS DEL ERP. Usala para preguntas sobre qué se vende más o cómo vienen las ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30.',
+                            'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30. Se ignora si mandás desde/hasta.',
                             'enum' => [7, 30, 90],
+                        ],
+                        'desde' => [
+                            'type' => 'string',
+                            'description' => 'Primer día del rango, AAAA-MM-DD, inclusive. Manda sobre dias.',
+                        ],
+                        'hasta' => [
+                            'type' => 'string',
+                            'description' => 'Último día del rango, AAAA-MM-DD, inclusive. Manda sobre dias.',
                         ],
                     ],
                     'required' => [],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::mas_vendidos($owner_id, self::dias_del_enum($input));
+                    return ConsultasSistemaIaHelper::mas_vendidos(
+                        $owner_id,
+                        self::dias_del_enum($input),
+                        isset($input['desde']) ? $input['desde'] : null,
+                        isset($input['hasta']) ? $input['hasta'] : null
+                    );
                 },
             ],
             [
@@ -1393,56 +1461,69 @@ CONFIRMACION;
             ],
             [
                 'name' => 'que_puedo_consultar',
-                'description' => 'Te dice qué datos del sistema podés pedir con consultar_datos y cómo filtrarlos. Llamala SIN entidad para ver la lista de lo que hay, y de nuevo CON una entidad para ver sus campos, el tipo de cada uno y qué operadores acepta. Usala antes de consultar_datos cuando la pregunta no encaja en ninguna de las otras herramientas: no adivines nombres de campos, un campo que no existe devuelve error y te gasta una vuelta.',
+                'description' => 'Te dice qué datos del sistema podés pedir con consultar_datos y resumir_datos, y cómo filtrarlos. Cubre prácticamente todo el sistema (ciento y pico de entidades agrupadas por módulo: artículos, ventas y sus renglones, clientes, compras y sus renglones, caja, gastos, agenda, tienda, producción, stock, configuración). Llamala SIN entidad —con `buscar` para acotar la lista— y de nuevo CON una entidad para ver sus campos, el tipo de cada uno, qué operadores acepta y cuáles viajan por defecto. No adivines nombres de entidad ni de campo: uno que no existe devuelve error y te gasta una vuelta.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'entidad' => [
                             'type' => 'string',
-                            'description' => 'Sobre cuál querés el detalle. Sin esto devuelve la lista de todas.',
-                            // La lista sale del propio catálogo: una entidad nueva aparece acá sola.
-                            'enum' => CatalogoDeDatosIaHelper::entidades(),
+                            // 🔴 Sin enum a propósito (misión asistente-omnisciente): con ciento y pico de
+                            // entidades el enum pesaba más que el resto del bloque de tools, y la
+                            // validación ya está en el handler, que contesta con la lista.
+                            'description' => 'Sobre cuál querés el detalle, tal como la nombra la lista. Sin esto devuelve la lista.',
+                        ],
+                        'buscar' => [
+                            'type' => 'string',
+                            'description' => 'Solo sin entidad: una palabra para acotar la lista por nombre, etiqueta o módulo (ejemplo: "caja", "compra", "cheque").',
                         ],
                     ],
                     'required' => [],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return CatalogoDeDatosIaHelper::que_puedo_consultar(isset($input['entidad']) ? (string) $input['entidad'] : null);
+                    return CatalogoDeDatosIaHelper::que_puedo_consultar(
+                        isset($input['entidad']) ? (string) $input['entidad'] : null,
+                        isset($input['buscar']) ? (string) $input['buscar'] : null
+                    );
                 },
             ],
             [
                 'name' => 'consultar_datos',
-                'description' => 'Consulta genérica sobre los datos del negocio: artículos, clientes, proveedores, ventas, compras a proveedores, gastos, tareas y vencimientos, presupuestos, cheques, cajas, pedidos y compradores de la tienda, vendedores, combos, rubros, sub rubros y marcas. Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato. 🔴 Pedí primero que_puedo_consultar con la entidad para saber qué campos tiene y qué operadores acepta cada uno: un campo o un operador que no existe devuelve error, no resultados. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos.',
+                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'entidad' => [
                             'type' => 'string',
-                            'description' => 'Qué se consulta.',
-                            'enum' => CatalogoDeDatosIaHelper::entidades(),
+                            // Sin enum, ver que_puedo_consultar: la validación está en el handler.
+                            'description' => 'Qué se consulta, tal como la nombra que_puedo_consultar.',
                         ],
                         'filtros' => [
                             'type' => 'array',
-                            'description' => 'Condiciones que tienen que cumplir los registros. Sin filtros trae los últimos cargados.',
+                            'description' => 'Condiciones que tienen que cumplir los registros (se cumplen todas). Sin filtros trae los últimos cargados.',
                             'items' => [
                                 'type' => 'object',
                                 'properties' => [
                                     'campo' => [
                                         'type' => 'string',
-                                        'description' => 'Nombre del campo, tal como lo devolvió que_puedo_consultar. Para filtrar por una relación va su campo con _id (por ejemplo category_id), no el nombre.',
+                                        'description' => 'Nombre del campo, tal como lo devolvió que_puedo_consultar. Para una relación va su campo con _id (por ejemplo category_id).',
                                     ],
                                     'operador' => [
                                         'type' => 'string',
-                                        'description' => 'Qué comparación hacer. "contiene" es solo para texto; "mayor" y "menor" para números y fechas.',
-                                        'enum' => ['contiene', 'igual', 'mayor', 'menor', 'vacio', 'no_vacio'],
+                                        'description' => 'Texto: contiene, igual, distinto, vacio, no_vacio, en. Número: igual, distinto, mayor, menor, mayor_o_igual, menor_o_igual, vacio, no_vacio, en. Fecha (por día): igual, desde, hasta (los dos inclusivos), mayor, menor, vacio, no_vacio. Relación (_id): igual (id o nombre), contiene (nombre), en (ids), vacio, no_vacio. Checkbox: igual.',
+                                        'enum' => ['contiene', 'igual', 'distinto', 'mayor', 'menor', 'mayor_o_igual', 'menor_o_igual', 'desde', 'hasta', 'vacio', 'no_vacio', 'en'],
                                     ],
                                     'valor' => [
                                         'type' => 'string',
-                                        'description' => 'Contra qué comparar. Las fechas van en formato AAAA-MM-DD. No va con "vacio" ni con "no_vacio".',
+                                        'description' => 'Contra qué comparar. Las fechas van en formato AAAA-MM-DD; para "en" va una lista separada por comas. No va con "vacio" ni con "no_vacio".',
                                     ],
                                 ],
                                 'required' => ['campo', 'operador'],
                             ],
+                        ],
+                        'campos' => [
+                            'type' => 'array',
+                            'description' => 'Qué campos devolver (nombres de que_puedo_consultar). Sin esto viajan los campos por defecto; los de campos_adicionales hay que pedirlos acá.',
+                            'items' => ['type' => 'string'],
                         ],
                         'orden' => [
                             'type' => 'object',
@@ -1478,8 +1559,161 @@ CONFIRMACION;
                         is_array($input['filtros'] ?? null) ? $input['filtros'] : [],
                         is_array($input['orden'] ?? null) ? $input['orden'] : null,
                         (int) ($input['pagina'] ?? 1),
+                        (int) ($input['limite'] ?? 0),
+                        is_array($input['campos'] ?? null) ? $input['campos'] : null
+                    );
+                },
+            ],
+            /*
+             * 🔴 DE ACÁ PARA ABAJO VAN LAS DE LA MISIÓN asistente-omnisciente (bloque A), AL FINAL
+             * por el mismo motivo de siempre: el orden es el prefijo que cachea con_cache_control().
+             */
+            [
+                'name' => 'resumir_datos',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount y suma cost. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'entidad' => [
+                            'type' => 'string',
+                            'description' => 'Qué se resume, tal como la nombra que_puedo_consultar.',
+                        ],
+                        'filtros' => [
+                            'type' => 'array',
+                            'description' => 'Los mismos filtros que consultar_datos.',
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => [
+                                    'campo'    => ['type' => 'string'],
+                                    'operador' => ['type' => 'string'],
+                                    'valor'    => ['type' => 'string'],
+                                ],
+                                'required' => ['campo', 'operador'],
+                            ],
+                        ],
+                        'agrupar_por' => [
+                            'type' => 'array',
+                            'description' => 'De 0 a 2 agrupaciones. Sin esto devuelve una sola fila de totales.',
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => [
+                                    'campo' => ['type' => 'string', 'description' => 'Campo por el que agrupar. Un campo _id agrupa por la relación y devuelve su etiqueta.'],
+                                    'por'   => ['type' => 'string', 'description' => 'Solo para un campo de fecha: dia, semana, mes o anio.', 'enum' => ['dia', 'semana', 'mes', 'anio']],
+                                ],
+                                'required' => ['campo'],
+                            ],
+                        ],
+                        'metricas' => [
+                            'type' => 'array',
+                            'description' => 'Qué calcular. Sin esto, conteo. Los alias de la respuesta son conteo, suma_<campo>, promedio_<campo>, minimo_<campo>, maximo_<campo>.',
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => [
+                                    'funcion' => ['type' => 'string', 'enum' => ['conteo', 'suma', 'promedio', 'minimo', 'maximo']],
+                                    'campo'   => ['type' => 'string', 'description' => 'Campo numérico (o de fecha para minimo/maximo). No va con conteo.'],
+                                ],
+                                'required' => ['funcion'],
+                            ],
+                        ],
+                        'orden' => [
+                            'type' => 'object',
+                            'description' => 'Por qué ordenar los grupos. Sin esto, la primera métrica de mayor a menor.',
+                            'properties' => [
+                                'por'       => ['type' => 'string', 'description' => 'Un alias de métrica (suma_amount) o "grupo".'],
+                                'direccion' => ['type' => 'string', 'enum' => ['ASC', 'DESC']],
+                            ],
+                            'required' => ['por'],
+                        ],
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos grupos traer. El default son 20 y el máximo 100.',
+                        ],
+                    ],
+                    'required' => ['entidad'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ResumenDeDatosIaHelper::resumir(
+                        $owner_id,
+                        (string) ($input['entidad'] ?? ''),
+                        is_array($input['filtros'] ?? null) ? $input['filtros'] : [],
+                        is_array($input['agrupar_por'] ?? null) ? $input['agrupar_por'] : [],
+                        is_array($input['metricas'] ?? null) ? $input['metricas'] : [],
+                        is_array($input['orden'] ?? null) ? $input['orden'] : null,
                         (int) ($input['limite'] ?? 0)
                     );
+                },
+            ],
+            [
+                'name' => 'consultar_resumen_de_ventas',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro o proveedor. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día, AAAA-MM-DD, inclusive.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día, AAAA-MM-DD, inclusive. Para un solo día, el mismo que desde.'],
+                        'agrupar_por' => [
+                            'type' => 'string',
+                            'description' => 'Sin esto, solo los totales.',
+                            'enum' => ResumenDeVentasIaHelper::AGRUPACIONES,
+                        ],
+                        'moneda' => ['type' => 'string', 'description' => 'pesos (default) o dolares.', 'enum' => ['pesos', 'dolares']],
+                    ],
+                    'required' => ['desde', 'hasta'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ResumenDeVentasIaHelper::resumen(
+                        $owner_id,
+                        isset($input['desde']) ? $input['desde'] : null,
+                        isset($input['hasta']) ? $input['hasta'] : null,
+                        isset($input['agrupar_por']) ? (string) $input['agrupar_por'] : null,
+                        isset($input['moneda']) ? (string) $input['moneda'] : 'pesos'
+                    );
+                },
+            ],
+            [
+                'name' => 'consultar_reporte_contable',
+                'description' => 'Los tres reportes contables del sistema para un rango de fechas: estado_resultados (devengado: ventas netas, costo de mercadería, gastos, resultado bruto y neto, márgenes), flujo_caja (percibido: la plata que entró y salió, por caja y método de pago, más la plata en tránsito) y posicion_fiscal (IVA, IIBB y pagos a cuenta de Ganancias). Usala para rentabilidad, ganancia, margen, cuánto entró de plata y cuánto impuesto hay que pagar; son los mismos números que las pantallas de Contabilidad. La respuesta dice en podado qué detalle se recortó. Tope 400 días.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'reporte' => ['type' => 'string', 'enum' => ReporteContableIaHelper::REPORTES],
+                        'desde'   => ['type' => 'string', 'description' => 'Primer día, AAAA-MM-DD, inclusive.'],
+                        'hasta'   => ['type' => 'string', 'description' => 'Último día, AAAA-MM-DD, inclusive.'],
+                        'moneda'  => ['type' => 'string', 'description' => 'pesos (default), dolares o consolidado. La posición fiscal no tiene moneda.', 'enum' => ReporteContableIaHelper::MONEDAS],
+                    ],
+                    'required' => ['reporte', 'desde', 'hasta'],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return ReporteContableIaHelper::reporte(
+                        $owner_id,
+                        isset($input['reporte']) ? $input['reporte'] : '',
+                        isset($input['desde']) ? $input['desde'] : null,
+                        isset($input['hasta']) ? $input['hasta'] : null,
+                        isset($input['moneda']) ? (string) $input['moneda'] : 'pesos'
+                    );
+                },
+            ],
+            [
+                'name' => 'mostrar_imagenes_de_articulos',
+                'description' => 'Adjunta a tu respuesta la foto de hasta 6 artículos, por id (el id de consultar_stock_de_articulos o el articulo_id de cualquier otra consulta). Usala cuando te pidan ver la foto de un artículo: la imagen viaja sola con tu respuesta, no escribas la URL en el texto. La respuesta dice qué artículos no tienen foto (sin_imagen): decilo en vez de prometerla.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'articulo_ids' => [
+                            'type' => 'array',
+                            'description' => 'Ids de los artículos, de 1 a 6.',
+                            'items' => ['type' => 'integer'],
+                            'minItems' => 1,
+                            'maxItems' => 6,
+                        ],
+                    ],
+                    'required' => ['articulo_ids'],
+                ],
+                // §3 del contrato: el handler es de C (AdjuntosIaHelper), con esta firma.
+                'handler' => function (array $input, $owner_id) {
+                    $ids = is_array($input['articulo_ids'] ?? null) ? $input['articulo_ids'] : [];
+
+                    return AdjuntosIaHelper::imagenes_de_articulos((int) $owner_id, array_map('intval', $ids));
                 },
             ],
         ];
@@ -1666,6 +1900,9 @@ CONFIRMACION;
                      */
                     $this->juntar_candidatos_a_mencion($tool_name, $datos);
 
+                    // §3 del contrato: lo que una tool deja como adjunto de la respuesta.
+                    $this->juntar_adjuntos($tool_name, $datos);
+
                     $content = $this->contenido_de_tool_result($datos);
                 } elseif (! is_null($assistant_message) && $assistant_message->acciones_habilitadas && HerramientasDeCarga::maneja($tool_name)) {
                     // Las dos puntas de las herramientas de carga (definición y
@@ -1730,6 +1967,37 @@ CONFIRMACION;
             }
         } catch (\Throwable $e) {
             Log::warning('AsistenteIaService: no se pudieron leer los candidatos a mención de una tool.', [
+                'tool'  => $tool_name,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Suma a los adjuntos de la respuesta lo que dejó una tool en `adjuntos_de_la_respuesta`,
+     * normalizado por AdjuntosIaHelper y recortado a su tope (misión asistente-omnisciente, §3).
+     *
+     * Protegido igual que las menciones: un adjunto es un extra de la respuesta, y si algo falla
+     * al juntarlo la tool ya contestó bien y el loop sigue.
+     *
+     * @param  string  $tool_name
+     * @param  mixed   $datos  Lo crudo que devolvió el handler.
+     * @return void
+     */
+    protected function juntar_adjuntos($tool_name, $datos)
+    {
+        if (! is_array($datos) || ! isset($datos['adjuntos_de_la_respuesta']) || ! is_array($datos['adjuntos_de_la_respuesta'])) {
+            return;
+        }
+
+        try {
+            $nuevos = AdjuntosIaHelper::normalizar($datos['adjuntos_de_la_respuesta']);
+
+            if (! empty($nuevos)) {
+                $this->adjuntos = array_slice(array_merge($this->adjuntos, $nuevos), 0, AdjuntosIaHelper::MAX_ADJUNTOS);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudieron juntar los adjuntos de una tool.', [
                 'tool'  => $tool_name,
                 'error' => $e->getMessage(),
             ]);
