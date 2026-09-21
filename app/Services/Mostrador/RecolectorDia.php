@@ -130,6 +130,24 @@ class RecolectorDia extends RecolectorBase
     }
 
     /**
+     * EL CONJUNTO DE VENTAS DE RENDIMIENTO, EXPUESTO PARA EL ASISTENTE (misión
+     * asistente-omnisciente, 21/9/2026). `consultar_resumen_de_ventas` tiene que dar EL MISMO
+     * número que el reporte de Rendimiento y que el informe del mostrador, y la única forma de
+     * garantizarlo es que los tres lean el mismo builder: este método delega en consulta_ventas()
+     * sin tocar el criterio (ni la fecha, ni la moneda, ni las consolidaciones). Si alguna vez
+     * cambia consulta_ventas(), cambian los tres juntos, que es la idea.
+     *
+     * @param User $owner
+     * @param Carbon $desde Primer día del rango (se usa la parte fecha)
+     * @param Carbon $hasta Último día del rango (se usa la parte fecha)
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function ventas_del_periodo(User $owner, Carbon $desde, Carbon $hasta)
+    {
+        return $this->consulta_ventas($owner, $desde, $hasta);
+    }
+
+    /**
      * Subconsulta con los ids de las ventas del rango (ver consulta_ventas), para acotar
      * article_purchases al MISMO conjunto de ventas que los totales.
      *
