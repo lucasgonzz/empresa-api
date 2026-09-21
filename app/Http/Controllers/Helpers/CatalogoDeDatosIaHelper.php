@@ -217,22 +217,25 @@ class CatalogoDeDatosIaHelper
 
         'cheque' => [
             'etiqueta'    => 'cheques',
-            'descripcion' => 'Los cheques recibidos y entregados. `tipo` distingue uno de otro.',
+            'descripcion' => 'Los cheques recibidos y entregados. `tipo` distingue uno de otro. El banco esta dos veces: `banco` es el texto escrito en cada cheque (puede variar: "Bco Nacion", "banco nación") y `cheque_banco_id` es el banco unificado del catalogo de bancos; para "los cheques del Banco Nación" filtra por cheque_banco_id, que es el que el negocio unifico, y usa `banco` solo para los cheques que todavia no tienen banco unificado.',
             'campos'      => [
-                'numero'        => ['tipo' => 'text',   'etiqueta' => 'numero'],
-                'banco'         => ['tipo' => 'text',   'etiqueta' => 'banco'],
-                'amount'        => ['tipo' => 'number', 'etiqueta' => 'importe'],
-                'tipo'          => ['tipo' => 'text',   'etiqueta' => 'tipo'],
-                'fecha_pago'    => ['tipo' => 'date',   'etiqueta' => 'fecha de pago'],
-                'fecha_emision' => ['tipo' => 'date',   'etiqueta' => 'fecha de emision'],
-                'estado_manual' => ['tipo' => 'text',   'etiqueta' => 'estado'],
-                'client_id'     => ['tipo' => 'search', 'etiqueta' => 'cliente'],
-                'provider_id'   => ['tipo' => 'search', 'etiqueta' => 'proveedor'],
-                'created_at'    => ['tipo' => 'date',   'etiqueta' => 'fecha de carga'],
+                'numero'          => ['tipo' => 'text',   'etiqueta' => 'numero'],
+                'banco'           => ['tipo' => 'text',   'etiqueta' => 'banco (texto escrito en el cheque)'],
+                'cheque_banco_id' => ['tipo' => 'search', 'etiqueta' => 'banco unificado (del catalogo de bancos)'],
+                'amount'          => ['tipo' => 'number', 'etiqueta' => 'importe'],
+                'tipo'            => ['tipo' => 'text',   'etiqueta' => 'tipo'],
+                'fecha_pago'      => ['tipo' => 'date',   'etiqueta' => 'fecha de pago'],
+                'fecha_emision'   => ['tipo' => 'date',   'etiqueta' => 'fecha de emision'],
+                'estado_manual'   => ['tipo' => 'text',   'etiqueta' => 'estado'],
+                'client_id'       => ['tipo' => 'search', 'etiqueta' => 'cliente'],
+                'provider_id'     => ['tipo' => 'search', 'etiqueta' => 'proveedor'],
+                'created_at'      => ['tipo' => 'date',   'etiqueta' => 'fecha de carga'],
             ],
             'relaciones'  => [
-                'cliente'   => ['tabla' => 'clients',   'columna_id' => 'client_id',   'campo' => 'name'],
-                'proveedor' => ['tabla' => 'providers', 'columna_id' => 'provider_id', 'campo' => 'name'],
+                'cliente'         => ['tabla' => 'clients',       'columna_id' => 'client_id',       'campo' => 'name'],
+                'proveedor'       => ['tabla' => 'providers',     'columna_id' => 'provider_id',     'campo' => 'name'],
+                // Misión cheques-endoso-y-bancos (21/9/2026): el banco del catálogo, por nombre.
+                'banco_unificado' => ['tabla' => 'cheque_bancos', 'columna_id' => 'cheque_banco_id', 'campo' => 'name'],
             ],
         ],
 

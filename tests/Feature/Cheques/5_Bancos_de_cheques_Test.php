@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Cheques;
 
+use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Models\Cheque;
 use App\Models\ChequeBanco;
 use App\Models\User;
@@ -181,6 +182,48 @@ class Bancos_de_cheques_Test extends ChequesTestCase
         // El otro banco y su cheque no se tocan.
         $this->assertEquals($otro->id, $con_el_otro->fresh()->cheque_banco_id);
         $this->assertEquals(['Banco Credicoop'], $this->nombres_del_catalogo());
+    }
+
+    /**
+     * El asistente puede filtrar los cheques por el banco UNIFICADO y no solo por el texto escrito
+     * (misión cheques-endoso-y-bancos, chequeo independiente): "los cheques del Banco Nación" tiene
+     * que traer también los que decían "Bco Nacion" antes de unificarse.
+     *
+     * @test
+     */
+    public function la_consulta_generica_del_asistente_filtra_por_el_banco_unificado()
+    {
+        $banco = ChequeBanco::find((int) $this->postJson('api/cheque-banco', ['name' => 'Banco Nación'])->json('model.id'));
+
+        list($cliente, $cuenta) = $this->cliente_con_cuenta('Cliente catálogo IA ' . uniqid());
+
+        // Dos cheques del mismo banco unificado con el texto escrito distinto, y uno de otro banco.
+        $this->cobrar_con_cheque($cliente, $cuenta, ['numero' => '8101', 'banco' => 'Bco Nacion', 'cheque_banco_id' => $banco->id]);
+        $this->cobrar_con_cheque($cliente, $cuenta, ['numero' => '8102', 'banco' => 'banco nación', 'cheque_banco_id' => $banco->id]);
+        $this->cobrar_con_cheque($cliente, $cuenta, ['numero' => '8103', 'banco' => 'Galicia']);
+
+        // El catálogo declara el campo y la relación.
+        $detalle = CatalogoDeDatosIaHelper::que_puedo_consultar('cheque');
+
+        $this->assertContains('cheque_banco_id', array_column($detalle['campos'], 'campo'));
+
+        $relaciones = array_column($detalle['relaciones'], 'campo_en_la_respuesta');
+
+        $this->assertContains('banco_unificado', $relaciones);
+        $this->assertEquals('cheque_banco_id', $detalle['relaciones'][array_search('banco_unificado', $relaciones, true)]['se_filtra_por']);
+
+        // Y filtrando por él salen los dos, con el nombre del banco en la respuesta.
+        $resultado = CatalogoDeDatosIaHelper::consultar_datos($this->dueno->id, 'cheque', [
+            ['campo' => 'cheque_banco_id', 'operador' => 'igual', 'valor' => $banco->id],
+        ]);
+
+        $numeros = array_column($resultado['registros'], 'numero');
+
+        sort($numeros);
+
+        $this->assertEquals(['8101', '8102'], $numeros, 'Cuerpo completo: ' . json_encode($resultado));
+        $this->assertEquals('Banco Nación', $resultado['registros'][0]['banco_unificado']);
+        $this->assertNotEquals('', $resultado['registros'][0]['banco'], 'El texto escrito en el cheque sigue viajando al lado.');
     }
 
     /**
