@@ -75,6 +75,14 @@ class AiMessageAction extends Model
     const TIPO_ACTUALIZACION_MASIVA = 'actualizacion_masiva';
     const TIPO_DISENO_PDF           = 'diseno_pdf';
 
+    /**
+     * Unificar los bancos de los cheques (misión cheques-endoso-y-bancos, 21/9/2026): crear los
+     * bancos del catálogo a partir de los textos libres y asignárselos a los cheques. Es masiva
+     * (toca N cheques) y NO entra en HerramientasDeCarga::AUTO_CONFIRMABLES: siempre la confirma la
+     * persona.
+     */
+    const TIPO_UNIFICAR_BANCOS = 'unificar_bancos_cheques';
+
     protected $guarded = [];
 
     /**
