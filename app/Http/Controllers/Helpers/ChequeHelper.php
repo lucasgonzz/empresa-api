@@ -82,7 +82,14 @@ class ChequeHelper {
             'fecha_emision'             => $payment_method['fecha_emision'] ?? null,
             'fecha_pago'                => $payment_method['fecha_pago'] ?? null,
             'es_echeq'                  => $payment_method['es_echeq'] ?? 0,
-            'notes'                     => $payment_method['notes'] ?? 0,
+
+            /*
+             * null y no 0: el default era el entero 0 (copiado del de `es_echeq`, que ahí sí es un
+             * booleano), y todo cheque cargado sin notas quedaba con un "0" escrito en la columna
+             * Notas del listado y en el campo Notas del formulario al endosarlo. Una nota vacía es
+             * null, como el resto de las claves de este create.
+             */
+            'notes'                     => $payment_method['notes'] ?? null,
 
             // Tipo de cheque: recibido (de cliente) o emitido (a proveedor)
             'tipo'                      => Self::get_tipo($model, $es_gasto),

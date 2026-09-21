@@ -123,6 +123,14 @@ class Endoso_en_pago_a_proveedor_Test extends ChequesTestCase
             'fecha_pago'    => now()->addDays(15)->format('Y-m-d'),
         ]);
 
+        /*
+         * Sin la clave `notes`, que es como manda la fila el payment_method_factory de
+         * current-acounts/pago/PaymentMethods.vue cuando el usuario no escribe ninguna nota: el
+         * default de crear_cheque tiene que ser null y no el entero 0, que se veía como un "0"
+         * escrito en la columna Notas y en el campo Notas al endosar el cheque.
+         */
+        unset($fila['notes']);
+
         $response = $this->postJson('api/current-acount/pago', $this->payload_de_pago('provider', $proveedor->id, $cuenta_proveedor, [$fila]));
 
         $response->assertStatus(201);
@@ -143,6 +151,7 @@ class Endoso_en_pago_a_proveedor_Test extends ChequesTestCase
         $this->assertNull($emitido->endosado_desde_cheque_id);
         $this->assertNull($emitido->endosado_desde_client_id);
         $this->assertNull($emitido->expense_id);
+        $this->assertNull($emitido->notes, 'Un cheque sin notas queda con notes null, no con un "0".');
         $this->assertEquals('emitido.pendientes', $this->solapa_de($emitido->id));
     }
 }
