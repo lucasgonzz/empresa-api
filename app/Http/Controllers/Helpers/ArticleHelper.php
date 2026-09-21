@@ -1712,12 +1712,19 @@ class ArticleHelper {
     }
 
     /**
-     * 🔴 ESTA FUNCION DEVUELVE UNA URL ROTA EN PRODUCCION, Y POR ESO NO LA USA EL ASISTENTE.
-     * Para una URL sin la palabra `storage` adentro, `strpos` da false y el retorno es
-     * literalmente `"public/https://..."`; y para una URL que SI la tiene, le antepone otro
-     * `/public` al que ApiUrlHelper ya le puso al guardarla (`.../public/public/storage/...`).
-     * Queda como esta porque el Mostrador (`RecolectorBase::fotos_de_articulos`) la consume y
-     * cambiarla es otra mision: lo nuevo va por primera_imagen_publica(), abajo.
+     * La primera imagen del articulo, tal como quedo guardada.
+     *
+     * ⚠️ HASTA EL 21/9/2026 ESTA FUNCION DEVOLVIA UNA URL ROTA EN PRODUCCION: reprocesaba la
+     * hosting_url insertando "public/" y terminaba en `"public/https://..."` o en
+     * `.../public/public/storage/...` (404). Por eso la mision asistente-omnisciente escribio
+     * primera_imagen_publica() al lado, que es la que usa el asistente. El mismo dia, y en
+     * paralelo, la mision del logo del Ticket 2.0 saco ese reprocesado de aca (ver el comentario
+     * de adentro): las dos ahora devuelven lo mismo para una URL guardada por ImageController.
+     *
+     * primera_imagen_publica() se queda igual y sigue siendo la que usa el asistente: normaliza
+     * ademas las formas que esta no cubre (una ruta relativa, un data:, una URL de otro host) y
+     * garantiza que lo que sale es absoluto o null, que es lo que necesita quien la manda afuera
+     * del sistema (Meta rechaza cualquier otra cosa).
      */
     static function getFirstImage($article) {
         if (count($article->images) >= 1) {

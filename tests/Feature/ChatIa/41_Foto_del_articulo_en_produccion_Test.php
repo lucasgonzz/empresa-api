@@ -157,8 +157,15 @@ class Foto_del_articulo_en_produccion_Test extends TestCase
 
         $this->assertSame($externa, ArticleHelper::primera_imagen_publica($articulo));
 
-        // El defecto: la función vieja devuelve una URL que no es absoluta ni existe.
-        $this->assertSame('public/' . $externa, ArticleHelper::getFirstImage($articulo));
+        /*
+         * ⚠️ Esta aserción decía que `getFirstImage()` devolvía `"public/<url>"` — el defecto que
+         * motivó escribir `primera_imagen_publica()`. El mismo 21/9, en paralelo, la misión del
+         * logo del Ticket 2.0 sacó ese reprocesado de `getFirstImage()`, así que para una URL ya
+         * absoluta las dos devuelven lo mismo. Se afirma eso, que es lo verdadero hoy; lo que
+         * sigue justificando a `primera_imagen_publica()` son las formas que la vieja NO
+         * normaliza, y que este archivo cubre en los otros tests (relativa, data:, vacía).
+         */
+        $this->assertSame($externa, ArticleHelper::getFirstImage($articulo));
     }
 
     /**

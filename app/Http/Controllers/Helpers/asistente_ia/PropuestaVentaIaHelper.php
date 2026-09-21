@@ -979,6 +979,32 @@ class PropuestaVentaIaHelper
                 continue;
             }
 
+            /*
+             * 🔴 UN ARTICULO CON VARIANTES NO SE VENDE DESDE ACA, Y NO ES UNA LIMITACION MENOR.
+             *
+             * Con la extension `article_variants` prendida, Vender NO deja vender el padre: devuelve
+             * una fila por variante y la venta va con `article_variant_id`. Este helper no conoce
+             * las variantes, asi que su payload lo manda en null: `SaleHelper::attachArticle()` lo
+             * guarda sin variante y el movimiento de stock se escribe contra el padre.
+             *
+             * Lo que pasaria en una tienda de ropa que pide "vende 2 remeras Nike": la venta se
+             * registra, se cobra, entra a la caja --y el stock del talle queda igual--. Y encima el
+             * descuento que si se le hizo al padre se pisa despues, porque
+             * UpdateVariantsStockHelper recalcula el stock del padre sumando sus variantes. O sea:
+             * una venta real con el stock intacto, sin error en ningun lado.
+             *
+             * Por eso se corta ACA, antes de proponer, y se dice adonde ir. Vender el talle correcto
+             * desde el chat es una mision aparte: hay que preguntar cual, y el modelo no tiene hoy
+             * como saber que variantes existen.
+             */
+            if (UserHelper::hasExtencion('article_variants', $contexto->owner) && $article->article_variants()->exists()) {
+
+                return RespuestaDeCargaIa::error(
+                    $article->name . ' se vende por variante (talle, color), y desde el chat no puedo elegir cuál. '
+                        . 'Esa venta se hace desde Vender, que te muestra una fila por variante.'
+                );
+            }
+
             $dictado = EntradaDeCargaIa::valor($item, 'precio_unitario');
 
             $precio_dictado = null;

@@ -441,6 +441,31 @@ class CatalogoDeEscrituraIaHelper
             'extension'          => null,
             'revisado'           => 'ExpenseCategoryController: solo name.',
         ],
+        /*
+         * Lo trajo `develop` el mismo 21/9 (misión cheques-endoso-y-bancos) y lo denunció el
+         * invariante de este catálogo, que es para lo que está: una ruta de recurso nueva no puede
+         * quedar sin clasificar. Entra con las tres operaciones porque es un catálogo por dueño con
+         * `name` y nada más, igual que las categorías de gasto — y su controller es de los pocos
+         * que scopea por dueño en `update()` y `destroy()` por su cuenta (`banco_del_dueno`).
+         *
+         * La baja es prolija y por eso no lleva aviso propio: `destroy()` deja los cheques que lo
+         * tenían con `cheque_banco_id` en null y **el texto del banco intacto**, que es el dato
+         * histórico de lo que decía el papel.
+         */
+        'cheque_banco' => [
+            'etiqueta'           => 'bancos de cheques',
+            'singular'           => 'banco de cheques',
+            'genero'             => 'm',
+            'descripcion'        => 'El catálogo de bancos para los cheques (ABM > Tesorería). El asistente además los unifica solo desde los textos ya cargados.',
+            'operaciones'        => null,
+            'solo_lectura'       => [],
+            'claves_de_pantalla' => [],
+            'ruta'               => ['name' => 'abm', 'params' => ['view' => 'tesoreria', 'sub_view' => 'bancos-de-cheques'], 'texto' => 'Ver en ABM'],
+            'aviso_de_baja'      => null,
+            'aviso_de_alta'      => null,
+            'extension'          => null,
+            'revisado'           => 'ChequeBancoController: solo name. El destroy desasocia los cheques y les deja el texto del banco.',
+        ],
         'address' => [
             'etiqueta'           => 'sucursales',
             'singular'           => 'sucursal',
