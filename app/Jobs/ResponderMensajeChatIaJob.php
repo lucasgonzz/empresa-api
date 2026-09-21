@@ -163,13 +163,8 @@ class ResponderMensajeChatIaJob implements ShouldQueue
              * dueño pidió ver— salen del tool_result de `mostrar_imagenes_de_articulos` y los
              * recolecta el servicio en el mismo loop, así que se guardan acá, junto a las menciones
              * y por el mismo motivo: fuera del loop ya no existen.
-             *
-             * ⚠️ GUARDA TEMPORAL: `adjuntos()` lo agrega el constructor A a AsistenteIaService. Hasta
-             * que su parte esté mergeada, este job tiene que seguir corriendo (y su suite en verde)
-             * con el servicio de hoy, que no tiene el método. Cuando A suba `adjuntos()`, esta guarda
-             * se saca y queda la asignación pelada, como la de menciones.
              */
-            $message->adjuntos = method_exists($service, 'adjuntos') ? $service->adjuntos() : [];
+            $message->adjuntos = $service->adjuntos();
             $message->save();
         } catch (\Throwable $e) {
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [
