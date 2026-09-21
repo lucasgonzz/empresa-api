@@ -382,6 +382,41 @@ class Catalogo_de_escritura_Test extends EmpresaTestCase
             $this->assertIsString($ruta['name'], $entidad);
             $this->assertIsString($ruta['texto'], $entidad);
             $this->assertTrue(is_array($ruta['params']) || $ruta['params'] instanceof \stdClass, $entidad);
+
+            /*
+             * 🔴 `view` y `sub_view` del ABM viajan EN LA URL, así que van en el mismo formato que
+             * arma `routeString()` de la SPA: minúsculas, sin espacios y con guión medio
+             * (src/common-vue/mixins/generals.js). El chequeo del contrato del 21/9/2026 encontró
+             * cinco entidades que mandaban 'tienda online' y 'cuenta corriente' con espacio: el
+             * botón "Ver lo que se registró" aparecía, navegaba, y aterrizaba en la solapa por
+             * defecto del ABM (Categorías) SIN decir nada, porque `setView()` de Abm.vue no matchea
+             * y cae al default de routes.js.
+             *
+             * Esta guarda atrapa el formato, que es lo que un repo puede verificar solo. Que el
+             * `sub_view` sea además el plural EXACTO del modelo de la SPA (`plural_model_name_spanish`)
+             * no se puede chequear desde acá —vive en el otro repo— y se verifica a mano al agregar
+             * una entidad: son dos listas en dos repos y no hay una tercera que las case.
+             */
+            $params = is_array($ruta['params']) ? $ruta['params'] : (array) $ruta['params'];
+
+            foreach (['view', 'sub_view'] as $clave) {
+                if (!isset($params[$clave])) {
+                    continue;
+                }
+
+                /*
+                 * ⚠️ Los acentos SÍ van: `routeString()` solo baja a minúsculas y cambia espacios
+                 * por guiones, no normaliza tildes. `expense_concept` viaja de verdad como
+                 * 'sub-categorías-de-gasto' porque su `plural_model_name_spanish` es
+                 * "Sub categorías de gasto". Lo que no puede haber es un espacio o una mayúscula.
+                 */
+                $this->assertMatchesRegularExpression(
+                    '/^[\p{Ll}\p{N}]+(-[\p{Ll}\p{N}]+)*$/u',
+                    $params[$clave],
+                    $entidad.': el '.$clave.' de la ruta tiene que ir en minúsculas y con guión medio, '
+                        .'como lo escribe routeString() de la SPA. Llegó "'.$params[$clave].'".'
+                );
+            }
         }
 
         $this->assertSame('provider', Catalogo::ruta_de_pantalla('provider')['name']);
