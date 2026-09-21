@@ -217,11 +217,16 @@ class ChequeController extends Controller
 
         $cheque = Cheque::where('user_id', $this->userId())->find($request->cheque_id);
 
+        if (is_null($cheque)) {
+
+            return response()->json(['message' => 'El cheque elegido para endosar no existe o no es de tu cuenta.'], 422);
+        }
+
         $problemas = ChequeHelper::problemas_de_endoso_en_payload([
             [
                 'cheque_id'                        => (int) $request->cheque_id,
                 'current_acount_payment_method_id' => $this->metodo_de_pago_cheque_id(),
-                'amount'                           => !is_null($cheque) ? $cheque->amount : null,
+                'amount'                           => $cheque->amount,
             ],
         ], $this->userId());
 

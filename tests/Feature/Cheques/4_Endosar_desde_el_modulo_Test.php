@@ -128,8 +128,13 @@ class Endosar_desde_el_modulo_Test extends ChequesTestCase
         $this->assertEquals($antes, $recibido->fresh()->toArray());
         $this->assertCount(1, $this->copias_de($recibido));
 
-        // Uno que no existe.
+        // Uno que no existe, y ninguno.
         $response = $this->putJson('api/cheque/endosar', ['cheque_id' => 999999999, 'provider_id' => $proveedor->id]);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('no existe o no es de tu cuenta', $response->json('message'));
+
+        $response = $this->putJson('api/cheque/endosar', ['cheque_id' => 0, 'provider_id' => $proveedor->id]);
 
         $response->assertStatus(422);
         $this->assertStringContainsString('no existe o no es de tu cuenta', $response->json('message'));
