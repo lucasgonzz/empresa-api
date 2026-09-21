@@ -136,23 +136,24 @@ class ProcessArticleChunk implements ShouldQueue
         $this->user = User::find($this->user_id);
 
         $this->inicio_chunk = microtime(true);
+
+        /*
+         * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel),
+         * para que un import o export grande no retenga el mismo worker. En el VPS, null: sigue
+         * en 'default', la única que el supervisor de cada cliente consume hoy.
+         *
+         * 🔴 Va en el constructor (propiedad pública $queue del trait Queueable), no como método
+         * viaQueue(): ese hook de Laravel es solo para event listeners en cola, nunca se invoca
+         * para Jobs. Y este job específicamente viaja en un Bus::chain (InitExcelImport::mandar_chain()),
+         * nunca en Bus::batch real (mandar_batch() es código muerto, ver su propio docblock) — en
+         * una chain, a diferencia de un batch, cada eslabón se despacha individualmente y respeta
+         * su propia $queue (verificado con tinker contra el Laravel real instalado, no asumido).
+         */
+        $this->queue = config('app.VPS') ? null : 'excel';
     }
 
     public function batchId() {
         return optional($this->batch())->id ?? 'NO_BATCH';
-    }
-
-    /**
-     * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel), para
-     * que un import o export grande no retenga el mismo worker. En el VPS, null: sigue en
-     * 'default', la única que el supervisor de cada cliente consume hoy — cambiar eso es un
-     * cambio de infraestructura aparte, no de este job.
-     *
-     * @return string|null
-     */
-    public function viaQueue()
-    {
-        return config('app.VPS') ? null : 'excel';
     }
 
     public function handle()

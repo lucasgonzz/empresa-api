@@ -59,8 +59,14 @@ class Kernel extends ConsoleKernel
         // catálogo: ProcessArticleChunk, los export de artículos/proveedores/clientes, etc. — jobs
         // con timeout de 600 a 3600 segundos). Antes de este cambio, un Excel grande retenía el
         // único worker y el asistente esperaba detrás (documentado desde el 17/9 en el docblock de
-        // RunExcelAnalysisJob, sin resolver hasta ahora). Los jobs pesados eligen su cola con
-        // viaQueue() (uno por clase, en app/Jobs/) — acá solo hace falta el segundo consumidor.
+        // RunExcelAnalysisJob, sin resolver hasta ahora). Los jobs pesados eligen su cola seteando
+        // la propiedad $queue en su propio constructor (uno por clase, en app/Jobs/) — 🔴 NO con un
+        // método viaQueue(): ese hook de Laravel solo existe para event listeners en cola
+        // (Illuminate\Events\Dispatcher), nunca se invoca para Jobs despachados con dispatch(),
+        // Bus::chain() ni Bus::batch() — un primer intento con viaQueue() quedó como código muerto
+        // hasta que el chequeo de esta misma misión lo encontró leyendo Illuminate\Bus\Dispatcher
+        // (pushCommandToQueue() lee $command->queue directamente) y verificándolo con tinker contra
+        // el Laravel real instalado. Acá solo hace falta el segundo consumidor.
         //
         // 🔴 Las DOS líneas llevan runInBackground(): sin eso, la primera bloquea el proceso de
         // schedule:run entero (síncrono) hasta vaciar 'default', incluido cualquier job largo que
@@ -69,8 +75,8 @@ class Kernel extends ConsoleKernel
         // del schedule. Es un cambio de comportamiento real de la línea que ya existía, no solo un
         // agregado — está pensado a propósito, no es un descuido.
         //
-        // En el VPS esto no se agenda (la condición de abajo da false): viaQueue() de cada job
-        // devuelve null con VPS=true, así que todo sigue yendo a 'default', la única cola que el
+        // En el VPS esto no se agenda (la condición de abajo da false): el $queue de cada job queda
+        // en null con VPS=true, así que todo sigue yendo a 'default', la única cola que el
         // supervisor de cada cliente ya consume hoy. Separar también ahí requeriría tocar la config
         // de supervisor de 21+ clientes en producción — cambio de infraestructura aparte, fuera del
         // alcance de esta misión.

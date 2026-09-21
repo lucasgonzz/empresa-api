@@ -110,19 +110,20 @@ class RunExcelAnalysisJob implements ShouldQueue
     public function __construct(int $excel_analysis_run_id)
     {
         $this->excel_analysis_run_id = $excel_analysis_run_id;
-    }
 
-    /**
-     * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel), para
-     * que un import o export grande no retenga el mismo worker. En el VPS, null: sigue en
-     * 'default', la única que el supervisor de cada cliente consume hoy — cambiar eso es un
-     * cambio de infraestructura aparte, no de este job.
-     *
-     * @return string|null
-     */
-    public function viaQueue()
-    {
-        return config('app.VPS') ? null : 'excel';
+        /*
+         * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel),
+         * para que un import o export grande no retenga el mismo worker. En el VPS, null: sigue
+         * en 'default', la única que el supervisor de cada cliente consume hoy — cambiar eso es
+         * un cambio de infraestructura aparte, no de este job.
+         *
+         * 🔴 Va en el constructor, seteando la propiedad pública $queue del trait Queueable, y NO
+         * como método viaQueue(): ese hook de Laravel solo existe para event listeners en cola
+         * (Illuminate\Events\Dispatcher), nunca se invoca para Jobs despachados con dispatch(),
+         * Bus::chain() o Bus::batch() (confirmado leyendo Illuminate\Bus\Dispatcher::pushCommandToQueue(),
+         * que lee $command->queue directamente). Un viaQueue() acá sería código muerto.
+         */
+        $this->queue = config('app.VPS') ? null : 'excel';
     }
 
     /**
