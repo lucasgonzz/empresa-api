@@ -57,7 +57,7 @@ class ChequeHelper {
      */
     static function crear_cheque($model, $payment_method, $from_expense = false) {
 
-        $cheque_id = isset($payment_method['cheque_id']) ? (int) $payment_method['cheque_id'] : 0;
+        $cheque_id = self::cheque_id_de($payment_method);
 
         if ($cheque_id > 0) {
 
@@ -147,11 +147,11 @@ class ChequeHelper {
 
         if ($model instanceof CurrentAcount && !is_null($model->provider_id)) {
 
-            $origen->endosado_a_provider_id = $model->provider_id;
+            $marca = ['endosado_a_provider_id' => $model->provider_id];
 
         } elseif ($model instanceof Expense) {
 
-            $origen->endosado_en_expense_id = $model->id;
+            $marca = ['endosado_en_expense_id' => $model->id];
 
         } else {
 
@@ -164,8 +164,30 @@ class ChequeHelper {
             throw new \RuntimeException('Un cheque recibido solo se endosa en un pago a un proveedor o en un gasto.');
         }
 
-        $origen->fecha_endoso = Carbon::now();
-        $origen->save();
+        $marca['fecha_endoso'] = Carbon::now();
+
+        /*
+         * 🔴 LA MARCA ES UN UPDATE CONDICIONAL, NO UN save(). Dos requests con el mismo `cheque_id`
+         * pueden pasar los dos la prevalidación del controller (los dos leyeron el cheque en cartera)
+         * y llegar acá a la vez; con un `find` + `save` los dos marcaban y los dos creaban su copia
+         * emitida: el mismo papel entregado dos veces, a dos proveedores. El UPDATE repite en el
+         * WHERE todas las condiciones de "se puede endosar" (del dueño, recibido, sin marca manual,
+         * en cartera), así que de dos carreras gana exactamente una: la otra afecta 0 filas y corta
+         * ACÁ, antes de crear la copia. No importa quién leyó qué ni cuándo.
+         */
+        $q = Cheque::where('id', $origen->id)
+                    ->where('cheques.user_id', UserHelper::userId())
+                    ->where('cheques.tipo', 'recibido')
+                    ->whereNull('cheques.estado_manual');
+
+        $marcadas = self::sin_endosar($q)->update($marca);
+
+        if ($marcadas !== 1) {
+
+            throw new \RuntimeException('El cheque N° '.$origen->numero.' ya fue endosado o cambió de estado mientras se registraba: no se endosó dos veces.');
+        }
+
+        $origen->refresh();
 
         $cheque_banco_id = !is_null($origen->cheque_banco_id) ? $origen->cheque_banco_id : self::cheque_banco_id_de($payment_method);
 
@@ -197,6 +219,27 @@ class ChequeHelper {
             'fecha_endoso'              => null,
             'estado_manual'             => null,
         ]);
+    }
+
+    /**
+     * El `cheque_id` de una fila: entero mayor a 0, o 0 si no pide endoso. Es LA lectura de esa
+     * clave, para la prevalidación, el alta y el botón: un `'12abc'` tiene que ser "sin cheque" en
+     * los tres lados, y no "sin cheque" en la prevalidación y 12 en el alta (un `(int)` pelado lo
+     * volvía 12).
+     *
+     * @param  array  $payment_method
+     * @return int
+     */
+    static function cheque_id_de($payment_method) {
+
+        if (!is_array($payment_method) || !isset($payment_method['cheque_id']) || !is_numeric($payment_method['cheque_id'])) {
+
+            return 0;
+        }
+
+        $id = (int) $payment_method['cheque_id'];
+
+        return $id > 0 ? $id : 0;
     }
 
     /**
@@ -280,6 +323,10 @@ class ChequeHelper {
      * Es exactamente el criterio del botón Endosar del módulo (pendientes, disponibles para cobrar y
      * pronto a vencerse; los vencidos no). Ordenados por fecha de pago, el que vence antes primero.
      *
+     * Un cheque SIN fecha de pago entra: ChequeController::index() lo lista igual (Carbon::parse(null)
+     * es ahora, así que cae en "pendientes") y vencido() lo deja pasar, así que dejarlo afuera acá
+     * sería un cheque que el módulo ofrece endosar con su botón y el select no muestra.
+     *
      * @param  int  $user_id
      * @return \Illuminate\Database\Eloquent\Collection
      */
@@ -290,7 +337,9 @@ class ChequeHelper {
         $q = Cheque::where('cheques.user_id', $user_id)
                     ->where('cheques.tipo', 'recibido')
                     ->whereNull('cheques.estado_manual')
-                    ->whereDate('cheques.fecha_pago', '>=', $desde);
+                    ->where(function ($sub) use ($desde) {
+                        $sub->whereNull('cheques.fecha_pago')->orWhereDate('cheques.fecha_pago', '>=', $desde);
+                    });
 
         return self::sin_endosar($q)
                     ->withAll()
@@ -352,10 +401,10 @@ class ChequeHelper {
      *
      * Además de lo de cada cheque (problemas_de_endoso), mira lo que solo se ve con la fila en la
      * mano: que el monto de la fila sea el del cheque (un cheque se endosa ENTERO, no hay endoso
-     * parcial), que el mismo cheque no esté en dos filas, y que la fila sea de un método de tipo
+     * parcial), que el mismo cheque no esté en dos filas, que la fila sea de un método de tipo
      * cheque — attach_payment_methods() solo crea cheques para ese tipo, así que un `cheque_id` en
      * una fila de Efectivo se registraría como efectivo y el cheque seguiría en cartera sin que
-     * nadie lo note.
+     * nadie lo note — y que la fila venga SIN caja destino, porque un endoso no mueve caja.
      *
      * @param  array|null  $payment_methods  Las filas tal como las manda la SPA.
      * @param  int  $user_id
@@ -374,12 +423,7 @@ class ChequeHelper {
 
         foreach ($payment_methods as $payment_method) {
 
-            if (!is_array($payment_method) || !isset($payment_method['cheque_id'])) {
-
-                continue;
-            }
-
-            $cheque_id = is_numeric($payment_method['cheque_id']) ? (int) $payment_method['cheque_id'] : 0;
+            $cheque_id = self::cheque_id_de($payment_method);
 
             if ($cheque_id <= 0) {
 
@@ -422,6 +466,18 @@ class ChequeHelper {
 
                 $problemas[] = $nombre.' es de $ '.Numbers::price($cheque->amount).': un cheque se endosa entero, el monto de la fila tiene que ser ese';
             }
+
+            /*
+             * Un endoso nunca es plata de caja: el papel cambia de manos y ninguna caja se mueve.
+             * Pero una fila de tipo cheque con caja destino SÍ genera egreso (es la conducta vieja
+             * del cheque nuevo, y el ABM de "caja por defecto por método de pago" se la propone al
+             * método Cheque), así que con `cheque_id` la caja tiene que venir vacía. El botón del
+             * módulo ya manda 0.
+             */
+            if (isset($payment_method['caja_id']) && is_numeric($payment_method['caja_id']) && (int) $payment_method['caja_id'] !== 0) {
+
+                $problemas[] = $nombre.' se endosa sin caja: un cheque endosado no mueve plata de ninguna caja';
+            }
         }
 
         return $problemas;
@@ -442,7 +498,7 @@ class ChequeHelper {
 
         foreach ($payment_methods as $payment_method) {
 
-            if (is_array($payment_method) && isset($payment_method['cheque_id']) && is_numeric($payment_method['cheque_id']) && (int) $payment_method['cheque_id'] > 0) {
+            if (self::cheque_id_de($payment_method) > 0) {
 
                 return true;
             }

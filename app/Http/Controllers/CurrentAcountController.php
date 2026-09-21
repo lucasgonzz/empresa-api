@@ -35,6 +35,7 @@ use App\Models\Seller;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -129,8 +130,7 @@ class CurrentAcountController extends Controller
          * IA registra pagos por el MISMO camino, adentro de su propia transacción. Acá queda lo que
          * es del HTTP: la prevalidación de cajas de arriba, armar las 12 claves que el alta le leía
          * al request, la notificación y la respuesta. El payload y las respuestas de
-         * `POST api/current-acount/pago` no cambiaron, y esta pantalla sigue sin transacción
-         * (hallazgo 5 del informe del 21/8/2026, fuera de alcance).
+         * `POST api/current-acount/pago` no cambiaron.
          */
         $datos = [];
 
@@ -140,7 +140,21 @@ class CurrentAcountController extends Controller
             $datos[$clave] = $request->{$clave};
         }
 
-        $pago = CurrentAcountPagoAltaHelper::registrar($datos);
+        /*
+         * El alta va adentro de una transacción (misión cheques-endoso-y-bancos, 21/9/2026).
+         * registrar() está pensado para que el llamador decida la transacción —el asistente ya lo
+         * llama adentro de la suya— y hasta acá la pantalla era el único camino que no la abría:
+         * el hallazgo 5 del informe del 21/8/2026 ("la pantalla sigue sin transacción"). Lo que lo
+         * volvió urgente es el endoso: un cheque que otra request endosó entre la prevalidación y
+         * attachPaymentMethods() corta con una excepción con el pago YA creado, y sin transacción
+         * ese pago quedaba huérfano, sin métodos ni imputación. Con esto, para este camino, el
+         * hallazgo queda cerrado. La notificación y los certificados de retención siguen afuera,
+         * como estaban: no son del circuito de la plata.
+         */
+        $pago = DB::transaction(function () use ($datos) {
+
+            return CurrentAcountPagoAltaHelper::registrar($datos);
+        });
 
         /*
          * Los certificados de las filas de medio de pago que son RETENCIONES. Va despues del alta

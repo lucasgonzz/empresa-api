@@ -13,6 +13,7 @@ use App\Models\CreditAccount;
 use App\Models\CurrentAcountPaymentMethod;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ChequeController extends Controller
 {
@@ -215,7 +216,10 @@ class ChequeController extends Controller
      */
     function endosar(Request $request) {
 
-        $cheque = Cheque::where('user_id', $this->userId())->find($request->cheque_id);
+        // La misma lectura de `cheque_id` que la fila de pago: un '12abc' es "sin cheque", no el 12.
+        $cheque_id = ChequeHelper::cheque_id_de(['cheque_id' => $request->cheque_id]);
+
+        $cheque = $cheque_id > 0 ? Cheque::where('user_id', $this->userId())->find($cheque_id) : null;
 
         if (is_null($cheque)) {
 
@@ -224,9 +228,10 @@ class ChequeController extends Controller
 
         $problemas = ChequeHelper::problemas_de_endoso_en_payload([
             [
-                'cheque_id'                        => (int) $request->cheque_id,
+                'cheque_id'                        => $cheque->id,
                 'current_acount_payment_method_id' => $this->metodo_de_pago_cheque_id(),
                 'amount'                           => $cheque->amount,
+                'caja_id'                          => 0,
             ],
         ], $this->userId());
 
@@ -289,20 +294,25 @@ class ChequeController extends Controller
             ],
         ];
 
-        return CurrentAcountPagoAltaHelper::registrar([
-            'credit_account_id'              => $credit_account->id,
-            'model_name'                     => 'provider',
-            'model_id'                       => $provider_id,
-            'current_acount_payment_methods' => $payment_methods,
-            'haber'                          => $cheque->amount,
-            'description'                    => null,
-            'numero_orden_de_compra'         => null,
-            'is_provisorio'                  => 0,
-            'current_date'                   => 1,
-            'created_at'                     => null,
-            'to_pay'                         => null,
-            'payment_plan_cuota'             => null,
-        ]);
+        // Adentro de una transacción por lo mismo que CurrentAcountController::pago(): si el
+        // cheque lo endosó otra request en el medio, el endoso corta y el pago no queda huérfano.
+        return DB::transaction(function () use ($credit_account, $provider_id, $payment_methods, $cheque) {
+
+            return CurrentAcountPagoAltaHelper::registrar([
+                'credit_account_id'              => $credit_account->id,
+                'model_name'                     => 'provider',
+                'model_id'                       => $provider_id,
+                'current_acount_payment_methods' => $payment_methods,
+                'haber'                          => $cheque->amount,
+                'description'                    => null,
+                'numero_orden_de_compra'         => null,
+                'is_provisorio'                  => 0,
+                'current_date'                   => 1,
+                'created_at'                     => null,
+                'to_pay'                         => null,
+                'payment_plan_cuota'             => null,
+            ]);
+        });
     }
 
     /**

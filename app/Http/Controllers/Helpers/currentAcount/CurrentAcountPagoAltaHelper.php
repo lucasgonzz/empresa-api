@@ -24,8 +24,10 @@ use Illuminate\Support\Facades\Log;
  * lo que el controller hace alrededor, y cada cosa tiene su porqué:
  *   - No prevalida las cajas sin apertura: cada llamador lo hace ANTES, para poder responder 422 sin
  *     haber escrito nada (ver CurrentAcountCajaHelper::cajas_sin_apertura_en_payload()).
- *   - No abre transacción: la pantalla sigue SIN transacción (hallazgo 5 del informe del 21/8/2026,
- *     fuera de alcance), y el asistente llama a registrar() adentro de la suya.
+ *   - No abre transacción: cada llamador decide. El asistente llama a registrar() adentro de la
+ *     suya, y desde la misión cheques-endoso-y-bancos (21/9/2026) la pantalla y el botón Endosar
+ *     del módulo de cheques también (cerró el hallazgo 5 del informe del 21/8/2026: un endoso que
+ *     corta adentro de attachPaymentMethods() no puede dejar el pago huérfano).
  *   - No manda la notificación: eso es del HTTP de la pantalla, y adentro de la transacción del
  *     asistente un aviso que falla voltearía un pago que ya quedó bien.
  */
