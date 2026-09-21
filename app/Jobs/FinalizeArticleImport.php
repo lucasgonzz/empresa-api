@@ -39,6 +39,20 @@ class FinalizeArticleImport implements ShouldQueue
         $this->import_status_id = $import_status_id;
     }
 
+    /**
+     * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel), para
+     * que un import o export grande no retenga el mismo worker. En el VPS, null: sigue en
+     * 'default', la única que el supervisor de cada cliente consume hoy — cambiar eso es un
+     * cambio de infraestructura aparte, no de este job. El re-dispatch interno de handle()
+     * (líneas de abajo) hereda esto solo, vía $this->queue.
+     *
+     * @return string|null
+     */
+    public function viaQueue()
+    {
+        return config('app.VPS') ? null : 'excel';
+    }
+
     public function handle()
     {
         $import_status = ImportStatus::select('id', 'processed_chunks', 'total_chunks', 'status')

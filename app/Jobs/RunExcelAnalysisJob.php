@@ -113,6 +113,19 @@ class RunExcelAnalysisJob implements ShouldQueue
     }
 
     /**
+     * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel), para
+     * que un import o export grande no retenga el mismo worker. En el VPS, null: sigue en
+     * 'default', la única que el supervisor de cada cliente consume hoy — cambiar eso es un
+     * cambio de infraestructura aparte, no de este job.
+     *
+     * @return string|null
+     */
+    public function viaQueue()
+    {
+        return config('app.VPS') ? null : 'excel';
+    }
+
+    /**
      * Ejecuta la corrida (análisis o recomendación, según `tipo`) y persiste el
      * resultado.
      *

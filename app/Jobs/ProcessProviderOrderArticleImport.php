@@ -71,6 +71,19 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
         $this->import_history_id   = $import_history_id;
     }
 
+    /**
+     * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel), para
+     * que un import o export grande no retenga el mismo worker. En el VPS, null: sigue en
+     * 'default', la única que el supervisor de cada cliente consume hoy — cambiar eso es un
+     * cambio de infraestructura aparte, no de este job.
+     *
+     * @return string|null
+     */
+    public function viaQueue()
+    {
+        return config('app.VPS') ? null : 'excel';
+    }
+
     public function handle()
     {
         $import_status = ImportStatus::find($this->import_status_id);
