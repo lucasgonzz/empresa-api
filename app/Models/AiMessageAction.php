@@ -113,6 +113,17 @@ class AiMessageAction extends Model
      */
     const TIPO_UNIFICAR_BANCOS = 'unificar_bancos_cheques';
 
+    /**
+     * Colgarle a un ARTÍCULO una foto que el dueño mandó (misión asistente-ventas-y-fotos,
+     * 21/9/2026). Es la hermana de TIPO_FOTO_SUCURSAL y la mecánica de la foto es la misma, pero
+     * 🔴 NO ENTRA en HerramientasDeCarga::AUTO_CONFIRMABLES, ni siquiera con el dueño en "resuelto"
+     * (decisión de Lucas, 21/9/2026): acá el destino se INFIERE de un nombre que puede venir
+     * inexacto, y una foto puesta en el artículo equivocado se publica en la tienda online (dispara
+     * Tienda Nube y Mercado Libre). La de sucursal se auto-confirma justamente porque no puede
+     * equivocarse de destino: hay pocas y no se publican en ningún lado.
+     */
+    const TIPO_FOTO_ARTICULO = 'foto_articulo';
+
     protected $guarded = [];
 
     /**

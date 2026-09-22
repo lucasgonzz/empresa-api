@@ -105,6 +105,13 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
      * assertCount pasó de 10 a 12. Lo que este test protege de verdad es el foreach de abajo
      * —que ninguna declarada se quede sin `case`—, y eso no se toca.
      *
+     * 🔴 SE HABÍA QUEDADO EN 16 Y ESTE TEST ESTABA EN ROJO SOBRE `develop`: las misiones de
+     * asistente-masivas-imagenes-y-remito (+7), cheques-endoso-y-bancos (+2) y
+     * asistente-omnisciente (+5) movieron el inventario de la pantalla sin tocar el número de acá,
+     * porque el que ellas miraban era el de 15_Acciones_service_y_job_Test. Puesto en el valor real
+     * al agregar proponer_foto_articulo (misión asistente-ventas-y-fotos, 21/9/2026): 28 de la
+     * pantalla más las 3 del canal de WhatsApp.
+     *
      * @group asistente-whatsapp
      * @test
      */
@@ -114,7 +121,7 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
 
         $nombres = HerramientasDeCarga::nombres(true);
 
-        $this->assertCount(16, $nombres, 'Trece de la pantalla (incluida proponer_foto_sucursal) más las tres del canal de WhatsApp.');
+        $this->assertCount(31, $nombres, 'Veintiocho de la pantalla (incluidas proponer_foto_sucursal y proponer_foto_articulo) más las tres del canal de WhatsApp.');
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(

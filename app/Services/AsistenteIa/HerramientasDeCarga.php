@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGastoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaGenericaIaHelper;
@@ -38,7 +39,8 @@ use Illuminate\Support\Facades\Log;
  * los diseños de PDF. La misión cheques-endoso-y-bancos (21/9/2026) sumó dos más al final:
  * consultar y unificar los bancos de los cheques. La misión asistente-omnisciente (21/9/2026)
  * sumó cinco más después de esas: el ABM genérico (que_puedo_cargar, proponer_alta,
- * proponer_edicion, proponer_baja) y proponer_venta. Van al final porque el orden es parte
+ * proponer_edicion, proponer_baja) y proponer_venta. La misión asistente-ventas-y-fotos (21/9/2026)
+ * sumó proponer_foto_articulo después de esas. Van al final porque el orden es parte
  * del caché de prompt (ver build_tools()).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
@@ -79,6 +81,16 @@ class HerramientasDeCarga
      * 21/9/2026): crean, cambian o borran datos del negocio por el controller de la pantalla, y una
      * baja no se deshace. Sus `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), y el
      * test 36 fija las dos cosas.
+     *
+     * 🔴 Y TAMPOCO ENTRA LA FOTO DE UN ARTÍCULO (`TIPO_FOTO_ARTICULO`, misión asistente-ventas-y-fotos,
+     * 21/9/2026), aunque la de SUCURSAL sí esté acá arriba. No es una inconsistencia, es la
+     * diferencia que importa: la sucursal se elige entre unas pocas y por su nombre completo —no
+     * puede errarle al destino—, y su foto no sale publicada en ningún lado. La del artículo se
+     * resuelve INFIRIENDO de un nombre que el dueño puede decir inexacto, y si le erra, la foto
+     * equivocada se PUBLICA: dispara Tienda Nube y Mercado Libre, y además se replica en el catálogo
+     * de los comercios vinculados. Decisión explícita de Lucas del 21/9/2026: confirma siempre la
+     * persona, esté en "resuelto" o no. Su `case` en ejecutar() tampoco pasa por
+     * quizas_auto_confirmar().
      *
      * @var array<int, string>
      */
@@ -878,6 +890,29 @@ class HerramientasDeCarga
                     'required'   => ['items'],
                 ],
             ],
+            /*
+             * Misión asistente-ventas-y-fotos (21/9/2026), al FINAL de lo que había: el orden del
+             * array es el prefijo del caché de prompt de Anthropic y lo nuevo nunca se intercala.
+             */
+            [
+                'name'         => 'proponer_foto_articulo',
+                'description'  => 'Arma la tarjeta para ponerle a un ARTÍCULO la última foto que la persona te mandó y todavía no se usó (la saco sola de esta conversación, no me la pases). El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                        ],
+                        'articulo_id' => [
+                            'type'        => 'integer',
+                            'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1167,6 +1202,14 @@ class HerramientasDeCarga
 
             case 'proponer_venta':
                 return self::resultado(PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a')));
+
+            /*
+             * Misión asistente-ventas-y-fotos (21/9/2026). 🔴 SIN quizas_auto_confirmar(), a
+             * propósito, aunque la foto de SUCURSAL de arriba sí pase por ahí: la del artículo
+             * siempre deja tarjeta (ver el docblock de AUTO_CONFIRMABLES).
+             */
+            case 'proponer_foto_articulo':
+                return self::resultado(PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
