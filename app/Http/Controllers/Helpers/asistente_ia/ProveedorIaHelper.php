@@ -450,8 +450,14 @@ class ProveedorIaHelper
      * El bloque `thinking` que se le manda a DeepSeek: `{type: enabled}` para profundo y
      * `{type: disabled}` para el resto, con el valor de config por si hay que moverlo por .env.
      *
+     * Con `enabled` viaja también `budget_tokens`, y no porque DeepSeek lo use: su doc dice que lo
+     * ignora. Va porque el esquema de Anthropic —que es el que este endpoint imita— lo exige junto
+     * con `enabled` (y menor que `max_tokens`), y si la validación de DeepSeek copia ese esquema, un
+     * `enabled` pelado rebota con 400 en el primer uso real de Profundo. Mandarlo no cuesta nada;
+     * omitirlo puede costar la funcionalidad entera. Queda por debajo de `max_tokens_profundo`.
+     *
      * @param  bool  $es_profundo
-     * @return array{type:string}
+     * @return array{type:string, budget_tokens?:int}
      */
     protected static function thinking_de_deepseek($es_profundo): array
     {
@@ -461,6 +467,18 @@ class ProveedorIaHelper
             $tipo = $es_profundo ? 'enabled' : 'disabled';
         }
 
-        return ['type' => $tipo];
+        if ($tipo !== 'enabled') {
+
+            return ['type' => $tipo];
+        }
+
+        $techo  = (int) config('services.deepseek.max_tokens_profundo', 8000);
+        $budget = (int) config('services.deepseek.thinking_budget_tokens', 4000);
+
+        if ($budget >= $techo) {
+            $budget = (int) floor($techo / 2);
+        }
+
+        return ['type' => 'enabled', 'budget_tokens' => max(1024, $budget)];
     }
 }

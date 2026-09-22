@@ -165,6 +165,13 @@ return [
         'thinking_agil'       => env('DEEPSEEK_THINKING_AGIL', 'disabled'),
         'thinking_profundo'   => env('DEEPSEEK_THINKING_PROFUNDO', 'enabled'),
         'max_tokens_profundo' => (int) env('DEEPSEEK_MAX_TOKENS_PROFUNDO', 8000),
+        /*
+         * `budget_tokens` que acompaña al thinking `enabled`. DeepSeek lo ignora (lo dice su doc),
+         * pero el esquema de Anthropic que ese endpoint imita lo exige con `enabled`: se manda para
+         * que un Profundo no rebote con 400 si la validación copia el esquema. Tiene que quedar por
+         * debajo de `max_tokens_profundo` (el helper lo recorta si no).
+         */
+        'thinking_budget_tokens' => (int) env('DEEPSEEK_THINKING_BUDGET_TOKENS', 4000),
         'ca_bundle'           => env('DEEPSEEK_CAINFO', env('ANTHROPIC_CAINFO')),
         'verify_ssl'          => filter_var(env('DEEPSEEK_VERIFY_SSL', env('ANTHROPIC_VERIFY_SSL', true)), FILTER_VALIDATE_BOOLEAN),
     ],

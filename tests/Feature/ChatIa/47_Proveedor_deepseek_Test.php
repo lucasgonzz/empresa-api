@@ -232,6 +232,7 @@ class Proveedor_deepseek_Test extends TestCase
         $this->assertEquals(['clave-deepseek-de-prueba'], $headers['x-api-key'], 'La clave del header es la de DeepSeek, no la de Anthropic.');
         $this->assertEquals(config('services.deepseek.model_agil'), $body['model']);
         $this->assertEquals('disabled', $body['thinking']['type'], 'Ágil manda el thinking apagado: DeepSeek lo trae prendido por defecto.');
+        $this->assertArrayNotHasKey('budget_tokens', $body['thinking'], 'Con disabled no viaja budget_tokens.');
         $this->assertEquals(AsistenteIaService::MAX_TOKENS, $body['max_tokens'], 'Con el thinking apagado el techo de salida es el de siempre.');
 
         /* El payload de siempre viaja igual: system, tools y messages. */
@@ -270,6 +271,8 @@ class Proveedor_deepseek_Test extends TestCase
         $this->assertEquals(self::URL_DEEPSEEK, $url);
         $this->assertEquals(config('services.deepseek.model_profundo'), $body['model']);
         $this->assertEquals('enabled', $body['thinking']['type']);
+        $this->assertArrayHasKey('budget_tokens', $body['thinking'], 'Con enabled viaja budget_tokens: el esquema de Anthropic lo exige y DeepSeek lo ignora.');
+        $this->assertLessThan($body['max_tokens'], $body['thinking']['budget_tokens'], 'El budget queda por debajo del techo de salida, como pide Anthropic.');
         $this->assertGreaterThanOrEqual(
             (int) config('services.deepseek.max_tokens_profundo'),
             $body['max_tokens'],
