@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -19,12 +20,25 @@ use Illuminate\Support\Facades\DB;
  * tabla de precios vive SOLO en el admin, para poder corregirla sin tocar a los 45 clientes—:
  * lo único que sale de acá son tokens contados.
  *
- * 🔴 LOS DOS CORTES VAN ABIERTOS POR DÍA, `personas[]` TAMBIÉN, y no es cosmético. El admin
- * guarda lo que recibe con clave `(client_id, fecha, ...)`. Un bloque agregado por todo el
- * rango lo obligaría a inventarle una fecha, y entonces la recolección nocturna de 3 días
- * pisaría, con su total de 3 días, lo que una consulta manual de 30 días dejó escrito — todas
- * las noches, sin un solo error en ningún log. Cualquier corte que el admin espeje tiene que
- * venir por día.
+ * 🔴 LOS CORTES VAN ABIERTOS POR DÍA, `personas[]` Y `personas_modelos[]` TAMBIÉN, y no es
+ * cosmético. El admin guarda lo que recibe con clave `(client_id, fecha, ...)`. Un bloque
+ * agregado por todo el rango lo obligaría a inventarle una fecha, y entonces la recolección
+ * nocturna de 3 días pisaría, con su total de 3 días, lo que una consulta manual de 30 días dejó
+ * escrito — todas las noches, sin un solo error en ningún log. Cualquier corte que el admin espeje
+ * tiene que venir por día.
+ *
+ * Misión proveedores-ia-deepseek (22/9/2026): se suman DOS bloques, `personas_modelos[]` (el corte
+ * por persona abierto además por proveedor y modelo, para costear lo que gastó cada persona con
+ * cada modelo) y `configuracion` (qué proveedor y qué modelo eligió el dueño). Son ADITIVOS:
+ * `dias[]` y `personas[]` no cambian de forma.
+ *
+ * 🔴 POR QUÉ `personas[]` NO SE ABRE POR MODELO. Un admin viejo lo espeja con clave única
+ * `(client_id, fecha, auth_user_id)`: si esta punta le mandara dos filas del mismo día y la misma
+ * persona (una por modelo), el upsert pisaría el total de esa persona con la ÚLTIMA fila del
+ * payload y perdería el consumo de las otras en silencio — sin error, con la pantalla mostrando
+ * menos de lo que se gastó. Los dos lados nunca llegan a producción al mismo tiempo, así que el
+ * corte fino va en un bloque NUEVO que el admin viejo ignora y el nuevo espeja con su propia
+ * clave de cinco dimensiones.
  */
 class ConsumoIaController extends Controller
 {
@@ -43,7 +57,7 @@ class ConsumoIaController extends Controller
     /**
      * GET api/admin-sync/consumo-ia?desde=AAAA-MM-DD&hasta=AAAA-MM-DD
      *
-     * 200 {user_id, desde, hasta, dias[], personas[]}
+     * 200 {user_id, desde, hasta, dias[], personas[], personas_modelos[], configuracion{}}
      * 401 la clave del header no coincide con la que tiene cargada este cliente
      * 409 no se pudo resolver el dueño de esta instancia
      * 422 fechas mal formadas, invertidas, o rango de más de MAX_DIAS días
@@ -133,11 +147,13 @@ class ConsumoIaController extends Controller
         $user_id = (int) $dueno->id;
 
         return response()->json([
-            'user_id'  => $user_id,
-            'desde'    => $desde->toDateString(),
-            'hasta'    => $hasta->toDateString(),
-            'dias'     => $this->dias($user_id, $desde, $hasta),
-            'personas' => $this->personas($user_id, $desde, $hasta),
+            'user_id'          => $user_id,
+            'desde'            => $desde->toDateString(),
+            'hasta'            => $hasta->toDateString(),
+            'dias'             => $this->dias($user_id, $desde, $hasta),
+            'personas'         => $this->personas($user_id, $desde, $hasta),
+            'personas_modelos' => $this->personas_modelos($user_id, $desde, $hasta),
+            'configuracion'    => $this->configuracion($dueno),
         ], 200);
     }
 
@@ -218,19 +234,7 @@ class ConsumoIaController extends Controller
                     ->orderByRaw('DATE(created_at), auth_user_id')
                     ->get();
 
-        $ids = [];
-
-        foreach ($filas as $fila) {
-
-            if (! is_null($fila->auth_user_id)) {
-
-                $ids[] = (int) $fila->auth_user_id;
-            }
-        }
-
-        $nombres = count($ids) > 0
-            ? User::whereIn('id', array_unique($ids))->pluck('name', 'id')
-            : collect();
+        $nombres = $this->nombres_de($filas);
 
         $salida = [];
 
@@ -249,6 +253,108 @@ class ConsumoIaController extends Controller
         }
 
         return $salida;
+    }
+
+    /**
+     * El corte por persona abierto ADEMÁS por proveedor y modelo, también por día (misión
+     * proveedores-ia-deepseek): es lo que le permite al admin decir cuánto gastó cada persona con
+     * cada modelo, que es la unidad de precio. Mismo query que `personas()` con dos dimensiones
+     * más en el group by, mismos nombres y misma resolución de nombres en una consulta.
+     *
+     * Va en un bloque aparte y no adentro de `personas[]` por la razón del docblock de la clase:
+     * un admin viejo espeja `personas[]` con clave (client_id, fecha, auth_user_id) y dos filas
+     * de la misma persona el mismo día le pisarían el total.
+     *
+     * @param  int     $user_id
+     * @param  Carbon  $desde
+     * @param  Carbon  $hasta
+     * @return array
+     */
+    protected function personas_modelos($user_id, Carbon $desde, Carbon $hasta): array
+    {
+        $filas = DB::table('ai_token_usages')
+                    ->selectRaw(
+                        'DATE(created_at) as fecha, auth_user_id, proveedor, modelo, COUNT(*) as llamadas, '
+                        . 'SUM(input_tokens) as input_tokens, '
+                        . 'SUM(output_tokens) as output_tokens, '
+                        . 'SUM(cache_creation_input_tokens) as cache_creation_input_tokens, '
+                        . 'SUM(cache_read_input_tokens) as cache_read_input_tokens'
+                    )
+                    ->where('user_id', $user_id)
+                    ->whereBetween('created_at', [$desde, $hasta])
+                    ->groupByRaw('DATE(created_at), auth_user_id, proveedor, modelo')
+                    ->orderByRaw('DATE(created_at), auth_user_id, proveedor, modelo')
+                    ->get();
+
+        $nombres = $this->nombres_de($filas);
+
+        $salida = [];
+
+        foreach ($filas as $fila) {
+
+            $auth_user_id = is_null($fila->auth_user_id) ? null : (int) $fila->auth_user_id;
+
+            $salida[] = [
+                'fecha'        => (string) $fila->fecha,
+                'auth_user_id' => $auth_user_id,
+                'nombre'       => is_null($auth_user_id) || ! isset($nombres[$auth_user_id])
+                    ? null
+                    : (string) $nombres[$auth_user_id],
+                'proveedor' => (string) $fila->proveedor,
+                'modelo'    => (string) $fila->modelo,
+                'llamadas'  => (int) $fila->llamadas,
+            ] + $this->contadores($fila);
+        }
+
+        return $salida;
+    }
+
+    /**
+     * Qué eligió el dueño para su asistente (misión proveedores-ia-deepseek), con los ids
+     * EFECTIVOS que resuelve ProveedorIaHelper: si el elegido no tiene clave en esta
+     * instalación, acá se ve el proveedor al que cayó, que es el que aparece en las filas de
+     * consumo. `modelo_asistente` es el del chat del dueño (según su pensamiento) y
+     * `modelo_general` el del bot de WhatsApp y el título.
+     *
+     * @param  \App\Models\User  $dueno
+     * @return array{proveedor:string, pensamiento:string, modelo_asistente:string, modelo_general:string}
+     */
+    protected function configuracion($dueno): array
+    {
+        $asistente = ProveedorIaHelper::modelo_del_asistente($dueno);
+        $general   = ProveedorIaHelper::modelo_general($dueno);
+
+        return [
+            'proveedor'        => $asistente['proveedor'],
+            'pensamiento'      => $asistente['pensamiento'],
+            'modelo_asistente' => $asistente['modelo'],
+            'modelo_general'   => $general['modelo'],
+        ];
+    }
+
+    /**
+     * Los nombres de las personas que aparecen en un corte, resueltos en UNA consulta sobre los
+     * ids que efectivamente aparecieron (ver el docblock de `personas()`: sin join, para que un
+     * empleado borrado no desaparezca del informe).
+     *
+     * @param  \Illuminate\Support\Collection  $filas  Filas con `auth_user_id`.
+     * @return \Illuminate\Support\Collection  id → nombre
+     */
+    protected function nombres_de($filas)
+    {
+        $ids = [];
+
+        foreach ($filas as $fila) {
+
+            if (! is_null($fila->auth_user_id)) {
+
+                $ids[] = (int) $fila->auth_user_id;
+            }
+        }
+
+        return count($ids) > 0
+            ? User::whereIn('id', array_unique($ids))->pluck('name', 'id')
+            : collect();
     }
 
     /**
