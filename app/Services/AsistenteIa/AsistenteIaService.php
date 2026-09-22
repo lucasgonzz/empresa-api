@@ -772,14 +772,15 @@ AUTO_RESUELTO;
         return <<<CARGA
 {$titulo_de_carga}
 - Gastos, pagos de clientes, pagos a proveedores (con efectivo, transferencia o CHEQUE),
-  tareas nuevas de la agenda, cambios en una tarea, marcar una tarea como hecha, armar un
-  combo, armar una oferta para un cliente, asignar la foto de una sucursal, mandar a buscar
-  imágenes para las categorías sin imagen y para artículos según un filtro, hacer una
-  actualización masiva de artículos por filtro, cambiar las columnas de un diseño de PDF
-  (remitos, facturas, catálogo), unificar los bancos de los cheques, hacer una venta, armar
-  un PRESUPUESTO, MOVER STOCK entre depósitos, CARGARLE STOCK a un depósito puntual, DARLE
-  O SACARLE UN PERMISO a un empleado, y crear, editar o borrar lo que se carga desde ABM
-  (clientes, proveedores, rubros, marcas y lo demás que dice que_puedo_cargar).
+  tareas nuevas de la agenda, cambios en una tarea, marcar una tarea como hecha,
+  armar un combo, armar una oferta para un cliente, asignar la foto de una sucursal,
+  mandar a buscar imágenes para las categorías sin imagen y para artículos según un filtro,
+  hacer una actualización masiva de artículos por filtro, cambiar las columnas de un
+  diseño de PDF (remitos, facturas, catálogo), unificar los bancos de los cheques,
+  hacer una venta, armar un PRESUPUESTO, MOVER STOCK entre depósitos, CARGARLE STOCK a un
+  depósito puntual, DARLE O SACARLE UN PERMISO a un empleado, y crear, editar o borrar lo
+  que se carga desde ABM (clientes, proveedores, rubros, marcas y lo demás que dice
+  que_puedo_cargar).
   Y el LINK del PDF de una venta o de un presupuesto lo pasás con consultar_link_de_pdf: es
   el mismo que se comparte por WhatsApp desde la pantalla.
   Lo que queda afuera de verdad: editar una venta o un presupuesto ya cargados, confirmar un
@@ -787,10 +788,12 @@ AUTO_RESUELTO;
   movimientos de caja, facturar, y mandar mensajes a terceros; los cobros con tarjeta de
   crédito, las retenciones y los cobros en otra moneda que la de la cuenta se cargan desde
   la pantalla.
-- Un cheque se carga como una fila más del pago, con su número, su banco y su fecha de
-  vencimiento, y SIN caja: un cheque no entra a ninguna caja hasta que lo cobrás. Si no te
-  dijeron el número, el banco o la fecha, preguntalos: un cheque sin eso no lo puede
-  reconocer nadie después.
+- Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
+  su número, su banco y su fecha de vencimiento, y SIN caja: un cheque no entra a ninguna
+  caja hasta que lo cobrás. Si no te dijeron el número, el banco o la fecha, preguntalos: un
+  cheque sin eso no lo puede reconocer nadie después. 🔴 En el cobro de una VENTA no: el
+  cobro de la venta no lleva esos datos y quedaría un cheque en blanco, así que esa venta se
+  hace desde Vender.
 - Mover stock entre depósitos y cargarle stock a un depósito son dos cosas distintas y no se
   confunden: mover saca de uno y pone en otro (y el artículo tiene que tener stock en el de
   origen); cargar deja el stock de ESE depósito en un número, y es lo único que le puede

@@ -287,8 +287,17 @@ class Acciones_service_y_job_Test extends TestCase
 
         $prompt = Http::recorded()[0][0]->data()['system'][0]['text'];
 
-        // Misión asistente-masivas-imagenes-y-remito (19/9/2026): las tres cargas nuevas también.
-        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda', 'imágenes para las categorías', 'actualización masiva de artículos', 'diseño de PDF'] as $lo_que_se_carga) {
+        /*
+         * Misión asistente-masivas-imagenes-y-remito (19/9/2026): las tres cargas nuevas también.
+         *
+         * 🔴 Y la misión asistente-capacidades-y-hilos (22/9/2026) suma las suyas, que es la mitad
+         * del arreglo: el 22/9 el agente contestó diez veces "no puedo" sobre cosas que la pantalla
+         * hace, y el motivo es que el prompt no las nombraba. Una capacidad que existe y que el
+         * prompt no enumera es una capacidad que el modelo no usa.
+         */
+        $lo_nuevo = ['CHEQUE', 'un PRESUPUESTO', 'MOVER STOCK', 'CARGARLE STOCK', 'UN PERMISO a un empleado', 'consultar_link_de_pdf'];
+
+        foreach (array_merge(['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda', 'imágenes para las categorías', 'actualización masiva de artículos', 'diseño de PDF'], $lo_nuevo) as $lo_que_se_carga) {
             $this->assertStringContainsString(
                 $lo_que_se_carga,
                 $prompt,

@@ -494,6 +494,70 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
         $this->assertNull(OpcionesDeCargaIaHelper::motivo_no_usable($this->metodo_cheque()));
     }
 
+    /**
+     * 🔴 PERO EN UNA VENTA NO, Y NO ES UNA PREFERENCIA.
+     *
+     * El cobro de una venta viaja por el camino del método ÚNICO del select
+     * (`current_acount_payment_method_id` + `caja_id`), que NO tiene dónde poner el número, el
+     * banco ni las fechas. `attach_payment_methods()` crearía el cheque igual —solo mira el slug
+     * del tipo— y todas las columnas de `cheques` son nullable: quedaría un cheque en blanco,
+     * imposible de reconciliar y sin ningún error en ningún lado.
+     *
+     * @test
+     */
+    public function en_una_venta_el_cheque_sigue_sin_poder_usarse()
+    {
+        $metodo = $this->metodo_cheque();
+
+        $this->assertNull(OpcionesDeCargaIaHelper::motivo_no_usable($metodo), 'En un pago sí se puede.');
+        $this->assertNotNull(OpcionesDeCargaIaHelper::motivo_no_usable_en_venta($metodo), 'En una venta no.');
+
+        // Y los que ya no se podían siguen dando el mismo motivo por los dos caminos.
+        foreach (OpcionesDeCargaIaHelper::metodos_de_pago() as $otro) {
+
+            if (OpcionesDeCargaIaHelper::es_cheque($otro)) {
+                continue;
+            }
+
+            $this->assertSame(
+                OpcionesDeCargaIaHelper::motivo_no_usable($otro),
+                OpcionesDeCargaIaHelper::motivo_no_usable_en_venta($otro),
+                (string) $otro->name
+            );
+        }
+
+        $articulo = \App\Models\Article::create([
+            'name'        => 'zz-p54 Martillo venta cheque',
+            'user_id'     => $this->dueno->id,
+            'status'      => 'active',
+            'final_price' => 1000,
+            'cost'        => 500,
+            'stock'       => 10,
+            'iva_id'      => 2,
+        ]);
+
+        $cheques_antes = Cheque::where('user_id', $this->dueno->id)->count();
+
+        list($conversation, $assistant) = $this->conversacion('Vendé 1 martillo y cobralo con cheque');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_venta', [
+            'items'          => [['articulo' => 'zz-p54 Martillo venta cheque', 'cantidad' => 1]],
+            'cobro'          => 'contado',
+            'metodo_de_pago' => $metodo->name,
+        ]);
+
+        $this->assertFalse(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertStringContainsString('Vender', (string) $respuesta['error']);
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+        $this->assertSame($cheques_antes, Cheque::where('user_id', $this->dueno->id)->count());
+
+        // Y tampoco se ofrece entre los métodos que la venta lista.
+        $nombres = array_column($respuesta['opciones']['metodos_de_pago'], 'nombre');
+
+        $this->assertNotContains((string) $metodo->name, $nombres);
+    }
+
     // =====================================================================
     // (g) El permiso de un empleado — el #44
     // =====================================================================

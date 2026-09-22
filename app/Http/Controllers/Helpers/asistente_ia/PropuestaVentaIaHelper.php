@@ -684,7 +684,8 @@ class PropuestaVentaIaHelper
             return RespuestaDeCargaIa::error('No hay un método de pago que se llame "' . $nombre . '".', ['metodos_de_pago' => self::opciones_de_metodos($metodos)]);
         }
 
-        $motivo = OpcionesDeCargaIaHelper::motivo_no_usable($elegido);
+        // 🔴 En venta, y no el general: el cheque se puede en un PAGO pero no acá (ver el helper).
+        $motivo = OpcionesDeCargaIaHelper::motivo_no_usable_en_venta($elegido);
 
         if (!is_null($motivo)) {
 
@@ -1870,10 +1871,17 @@ class PropuestaVentaIaHelper
 
         $usables = [];
 
-        foreach (OpcionesDeCargaIaHelper::opciones_de_metodos($metodos) as $opcion) {
+        /*
+         * 🔴 El filtro es el DE VENTA, no el general: desde el 22/9/2026 el cheque se puede usar en
+         * un pago de cuenta corriente, pero no en el cobro de una venta (ver
+         * OpcionesDeCargaIaHelper::motivo_no_usable_en_venta). Ofrecerlo acá terminaría en un cheque
+         * en blanco, sin número ni banco.
+         */
+        foreach ($metodos as $metodo) {
 
-            if (!empty($opcion['se_puede_usar'])) {
-                $usables[] = ['nombre' => $opcion['nombre']];
+            if (is_null(OpcionesDeCargaIaHelper::motivo_no_usable_en_venta($metodo))) {
+
+                $usables[] = ['nombre' => (string) $metodo->name];
             }
         }
 

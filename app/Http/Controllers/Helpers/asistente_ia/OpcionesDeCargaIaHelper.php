@@ -535,6 +535,39 @@ class OpcionesDeCargaIaHelper {
     }
 
     /**
+     * Por qué el asistente no puede cobrar UNA VENTA con ese método, o null si puede.
+     *
+     * 🔴 ES LA MISMA REGLA MÁS UNA: EL CHEQUE, QUE SÍ SE PUEDE EN UN PAGO PERO NO EN UNA VENTA
+     * (misión asistente-capacidades-y-hilos, 22/9/2026). El motivo no es una preferencia: el cobro
+     * de una venta viaja por el camino del método ÚNICO del select —`current_acount_payment_method_id`
+     * y `caja_id`, con `selected_payment_methods` vacío—, que NO tiene dónde poner el número, el
+     * banco ni las fechas del cheque. `attach_payment_methods()` crea el cheque igual, porque solo
+     * mira el slug del tipo, y todas las columnas de `cheques` son nullable: quedaría un cheque en
+     * blanco, sin número ni banco, imposible de reconciliar y sin ningún error en ningún lado. Un
+     * pago de cuenta corriente sí puede, porque ahí la fila lleva esos datos (PagosIaHelper::
+     * fila_de_cheque).
+     *
+     * @param  \App\Models\CurrentAcountPaymentMethod  $metodo  Con `type` cargado.
+     * @return string|null
+     */
+    static function motivo_no_usable_en_venta($metodo) {
+
+        $motivo = self::motivo_no_usable($metodo);
+
+        if (!is_null($motivo)) {
+
+            return $motivo;
+        }
+
+        if (self::es_cheque($metodo)) {
+
+            return 'Una venta cobrada con cheque se hace desde Vender: el cobro de la venta no lleva el número, el banco ni la fecha del cheque, y quedaría un cheque en blanco. Un PAGO de cuenta corriente con cheque sí lo puedo cargar.';
+        }
+
+        return null;
+    }
+
+    /**
      * true si el método de pago es del tipo Cheque, que es el que dispara
      * `ChequeHelper::crear_cheque()` en `PaymentMethodHelper::attach_payment_methods()`.
      *
