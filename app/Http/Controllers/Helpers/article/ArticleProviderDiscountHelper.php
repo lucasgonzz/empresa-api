@@ -1284,6 +1284,12 @@ class ArticleProviderDiscountHelper {
      * `ProcessRow`: dejarlo resolver solo da `false` siempre, con la funcionalidad muerta y sin un
      * solo error que lo delate.
      *
+     * 🔴 PROCESA EN LOTES, no articulo por articulo (fix 22/9/2026, incidente Servian/EXPOYER: unos
+     * 106.000 articulos hicieron que el job tocara el timeout de 3600s de
+     * `ProcessSincronizarDescuentosProveedorJob`). Antes, cada articulo abria su propia
+     * `DB::transaction()` y su propio `User::find()` adentro de `setFinalPrice()` — con el MISMO
+     * owner repetido cientos de miles de veces. El detalle esta en `aplicar_ficha_en_lote()`.
+     *
      * @param  \App\Models\Provider $provider
      * @param  string $alcance               ALCANCE_TODOS | ALCANCE_SOLO_CON_DESCUENTOS.
      * @param  bool   $pisar_editados        Si tambien se rehacen los editados a mano.
@@ -1344,64 +1350,69 @@ class ArticleProviderDiscountHelper {
             return $resultado;
         }
 
+        /*
+         * 🔴 EL DUEÑO SE BUSCA ACA, UNA SOLA VEZ PARA TODA LA SINCRONIZACION — no adentro de
+         * `aplicar_ficha_en_lote()`. Hallazgo del chequeo independiente (22/9/2026): buscarlo
+         * adentro de esa funcion lo hace "una vez por LLAMADA", no "una vez en total", y esta
+         * funcion la llama hasta 4 veces (una por grupo). Un catalogo real como el de EXPOYER cae
+         * facil en mas de un grupo a la vez (articulos sin descuentos Y articulos desactualizados
+         * en la misma corrida), asi que sin este cambio el dueño se hubiera buscado 2, 3 o 4 veces
+         * en vez de 1. Sigue siendo insignificante al lado de las ~106.000 consultas de antes, pero
+         * la garantia que documenta `aplicar_ficha_en_lote()` tiene que ser cierta de verdad.
+         */
+        $owner_user = User::find($provider->user_id);
+
         // 1) Articulos SIN ningun descuento tagueado a este proveedor. Es el alcance nuevo: hasta
         //    hoy eran invisibles para toda propagacion.
         if ($alcance === self::ALCANCE_TODOS) {
 
-            foreach ($escaneo['sin_descuentos'] as $article_id) {
+            $items = [];
 
-                if (self::aplicar_ficha_al_articulo($provider, $article_id, [], 0)) {
-                    $resultado['creados']++;
-                }
+            foreach ($escaneo['sin_descuentos'] as $article_id) {
+                $items[] = ['article_id' => $article_id, 'ids_a_barrer' => [], 'mostrar_en_online' => 0];
             }
+
+            $resultado['creados'] = count(self::aplicar_ficha_en_lote($provider, $items, $owner_user));
         }
 
         // 2) Desactualizados: tienen la copia vieja de la ficha y nadie los edito.
-        foreach ($escaneo['desactualizados'] as $article_id) {
+        $items = [];
 
-            if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, false)) {
-                $resultado['actualizados']++;
-            }
+        foreach ($escaneo['desactualizados'] as $article_id) {
+            $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, false);
         }
 
+        $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items, $owner_user));
+
         // 3) Editados a mano: se respetan salvo tilde explicito del usuario.
-        foreach ($escaneo['editados_a_mano'] as $article_id) {
+        if ($pisar_editados) {
 
-            if (!$pisar_editados) {
-                $resultado['respetados']++;
-                continue;
+            $items = [];
+
+            foreach ($escaneo['editados_a_mano'] as $article_id) {
+                $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, false);
             }
 
-            if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, false)) {
-                $resultado['actualizados']++;
-            }
+            $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items, $owner_user));
+
+        } else {
+            $resultado['respetados'] = count($escaneo['editados_a_mano']);
         }
 
         // 4) Los que tienen descuentos que la ficha no puede reponer. Su destino lo eligio el
-        //    usuario en el modal.
-        foreach ($escaneo['con_descuentos_de_compra'] as $article_id) {
+        //    usuario en el modal. `$accion_sobre_compras` no cambia articulo a articulo, asi que la
+        //    rama se decide una sola vez para todo el grupo.
+        if ($accion_sobre_compras === self::ACCION_COMPRAS_SALTEAR) {
 
-            if ($accion_sobre_compras === self::ACCION_COMPRAS_SALTEAR) {
-                $resultado['de_compra_salteados']++;
-                continue;
-            }
+            $resultado['de_compra_salteados'] = count($escaneo['con_descuentos_de_compra']);
 
-            if ($accion_sobre_compras === self::ACCION_COMPRAS_PISAR) {
-
-                /*
-                 * PISAR: se barre TODO lo tagueado a este proveedor —incluida la bonificacion
-                 * negociada de una compra— y se deja solo lo de la ficha. El usuario lo eligio con
-                 * el numero a la vista; el default es saltear justamente porque esto no se puede
-                 * deshacer.
-                 */
-                if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, true)) {
-                    $resultado['de_compra_pisados']++;
-                }
-
-                continue;
-            }
+        } else {
 
             /*
+             * PISAR: se barre TODO lo tagueado a este proveedor —incluida la bonificacion negociada
+             * de una compra— y se deja solo lo de la ficha. El usuario lo eligio con el numero a la
+             * vista; el default es saltear justamente porque esto no se puede deshacer.
+             *
              * AGREGAR: se rehace lo de la ficha y se DEJA lo de la compra. El articulo queda con
              * los dos, en cascada — 1000 con 10% de compra y 10% de ficha da 810, no 900. Es la
              * opcion que duplica y Lucas la pidio explicitamente.
@@ -1411,8 +1422,20 @@ class ArticleProviderDiscountHelper {
              * del boton bajaria el costo un escalon mas. Con esto, correrlo dos veces da el mismo
              * resultado que correrlo una.
              */
-            if (self::rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, false)) {
-                $resultado['de_compra_agregados']++;
+            $barrer_todo = ($accion_sobre_compras === self::ACCION_COMPRAS_PISAR);
+
+            $items = [];
+
+            foreach ($escaneo['con_descuentos_de_compra'] as $article_id) {
+                $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, $barrer_todo);
+            }
+
+            $tocados = self::aplicar_ficha_en_lote($provider, $items, $owner_user);
+
+            if ($barrer_todo) {
+                $resultado['de_compra_pisados'] = count($tocados);
+            } else {
+                $resultado['de_compra_agregados'] = count($tocados);
             }
         }
 
@@ -1420,40 +1443,38 @@ class ArticleProviderDiscountHelper {
     }
 
     /**
-     * Rehace en un articulo los descuentos de la ficha del proveedor.
+     * Calcula, SIN ESCRIBIR NADA, que le corresponde a un articulo dado el escaneo: que descuentos
+     * tagueados hay que barrer y si el resultado tiene que nacer visible en la tienda online.
      *
-     * @param  \App\Models\Provider $provider
+     * Es el mismo calculo que antes vivia al principio de la (ex) `rehacer_lo_de_la_ficha()`:
+     * separarlo de la escritura es lo que permite juntar muchos articulos en un item por vez y
+     * mandarlos juntos a `aplicar_ficha_en_lote()`, en vez de escribir uno por uno.
+     *
+     * "Mostrar en la tienda online": si alguno de los descuentos que se reemplazan lo tenia
+     * activado, el resultado nace con el tilde puesto. Sin esto, cada sincronizacion le apagaria en
+     * silencio el precio tachado y el badge de oferta del ecommerce, articulo por articulo y sin
+     * forma de saber cuales. Es exactamente lo que ya hace `propagar_a_articulos()`.
+     *
      * @param  array $escaneo     Salida de `escanear_articulos_del_proveedor()`.
      * @param  int   $article_id
-     * @param  bool  $barrer_todo Si es true se borra TODO lo tagueado a este proveedor (opcion
+     * @param  bool  $barrer_todo Si es true se barre TODO lo tagueado a este proveedor (opcion
      *                            "pisar"); si es false, solo lo que gobierna la ficha.
-     * @return bool
+     * @return array{article_id:int,ids_a_barrer:array,mostrar_en_online:int}
      */
-    static function rehacer_lo_de_la_ficha($provider, $escaneo, $article_id, $barrer_todo) {
+    static function preparar_item_de_sincronizacion($escaneo, $article_id, $barrer_todo) {
 
         $tagueados = isset($escaneo['tagueados_por_articulo'][$article_id])
             ? $escaneo['tagueados_por_articulo'][$article_id]
             : [];
 
-        $a_barrer = [];
-
-        foreach ($tagueados as $descuento) {
-
-            if ($barrer_todo || self::gobernado_por_la_ficha($descuento)) {
-                $a_barrer[] = $descuento;
-            }
-        }
-
-        /*
-         * "Mostrar en la tienda online": si alguno de los descuentos que se reemplazan lo tenia
-         * activado, los nuevos nacen con el tilde puesto. Sin esto, cada sincronizacion le apagaria
-         * en silencio el precio tachado y el badge de oferta del ecommerce, articulo por articulo y
-         * sin forma de saber cuales. Es exactamente lo que ya hace `propagar_a_articulos()`.
-         */
         $mostrar_en_online = 0;
         $ids_a_barrer = [];
 
-        foreach ($a_barrer as $descuento) {
+        foreach ($tagueados as $descuento) {
+
+            if (!$barrer_todo && !self::gobernado_por_la_ficha($descuento)) {
+                continue;
+            }
 
             $ids_a_barrer[] = $descuento->id;
 
@@ -1462,66 +1483,133 @@ class ArticleProviderDiscountHelper {
             }
         }
 
-        return self::aplicar_ficha_al_articulo($provider, $article_id, $ids_a_barrer, $mostrar_en_online);
+        return [
+            'article_id'        => $article_id,
+            'ids_a_barrer'      => $ids_a_barrer,
+            'mostrar_en_online' => $mostrar_en_online,
+        ];
     }
 
     /**
-     * Borra los descuentos indicados y crea los de la ficha, en una transaccion, y recalcula el
-     * precio del articulo.
+     * Borra los descuentos indicados y crea los de la ficha para VARIOS articulos, en lotes, y
+     * recalcula el precio de cada uno.
      *
-     * ⚠️ A DIFERENCIA de `propagar_a_articulos()`, aca un `$ids_a_barrer` VACIO es un caso legitimo
-     * y se crea igual: es el articulo del proveedor que no tenia ningun descuento, que es
-     * justamente lo que el modo "todos" viene a alcanzar. La defensa contra duplicar —que en el
-     * camino viejo vive en este punto— aca vive mas arriba, en el reparto en grupos excluyentes de
-     * `escanear_articulos_del_proveedor()`: un articulo que ya tiene filas de la ficha nunca llega
-     * hasta aca con la lista de barrido vacia.
+     * 🔴 REEMPLAZA a las (ex) `aplicar_ficha_al_articulo()` + `rehacer_lo_de_la_ficha()`, que hacian
+     * todo esto UNA VEZ POR ARTICULO. El fix del incidente Servian/EXPOYER (22/9/2026: ~106.000
+     * articulos, timeout de 3600s en `ProcessSincronizarDescuentosProveedorJob`) esta entero en tres
+     * cambios sobre el camino viejo:
      *
-     * 🔴 La transaccion no es decorativa: `ProviderController` despacha `ProcessSetFinalPrices`
-     * cuando algun descuento se toco hace menos de 2 minutos, asi que puede haber un worker
-     * recalculando estos mismos articulos. Sin transaccion, ese worker puede leer el articulo entre
-     * el DELETE y el INSERT y guardarle un `costo_real` calculado con CERO descuentos.
+     *   1. `Article::whereIn()->get()` UNA VEZ POR LOTE, no `Article::find()` por articulo.
+     *   2. `DB::transaction()` UNA VEZ POR LOTE para el DELETE + los INSERT de descuentos, no una
+     *      transaccion por articulo. El invariante que protegia esa transaccion sigue protegido:
+     *      `ProviderController` puede despachar `ProcessSetFinalPrices` con un worker leyendo estos
+     *      mismos articulos, y el DELETE y el INSERT de CADA articulo siguen sin ser separables
+     *      desde afuera, porque los dos quedan dentro del mismo commit del lote.
      *
-     * 🔴 `unsetRelation('article_discounts')` antes de recalcular: clase de error del 31/8/2026, ya
-     * fijada dos veces en este helper. Eloquent cachea las relaciones ya cargadas, asi que sin esto
-     * `setFinalPrice()` calcula con los descuentos de ANTES y guarda el resultado como si estuviera
-     * bien, sin ninguna excepcion de por medio.
+     *      ⚠️ Esto SI cambia el radio del fallo (hallazgo del chequeo independiente, 22/9/2026): con
+     *      la transaccion vieja, un error a mitad de camino perdia el trabajo de 1 articulo, que ya
+     *      quedaba el resto firme en la base. Con el lote, un error en el articulo 150 de 200
+     *      revierte los otros 199 que ya estaban bien. Se acepta a proposito: el tamaño de lote por
+     *      defecto (200) deja esa perdida en ~0,2% de un catalogo como el de EXPOYER, la
+     *      sincronizacion es idempotente (una corrida posterior retoma exactamente donde quedo,
+     *      ver `escanear_articulos_del_proveedor()`) y evitarlo del todo exigiria volver a pagar la
+     *      transaccion por articulo que es, junto con el punto 3, lo que rozaba el timeout.
+     *   3. El `User` dueño se busca UNA SOLA VEZ para TODA la sincronizacion (no adentro de esta
+     *      funcion, que se llama hasta 4 veces — una por grupo): lo busca `sincronizar_a_articulos()`
+     *      y lo pasa por parametro. Es el hallazgo mas caro: son cientos de miles de consultas
+     *      identicas al MISMO registro. Es siempre el mismo owner porque
+     *      `escanear_articulos_del_proveedor()` arma el universo con
+     *      `Article::where('user_id', $provider->user_id)`; aun asi se verifica articulo por
+     *      articulo antes de reusarlo (mas abajo) en vez de asumirlo a ciegas: si alguna vez no
+     *      coincidiera, cae al `User::find()` puntual de siempre.
      *
-     * 🔴 Y el usuario va EXPLICITO a `setFinalPrice()`: esto corre en un worker, donde no hay
-     * sesion.
+     * `setFinalPrice()` NO se toca (motor de precios completo, usado en todo el sistema) y sigue
+     * corriendo POR ARTICULO y FUERA de la transaccion, en el mismo orden relativo que antes.
      *
      * @param  \App\Models\Provider $provider
-     * @param  int   $article_id
-     * @param  array $ids_a_barrer
-     * @param  int   $mostrar_en_online
-     * @return bool  true si el articulo se toco.
+     * @param  array $items  Cada item: ['article_id' => int, 'ids_a_barrer' => array,
+     *                       'mostrar_en_online' => int]. Salen de `preparar_item_de_sincronizacion()`
+     *                       o, para el alcance "todos" (articulos sin ningun descuento tagueado), se
+     *                       arman directo con `ids_a_barrer` vacio.
+     * @param  \App\Models\User|null $owner_user  Dueño ya resuelto por el llamador (una sola vez
+     *                       para toda la sincronizacion). Si viene null, cada articulo cae al
+     *                       `User::find()` puntual de siempre dentro de `setFinalPrice()` — mas
+     *                       lento pero correcto, nunca se asume un dueño sin haberlo verificado.
+     * @return array  Ids de los articulos que existian y se tocaron.
      */
-    static function aplicar_ficha_al_articulo($provider, $article_id, $ids_a_barrer, $mostrar_en_online) {
+    static function aplicar_ficha_en_lote($provider, array $items, $owner_user = null) {
 
-        $article = Article::find($article_id);
-
-        if (is_null($article)) {
-            return false;
+        if (count($items) === 0) {
+            return [];
         }
 
-        DB::transaction(function () use ($article, $provider, $ids_a_barrer, $mostrar_en_online) {
+        $tocados = [];
 
-            if (count($ids_a_barrer)) {
-                ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
+        // Tamaño del lote, configurable para poder testear el corte entre lotes con pocos
+        // articulos (mismo patron que `ARTICLE_EXCEL_CHUNK_SIZE` del importador de catalogo).
+        $tamano_lote = (int) config('app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE', 200);
+
+        if ($tamano_lote < 1) {
+            $tamano_lote = 200;
+        }
+
+        foreach (array_chunk($items, $tamano_lote) as $lote) {
+
+            $ids_del_lote = array_column($lote, 'article_id');
+
+            $articulos = Article::whereIn('id', $ids_del_lote)->get()->keyBy('id');
+
+            DB::transaction(function () use ($lote, $articulos, $provider) {
+
+                foreach ($lote as $item) {
+
+                    $article = $articulos->get($item['article_id']);
+
+                    if (is_null($article)) {
+                        continue;
+                    }
+
+                    if (count($item['ids_a_barrer'])) {
+                        ArticleDiscount::whereIn('id', $item['ids_a_barrer'])->delete();
+                    }
+
+                    self::create_tagged_discounts(
+                        $article,
+                        $provider->id,
+                        $provider->provider_discounts,
+                        $item['mostrar_en_online'],
+                        ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
+                    );
+                }
+            });
+
+            foreach ($lote as $item) {
+
+                $article = $articulos->get($item['article_id']);
+
+                if (is_null($article)) {
+                    continue;
+                }
+
+                // 🔴 `unsetRelation('article_discounts')` antes de recalcular: clase de error del
+                // 31/8/2026, ya fijada dos veces en este helper. Eloquent cachea las relaciones ya
+                // cargadas, asi que sin esto `setFinalPrice()` calcula con los descuentos de ANTES
+                // y guarda el resultado como si estuviera bien, sin ninguna excepcion de por medio.
+                $article->unsetRelation('article_discounts');
+
+                // El owner memoizado solo se reusa si de verdad es el dueño de ESTE articulo. No
+                // debería pasar nunca en este camino (ver el punto 3 del docblock), pero preferimos
+                // la consulta de mas antes que asumir mal a quien va a parar `setFinalPrice()`.
+                $user_para_precio = (!is_null($owner_user) && (int) $owner_user->id === (int) $article->user_id)
+                    ? $owner_user
+                    : null;
+
+                ArticleHelper::setFinalPrice($article, $article->user_id, $user_para_precio);
+
+                $tocados[] = $item['article_id'];
             }
+        }
 
-            self::create_tagged_discounts(
-                $article,
-                $provider->id,
-                $provider->provider_discounts,
-                $mostrar_en_online,
-                ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
-            );
-        });
-
-        $article->unsetRelation('article_discounts');
-
-        ArticleHelper::setFinalPrice($article, $article->user_id);
-
-        return true;
+        return $tocados;
     }
 }
