@@ -2506,12 +2506,13 @@ class ContabilidadRepository
         $resultado = [];
 
         foreach ($legacy as $row) {
-            $key = $row->current_acount_payment_method_id.'-'.$row->caja_id;
+            $caja_id = self::normalizar_caja_id($row->caja_id);
+            $key = $row->current_acount_payment_method_id.'-'.$caja_id;
 
             if (!isset($resultado[$key])) {
                 $resultado[$key] = [
                     'current_acount_payment_method_id' => (int) $row->current_acount_payment_method_id,
-                    'caja_id'                            => $row->caja_id,
+                    'caja_id'                            => $caja_id,
                     'total'                               => 0.0,
                 ];
             }
@@ -2529,7 +2530,9 @@ class ContabilidadRepository
                     continue;
                 }
 
-                $caja_id = isset($payment_method->pivot->caja_id) ? $payment_method->pivot->caja_id : null;
+                $caja_id = self::normalizar_caja_id(
+                    isset($payment_method->pivot->caja_id) ? $payment_method->pivot->caja_id : null
+                );
                 $key = $payment_method->id.'-'.$caja_id;
 
                 if (!isset($resultado[$key])) {
@@ -2545,6 +2548,26 @@ class ContabilidadRepository
         }
 
         return $resultado;
+    }
+
+    /**
+     * Normaliza `caja_id` para el agrupamiento del desglose caja/método: en este sistema "sin
+     * caja" se guarda a veces como `NULL` (cuenta corriente, que no tiene columna propia de caja;
+     * o el selector manual de la SPA) y a veces como `0` (cuando `caja_por_defecto.js` no
+     * encuentra una caja candidata). Sin esta normalización, `combinar_desglose_caja_metodo()`
+     * arma claves distintas ("3-0" vs "3-") para lo que es la misma fila de "sin caja asignada",
+     * y el desglose termina repitiendo el mismo método con montos parciales en vez de fundirlos.
+     *
+     * @param  int|string|null $caja_id
+     * @return int|string|null
+     */
+    private static function normalizar_caja_id($caja_id)
+    {
+        if (is_null($caja_id) || (int) $caja_id === 0) {
+            return null;
+        }
+
+        return $caja_id;
     }
 
     /**
