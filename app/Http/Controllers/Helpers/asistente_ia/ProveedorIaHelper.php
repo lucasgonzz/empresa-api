@@ -333,6 +333,15 @@ class ProveedorIaHelper
      * Le suma la clave `thinking` al payload SOLO si el proveedor la necesita: con null (Anthropic)
      * el payload vuelve tal cual, byte por byte lo mismo que se mandaba antes de esta misión.
      *
+     * 🔴 Y CON EL THINKING PRENDIDO SUBE `max_tokens` AL TECHO DE PROFUNDO. No está documentado si
+     * el endpoint compatible con Anthropic de DeepSeek cuenta los tokens de razonamiento contra
+     * `max_tokens` (en el formato OpenAI no los cuenta; en el de Anthropic sí): con los 1500 del
+     * asistente, un razonamiento largo podría agotar el techo antes de escribir una sola palabra
+     * de respuesta, y Profundo cortaría "sin texto". Por eso, cuando el `thinking` que se agrega es
+     * `enabled`, el techo del payload se sube a `services.deepseek.max_tokens_profundo` si el que
+     * trae es menor — nunca se baja. Es inocuo para el costo: la salida se paga por token
+     * GENERADO, no por el techo declarado.
+     *
      * @param  array  $payload
      * @param  array|null  $thinking
      * @return array
@@ -345,6 +354,16 @@ class ProveedorIaHelper
         }
 
         $payload['thinking'] = $thinking;
+
+        if (isset($thinking['type']) && (string) $thinking['type'] === 'enabled') {
+
+            $techo_profundo = (int) config('services.deepseek.max_tokens_profundo');
+            $techo_actual   = isset($payload['max_tokens']) ? (int) $payload['max_tokens'] : 0;
+
+            if ($techo_profundo > $techo_actual) {
+                $payload['max_tokens'] = $techo_profundo;
+            }
+        }
 
         return $payload;
     }

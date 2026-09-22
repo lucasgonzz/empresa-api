@@ -138,20 +138,29 @@ return [
      * análogo de Haiku: contestar rápido) y Profundo lo manda `enabled`. Para Anthropic no se manda
      * ninguna clave `thinking`, exactamente como hasta hoy.
      *
+     * `max_tokens_profundo` es el techo de salida cuando el thinking va `enabled` (Profundo): no está
+     * documentado si el endpoint compatible con Anthropic cuenta los tokens de razonamiento contra
+     * `max_tokens` (en el formato OpenAI no los cuenta; en el de Anthropic sí), y con los 1500 del
+     * asistente un razonamiento largo podría cortar antes de escribir una sola palabra de respuesta.
+     * ProveedorIaHelper::agregar_thinking() sube el techo del payload a este valor cuando el que trae
+     * es menor (nunca lo baja). Es inocuo para el costo: la salida se paga por token generado, no
+     * por el techo declarado.
+     *
      * Sin `DEEPSEEK_API_KEY` en el .env de la instalación, DeepSeek no se puede elegir (el modal lo
      * muestra como no disponible y el PUT contesta 422). El bloque TLS es el mismo de Anthropic y
      * cae a él por defecto: es la misma máquina con el mismo cacert.pem.
      */
     'deepseek' => [
-        'api_key'           => env('DEEPSEEK_API_KEY'),
-        'base_url'          => env('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/anthropic'),
-        'model'             => env('DEEPSEEK_MODEL', 'deepseek-flash'),
-        'model_agil'        => env('DEEPSEEK_MODEL_AGIL', 'deepseek-flash'),
-        'model_profundo'    => env('DEEPSEEK_MODEL_PROFUNDO', 'deepseek-v4-pro'),
-        'thinking_agil'     => env('DEEPSEEK_THINKING_AGIL', 'disabled'),
-        'thinking_profundo' => env('DEEPSEEK_THINKING_PROFUNDO', 'enabled'),
-        'ca_bundle'         => env('DEEPSEEK_CAINFO', env('ANTHROPIC_CAINFO')),
-        'verify_ssl'        => filter_var(env('DEEPSEEK_VERIFY_SSL', env('ANTHROPIC_VERIFY_SSL', true)), FILTER_VALIDATE_BOOLEAN),
+        'api_key'             => env('DEEPSEEK_API_KEY'),
+        'base_url'            => env('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/anthropic'),
+        'model'               => env('DEEPSEEK_MODEL', 'deepseek-flash'),
+        'model_agil'          => env('DEEPSEEK_MODEL_AGIL', 'deepseek-flash'),
+        'model_profundo'      => env('DEEPSEEK_MODEL_PROFUNDO', 'deepseek-v4-pro'),
+        'thinking_agil'       => env('DEEPSEEK_THINKING_AGIL', 'disabled'),
+        'thinking_profundo'   => env('DEEPSEEK_THINKING_PROFUNDO', 'enabled'),
+        'max_tokens_profundo' => (int) env('DEEPSEEK_MAX_TOKENS_PROFUNDO', 8000),
+        'ca_bundle'           => env('DEEPSEEK_CAINFO', env('ANTHROPIC_CAINFO')),
+        'verify_ssl'          => filter_var(env('DEEPSEEK_VERIFY_SSL', env('ANTHROPIC_VERIFY_SSL', true)), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /**
