@@ -6,6 +6,7 @@ use App\Events\ChatIaMensajeActualizado;
 use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -134,11 +135,14 @@ class ResponderMensajeChatIaJob implements ShouldQueue
 
         // Guard por si el job quedó encolado y la clave se quitó después:
         // sin credenciales no se sale a la red y el usuario ve un error claro.
-        if (!$service->hay_credenciales()) {
+        // Se pregunta por el proveedor del DUEÑO (misión proveedores-ia-deepseek):
+        // el elegido, o el que tenga clave si el elegido no la tiene.
+        if (!$service->hay_credenciales($owner)) {
             $this->marcar_error(
                 $message,
                 'La cuenta no tiene la IA configurada. Avisale a quien administra el sistema.',
-                'sin ANTHROPIC_API_KEY al momento de generar la respuesta'
+                'sin clave de ' . ProveedorIaHelper::nombre_de(ProveedorIaHelper::proveedor_de($owner))
+                . ' (ni de otro proveedor) al momento de generar la respuesta'
             );
             $this->avisar($conversation, $message);
 

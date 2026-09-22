@@ -316,13 +316,24 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
         $this->assertEquals(AdjuntosIaHelper::MAX_ADJUNTOS, $schema['properties']['articulo_ids']['maxItems']);
         $this->assertEquals(['articulo_ids'], $schema['required']);
 
-        // Las cuatro nuevas van al final, en este orden (el orden es el prefijo del caché).
+        /*
+         * Las cuatro de esta misión van juntas y en este orden, y nada de lo anterior se movió: el
+         * orden del registro es el prefijo que cachea con_cache_control().
+         *
+         * 🔴 El `-5` de abajo NO es un ajuste para que el test pase: la misión asistente-ventas-y-fotos
+         * (21/9/2026) sumó `consultar_ventas_sin_cobrar` DESPUÉS de estas cuatro, que es la única
+         * forma correcta de agregar una tool. Lo que este test cuida —que estas cuatro no se
+         * reordenen ni se separen— se sigue cuidando igual; lo que cambia es cuántas hay atrás.
+         * Cada tool nueva mueve este offset en uno, y eso es lo que tiene que pasar.
+         */
         $nombres = $service->nombres_de_lectura();
 
         $this->assertEquals(
             ['resumir_datos', 'consultar_resumen_de_ventas', 'consultar_reporte_contable', 'mostrar_imagenes_de_articulos'],
-            array_slice($nombres, -4)
+            array_slice($nombres, -5, 4)
         );
+
+        $this->assertEquals('consultar_ventas_sin_cobrar', $nombres[count($nombres) - 1]);
 
         // Y el handler deja la imagen en adjuntos(), sin cruzarla contra ningún texto.
         $con_foto = Article::create(['name' => 'Precintos A4', 'user_id' => $this->comercio->id]);

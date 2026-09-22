@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,26 +18,35 @@ use Illuminate\Http\Request;
  *
  * 🔴 LA CONFIG SE GUARDA Y SE LEE DEL DUEÑO, NO DE LA PERSONA. A diferencia de
  * UserController::set_chat_ia_preferencias() —que guarda con Auth::user() porque una coordenada de
- * pantalla es de cada persona—, la confianza y el modelo del agente son del COMERCIO: el asistente
- * contesta lo mismo abra quien lo abra. Por eso se resuelve con UserHelper::user(true), que devuelve
- * el dueño aunque quien esté autenticado sea un admin_access.
+ * pantalla es de cada persona—, la confianza, el proveedor y el modelo del agente son del COMERCIO:
+ * el asistente contesta lo mismo abra quien lo abra. Por eso se resuelve con UserHelper::user(true),
+ * que devuelve el dueño aunque quien esté autenticado sea un admin_access.
+ *
+ * Misión proveedores-ia-deepseek (22/9/2026): se suma el PROVEEDOR (`users.agente_proveedor`,
+ * Claude o DeepSeek). Los enums de proveedor y de pensamiento POR proveedor viven en
+ * ProveedorIaHelper y no se duplican acá: DeepSeek no tiene `equilibrado`, y un proveedor sin clave
+ * en la instalación no se puede elegir (422 con mensaje). `proveedor` es OPCIONAL en el PUT porque
+ * una SPA vieja no lo manda y tiene que seguir guardando confianza y pensamiento sin tocarlo.
  */
 class AsistenteConfigController extends Controller
 {
     /** Valores válidos de `agente_confianza`. */
     const CONFIANZAS = ['cauteloso', 'resuelto'];
 
-    /** Valores válidos de `agente_pensamiento`. */
+    /**
+     * La UNIÓN de los valores de `agente_pensamiento` de todos los proveedores, para el mensaje de
+     * validación del enum. La validez POR proveedor la decide ProveedorIaHelper::pensamientos_de().
+     */
     const PENSAMIENTOS = ['agil', 'equilibrado', 'profundo'];
 
     /** Default de la confianza (coincide con el default de la columna). */
     const CONFIANZA_POR_DEFECTO = 'resuelto';
 
-    /** Default del modelo (coincide con el default de la columna). */
-    const PENSAMIENTO_POR_DEFECTO = 'agil';
+    /** Default del modelo (coincide con el default de la columna y con el del helper). */
+    const PENSAMIENTO_POR_DEFECTO = ProveedorIaHelper::PENSAMIENTO_POR_DEFECTO;
 
     /**
-     * GET api/user/asistente-config → {confianza, pensamiento} del dueño.
+     * GET api/user/asistente-config → la config del dueño (ver config_de()).
      *
      * @return JsonResponse
      */
@@ -55,8 +65,10 @@ class AsistenteConfigController extends Controller
     /**
      * PUT api/user/asistente-config → valida los enums y guarda en el dueño.
      *
-     * Las dos claves son obligatorias: el modal las manda juntas. Un valor fuera del enum corta con
-     * 422 sin guardar nada.
+     * `confianza` y `pensamiento` son obligatorias: el modal las manda juntas. `proveedor` es
+     * opcional (una SPA vieja no lo manda y se conserva el guardado). Todo se valida ANTES de
+     * guardar nada: un valor fuera del enum, un proveedor sin clave en la instalación o un
+     * pensamiento que ese proveedor no tiene cortan con 422 y la config queda como estaba.
      *
      * @param  Request  $request
      * @return JsonResponse
@@ -66,6 +78,7 @@ class AsistenteConfigController extends Controller
         $request->validate([
             'confianza'   => 'required|in:' . implode(',', self::CONFIANZAS),
             'pensamiento' => 'required|in:' . implode(',', self::PENSAMIENTOS),
+            'proveedor'   => 'nullable|in:' . implode(',', ProveedorIaHelper::PROVEEDORES),
         ]);
 
         $owner = UserHelper::user(true);
@@ -75,8 +88,42 @@ class AsistenteConfigController extends Controller
             return response()->json(['message' => 'No se pudo resolver el dueño de la cuenta.'], 409);
         }
 
+        /*
+         * El proveedor resultante: el que vino, o el guardado si la SPA no lo manda. Si vino uno
+         * sin clave en esta instalación, no se puede elegir (el modal lo muestra como no disponible;
+         * esto es la guarda del lado del servidor).
+         */
+        $vino_proveedor = $request->filled('proveedor');
+        $proveedor      = $vino_proveedor
+            ? (string) $request->input('proveedor')
+            : ProveedorIaHelper::proveedor_elegido($owner);
+
+        if ($vino_proveedor && ! ProveedorIaHelper::hay_credenciales($proveedor)) {
+
+            return response()->json([
+                'message' => ProveedorIaHelper::nombre_de($proveedor)
+                           . ' no está disponible en esta instalación: falta cargar la clave de la API.',
+            ], 422);
+        }
+
+        $pensamiento = (string) $request->input('pensamiento');
+
+        if (! in_array($pensamiento, ProveedorIaHelper::pensamientos_de($proveedor), true)) {
+
+            return response()->json([
+                'message' => ProveedorIaHelper::nombre_de($proveedor) . ' no tiene el modo de pensamiento "'
+                           . $pensamiento . '". Elegí uno de: '
+                           . implode(', ', ProveedorIaHelper::pensamientos_de($proveedor)) . '.',
+            ], 422);
+        }
+
         $owner->agente_confianza = (string) $request->input('confianza');
-        $owner->agente_pensamiento = (string) $request->input('pensamiento');
+        $owner->agente_pensamiento = $pensamiento;
+
+        if ($vino_proveedor) {
+            $owner->agente_proveedor = $proveedor;
+        }
+
         $owner->save();
 
         return response()->json($this->config_de($owner), 200);
@@ -84,7 +131,7 @@ class AsistenteConfigController extends Controller
 
     /**
      * GET api/mi-consumo-ia → lo que muestra el footer del panel: consumo del mes contra el tope del
-     * plan, más el modo activo del agente.
+     * plan, más el modo activo del agente (proveedor, pensamiento y el id del modelo efectivo).
      *
      * @return JsonResponse
      */
@@ -98,6 +145,7 @@ class AsistenteConfigController extends Controller
         }
 
         $estado = TopeDeTokensHelper::estado($owner);
+        $modelo = ProveedorIaHelper::modelo_del_asistente($owner);
 
         return response()->json([
             'consumo_mes' => [
@@ -111,22 +159,49 @@ class AsistenteConfigController extends Controller
             ],
             'cerca'       => $estado['cerca'],
             'supero'      => $estado['supero'],
-            'pensamiento' => $this->pensamiento_de($owner),
+            /*
+             * Misión proveedores-ia-deepseek: el footer describe con qué CORRE el asistente, así que
+             * los tres salen de modelo_del_asistente(): el proveedor efectivo (con el fallback de
+             * clave), el pensamiento válido para ese proveedor y el id del modelo. Si el dueño guardó
+             * `equilibrado` y el asistente cayó a DeepSeek, acá dice `agil`, que es lo que corre.
+             */
+            'pensamiento' => $modelo['pensamiento'],
             'confianza'   => $this->confianza_de($owner),
+            'proveedor'   => $modelo['proveedor'],
+            'modelo'      => $modelo['modelo'],
         ], 200);
     }
 
     /**
-     * {confianza, pensamiento} del dueño, con los defaults por si la columna quedó en null.
+     * La config del dueño, con los defaults por si alguna columna quedó en null:
+     *
+     *   { confianza, pensamiento, proveedor, proveedores_disponibles: [...],
+     *     pensamientos_por_proveedor: {anthropic: [...], deepseek: [...]},
+     *     modelo: {proveedor, modelo, pensamiento} }
+     *
+     * `proveedor` es el ELEGIDO (lo que el dueño guardó); `modelo` es con lo que efectivamente
+     * corre el asistente (si el elegido no tiene clave, ahí se ve al que cayó). Las dos listas son
+     * para que el modal deshabilite lo que no está disponible y filtre las variantes por proveedor
+     * sin tener la lista duplicada del lado de la SPA.
      *
      * @param  \App\Models\User  $owner
      * @return array
      */
     protected function config_de($owner): array
     {
+        $modelo = ProveedorIaHelper::modelo_del_asistente($owner);
+
         return [
-            'confianza'   => $this->confianza_de($owner),
-            'pensamiento' => $this->pensamiento_de($owner),
+            'confianza'                  => $this->confianza_de($owner),
+            'pensamiento'                => $this->pensamiento_de($owner),
+            'proveedor'                  => ProveedorIaHelper::proveedor_elegido($owner),
+            'proveedores_disponibles'    => ProveedorIaHelper::proveedores_disponibles(),
+            'pensamientos_por_proveedor' => ProveedorIaHelper::PENSAMIENTOS_POR_PROVEEDOR,
+            'modelo'                     => [
+                'proveedor'   => $modelo['proveedor'],
+                'modelo'      => $modelo['modelo'],
+                'pensamiento' => $modelo['pensamiento'],
+            ],
         ];
     }
 
@@ -144,15 +219,15 @@ class AsistenteConfigController extends Controller
     }
 
     /**
-     * El modo de pensamiento del dueño, cayendo al default si viene vacío o fuera del enum.
+     * El modo de pensamiento del dueño, válido para SU proveedor (el elegido): cae al default si
+     * viene vacío, fuera del enum o si ese proveedor no lo tiene — así el footer nunca muestra
+     * `equilibrado` para un dueño en DeepSeek.
      *
      * @param  \App\Models\User  $owner
      * @return string
      */
     protected function pensamiento_de($owner): string
     {
-        $valor = (string) $owner->agente_pensamiento;
-
-        return in_array($valor, self::PENSAMIENTOS, true) ? $valor : self::PENSAMIENTO_POR_DEFECTO;
+        return ProveedorIaHelper::pensamiento_de($owner, ProveedorIaHelper::proveedor_elegido($owner));
     }
 }
