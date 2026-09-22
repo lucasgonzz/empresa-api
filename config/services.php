@@ -92,6 +92,12 @@ return [
      */
     'anthropic' => [
         'api_key'    => env('ANTHROPIC_API_KEY'),
+        /*
+         * Base de la API. Vive acá y no en cada service (misión proveedores-ia-deepseek, 22/9/2026):
+         * desde que hay dos proveedores, la URL de `/v1/messages` la arma ProveedorIaHelper a partir
+         * de la base del proveedor elegido, y esta es la de Claude.
+         */
+        'base_url'   => env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
         'model'      => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
         /*
          * Los tres modelos que elige la preferencia "cómo piensa" del agente (misión
@@ -108,6 +114,44 @@ return [
         'model_profundo'    => env('ANTHROPIC_MODEL_PROFUNDO', 'claude-opus-5'),
         'ca_bundle'  => env('ANTHROPIC_CAINFO'),
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+    ],
+
+    /*
+     * API de DeepSeek — el segundo proveedor del asistente (misión proveedores-ia-deepseek,
+     * 22/9/2026). El DUEÑO del negocio elige entre Claude y DeepSeek (`users.agente_proveedor`) y los
+     * tres caminos del asistente —el chat del dueño, el bot de WhatsApp y el título de conversación—
+     * siguen esa elección. El resto de los puntos de IA del repo (escaneo de facturas, importación
+     * Excel, validación de imágenes, descripciones, paleta, resúmenes) siguen en Anthropic.
+     *
+     * Se le pega por su endpoint COMPATIBLE CON ANTHROPIC (`base_url` termina en `/anthropic`):
+     * acepta el mismo payload de `/v1/messages` —system, tools con input_schema, bloques tool_use /
+     * tool_result, imágenes base64— y contesta con la misma forma (content[], stop_reason, usage).
+     * Por eso no hay un traductor de formatos: lo único que cambia por proveedor es la URL, la
+     * clave, el id del modelo y el parámetro `thinking`. Todo eso lo resuelve ProveedorIaHelper.
+     *
+     * Los ids de los modelos salen de api-docs.deepseek.com (22/9/2026): `deepseek-flash` es el
+     * rápido y barato, con visión; `deepseek-v4-pro` razona a fondo y no ve imágenes. DeepSeek no
+     * tiene "equilibrado": el dueño elige entre Ágil (Flash) y Profundo (Pro). `model` es el
+     * "general", el que usan el bot de WhatsApp y el título (el análogo de ANTHROPIC_MODEL).
+     *
+     * El thinking de DeepSeek viene PRENDIDO por defecto, así que Ágil lo manda `disabled` (es el
+     * análogo de Haiku: contestar rápido) y Profundo lo manda `enabled`. Para Anthropic no se manda
+     * ninguna clave `thinking`, exactamente como hasta hoy.
+     *
+     * Sin `DEEPSEEK_API_KEY` en el .env de la instalación, DeepSeek no se puede elegir (el modal lo
+     * muestra como no disponible y el PUT contesta 422). El bloque TLS es el mismo de Anthropic y
+     * cae a él por defecto: es la misma máquina con el mismo cacert.pem.
+     */
+    'deepseek' => [
+        'api_key'           => env('DEEPSEEK_API_KEY'),
+        'base_url'          => env('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/anthropic'),
+        'model'             => env('DEEPSEEK_MODEL', 'deepseek-flash'),
+        'model_agil'        => env('DEEPSEEK_MODEL_AGIL', 'deepseek-flash'),
+        'model_profundo'    => env('DEEPSEEK_MODEL_PROFUNDO', 'deepseek-v4-pro'),
+        'thinking_agil'     => env('DEEPSEEK_THINKING_AGIL', 'disabled'),
+        'thinking_profundo' => env('DEEPSEEK_THINKING_PROFUNDO', 'enabled'),
+        'ca_bundle'         => env('DEEPSEEK_CAINFO', env('ANTHROPIC_CAINFO')),
+        'verify_ssl'        => filter_var(env('DEEPSEEK_VERIFY_SSL', env('ANTHROPIC_VERIFY_SSL', true)), FILTER_VALIDATE_BOOLEAN),
     ],
 
     /**
