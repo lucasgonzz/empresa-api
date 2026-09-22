@@ -147,8 +147,10 @@ class HiloPorTemaIaHelper
     /**
      * Por qué este mensaje NO se puede cortar, o null si se le puede preguntar a la IA.
      *
-     * Devuelve el motivo como texto y no un booleano porque es lo que después se loguea: cuando
-     * Lucas diga "esto tendría que haber abierto un hilo nuevo", la respuesta está en una línea.
+     * Devuelve el MOTIVO como texto y no un booleano a propósito: el día que Lucas pregunte "esto
+     * tendría que haber abierto un hilo nuevo", la respuesta es una línea que ya está escrita y
+     * lista para loguear. Hoy el llamador solo mira si es null, porque un log por turno con el
+     * motivo de cada mensaje que NO cortó sería ruido: la mayoría de los mensajes no cortan.
      *
      * @param  \App\Models\AiConversation  $vigente
      * @param  string  $texto  Ya recortado.
