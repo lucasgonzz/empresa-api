@@ -1204,9 +1204,15 @@ class HerramientasDeCarga
                 return self::resultado(PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a')));
 
             /*
-             * Misión asistente-ventas-y-fotos (21/9/2026). 🔴 SIN quizas_auto_confirmar(), a
-             * propósito, aunque la foto de SUCURSAL de arriba sí pase por ahí: la del artículo
-             * siempre deja tarjeta (ver el docblock de AUTO_CONFIRMABLES).
+             * Misión asistente-ventas-y-fotos (21/9/2026). 🔴 Va SIN la auto-confirmación del
+             * agente, a propósito, aunque la foto de SUCURSAL de arriba sí pase por ahí: la del
+             * artículo siempre deja tarjeta (ver el docblock de AUTO_CONFIRMABLES).
+             *
+             * El nombre de esa función no se escribe acá: `36_Guardas_de_las_cargas_genericas_Test`
+             * lee ESTE archivo como texto y corta el bloque de cada `case` hasta el `case`
+             * siguiente, así que un comentario puesto entre dos casos se le atribuye al de arriba
+             * —`proponer_venta`— y lo da por auto-confirmable. Nombrarla en prosa dice lo mismo sin
+             * romper esa lectura.
              */
             case 'proponer_foto_articulo':
                 return self::resultado(PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input));
