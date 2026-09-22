@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
@@ -274,14 +275,29 @@ class AsistenteIaService
          * sola vez, antes del loop: las fotos viajan en el último turno del dueño, que es el
          * mismo en todas las iteraciones (los tool_result que se van sumando no traen imágenes).
          */
-        $eleccion  = ProveedorIaHelper::modelo_del_asistente($owner, $this->lleva_imagenes($messages));
-        $proveedor = $eleccion['proveedor'];
-        $model     = $eleccion['modelo'];
-        $thinking  = $eleccion['thinking'];
+        $lleva_imagenes = $this->lleva_imagenes($messages);
+
+        /*
+         * El PROVEEDOR se resuelve una sola vez y no cambia en todo el turno (con él, el cliente
+         * HTTP y la URL). El MODELO sí: se recalcula en cada vuelta, adentro del loop — ver el 🔴
+         * del escalado ahí abajo.
+         */
+        $proveedor = ProveedorIaHelper::proveedor_de($owner);
+        $model     = '';
+        $thinking  = null;
         $http      = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
         $url       = ProveedorIaHelper::url_messages($proveedor);
 
         $max_iterations = $con_acciones ? self::MAX_TOOL_ITERATIONS_CON_ACCIONES : self::MAX_TOOL_ITERATIONS;
+
+        /*
+         * Misión asistente-capacidades-y-hilos (22/9/2026): true en cuanto el modelo pide una tool
+         * de CARGA en este turno (`proponer_*` o `confirmar_carga_pendiente`). Desde esa vuelta en
+         * adelante el turno sigue con el modelo Profundo y NO vuelve al Ágil, incluido el texto
+         * final —que es justamente donde se decide pedir confirmación de más o inventar un número—.
+         * Una consulta de solo lectura nunca lo prende, así que nunca se encarece.
+         */
+        $toco_una_carga = false;
 
         $iterations = 0;
         $final_text = '';
@@ -305,6 +321,31 @@ class AsistenteIaService
             }
 
             $iterations++;
+
+            /*
+             * EL MODELO SE RECALCULA EN CADA VUELTA (misión asistente-capacidades-y-hilos,
+             * 22/9/2026). Pedido de Lucas: "las acciones contra deepseek pro a ver si cambia". El
+             * turno arranca en el Ágil y, en cuanto tocó una carga, el resto de las vueltas van con
+             * el Profundo (Anthropic: Haiku → Opus; DeepSeek: Flash → Pro). El PROVEEDOR no cambia
+             * —proveedor_de() no mira estos flags—, así que `$http` y `$url` siguen valiendo; lo
+             * único que se mueve es el id del modelo y su bloque `thinking`, que viajan juntos para
+             * que el techo de `max_tokens` que sube agregar_thinking() acompañe al modelo que
+             * efectivamente corre.
+             *
+             * 🔴 CAMBIAR DE MODELO TIRA EL CACHÉ DE PROMPT DE ESA LLAMADA, Y ESTÁ ACEPTADO. El caché
+             * de Anthropic es por (modelo + prefijo de bytes): la vuelta en la que se escala paga el
+             * system y las tools enteros de nuevo. Se paga UNA vez por turno y SOLO en los turnos
+             * que cargan —una consulta de solo lectura nunca escala—, y lo que compra es que la
+             * decisión de ejecutar y el texto que la cuenta los tome el modelo grande. 🔴 Si alguien
+             * viene a "optimizar" esto volviendo a calcular el modelo una sola vez afuera del loop,
+             * está sacando la misión entera: el escalado es esto.
+             *
+             * 🔴 Y CON FOTOS MANDA LA VISIÓN, NO EL ESCALADO: `$lleva_imagenes` viaja igual, así que
+             * el Pro de DeepSeek —que no ve imágenes y no lo avisa con un error— nunca recibe una.
+             */
+            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga);
+            $model    = $eleccion['modelo'];
+            $thinking = $eleccion['thinking'];
 
             /*
              * El mismo payload para los dos proveedores; `agregar_thinking` solo suma la clave
@@ -362,6 +403,15 @@ class AsistenteIaService
                 : [];
 
             if ($stop_reason === 'tool_use') {
+                /*
+                 * Antes de ejecutar nada: si entre lo que pidió hay una tool de carga, el turno
+                 * queda escalado y las vueltas que siguen van con el Profundo. Se mira acá y no
+                 * adentro de execute_tool_calls() porque el dato está en los bloques del assistant,
+                 * crudo y sin depender de lo que cada tool devuelva (una propuesta que contesta
+                 * "faltan" escala igual: el modelo ya está en una carga).
+                 */
+                $toco_una_carga = $toco_una_carga || $this->toca_una_carga($content_blocks);
+
                 // Normalizar bloques antes de reenviarlos: PHP decodifica input:{} como [] y Anthropic exige object.
                 $messages[] = [
                     'role'    => 'assistant',
@@ -509,7 +559,16 @@ class AsistenteIaService
          * bloque "Qué podés cargar", con sus reglas.
          */
         $regla_de_solo_lectura = $con_acciones ? '' : $this->regla_de_solo_lectura();
-        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga() : '';
+
+        /*
+         * Misión asistente-capacidades-y-hilos (22/9/2026): el bloque de carga depende del MODO DE
+         * CONFIANZA del dueño, porque en "directo" dice literalmente lo contrario de lo que dice en
+         * los otros dos ("ejecutás y contás lo que hiciste" contra "dejás la tarjeta"). Se lee con
+         * guardada() —no con el default— para que una columna vacía nunca haga hablar al modelo como
+         * si ejecutara solo, que es exactamente el criterio de la puerta de auto-confirmación.
+         */
+        $confianza = ConfianzaDelAgenteIaHelper::guardada($owner);
+        $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) : '';
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -621,12 +680,84 @@ REGLA;
      * cargados. La línea de auto-ejecución enumera las tres cargas que en
      * "resuelto" van sin tarjeta y deja explícito que la masiva nunca.
      *
+     * Misión asistente-capacidades-y-hilos (22/9/2026): con el dueño en "directo" tres renglones
+     * dicen lo contrario —el modelo ejecuta y cuenta lo que hizo, en vez de dejar la tarjeta—, y se
+     * suman dos reglas duras contra el defecto más grave que encontró el diagnóstico de demo3: el
+     * agente que AFIRMA cargas que no hizo e INVENTA el motivo de un fallo que nadie le informó.
+     * Esas dos van en los tres modos.
+     *
+     * @param  string  $confianza  El modo guardado del dueño (ConfianzaDelAgenteIaHelper).
      * @return string
      */
-    protected function bloque_de_carga(): string
+    protected function bloque_de_carga($confianza = ''): string
     {
+        $es_directo = (string) $confianza === ConfianzaDelAgenteIaHelper::DIRECTO;
+
+        $titulo_de_carga = $es_directo
+            ? 'Qué podés cargar. Con tu confianza en "directo", casi todo lo hacés en el acto sin dejar tarjeta:'
+            : 'Qué podés cargar, siempre con una tarjeta que la persona confirma:';
+
+        $regla_de_la_tarjeta = $es_directo
+            ? <<<DIRECTO
+- El dueño puso tu confianza en "directo": cuando llamás a una herramienta proponer_, el sistema
+  la EJECUTA en el acto y te devuelve el resultado. Contá lo que quedó hecho en una línea, con lo
+  que dice `resultado`. Si la respuesta te dice que igual quedó tarjeta para confirmar, decí eso y
+  no que ya está hecho.
+DIRECTO
+            : <<<CONFIRMA
+- Vos nunca registrás nada: llamás a la herramienta proponer_ que corresponde y el sistema
+  le muestra a la persona una tarjeta con Confirmar y Cancelar. Nunca digas "ya lo cargué",
+  "listo" ni "registrado": decí que dejaste la tarjeta para confirmar y resumila en una línea.
+CONFIRMA;
+
+        /*
+         * 🔴 LAS DOS REGLAS QUE TAPAN EL DEFECTO MÁS GRAVE, y van en los TRES modos. El 22/9/2026 en
+         * demo3 el agente anunció cuatro cargas: "quedó registrada la venta número 4882" (esa venta
+         * existe, pero es del 28/10/2025: ninguna venta se creó ese día), "el sistema rechazó el
+         * alta de Global Sources" (la tarjeta quedó en `propuesta` con `error_mensaje` NULL: no hubo
+         * rechazo, nunca se ejecutó, y el motivo lo inventó él) y "ahí está la factura cargada a
+         * nombre de Pablo Chao" (no hay ninguna compra). Contra las tablas de ese día: cero ventas,
+         * cero compras, cero proveedores nuevos. El modo directo agranda el riesgo —si ejecuta solo
+         * y después miente sobre el resultado, nadie lo cruza—, así que las dos reglas van con él.
+         */
+        $reglas_contra_lo_inventado = <<<VERDAD
+- 🔴 Un número, un nombre o un total de algo que quedó registrado salen SIEMPRE del `resultado`
+  que te devolvió la herramienta, palabra por palabra. Nunca de tu memoria, de lo que se habló
+  antes ni de una cuenta tuya. Si la herramienta no te dio un número, no digas ninguno: decí que
+  quedó hecho y que el número lo ve en la pantalla.
+- 🔴 Si algo NO se pudo hacer, el motivo es el que te dijo la herramienta en `error`, tal cual y
+  completo. NUNCA inventes un rechazo del sistema: si la herramienta no te dijo que falló, no
+  falló — quedó como la respuesta te lo dice. "El sistema lo rechazó" sin un `error` que lo diga
+  es una mentira, y es peor que no haber hecho nada.
+VERDAD;
+
+        $regla_de_auto_ejecucion = $es_directo
+            ? <<<AUTO_DIRECTO
+- Con tu confianza en "directo" se hacen en el acto: los gastos, los pagos, las tareas (nuevas,
+  cambios y marcarlas hechas), los combos, las ofertas, la compra con factura, la foto de una
+  sucursal y la de un artículo, las búsquedas de imágenes, los diseños de PDF, las altas y las
+  ediciones del ABM genérico, y las ventas. En todos esos casos avisá que YA quedó hecho, con lo
+  que te devolvió el resultado.
+- 🔴 TRES cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de saltearlas:
+  borrar algo (proponer_baja), la actualización masiva de artículos y la unificación de bancos de
+  los cheques. En esas tres decí que dejaste la tarjeta para confirmar, aunque la persona te pida
+  que lo hagas sin preguntar: un borrado no se deshace y las otras dos tocan cientos de registros
+  de un saque. Si insisten, explicá eso en una línea y no lo discutas más.
+AUTO_DIRECTO
+            : <<<AUTO_RESUELTO
+- Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
+  foto de una sucursal, mandar a buscar imágenes (categorías y artículos) y cambiar un
+  diseño de PDF; en ese caso avisá que ya quedó hecho o mandado. Con "cauteloso" dejás la
+  tarjeta para confirmar, como todo lo demás. La actualización masiva y la unificación de
+  bancos de cheques SIEMPRE dejan tarjeta.
+- 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
+  da ella con la tarjeta. Decile, en una línea, que puede prender el modo directo desde la
+  configuración del asistente y que a partir de ahí las cargas se hacen solas. No vuelvas a
+  proponer lo mismo esperando que la insistencia lo habilite.
+AUTO_RESUELTO;
+
         return <<<CARGA
-Qué podés cargar, siempre con una tarjeta que la persona confirma:
+{$titulo_de_carga}
 - Gastos, pagos de clientes, pagos a proveedores, tareas nuevas de la agenda, cambios en
   una tarea, marcar una tarea como hecha, armar un combo, armar una oferta para un
   cliente, asignar la foto de una sucursal, mandar a buscar imágenes para las categorías
@@ -641,9 +772,7 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
   pantalla (unificar los bancos de los cheques que ya están cargados sí lo hacés vos).
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
   ni WhatsApp, y eso decíselo a la persona.
-- Vos nunca registrás nada: llamás a la herramienta proponer_ que corresponde y el sistema
-  le muestra a la persona una tarjeta con Confirmar y Cancelar. Nunca digas "ya lo cargué",
-  "listo" ni "registrado": decí que dejaste la tarjeta para confirmar y resumila en una línea.
+{$regla_de_la_tarjeta}
 - Antes de proponer, juntá todos los datos. Si falta algo (cuánto, a quién, cómo se pagó, a
   qué caja, qué día, qué subcategoría) o hay más de una opción posible (dos clientes con
   nombre parecido, una cuenta en pesos y otra en dólares, varias subcategorías que encajan),
@@ -654,6 +783,7 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
 - Si la herramienta devuelve "faltan", preguntá eso. Si devuelve "error", contá ese motivo
   tal cual y no agregues otro. Si devuelve "confirmada_parecida", avisá que hace un momento
   se confirmó una carga parecida y que confirme esta solo si es otra carga.
+{$reglas_contra_lo_inventado}
 - Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
   asociado. Un pago futuro, como tarea para cobrar o pagar ese día. Para una tarea con gasto
   preguntá el monto una vez; si la persona no lo sabe, se agenda sin monto.
@@ -693,14 +823,10 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
   son Banco Nación) y proponé con proponer_unificar_bancos_de_cheques; si un texto es
   ambiguo, preguntá cuál banco es. SIEMPRE queda tarjeta para confirmar, nunca se aplica
   sola, esté como esté tu confianza.
-- Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
-  foto de una sucursal, mandar a buscar imágenes (categorías y artículos) y cambiar un
-  diseño de PDF; en ese caso avisá que ya quedó hecho o mandado. Con "cauteloso" dejás la
-  tarjeta para confirmar, como todo lo demás. La actualización masiva y la unificación de
-  bancos de cheques SIEMPRE dejan tarjeta.
+{$regla_de_auto_ejecucion}
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
   pasó con cada tarjeta. No las repitas.
-{$this->bloques_de_prompt_de_b_y_c()}
+{$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
     }
 
@@ -712,10 +838,44 @@ CARGA;
      * Termina con un salto de línea a propósito: el heredoc de bloque_de_carga() lo interpola en su
      * última línea y el bloque tiene que seguir cerrando con "\n", como antes de la misión.
      *
+     * Misión asistente-capacidades-y-hilos (22/9/2026): los dos renglones que decían "esto NUNCA se
+     * hace solo, ni porque la persona lo pida sin preguntar" —el de las genéricas y el de la venta—
+     * pasan a depender del modo. Eran, literalmente, la razón por la que el 22/9 Lucas pidió tres
+     * veces que dejara de confirmar y no pasó nada. 🔴 La BAJA sigue dejando tarjeta en los tres
+     * modos y su renglón no cambia.
+     *
+     * @param  string  $confianza  El modo guardado del dueño (ConfianzaDelAgenteIaHelper).
      * @return string
      */
-    protected function bloques_de_prompt_de_b_y_c(): string
+    protected function bloques_de_prompt_de_b_y_c($confianza = ''): string
     {
+        $es_directo = (string) $confianza === ConfianzaDelAgenteIaHelper::DIRECTO;
+
+        $regla_de_las_genericas = $es_directo
+            ? <<<GEN_DIRECTO
+- 🔴 Con tu confianza en "directo", un alta y una edición se ejecutan en el acto: no digas que
+  dejaste una tarjeta, contá lo que quedó creado o cambiado con lo que devolvió el `resultado`.
+  BORRAR es la excepción: proponer_baja SIEMPRE deja tarjeta, en todos los modos.
+GEN_DIRECTO
+            : <<<GEN_CONFIRMA
+- 🔴 Estas cargas NUNCA se hacen solas en este modo: crear, cambiar o borrar datos del negocio y
+  vender lo confirma la persona con la tarjeta. Decí que dejaste la tarjeta para confirmar, nunca
+  que ya está hecho. Si te piden que lo hagas sin preguntar, contá que eso se prende una sola vez
+  desde la configuración del asistente (el modo directo).
+GEN_CONFIRMA;
+
+        $regla_de_la_venta = $es_directo
+            ? <<<VENTA_DIRECTO
+- Con tu confianza en "directo" la venta se registra en el acto. Decí el número de venta y el
+  total que te devolvió el `resultado`, en una línea. 🔴 Ese número sale DE AHÍ y de ningún otro
+  lado: si el resultado no lo trae, no lo digas.
+VENTA_DIRECTO
+            : <<<VENTA_CONFIRMA
+- Una venta NUNCA se hace sola en este modo: siempre queda tarjeta para confirmar. Nunca digas
+  "vendido", "ya está la venta" ni "registrada" hasta que la tarjeta se confirme. Cuando se
+  confirme, contá el número de venta y el total que te devolvió la confirmación, en una línea.
+VENTA_CONFIRMA;
+
         return <<<BYC
 - Todo lo demás que se carga desde ABM, Clientes, Proveedores, Artículos y Gastos lo hacés
   con el ABM genérico: que_puedo_cargar te dice qué entidades podés crear, editar o borrar
@@ -742,10 +902,7 @@ CARGA;
   de eso (una categoría se lleva sus subcategorías; una venta anulada devuelve el stock y
   borra su cuenta corriente pero no compensa la caja). Contáselo a la persona en una línea
   antes de que confirme.
-- 🔴 Estas cargas NUNCA se hacen solas: ni con tu confianza en "resuelto" ni porque la persona
-  lo pida "sin preguntar". Crear, cambiar o borrar datos del negocio y vender lo confirma
-  siempre la persona con la tarjeta. Decí que dejaste la tarjeta para confirmar, nunca que ya
-  está hecho.
+{$regla_de_las_genericas}
 - Cuando la persona confirma, la tarjeta te devuelve el resultado: qué quedó creado, cambiado
   o borrado, y `campos_que_no_quedaron` si la pantalla normalizó o ignoró algo (un margen 0 se
   guarda como vacío, por ejemplo). Contá lo que devolvió el resultado, incluidos esos campos,
@@ -765,10 +922,7 @@ CARGA;
   cargados: mandá el porcentaje en descuento_porcentaje y, si la herramienta te dice que
   no hay uno con ese porcentaje, ofrecé los que sí hay. No armes el descuento bajando el
   precio a mano.
-- Una venta NUNCA se hace sola: siempre queda tarjeta para confirmar, esté como esté tu
-  confianza. Nunca digas "vendido", "ya está la venta" ni "registrada" hasta que la
-  tarjeta se confirme. Cuando se confirme, contá el número de venta y el total que te
-  devolvió la confirmación, en una línea.
+{$regla_de_la_venta}
 - Si la tarjeta avisa que el stock queda en negativo, decíselo a la persona antes de que
   confirme: la venta se puede hacer igual, pero tiene que saberlo.
 - Si la confirmación dice que el sistema encontró una venta igual creada hace segundos y
@@ -1184,6 +1338,32 @@ CONFIRMACION;
                 if (is_array($bloque) && ($bloque['type'] ?? '') === 'image') {
                     return true;
                 }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si entre los bloques `tool_use` que devolvió el modelo hay una tool de CARGA (misión
+     * asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * Quién es de carga y quién no lo decide HerramientasDeCarga::es_de_carga(), que es donde viven
+     * las herramientas: acá solo se recorren los bloques. Una consulta de solo lectura devuelve
+     * false y el turno sigue con el Ágil, que es la mitad del sentido del escalado.
+     *
+     * @param  array<int, mixed>  $content_blocks  Bloques content devueltos por el modelo.
+     * @return bool
+     */
+    protected function toca_una_carga(array $content_blocks): bool
+    {
+        foreach ($content_blocks as $block) {
+            if (! is_array($block) || ($block['type'] ?? '') !== 'tool_use') {
+                continue;
+            }
+
+            if (HerramientasDeCarga::es_de_carga((string) ($block['name'] ?? ''))) {
+                return true;
             }
         }
 

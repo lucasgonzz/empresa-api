@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use Illuminate\Http\JsonResponse;
@@ -27,11 +28,17 @@ use Illuminate\Http\Request;
  * ProveedorIaHelper y no se duplican acá: DeepSeek no tiene `equilibrado`, y un proveedor sin clave
  * en la instalación no se puede elegir (422 con mensaje). `proveedor` es OPCIONAL en el PUT porque
  * una SPA vieja no lo manda y tiene que seguir guardando confianza y pensamiento sin tocarlo.
+ *
+ * Misión asistente-capacidades-y-hilos (22/9/2026): la confianza pasa a tener TRES niveles, con
+ * `directo` como el más suelto (ver ConfianzaDelAgenteIaHelper). El enum y el default no se
+ * duplican acá: salen de ese helper, que es el que además leen la puerta de auto-confirmación y el
+ * prompt. El default sigue siendo `resuelto`, así que ninguna cuenta cambia de comportamiento sin
+ * que alguien prenda el modo directo a mano.
  */
 class AsistenteConfigController extends Controller
 {
-    /** Valores válidos de `agente_confianza`. */
-    const CONFIANZAS = ['cauteloso', 'resuelto'];
+    /** Valores válidos de `agente_confianza` (cauteloso, resuelto, directo). */
+    const CONFIANZAS = ConfianzaDelAgenteIaHelper::MODOS;
 
     /**
      * La UNIÓN de los valores de `agente_pensamiento` de todos los proveedores, para el mensaje de
@@ -40,7 +47,7 @@ class AsistenteConfigController extends Controller
     const PENSAMIENTOS = ['agil', 'equilibrado', 'profundo'];
 
     /** Default de la confianza (coincide con el default de la columna). */
-    const CONFIANZA_POR_DEFECTO = 'resuelto';
+    const CONFIANZA_POR_DEFECTO = ConfianzaDelAgenteIaHelper::POR_DEFECTO;
 
     /** Default del modelo (coincide con el default de la columna y con el del helper). */
     const PENSAMIENTO_POR_DEFECTO = ProveedorIaHelper::PENSAMIENTO_POR_DEFECTO;
@@ -213,9 +220,7 @@ class AsistenteConfigController extends Controller
      */
     protected function confianza_de($owner): string
     {
-        $valor = (string) $owner->agente_confianza;
-
-        return in_array($valor, self::CONFIANZAS, true) ? $valor : self::CONFIANZA_POR_DEFECTO;
+        return ConfianzaDelAgenteIaHelper::con_default($owner);
     }
 
     /**

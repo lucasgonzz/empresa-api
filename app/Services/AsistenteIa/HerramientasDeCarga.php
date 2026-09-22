@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
@@ -77,20 +78,21 @@ class HerramientasDeCarga
      * cheques-endoso-y-bancos): toca N cheques de un saque y decide a qué banco va cada texto.
      * Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
      *
-     * 🔴 TAMPOCO ENTRAN LAS GENÉRICAS (alta, edicion, baja) NI LA VENTA (misión asistente-omnisciente,
-     * 21/9/2026): crean, cambian o borran datos del negocio por el controller de la pantalla, y una
-     * baja no se deshace. Sus `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), y el
-     * test 36 fija las dos cosas.
+     * 🔴 TAMPOCO ENTRAN LAS GENÉRICAS (alta, edicion, baja), NI LA VENTA (misión
+     * asistente-omnisciente, 21/9/2026), NI LA FOTO DE UN ARTÍCULO (misión asistente-ventas-y-fotos,
+     * 21/9/2026), aunque la foto de SUCURSAL sí esté acá arriba. No es una inconsistencia: la
+     * sucursal se elige entre unas pocas y por su nombre completo —no puede errarle al destino— y su
+     * foto no sale publicada en ningún lado; la del artículo se resuelve INFIRIENDO de un nombre que
+     * el dueño puede decir inexacto, y si le erra, la foto equivocada se PUBLICA (dispara Tienda
+     * Nube y Mercado Libre, y se replica en el catálogo de los comercios vinculados).
      *
-     * 🔴 Y TAMPOCO ENTRA LA FOTO DE UN ARTÍCULO (`TIPO_FOTO_ARTICULO`, misión asistente-ventas-y-fotos,
-     * 21/9/2026), aunque la de SUCURSAL sí esté acá arriba. No es una inconsistencia, es la
-     * diferencia que importa: la sucursal se elige entre unas pocas y por su nombre completo —no
-     * puede errarle al destino—, y su foto no sale publicada en ningún lado. La del artículo se
-     * resuelve INFIRIENDO de un nombre que el dueño puede decir inexacto, y si le erra, la foto
-     * equivocada se PUBLICA: dispara Tienda Nube y Mercado Libre, y además se replica en el catálogo
-     * de los comercios vinculados. Decisión explícita de Lucas del 21/9/2026: confirma siempre la
-     * persona, esté en "resuelto" o no. Su `case` en ejecutar() tampoco pasa por
-     * quizas_auto_confirmar().
+     * ⚠️ DESDE EL 22/9/2026 ESTA LISTA ES LA DEL MODO "RESUELTO" Y NADA MÁS. El modo "directo"
+     * (misión asistente-capacidades-y-hilos) tiene la suya, AUTO_CONFIRMABLES_DIRECTO, y ahí sí
+     * entran las genéricas de alta y edición, la venta y la foto de un artículo — el dueño lo prendió
+     * a conciencia desde la configuración. Lo que cambió con esa misión es que los `case` de esas
+     * propuestas SÍ pasan por quizas_auto_confirmar(): quién se ejecuta lo decide el modo adentro de
+     * la puerta, no la ausencia de la llamada. Los únicos tres `case` que siguen sin pasar por ahí
+     * son los de NUNCA_AUTO_CONFIRMABLES, y los tests 26, 36 y 49 lo fijan leyendo este archivo.
      *
      * @var array<int, string>
      */
@@ -100,6 +102,78 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_IMAGENES_ARTICULOS,
         AiMessageAction::TIPO_DISENO_PDF,
     ];
+
+    /**
+     * Los tipos que el modo "directo" ejecuta en el acto, sin dejar tarjeta (misión
+     * asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * 🔴 POR QUÉ EXISTE ESTA LISTA, Y POR QUÉ NO ES UNA FRASE EN EL CHAT. El 22/9/2026 Lucas le
+     * pidió TRES VECES al agente, explícito, que dejara de pedirle confirmación, y el mensaje
+     * siguiente del agente volvió a pedirle una. Un pago le costó 2 vueltas, una venta 4 y un alta
+     * de proveedor 3 (y ni siquiera se creó). La decisión de Lucas fue prenderlo desde la
+     * CONFIGURACIÓN del asistente, una vez y a conciencia: una frase suelta en la conversación la
+     * puede escribir cualquier texto que devuelva una tool —la observación de un pedido, el chat de
+     * un comprador de la tienda— y eso sería una puerta a ejecutar cargas sin que nadie las pida.
+     *
+     * Empieza con los cuatro de "resuelto" (en "directo" siguen valiendo, no se pierde ninguno) y
+     * sigue con lo que suma este modo. Los agregados van al FINAL: es la misma regla del caché de
+     * prompt que vale para las tools, y además deja que dos misiones en paralelo sumen tipos sin
+     * pisarse.
+     *
+     * 🔴 LO QUE NO ESTÁ ACÁ NO ESTÁ POR ERROR, está por decisión (ver NUNCA_AUTO_CONFIRMABLES).
+     *
+     * @var array<int, string>
+     */
+    const AUTO_CONFIRMABLES_DIRECTO = [
+        AiMessageAction::TIPO_FOTO_SUCURSAL,
+        AiMessageAction::TIPO_IMAGENES_CATEGORIAS,
+        AiMessageAction::TIPO_IMAGENES_ARTICULOS,
+        AiMessageAction::TIPO_DISENO_PDF,
+        AiMessageAction::TIPO_GASTO,
+        AiMessageAction::TIPO_PAGO,
+        AiMessageAction::TIPO_TAREA_NUEVA,
+        AiMessageAction::TIPO_TAREA_EDITAR,
+        AiMessageAction::TIPO_TAREA_COMPLETAR,
+        AiMessageAction::TIPO_COMBO,
+        AiMessageAction::TIPO_OFERTA,
+        AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+        AiMessageAction::TIPO_FOTO_ARTICULO,
+        AiMessageAction::TIPO_ALTA,
+        AiMessageAction::TIPO_EDICION,
+        AiMessageAction::TIPO_VENTA,
+    ];
+
+    /**
+     * Los tres tipos que NO se auto-ejecutan en NINGÚN modo, ni siquiera en "directo" (decisión de
+     * Lucas, misión asistente-capacidades-y-hilos).
+     *
+     * 🔴 `baja`: 31 de las 40 entidades del catálogo de escritura NO usan SoftDeletes. Borrar una
+     * lista de precios deja a los clientes que la tenían colgados y no hay vuelta atrás — no es
+     * "reversible con otra carga", es irreversible. La confirma siempre la persona.
+     * 🔴 `actualizacion_masiva`: toca TODOS los artículos que cumplen un filtro de un saque. La
+     * persona tiene que ver cuántos alcanza antes de que pase.
+     * 🔴 `unificar_bancos_cheques`: toca N cheques de un saque y decide a qué banco va cada texto.
+     *
+     * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
+     * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
+     * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda: los
+     * tests 26, 36 y 49 fijan las tres.
+     *
+     * @var array<int, string>
+     */
+    const NUNCA_AUTO_CONFIRMABLES = [
+        AiMessageAction::TIPO_BAJA,
+        AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
+        AiMessageAction::TIPO_UNIFICAR_BANCOS,
+    ];
+
+    /**
+     * Lo que se le dice al modelo cuando la auto-ejecución de una tarjeta lanzó: ver el 🔴 del
+     * catch de quizas_auto_confirmar().
+     */
+    const NOTA_AUTO_EJECUCION_FALLIDA = 'No se pudo ejecutar en el acto por una falla del sistema, '
+        . 'así que quedó como tarjeta para que la persona la confirme. Decile exactamente eso: NO '
+        . 'digas que ya está cargado ni inventes otro motivo.';
 
     /**
      * Definiciones con su input_schema para la API de Anthropic.
@@ -1081,29 +1155,75 @@ class HerramientasDeCarga
                 $dias = EntradaDeCargaIa::valor($input, 'dias');
                 return self::resultado(ConsultasDeCargaIaHelper::tareas($contexto, EntradaDeCargaIa::texto($input, 'busqueda'), is_null($dias) ? 30 : (int) $dias));
 
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026): las ocho que mueven plata, agenda o
+             * catálogo pasan por la puerta única. Quién se ejecuta solo lo decide el MODO del dueño
+             * dentro de quizas_auto_confirmar(): con "cauteloso" y "resuelto" queda la tarjeta, como
+             * hasta hoy; solo con "directo" se ejecutan en el acto.
+             */
             case 'proponer_gasto':
-                return self::resultado(PropuestaGastoIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaGastoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_pago':
-                return self::resultado(PropuestaPagoIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaPagoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_tarea':
-                return self::resultado(PropuestaTareaIaHelper::proponer_tarea($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaTareaIaHelper::proponer_tarea($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_cambios_en_tarea':
-                return self::resultado(PropuestaTareaIaHelper::proponer_cambios($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaTareaIaHelper::proponer_cambios($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_marcar_tarea_hecha':
-                return self::resultado(PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_combo':
-                return self::resultado(PropuestaComboIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaComboIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_oferta':
-                return self::resultado(PropuestaOfertaIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaOfertaIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_compra_con_factura':
-                return self::resultado(PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_foto_sucursal':
                 return self::resultado(self::quizas_auto_confirmar(
@@ -1164,31 +1284,42 @@ class HerramientasDeCarga
 
 
             /*
-             * Misión asistente-omnisciente (21/9/2026). 🔴 Las cuatro propuestas van SIN
-             * quizas_auto_confirmar(), a propósito: crear, cambiar o borrar datos del negocio, y
-             * vender, lo confirma siempre la persona (ver AUTO_CONFIRMABLES). La venta la implementa
-             * el constructor C (contrato §4); acá solo se wirea por nombre y firma.
+             * Misión asistente-omnisciente (21/9/2026), corrida a tres modos por la misión
+             * asistente-capacidades-y-hilos (22/9/2026): el alta, la edición y la venta pasan por la
+             * puerta única y solo se ejecutan solas con el dueño en "directo". 🔴 La BAJA no: va SIN
+             * la auto-confirmación del agente, en ningún modo, porque 31 de las 40 entidades no
+             * tienen SoftDeletes y un borrado no se deshace (ver NUNCA_AUTO_CONFIRMABLES).
              */
             case 'que_puedo_cargar':
                 return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad')));
 
             case 'proponer_alta':
-                return self::resultado(PropuestaGenericaIaHelper::proponer_alta(
+                return self::resultado(self::quizas_auto_confirmar(
                     $contexto,
+                    $conversation,
                     $assistant_message,
-                    EntradaDeCargaIa::valor($input, 'entidad'),
-                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
-                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    PropuestaGenericaIaHelper::proponer_alta(
+                        $contexto,
+                        $assistant_message,
+                        EntradaDeCargaIa::valor($input, 'entidad'),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    )
                 ));
 
             case 'proponer_edicion':
-                return self::resultado(PropuestaGenericaIaHelper::proponer_edicion(
+                return self::resultado(self::quizas_auto_confirmar(
                     $contexto,
+                    $conversation,
                     $assistant_message,
-                    EntradaDeCargaIa::valor($input, 'entidad'),
-                    EntradaDeCargaIa::valor($input, 'registro'),
-                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
-                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    PropuestaGenericaIaHelper::proponer_edicion(
+                        $contexto,
+                        $assistant_message,
+                        EntradaDeCargaIa::valor($input, 'entidad'),
+                        EntradaDeCargaIa::valor($input, 'registro'),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    )
                 ));
 
             case 'proponer_baja':
@@ -1201,21 +1332,28 @@ class HerramientasDeCarga
                 ));
 
             case 'proponer_venta':
-                return self::resultado(PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a')));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a'))
+                ));
 
             /*
-             * Misión asistente-ventas-y-fotos (21/9/2026). 🔴 Va SIN la auto-confirmación del
-             * agente, a propósito, aunque la foto de SUCURSAL de arriba sí pase por ahí: la del
-             * artículo siempre deja tarjeta (ver el docblock de AUTO_CONFIRMABLES).
-             *
-             * El nombre de esa función no se escribe acá: `36_Guardas_de_las_cargas_genericas_Test`
-             * lee ESTE archivo como texto y corta el bloque de cada `case` hasta el `case`
-             * siguiente, así que un comentario puesto entre dos casos se le atribuye al de arriba
-             * —`proponer_venta`— y lo da por auto-confirmable. Nombrarla en prosa dice lo mismo sin
-             * romper esa lectura.
+             * Misión asistente-ventas-y-fotos (21/9/2026), revisada el 22/9 por la misión
+             * asistente-capacidades-y-hilos: la foto de un artículo SIGUE sin auto-confirmarse en
+             * "resuelto" (se publica en la tienda, dispara Tienda Nube y Mercado Libre y se replica
+             * en los comercios vinculados: su tipo no está en AUTO_CONFIRMABLES), pero en "directo"
+             * sí, porque ahí el dueño ya pidió a conciencia que las cargas se hagan solas. Las dos
+             * cosas las decide el modo adentro de la puerta única.
              */
             case 'proponer_foto_articulo':
-                return self::resultado(PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
@@ -1279,14 +1417,79 @@ class HerramientasDeCarga
     }
 
     /**
-     * Si la propuesta recién creada es de un tipo auto-confirmable Y el dueño está en "resuelto", la
-     * confirma en el acto y devuelve el resultado ejecutado; si no, devuelve la propuesta tal cual
-     * (queda como una tarjeta más, para confirmar a mano). Misión foto-sucursal-y-asistente-configurable.
+     * Los tipos que se auto-ejecutan con ESE modo de confianza, ya filtrados por los tres que no se
+     * auto-ejecutan nunca (misión asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * Un modo que no se reconoce —"cauteloso", una columna vacía o un valor viejo— devuelve la lista
+     * vacía: sin modo legible no se ejecuta nada solo, que es exactamente lo que hacía el `!==
+     * 'resuelto'` de antes de esta misión.
+     *
+     * @param  string  $confianza
+     * @return array<int, string>
+     */
+    public static function auto_confirmables_de($confianza): array
+    {
+        $confianza = (string) $confianza;
+
+        if ($confianza === ConfianzaDelAgenteIaHelper::DIRECTO) {
+
+            $lista = self::AUTO_CONFIRMABLES_DIRECTO;
+
+        } elseif ($confianza === ConfianzaDelAgenteIaHelper::RESUELTO) {
+
+            $lista = self::AUTO_CONFIRMABLES;
+
+        } else {
+
+            return [];
+        }
+
+        // 🔴 La segunda guarda de NUNCA_AUTO_CONFIRMABLES: ver el docblock de esa constante.
+        return array_values(array_diff($lista, self::NUNCA_AUTO_CONFIRMABLES));
+    }
+
+    /**
+     * true si la herramienta es una CARGA: una que propone una tarjeta o la que confirma una
+     * pendiente (misión asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * La usa el loop de AsistenteIaService para saber que el turno "tocó" una carga y tiene que
+     * seguir con el modelo Profundo. Va por el prefijo `proponer_` a propósito: una capacidad nueva
+     * que respete el nombre de la casa queda cubierta sin tocar este método. Las consultas
+     * (`consultar_*`, `contar_*`, `que_puedo_cargar`) y la cancelación NO son cargas: una consulta
+     * de solo lectura nunca tiene por qué encarecerse.
+     *
+     * @param  string  $tool_name
+     * @return bool
+     */
+    public static function es_de_carga($tool_name): bool
+    {
+        $tool_name = (string) $tool_name;
+
+        if (strpos($tool_name, 'proponer_') === 0) {
+
+            return true;
+        }
+
+        return $tool_name === 'confirmar_carga_pendiente';
+    }
+
+    /**
+     * Si la propuesta recién creada es de un tipo que el MODO DE CONFIANZA del dueño auto-ejecuta,
+     * la confirma en el acto y devuelve el resultado ejecutado; si no, devuelve la propuesta tal
+     * cual (queda como una tarjeta más, para confirmar a mano). Misión
+     * foto-sucursal-y-asistente-configurable, corrida a tres modos el 22/9/2026.
      *
      * 🔴 Es la única puerta a la auto-ejecución. Una respuesta negativa de proponer() (faltan datos,
      * sin permiso, sin foto) no tiene tarjeta_id y sale sin tocar nada. Y el catch es la red: si la
      * confirmación en el acto lanzara, la tarjeta ya quedó propuesta y la persona la puede confirmar
      * a mano — la carga nunca se pierde por auto-ejecutar.
+     *
+     * 🔴 Y EL CATCH LE AVISA AL MODELO QUE NO SE EJECUTÓ. Antes devolvía la propuesta muda, y en
+     * "resuelto" eso era casi inofensivo. En "directo" no: el prompt le dijo al modelo que sus
+     * cargas se hacen solas, así que una propuesta muda es justo lo que lo lleva a escribir "listo,
+     * ya lo cargué" sobre algo que quedó sin hacer — el defecto más grave del 22/9 en demo3 (cuatro
+     * anuncios de "quedó registrado" contra cero ventas, cero compras y cero proveedores). La nota
+     * dice qué pasó de verdad y le prohíbe inventar el motivo.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiConversation  $conversation
@@ -1303,7 +1506,9 @@ class HerramientasDeCarga
 
         $tipo = isset($respuesta['tipo']) ? (string) $respuesta['tipo'] : '';
 
-        if (!in_array($tipo, self::AUTO_CONFIRMABLES, true)) {
+        $owner = $contexto->owner;
+
+        if (!in_array($tipo, self::auto_confirmables_de(ConfianzaDelAgenteIaHelper::guardada($owner)), true)) {
 
             return $respuesta;
         }
@@ -1319,26 +1524,20 @@ class HerramientasDeCarga
             return $respuesta;
         }
 
-        $owner = $contexto->owner;
-
-        // Solo "resuelto" auto-ejecuta; "cauteloso" (y cualquier otro valor, o dueño nulo) deja la
-        // tarjeta propuesta.
-        if (is_null($owner) || (string) $owner->agente_confianza !== 'resuelto') {
-
-            return $respuesta;
-        }
-
         try {
 
             return ConfirmacionPorTextoIaHelper::confirmar_del_agente($conversation, (int) $respuesta['tarjeta_id']);
 
         } catch (\Throwable $e) {
 
-            Log::warning('HerramientasDeCarga: no se pudo auto-confirmar una tarjeta en modo resuelto', [
+            Log::warning('HerramientasDeCarga: no se pudo auto-confirmar una tarjeta', [
                 'ai_conversation_id' => (int) $conversation->id,
                 'tarjeta_id'         => (int) $respuesta['tarjeta_id'],
+                'confianza'          => ConfianzaDelAgenteIaHelper::guardada($owner),
                 'error'              => $e->getMessage(),
             ]);
+
+            $respuesta['nota'] = self::NOTA_AUTO_EJECUCION_FALLIDA;
 
             return $respuesta;
         }

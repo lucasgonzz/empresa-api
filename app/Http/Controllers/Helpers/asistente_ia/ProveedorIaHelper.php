@@ -255,14 +255,30 @@ class ProveedorIaHelper
      * Anthropic no cambia: todos sus modelos ven. El `modelo` que se devuelve es el que efectivamente
      * se usa y el que se registra en ai_token_usages.
      *
+     * 🔴 CON `$forzar_profundo` EL PENSAMIENTO DEL DUEÑO SE IGNORA Y SE VA AL PROFUNDO (misión
+     * asistente-capacidades-y-hilos, 22/9/2026). Lo pide el loop del chat cuando el turno ya tocó
+     * una tool de carga: "las acciones contra deepseek pro a ver si cambia" (Lucas, 22/9). Es POR
+     * TURNO y por vuelta, no una preferencia guardada: `users.agente_pensamiento` no se toca y la
+     * configuración sigue mostrando lo que el dueño eligió. El orden importa — el forzado se aplica
+     * ANTES de elegir el modelo, así que la guarda de visión (que corre después) sigue mandando y un
+     * turno con foto va a Flash aunque haya escalado. Y el `thinking` sale del pensamiento ya
+     * forzado, así que el techo que sube agregar_thinking() acompaña al modelo que corre.
+     *
      * @param  \App\Models\User|null  $owner
      * @param  bool  $necesita_vision  true si el pedido lleva al menos un bloque `image`.
+     * @param  bool  $forzar_profundo  true para correr esta llamada con el modelo Profundo.
      * @return array{proveedor:string, pensamiento:string, modelo:string, thinking:array|null}
      */
-    public static function modelo_del_asistente($owner, $necesita_vision = false): array
+    public static function modelo_del_asistente($owner, $necesita_vision = false, $forzar_profundo = false): array
     {
         $proveedor   = self::proveedor_de($owner);
         $pensamiento = self::pensamiento_de($owner, $proveedor);
+
+        /* El `in_array` es por si alguna vez hay un proveedor sin variante profunda: ahí no se fuerza nada. */
+        if ($forzar_profundo && in_array('profundo', self::pensamientos_de($proveedor), true)) {
+
+            $pensamiento = 'profundo';
+        }
 
         if ($proveedor === self::DEEPSEEK) {
 
