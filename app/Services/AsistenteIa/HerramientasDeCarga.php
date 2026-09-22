@@ -92,7 +92,7 @@ class HerramientasDeCarga
      * a conciencia desde la configuración. Lo que cambió con esa misión es que los `case` de esas
      * propuestas SÍ pasan por quizas_auto_confirmar(): quién se ejecuta lo decide el modo adentro de
      * la puerta, no la ausencia de la llamada. Los únicos tres `case` que siguen sin pasar por ahí
-     * son los de NUNCA_AUTO_CONFIRMABLES, y los tests 26, 36 y 49 lo fijan leyendo este archivo.
+     * son los de NUNCA_AUTO_CONFIRMABLES, y los tests 26, 36 y 51 lo fijan leyendo este archivo.
      *
      * @var array<int, string>
      */
@@ -157,7 +157,7 @@ class HerramientasDeCarga
      * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
      * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
      * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda: los
-     * tests 26, 36 y 49 fijan las tres.
+     * tests 26, 36 y 51 fijan las tres.
      *
      * @var array<int, string>
      */
@@ -1520,6 +1520,20 @@ class HerramientasDeCarga
          * "en general se puede"; la propuesta dice "esta vez no". Se respeta la propuesta.
          */
         if (!empty($respuesta['requiere_confirmacion'])) {
+
+            return $respuesta;
+        }
+
+        /*
+         * 🔴 NI SI LA MISMA CARGA YA SE CONFIRMÓ HACE UN INSTANTE (misión
+         * asistente-capacidades-y-hilos, 22/9/2026). `confirmada_parecida` es la defensa contra el
+         * doble registro de AccionesIaHelper: hay una tarjeta CONFIRMADA con la misma clave,
+         * resuelta después del mensaje que disparó esta respuesta. Con la confirmación a mano eso
+         * era un aviso —la persona miraba y decidía—, pero en "directo" auto-ejecutar encima es,
+         * lisa y llanamente, cargar el mismo gasto o la misma venta dos veces. Se deja la tarjeta
+         * con su aviso y decide la persona, que es lo que esa guarda vino a garantizar.
+         */
+        if (!empty($respuesta['confirmada_parecida'])) {
 
             return $respuesta;
         }

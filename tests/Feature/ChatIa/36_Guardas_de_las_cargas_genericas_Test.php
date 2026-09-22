@@ -27,9 +27,15 @@ use Tests\EmpresaTestCase;
  * - 🔴 Un registro de OTRO dueño no se edita ni se borra, ni por la herramienta (error) ni por una
  *   tarjeta armada a mano con su id (422 sin escribir nada): los controllers resuelven por
  *   Model::find($id) pelado y esta es la tenencia que ellos no chequean.
- * - 🔴 Los cuatro tipos nuevos (alta, edicion, baja, venta) NUNCA se auto-confirman, ni con el
- *   dueño en "resuelto": no están en AUTO_CONFIRMABLES y sus `case` no pasan por
- *   quizas_auto_confirmar().
+ * - 🔴 Los cuatro tipos nuevos (alta, edicion, baja, venta) NUNCA se auto-confirman con el dueño en
+ *   "resuelto": no están en AUTO_CONFIRMABLES. Y la BAJA no se auto-confirma en NINGÚN modo, ni
+ *   siquiera en "directo": su `case` sigue sin pasar por quizas_auto_confirmar().
+ *
+ *   ⚠️ Desde la misión asistente-capacidades-y-hilos (22/9/2026) los `case` de alta, edición y
+ *   venta SÍ pasan por esa puerta, a propósito: quién se ejecuta lo decide adentro el modo de
+ *   confianza del dueño. Lo que este archivo sigue fijando es que en "resuelto" las cuatro quedan
+ *   propuestas, que es la aserción de comportamiento y no la de forma. El modo directo lo cubre el
+ *   test 51.
  * - `campos_que_no_quedaron` informa un campo que el controller normaliza: un margen 0 que
  *   ArticleController guarda como null (CriterioDePrecioHelper::normalizar).
  * - Un nombre ambiguo devuelve `faltan` con las opciones {id, nombre}; la coincidencia exacta gana.
@@ -203,7 +209,9 @@ class Guardas_de_las_cargas_genericas_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 Nunca se auto-confirman, los cuatro tipos.
+     * 🔴 Nunca se auto-confirman con el dueño en "resuelto", los cuatro tipos. Y la BAJA tampoco en
+     * "directo": su `case` sigue sin pasar por la puerta de la auto-ejecución (ver el docblock de
+     * la clase y HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES).
      *
      * @test
      */
@@ -213,16 +221,14 @@ class Guardas_de_las_cargas_genericas_Test extends EmpresaTestCase
             $this->assertNotContains($tipo, HerramientasDeCarga::AUTO_CONFIRMABLES, $tipo);
         }
 
-        // Y el despacho no pasa por quizas_auto_confirmar(): se lee el archivo, como el test 26.
+        // Y el despacho de la BAJA no pasa por quizas_auto_confirmar(): se lee el archivo, como el test 26.
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 
-        foreach (['proponer_alta', 'proponer_edicion', 'proponer_baja', 'proponer_venta'] as $herramienta) {
-            $desde = strpos($contenido, "case '" . $herramienta . "':");
-            $this->assertNotFalse($desde, $herramienta . ' no se despacha');
-            $hasta = strpos($contenido, 'case ', $desde + 10);
-            $bloque = substr($contenido, $desde, $hasta - $desde);
-            $this->assertStringNotContainsString('quizas_auto_confirmar', $bloque, $herramienta . ' pasa por la auto-confirmación');
-        }
+        $desde = strpos($contenido, "case 'proponer_baja':");
+        $this->assertNotFalse($desde, 'proponer_baja no se despacha');
+        $hasta = strpos($contenido, 'case ', $desde + 10);
+        $bloque = substr($contenido, $desde, $hasta - $desde);
+        $this->assertStringNotContainsString('quizas_auto_confirmar', $bloque, 'proponer_baja pasa por la auto-confirmación');
 
         $this->dueno->agente_confianza = 'resuelto';
         $this->dueno->save();

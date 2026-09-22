@@ -120,7 +120,7 @@ class ConfirmacionPorTextoIaHelper
      *
      * ⚠️ Eso vale IGUAL para el modo "directo", que es el que más cargas auto-ejecuta: sigue sin
      * pasar por rechazo(), así que MENSAJE_MISMO_TURNO no lo frena, y la guarda sigue intacta para
-     * la confirmación por texto de los otros dos modos (el "dale" del dueño por WhatsApp). El test 49
+     * la confirmación por texto de los otros dos modos (el "dale" del dueño por WhatsApp). El test 51
      * lo fija con las dos puntas: el modo directo ejecuta en el mismo turno y un
      * confirmar_carga_pendiente del mismo turno sigue rebotando con MENSAJE_MISMO_TURNO.
      *
