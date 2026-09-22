@@ -71,6 +71,21 @@ class EjecutorAccionesIaHelper {
         AiMessageAction::TIPO_EDICION,
         AiMessageAction::TIPO_BAJA,
         AiMessageAction::TIPO_VENTA,
+        /*
+         * El presupuesto, por el mismo motivo (misión asistente-capacidades-y-hilos, 22/9/2026):
+         * `BudgetController::store()` abre su PROPIA transacción con `DB::beginTransaction()` y la
+         * cierra con `commit()`, que anidado adentro de otra sólo decrementa el contador — y encima
+         * emite `sendAddModelNotification`, un broadcast que saldría antes de que el presupuesto
+         * exista para nadie más. Con la transacción del ejecutor ya cerrada, el controller corre
+         * igual que cuando lo llama la pantalla.
+         *
+         * ⚠️ Las DOS DE STOCK no están acá y es a propósito: `StockMovementController::crear()` y
+         * `ArticleController::update_addresses_stock()` no abren transacción propia y lo único que
+         * despachan es una fila de cola (`SyncToTNArticle` / `SyncToMeliArticle`) y, en el caso del
+         * stock que entra, un `ProcessSendAdviseMail`. Quedan en el camino de una sola transacción,
+         * como el gasto, el pago y la compra.
+         */
+        AiMessageAction::TIPO_PRESUPUESTO,
     ];
 
     /**
@@ -624,6 +639,13 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_STOCK_DEPOSITO:
                 return PropuestaStockIaHelper::ejecutar_stock_en_deposito($contexto, $accion);
+
+            /*
+             * El presupuesto va por `BudgetController::store()`, que abre su PROPIA transacción y
+             * emite la notificación de alta: por eso su tipo está en TIPOS_DE_DOS_ETAPAS.
+             */
+            case AiMessageAction::TIPO_PRESUPUESTO:
+                return PropuestaPresupuestoIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

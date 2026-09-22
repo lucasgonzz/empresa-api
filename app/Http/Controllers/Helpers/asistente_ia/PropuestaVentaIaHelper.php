@@ -54,6 +54,16 @@ use Illuminate\Support\Facades\Auth;
  * haberlo pedido. Lo que NO se auto-ejecuta en ningún modo es borrar (proponer_baja), la
  * actualización masiva y la unificación de bancos: ver NUNCA_AUTO_CONFIRMABLES.
  */
+/*
+ * ⚠️ SIETE MÉTODOS DE ESTA CLASE SON `public` Y NO `protected`, Y ES A PROPÓSITO (misión
+ * asistente-capacidades-y-hilos, 22/9/2026): `resolver_cliente`, `resolver_lista_de_precios`,
+ * `resolver_renglones`, `resolver_descuento`, `resolver_sucursal`, `renglon_de_articulo` y
+ * `porcentaje` los usa también `PropuestaPresupuestoIaHelper`. Un presupuesto de VENDER es la
+ * MISMA pantalla que una venta hasta el momento de cobrar: mismos renglones, misma cascada de
+ * precios por lista, mismo catálogo de descuentos y misma sucursal. Copiar esos resolvedores en el
+ * otro archivo sería tener dos criterios de precio para la misma pantalla, que es exactamente la
+ * clase de error que el repo ya tiene aprendida.
+ */
 class PropuestaVentaIaHelper
 {
     /**
@@ -482,7 +492,7 @@ class PropuestaVentaIaHelper
      * @param  mixed  $valor
      * @return \App\Models\Client|null|array
      */
-    protected static function resolver_cliente(ContextoDeCargaIa $contexto, $valor)
+    public static function resolver_cliente(ContextoDeCargaIa $contexto, $valor)
     {
         if (EntradaDeCargaIa::vacio($valor)) {
 
@@ -810,7 +820,7 @@ class PropuestaVentaIaHelper
      * @param  string  $nombre
      * @return \App\Models\PriceType|null|array
      */
-    protected static function resolver_lista_de_precios(ContextoDeCargaIa $contexto, $cliente, $nombre)
+    public static function resolver_lista_de_precios(ContextoDeCargaIa $contexto, $cliente, $nombre)
     {
         $nombre = trim((string) $nombre);
 
@@ -941,7 +951,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return array<int, array<string, mixed>>|array  Renglones (vacío si alguno quedó pendiente), o la respuesta negativa.
      */
-    protected static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones)
+    public static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones)
     {
         if (!is_array($items) || !count($items)) {
 
@@ -1196,7 +1206,7 @@ class PropuestaVentaIaHelper
      * @param  mixed  $valor
      * @return \App\Models\Discount|null|array
      */
-    protected static function resolver_descuento(ContextoDeCargaIa $contexto, $cliente, $valor)
+    public static function resolver_descuento(ContextoDeCargaIa $contexto, $cliente, $valor)
     {
         if (EntradaDeCargaIa::vacio($valor)) {
 
@@ -1278,7 +1288,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return \App\Models\Address|null|array
      */
-    protected static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre, array &$faltan, array &$opciones)
+    public static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre, array &$faltan, array &$opciones)
     {
         $sucursales = Address::where('user_id', $contexto->owner_id)->orderBy('id')->get();
 
@@ -1780,7 +1790,7 @@ class PropuestaVentaIaHelper
      * @param  array  $renglon
      * @return string
      */
-    protected static function renglon_de_articulo(array $renglon): string
+    public static function renglon_de_articulo(array $renglon): string
     {
         $subtotal = round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2);
 
@@ -1930,7 +1940,7 @@ class PropuestaVentaIaHelper
      * @param  float  $porcentaje
      * @return string
      */
-    protected static function porcentaje($porcentaje): string
+    public static function porcentaje($porcentaje): string
     {
         return self::numero((float) $porcentaje);
     }

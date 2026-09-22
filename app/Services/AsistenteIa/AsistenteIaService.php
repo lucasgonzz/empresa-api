@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
@@ -2206,6 +2207,43 @@ CONFIRMACION;
                         : null;
 
                     return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona);
+                },
+            ],
+            /*
+             * 🔴 Y DE ACÁ PARA ABAJO, LO DE LA MISIÓN asistente-capacidades-y-hilos (22/9/2026),
+             * al final por el mismo motivo de siempre: el orden de este array es el prefijo que
+             * cachea con_cache_control().
+             */
+            [
+                'name' => 'consultar_link_de_pdf',
+                'description' => 'Devuelve el LINK del PDF de una venta o de un presupuesto: el mismo que comparte el botón de WhatsApp de la pantalla. Es la respuesta a "pasame el PDF", "mandame el comprobante" y "dame el link". El número es el que la persona ve (N° de venta o de presupuesto), no un id interno. Pasá el link TAL CUAL: no lo acortes, no lo cambies y no armes uno por tu cuenta con otra ruta, porque las otras no existen o son de otra cosa. Si la respuesta trae "error", contá ese motivo tal cual y NO inventes un link.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'tipo'   => [
+                            'type'        => 'string',
+                            'enum'        => ['venta', 'presupuesto'],
+                            'description' => 'De qué comprobante es el PDF.',
+                        ],
+                        'numero' => [
+                            'type'        => 'integer',
+                            'description' => 'El número del comprobante, como lo ve la persona en la pantalla.',
+                        ],
+                    ],
+                    'required' => ['tipo', 'numero'],
+                ],
+                /*
+                 * La conversación viaja porque el permiso se mira sobre QUIÉN pregunta (el mismo
+                 * criterio que consultar_ventas_sin_cobrar), y el owner porque la pertenencia del
+                 * comprobante se chequea contra el dueño: las rutas del PDF son públicas.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return LinkDePdfIaHelper::link(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        isset($input['tipo']) ? (string) $input['tipo'] : '',
+                        isset($input['numero']) ? $input['numero'] : null
+                    );
                 },
             ],
         ];

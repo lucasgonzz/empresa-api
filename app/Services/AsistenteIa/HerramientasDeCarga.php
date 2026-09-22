@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
@@ -1081,6 +1082,64 @@ class HerramientasDeCarga
                     'required'   => ['deposito', 'cantidad', 'modo'],
                 ],
             ],
+            [
+                'name'         => 'proponer_presupuesto',
+                'description'  => 'Arma la tarjeta de un PRESUPUESTO por el mismo camino que el "guardar como presupuesto" de la pantalla de Vender: NO vende nada y NO descuenta stock. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. 🔴 El cliente es obligatorio: un presupuesto es para alguien, y de ahí sale la lista de precios. Un presupuesto no toca stock, ni caja, ni cuenta corriente: eso pasa recién cuando la persona lo confirma desde la pantalla de Presupuestos, y eso NO lo hacés vos. Después de crearlo podés pasar el link del PDF con consultar_link_de_pdf. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'items'                => [
+                            'type'        => 'array',
+                            'description' => 'Los renglones del presupuesto, uno por artículo.',
+                            'minItems'    => 1,
+                            'maxItems'    => 50,
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'articulo'        => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                                    ],
+                                    'articulo_id'     => [
+                                        'type'        => 'integer',
+                                        'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                                    ],
+                                    'cantidad'        => [
+                                        'type'        => 'number',
+                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                    ],
+                                    'precio_unitario' => [
+                                        'type'        => 'number',
+                                        'description' => 'Solo si la persona dictó un precio distinto al de la lista. Mayor a 0.',
+                                    ],
+                                ],
+                                'required'   => ['cantidad'],
+                            ],
+                        ],
+                        'cliente'              => [
+                            'type'        => ['string', 'integer'],
+                            'description' => 'Nombre del cliente (o su id si otra herramienta lo devolvió). Es obligatorio.',
+                        ],
+                        'lista_de_precios'     => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la lista de precios, solo si la persona pidió una distinta a la del cliente.',
+                        ],
+                        'descuento_porcentaje' => [
+                            'type'        => 'number',
+                            'description' => 'Descuento sobre el total, en porcentaje (0 a 100).',
+                        ],
+                        'observaciones'        => [
+                            'type' => 'string',
+                        ],
+                        'sucursal'             => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                        ],
+                        'reemplaza_a'          => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['items', 'cliente'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1469,6 +1528,19 @@ class HerramientasDeCarga
                     $conversation,
                     $assistant_message,
                     PropuestaStockIaHelper::proponer_stock_en_deposito($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * El presupuesto también pasa por la puerta: no toca stock, ni caja, ni cuenta
+             * corriente (eso pasa recién al confirmarlo desde la pantalla de Presupuestos), así que
+             * uno de más se borra. Ver PropuestaPresupuestoIaHelper.
+             */
+            case 'proponer_presupuesto':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaPresupuestoIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
 
             case 'confirmar_carga_pendiente':
