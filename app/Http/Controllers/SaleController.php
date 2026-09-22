@@ -182,13 +182,44 @@ class SaleController extends Controller
      * con una ventana de 5, o sea que terminaba de mirar cuando la venta anterior ya habia quedado
      * fuera de su propia ventana. Ese era el motivo de las ventas duplicadas.
      */
-    function venta_ya_cread($request) {
+    function venta_ya_cread($request, $created_at = null) {
+        /*
+         * 🔴 EL ANCLA DE LA VENTANA ES EL `created_at` QUE SE VA A GUARDAR, NO `now()`. NO LO
+         * "SIMPLIFIQUES" DE VUELTA (misión fecha-creacion-editable, 22/9/2026).
+         *
+         * Desde que el usuario elige la fecha de creación de la venta, `created_at` dejó de ser el
+         * reloj del servidor, y la condición vieja (`>= now()-5s`, abierta por arriba) deja de
+         * significar lo que dice en los dos extremos:
+         *
+         *  - con una fecha PASADA no encuentra nunca nada, y el doble clic vuelve a crear DOS
+         *    ventas: stock descontado dos veces, dos movimientos de caja y dos comisiones. Es
+         *    exactamente lo que la migración 2026_09_01_180000 avisa en mayúsculas;
+         *  - con una fecha FUTURA el `>=` abierto da verdadero para CUALQUIER venta futura del
+         *    mismo cliente/empleado/total, así que la guarda empieza a rechazar ventas legítimas
+         *    devolviendo 200 con el cuerpo vacío: el vendedor cree que guardó y no guardó.
+         *
+         * Por eso la ventana de 5 segundos se centra en el instante que se va a insertar y se
+         * cierra de los dos lados. Dos ventas de un doble clic llevan la MISMA fecha elegida y
+         * horas a milisegundos de distancia, así que siguen cayendo adentro igual que antes.
+         *
+         * El rango sobre `created_at` se conserva a propósito: es lo que hace que se siga usando
+         * el índice `sales_user_id_created_at_idx`, que era la otra razón por la que esta
+         * condición estaba escrita así (sin él la guarda tardaba 13 segundos y no servía).
+         *
+         * El parámetro es opcional y cae a `now()` para los llamadores que no resuelven la fecha
+         * (hoy, los tests que ejercitan la guarda sola).
+         */
+        if (is_null($created_at)) {
+            $created_at = Carbon::now();
+        }
+
         $sale_ya_creada = Sale::select('num', 'total', 'created_at')
                                 ->where('user_id', $this->userId())
                                 ->where('client_id', $request->client_id)
                                 ->where('employee_id', SaleHelper::getEmployeeId($request))
                                 ->where('total', $request->total)
-                                ->where('created_at', '>=', Carbon::now()->subSeconds(5))
+                                ->where('created_at', '>=', $created_at->copy()->subSeconds(5))
+                                ->where('created_at', '<=', $created_at->copy()->addSeconds(5))
                                 ->orderBy('created_at', 'DESC')
                                 ->first();
         if (!is_null($sale_ya_creada)) {
@@ -315,7 +346,18 @@ class SaleController extends Controller
 
         try {
 
-            if ($this->venta_ya_cread($request)) {
+            /*
+             * La fecha de creación que eligió el usuario (misión fecha-creacion-editable,
+             * 22/9/2026), resuelta UNA SOLA VEZ y antes de la guarda anti-duplicados: el mismo
+             * instante que se usa para centrar la ventana de 5 segundos es el que se inserta más
+             * abajo. Resolverlo dos veces haría que la ventana y la fila difieran en los
+             * milisegundos que tarde el medio, y con eso la guarda dejaría de significar lo que
+             * dice. Sin la clave en el request, esto es `Carbon::now()`: el comportamiento de
+             * siempre. Ver `SaleHelper::resolver_created_at()`.
+             */
+            $created_at = SaleHelper::resolver_created_at($request->created_at);
+
+            if ($this->venta_ya_cread($request, $created_at)) {
                 Log::info('No se volvio a crear la venta');
                 DB::rollBack();
                 return response(null, 200);
@@ -326,6 +368,13 @@ class SaleController extends Controller
 
             $model = Sale::create(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                               => $this->num('sales'),
+                /*
+                 * La fecha de creación elegida por el usuario, ya resuelta arriba (día elegido +
+                 * hora actual). `Sale` tiene `$guarded = []`, así que la clave entra sola. Nunca
+                 * es null: sin la clave en el request el helper devuelve `Carbon::now()`, que es
+                 * lo mismo que hubiera puesto Eloquent.
+                 */
+                'created_at'                        => $created_at,
                 'client_id'                         => $request->client_id,
                 'sale_type_id'                      => $request->sale_type_id,
                 'observations'                      => $request->observations,
@@ -840,7 +889,27 @@ class SaleController extends Controller
             $model->employee_id                         = (int) $request->employee_id > 0
                                                             ? (int) $request->employee_id
                                                             : $model->employee_id;
-            
+
+            /*
+                La fecha de creación editable (misión fecha-creacion-editable, 22/9/2026).
+
+                Misma guarda que `omitir_en_cuenta_corriente` y `price_type_id`: si la clave no
+                viaja —una SPA vieja, el asistente, cualquier PUT que no hable de la fecha— lo
+                guardado NO se pisa.
+
+                Y aunque venga, el helper devuelve null cuando el día pedido es el mismo que el
+                guardado: así la HORA ORIGINAL de la venta queda intacta. Solo si el día cambió se
+                reescribe, conservando esa hora. Ver `SaleHelper::resolver_created_at_de_update()`.
+            */
+            if ($request->exists('created_at')) {
+
+                $created_at_nuevo = SaleHelper::resolver_created_at_de_update($model->created_at, $request->created_at);
+
+                if (!is_null($created_at_nuevo)) {
+                    $model->created_at = $created_at_nuevo;
+                }
+            }
+
             $model->updated_at                          = Carbon::now();
             
             $model->save();
