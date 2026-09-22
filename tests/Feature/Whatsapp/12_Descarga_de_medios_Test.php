@@ -216,6 +216,18 @@ class Descarga_de_medios_Test extends TestCase
         // contenido, que es justo lo que la lista blanca de mimes viene a evitar.
         $this->assertEquals('nosniff', $response->headers->get('X-Content-Type-Options'));
 
+        /*
+         * 🔴 Y NO CACHEABLE POR UN INTERMEDIARIO: esto sirve el adjunto de un chat privado con un
+         * comprador. Los otros dos headers SI se pueden setear desde el array de response()->file();
+         * el unico que no es `Cache-Control`, porque BinaryFileResponse nace con $public = true y
+         * llama a setPublic() DESPUES de cargarlos, asi que un 'private' puesto ahi sale como
+         * 'max-age=300, public'. Por eso va con setPrivate() sobre la respuesta ya armada.
+         */
+        $cache_control = $response->headers->get('Cache-Control');
+
+        $this->assertStringContainsString('private', (string) $cache_control, 'El adjunto del chat sale cacheable por un intermediario: ' . $cache_control);
+        $this->assertStringNotContainsString('public', (string) $cache_control, 'El adjunto del chat sale marcado como publico: ' . $cache_control);
+
         ob_start();
         $response->sendContent();
         $cuerpo = ob_get_clean();
