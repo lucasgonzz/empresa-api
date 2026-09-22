@@ -60,6 +60,10 @@ class OpcionesDeCargaIaHelper {
      * mensaje #46 del 22/9 en demo3 —"los pagos con cheque no los puedo cargar desde acá"— era
      * exactamente este renglón.
      *
+     * 🔴 PERO SIGUE SIN PODERSE EN EL COBRO DE UNA VENTA, y eso vive en motivo_no_usable_en_venta():
+     * ahí el cobro viaja por el método único del select, que no lleva los datos del cheque. Esta
+     * constante es la lista del PAGO; la venta tiene la suya, que es ésta más el cheque.
+     *
      * @var array<string,string>
      */
     const MOTIVOS_NO_USABLES = [
