@@ -14,6 +14,7 @@ use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -467,6 +468,53 @@ class Proveedor_deepseek_Test extends TestCase
         $this->dueno_en('anthropic', 'agil');
         $this->assertTrue($service->hay_credenciales($this->comercio->fresh()));
         $this->assertEquals('deepseek', ProveedorIaHelper::proveedor_de($this->comercio->fresh()));
+    }
+
+    /**
+     * (f') El warning del fallback sale UNA vez por dueño en el mismo proceso, aunque el proveedor
+     * se resuelva varias veces (el guard del job, el service, el GET de config, la recolección):
+     * repetirlo entierra el log sin agregar nada. El resultado no cambia entre llamadas.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_warning_del_fallback_sale_una_sola_vez_por_dueno_en_el_mismo_proceso()
+    {
+        config(['services.deepseek.api_key' => null]);
+        $this->dueno_en('deepseek', 'agil');
+
+        Log::spy();
+
+        $owner = $this->comercio->fresh();
+
+        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($owner));
+        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($owner));
+        $this->assertEquals('anthropic', ProveedorIaHelper::modelo_del_asistente($owner)['proveedor']);
+        $this->assertEquals('anthropic', ProveedorIaHelper::modelo_general($owner)['proveedor']);
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje) {
+                return strpos((string) $mensaje, 'ProveedorIaHelper: el dueño eligió DeepSeek') === 0;
+            })
+            ->once();
+
+        /* Otro dueño en la misma situación sí recibe su propio aviso: el silencio es por dueño. */
+        $otro = User::create([
+            'name'     => 'Otro comercio P47',
+            'email'    => 'deepseek-p47-otro-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+        ]);
+        $otro->agente_proveedor = 'deepseek';
+        $otro->save();
+
+        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($otro->fresh()));
+        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($otro->fresh()));
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje) {
+                return strpos((string) $mensaje, 'ProveedorIaHelper: el dueño eligió DeepSeek') === 0;
+            })
+            ->twice();
     }
 
     /**

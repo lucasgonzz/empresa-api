@@ -158,6 +158,14 @@ class ProveedorIaHelper
     }
 
     /**
+     * Los dueños por los que ya se avisó el fallback de clave en este proceso PHP, por owner_id
+     * (0 = sin dueño). Ver el comentario del warning en proveedor_de().
+     *
+     * @var array<int, bool>
+     */
+    protected static $avisados = [];
+
+    /**
      * El proveedor con el que EFECTIVAMENTE se llama: el elegido si tiene clave; si no, el primero
      * que la tenga, con un warning en el log (ver el docblock de la clase); si ninguno la tiene, el
      * elegido, para que el llamador falle por "sin credenciales" como hasta hoy.
@@ -183,15 +191,28 @@ class ProveedorIaHelper
 
         $reemplazo = $disponibles[0];
 
-        Log::warning(
-            'ProveedorIaHelper: el dueño eligió ' . self::nombre_de($elegido) . ' pero esta instalación no tiene '
-            . 'su clave cargada; el asistente cae a ' . self::nombre_de($reemplazo) . '.',
-            [
-                'owner_id'  => is_null($owner) ? null : $owner->id,
-                'elegido'   => $elegido,
-                'reemplazo' => $reemplazo,
-            ]
-        );
+        /*
+         * UN warning por dueño y por request, no uno por llamada: por cada mensaje esto se resuelve
+         * dos veces (el guard del job y el service), y además en cada GET de config o de consumo y
+         * en cada recolección nocturna del admin. Repetirlo no agrega información y entierra el
+         * log. El resultado no cambia: solo se calla el aviso repetido dentro del mismo proceso PHP
+         * (en un worker de cola de larga vida, una vez por dueño mientras viva el worker).
+         */
+        $clave_de_aviso = is_null($owner) ? 0 : (int) $owner->id;
+
+        if (! isset(self::$avisados[$clave_de_aviso])) {
+            self::$avisados[$clave_de_aviso] = true;
+
+            Log::warning(
+                'ProveedorIaHelper: el dueño eligió ' . self::nombre_de($elegido) . ' pero esta instalación no tiene '
+                . 'su clave cargada; el asistente cae a ' . self::nombre_de($reemplazo) . '.',
+                [
+                    'owner_id'  => is_null($owner) ? null : $owner->id,
+                    'elegido'   => $elegido,
+                    'reemplazo' => $reemplazo,
+                ]
+            );
+        }
 
         return $reemplazo;
     }
