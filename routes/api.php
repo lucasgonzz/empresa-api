@@ -1134,6 +1134,18 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
         Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
         Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
 
+        /*
+         * El binario de una foto que el dueño mandó por WhatsApp (misión
+         * asistente-capacidades-y-hilos, P5). Es la `url` que viaja en `imagenes` de cada mensaje.
+         *
+         * 🔴 VA ACÁ ADENTRO Y NO EN NINGÚN LADO PÚBLICO: la foto vive en el disco `local`
+         * (privado) y puede ser la factura de un proveedor, con CUIT y precios de compra. Mismo
+         * gate que el resto del chat, y adentro la misma tenencia doble. Va POR ID DE MENSAJE y no
+         * colgada de la conversación porque la SPA tiene el mensaje a mano y no siempre la
+         * conversación (el globo optimista del POST); la conversación igual se chequea adentro.
+         */
+        Route::get('ai-mensajes/{message_id}/imagen/{orden}', 'AiConversationController@imagen_de_mensaje');
+
         // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
         // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
         // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que

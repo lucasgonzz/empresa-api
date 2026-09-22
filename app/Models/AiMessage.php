@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FotosDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use Illuminate\Database\Eloquent\Model;
 
@@ -47,6 +48,11 @@ use Illuminate\Database\Eloquent\Model;
  * `tipo`: 'texto' | 'audio' | 'imagen' — con qué lo mandó la persona. Un audio
  * llega ya transcripto por Kapso; el que llega SIN transcribir se contesta de
  * forma determinista y sin salir a la IA (ver AdminSync\AsistenteController).
+ *
+ * `imagenes` (misión asistente-capacidades-y-hilos, P5): las fotos que mandó el
+ * DUEÑO —al revés que `adjuntos`, que son las que manda el asistente—, con el
+ * recorte `{id, orden, url}` y siempre como lista. Lo inyecta toArray(); ver el
+ * 🔴 de ese método por qué no va en $appends como las otras dos.
  */
 class AiMessage extends Model
 {
@@ -162,6 +168,35 @@ class AiMessage extends Model
         $this->attributes['adjuntos'] = empty($adjuntos)
             ? null
             : json_encode($adjuntos, JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Suma `imagenes` —las fotos que mandó el dueño— a TODA serialización del mensaje, con el
+     * contrato de P5: `[{id, orden, url}]`, siempre lista, nunca null y nunca ausente.
+     *
+     * 🔴 POR QUÉ NO VA EN $appends COMO `menciones` Y `adjuntos`, QUE ES LO QUE PARECERÍA OBVIO.
+     * Un append se sirve con un accessor `getImagenesAttribute()`, y un accessor con ese nombre
+     * GANA sobre la relación `imagenes()` en Model::getAttribute() — o sea que `$message->imagenes`
+     * dejaría de devolver la colección de AiMessageImagen y devolvería este array. Eso rompe el
+     * camino que le manda las fotos al modelo (AsistenteIaService::build_messages_payload usa
+     * `$message->imagenes->isEmpty()`, `->count()` y recorre los modelos), que es justamente lo
+     * ÚNICO que hoy funciona bien de las fotos del dueño.
+     *
+     * Y hay un segundo motivo, independiente: toArray() es `attributesToArray() +
+     * relationsToArray()`, en ese orden. Con la relación cargada con `with('imagenes')` —que es lo
+     * que hacen los controllers del chat para no pagar N+1—, `relationsToArray()` pisaría el append
+     * con las filas CRUDAS de la tabla, `path` del disco privado incluido. Inyectando acá, después
+     * del merge, lo que sale es siempre el recorte del contrato.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray()
+    {
+        $array = parent::toArray();
+
+        $array['imagenes'] = FotosDelMensajeIaHelper::del_mensaje($this);
+
+        return $array;
     }
 
     /**

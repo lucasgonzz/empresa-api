@@ -10,6 +10,7 @@ use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -147,7 +148,12 @@ class AiConversationController extends Controller
             $per_page = 200;
         }
 
+        /*
+         * `with('imagenes')`: las fotos que mandó el dueño viajan en cada mensaje (P5 de la misión
+         * asistente-capacidades-y-hilos) y sin el eager load serían 30 consultas por página.
+         */
         $paginator = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->with('imagenes')
             ->orderBy('id', 'DESC')
             ->paginate($per_page, ['*'], 'page', $page);
 
@@ -351,6 +357,7 @@ class AiConversationController extends Controller
         }
 
         $message = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->with('imagenes')
             ->where('id', $message_id)
             ->first();
 
@@ -361,6 +368,76 @@ class AiConversationController extends Controller
         AccionesIaHelper::cargar_en_mensajes([$message]);
 
         return response()->json(['model' => $message], 200);
+    }
+
+    /**
+     * El binario de una foto que el dueño mandó por WhatsApp (misión asistente-capacidades-y-hilos,
+     * P5): `GET api/ai-mensajes/{message_id}/imagen/{orden}`.
+     *
+     * Es la `url` que viaja en cada mensaje dentro de `imagenes` (FotosDelMensajeIaHelper). Lucas
+     * las reportó así: "Las fotos que le mando por whatsapp no las veo en el chat del sistema" —
+     * llegaban y se guardaban bien, pero no había forma de mirarlas.
+     *
+     * 🔴 NUNCA UNA RUTA PÚBLICA NI UN LINK FIRMADO ETERNO. El binario vive en el disco `local`
+     * (privado) y son fotos del negocio: facturas de proveedores con CUIT, razón social y precios
+     * de compra. Esta ruta está adentro del mismo grupo que el resto del chat (Sanctum + extensión
+     * `asistente_ia` + solo el dueño) y encima pasa por la MISMA tenencia doble que todo lo demás:
+     * el mensaje tiene que ser de una conversación de esta persona (`auth_user_id`) y de esta
+     * cuenta (`user_id`). Lo que la sostiene del lado del navegador es la sesión de Sanctum, que es
+     * una cookie: por eso un `<img src>` derecho alcanza, exactamente como ya lo hace el modal de
+     * revisión del escaneo de facturas con `provider-order-scan/{uuid}/imagen/{orden}`. No hace
+     * falta base64 ni una URL firmada; el patrón ya existe en el repo y este lo copia.
+     *
+     * 404 —y no 403— cuando el mensaje es de otra persona: distinguir "no es tuyo" de "no existe"
+     * ya confirma que existe. Mismo criterio que FichaArticuloIaHelper.
+     *
+     * @param  int  $message_id
+     * @param  int  $orden
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|JsonResponse
+     */
+    public function imagen_de_mensaje($message_id, $orden)
+    {
+        $message = AiMessage::whereIn('ai_conversation_id', function ($query) {
+            $query->select('id')
+                ->from('ai_conversations')
+                ->where('auth_user_id', UserHelper::userId(false))
+                ->where('user_id', UserHelper::userId(true));
+        })
+            ->where('id', (int) $message_id)
+            ->first();
+
+        if (is_null($message)) {
+            return response()->json(['message' => 'Mensaje no encontrado.'], 404);
+        }
+
+        $imagen = AiMessageImagen::where('ai_message_id', $message->id)
+            ->where('orden', (int) $orden)
+            ->first();
+
+        if (is_null($imagen)) {
+            return response()->json(['message' => 'Foto no encontrada.'], 404);
+        }
+
+        $ruta = storage_path('app/' . $imagen->path);
+
+        if (!file_exists($ruta)) {
+            return response()->json(['message' => 'Foto no encontrada.'], 404);
+        }
+
+        $respuesta = response()->file($ruta);
+
+        /*
+         * 🔴 setPrivate() Y NO UN HEADER `Cache-Control` EN EL ARRAY DE response()->file().
+         * BinaryFileResponse nace con `$public = true` y su constructor llama a setPublic()
+         * DESPUÉS de cargar los headers que se le pasaron: un `private` puesto ahí sale como
+         * `max-age=300, public`, que es exactamente lo contrario. Medido con el test de este
+         * endpoint. Y acá importa de verdad: un proxy o una CDN intermedia guardando la factura
+         * de un proveedor y sirviéndosela a otro es el peor final posible para estas fotos.
+         */
+        $respuesta->setPrivate();
+        $respuesta->setMaxAge(300);
+
+        return $respuesta;
     }
 
     /**
