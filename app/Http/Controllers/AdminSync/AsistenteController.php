@@ -162,7 +162,16 @@ class AsistenteController extends Controller
             return $this->respuesta_del_turno($ya_estaba);
         }
 
-        $conversation = AsistenteCanalHelper::conversacion($dueno, $request->input('ai_conversation_id'));
+        /*
+         * 🔴 Un audio que Kapso no pudo transcribir NO dice nada del tema: viaja como texto vacío
+         * para que HiloPorTemaIaHelper no lo tome por un pedido nuevo (el literal
+         * AUDIO_SIN_TRANSCRIPCION tiene 23 caracteres y pasaría el umbral de largo). El mensaje
+         * igual se guarda con su texto real unas líneas más abajo: esto es solo con qué se decide
+         * el hilo.
+         */
+        $texto_del_tema = $sin_transcribir ? '' : $texto;
+
+        $conversation = AsistenteCanalHelper::conversacion($dueno, $request->input('ai_conversation_id'), $texto_del_tema);
 
         /*
          * Mismo criterio que AiConversationController::send_message(): el título se infiere solo

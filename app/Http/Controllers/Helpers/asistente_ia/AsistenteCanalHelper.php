@@ -130,7 +130,12 @@ class AsistenteCanalHelper
      *      un informe que él mismo mandó, así que esto es "el dueño respondió citando": reabre ese
      *      hilo aunque hayan pasado días.)
      *   2. si no, la última conversación de WhatsApp del dueño que habló hace menos de
-     *      HORAS_CORTE → esa.
+     *      HORAS_CORTE → esa...
+     *   2.b ...salvo que el mensaje nuevo arranque OTRA TAREA, que es lo que decide
+     *      HiloPorTemaIaHelper (misión asistente-capacidades-y-hilos, P4, 22/9/2026). En WhatsApp
+     *      el dueño escribe siempre desde la misma conversación, así que sin este paso se juntaban
+     *      ocho tareas sin relación en un solo hilo (76 mensajes en demo3) con el título de lo
+     *      primero que se pidió. Cualquier falla de ese llamado se comporta como "sigue".
      *   3. si no → una nueva.
      *
      * Un `ai_conversation_id` que no existe, que es de otro dueño o que es de un origen que este
@@ -143,9 +148,11 @@ class AsistenteCanalHelper
      *
      * @param  \App\Models\User  $dueno
      * @param  mixed  $ai_conversation_id  El que mandó el admin, o null.
+     * @param  string  $texto  El texto del mensaje nuevo, con el que se decide si es otro tema.
+     *                         Vacío (una foto sola, un audio sin transcribir) nunca corta.
      * @return \App\Models\AiConversation
      */
-    public static function conversacion(User $dueno, $ai_conversation_id = null)
+    public static function conversacion(User $dueno, $ai_conversation_id = null, $texto = '')
     {
         $pedida = self::conversacion_pedida($dueno, $ai_conversation_id);
 
@@ -163,7 +170,14 @@ class AsistenteCanalHelper
                                     ->orderBy('id', 'DESC')
                                     ->first();
 
-        if (!is_null($reciente)) {
+        /*
+         * 🔴 UN HILO POR TAREA. Con conversación vigente, la IA decide si este mensaje sigue el
+         * tema o arranca otro; con `nueva` se cae al create de abajo y el título lo infiere
+         * InferirTituloConversacionIaJob por el camino de siempre, porque la conversación nace sin
+         * título y sin mensajes. Las guardas duras —tarjeta en `propuesta`, cita del admin,
+         * mensaje corto o sin texto— y el "una falla no corta" viven en el helper.
+         */
+        if (!is_null($reciente) && !HiloPorTemaIaHelper::abre_otro_hilo($reciente, $texto, $ai_conversation_id)) {
 
             return $reciente;
         }
