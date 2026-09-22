@@ -34,8 +34,7 @@ use Illuminate\Support\Facades\DB;
  * ⚠️ El `dias` es el umbral de antigüedad de la query compartida, y `COALESCE` con el umbral propio
  * de cada venta (`sales.dias_alerta_venta_no_cobrada_personalizado`) hace que el de la venta gane
  * siempre. Con `dias = 0` es "todas", salvo las que tengan su propio umbral cargado y todavía no lo
- * cumplan. Si el modelo no manda ninguno, sale de la cascada por rol de la pantalla (ver
- * `dias_de_la_cascada()`).
+ * cumplan. Si el modelo no manda ninguno, es 0: todas (ver el porqué en `umbral_de_dias()`).
  *
  * 🔴 Y ESPEJAR LA PANTALLA ES TAMBIÉN ESPEJAR A QUIÉN LE MUESTRA QUÉ. La pantalla calcula
  * `$ver_solo_las_ventas_suyas = true` por defecto y solo lo apaga para el dueño o para quien tenga
@@ -257,10 +256,22 @@ class VentasSinCobrarIaHelper
 
     /**
      * El umbral de antigüedad que finalmente se aplica: el que pidió el modelo si mandó uno, y si no
-     * el de la cascada por rol de la pantalla. Es el mismo orden del controller, donde el `?dias=N`
-     * del query string PISA la cascada.
+     * **cero, o sea todas**.
      *
-     * @param  int|null  $dias  Lo que pidió el modelo. null = no pidió nada.
+     * 🔴 SIN `dias` NO SE USA LA CASCADA DE LA PANTALLA, y es a propósito (decisión de Lucas,
+     * 22/9/2026). La primera versión caía a `dias_de_la_cascada()` creyendo que casi ningún comercio
+     * tenía configurado el umbral de alertas, así que en la práctica daba "todas". Falso:
+     * `UserSeeder` siembra `dias_alertar_*_ventas_no_cobradas = 1` para TODO usuario, en local y en
+     * producción. Con eso, "¿cuánto me deben?" excluía la venta a cuenta corriente hecha esa misma
+     * mañana (`DATE(created_at) <= CURDATE() - 1`), mientras "¿qué me debe Pérez?"
+     * (`consultar_ventas_impagas_de_un_cliente`, con `dias = 0`) sí la incluía: dos números que no
+     * cerraban en la misma conversación. El umbral de alertas es para "qué se está atrasando", no
+     * para "cuánto me deben"; el modelo lo pide explícito cuando la pregunta es esa.
+     *
+     * `dias_de_la_cascada()` queda: es la copia fiel del criterio de la pantalla y sirve el día que
+     * se quiera exponer "las vencidas según mis alertas" como pregunta propia.
+     *
+     * @param  int|null  $dias  Lo que pidió el modelo. null = no pidió nada = todas.
      * @param  \App\Models\User|null  $persona
      * @param  \App\Models\User  $owner
      * @return int
@@ -268,7 +279,7 @@ class VentasSinCobrarIaHelper
     protected static function umbral_de_dias($dias, $persona, $owner)
     {
         if (is_null($dias)) {
-            $dias = self::dias_de_la_cascada($persona, $owner);
+            $dias = 0;
         }
 
         $dias = (int) $dias;

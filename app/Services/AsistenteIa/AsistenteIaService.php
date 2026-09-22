@@ -852,9 +852,10 @@ QUIEN;
 PERMISO;
         } else {
             $permiso = <<<PERMISO
-- Si lo que te pide dice "solo el dueño puede", decile que eso lo tiene que hacer el dueño. Para
-  todo lo demás llamá igual a la herramienta: quién puede cargar qué lo decide el sistema, no vos,
-  y si devuelve que no tiene permiso contás ese motivo tal cual, sin agregarle otro.
+- Si lo que te pide dice que "solo lo pueden hacer el dueño o un administrador", decile que eso
+  lo tiene que hacer uno de ellos. Para todo lo demás llamá igual a la herramienta: quién puede
+  cargar qué lo decide el sistema, no vos, y si devuelve que no tiene permiso contás ese motivo
+  tal cual, sin agregarle otro.
 PERMISO;
         }
 
@@ -1956,7 +1957,7 @@ CONFIRMACION;
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás, vale el mismo umbral que la pantalla "Ventas sin cobrar" le aplica a esta persona; mandá 0 para pedir todas. Usalo para "lo que me deben hace más de 30 días". Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
                         ],
                     ],
                     'required' => [],

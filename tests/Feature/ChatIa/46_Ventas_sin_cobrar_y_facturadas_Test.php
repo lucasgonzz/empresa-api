@@ -322,43 +322,46 @@ class Ventas_sin_cobrar_y_facturadas_Test extends TestCase
     }
 
     /**
-     * Sin `dias` del modelo vale la cascada por rol de la pantalla, y un `dias` explícito la pisa: es
-     * el mismo orden del controller, donde el `?dias=N` del query string pisa la cascada.
+     * Sin `dias` del modelo son TODAS las ventas sin cobrar, incluida la de hoy, aunque el comercio
+     * tenga configurado un umbral de alertas. Un `dias` explícito sí acota.
      *
-     * 🔴 Y la única diferencia a propósito con la pantalla: una cascada que termina en null (ninguna
-     * de las columnas configurada, que es lo normal) es "todas" y no "ninguna". Con null en el
-     * `INTERVAL ? DAY` la query compartida no devuelve ninguna fila, y el asistente le diría al dueño
-     * "no tenés nada sin cobrar" con el negocio lleno de deuda.
+     * 🔴 ESTE TEST CAMBIÓ DE CONDUCTA A PROPÓSITO (decisión de Lucas, 22/9/2026). La versión anterior
+     * afirmaba que sin `dias` valía la cascada por rol de la pantalla, sobre la premisa de que casi
+     * ningún comercio tenía el umbral configurado. La premisa era falsa: `UserSeeder` siembra
+     * `dias_alertar_*_ventas_no_cobradas = 1` para todo usuario, así que en la práctica "¿cuánto me
+     * deben?" excluía la venta a cuenta corriente hecha esa misma mañana, mientras "¿qué me debe
+     * Pérez?" (otra herramienta, con `dias = 0`) sí la incluía. Dos números que no cerraban. El umbral
+     * de alertas es para "qué se está atrasando", no para "cuánto me deben".
      *
      * @group chat-ia
      * @test
      */
-    public function sin_dias_del_modelo_vale_la_cascada_por_rol_y_el_dias_explicito_la_pisa()
+    public function sin_dias_del_modelo_son_todas_aunque_el_comercio_tenga_umbral_y_el_dias_explicito_acota()
     {
-        $cliente = Client::create(['name' => 'Cliente cascada', 'user_id' => $this->comercio->id]);
+        $cliente = Client::create(['name' => 'Cliente umbral', 'user_id' => $this->comercio->id]);
 
         $this->venta_impaga($cliente, 1000, 1000, now()->subDays(40));
         $this->venta_impaga($cliente, 500, 500, now()->subDays(2));
 
-        // Nada configurado: la cascada da null y eso es "todas", no "ninguna".
+        // Nada configurado: todas.
         $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $this->comercio)['ventas_sin_cobrar']);
 
-        // El dueño configuró 30 días para administradores: sin `dias` del modelo, vale eso.
+        // El comercio tiene el umbral configurado (como lo deja el seeder para todos): sin `dias`
+        // del modelo SIGUEN siendo todas — el umbral de alertas no se le aplica a "cuánto me deben".
         $this->comercio->dias_alertar_administradores_ventas_no_cobradas = 30;
         $this->comercio->dias_alertar_empleados_ventas_no_cobradas = 1;
         $this->comercio->save();
 
-        $this->assertEquals(1, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $this->comercio)['ventas_sin_cobrar']);
+        $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $this->comercio)['ventas_sin_cobrar']);
 
-        // Y el `dias` explícito del modelo lo pisa.
+        // Y un `dias` explícito del modelo sí acota: es la pregunta por lo atrasado.
+        $this->assertEquals(1, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 30, $this->comercio)['ventas_sin_cobrar']);
         $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0, $this->comercio)['ventas_sin_cobrar']);
 
-        // Un empleado con columna propia usa la suya (35 → solo la de 40 días); sin columna, la de empleados del dueño (1 → las dos).
+        // Un empleado con umbral propio tampoco lo hereda sin `dias`: todas.
         $con_umbral = $this->empleado('Empleado con umbral', ['ver_alertas_de_todos_los_empleados' => 1, 'dias_alertar_empleados_ventas_no_cobradas' => 35]);
-        $sin_umbral = $this->empleado('Empleado sin umbral', ['ver_alertas_de_todos_los_empleados' => 1]);
 
-        $this->assertEquals(1, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $con_umbral)['ventas_sin_cobrar']);
-        $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $sin_umbral)['ventas_sin_cobrar']);
+        $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $con_umbral)['ventas_sin_cobrar']);
     }
 
     // ------------------------------------------------------------------ C2

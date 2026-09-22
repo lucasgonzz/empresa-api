@@ -133,7 +133,10 @@ class Rol_de_quien_escribe_Test extends TestCase
         $this->assertStringContainsString('Pedro Empleado', $texto);
         $this->assertStringContainsString('No es el dueño ni administrador', $texto);
         $this->assertStringNotContainsString('NO te niegues por permiso', $texto);
-        $this->assertStringContainsString('lo tiene que hacer el dueño', $texto);
+        // "uno de ellos" = el dueño o un administrador, que es lo que chequea es_admin() y lo que
+        // dice el bloque de carga; el texto viejo decía "el dueño" y le mentía al modelo sobre
+        // quién más puede.
+        $this->assertStringContainsString('lo tiene que hacer uno de ellos', $texto);
     }
 
     /**
@@ -173,7 +176,7 @@ class Rol_de_quien_escribe_Test extends TestCase
 
         // Y el texto habla de "tenerlo", no de "ser el dueño": el administrador no lo es y el prompt no lo afirma.
         $this->assertStringContainsString('esta persona lo tiene', $texto);
-        $this->assertStringNotContainsString('lo tiene que hacer el dueño', $texto);
+        $this->assertStringNotContainsString('lo tiene que hacer uno de ellos', $texto);
     }
 
     /**
