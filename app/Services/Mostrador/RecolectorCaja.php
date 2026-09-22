@@ -856,10 +856,16 @@ class RecolectorCaja extends RecolectorBase
     /**
      * Cuántas ventas sin cobrar tiene cada cliente del lote, en una consulta.
      *
-     * 🔴 Es A PROPÓSITO VentasSinCobrarHelper::query_de_ventas(), incluida la precedencia rara de
-     * su orWhere y su CURDATE(): el botón del informe abre el modal del recordatorio, y el modal
-     * trabaja sobre esas ventas. Si acá se contara "lo correcto", el informe ofrecería mandarle
-     * el recordatorio a un cliente para el que el modal después dice que no hay ventas.
+     * 🔴 Es A PROPÓSITO VentasSinCobrarHelper::query_de_ventas(), incluido su CURDATE(): el botón
+     * del informe abre el modal del recordatorio, y el modal trabaja sobre esas ventas. Si acá se
+     * contara "lo correcto", el informe ofrecería mandarle el recordatorio a un cliente para el
+     * que el modal después dice que no hay ventas.
+     *
+     * ⚠️ Este comentario decía además "incluida la precedencia rara de su orWhere". Esa precedencia
+     * se corrigió el 21/9/2026 (misión asistente-ventas-y-fotos): `debe > 0` aplicaba solo a la
+     * rama `sin_pagar` por falta de paréntesis. Lo que sostiene la coincidencia informe↔modal no es
+     * compartir un defecto, es compartir LA MISMA query: al arreglarla, los dos lados se movieron
+     * juntos y siguen dando lo mismo.
      *
      * Por lo mismo, el umbral de antigüedad es el que usa RecordatorioCobroController cuando el
      * modal no manda `dias` (el dueño no filtró Alertas → Cobros en esa sesión): para el dueño,
