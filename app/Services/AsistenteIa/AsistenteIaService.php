@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
@@ -18,19 +19,25 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
  * El cerebro del chat con el asistente de IA del negocio.
  *
  * Copia adaptada del loop de tool use de admin-api
- * (SupportAiSuggestionService): pedir → si Claude corta con tool_use,
+ * (SupportAiSuggestionService): pedir → si el modelo corta con tool_use,
  * ejecutar las consultas, devolver los tool_result y repetir, hasta
  * end_turn o hasta el techo de iteraciones. Las cuatro tools son de
  * LECTURA pura y delegan en ConsultasSistemaIaHelper filtrando por el
  * user_id del DUEÑO resuelto desde la conversación (nunca desde Auth:
  * esto corre adentro de un job sin sesión).
+ *
+ * Misión proveedores-ia-deepseek (22/9/2026): el loop corre contra el
+ * PROVEEDOR que eligió el dueño —Claude (Anthropic) o DeepSeek, por su
+ * endpoint compatible con Anthropic— y este servicio no sabe cuál es: le
+ * pide a ProveedorIaHelper el modelo, el cliente HTTP, la URL y el bloque
+ * `thinking`, y registra el gasto con el proveedor que efectivamente
+ * contestó. El payload es el mismo para los dos.
  *
  * Misión asistente-ia-acciones (15/9/2026): si el mensaje del assistant
  * tiene `acciones_habilitadas` (la SPA nueva manda `acciones: true`), el
@@ -76,7 +83,7 @@ class AsistenteIaService
     const MAX_TOKENS = 1500;
 
     /**
-     * Timeout de cada llamada HTTP a Anthropic, en segundos (alineado con el
+     * Timeout de cada llamada HTTP al proveedor de IA, en segundos (alineado con el
      * timeout(60) de WhatsappBotAiService: una respuesta de chat que tarda
      * más que eso ya está perdida para el usuario). Es el primer escalón de la
      * cadena de techos: la cuenta completa está en PRESUPUESTO_SEGUNDOS.
@@ -90,7 +97,7 @@ class AsistenteIaService
      *
      * Existe porque en WAMP/Windows sin pcntl el $timeout del job NO se
      * aplica (Laravel lo implementa con pcntl_alarm): sin este techo, un
-     * Anthropic colgado que responde lento —sin vencer el timeout HTTP— puede
+     * proveedor colgado que responde lento —sin vencer el timeout HTTP— puede
      * retener el worker compartido con las importaciones tantas llamadas
      * enteras como iteraciones tenga el techo. 🔴 ES EL ÚNICO TECHO DE TIEMPO
      * QUE RIGE DE VERDAD EN ESTA MÁQUINA.
@@ -106,7 +113,7 @@ class AsistenteIaService
      *
      * Y LA CADENA COMPLETA, que tiene que quedar coherente en los cinco escalones:
      *
-     *   1. TIMEOUT_SEGUNDOS = 60      una llamada HTTP, lo único que corta a Anthropic
+     *   1. TIMEOUT_SEGUNDOS = 60      una llamada HTTP, lo único que corta al proveedor
      *   2. PRESUPUESTO_SEGUNDOS = 210 el loop no arranca una vuelta nueva pasado esto
      *   3. peor caso = 210 + 60 = 270 el presupuesto más la llamada en vuelo, que no se corta
      *   4. $timeout del job = 300     tiene que ser MAYOR que 270 (donde hay pcntl, si no mataría
@@ -164,53 +171,44 @@ class AsistenteIaService
     protected $adjuntos = [];
 
     /**
-     * true si hay clave de Anthropic configurada. No tener IA contratada no
-     * es un error: sin clave, el job deja el mensaje en error amigable sin
-     * salir a la red.
+     * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
+     * es un error: sin clave, el job deja el mensaje en error amigable sin salir a la red.
      *
+     * Con `$owner` se resuelve SU proveedor (el elegido, o el que tenga clave si el elegido no la
+     * tiene: ProveedorIaHelper::proveedor_de()) y se pregunta por esa clave. Sin `$owner` —los
+     * llamadores anteriores a la misión proveedores-ia-deepseek no lo pasan— alcanza con que
+     * algún proveedor la tenga.
+     *
+     * @param  \App\Models\User|null  $owner
      * @return bool
      */
-    public function hay_credenciales(): bool
+    public function hay_credenciales($owner = null): bool
     {
-        return (string) config('services.anthropic.api_key') !== '';
+        if (! is_null($owner)) {
+
+            return ProveedorIaHelper::hay_credenciales(ProveedorIaHelper::proveedor_de($owner));
+        }
+
+        return count(ProveedorIaHelper::proveedores_disponibles()) > 0;
     }
 
     /**
-     * El modelo con el que se corre el loop, elegido por la preferencia "cómo piensa" del DUEÑO
-     * (misión foto-sucursal-y-asistente-configurable, 17/9/2026 — corrida a tres niveles el
-     * 21/9/2026): `profundo` usa el modelo caro (services.anthropic.model_profundo), `equilibrado`
-     * usa el intermedio (services.anthropic.model_equilibrado) y cualquier otro valor —incluido el
-     * default `agil` y una columna nula— usa el económico (services.anthropic.model_agil).
+     * El id del modelo con el que se corre el loop, elegido por el proveedor y la preferencia "cómo
+     * piensa" del DUEÑO (misión foto-sucursal-y-asistente-configurable, 17/9/2026 — corrida a tres
+     * niveles el 21/9/2026 y a dos proveedores el 22/9/2026).
      *
-     * 🔴 LOS IDS NO SE HARDCODEAN ACÁ: salen de config/services.php, que es donde se pueden mover
-     * por .env. Si el modelo preferido viniera vacío (config mal armada), cae al
-     * services.anthropic.model de siempre, que es el que usaba este servicio antes de la misión — así
-     * un negocio nunca queda sin modelo. El modelo elegido es el que se registra en ai_token_usages,
-     * porque es con el que efectivamente se llamó a la API.
+     * 🔴 LOS IDS NO SE HARDCODEAN ACÁ NI EN NINGÚN SERVICE: salen de config/services.php, que es
+     * donde se pueden mover por .env, y el mapeo pensamiento → modelo vive en
+     * ProveedorIaHelper::modelo_del_asistente(), que además devuelve el proveedor y el bloque
+     * `thinking`. Este método queda como atajo para quien solo necesita el id (tests y comentarios
+     * que lo nombran): el loop usa el array completo.
      *
      * @param  \App\Models\User|null  $owner
      * @return string
      */
     protected function modelo_para($owner): string
     {
-        $pensamiento = is_null($owner) ? '' : (string) $owner->agente_pensamiento;
-
-        /* PHP 7.4: sin match(). 'agil' y cualquier valor no reconocido caen al mismo default de siempre. */
-        $modelos_por_pensamiento = [
-            'profundo'    => (string) config('services.anthropic.model_profundo'),
-            'equilibrado' => (string) config('services.anthropic.model_equilibrado'),
-        ];
-
-        $preferido = isset($modelos_por_pensamiento[$pensamiento])
-            ? $modelos_por_pensamiento[$pensamiento]
-            : (string) config('services.anthropic.model_agil');
-
-        if ($preferido !== '') {
-
-            return $preferido;
-        }
-
-        return (string) config('services.anthropic.model');
+        return ProveedorIaHelper::modelo_del_asistente($owner)['modelo'];
     }
 
     /**
@@ -260,8 +258,18 @@ class AsistenteIaService
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp);
         $messages = $this->build_messages_payload($conversation);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp);
-        $model    = $this->modelo_para($owner);
-        $http     = $this->build_http_client();
+
+        /*
+         * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
+         * elección del DUEÑO (ProveedorIaHelper). El cliente HTTP y la URL son del proveedor
+         * efectivo, que es también el que se registra en ai_token_usages: es con el que se llamó.
+         */
+        $eleccion  = ProveedorIaHelper::modelo_del_asistente($owner);
+        $proveedor = $eleccion['proveedor'];
+        $model     = $eleccion['modelo'];
+        $thinking  = $eleccion['thinking'];
+        $http      = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
+        $url       = ProveedorIaHelper::url_messages($proveedor);
 
         $max_iterations = $con_acciones ? self::MAX_TOOL_ITERATIONS_CON_ACCIONES : self::MAX_TOOL_ITERATIONS;
 
@@ -288,25 +296,28 @@ class AsistenteIaService
 
             $iterations++;
 
-            $response = $http->post('https://api.anthropic.com/v1/messages', [
+            /*
+             * El mismo payload para los dos proveedores; `agregar_thinking` solo suma la clave
+             * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
+             */
+            $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
                 'model'      => $model,
                 'max_tokens' => self::MAX_TOKENS,
                 'system'     => $system,
                 'tools'      => $tools,
                 'messages'   => $messages,
-            ]);
+            ], $thinking));
 
             if (! $response->successful()) {
                 /*
-                 * Mismo manejo de errores transitorios que ResumenIaService:
-                 * overloaded_error / api_error / HTTP 529 reciben un mensaje amigable.
+                 * Mismo manejo de errores transitorios que ResumenIaService: overloaded_error /
+                 * api_error / HTTP 529 (Anthropic) y los 429/500/502/503 con los que DeepSeek
+                 * saturado contesta reciben un mensaje amigable (ProveedorIaHelper decide).
                  */
                 $error_body = $response->json();
                 $error_type = $error_body['error']['type'] ?? null;
 
-                $transient_error_types = ['overloaded_error', 'api_error'];
-
-                if (in_array($error_type, $transient_error_types) || $response->status() === 529) {
+                if (ProveedorIaHelper::es_error_transitorio($response)) {
                     throw AsistenteIaException::sobrecargado(
                         '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
                     );
@@ -317,7 +328,8 @@ class AsistenteIaService
                  * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
                  */
                 throw AsistenteIaException::falla_tecnica(
-                    'Error al comunicarse con Claude API (HTTP ' . $response->status() . '): ' . $response->body()
+                    'Error al comunicarse con la API de ' . ProveedorIaHelper::nombre_de($proveedor)
+                    . ' (HTTP ' . $response->status() . '): ' . $response->body()
                 );
             }
 
@@ -328,6 +340,7 @@ class AsistenteIaService
                 'user_id'            => $conversation->user_id,
                 'auth_user_id'       => $conversation->auth_user_id,
                 'proceso'            => 'chat_mensaje',
+                'proveedor'          => $proveedor,
                 'modelo'             => $model,
                 'body'               => is_array($response_body) ? $response_body : [],
                 'ai_conversation_id' => $conversation->id,
@@ -2132,40 +2145,14 @@ CONFIRMACION;
     }
 
     /**
-     * Cliente HTTP hacia Anthropic: headers de versión y caché de prompt,
-     * timeout de 60s por llamada (el techo del loop completo lo pone
-     * PRESUPUESTO_SEGUNDOS) y el mismo bloque TLS que ResumenIaService
-     * (WAMP/Windows suele requerir ca_bundle o verify_ssl=false).
-     *
-     * @return \Illuminate\Http\Client\PendingRequest
-     */
-    protected function build_http_client()
-    {
-        $api_key = (string) config('services.anthropic.api_key');
-
-        $http = Http::withHeaders([
-            'x-api-key'         => $api_key,
-            'anthropic-version' => '2023-06-01',
-            'anthropic-beta'    => 'prompt-caching-2024-07-31',
-            'content-type'      => 'application/json',
-        ])->timeout(self::TIMEOUT_SEGUNDOS);
-
-        $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);
-        $ca_bundle  = config('services.anthropic.ca_bundle');
-
-        if (! $verify_ssl) {
-            $http = $http->withoutVerifying();
-        } elseif (is_string($ca_bundle) && $ca_bundle !== '' && is_file($ca_bundle)) {
-            $http = $http->withOptions(['verify' => $ca_bundle]);
-        }
-
-        return $http;
-    }
-
-    /**
      * Concatena el texto de los bloques text de una respuesta.
      *
-     * @param array<string, mixed> $body Respuesta JSON de Anthropic.
+     * El cliente HTTP que antes se armaba acá (headers de versión y caché de prompt, timeout de
+     * TIMEOUT_SEGUNDOS por llamada —el techo del loop completo lo pone PRESUPUESTO_SEGUNDOS— y el
+     * bloque TLS de la casa) vive ahora en ProveedorIaHelper::cliente_http(), que lo arma para el
+     * proveedor que corresponda.
+     *
+     * @param array<string, mixed> $body Respuesta JSON del proveedor (forma de Anthropic).
      * @return string
      */
     protected function extract_response_text(array $body): string
