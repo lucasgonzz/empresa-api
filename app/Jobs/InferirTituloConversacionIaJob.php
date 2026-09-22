@@ -3,13 +3,14 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\AiConversation;
+use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -17,9 +18,11 @@ use Illuminate\Support\Facades\Log;
  * mensaje (misión chat-ia-y-modulo-ia, D19).
  *
  * Lo despacha send_message SOLO cuando la conversación tiene titulo null y
- * es su primer mensaje de usuario. Llamada corta y barata: el mismo modelo de
- * config (no hay selector de modelo en esta misión y no se hardcodea uno
- * distinto), max_tokens 40, sin tools y sin system.
+ * es su primer mensaje de usuario. Llamada corta y barata: el modelo
+ * "general" del proveedor que eligió el DUEÑO de la conversación (misión
+ * proveedores-ia-deepseek: Claude o DeepSeek, `services.<proveedor>.model`,
+ * resuelto por ProveedorIaHelper — no se hardcodea uno distinto), max_tokens
+ * 40, sin tools y sin system.
  *
  * Un título es COSMÉTICO: cualquier falla degrada a titulo null (la SPA
  * muestra "Nueva conversación") sin marcar error visible en ningún lado.
@@ -77,9 +80,14 @@ class InferirTituloConversacionIaJob implements ShouldQueue
             return;
         }
 
+        // El proveedor lo elige el dueño de la conversación; el modelo es el
+        // general de ese proveedor y el gasto se registra con él.
+        $eleccion  = ProveedorIaHelper::modelo_general(User::find($conversation->user_id));
+        $proveedor = $eleccion['proveedor'];
+
         // Sin clave no se sale a la red: el título queda null y la SPA sigue
         // mostrando "Nueva conversación".
-        if ((string) config('services.anthropic.api_key') === '') {
+        if (! ProveedorIaHelper::hay_credenciales($proveedor)) {
             return;
         }
 
@@ -89,16 +97,18 @@ class InferirTituloConversacionIaJob implements ShouldQueue
                 . 'Respondé solo el título.'
                 . "\n\n<mensaje>\n" . $this->texto_primer_mensaje . "\n</mensaje>";
 
-            $response = $this->build_http_client()->post('https://api.anthropic.com/v1/messages', [
-                'model'      => (string) config('services.anthropic.model'),
-                'max_tokens' => self::MAX_TOKENS,
-                'messages'   => [
-                    [
-                        'role'    => 'user',
-                        'content' => $prompt,
+            // El mismo payload para los dos proveedores; `thinking` solo viaja con DeepSeek.
+            $response = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS)
+                ->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
+                    'model'      => $eleccion['modelo'],
+                    'max_tokens' => self::MAX_TOKENS,
+                    'messages'   => [
+                        [
+                            'role'    => 'user',
+                            'content' => $prompt,
+                        ],
                     ],
-                ],
-            ]);
+                ], $eleccion['thinking']));
 
             if (!$response->successful()) {
                 Log::warning('InferirTituloConversacionIaJob: la API devolvió error, el título queda null', [
@@ -116,7 +126,8 @@ class InferirTituloConversacionIaJob implements ShouldQueue
                 'user_id'            => $conversation->user_id,
                 'auth_user_id'       => $conversation->auth_user_id,
                 'proceso'            => 'chat_titulo',
-                'modelo'             => (string) config('services.anthropic.model'),
+                'proveedor'          => $proveedor,
+                'modelo'             => $eleccion['modelo'],
                 'body'               => is_array($body) ? $body : [],
                 'ai_conversation_id' => $conversation->id,
             ]);
@@ -161,33 +172,10 @@ class InferirTituloConversacionIaJob implements ShouldQueue
         return mb_substr(trim($titulo), 0, self::MAX_LARGO_TITULO);
     }
 
-    /**
-     * Cliente HTTP hacia Anthropic con el bloque TLS de la casa (WAMP/Windows
-     * suele requerir ca_bundle o verify_ssl=false).
-     *
-     * Copia local del patrón de ResumenIaService::build_anthropic_http_client()
-     * a propósito: ese método es protected de otro servicio y este job no
-     * puede tocar archivos del núcleo de la misión (reparto del plan, §4).
-     *
-     * @return \Illuminate\Http\Client\PendingRequest
+    /*
+     * El cliente HTTP que este job armaba a mano (una copia local del patrón de
+     * ResumenIaService, porque en su misión no podía tocar el núcleo) ya no hace
+     * falta: lo arma ProveedorIaHelper::cliente_http() para el proveedor que
+     * corresponda, con el mismo bloque TLS de la casa.
      */
-    protected function build_http_client()
-    {
-        $http = Http::withHeaders([
-            'x-api-key'         => (string) config('services.anthropic.api_key'),
-            'anthropic-version' => '2023-06-01',
-            'content-type'      => 'application/json',
-        ])->timeout(self::TIMEOUT_SEGUNDOS);
-
-        $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);
-        $ca_bundle  = config('services.anthropic.ca_bundle');
-
-        if (!$verify_ssl) {
-            $http = $http->withoutVerifying();
-        } elseif (is_string($ca_bundle) && $ca_bundle !== '' && is_file($ca_bundle)) {
-            $http = $http->withOptions(['verify' => $ca_bundle]);
-        }
-
-        return $http;
-    }
 }

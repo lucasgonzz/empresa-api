@@ -3,11 +3,11 @@
 namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
+use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
-use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -31,6 +31,12 @@ use Illuminate\Support\Facades\Storage;
  * (`BusinessHoursPromptBuilder`, con el dato que empuja admin-api; misión
  * horarios-negocio-admin-sync). Sigue la misma regla que las habilidades: sin horario cargado
  * no se agrega nada y el prompt queda idéntico, byte por byte, al de antes de esa capa.
+ *
+ * Misión proveedores-ia-deepseek (22/9/2026): las tres llamadas siguen la elección de proveedor
+ * del DUEÑO del negocio (`users.agente_proveedor`, Claude o DeepSeek por su endpoint compatible
+ * con Anthropic), con el modelo "general" de ese proveedor (`services.<proveedor>.model`). Este
+ * service no sabe cuál es: ProveedorIaHelper le da el modelo, el cliente HTTP, la URL y el
+ * bloque `thinking`, y el gasto se registra con el proveedor que efectivamente contestó.
  */
 class WhatsappBotAiService
 {
@@ -92,6 +98,13 @@ SUMMARY;
      * que `HISTORY_LIMIT` porque acá no compite por espacio con el bloque de catálogo.
      */
     private const SUMMARY_HISTORY_LIMIT = 100;
+
+    /**
+     * Timeout de cada llamada HTTP al proveedor de IA, en segundos. Es el mismo 60 que tenía el
+     * `->timeout(60)` del cliente local antes de que el cliente se armara en ProveedorIaHelper;
+     * AsistenteIaService::TIMEOUT_SEGUNDOS está alineado con este número.
+     */
+    private const TIMEOUT_SEGUNDOS = 60;
 
     /**
      * Tope duro de imágenes entrantes que viajan al modelo cuando la visión está prendida:
@@ -229,9 +242,17 @@ SUMMARY;
     public function generate_response_with_photo(WhatsappChat $chat, WhatsappBotConfig $config, $proceso = 'whatsapp_respuesta', $auth_user_id = null): array
     {
         try {
-            $api_key = (string) config('services.anthropic.api_key');
-            if ($api_key === '') {
-                Log::channel('daily')->warning('WhatsappBotAiService: ANTHROPIC_API_KEY no configurada.');
+            /*
+             * El proveedor y el modelo general los elige el DUEÑO del negocio (misión
+             * proveedores-ia-deepseek): sin clave para ese proveedor (ni para otro al que caer)
+             * no se sale a la red.
+             */
+            $owner_user = $this->owner_user($config);
+            $eleccion   = ProveedorIaHelper::modelo_general($owner_user);
+            $proveedor  = $eleccion['proveedor'];
+
+            if (! ProveedorIaHelper::hay_credenciales($proveedor)) {
+                Log::channel('daily')->warning('WhatsappBotAiService: sin clave de ' . ProveedorIaHelper::nombre_de($proveedor) . ' configurada.');
                 return $this->empty_response('sin_configurar');
             }
 
@@ -258,20 +279,21 @@ SUMMARY;
             $system_prompt = $this->build_system_prompt($config);
             // El `$config` viaja hasta el armado del payload porque ahí se decide si las
             // imágenes entrantes van como bloques de visión o como texto (`ai_vision_enabled`).
-            $messages = $this->build_messages_payload($history, $articles, $this->owner_user($config), $config);
+            $messages = $this->build_messages_payload($history, $articles, $owner_user, $config);
 
-            $model = (string) config('services.anthropic.model', 'claude-sonnet-4-20250514');
-            $http  = $this->build_http_client();
+            $model = $eleccion['modelo'];
+            $http  = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
 
-            $response = $http->post('https://api.anthropic.com/v1/messages', [
+            // El mismo payload para los dos proveedores; `thinking` solo viaja con DeepSeek.
+            $response = $http->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
                 'model'      => $model,
                 'max_tokens' => 500,
                 'system'     => $system_prompt,
                 'messages'   => $messages,
-            ]);
+            ], $eleccion['thinking']));
 
             if ($response->failed()) {
-                Log::channel('daily')->error('WhatsappBotAiService: error HTTP de Anthropic.', [
+                Log::channel('daily')->error('WhatsappBotAiService: error HTTP de ' . ProveedorIaHelper::nombre_de($proveedor) . '.', [
                     'status' => $response->status(),
                     'body'   => substr($response->body(), 0, 500),
                 ]);
@@ -288,6 +310,7 @@ SUMMARY;
                 'user_id'       => (int) $chat->user_id,
                 'proceso'       => $proceso,
                 'body'          => is_array($body) ? $body : [],
+                'proveedor'     => $proveedor,
                 'modelo'        => $model,
                 'auth_user_id'  => $auth_user_id,
                 'referencia_id' => (int) $chat->id,
@@ -395,9 +418,15 @@ SUMMARY;
     public function generate_summary(WhatsappChat $chat, $proceso = 'whatsapp_resumen', $auth_user_id = null): string
     {
         try {
-            $api_key = (string) config('services.anthropic.api_key');
-            if ($api_key === '') {
-                Log::channel('daily')->warning('WhatsappBotAiService: ANTHROPIC_API_KEY no configurada (resumen).');
+            /*
+             * Acá no llega `$config`, así que el dueño —cuya elección de proveedor manda— se
+             * resuelve por el `user_id` del chat (misión proveedores-ia-deepseek).
+             */
+            $eleccion  = ProveedorIaHelper::modelo_general(User::find($chat->user_id));
+            $proveedor = $eleccion['proveedor'];
+
+            if (! ProveedorIaHelper::hay_credenciales($proveedor)) {
+                Log::channel('daily')->warning('WhatsappBotAiService: sin clave de ' . ProveedorIaHelper::nombre_de($proveedor) . ' configurada (resumen).');
                 return '';
             }
 
@@ -411,20 +440,20 @@ SUMMARY;
                 return '';
             }
 
-            $model = (string) config('services.anthropic.model', 'claude-sonnet-4-20250514');
-            $http  = $this->build_http_client();
+            $model = $eleccion['modelo'];
+            $http  = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
 
-            $response = $http->post('https://api.anthropic.com/v1/messages', [
+            $response = $http->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
                 'model'      => $model,
                 'max_tokens' => 400,
                 'system'     => self::SUMMARY_SYSTEM_PROMPT,
                 'messages'   => [
                     ['role' => 'user', 'content' => "Conversación:\n{$transcript}"],
                 ],
-            ]);
+            ], $eleccion['thinking']));
 
             if ($response->failed()) {
-                Log::channel('daily')->error('WhatsappBotAiService: error HTTP de Anthropic (resumen).', [
+                Log::channel('daily')->error('WhatsappBotAiService: error HTTP de ' . ProveedorIaHelper::nombre_de($proveedor) . ' (resumen).', [
                     'status' => $response->status(),
                     'body'   => substr($response->body(), 0, 500),
                 ]);
@@ -440,6 +469,7 @@ SUMMARY;
                 'user_id'       => (int) $chat->user_id,
                 'proceso'       => $proceso,
                 'body'          => is_array($body) ? $body : [],
+                'proveedor'     => $proveedor,
                 'modelo'        => $model,
                 'auth_user_id'  => $auth_user_id,
                 'referencia_id' => (int) $chat->id,
@@ -1102,8 +1132,13 @@ SUMMARY;
     }
 
     /**
-     * Extrae el texto de la respuesta de Anthropic (concatena todos los bloques `text`
-     * del array `content`), igual que el comportamiento previo a este refactor.
+     * Extrae el texto de la respuesta del proveedor (concatena todos los bloques `text`
+     * del array `content`, forma de Anthropic que DeepSeek también devuelve), igual que el
+     * comportamiento previo a este refactor.
+     *
+     * El cliente HTTP con la configuración TLS de config/services.php que antes se armaba acá
+     * vive ahora en ProveedorIaHelper::cliente_http(), que lo arma para el proveedor que
+     * corresponda.
      *
      * @param array|null $body Body decodificado de la respuesta HTTP.
      *
@@ -1122,30 +1157,5 @@ SUMMARY;
         }
 
         return trim($text);
-    }
-
-    /**
-     * Cliente HTTP hacia Anthropic con configuración TLS desde config/services.php.
-     */
-    private function build_http_client(): PendingRequest
-    {
-        $api_key = (string) config('services.anthropic.api_key');
-
-        $http = Http::withHeaders([
-            'x-api-key'         => $api_key,
-            'anthropic-version' => '2023-06-01',
-            'content-type'      => 'application/json',
-        ])->timeout(60);
-
-        $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);
-        $ca_bundle  = config('services.anthropic.ca_bundle');
-
-        if (! $verify_ssl) {
-            $http = $http->withoutVerifying();
-        } elseif (is_string($ca_bundle) && $ca_bundle !== '' && is_file($ca_bundle)) {
-            $http = $http->withOptions(['verify' => $ca_bundle]);
-        }
-
-        return $http;
     }
 }
