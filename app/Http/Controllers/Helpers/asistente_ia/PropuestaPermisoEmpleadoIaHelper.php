@@ -8,6 +8,7 @@ use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\PermissionEmpresa;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
@@ -192,6 +193,13 @@ class PropuestaPermisoEmpleadoIaHelper
             $mensaje,
             AiMessageAction::TIPO_PERMISO_EMPLEADO,
             self::clave($empleado->id, $permiso->id),
+            /*
+             * ⚠️ `payload` queda guardado como registro de lo que se propuso, pero al confirmar NO
+             * se usa: se rearma con la ficha de ese momento. Lo que manda al ejecutar es `esperado`
+             * —el empleado, el permiso y si se da o se saca—, y `permiso_ids` es la lista que la
+             * tarjeta PROMETIÓ, para poder leer después qué se le dijo a la persona. Ver el 🔴 de
+             * ejecutar().
+             */
             [
                 'payload'  => $payload,
                 'esperado' => [
@@ -208,7 +216,9 @@ class PropuestaPermisoEmpleadoIaHelper
                     ? null
                     : 'Con este cambio ' . $empleado->name . ' se queda sin ningún permiso: va a poder entrar, pero no ver ni hacer casi nada.',
             ],
-            EntradaDeCargaIa::valor($input, 'reemplaza_a')
+            EntradaDeCargaIa::valor($input, 'reemplaza_a'),
+            // El `updated_at` de la ficha: si la editan en el medio, confirmar da 409 (ver ejecutar()).
+            is_null($empleado->updated_at) ? null : $empleado->updated_at->format('Y-m-d H:i:s')
         );
 
         $resumen = ($accion === self::ACCION_DAR ? 'Darle ' : 'Sacarle ') . '"' . $permiso->name . '" a ' . $empleado->name;
@@ -264,8 +274,6 @@ class PropuestaPermisoEmpleadoIaHelper
 
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
-        $payload = isset($datos['payload']) && is_array($datos['payload']) ? $datos['payload'] : [];
-
         $esperado = isset($datos['esperado']) && is_array($datos['esperado']) ? $datos['esperado'] : [];
 
         $employee_id = isset($esperado['employee_id']) ? (int) $esperado['employee_id'] : 0;
@@ -288,23 +296,62 @@ class PropuestaPermisoEmpleadoIaHelper
         }
 
         /*
-         * 🔴 LA CONTRASEÑA DE LA TARJETA PUEDE ESTAR VIEJA. La tarjeta guarda la `visible_password`
-         * del momento de proponer; si la cambiaron en el medio, mandarla la volvería atrás. Se pisa
-         * con la de ahora, que es la que el endpoint va a re-hashear.
+         * 🔴 PRIMERA CAPA: SI LA FICHA CAMBIÓ, LA TARJETA ESTÁ VIEJA Y SE DICE.
+         *
+         * La tarjeta muestra "le quedan: A, B" y esa lista se armó con la ficha de ese momento. Si
+         * alguien la editó desde ABM > Empleados en el medio, ese renglón dejó de ser verdad, y una
+         * tarjeta que afirma algo falso no se confirma en silencio: se vence y se pide de nuevo.
+         * Mismo criterio y mismo `referencia_updated_at` que EjecutorGenericoIaHelper y
+         * PropuestaTareaIaHelper. La ventana es de hasta 24 h (AiMessageAction::HORAS_VENCIMIENTO).
          */
-        $payload['visible_password'] = (string) $empleado->visible_password;
+        self::verificar_que_no_cambio($accion, $empleado);
 
-        if (!isset($payload['id']) || (int) $payload['id'] !== $employee_id) {
+        /*
+         * 🔴 SEGUNDA CAPA, Y NO ES REDUNDANTE: EL PAYLOAD SE REARMA CON EL EMPLEADO DE AHORA.
+         *
+         * `payload` lleva el MODELO ENTERO (nombre, teléfono, documento, sucursal, admin_access,
+         * vendedor, versiones) y `EmployeeController::update()` pisa cada columna con lo que le
+         * llega: confirmar con el payload congelado revierte, sin que nadie lo vea, todo lo que se
+         * haya editado de esa ficha entre la propuesta y el clic. Es exactamente el problema que
+         * PropuestaStockIaHelper::ejecutar_stock_en_deposito() resuelve rearmando, y acá duele más,
+         * porque un empleado al que le devolvieron un permiso que después se le vuelve a ir no se
+         * entera hasta que llega a trabajar.
+         *
+         * 🔴 Y LA GUARDA DE ARRIBA NO ALCANZA SOLA: un cambio SOLO de permisos (un `sync()` sobre
+         * la pivot `permission_empresa_user`) NO toca `users.updated_at`, así que no dispara el 409.
+         * Por eso el alta o la baja que pidió el dueño se aplica sobre la lista que el empleado
+         * tiene AHORA, y no sobre la congelada: un permiso que le dieron en el medio se conserva.
+         */
+        $permiso_id = isset($esperado['permiso_id']) ? (int) $esperado['permiso_id'] : 0;
 
-            throw new AccionIaException(500, 'La tarjeta tiene el empleado cambiado. Pedímela de nuevo.');
+        $que_hago = isset($esperado['accion']) ? (string) $esperado['accion'] : '';
+
+        if ($permiso_id <= 0 || !in_array($que_hago, [self::ACCION_DAR, self::ACCION_SACAR], true)) {
+
+            throw new AccionIaException(500, 'La tarjeta de permisos está incompleta. Pedímela de nuevo.');
         }
 
-        if (!isset($payload['permissions']) || !is_array($payload['permissions'])) {
+        $permiso = PermissionEmpresa::find($permiso_id);
 
-            throw new AccionIaException(500, 'La tarjeta no tiene la lista de permisos. Pedímela de nuevo.');
+        if (is_null($permiso)) {
+
+            throw new AccionIaException(422, 'Ese permiso ya no existe en el sistema. Pedímelo de nuevo.');
         }
 
-        $esperados = isset($esperado['permiso_ids']) && is_array($esperado['permiso_ids']) ? $esperado['permiso_ids'] : [];
+        $finales = self::permisos_actuales($empleado);
+
+        if ($que_hago === self::ACCION_DAR) {
+
+            $finales[$permiso_id] = $permiso;
+
+        } else {
+
+            unset($finales[$permiso_id]);
+        }
+
+        $payload = self::payload($empleado, $finales);
+
+        $esperados = array_map('intval', array_keys($finales));
 
         $request = Request::create('/api/employee/' . $employee_id, 'PUT', $payload);
         $request->headers->set('Accept', 'application/json');
@@ -400,6 +447,38 @@ class PropuestaPermisoEmpleadoIaHelper
             'seller_id'                                 => $empleado->seller_id,
             'permissions'                               => $lista,
         ];
+    }
+
+    /**
+     * La ficha del empleado no cambió desde que se armó la tarjeta.
+     *
+     * Mismo mecanismo que `EjecutorGenericoIaHelper::verificar_que_no_cambio()`: 409 con la tarjeta
+     * vencida, para que la persona pida una nueva en vez de confirmar un renglón que ya no dice la
+     * verdad. Se compara al segundo, que es la precisión de la columna.
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @param  \App\Models\User  $empleado
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_que_no_cambio(AiMessageAction $accion, User $empleado)
+    {
+        $referencia = $accion->referencia_updated_at;
+
+        $referencia = is_null($referencia) ? null : Carbon::parse($referencia)->format('Y-m-d H:i:s');
+
+        $actual = is_null($empleado->updated_at) ? null : Carbon::parse($empleado->updated_at)->format('Y-m-d H:i:s');
+
+        if ($referencia !== $actual) {
+
+            throw new AccionIaException(
+                409,
+                'La ficha de ' . $empleado->name . ' cambió después de que armé la tarjeta, así que lo que decía sobre sus permisos '
+                . 'puede haber quedado viejo. Pedímelo de nuevo y te la armo con lo que tiene ahora.',
+                AiMessageAction::ESTADO_VENCIDA
+            );
+        }
     }
 
     /**

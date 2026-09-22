@@ -76,8 +76,9 @@ class HerramientasDeCarga
      * 🔴 LA ACTUALIZACIÓN MASIVA NO ESTÁ NI VA A ESTAR ACÁ. Reescribe precios, márgenes, stock o
      * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
      * que ver cuántos alcanza y confirmar (decisión de Lucas, misión asistente-masivas-imagenes-y-
-     * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(), y el test 26 fija
-     * las dos cosas. Lo mismo para unificar los bancos de los cheques (misión
+     * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(): eso lo fijan los
+     * tests 36 y 51, que leen el archivo; el test 26 cuida la lista, no el `case`. Lo mismo para
+     * unificar los bancos de los cheques (misión
      * cheques-endoso-y-bancos): toca N cheques de un saque y decide a qué banco va cada texto.
      * Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
      *
@@ -94,8 +95,11 @@ class HerramientasDeCarga
      * entran las genéricas de alta y edición, la venta y la foto de un artículo — el dueño lo prendió
      * a conciencia desde la configuración. Lo que cambió con esa misión es que los `case` de esas
      * propuestas SÍ pasan por quizas_auto_confirmar(): quién se ejecuta lo decide el modo adentro de
-     * la puerta, no la ausencia de la llamada. Los únicos tres `case` que siguen sin pasar por ahí
-     * son los de NUNCA_AUTO_CONFIRMABLES, y los tests 26, 36 y 51 lo fijan leyendo este archivo.
+     * la puerta, no la ausencia de la llamada. Los únicos `case` que siguen sin pasar por ahí son
+     * los de NUNCA_AUTO_CONFIRMABLES —cuatro desde el 22/9/2026, con el permiso de un empleado—, y
+     * eso lo fijan los tests 36 y 51 LEYENDO ESTE ARCHIVO como texto plano (el `switch` no es
+     * introspectable de otra forma). El test 26 también cuida la masiva, pero solo por la
+     * constante: no lee el archivo, así que no cubre la tercera guarda.
      *
      * @var array<int, string>
      */
@@ -179,8 +183,9 @@ class HerramientasDeCarga
      *
      * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
      * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
-     * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda: los
-     * tests 26, 36 y 51 fijan las tres.
+     * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda. Las
+     * dos primeras las fijan los tests 26, 36 y 51 por la constante; la tercera, solo el 36 y el
+     * 51, que son los que leen este archivo como texto plano.
      *
      * @var array<int, string>
      */
@@ -1635,7 +1640,7 @@ class HerramientasDeCarga
     }
 
     /**
-     * Los tipos que se auto-ejecutan con ESE modo de confianza, ya filtrados por los tres que no se
+     * Los tipos que se auto-ejecutan con ESE modo de confianza, ya filtrados por los que no se
      * auto-ejecutan nunca (misión asistente-capacidades-y-hilos, 22/9/2026).
      *
      * Un modo que no se reconoce —"cauteloso", una columna vacía o un valor viejo— devuelve la lista

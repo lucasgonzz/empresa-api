@@ -664,6 +664,120 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 LA VENTANA ENTRE PROPONER Y CONFIRMAR: UN CAMBIO DE PERMISOS HECHO POR FUERA NO SE PIERDE.
+     *
+     * `payload` lleva el modelo entero y `update()` pisa cada columna con lo que le llega, así que
+     * confirmar con el payload congelado revertiría lo que se haya tocado en el medio — y la
+     * verificación posterior, si comparara contra la lista congelada, diría que salió bien.
+     *
+     * Este caso es el que la guarda de `updated_at` NO puede atrapar: un `sync()` sobre la pivot
+     * `permission_empresa_user` no toca `users.updated_at`. Lo cubre el rearmado del payload, que
+     * aplica el alta o la baja sobre la lista que el empleado tiene AHORA.
+     *
+     * @test
+     */
+    public function un_permiso_dado_por_fuera_entre_proponer_y_confirmar_no_se_pierde()
+    {
+        $this->dar_extension(PropuestaPermisoEmpleadoIaHelper::EXTENSION);
+
+        self::ids_de(['provider.index']);
+
+        $empleado = $this->empleado(['sale.index', 'client.index'], 'clave-ventana');
+
+        list($conversation, $assistant) = $this->conversacion('Sacale el permiso de ver ventas');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_permiso_de_empleado', [
+            'empleado' => $empleado->name,
+            'permiso'  => 'sale.index',
+            'accion'   => 'sacar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        /*
+         * En el medio, el dueño le da OTRO permiso desde la pantalla de Empleados. Se hace con la
+         * pivot a propósito: así no se toca `users.updated_at` y la guarda del 409 no lo tapa, que
+         * es justo el caso que tiene que cubrir el rearmado.
+         */
+        $empleado->permissions()->syncWithoutDetaching(self::ids_de(['provider.index']));
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $this->actuar_como_el_dueno();
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, $accion->estado_guardado(), (string) $accion->error_mensaje);
+
+        $slugs = [];
+
+        foreach (User::find($empleado->id)->permissions as $permiso) {
+            $slugs[] = (string) $permiso->slug;
+        }
+
+        sort($slugs);
+
+        $this->assertSame(
+            ['client.index', 'provider.index'],
+            $slugs,
+            'Se perdió el permiso que le dieron entre la propuesta y el clic: el payload se confirmó congelado.'
+        );
+    }
+
+    /**
+     * 🔴 Y SI LA FICHA CAMBIÓ, LA TARJETA SE VENCE EN VEZ DE REVERTIRLA.
+     *
+     * Editar al empleado desde ABM > Empleados toca `users.updated_at`. Confirmar con el payload
+     * congelado le devolvería el teléfono (y el nombre, y la sucursal, y el vendedor) al valor
+     * viejo, sin que nadie lo vea. Se corta con 409 y la tarjeta queda vencida: el renglón
+     * "le quedan" que la persona está mirando ya puede no ser verdad.
+     *
+     * @test
+     */
+    public function si_editan_la_ficha_en_el_medio_la_tarjeta_se_vence_y_no_revierte_nada()
+    {
+        $this->dar_extension(PropuestaPermisoEmpleadoIaHelper::EXTENSION);
+
+        $empleado = $this->empleado(['sale.index', 'client.index'], 'clave-ficha');
+
+        list($conversation, $assistant) = $this->conversacion('Sacale el permiso de ver ventas');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_permiso_de_empleado', [
+            'empleado' => $empleado->name,
+            'permiso'  => 'sale.index',
+            'accion'   => 'sacar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        /*
+         * En el medio, el dueño le cambia el teléfono desde la pantalla.
+         *
+         * ⚠️ El `updated_at` se adelanta a mano y no es un truco para que el test pase: la columna
+         * es `timestamp`, o sea precisión de SEGUNDO, y el test entero corre en milisegundos, así
+         * que un save() acá dejaría el mismo segundo que la propuesta y no habría nada que
+         * detectar. El caso real es una edición minutos u horas después —la tarjeta vive hasta 24 h
+         * (AiMessageAction::HORAS_VENCIMIENTO)—, y eso es lo que se representa.
+         */
+        $empleado->phone = '11-5555-4444';
+        $empleado->updated_at = Carbon::now()->addMinutes(5);
+        $empleado->save();
+
+        $http = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $http->assertStatus(409);
+
+        $this->actuar_como_el_dueno();
+
+        $recargado = User::find($empleado->id);
+
+        $this->assertSame('11-5555-4444', (string) $recargado->phone, 'El teléfono volvió al valor viejo de la tarjeta.');
+        $this->assertCount(2, $recargado->permissions, 'La tarjeta vencida no puede haber tocado los permisos.');
+
+        $this->assertSame(AiMessageAction::ESTADO_VENCIDA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+    }
+
+    /**
      * 🔴 SIN `visible_password` CARGADA, LA CARGA SE RECHAZA. `update()` hace bcrypt() de lo que le
      * llegue: con la clave vacía el empleado se queda afuera del sistema, y eso no lo pidió nadie.
      *
