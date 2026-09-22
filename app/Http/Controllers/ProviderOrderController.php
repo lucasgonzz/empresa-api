@@ -8,6 +8,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
@@ -98,6 +99,17 @@ class ProviderOrderController extends Controller
             'generate_current_acount'                   => $request->generate_current_acount,
             'address_id'                                => $request->address_id,
             'numero_comprobante'                        => $request->numero_comprobante,
+            /*
+             * La fecha de creación que eligió el usuario en la solapa "Configuracion" de la compra
+             * (misión fecha-creacion-editable, 22/9/2026). Esta lista de claves es una lista
+             * blanca: lo que no está acá no llega al modelo aunque la SPA lo mande, así que la
+             * clave tiene que figurar explícitamente.
+             *
+             * Se resuelve con el helper de ventas a propósito: es el ÚNICO lugar donde se
+             * interpreta el campo, para los dos flujos. Sin la clave en el request devuelve
+             * `Carbon::now()`, o sea lo mismo que hubiera puesto Eloquent.
+             */
+            'created_at'                                => SaleHelper::resolver_created_at($request->created_at),
             'childrens'                                 => $request->childrens,
             'articles'                                  => $request->articles,
         ]);
@@ -134,6 +146,23 @@ class ProviderOrderController extends Controller
             $model->generate_current_acount                     = $request->generate_current_acount;
             $model->numero_comprobante                          = $request->numero_comprobante;
             $model->moneda_id                                   = $request->moneda_id;
+
+            /*
+             * La fecha de creación editable (misión fecha-creacion-editable, 22/9/2026), mismo
+             * criterio que el update de una venta: con `exists()`, porque un PUT que no manda la
+             * clave —una SPA vieja— no puede pisar lo guardado; y el helper devuelve null cuando
+             * el día pedido es el mismo que el guardado, así la hora original de la compra queda
+             * intacta. Solo si el día cambió se reescribe, conservando esa hora.
+             */
+            if ($request->exists('created_at')) {
+
+                $created_at_nuevo = SaleHelper::resolver_created_at_de_update($model->created_at, $request->created_at);
+
+                if (!is_null($created_at_nuevo)) {
+                    $model->created_at = $created_at_nuevo;
+                }
+            }
+
             $model->save();
 
 
