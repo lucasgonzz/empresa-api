@@ -59,6 +59,10 @@ class OnlineConfiguration extends Model
         'avisar_ingreso_stock_por_mail' => 'boolean',
         // Muestra u oculta el texto "Stock disponible" en la ficha del articulo de la tienda.
         'mostrar_stock_disponible' => 'boolean',
+        // Si esta prendido, la tienda ignora el stock real de los articulos: ninguno se muestra
+        // agotado ni tiene tope de cantidad al comprar. Arranca en false (ver la migracion): es
+        // un comportamiento mas agresivo que el default de mostrar_stock_disponible.
+        'ignorar_stock' => 'boolean',
         // Login con Google de la tienda online (prompt 589, grupo 164): master switch. No hace
         // falta agregar google_client_id/google_client_secret a $fillable: el modelo usa
         // $guarded = [] (mass assignment abierto), y ademas el controller las asigna una por una.

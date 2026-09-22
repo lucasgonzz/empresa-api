@@ -54,6 +54,13 @@ class OnlineConfigurationController extends Controller
         // tiene que apagar el flag solo.
         $model->mostrar_stock_disponible        = $request->boolean('mostrar_stock_disponible', $model->mostrar_stock_disponible ?? true);
 
+        // Ignorar stock en la tienda online: si esta prendido, ningun articulo se muestra agotado
+        // ni tiene tope de cantidad al comprar (mismo comportamiento que ya existe hoy para un
+        // articulo con stock null). Arranca en false, al reves que el toggle de arriba: es un
+        // comportamiento nuevo y mas agresivo, asi que una pantalla vieja que manda el PUT sin la
+        // clave nueva no tiene que prenderlo solo.
+        $model->ignorar_stock                   = $request->boolean('ignorar_stock', $model->ignorar_stock ?? false);
+
         $model->online_description              = $request->online_description;
 
         // Descripción para vista previa al compartir el link de la tienda (og:description /
