@@ -134,6 +134,11 @@ return [
      * tiene "equilibrado": el dueño elige entre Ágil (Flash) y Profundo (Pro). `model` es el
      * "general", el que usan el bot de WhatsApp y el título (el análogo de ANTHROPIC_MODEL).
      *
+     * `model_vision` es el modelo CON visión: cuando el dueño manda una foto y está en Profundo, esa
+     * llamada va con este modelo (con el thinking de Profundo igual prendido: Flash también razona).
+     * Sin esto la foto viajaría a Pro, que no la ve — y DeepSeek no devuelve un error: mapea el
+     * pedido y contesta sin haber mirado la imagen. Por eso el modelo se elige explícito.
+     *
      * El thinking de DeepSeek viene PRENDIDO por defecto, así que Ágil lo manda `disabled` (es el
      * análogo de Haiku: contestar rápido) y Profundo lo manda `enabled`. Para Anthropic no se manda
      * ninguna clave `thinking`, exactamente como hasta hoy.
@@ -156,6 +161,7 @@ return [
         'model'               => env('DEEPSEEK_MODEL', 'deepseek-flash'),
         'model_agil'          => env('DEEPSEEK_MODEL_AGIL', 'deepseek-flash'),
         'model_profundo'      => env('DEEPSEEK_MODEL_PROFUNDO', 'deepseek-v4-pro'),
+        'model_vision'        => env('DEEPSEEK_MODEL_VISION', 'deepseek-flash'),
         'thinking_agil'       => env('DEEPSEEK_THINKING_AGIL', 'disabled'),
         'thinking_profundo'   => env('DEEPSEEK_THINKING_PROFUNDO', 'enabled'),
         'max_tokens_profundo' => (int) env('DEEPSEEK_MAX_TOKENS_PROFUNDO', 8000),

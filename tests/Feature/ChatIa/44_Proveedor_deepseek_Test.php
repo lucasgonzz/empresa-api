@@ -7,12 +7,14 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
 use App\Models\AiTokenUsage;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 /**
@@ -24,8 +26,9 @@ use Tests\TestCase;
  * `thinking` (disabled / enabled); con el dueño en Anthropic el body NO lleva `thinking` y va a
  * `api.anthropic.com`, exactamente como antes de la misión; un `equilibrado` guardado cae a agil
  * en DeepSeek; sin clave de DeepSeek el asistente cae a Anthropic y el gasto se registra con el
- * proveedor que contestó; un 503 de DeepSeek es "sobrecargado" y no una falla técnica; y el título
- * de conversación también sigue al dueño.
+ * proveedor que contestó; un 503 de DeepSeek es "sobrecargado" y no una falla técnica; una foto en
+ * el pedido con DeepSeek/Profundo va al modelo con visión (Pro no ve imágenes) con el thinking de
+ * Profundo; y el título de conversación también sigue al dueño.
  *
  * 🔴 Ningún test sale a la red: Http::fake con los dos hosts, y las claves son de prueba.
  *
@@ -62,6 +65,7 @@ class Proveedor_deepseek_Test extends TestCase
             'services.deepseek.model'           => 'deepseek-general-test',
             'services.deepseek.model_agil'      => 'deepseek-flash-test',
             'services.deepseek.model_profundo'  => 'deepseek-pro-test',
+            'services.deepseek.model_vision'    => 'deepseek-vision-test',
         ]);
 
         $this->comercio = User::create([
@@ -135,6 +139,42 @@ class Proveedor_deepseek_Test extends TestCase
         ]);
 
         return [$conversation, $assistant];
+    }
+
+    /**
+     * Le cuelga una foto de verdad (un PNG chico en el disco fake) al último mensaje del usuario de
+     * la conversación, con su fila en `ai_message_imagenes`: así build_messages_payload() arma el
+     * bloque `image` como en producción. Misma siembra que AsistenteWhatsapp/4_Imagenes_Test.
+     *
+     * @param  AiConversation  $conversation
+     * @return void
+     */
+    protected function con_una_foto(AiConversation $conversation)
+    {
+        Storage::fake('local');
+
+        $mensaje = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        $recurso = imagecreatetruecolor(30, 30);
+        ob_start();
+        imagepng($recurso);
+        $binario = ob_get_clean();
+
+        $path = 'asistente_imagenes/' . $this->comercio->id . '/' . $mensaje->id . '/1.webp';
+
+        Storage::disk('local')->put($path, $binario);
+
+        AiMessageImagen::create([
+            'ai_message_id' => $mensaje->id,
+            'user_id'       => $this->comercio->id,
+            'orden'         => 1,
+            'path'          => $path,
+            'mime'          => 'image/webp',
+            'bytes'         => strlen($binario),
+        ]);
     }
 
     /**
@@ -239,6 +279,76 @@ class Proveedor_deepseek_Test extends TestCase
 
         $this->assertEquals('deepseek', $fila->proveedor);
         $this->assertEquals(config('services.deepseek.model_profundo'), $fila->modelo);
+    }
+
+    /**
+     * (b') Dueño en DeepSeek / profundo con una FOTO en el pedido: la llamada va con el modelo de
+     * visión (Pro no ve imágenes y DeepSeek no avisa: contestaría sin mirar la foto), con el
+     * thinking de Profundo igual prendido, y la fila registra el modelo que efectivamente se usó.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function con_una_foto_el_dueno_en_deepseek_profundo_va_al_modelo_de_vision_pensando()
+    {
+        $this->fakes_de_red();
+        $this->dueno_en('deepseek', 'profundo');
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente();
+        $this->con_una_foto($conversation);
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        list($url, $headers, $body) = $this->el_request_enviado();
+
+        $this->assertEquals(self::URL_DEEPSEEK, $url);
+        $this->assertEquals(config('services.deepseek.model_vision'), $body['model'], 'Con una foto, Profundo de DeepSeek va al modelo que ve.');
+        $this->assertNotEquals(config('services.deepseek.model_profundo'), $body['model']);
+        $this->assertEquals('enabled', $body['thinking']['type'], 'El thinking sigue siendo el de Profundo: Flash también razona.');
+
+        /* La foto efectivamente viajó: el último turno del dueño lleva un bloque image. */
+        $ultimo = $body['messages'][count($body['messages']) - 1];
+        $this->assertTrue(is_array($ultimo['content']));
+        $this->assertEquals('image', $ultimo['content'][0]['type']);
+
+        $fila = AiTokenUsage::where('ai_conversation_id', $conversation->id)->first();
+
+        $this->assertEquals('deepseek', $fila->proveedor);
+        $this->assertEquals(config('services.deepseek.model_vision'), $fila->modelo, 'Se registra el modelo con el que efectivamente se llamó.');
+    }
+
+    /**
+     * (b'') Y sin foto, Profundo sigue yendo a Pro: el modelo de visión es solo para las fotos.
+     * Con Anthropic una foto no cambia nada, porque todos sus modelos ven.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function sin_foto_profundo_sigue_en_pro_y_con_anthropic_la_foto_no_cambia_el_modelo()
+    {
+        $this->fakes_de_red();
+        $this->dueno_en('deepseek', 'profundo');
+
+        $this->responder();
+
+        list($url, $headers, $body) = $this->el_request_enviado();
+
+        $this->assertEquals(config('services.deepseek.model_profundo'), $body['model']);
+
+        /* Anthropic con foto: el modelo de la variante, sin desvío. Fake nuevo para contar de cero. */
+        $this->fakes_de_red();
+        $this->dueno_en('anthropic', 'profundo');
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente();
+        $this->con_una_foto($conversation);
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        list($url, $headers, $body) = $this->el_request_enviado();
+
+        $this->assertEquals(self::URL_ANTHROPIC, $url);
+        $this->assertEquals(config('services.anthropic.model_profundo'), $body['model'], 'Todos los modelos de Anthropic ven: la foto no cambia el modelo.');
+        $this->assertEquals('image', $body['messages'][count($body['messages']) - 1]['content'][0]['type']);
     }
 
     /**

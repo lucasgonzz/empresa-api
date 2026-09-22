@@ -223,10 +223,21 @@ class ProveedorIaHelper
      * model_profundo con thinking `thinking_profundo` (enabled), el resto → model_agil con thinking
      * `thinking_agil` (disabled); si el modelo viene vacío cae a `services.deepseek.model`.
      *
+     * 🔴 CON UNA FOTO EN EL PEDIDO, DEEPSEEK VA CON EL MODELO DE VISIÓN. `deepseek-v4-pro` (Profundo)
+     * NO ve imágenes (api-docs.deepseek.com: Flash "Vision: Supported", Pro "Not supported"), y
+     * DeepSeek no lo denuncia con un error: mapea el pedido y contesta como si la foto no
+     * estuviera — un camino de falla mudo, el dueño manda la factura y recibe una respuesta que
+     * no la miró. Por eso, con `$necesita_vision`, el modelo se elige EXPLÍCITO
+     * (`services.deepseek.model_vision`, Flash; si viene vacío, `model_agil`) y el `thinking` sigue
+     * siendo el de la variante elegida: Profundo mantiene `enabled`, porque Flash también razona.
+     * Anthropic no cambia: todos sus modelos ven. El `modelo` que se devuelve es el que efectivamente
+     * se usa y el que se registra en ai_token_usages.
+     *
      * @param  \App\Models\User|null  $owner
+     * @param  bool  $necesita_vision  true si el pedido lleva al menos un bloque `image`.
      * @return array{proveedor:string, pensamiento:string, modelo:string, thinking:array|null}
      */
-    public static function modelo_del_asistente($owner): array
+    public static function modelo_del_asistente($owner, $necesita_vision = false): array
     {
         $proveedor   = self::proveedor_de($owner);
         $pensamiento = self::pensamiento_de($owner, $proveedor);
@@ -235,13 +246,20 @@ class ProveedorIaHelper
 
             $es_profundo = $pensamiento === 'profundo';
 
+            if ($necesita_vision) {
+                $modelo = (string) config('services.deepseek.model_vision');
+
+                if ($modelo === '') {
+                    $modelo = (string) config('services.deepseek.model_agil');
+                }
+            } else {
+                $modelo = (string) config($es_profundo ? 'services.deepseek.model_profundo' : 'services.deepseek.model_agil');
+            }
+
             return [
                 'proveedor'   => $proveedor,
                 'pensamiento' => $pensamiento,
-                'modelo'      => self::modelo_o_general(
-                    (string) config($es_profundo ? 'services.deepseek.model_profundo' : 'services.deepseek.model_agil'),
-                    self::DEEPSEEK
-                ),
+                'modelo'      => self::modelo_o_general($modelo, self::DEEPSEEK),
                 'thinking'    => self::thinking_de_deepseek($es_profundo),
             ];
         }

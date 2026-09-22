@@ -263,8 +263,15 @@ class AsistenteIaService
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
          * elección del DUEÑO (ProveedorIaHelper). El cliente HTTP y la URL son del proveedor
          * efectivo, que es también el que se registra en ai_token_usages: es con el que se llamó.
+         *
+         * 🔴 SI EL PEDIDO LLEVA UNA FOTO, EL HELPER LO TIENE QUE SABER. El Profundo de DeepSeek
+         * (`deepseek-v4-pro`) no ve imágenes y DeepSeek no lo avisa con un error: contesta sin
+         * haber mirado la foto. Con el flag, el helper elige explícito el modelo con visión
+         * (Flash) para ESA llamada; sin fotos, o con Anthropic, no cambia nada. Se decide una
+         * sola vez, antes del loop: las fotos viajan en el último turno del dueño, que es el
+         * mismo en todas las iteraciones (los tool_result que se van sumando no traen imágenes).
          */
-        $eleccion  = ProveedorIaHelper::modelo_del_asistente($owner);
+        $eleccion  = ProveedorIaHelper::modelo_del_asistente($owner, $this->lleva_imagenes($messages));
         $proveedor = $eleccion['proveedor'];
         $model     = $eleccion['modelo'];
         $thinking  = $eleccion['thinking'];
@@ -1029,6 +1036,34 @@ CONFIRMACION;
         }
 
         return $payload;
+    }
+
+    /**
+     * true si algún mensaje del payload lleva al menos un bloque `image` (la forma que arma
+     * bloques_de_imagen(): `{type: 'image', source: {type: 'base64', ...}}`). Un turno sin fotos
+     * viaja con `content` string y no cuenta; uno con fotos, con `content` array de bloques.
+     *
+     * Lo usa responder() para pedirle a ProveedorIaHelper el modelo con visión (misión
+     * proveedores-ia-deepseek: el Profundo de DeepSeek no ve imágenes).
+     *
+     * @param array<int, array{role: string, content: string|array}> $messages
+     * @return bool
+     */
+    protected function lleva_imagenes(array $messages): bool
+    {
+        foreach ($messages as $message) {
+            if (! isset($message['content']) || ! is_array($message['content'])) {
+                continue;
+            }
+
+            foreach ($message['content'] as $bloque) {
+                if (is_array($bloque) && ($bloque['type'] ?? '') === 'image') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
