@@ -483,6 +483,76 @@ class Sincronizar_Descuentos_Proveedor_Test extends EmpresaTestCase
     }
 
     /**
+     * La misma independencia que `solo_con_descuentos_con_pisar_si_toca_las_de_compra`, pero con
+     * AGREGAR: con `alcance=solo_con_descuentos` el articulo con un descuento de compra queda con
+     * los dos grupos, en cascada, exactamente igual que con `alcance=todos`
+     * (`todos_con_agregar_deja_los_dos_grupos_y_correrlo_dos_veces_da_lo_mismo`) — el bucle de "con
+     * descuentos de compra" no mira el alcance, nunca lo miro.
+     *
+     * 🔴 Esta combinacion quedo expuesta recien con la mision `modos-sincronizar-descuentos-proveedor`
+     * (22/9/2026): hasta entonces el frontend solo ofrecia el selector saltear/pisar/agregar con
+     * `alcance=todos`, asi que con el alcance default (`solo_con_descuentos`) nadie podia elegir
+     * "agregar" desde la interfaz, aunque el backend ya la aceptaba. Sin este test, la combinacion
+     * queda expuesta en la ventana sin cobertura explicita — mismo argumento que ya dejo escrito el
+     * test hermano de "pisar".
+     *
+     * @test
+     */
+    public function solo_con_descuentos_con_agregar_si_toca_las_de_compra()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_de_la_suite();
+        $this->descuento_del_proveedor($provider, 10, 'Bonif ficha');
+
+        $article = $this->articulo_del_proveedor($provider, 'zz Sincro solo-con agregar');
+
+        $this->descuento_de_compra($article, $provider, 20);
+
+        $this->sincronizar($provider, [
+            'alcance'              => 'solo_con_descuentos',
+            'accion_sobre_compras' => 'agregar',
+        ])->assertStatus(200);
+
+        $this->assertCount(
+            2,
+            $this->tagueados($article->id),
+            'Agregando con "solo_con_descuentos", el articulo queda con los dos grupos: el de la '.
+            'compra y el de la ficha, igual que con "todos".'
+        );
+
+        $this->assertCount(1, $this->tagueados_de_origen($article->id, ArticleDiscount::ORIGEN_COMPRA));
+        $this->assertCount(1, $this->tagueados_de_origen($article->id, ArticleDiscount::ORIGEN_FICHA_PROVEEDOR));
+
+        /* 1000 x 0,80 x 0,90 = 720. Mismo numero que el equivalente con "todos". */
+        $this->assertEqualsWithDelta(
+            720,
+            $this->costo_real($article->id),
+            self::DELTA,
+            'Los descuentos se aplican en CASCADA, no sumados: 1000 con 20% y 10% da 720, no 700.'
+        );
+
+        /* 🔴 Segunda corrida: idempotente, igual que con "todos". */
+        $this->sincronizar($provider, [
+            'alcance'              => 'solo_con_descuentos',
+            'accion_sobre_compras' => 'agregar',
+        ])->assertStatus(200);
+
+        $this->assertCount(
+            2,
+            $this->tagueados($article->id),
+            'Correr la sincronizacion dos veces no puede apilar una copia mas de la ficha.'
+        );
+
+        $this->assertEqualsWithDelta(
+            720,
+            $this->costo_real($article->id),
+            self::DELTA,
+            'Y el costo real tiene que quedar en el mismo numero: la operacion es idempotente.'
+        );
+    }
+
+    /**
      * 🔴 EL ALCANCE NUEVO: el articulo del proveedor que no tenia NINGUN descuento recibe los de la
      * ficha, con el origen, la relacion y el nombre.
      *
