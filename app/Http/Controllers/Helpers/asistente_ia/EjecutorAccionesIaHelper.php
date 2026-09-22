@@ -611,6 +611,19 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_FOTO_ARTICULO:
                 return PropuestaFotoArticuloIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026). Las dos de stock llaman al mismo
+             * controller que usa el Listado (`StockMovementController::store()` y
+             * `ArticleController::update_addresses_stock()`) y CONFIRMAN el resultado leyendo el
+             * pivot después: los dos endpoints devuelven 201/200 pase lo que pase, incluso sin
+             * haber hecho nada. Ver el docblock de PropuestaStockIaHelper.
+             */
+            case AiMessageAction::TIPO_MOVIMIENTO_STOCK:
+                return PropuestaStockIaHelper::ejecutar_movimiento($contexto, $accion);
+
+            case AiMessageAction::TIPO_STOCK_DEPOSITO:
+                return PropuestaStockIaHelper::ejecutar_stock_en_deposito($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

@@ -124,6 +124,41 @@ class AiMessageAction extends Model
      */
     const TIPO_FOTO_ARTICULO = 'foto_articulo';
 
+    /*
+     * Las cuatro capacidades nuevas de la misión asistente-capacidades-y-hilos (22/9/2026), que
+     * tapan cuatro de los diez "no puedo" que el agente contestó el 22/9 en demo3. Van al FINAL de
+     * la lista por la misma razón que las tools: cada misión suma lo suyo atrás de lo que había.
+     */
+
+    /**
+     * Mover stock de un depósito a otro (mensaje #24 del diagnóstico). Es el mismo movimiento que
+     * hace el modal "Movimiento de depósitos" del Listado, por `POST api/stock-movement`.
+     */
+    const TIPO_MOVIMIENTO_STOCK = 'movimiento_stock';
+
+    /**
+     * Dejar el stock de UN depósito en un número (mensaje #42). Es la única vía que además puede
+     * ABRIR un depósito para un artículo que todavía no lo tenía.
+     */
+    const TIPO_STOCK_DEPOSITO = 'stock_deposito';
+
+    /**
+     * Crear un presupuesto (mensaje #56), por el mismo `POST api/budget` que usa la pantalla de
+     * Vender con "guardar como presupuesto". 🔴 No toca stock, ni caja, ni cuenta corriente: eso
+     * pasa recién al confirmarlo desde la pantalla de Presupuestos.
+     */
+    const TIPO_PRESUPUESTO = 'presupuesto';
+
+    /**
+     * Darle o sacarle un permiso a un empleado (mensaje #44), por `PUT api/employee/{id}`.
+     *
+     * 🔴 ESTE NO SE AUTO-EJECUTA EN NINGÚN MODO, ni siquiera en "directo": está en
+     * HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES. El endpoint reemplaza la lista ENTERA de
+     * permisos y reescribe la contraseña en cada llamada, así que una tarjeta mal armada deja a un
+     * empleado sin permisos o sin poder entrar. Lo confirma siempre una persona, mirando qué queda.
+     */
+    const TIPO_PERMISO_EMPLEADO = 'permiso_empleado';
+
     protected $guarded = [];
 
     /**

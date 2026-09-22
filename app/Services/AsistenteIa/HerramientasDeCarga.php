@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
@@ -141,10 +142,22 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_ALTA,
         AiMessageAction::TIPO_EDICION,
         AiMessageAction::TIPO_VENTA,
+        /*
+         * Las capacidades nuevas de la misión asistente-capacidades-y-hilos (22/9/2026), atrás de
+         * lo que había. Las tres son reversibles con otra carga del mismo peso: mover stock entre
+         * dos depósitos del mismo negocio no cambia el stock total, dejar el stock de un depósito
+         * en un número se vuelve a cambiar igual, y un presupuesto no toca stock ni caja ni cuenta
+         * corriente (eso pasa recién al confirmarlo desde la pantalla de Presupuestos).
+         *
+         * 🔴 TIPO_PERMISO_EMPLEADO NO ESTÁ ACÁ, y está en NUNCA_AUTO_CONFIRMABLES: ver ahí.
+         */
+        AiMessageAction::TIPO_MOVIMIENTO_STOCK,
+        AiMessageAction::TIPO_STOCK_DEPOSITO,
+        AiMessageAction::TIPO_PRESUPUESTO,
     ];
 
     /**
-     * Los tres tipos que NO se auto-ejecutan en NINGÚN modo, ni siquiera en "directo" (decisión de
+     * Los tipos que NO se auto-ejecutan en NINGÚN modo, ni siquiera en "directo" (decisión de
      * Lucas, misión asistente-capacidades-y-hilos).
      *
      * 🔴 `baja`: 31 de las 40 entidades del catálogo de escritura NO usan SoftDeletes. Borrar una
@@ -153,6 +166,14 @@ class HerramientasDeCarga
      * 🔴 `actualizacion_masiva`: toca TODOS los artículos que cumplen un filtro de un saque. La
      * persona tiene que ver cuántos alcanza antes de que pase.
      * 🔴 `unificar_bancos_cheques`: toca N cheques de un saque y decide a qué banco va cada texto.
+     * 🔴 `permiso_empleado` (22/9/2026): `EmployeeController::update()` REEMPLAZA la lista entera de
+     * permisos (`sync([])` y después un attach por permiso) y reescribe la contraseña en cada
+     * llamada (`password = bcrypt($request->visible_password)`). Una tarjeta mal armada deja a un
+     * empleado sin ninguno de sus permisos o directamente sin poder entrar al sistema, y eso no lo
+     * nota nadie hasta que esa persona llega a trabajar. No es reversible con otra carga: es
+     * reversible con otra carga *si alguien se entera*. Por eso, aunque el dueño tenga el modo
+     * directo prendido, esta tarjeta se confirma siempre, y su presentación dice con qué lista de
+     * permisos queda el empleado, no solo cuál se toca.
      *
      * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
      * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
@@ -165,6 +186,7 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_BAJA,
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
         AiMessageAction::TIPO_UNIFICAR_BANCOS,
+        AiMessageAction::TIPO_PERMISO_EMPLEADO,
     ];
 
     /**
@@ -987,6 +1009,78 @@ class HerramientasDeCarga
                     'required'   => [],
                 ],
             ],
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026), al FINAL de lo que había: el orden
+             * del array es el prefijo del caché de prompt de Anthropic y lo nuevo nunca se
+             * intercala. Son las cuatro capacidades que el agente contestó que no podía hacer el
+             * 22/9 en demo3 (mensajes #24, #42, #56 y #44) y que la pantalla sí hace.
+             */
+            [
+                'name'         => 'proponer_movimiento_de_stock',
+                'description'  => 'Arma la tarjeta para MOVER stock de un artículo de un depósito (o sucursal) a otro, por el mismo camino que el modal "Movimiento de depósitos" del Listado. La cantidad va SIEMPRE en positivo y el sistema la resta del origen y la suma al destino: no mandes números negativos ni la llames dos veces. El artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) y los depósitos por su nombre, como los devuelve consultar_stock_por_deposito. 🔴 Sirve para MOVER, no para cargar: si el artículo todavía no tiene stock en el depósito de origen, la respuesta te lo dice y ahí va proponer_stock_en_deposito. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'articulo'      => [
+                            'type'        => 'string',
+                            'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                        ],
+                        'articulo_id'   => [
+                            'type'        => 'integer',
+                            'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                        ],
+                        'cantidad'      => [
+                            'type'        => 'number',
+                            'description' => 'Cuántas unidades se mueven. Siempre mayor a 0.',
+                        ],
+                        'desde'         => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del depósito o sucursal de donde SALE el stock.',
+                        ],
+                        'hacia'         => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del depósito o sucursal al que ENTRA el stock.',
+                        ],
+                        'observaciones' => [
+                            'type' => 'string',
+                        ],
+                        'reemplaza_a'   => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['cantidad', 'desde', 'hacia'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_stock_en_deposito',
+                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 a Florida" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                        ],
+                        'articulo_id' => [
+                            'type'        => 'integer',
+                            'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                        ],
+                        'deposito'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito.',
+                        ],
+                        'cantidad'    => [
+                            'type'        => 'number',
+                            'description' => 'Cuántas unidades. Con modo sumar o restar es cuánto se mueve; con modo fijar es en cuánto queda.',
+                        ],
+                        'modo'        => [
+                            'type'        => 'string',
+                            'enum'        => ['sumar', 'restar', 'fijar'],
+                            'description' => 'Qué hacer con la cantidad. Si no lo mandás se toma "fijar".',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['deposito', 'cantidad', 'modo'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1353,6 +1447,28 @@ class HerramientasDeCarga
                     $conversation,
                     $assistant_message,
                     PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026). Las dos de stock pasan por la
+             * puerta única: con el dueño en "directo" se hacen en el acto, y en los otros dos modos
+             * dejan tarjeta. Mover stock entre dos depósitos del mismo negocio no cambia el stock
+             * total ni toca plata, y dejarlo en un número se deshace con otra carga igual de barata.
+             */
+            case 'proponer_movimiento_de_stock':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaStockIaHelper::proponer_movimiento($contexto, $assistant_message, $input)
+                ));
+
+            case 'proponer_stock_en_deposito':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaStockIaHelper::proponer_stock_en_deposito($contexto, $assistant_message, $input)
                 ));
 
             case 'confirmar_carga_pendiente':
