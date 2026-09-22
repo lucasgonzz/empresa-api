@@ -32,8 +32,14 @@ use Illuminate\Support\Str;
  *     `referencia_updated_at`: si alguien edita el registro entre la tarjeta y el clic, confirmar
  *     da 409 y la tarjeta queda vencida.
  *
- * 🔴 Ninguna de las tres se auto-confirma, ni siquiera con el dueño en "resuelto": no están en
- * HerramientasDeCarga::AUTO_CONFIRMABLES y su `case` en ejecutar() no pasa por quizas_auto_confirmar().
+ * 🔴 Ninguna de las tres se auto-confirma con el dueño en "cauteloso" ni en "resuelto": no están en
+ * HerramientasDeCarga::AUTO_CONFIRMABLES.
+ *
+ * ⚠️ Con el dueño en "directo" (misión asistente-capacidades-y-hilos, 22/9/2026) el ALTA y la
+ * EDICIÓN sí se ejecutan solas: entran en AUTO_CONFIRMABLES_DIRECTO y sus `case` pasan por
+ * quizas_auto_confirmar(), que es quien mira el modo. 🔴 LA BAJA NO, EN NINGÚN MODO: 31 de las 40
+ * entidades de este catálogo no usan SoftDeletes, así que un borrado no se deshace. Está en
+ * NUNCA_AUTO_CONFIRMABLES y su `case` sigue sin pasar por la puerta.
  */
 class PropuestaGenericaIaHelper
 {

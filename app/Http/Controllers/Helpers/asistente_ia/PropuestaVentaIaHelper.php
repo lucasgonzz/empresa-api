@@ -44,8 +44,15 @@ use Illuminate\Support\Facades\Auth;
  * El límite de crédito NO: ese 422 vuelve como texto de la tarjeta, porque el saldo cambia
  * entre la propuesta y el clic y es el controller el que tiene la última palabra.
  *
- * NUNCA SE AUTO-CONFIRMA: `venta` no entra en `HerramientasDeCarga::AUTO_CONFIRMABLES`, esté el
- * dueño en la confianza que esté. Una venta mueve stock y plata.
+ * NO SE AUTO-CONFIRMA CON "CAUTELOSO" NI CON "RESUELTO": `venta` no entra en
+ * `HerramientasDeCarga::AUTO_CONFIRMABLES`. Una venta mueve stock y plata.
+ *
+ * ⚠️ SÍ se ejecuta sola con el dueño en "directo" (misión asistente-capacidades-y-hilos,
+ * 22/9/2026): entra en `AUTO_CONFIRMABLES_DIRECTO` y su `case` en ejecutar() pasa por
+ * quizas_auto_confirmar(), que es quien mira el modo. Ese modo se prende a mano desde la
+ * configuración del asistente y el default sigue siendo "resuelto", así que nadie lo tiene sin
+ * haberlo pedido. Lo que NO se auto-ejecuta en ningún modo es borrar (proponer_baja), la
+ * actualización masiva y la unificación de bancos: ver NUNCA_AUTO_CONFIRMABLES.
  */
 class PropuestaVentaIaHelper
 {
