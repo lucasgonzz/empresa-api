@@ -69,9 +69,9 @@ class Proveedor_deepseek_Test extends TestCase
         ]);
 
         $this->comercio = User::create([
-            'name'         => 'Comercio deepseek P44',
-            'company_name' => 'Ferreteria P44',
-            'email'        => 'deepseek-p44-' . uniqid() . '@test.local',
+            'name'         => 'Comercio deepseek P47',
+            'company_name' => 'Ferreteria P47',
+            'email'        => 'deepseek-p47-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
     }

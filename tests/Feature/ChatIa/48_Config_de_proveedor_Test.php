@@ -47,9 +47,9 @@ class Config_de_proveedor_Test extends TestCase
         ]);
 
         $this->comercio = User::create([
-            'name'         => 'Comercio config proveedor P45',
-            'company_name' => 'Ferreteria P45',
-            'email'        => 'config-p45-' . uniqid() . '@test.local',
+            'name'         => 'Comercio config proveedor P48',
+            'company_name' => 'Ferreteria P48',
+            'email'        => 'config-p48-' . uniqid() . '@test.local',
             'password'     => Hash::make('secret'),
         ]);
 
