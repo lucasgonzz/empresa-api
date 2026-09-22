@@ -73,6 +73,8 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_resumen_de_ventas',
         'consultar_reporte_contable',
         'mostrar_imagenes_de_articulos',
+        // Misión asistente-ventas-y-fotos (21/9/2026): las ventas sin cobrar del negocio, al final.
+        'consultar_ventas_sin_cobrar',
     ];
 
     /** @var User */

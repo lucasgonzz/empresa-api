@@ -533,6 +533,11 @@ class ResumenDeVentasIaHelper
             return self::por_metodo_de_pago($ventas, $totales);
         }
 
+        if ($agrupar_por === 'facturada') {
+
+            return self::con_la_nota(self::por_facturada($ventas), $agrupar_por);
+        }
+
         if (in_array($agrupar_por, ['articulo', 'rubro', 'proveedor'], true)) {
             return self::por_articulo($owner, $ventas, $agrupar_por);
         }
@@ -546,7 +551,6 @@ class ResumenDeVentasIaHelper
             'sucursal'  => 'COALESCE(sales.address_id, 0)',
             'vendedor'  => 'COALESCE(sales.employee_id, 0)',
             'cliente'   => 'COALESCE(sales.client_id, 0)',
-            'facturada' => self::expresion_facturada(),
         ];
 
         $expresion = $expresiones[$agrupar_por];
@@ -583,8 +587,18 @@ class ResumenDeVentasIaHelper
             ];
         }
 
-        $resultado = self::ordenar_y_topear(array_values($grupos));
+        return self::con_la_nota(self::ordenar_y_topear(array_values($grupos)), $agrupar_por);
+    }
 
+    /**
+     * Le pega al resultado de una agrupación la nota que la explica, si tiene.
+     *
+     * @param  array   $resultado
+     * @param  string  $agrupar_por
+     * @return array<string, mixed>
+     */
+    protected static function con_la_nota(array $resultado, string $agrupar_por): array
+    {
         $nota = self::nota_de_la_agrupacion($agrupar_por);
 
         if (! is_null($nota)) {
@@ -658,7 +672,7 @@ class ResumenDeVentasIaHelper
      *
      * @return string
      */
-    protected static function expresion_facturada(): string
+    protected static function condicion_facturada(): string
     {
         $con_cae = 'afip_tickets.deleted_at IS NULL AND afip_tickets.cae IS NOT NULL AND afip_tickets.cae <> \'\'';
 
@@ -666,7 +680,62 @@ class ResumenDeVentasIaHelper
 
         $de_la_consolidacion = 'EXISTS (SELECT 1 FROM afip_tickets WHERE afip_tickets.sale_id = sales.consolidacion_facturacion_id AND ' . $con_cae . ')';
 
-        return 'CASE WHEN (' . $propio . ' OR ' . $de_la_consolidacion . ') THEN 1 ELSE 0 END';
+        return '(' . $propio . ' OR ' . $de_la_consolidacion . ')';
+    }
+
+    /**
+     * Los dos grupos de `facturada`: con comprobante de ARCA y sin él.
+     *
+     * 🔴 SON DOS CONSULTAS CON UN WHERE, Y NO UN GROUP BY POR LA EXPRESIÓN, A PROPÓSITO. Con la
+     * condición puesta en el SELECT y en el GROUP BY, MySQL en `only_full_group_by` corta con el
+     * error 1055: los EXISTS son correlacionados (referencian `sales.id`) y el motor no los acepta
+     * como dependencia funcional. Medido el 21/9/2026 contra `empresa_testing_s8`. Un COUNT y un
+     * SUM con la condición en el WHERE no tienen ese problema, y el conjunto que cuentan es el
+     * mismo.
+     *
+     * 🔴 LOS DOS GRUPOS VIAJAN SIEMPRE QUE HAYA VENTAS, INCLUSO EL QUE DA CERO. "¿Me quedó algo sin
+     * facturar?" se contesta con un cero explícito; un grupo ausente el modelo lo lee como "no
+     * sé" y contesta con una vuelta de más o con una evasiva.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @return array<string, mixed>
+     */
+    protected static function por_facturada($ventas): array
+    {
+        $condicion = self::condicion_facturada();
+
+        $facturadas = (clone $ventas)
+            ->whereRaw($condicion)
+            ->toBase()
+            ->selectRaw('COUNT(*) as cantidad, COALESCE(SUM(sales.total), 0) as total')
+            ->first();
+
+        $sin_facturar = (clone $ventas)
+            ->whereRaw('NOT ' . $condicion)
+            ->toBase()
+            ->selectRaw('COUNT(*) as cantidad, COALESCE(SUM(sales.total), 0) as total')
+            ->first();
+
+        $con = (int) $facturadas->cantidad;
+        $sin = (int) $sin_facturar->cantidad;
+
+        if ($con + $sin === 0) {
+
+            return ['grupos' => [], 'encontrados' => 0];
+        }
+
+        return self::ordenar_y_topear([
+            [
+                'etiqueta' => self::ETIQUETA_FACTURADA,
+                'cantidad' => $con,
+                'total'    => (float) $facturadas->total,
+            ],
+            [
+                'etiqueta' => self::ETIQUETA_SIN_FACTURAR,
+                'cantidad' => $sin,
+                'total'    => (float) $sin_facturar->total,
+            ],
+        ]);
     }
 
     /**
@@ -743,11 +812,6 @@ class ResumenDeVentasIaHelper
         }
 
         $id = (int) $grupo;
-
-        if ($agrupar_por === 'facturada') {
-
-            return $id === 1 ? self::ETIQUETA_FACTURADA : self::ETIQUETA_SIN_FACTURAR;
-        }
 
         if ($agrupar_por === 'sucursal') {
             return $id > 0 && isset($nombres[$id]) ? $nombres[$id] : 'Sin sucursal';
