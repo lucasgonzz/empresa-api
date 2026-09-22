@@ -470,8 +470,10 @@ class Proveedor_deepseek_Test extends TestCase
     }
 
     /**
-     * (g) Un 503 de DeepSeek (saturado) es "sobrecargado" —lo que se reintenta solo— y no la
-     * falla técnica genérica: DeepSeek no manda `overloaded_error` ni 529 como Anthropic.
+     * (g) Un 503 de DeepSeek (saturado) es "sobrecargado" y no la falla técnica genérica:
+     * DeepSeek no manda `overloaded_error` ni 529 como Anthropic. Nada se reintenta solo
+     * (ResponderMensajeChatIaJob tiene $tries = 1): lo único que cambia es el texto que ve la
+     * persona —"probá de nuevo en unos segundos" en vez del genérico de conexión cortada—.
      *
      * @group chat-ia
      * @test

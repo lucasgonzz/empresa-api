@@ -2179,13 +2179,16 @@ CONFIRMACION;
         return $normalized;
     }
 
+    /*
+     * Acá vivía build_http_client(): el cliente HTTP hacia Anthropic con los headers de versión y
+     * caché de prompt, el timeout de TIMEOUT_SEGUNDOS por llamada (el techo del loop completo lo
+     * pone PRESUPUESTO_SEGUNDOS) y el bloque TLS de la casa. Desde la misión
+     * proveedores-ia-deepseek lo arma ProveedorIaHelper::cliente_http() para el proveedor que
+     * corresponda, con los mismos headers y el mismo bloque TLS.
+     */
+
     /**
      * Concatena el texto de los bloques text de una respuesta.
-     *
-     * El cliente HTTP que antes se armaba acá (headers de versión y caché de prompt, timeout de
-     * TIMEOUT_SEGUNDOS por llamada —el techo del loop completo lo pone PRESUPUESTO_SEGUNDOS— y el
-     * bloque TLS de la casa) vive ahora en ProveedorIaHelper::cliente_http(), que lo arma para el
-     * proveedor que corresponda.
      *
      * @param array<string, mixed> $body Respuesta JSON del proveedor (forma de Anthropic).
      * @return string

@@ -1136,10 +1136,6 @@ SUMMARY;
      * del array `content`, forma de Anthropic que DeepSeek también devuelve), igual que el
      * comportamiento previo a este refactor.
      *
-     * El cliente HTTP con la configuración TLS de config/services.php que antes se armaba acá
-     * vive ahora en ProveedorIaHelper::cliente_http(), que lo arma para el proveedor que
-     * corresponda.
-     *
      * @param array|null $body Body decodificado de la respuesta HTTP.
      *
      * @return string
@@ -1158,4 +1154,11 @@ SUMMARY;
 
         return trim($text);
     }
+
+    /*
+     * Acá vivía build_http_client(): el cliente HTTP hacia Anthropic con la configuración TLS de
+     * config/services.php y un timeout de 60 segundos. Desde la misión proveedores-ia-deepseek lo
+     * arma ProveedorIaHelper::cliente_http() para el proveedor que corresponda (con
+     * TIMEOUT_SEGUNDOS, el mismo 60).
+     */
 }

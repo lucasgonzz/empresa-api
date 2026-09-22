@@ -75,8 +75,9 @@ class ProveedorIaHelper
     const RUTA_MESSAGES = '/v1/messages';
 
     /**
-     * Tipos de error que la API declara transitorios y que se reintentan solos: el llamador le
-     * dice a la persona que el servicio está sobrecargado, no que hubo una falla técnica.
+     * Tipos de error que la API declara transitorios (el proveedor saturado): el llamador le
+     * dice a la persona que el servicio está sobrecargado y que pruebe en unos segundos, no que
+     * hubo una falla técnica. Nadie reintenta solo: el job de respuesta tiene $tries = 1.
      */
     const TIPOS_DE_ERROR_TRANSITORIO = ['overloaded_error', 'api_error'];
 
