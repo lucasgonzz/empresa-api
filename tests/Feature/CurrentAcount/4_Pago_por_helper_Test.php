@@ -3,6 +3,7 @@
 namespace Tests\Feature\CurrentAcount;
 
 use App\Http\Controllers\Helpers\CreditAccountHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\Caja;
@@ -55,6 +56,9 @@ class Pago_por_helper_Test extends EmpresaTestCase
     /** @var AsistenteIaService */
     protected $service;
 
+    /** @var string|null El `agente_confianza` del dueño antes de que este archivo lo fijara. */
+    protected $confianza_original = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -71,11 +75,30 @@ class Pago_por_helper_Test extends EmpresaTestCase
 
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
 
+        /*
+         * 🔴 EL MODO DEL AGENTE SE FIJA ACÁ Y NO SE HEREDA DEL DEFAULT (misión
+         * asistente-capacidades-y-hilos, 22/9/2026).
+         *
+         * Este archivo mide que `proponer_pago` SOLO PROPONE: espera `ok: true` de la propuesta y
+         * el 422 recién al confirmar. Eso es cierto con el dueño en "cauteloso" o en "resuelto",
+         * pero NO en "directo": ahí la carga se auto-ejecuta en el mismo turno y el 422 sale en la
+         * propuesta. `users.agente_confianza` es un interruptor GLOBAL de la cuenta y el fixture es
+         * compartido, así que cualquier archivo que lo deje mal —o una corrida cortada a la
+         * mitad— dejaba a éste rojo por algo que no tiene nada que ver con lo que prueba. Se fija
+         * explícito el modo que este archivo necesita, y se devuelve en tearDown().
+         */
+        $this->confianza_original = $this->dueno->agente_confianza;
+
+        $this->dueno->agente_confianza = ConfianzaDelAgenteIaHelper::CAUTELOSO;
+        $this->dueno->save();
+
         $this->service = new AsistenteIaService();
     }
 
     protected function tearDown(): void
     {
+        User::where('id', $this->dueno->id)->update(['agente_confianza' => $this->confianza_original]);
+
         $this->limpiar_escenarios();
 
         parent::tearDown();

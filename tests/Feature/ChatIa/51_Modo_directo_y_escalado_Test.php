@@ -81,6 +81,23 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
     /** @var array<int,ExtencionEmpresa> Extensiones enganchadas por este archivo. */
     protected $extensiones_enganchadas = [];
 
+    /**
+     * El `agente_confianza` que el dueño tenía ANTES de que este archivo lo tocara, para devolverlo
+     * en tearDown().
+     *
+     * 🔴 POR QUÉ SE RESTAURA A MANO Y NO SE CONFÍA EN LA TRANSACCIÓN. `agente_confianza` es un
+     * INTERRUPTOR GLOBAL de la cuenta, y este archivo lo mueve en casi todos sus tests. Si una
+     * corrida se corta a la mitad —o el rollback de DatabaseTransactions no alcanza por lo que
+     * sea— la columna queda en "directo" y contamina a cualquier suite posterior que comparta el
+     * fixture. No es hipotético: `tests/Feature/CurrentAcount/4_Pago_por_helper_Test` (fuera del
+     * filtro ChatIa, así que nadie lo ve) asume que `proponer_pago` SOLO PROPONE, y con la columna
+     * en "directo" la carga se auto-ejecuta en el mismo turno y ese archivo se pone rojo por algo
+     * que no tiene nada que ver con él. Dos líneas de tearDown evitan una tarde de diagnóstico.
+     *
+     * @var string|null
+     */
+    protected $confianza_original = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -104,11 +121,16 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
+        $this->confianza_original = $this->dueno->agente_confianza;
+
         $this->dar_extension('asistente_ia');
     }
 
     protected function tearDown(): void
     {
+        /* Lo primero: el interruptor global vuelve a como estaba (ver $confianza_original). */
+        User::where('id', $this->dueno->id)->update(['agente_confianza' => $this->confianza_original]);
+
         foreach ($this->limites_a_restaurar as $id => $limite) {
             CreditAccount::where('id', $id)->update(['limite_credito' => $limite]);
         }
@@ -147,8 +169,12 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
     }
 
     /**
-     * Deja al dueño en un modo de confianza, guardado en la base (la transacción del test lo
-     * revierte).
+     * Deja al dueño en un modo de confianza, guardado en la base.
+     *
+     * 🔴 NO se confía en que la transacción del test lo revierta: `agente_confianza` es un
+     * interruptor GLOBAL de la cuenta y el tearDown de este archivo lo devuelve explícitamente a
+     * como estaba (ver $confianza_original). Es una columna que, si se escapa, ensucia suites
+     * ajenas que ni siquiera están en este filtro.
      *
      * @param  string  $modo
      * @return void
@@ -456,11 +482,15 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
     }
 
     /**
-     * 🔴 LAS TRES PROHIBIDAS, DE UNA: ninguna entra en ninguna lista, en ningún modo.
+     * 🔴 LAS PROHIBIDAS, DE UNA: ninguna entra en ninguna lista, en ningún modo.
+     *
+     * Recorre NUNCA_AUTO_CONFIRMABLES entera y no una lista escrita acá, a propósito: cuando una
+     * misión suma un tipo prohibido —`permiso_empleado` el mismo 22/9/2026— queda cubierto sin
+     * tocar este test.
      *
      * @test
      */
-    public function las_tres_prohibidas_no_entran_en_ninguna_lista_de_ningun_modo()
+    public function las_prohibidas_no_entran_en_ninguna_lista_de_ningun_modo()
     {
         foreach (ConfianzaDelAgenteIaHelper::MODOS as $modo) {
 

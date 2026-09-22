@@ -515,10 +515,17 @@ class Foto_de_articulo_Test extends TestCase
     }
 
     /**
-     * 🔴 NO SE AUTO-CONFIRMA NI EN "RESUELTO" (decisión de Lucas, 21/9/2026). La de SUCURSAL sí,
+     * 🔴 NO SE AUTO-CONFIRMA EN "RESUELTO" (decisión de Lucas, 21/9/2026). La de SUCURSAL sí,
      * porque no puede equivocarse de destino; ésta infiere el artículo de un nombre que puede venir
-     * inexacto, y una foto mal asignada se PUBLICA. Se fijan las dos puntas: el tipo fuera de
-     * AUTO_CONFIRMABLES y el `case` del despacho sin quizas_auto_confirmar().
+     * inexacto, y una foto mal asignada se PUBLICA.
+     *
+     * ⚠️ LO QUE SE FIJA ACÁ ES EL COMPORTAMIENTO, NO LA FORMA. Hasta el 22/9/2026 este test decía
+     * que además se fijaba "el `case` del despacho sin quizas_auto_confirmar()", y eso quedó
+     * vencido con la misión asistente-capacidades-y-hilos: ese `case` SÍ pasa por la puerta, porque
+     * ahora es la puerta la que mira el modo del dueño y la foto de un artículo sí se auto-ejecuta
+     * en "directo". Lo que sigue siendo verdad, y es lo que este test mide, es que con el dueño en
+     * "resuelto" la tarjeta queda propuesta: el tipo no está en AUTO_CONFIRMABLES. El modo directo
+     * lo cubre el test 51.
      *
      * @test
      */
