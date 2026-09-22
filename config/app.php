@@ -241,6 +241,8 @@ return [
     'GUARDAR_PRECIO_DE_OTROS_PROVEEDORES'       => env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', false),
     'CODIGOS_DE_PROVEEDOR_REPETIDOS'            => env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false),
     'ARTICLE_EXCEL_CHUNK_SIZE'                  => env('ARTICLE_EXCEL_CHUNK_SIZE', 300),
+    // Fix 22/9/2026 (incidente Servian/EXPOYER, ver ArticleProviderDiscountHelper::aplicar_ficha_en_lote).
+    'SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE'     => env('SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE', 200),
     'VPS'                                       => env('VPS', false),
     'APP_ENV'                                   => env('APP_ENV', 'production'),
     'APP_URL'                                   => env('APP_URL'),

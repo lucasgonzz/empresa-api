@@ -12,6 +12,7 @@ use App\Models\ProviderDiscount;
 use App\Models\ProviderOrderDiscount;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Tests\EmpresaTestCase;
 
@@ -1445,5 +1446,231 @@ class Sincronizar_Descuentos_Proveedor_Test extends EmpresaTestCase
             'name'    => 'zz Proveedor de otra cuenta',
             'user_id' => $otro_user->id,
         ]);
+    }
+
+    /* ==================================================================================
+     * 8. RENDIMIENTO: EL LOTE (fix 22/9/2026, incidente Servian/EXPOYER)
+     * ================================================================================== */
+
+    /**
+     * 🔴 EL HALLAZGO QUE ROZO EL TIMEOUT: antes de este fix, cada articulo disparaba su propio
+     * `Article::find()` y su propio `User::find()` adentro de `setFinalPrice()` — el MISMO dueño,
+     * buscado una vez por articulo. Con ~106.000 articulos (el catalogo real que le disparo el
+     * incidente a Servian) eso es una consulta identica repetida cien mil veces.
+     *
+     * Este test prueba el MECANISMO, no un numero de queries elegido a mano: que el dueño se busca
+     * UNA sola vez para toda la sincronizacion, sin importar cuantos articulos haya, y que los
+     * articulos se traen UNA vez POR LOTE (`whereIn`), no uno por uno.
+     *
+     * El tamaño del lote se achica por config a 2 (en vez de los 200 de produccion) para poder
+     * probar el corte entre lotes con 5 articulos en lugar de necesitar miles.
+     *
+     * Llama al helper DIRECTO (no por el endpoint, como el resto de la suite): pasando por el job y
+     * la notificacion se cuelan otras consultas a `users` que no tienen nada que ver con este fix
+     * (`avisar_que_termino()`, `BackgroundProcessHelper`), y ensuciarian el conteo.
+     *
+     * @test
+     */
+    public function el_owner_y_los_articulos_se_consultan_por_lote_no_por_articulo()
+    {
+        config(['app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE' => 2]);
+
+        $provider = $this->proveedor_de_la_suite();
+        $this->descuento_del_proveedor($provider, 10, 'Bonif ficha');
+
+        $articulos = [];
+
+        for ($i = 1; $i <= 5; $i++) {
+            $articulos[] = $this->articulo_del_proveedor($provider, 'zz Sincro lote ' . $i);
+        }
+
+        /*
+         * Sin sesion, como en el worker real: es lo que documenta el propio job
+         * (`ProcessSincronizarDescuentosProveedorJob`, "EN EL WORKER NO HAY SESION NI Auth::user()").
+         * Sin este logout, `Auth::user()` devuelve el usuario que dejó `actingAs()` en el `setUp()`
+         * de `EmpresaTestCase` (necesario para las llamadas HTTP de los fixtures de arriba) y
+         * `PriceChangeController::store()` —que corre dentro de `setFinalPrice()`, un cambio de
+         * precio real por articulo— vuelve a buscarlo con un `User::find()` propio, por afuera de
+         * todo lo que este fix optimiza. En el worker de produccion esa rama da `null` sin tocar la
+         * base; en el test, sin este logout, quedaria contando una consulta que en produccion no
+         * existe.
+         */
+        // Después de los `postJson()` de arriba, el guard activo queda en sanctum (RequestGuard,
+        // sin `logout()`) — clase de error ya fijada en la suite de procesos en segundo plano
+        // (18/9/2026): hay que devolverlo a `web` antes de poder cerrar la sesión.
+        \Illuminate\Support\Facades\Auth::shouldUse('web');
+        \Illuminate\Support\Facades\Auth::logout();
+
+        DB::enableQueryLog();
+
+        $resultado = ArticleProviderDiscountHelper::sincronizar_a_articulos(
+            $provider->fresh(),
+            ArticleProviderDiscountHelper::ALCANCE_TODOS
+        );
+
+        $queries = DB::getQueryLog();
+
+        DB::disableQueryLog();
+
+        $this->assertEquals(5, $resultado['creados'], 'Precondicion: los 5 se tienen que haber tocado.');
+
+        $consultas_de_owner = array_values(array_filter($queries, function ($q) {
+            return stripos($q['query'], 'from `users`') !== false;
+        }));
+
+        $this->assertCount(
+            1,
+            $consultas_de_owner,
+            'El dueño de la cuenta se busca UNA sola vez para toda la sincronizacion, no una vez '.
+            'por articulo: eso es lo que hacia rozar el timeout con un catalogo de cien mil.'
+        );
+
+        $consultas_de_articulos_en_lote = array_values(array_filter($queries, function ($q) {
+            return stripos($q['query'], 'from `articles`') !== false && strpos($q['query'], ' in (') !== false;
+        }));
+
+        $this->assertCount(
+            3,
+            $consultas_de_articulos_en_lote,
+            '5 articulos con lote de 2 son 3 lotes (2+2+1): 3 consultas whereIn(), nunca 5 find().'
+        );
+
+        // Y el resultado tiene que seguir siendo el correcto para los 5, incluido el que quedo
+        // solo en el ultimo lote (el que no completa el tamaño del lote).
+        foreach ($articulos as $article) {
+
+            $vigentes = $this->tagueados($article->id);
+
+            $this->assertCount(1, $vigentes);
+            $this->assertEqualsWithDelta(10, (float) $vigentes->first()->percentage, self::DELTA);
+            $this->assertEqualsWithDelta(900, $this->costo_real($article->id), self::DELTA);
+        }
+    }
+
+    /**
+     * El mismo corte de lote, pero en el grupo de DESACTUALIZADOS: cada articulo ya tiene un
+     * `article_discount` tagueado VIEJO que hay que borrar y reemplazar por el nuevo, dentro del
+     * mismo lote. Es el camino que ejercita el DELETE + INSERT batcheado de
+     * `aplicar_ficha_en_lote()`, cruzando el limite del lote con datos para borrar (no solo para
+     * crear, como el test de arriba).
+     *
+     * @test
+     */
+    public function el_lote_actualiza_varios_articulos_desactualizados_sin_perder_ninguno()
+    {
+        config(['app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE' => 2]);
+
+        $provider = $this->proveedor_de_la_suite();
+        $descuento = $this->descuento_del_proveedor($provider, 10, 'Bonif ficha');
+
+        $articulos = [];
+
+        for ($i = 1; $i <= 5; $i++) {
+            $article = $this->articulo_del_proveedor($provider, 'zz Sincro desactualizado ' . $i);
+            $this->descuento_de_ficha($article, $provider, 10);
+            $articulos[] = $article;
+        }
+
+        /* El proveedor renegocia: de 10 a 15. Los 5 quedan "desactualizados". */
+        $this->putJson('api/provider-discount/' . $descuento->id, [
+            'percentage' => 15,
+            'nombre'     => 'Bonif ficha',
+        ])->assertStatus(200);
+
+        $resultado = ArticleProviderDiscountHelper::sincronizar_a_articulos(
+            $provider->fresh(),
+            ArticleProviderDiscountHelper::ALCANCE_SOLO_CON_DESCUENTOS
+        );
+
+        $this->assertEquals(5, $resultado['actualizados']);
+
+        foreach ($articulos as $article) {
+
+            $vigentes = $this->tagueados($article->id);
+
+            $this->assertCount(
+                1,
+                $vigentes,
+                'Cada articulo tiene que quedar con UN solo descuento vigente, no con el viejo y el nuevo apilados.'
+            );
+
+            $this->assertEqualsWithDelta(15, (float) $vigentes->first()->percentage, self::DELTA);
+            $this->assertEqualsWithDelta(850, $this->costo_real($article->id), self::DELTA);
+        }
+    }
+
+    /**
+     * 🔴 Hallazgo del chequeo independiente (22/9/2026): el test de arriba de "una sola consulta"
+     * deja vacios los otros 3 grupos a proposito (todos los articulos que crea quedan en
+     * "sin_descuentos"), asi que solo ejercita UNA llamada a `aplicar_ficha_en_lote()` y no puede
+     * detectar que el dueño se buscara de nuevo si un SEGUNDO grupo tambien tiene articulos. Un
+     * catalogo real cae facil en mas de un grupo a la vez (articulos nuevos sin descuentos Y
+     * articulos desactualizados, en la misma corrida) — por eso el fetch del dueño se subio a
+     * `sincronizar_a_articulos()` (una sola vez para TODA la sincronizacion) en vez de vivir
+     * adentro de `aplicar_ficha_en_lote()` (una vez por cada una de sus hasta 4 llamadas).
+     *
+     * Este test arma los DOS grupos a la vez —3 articulos "sin_descuentos" (grupo 1) y 2
+     * "desactualizados" (grupo 2)— en una sola corrida con `ALCANCE_TODOS`, y confirma que el
+     * dueño se sigue buscando UNA sola vez pese a que las dos llamadas a `aplicar_ficha_en_lote()`
+     * tienen items.
+     *
+     * @test
+     */
+    public function el_owner_se_busca_una_sola_vez_aunque_dos_grupos_tengan_articulos()
+    {
+        config(['app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE' => 2]);
+
+        $provider = $this->proveedor_de_la_suite();
+        $this->descuento_del_proveedor($provider, 10, 'Bonif ficha');
+
+        // Grupo 1 (sin_descuentos): articulos nuevos, sin nada tagueado.
+        $nuevos = [];
+        for ($i = 1; $i <= 3; $i++) {
+            $nuevos[] = $this->articulo_del_proveedor($provider, 'zz Sincro mixto nuevo ' . $i);
+        }
+
+        // Grupo 2 (desactualizados): ya tienen la copia VIEJA de la ficha (5%, la ficha renegocio a 10%).
+        $viejos = [];
+        for ($i = 1; $i <= 2; $i++) {
+            $article = $this->articulo_del_proveedor($provider, 'zz Sincro mixto viejo ' . $i);
+            $this->descuento_de_ficha($article, $provider, 5);
+            $viejos[] = $article;
+        }
+
+        \Illuminate\Support\Facades\Auth::shouldUse('web');
+        \Illuminate\Support\Facades\Auth::logout();
+
+        DB::enableQueryLog();
+
+        $resultado = ArticleProviderDiscountHelper::sincronizar_a_articulos(
+            $provider->fresh(),
+            ArticleProviderDiscountHelper::ALCANCE_TODOS
+        );
+
+        $queries = DB::getQueryLog();
+
+        DB::disableQueryLog();
+
+        $this->assertEquals(3, $resultado['creados'], 'Precondicion: el grupo 1 (sin_descuentos) tiene 3.');
+        $this->assertEquals(2, $resultado['actualizados'], 'Precondicion: el grupo 2 (desactualizados) tiene 2.');
+
+        $consultas_de_owner = array_values(array_filter($queries, function ($q) {
+            return stripos($q['query'], 'from `users`') !== false;
+        }));
+
+        $this->assertCount(
+            1,
+            $consultas_de_owner,
+            'El dueño se busca UNA sola vez para TODA la sincronizacion, aunque dos grupos '.
+            'distintos (sin_descuentos Y desactualizados) tengan articulos en la misma corrida.'
+        );
+
+        foreach ($nuevos as $article) {
+            $this->assertEqualsWithDelta(10, (float) $this->tagueados($article->id)->first()->percentage, self::DELTA);
+        }
+
+        foreach ($viejos as $article) {
+            $this->assertEqualsWithDelta(10, (float) $this->tagueados($article->id)->first()->percentage, self::DELTA);
+        }
     }
 }
