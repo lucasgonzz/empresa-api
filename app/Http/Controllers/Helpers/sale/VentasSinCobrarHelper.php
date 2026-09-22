@@ -81,13 +81,38 @@ class VentasSinCobrarHelper {
 	/**
 	 * La query de ventas sin cobrar, en un solo lugar.
 	 *
-	 * Es la query que vivia dentro de `SaleController::ventas_sin_cobrar()`, extraida TAL CUAL:
-	 * mismo `whereHas` sobre `current_acount` y mismo `whereRaw` con el
+	 * Es la query que vivia dentro de `SaleController::ventas_sin_cobrar()`: mismo `whereHas` sobre
+	 * `current_acount` y mismo `whereRaw` con el
 	 * `COALESCE(sales.dias_alerta_venta_no_cobrada_personalizado, ?)`, que hace que el umbral
 	 * propio de una venta le gane siempre al umbral general.
 	 *
 	 * Devuelve el Builder sin ejecutar, para que cada caller le agregue lo suyo (el `with()`, el
 	 * `orderBy()`, un `where('client_id', ...)` encima) sin que el recorte se reescriba dos veces.
+	 *
+	 * 🔴 DOS CORRECCIONES DEL 21/9/2026 (mision asistente-ventas-y-fotos), al exponer esta query en
+	 * el asistente. Se corrigen ACA y no en una copia porque una segunda definicion de "venta
+	 * impaga" es el camino mas corto a que la pantalla y el chat le den dos numeros distintos al
+	 * mismo comerciante. Las dos son a favor de la pantalla, no en contra:
+	 *
+	 *   1. Los parentesis del `whereHas`. Estaba escrito
+	 *      `where(debe > 0)->where(status='sin_pagar')->orWhere(status='pagandose')->where(...)`,
+	 *      y por la precedencia de AND sobre OR de MySQL eso se lee
+	 *      `(debe > 0 AND status='sin_pagar') OR (status='pagandose' AND (...))`: el `debe > 0`
+	 *      aplicaba SOLO a la primera rama, asi que una cuenta `pagandose` con `debe` en 0 o en
+	 *      negativo entraba igual al listado de ventas sin cobrar. Ahora el `debe > 0` esta afuera
+	 *      del OR y cubre las dos ramas, que es lo que el listado siempre quiso decir.
+	 *
+	 *   2. `soloVentasReales()`. Sin el scope, una venta CONTENEDORA de consolidacion AFIP
+	 *      (`is_consolidacion_facturacion = 1`) podria aparecer como venta sin cobrar y sumar
+	 *      deuda que ya esta contada en las ventas que agrupa. Hoy esas contenedoras no generan
+	 *      cuenta corriente, asi que en la practica no cambia ninguna fila — pero eso no estaba
+	 *      escrito en ningun lado y es justo lo que se rompe en silencio el dia que cambie. Es el
+	 *      mismo scope que ya usan Rendimiento, performance y el resumen de ventas del asistente.
+	 *
+	 * ⚠️ LO QUE NO FILTRA, Y NO SE LE AGREGA: `sales.terminada`. La pantalla de ventas sin cobrar
+	 * tampoco lo filtra, y el valor de esta query es que el chat y la pantalla contesten IGUAL.
+	 * Agregarlo aca haria que el asistente conteste un numero que el comerciante no puede
+	 * reproducir en ninguna pantalla.
 	 *
 	 * @param int      $owner_id    Dueno de las ventas (`sales.user_id`).
 	 * @param int|null $employee_id Si viene, recorta a las ventas de ese empleado
@@ -98,15 +123,8 @@ class VentasSinCobrarHelper {
 	static function query_de_ventas($owner_id, $employee_id, $dias) {
 
 		$sales = Sale::where('user_id', $owner_id)
-						->whereHas('current_acount', function($q) {
-							return $q->where('debe', '>', 0)
-										->where('status', 'sin_pagar')
-										->orWhere('status', 'pagandose')
-										->where(function ($query) {
-											$query->whereNull('pagandose')
-											->orWhereRaw('debe - pagandose > 300');
-										});
-						})
+						->soloVentasReales()
+						->whereHas('current_acount', self::condicion_de_deuda())
 						// ->whereHas('client', function ($query) {
 						//     $query->whereHas(function ($q) {
 						//         $q->whereHas('credit_account', function($q_c_a) {
@@ -125,6 +143,40 @@ class VentasSinCobrarHelper {
 		}
 
 		return $sales;
+	}
+
+	/**
+	 * QUE ES UNA DEUDA VIVA, en una sola definicion: la condicion sobre la fila de `current_acounts`
+	 * que hace que su venta cuente como "sin cobrar".
+	 *
+	 * Es la condicion que `query_de_ventas()` le pasa al `whereHas`, devuelta como Closure para que
+	 * quien tenga que SUMAR esas filas —y no solo filtrar las ventas— use exactamente la misma y no
+	 * una copia. Sin esto, el total que informa el asistente y el listado que ve la pantalla podrian
+	 * estar mirando conjuntos distintos y nadie tendria como darse cuenta.
+	 *
+	 * Las columnas van SIN calificar (`debe`, `status`, `pagandose`) a proposito: asi sirve tanto
+	 * adentro del `whereHas` —donde la subquery ya corre sobre `current_acounts`— como en un
+	 * `DB::table('current_acounts')` directo. Si algun caller le joinea otra tabla con una columna
+	 * `status`, tiene que calificarla el, no este helper.
+	 *
+	 * @return \Closure
+	 */
+	static function condicion_de_deuda() {
+
+		return function ($q) {
+
+			$q->where('debe', '>', 0)
+				->where(function ($rama) {
+					$rama->where('status', 'sin_pagar')
+						->orWhere(function ($pagandose) {
+							$pagandose->where('status', 'pagandose')
+								->where(function ($query) {
+									$query->whereNull('pagandose')
+										->orWhereRaw('debe - pagandose > 300');
+								});
+						});
+				});
+		};
 	}
 
 }

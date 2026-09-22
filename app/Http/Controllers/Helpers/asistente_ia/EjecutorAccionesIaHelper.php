@@ -603,6 +603,14 @@ class EjecutorAccionesIaHelper {
             // Misión cheques-endoso-y-bancos (21/9/2026).
             case AiMessageAction::TIPO_UNIFICAR_BANCOS:
                 return PropuestaBancosChequesIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-ventas-y-fotos (21/9/2026): la foto de un artículo. Escribe la fila
+             * en `images` y dispara los mismos cuatro efectos que la pantalla (ver el helper).
+             * Nunca llega acá desde la auto-confirmación: su tipo no está en AUTO_CONFIRMABLES.
+             */
+            case AiMessageAction::TIPO_FOTO_ARTICULO:
+                return PropuestaFotoArticuloIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

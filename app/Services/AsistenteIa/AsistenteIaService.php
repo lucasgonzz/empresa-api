@@ -9,12 +9,15 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -509,6 +512,12 @@ class AsistenteIaService
         $bloque_de_carga = $con_acciones ? $this->bloque_de_carga() : '';
 
         /*
+         * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
+         * DEL BLOQUE DE CARGA PORQUE LO CORRIGE, igual que el de WhatsApp.
+         */
+        $bloque_de_quien_escribe = $this->bloque_de_quien_escribe($conversation, $company_name, $con_acciones);
+
+        /*
          * Misión asistente-por-whatsapp: el bloque del canal va DESPUÉS del de
          * carga a propósito, porque lo corrige. El de carga habla de "la
          * tarjeta que la persona confirma" y en WhatsApp no hay tarjeta que
@@ -569,7 +578,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_whatsapp}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -658,7 +667,7 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
 - Si la persona no tiene permiso para algo, decile que no tiene permiso para cargarlo desde
   su usuario.
 - Nunca muestres ni pidas números internos (ids).
-- La foto de una sucursal solo la puede asignar el dueño. La foto la saco sola de las
+- La foto de una sucursal solo la pueden asignar el dueño o un administrador. La foto la saco sola de las
   que la persona mandó en la conversación; no se la pidas.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
@@ -767,6 +776,121 @@ CARGA;
   intentar: casi siempre es la misma venta cargada desde la pantalla.
 
 BYC;
+    }
+
+    /**
+     * QUIÉN ES LA PERSONA QUE ESTÁ ESCRIBIENDO, Y QUÉ ROL TIENE.
+     *
+     * 🔴 POR QUÉ EXISTE ESTE BLOQUE (misión asistente-ventas-y-fotos, 21/9/2026). El prompt le
+     * contaba al modelo el nombre del negocio, el tono y la fecha, pero NUNCA quién le hablaba. Y el
+     * bloque de carga dice que la foto de una sucursal solo la asigna el dueño. Con esas dos
+     * cosas juntas el modelo asume lo peor y se niega SOLO: medido en producción el 21/9, el dueño
+     * pidió por WhatsApp asignarle una foto a una sucursal y recibió "solo el dueño puede hacerlo"
+     * en una sola vuelta de `ai_token_usages` —o sea, sin haber llamado la herramienta ni una vez—,
+     * con un texto redactado por él y no con la constante del código. La conversación era del dueño:
+     * `PermisosIaHelper::es_admin()` habría dado true. Nunca se ejecutó.
+     *
+     * 🔴 ESTO NO REEMPLAZA NINGÚN PERMISO. `PermisosIaHelper` sigue siendo la guarda real y la regla
+     * "solo el dueño" sigue escrita en el bloque de carga: lo único que hace este bloque es evitar
+     * que el modelo invente un rechazo que el sistema no pidió. Sacarlo "porque los permisos ya se
+     * chequean adentro" devuelve el bug: el que rechazaba no era el permiso, era el prompt.
+     *
+     * La persona se resuelve igual que en `ContextoDeCargaIa`: `ai_conversations.auth_user_id` → el
+     * `User`, `owner_id` vacío = dueño, `admin_access` = admin. Si no se puede resolver (una
+     * conversación vieja sin `auth_user_id`, o un usuario borrado) el bloque no se escribe: es mejor
+     * el prompt de antes que una afirmación inventada sobre quién es.
+     *
+     * Termina con un salto de línea, como el resto de los bloques del prompt.
+     *
+     * @param  AiConversation  $conversation
+     * @param  string  $company_name   Nombre del negocio, ya resuelto por build_system_prompt().
+     * @param  bool    $con_acciones   true si el mensaje tiene las herramientas de carga.
+     * @return string
+     */
+    protected function bloque_de_quien_escribe(AiConversation $conversation, $company_name, $con_acciones = false): string
+    {
+        $auth_user_id = (int) $conversation->auth_user_id;
+
+        if ($auth_user_id <= 0) {
+
+            return '';
+        }
+
+        $persona = User::find($auth_user_id);
+
+        if (is_null($persona)) {
+
+            return '';
+        }
+
+        $nombre = trim((string) $persona->name);
+
+        if ($nombre === '') {
+            $nombre = 'la persona que usa el sistema';
+        }
+
+        $es_dueno = PermisosIaHelper::es_dueno($persona);
+        $es_admin = PermisosIaHelper::es_admin($persona);
+
+        if ($es_dueno) {
+            $quien = 'Te escribe ' . $nombre . ', EL DUEÑO de "' . $company_name . '". Es la persona que manda en esta cuenta.';
+        } elseif ($es_admin) {
+            $quien = 'Te escribe ' . $nombre . ', que trabaja en "' . $company_name . '" con acceso de administrador. No es el dueño.';
+        } else {
+            $quien = 'Te escribe ' . $nombre . ', que trabaja en "' . $company_name . '". No es el dueño ni administrador.';
+        }
+
+        /*
+         * Sin las herramientas de carga no hay nada que se pueda negar por permiso, así que el
+         * renglón del permiso sobraría y el bloque queda en la sola identidad.
+         */
+        if (! $con_acciones) {
+
+            return <<<QUIEN
+
+Quién te está escribiendo:
+- {$quien}
+
+
+QUIEN;
+        }
+
+        /*
+         * 🔴 La rama permisiva es `es_admin` y NO `es_dueno`, aunque el bloque de carga hable del
+         * "dueño": las herramientas que dicen eso —la foto de sucursal, la de categoría, el diseño
+         * de PDF— chequean `PermisosIaHelper::es_admin()`, o sea dueño O `admin_access`. Con
+         * `es_dueno` acá, a un administrador el modelo le contestaba "eso lo tiene que hacer el
+         * dueño" sin llamar a la herramienta que lo habría dejado pasar — exactamente el mismo
+         * rechazo inventado que esta misión vino a cerrar, reproducido para el otro rol.
+         */
+        if ($es_admin) {
+            $permiso = <<<PERMISO
+- 🔴 NO te niegues por permiso. Donde una regla diga "solo el dueño puede" —la foto de una
+  sucursal, por ejemplo—, esta persona lo tiene: llamá igual a la herramienta. Si de verdad
+  no se puede, el motivo te lo devuelve ella y recién ahí lo contás, tal cual. Contestar "eso
+  solo lo puede hacer el dueño" sin haber llamado a ninguna herramienta es un error.
+PERMISO;
+        } else {
+            $permiso = <<<PERMISO
+- Si lo que te pide dice que "solo lo pueden hacer el dueño o un administrador", decile que eso
+  lo tiene que hacer uno de ellos. Para todo lo demás llamá igual a la herramienta: quién puede
+  cargar qué lo decide el sistema, no vos, y si devuelve que no tiene permiso contás ese motivo
+  tal cual, sin agregarle otro.
+PERMISO;
+        }
+
+        /*
+         * Abre y cierra con una línea en blanco: el bloque que viene atrás (el de WhatsApp, o el
+         * "Hoy es ...") tiene que quedar separado, no pegado al último renglón de este.
+         */
+        return <<<QUIEN
+
+Quién te está escribiendo:
+- {$quien}
+{$permiso}
+
+
+QUIEN;
     }
 
     /**
@@ -1256,11 +1380,17 @@ CONFIRMACION;
      * elemento a este array, y olvidarse una punta dejó de ser posible. Es el mismo movimiento que
      * ya había hecho HerramientasDeCarga con sus definiciones y su despacho.
      *
-     * El `handler` recibe (array $input, int $owner_id) y devuelve los DATOS crudos: el json_encode
-     * con su fallback vive centralizado en contenido_de_tool_result() y la defensa del enum `dias`
-     * en dias_del_enum(), en vez de repetidos ocho y tres veces. La clave `handler` va siempre
-     * ÚLTIMA: herramientas_de_lectura() la saca, y lo que viaja a la API queda con el mismo orden
-     * de claves de siempre.
+     * El `handler` recibe (array $input, int $owner_id, AiConversation $conversation) y devuelve los
+     * DATOS crudos: el json_encode con su fallback vive centralizado en contenido_de_tool_result() y
+     * la defensa del enum `dias` en dias_del_enum(), en vez de repetidos ocho y tres veces. La clave
+     * `handler` va siempre ÚLTIMA: herramientas_de_lectura() la saca, y lo que viaja a la API queda
+     * con el mismo orden de claves de siempre.
+     *
+     * ⚠️ El tercer argumento (la conversación) se agregó el 21/9/2026 para las tools que tienen que
+     * saber QUIÉN pregunta y no solo de qué negocio (consultar_ventas_sin_cobrar recorta el conjunto
+     * por persona como la pantalla). Los handlers que no lo necesitan lo siguen ignorando: PHP no se
+     * queja de un argumento de más en un Closure, así que declararlo es opcional y ninguno de los
+     * anteriores cambió de firma.
      *
      * 🔴 EL ORDEN DE ESTE ARRAY ES PARTE DEL CACHÉ DE PROMPT (ver build_tools): no se reordena.
      *
@@ -1781,7 +1911,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro o proveedor. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -1793,6 +1923,15 @@ CONFIRMACION;
                             'enum' => ResumenDeVentasIaHelper::AGRUPACIONES,
                         ],
                         'moneda' => ['type' => 'string', 'description' => 'pesos (default) o dolares.', 'enum' => ['pesos', 'dolares']],
+                        /*
+                         * C3 de la misión asistente-ventas-y-fotos: el método ACOTA el conjunto, y se
+                         * combina con cualquier agrupar_por. Antes solo se podía agrupar, así que
+                         * "cuánto le vendí con tarjeta a Fulano" no tenía forma de contestarse.
+                         */
+                        'metodo_de_pago' => [
+                            'type' => 'string',
+                            'description' => 'Nombre del método de pago, para dejar SOLO las ventas que lo tocaron (se combina con agrupar_por: metodo_de_pago "Tarjeta" + agrupar_por "cliente" contesta a quién le vendiste con tarjeta). También vale "Cuenta corriente" para quedarte con lo vendido fiado. 🔴 Cada importe sigue siendo el TOTAL de la venta, no la parte pagada con ese método: una venta pagada con dos métodos entra entera en los dos filtros, así que no sumes dos llamadas. Si el nombre no existe o encaja con varios, la respuesta trae "error" con los que hay: preguntá cuál y volvé a llamar.',
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -1802,7 +1941,8 @@ CONFIRMACION;
                         isset($input['desde']) ? $input['desde'] : null,
                         isset($input['hasta']) ? $input['hasta'] : null,
                         isset($input['agrupar_por']) ? (string) $input['agrupar_por'] : null,
-                        isset($input['moneda']) ? (string) $input['moneda'] : 'pesos'
+                        isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
+                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null
                     );
                 },
             ],
@@ -1850,6 +1990,42 @@ CONFIRMACION;
                     $ids = is_array($input['articulo_ids'] ?? null) ? $input['articulo_ids'] : [];
 
                     return AdjuntosIaHelper::imagenes_de_articulos((int) $owner_id, array_map('intval', $ids));
+                },
+            ],
+            /*
+             * 🔴 DE ACÁ PARA ABAJO, LO DE LA MISIÓN asistente-ventas-y-fotos (21/9/2026), Y VA AL
+             * FINAL POR EL MISMO MOTIVO DE SIEMPRE: el orden de este array es el prefijo que cachea
+             * con_cache_control().
+             */
+            [
+                'name' => 'consultar_ventas_sin_cobrar',
+                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                /*
+                 * 🔴 La persona sale de la conversación y no del dueño: el conjunto se recorta por
+                 * QUIÉN pregunta, como en la pantalla. `ContextoDeCargaIa` es el mismo resolutor que
+                 * usan las herramientas de carga (auth_user_id → User), para que "quién es esta
+                 * persona" tenga una sola definición en el asistente. `dias` viaja null cuando el
+                 * modelo no lo mandó, para que el helper aplique la cascada por rol en vez de leer
+                 * un 0 que el modelo nunca pidió.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    $dias = isset($input['dias']) ? (int) $input['dias'] : null;
+
+                    $persona = ($conversation instanceof AiConversation)
+                        ? ContextoDeCargaIa::de_la_conversacion($conversation)->persona
+                        : null;
+
+                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona);
                 },
             ],
         ];
@@ -2025,8 +2201,10 @@ CONFIRMACION;
 
                 if (! is_null($handler)) {
                     // Las dos puntas de una tool de lectura (su definición y su handler) son la
-                    // misma entrada de registro_de_lectura(): acá solo se la invoca.
-                    $datos = call_user_func($handler, $tool_input, $owner_id);
+                    // misma entrada de registro_de_lectura(): acá solo se la invoca. La conversación
+                    // va tercera para las tools que recortan por QUIÉN pregunta (ver el docblock
+                    // del registro); las demás la ignoran sin declararla.
+                    $datos = call_user_func($handler, $tool_input, $owner_id, $conversation);
 
                     /*
                      * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del

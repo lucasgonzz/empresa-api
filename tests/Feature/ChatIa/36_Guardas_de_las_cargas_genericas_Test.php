@@ -463,14 +463,30 @@ class Guardas_de_las_cargas_genericas_Test extends EmpresaTestCase
     {
         $nombres = HerramientasDeCarga::nombres();
 
+        /*
+         * Las cinco de esta misión van juntas y en este orden.
+         *
+         * 🔴 Ya NO se afirma que sean las ÚLTIMAS del array, y el cambio es a propósito: la regla
+         * del prefijo del caché de prompt manda agregar cada herramienta nueva AL FINAL, así que
+         * toda misión posterior queda detrás de estas cinco. Con `array_slice(-5)` esa regla, bien
+         * cumplida, se leía como un rojo — pasó el 21/9/2026 al sumar `proponer_foto_articulo`.
+         * Lo que este test tiene que proteger es que las cinco sigan juntas, en orden y despachadas,
+         * no que nadie más pueda venir después.
+         */
+        $desde = array_search('que_puedo_cargar', $nombres, true);
+
+        $this->assertNotFalse($desde, 'que_puedo_cargar no está declarada');
+
+        $de_esta_mision = array_slice($nombres, $desde, 5);
+
         $this->assertSame(
             ['que_puedo_cargar', 'proponer_alta', 'proponer_edicion', 'proponer_baja', 'proponer_venta'],
-            array_slice($nombres, -5)
+            $de_esta_mision
         );
 
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 
-        foreach (array_slice($nombres, -5) as $nombre) {
+        foreach ($de_esta_mision as $nombre) {
             $this->assertStringContainsString("case '" . $nombre . "':", $contenido, $nombre);
         }
 
