@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Models\Budget;
 use App\Models\Sale;
+use App\Models\User;
 
 /**
  * El link del PDF de una venta o de un presupuesto (misión asistente-capacidades-y-hilos,
@@ -163,7 +164,7 @@ class LinkDePdfIaHelper
      */
     public static function base_publica($owner_id): string
     {
-        $owner = \App\Models\User::find((int) $owner_id);
+        $owner = User::find((int) $owner_id);
 
         $guardada = is_null($owner) ? '' : (string) $owner->api_url;
 
