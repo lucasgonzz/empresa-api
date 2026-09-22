@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
@@ -489,6 +490,12 @@ class AsistenteIaService
         $bloque_de_carga = $con_acciones ? $this->bloque_de_carga() : '';
 
         /*
+         * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
+         * DEL BLOQUE DE CARGA PORQUE LO CORRIGE, igual que el de WhatsApp.
+         */
+        $bloque_de_quien_escribe = $this->bloque_de_quien_escribe($conversation, $company_name, $con_acciones);
+
+        /*
          * Misión asistente-por-whatsapp: el bloque del canal va DESPUÉS del de
          * carga a propósito, porque lo corrige. El de carga habla de "la
          * tarjeta que la persona confirma" y en WhatsApp no hay tarjeta que
@@ -549,7 +556,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_whatsapp}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -747,6 +754,106 @@ CARGA;
   intentar: casi siempre es la misma venta cargada desde la pantalla.
 
 BYC;
+    }
+
+    /**
+     * QUIÉN ES LA PERSONA QUE ESTÁ ESCRIBIENDO, Y QUÉ ROL TIENE.
+     *
+     * 🔴 POR QUÉ EXISTE ESTE BLOQUE (misión asistente-ventas-y-fotos, 21/9/2026). El prompt le
+     * contaba al modelo el nombre del negocio, el tono y la fecha, pero NUNCA quién le hablaba. Y el
+     * bloque de carga dice "la foto de una sucursal solo la puede asignar el dueño". Con esas dos
+     * cosas juntas el modelo asume lo peor y se niega SOLO: medido en producción el 21/9, el dueño
+     * pidió por WhatsApp asignarle una foto a una sucursal y recibió "solo el dueño puede hacerlo"
+     * en una sola vuelta de `ai_token_usages` —o sea, sin haber llamado la herramienta ni una vez—,
+     * con un texto redactado por él y no con la constante del código. La conversación era del dueño:
+     * `PermisosIaHelper::es_admin()` habría dado true. Nunca se ejecutó.
+     *
+     * 🔴 ESTO NO REEMPLAZA NINGÚN PERMISO. `PermisosIaHelper` sigue siendo la guarda real y la regla
+     * "solo el dueño" sigue escrita en el bloque de carga: lo único que hace este bloque es evitar
+     * que el modelo invente un rechazo que el sistema no pidió. Sacarlo "porque los permisos ya se
+     * chequean adentro" devuelve el bug: el que rechazaba no era el permiso, era el prompt.
+     *
+     * La persona se resuelve igual que en `ContextoDeCargaIa`: `ai_conversations.auth_user_id` → el
+     * `User`, `owner_id` vacío = dueño, `admin_access` = admin. Si no se puede resolver (una
+     * conversación vieja sin `auth_user_id`, o un usuario borrado) el bloque no se escribe: es mejor
+     * el prompt de antes que una afirmación inventada sobre quién es.
+     *
+     * Termina con un salto de línea, como el resto de los bloques del prompt.
+     *
+     * @param  AiConversation  $conversation
+     * @param  string  $company_name   Nombre del negocio, ya resuelto por build_system_prompt().
+     * @param  bool    $con_acciones   true si el mensaje tiene las herramientas de carga.
+     * @return string
+     */
+    protected function bloque_de_quien_escribe(AiConversation $conversation, $company_name, $con_acciones = false): string
+    {
+        $auth_user_id = (int) $conversation->auth_user_id;
+
+        if ($auth_user_id <= 0) {
+
+            return '';
+        }
+
+        $persona = User::find($auth_user_id);
+
+        if (is_null($persona)) {
+
+            return '';
+        }
+
+        $nombre = trim((string) $persona->name);
+
+        if ($nombre === '') {
+            $nombre = 'la persona que usa el sistema';
+        }
+
+        $es_dueno = PermisosIaHelper::es_dueno($persona);
+        $es_admin = PermisosIaHelper::es_admin($persona);
+
+        if ($es_dueno) {
+            $quien = 'Te escribe ' . $nombre . ', EL DUEÑO de "' . $company_name . '". Es la persona que manda en esta cuenta.';
+        } elseif ($es_admin) {
+            $quien = 'Te escribe ' . $nombre . ', que trabaja en "' . $company_name . '" con acceso de administrador. No es el dueño.';
+        } else {
+            $quien = 'Te escribe ' . $nombre . ', que trabaja en "' . $company_name . '". No es el dueño ni administrador.';
+        }
+
+        /*
+         * Sin las herramientas de carga no hay nada que se pueda negar por permiso, así que el
+         * renglón del permiso sobraría y el bloque queda en la sola identidad.
+         */
+        if (! $con_acciones) {
+
+            return <<<QUIEN
+
+Quién te está escribiendo:
+- {$quien}
+
+QUIEN;
+        }
+
+        if ($es_dueno) {
+            $permiso = <<<PERMISO
+- 🔴 NO te niegues por permiso. Donde una regla diga "solo el dueño puede" —la foto de una
+  sucursal, por ejemplo—, esta persona ES el dueño: llamá igual a la herramienta. Si de verdad
+  no se puede, el motivo te lo devuelve ella y recién ahí lo contás, tal cual. Contestar "eso
+  solo lo puede hacer el dueño" sin haber llamado a ninguna herramienta es un error.
+PERMISO;
+        } else {
+            $permiso = <<<PERMISO
+- Si lo que te pide dice "solo el dueño puede", decile que eso lo tiene que hacer el dueño. Para
+  todo lo demás llamá igual a la herramienta: quién puede cargar qué lo decide el sistema, no vos,
+  y si devuelve que no tiene permiso contás ese motivo tal cual, sin agregarle otro.
+PERMISO;
+        }
+
+        return <<<QUIEN
+
+Quién te está escribiendo:
+- {$quien}
+{$permiso}
+
+QUIEN;
     }
 
     /**
