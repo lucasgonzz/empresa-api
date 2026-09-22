@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\ChatIa;
 
-use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Stock\SetArticleStock\CheckToAddress;
@@ -18,7 +17,6 @@ use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\EmpresaTestCase;
@@ -61,9 +59,6 @@ class Stock_por_deposito_por_asistente_Test extends EmpresaTestCase
 
     /** @var array<int,ExtencionEmpresa> Extensiones enganchadas por este archivo. */
     protected $extensiones_enganchadas = [];
-
-    /** @var array<int,Address> Sucursales creadas por un test, para borrarlas. */
-    protected $sucursales_creadas = [];
 
     protected function setUp(): void
     {
@@ -120,14 +115,10 @@ class Stock_por_deposito_por_asistente_Test extends EmpresaTestCase
      */
     protected function sucursal($nombre)
     {
-        $sucursal = Address::create([
+        return Address::create([
             'street'  => $nombre,
             'user_id' => $this->dueno->id,
         ]);
-
-        $this->sucursales_creadas[] = $sucursal;
-
-        return $sucursal;
     }
 
     /**
@@ -662,6 +653,53 @@ class Stock_por_deposito_por_asistente_Test extends EmpresaTestCase
 
         // 🔴 Y el depósito que no se tocó quedó donde estaba: viajó con su número de hoy.
         $this->assertEqualsWithDelta(40, $this->pivot($articulo->id, $central->id), self::DELTA);
+    }
+
+    /**
+     * 🔴 LA OTRA CARA DE LA TRAMPA 2: si entre proponer y confirmar cambia el stock de OTRO
+     * depósito, confirmar no se lo corrige.
+     *
+     * El payload lleva todos los depósitos y el helper del back calcula, para cada uno, la
+     * diferencia contra lo que hay. Con el payload congelado al momento de proponer, un depósito
+     * que vendió en el medio volvería a su número anterior: un ajuste de stock que nadie pidió, en
+     * un depósito que la tarjeta ni nombra. Por eso el payload se rearma al confirmar.
+     *
+     * @test
+     */
+    public function lo_que_cambio_en_otro_deposito_entre_proponer_y_confirmar_no_se_pisa()
+    {
+        $articulo = $this->articulo_de_prueba('zz-p52 Pastina congelada');
+
+        $florida = $this->sucursal('zz-p52 Congelada florida');
+        $central = $this->sucursal('zz-p52 Congelada central');
+
+        $this->stock_en($articulo, $florida, 3);
+        $this->stock_en($articulo, $central, 40);
+
+        list($conversation, $assistant) = $this->conversacion('Sumale 10 a Florida');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p52 Pastina congelada',
+            'deposito' => 'zz-p52 Congelada florida',
+            'cantidad' => 10,
+            'modo'     => 'sumar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        // En el medio, alguien vende 15 de Central (o hace cualquier otra cosa con ese depósito).
+        $this->stock_en($articulo, $central, 25);
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(13, $this->pivot($articulo->id, $florida->id), self::DELTA);
+
+        $this->assertEqualsWithDelta(
+            25,
+            $this->pivot($articulo->id, $central->id),
+            self::DELTA,
+            'Volvió a 40: el payload de la tarjeta corrigió un depósito que no se estaba tocando.'
+        );
     }
 
     /**

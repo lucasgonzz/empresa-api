@@ -503,6 +503,11 @@ class PropuestaStockIaHelper
             $mensaje,
             AiMessageAction::TIPO_STOCK_DEPOSITO,
             self::clave_deposito($articulo->id, $deposito->id),
+            /*
+             * ⚠️ `payload` queda guardado como registro de lo que se propuso, pero al confirmar NO
+             * se usa: se rearma con los números de ese momento. Ver el 🔴 de
+             * ejecutar_stock_en_deposito(). Lo que manda al ejecutar es `esperado`.
+             */
             ['payload' => $payload, 'esperado' => [
                 'article_id' => (int) $articulo->id,
                 'address_id' => (int) $deposito->id,
@@ -550,8 +555,6 @@ class PropuestaStockIaHelper
     {
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
-        $payload = isset($datos['payload']) && is_array($datos['payload']) ? $datos['payload'] : [];
-
         $esperado = isset($datos['esperado']) && is_array($datos['esperado']) ? $datos['esperado'] : [];
 
         $persona = self::persona_autenticada($contexto, 'El stock de un depósito');
@@ -560,13 +563,38 @@ class PropuestaStockIaHelper
 
         $address_id = isset($esperado['address_id']) ? (int) $esperado['address_id'] : 0;
 
+        if ($address_id <= 0) {
+
+            throw new AccionIaException(422, 'La tarjeta del stock está incompleta. Pedímela de nuevo.');
+        }
+
         self::verificar_permiso_de_ejecucion($contexto, [$address_id]);
 
         self::verificar_depositos($contexto, [$address_id]);
 
         $final = isset($esperado['final']) ? (float) $esperado['final'] : 0.0;
 
-        $antes = self::amount_de(self::pivots_del_articulo($articulo->id), $address_id);
+        $pivots = self::pivots_del_articulo($articulo->id);
+
+        $antes = self::amount_de($pivots, $address_id);
+
+        /*
+         * 🔴 EL PAYLOAD SE REARMA ACÁ, CON LOS NÚMEROS DE AHORA, Y NO SE USA EL QUE GUARDÓ LA
+         * TARJETA. Es la otra cara de la trampa 2: el payload lleva TODOS los depósitos del
+         * artículo, y `UpdateAddressesStockHelper` calcula, para cada uno, la diferencia contra lo
+         * que hay. Entre proponer y confirmar pueden pasar horas: si en el medio se vendió algo de
+         * OTRO depósito, el payload viejo lo "corregiría" a su número anterior — un ajuste de stock
+         * que nadie pidió, en un depósito que la tarjeta ni nombra. Rearmado con los pivots de
+         * ahora, los que no cambian viajan con su valor actual (diferencia 0, no se tocan) y el que
+         * cambia va al número que la persona confirmó en la tarjeta.
+         */
+        $payload = self::payload_de_stock_en_deposito(
+            $articulo,
+            self::depositos_del_dueno($contexto->owner_id),
+            $pivots,
+            $address_id,
+            $final
+        );
 
         $request = Request::create('/api/article-update-addresses', 'PUT', $payload);
         $request->headers->set('Accept', 'application/json');
