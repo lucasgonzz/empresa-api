@@ -15,6 +15,7 @@ use App\Models\Category;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\Expense;
 use App\Models\ExtencionEmpresa;
 use App\Models\Sale;
 use App\Models\User;
@@ -661,25 +662,36 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
     {
         $this->dueno_en(ConfianzaDelAgenteIaHelper::DIRECTO);
 
-        $categoria = Category::create(['name' => 'Rubro repetido P51', 'user_id' => $this->dueno->id, 'num' => 946]);
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
 
-        list($conversation, $assistant) = $this->conversacion('Ponele 12 de margen al rubro');
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+        $metodo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+        $this->actuar_como_el_dueno();
 
-        $primera = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
-            'entidad'  => 'category',
-            'registro' => 'Rubro repetido P51',
-            'cambios'  => ['percentage_gain' => 12],
-        ]);
+        $gastos_antes = Expense::where('user_id', $this->dueno->id)->count();
+
+        list($conversation, $assistant) = $this->conversacion('Anotá el alquiler, 5000, en efectivo');
+
+        $entrada = [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 5000,
+            'pagos'           => [['metodo_de_pago_id' => $metodo->id, 'caja_id' => $caja->id]],
+            'observaciones'   => 'Gasto repetido P51',
+        ];
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_gasto', $entrada);
 
         $this->assertSame('confirmada', $primera['estado'], json_encode($primera));
-        $this->assertEqualsWithDelta(12, (float) Category::find($categoria->id)->percentage_gain, self::DELTA);
 
-        /* La misma carga, otra vez, en el mismo turno. */
-        $segunda = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
-            'entidad'  => 'category',
-            'registro' => 'Rubro repetido P51',
-            'cambios'  => ['percentage_gain' => 12],
-        ]);
+        $gasto = Expense::where('user_id', $this->dueno->id)->orderBy('id', 'DESC')->first();
+
+        $this->assertNotNull($gasto, 'No se registró el gasto.');
+
+        $this->gastos_creados_por_escenarios[] = (int) $gasto->id;
+
+        /* La MISMA carga, otra vez, en el mismo turno: misma clave (gasto:{subcategoria}). */
+        $segunda = $this->herramienta($conversation, $assistant, 'proponer_gasto', $entrada);
 
         $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
         $this->assertArrayHasKey('confirmada_parecida', $segunda, 'La guarda anti-doble-registro no se disparó.');
@@ -687,7 +699,9 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
 
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($segunda['tarjeta_id'])->estado_guardado());
 
-        /* Una sola confirmada, la primera. */
+        /* 🔴 Un solo gasto en la base, y una sola tarjeta confirmada. */
+        $this->assertSame($gastos_antes + 1, Expense::where('user_id', $this->dueno->id)->count(), 'El gasto se cargó dos veces.');
+
         $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)
                                             ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
                                             ->count());
