@@ -290,9 +290,14 @@ class PropuestaStockIaHelper
             isset($esperado['to_address_id']) ? (int) $esperado['to_address_id'] : 0,
         ]);
 
-        $desde_id = (int) $esperado['from_address_id'];
-        $hacia_id = (int) $esperado['to_address_id'];
-        $cantidad = (float) $esperado['cantidad'];
+        $desde_id = isset($esperado['from_address_id']) ? (int) $esperado['from_address_id'] : 0;
+        $hacia_id = isset($esperado['to_address_id']) ? (int) $esperado['to_address_id'] : 0;
+        $cantidad = isset($esperado['cantidad']) ? (float) $esperado['cantidad'] : 0.0;
+
+        if ($desde_id <= 0 || $hacia_id <= 0 || $cantidad <= 0) {
+
+            throw new AccionIaException(422, 'La tarjeta del movimiento está incompleta. Pedímela de nuevo.');
+        }
 
         self::verificar_depositos($contexto, [$desde_id, $hacia_id]);
 

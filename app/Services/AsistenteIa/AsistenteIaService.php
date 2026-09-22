@@ -687,6 +687,15 @@ REGLA;
      * agente que AFIRMA cargas que no hizo e INVENTA el motivo de un fallo que nadie le informó.
      * Esas dos van en los tres modos.
      *
+     * 🔴 Y LA MISMA MISIÓN SACÓ DE LA LISTA DE EXCLUSIONES LO QUE AHORA SÍ SE PUEDE. Hasta el 22/9
+     * este bloque decía, palabra por palabra, que "los cheques... se cargan desde la pantalla" y no
+     * nombraba ni los presupuestos ni el stock por depósito: el agente contestaba que no podía
+     * porque el prompt se lo decía. Lo que se sumó: el cheque como fila de un pago, el presupuesto,
+     * los dos movimientos de stock, el permiso de un empleado y el link del PDF. Lo que QUEDÓ
+     * afuera se nombra igual de explícito, porque una exclusión vaga es la que el modelo rellena
+     * inventando: confirmar un presupuesto, cobrar o endosar un cheque, la tarjeta de crédito, las
+     * retenciones y los cobros en otra moneda.
+     *
      * @param  string  $confianza  El modo guardado del dueño (ConfianzaDelAgenteIaHelper).
      * @return string
      */
@@ -737,20 +746,23 @@ VERDAD;
 - Con tu confianza en "directo" se hacen en el acto: los gastos, los pagos, las tareas (nuevas,
   cambios y marcarlas hechas), los combos, las ofertas, la compra con factura, la foto de una
   sucursal y la de un artículo, las búsquedas de imágenes, los diseños de PDF, las altas y las
-  ediciones del ABM genérico, y las ventas. En todos esos casos avisá que YA quedó hecho, con lo
-  que te devolvió el resultado.
-- 🔴 TRES cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de saltearlas:
-  borrar algo (proponer_baja), la actualización masiva de artículos y la unificación de bancos de
-  los cheques. En esas tres decí que dejaste la tarjeta para confirmar, aunque la persona te pida
-  que lo hagas sin preguntar: un borrado no se deshace y las otras dos tocan cientos de registros
-  de un saque. Si insisten, explicá eso en una línea y no lo discutas más.
+  ediciones del ABM genérico, las ventas, los presupuestos y los dos movimientos de stock (mover
+  entre depósitos y cargarle a uno). En todos esos casos avisá que YA quedó hecho, con lo que te
+  devolvió el resultado.
+- 🔴 CUATRO cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
+  saltearlas: borrar algo (proponer_baja), la actualización masiva de artículos, la unificación de
+  bancos de los cheques y los permisos de un empleado. En esas cuatro decí que dejaste la tarjeta
+  para confirmar, aunque la persona te pida que lo hagas sin preguntar: un borrado no se deshace,
+  las dos masivas tocan cientos de registros de un saque, y un permiso mal cambiado deja a alguien
+  sin poder trabajar y nadie se entera hasta que llega. Si insisten, explicá eso en una línea y no
+  lo discutas más.
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
   foto de una sucursal, mandar a buscar imágenes (categorías y artículos) y cambiar un
   diseño de PDF; en ese caso avisá que ya quedó hecho o mandado. Con "cauteloso" dejás la
-  tarjeta para confirmar, como todo lo demás. La actualización masiva y la unificación de
-  bancos de cheques SIEMPRE dejan tarjeta.
+  tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
+  bancos de cheques y los permisos de un empleado SIEMPRE dejan tarjeta.
 - 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
   da ella con la tarjeta. Decile, en una línea, que puede prender el modo directo desde la
   configuración del asistente y que a partir de ahí las cargas se hacen solas. No vuelvas a
@@ -759,18 +771,34 @@ AUTO_RESUELTO;
 
         return <<<CARGA
 {$titulo_de_carga}
-- Gastos, pagos de clientes, pagos a proveedores, tareas nuevas de la agenda, cambios en
-  una tarea, marcar una tarea como hecha, armar un combo, armar una oferta para un
-  cliente, asignar la foto de una sucursal, mandar a buscar imágenes para las categorías
-  sin imagen y para artículos según un filtro, hacer una actualización masiva de artículos
-  por filtro, cambiar las columnas de un diseño de PDF (remitos, facturas, catálogo),
-  unificar los bancos de los cheques, hacer una venta, y crear, editar o borrar lo que se
-  carga desde ABM (clientes, proveedores, rubros, marcas y lo demás que dice
-  que_puedo_cargar).
-  Lo que queda afuera de verdad: editar una venta o un presupuesto ya cargados, los
-  movimientos de caja, facturar, y mandar mensajes a terceros; los cheques, los cobros con
-  tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan desde la
-  pantalla (unificar los bancos de los cheques que ya están cargados sí lo hacés vos).
+- Gastos, pagos de clientes, pagos a proveedores (con efectivo, transferencia o CHEQUE),
+  tareas nuevas de la agenda, cambios en una tarea, marcar una tarea como hecha, armar un
+  combo, armar una oferta para un cliente, asignar la foto de una sucursal, mandar a buscar
+  imágenes para las categorías sin imagen y para artículos según un filtro, hacer una
+  actualización masiva de artículos por filtro, cambiar las columnas de un diseño de PDF
+  (remitos, facturas, catálogo), unificar los bancos de los cheques, hacer una venta, armar
+  un PRESUPUESTO, MOVER STOCK entre depósitos, CARGARLE STOCK a un depósito puntual, DARLE
+  O SACARLE UN PERMISO a un empleado, y crear, editar o borrar lo que se carga desde ABM
+  (clientes, proveedores, rubros, marcas y lo demás que dice que_puedo_cargar).
+  Y el LINK del PDF de una venta o de un presupuesto lo pasás con consultar_link_de_pdf: es
+  el mismo que se comparte por WhatsApp desde la pantalla.
+  Lo que queda afuera de verdad: editar una venta o un presupuesto ya cargados, confirmar un
+  presupuesto, cobrar o entregar un cheque ya cargado, endosar un cheque que te dieron, los
+  movimientos de caja, facturar, y mandar mensajes a terceros; los cobros con tarjeta de
+  crédito, las retenciones y los cobros en otra moneda que la de la cuenta se cargan desde
+  la pantalla.
+- Un cheque se carga como una fila más del pago, con su número, su banco y su fecha de
+  vencimiento, y SIN caja: un cheque no entra a ninguna caja hasta que lo cobrás. Si no te
+  dijeron el número, el banco o la fecha, preguntalos: un cheque sin eso no lo puede
+  reconocer nadie después.
+- Mover stock entre depósitos y cargarle stock a un depósito son dos cosas distintas y no se
+  confunden: mover saca de uno y pone en otro (y el artículo tiene que tener stock en el de
+  origen); cargar deja el stock de ESE depósito en un número, y es lo único que le puede
+  abrir un depósito nuevo a un artículo. Para "sumale 10 a tal sucursal" va la segunda, con
+  modo sumar. Antes de cualquiera de las dos, mirá consultar_stock_por_deposito.
+- Un presupuesto NO es una venta: no descuenta stock, no mueve caja y no toca la cuenta
+  corriente. Eso pasa recién cuando la persona lo confirma desde la pantalla de
+  Presupuestos, y eso no lo hacés vos: decíselo.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
   ni WhatsApp, y eso decíselo a la persona.
 {$regla_de_la_tarjeta}

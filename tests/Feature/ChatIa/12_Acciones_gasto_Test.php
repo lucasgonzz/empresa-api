@@ -379,31 +379,58 @@ class Acciones_gasto_Test extends EmpresaTestCase
     }
 
     /**
-     * El método de pago 1 del catálogo (el Cheque) no lo carga el asistente, y el motivo es el de su
-     * tipo: la pantalla tampoco le dibuja caja.
+     * 🔴 EL MÉTODO DE PAGO 1 DEL CATÁLOGO (EL CHEQUE) PASÓ A SER USABLE EL 22/9/2026 (misión
+     * asistente-capacidades-y-hilos), y este test dice cómo.
+     *
+     * Hasta ese día devolvía el motivo "Los cheques se cargan desde la pantalla", que es
+     * literalmente lo que el agente contestó en el mensaje #46 de demo3. Ahora se puede cargar,
+     * pero SOLO con sus datos: sin número, banco y fecha de vencimiento el cheque quedaría en
+     * blanco (todas las columnas de `cheques` son nullable y `ChequeHelper::crear_cheque()` no
+     * valida nada), así que lo que antes era un "no se puede" ahora es un "faltan".
+     *
+     * Y la regla por id (METODO_SIN_CAJA_ID) sigue existiendo para todo lo demás: lo que se levanta
+     * es la excepción del cheque, que no lleva caja porque no mueve caja.
      *
      * @test
      */
-    public function el_metodo_de_pago_uno_devuelve_error_con_el_motivo_de_su_tipo()
+    public function el_metodo_de_pago_uno_es_el_cheque_y_ahora_se_puede_usar_con_sus_datos()
     {
         $metodo = CurrentAcountPaymentMethod::find(1);
         $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
 
         $this->assertNotNull($metodo, 'El catálogo del fixture tiene que tener el método de pago 1.');
+        $this->assertTrue(OpcionesDeCargaIaHelper::es_cheque($metodo), 'El método 1 del catálogo tiene que ser el Cheque.');
 
         list($conversation, $assistant) = $this->conversacion();
 
-        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+        // Sin los datos del cheque no se propone nada, y se pide lo que falta.
+        $sin_datos = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
             'subcategoria_id' => $concepto->id,
             'monto'           => 5000,
             'pagos'           => [['metodo_de_pago_id' => 1]],
         ]);
 
-        $this->assertFalse($respuesta['ok']);
-        $this->assertEquals(OpcionesDeCargaIaHelper::MOTIVOS_NO_USABLES['cheque'], $respuesta['error']);
+        $this->assertFalse($sin_datos['ok']);
+        $this->assertNotEmpty($sin_datos['faltan']);
         $this->assertEquals(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
 
-        // Y en las opciones de carga viaja como no usable, con ese mismo motivo.
+        // Con los datos, sí: y el cheque NO lleva caja.
+        $con_datos = $this->herramienta($conversation, $assistant, 'proponer_gasto', [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 5000,
+            'pagos'           => [[
+                'metodo_de_pago_id' => 1,
+                'cheque'            => [
+                    'numero'     => '12345678',
+                    'banco'      => 'Banco Nación',
+                    'fecha_pago' => Carbon::today()->addDays(30)->format('Y-m-d'),
+                ],
+            ]],
+        ]);
+
+        $this->assertTrue($con_datos['ok'], json_encode($con_datos));
+
+        // Y en las opciones de carga ya no viaja como no usable.
         $opciones = $this->herramienta($conversation, $assistant, 'consultar_opciones_de_carga', []);
 
         $por_id = [];
@@ -411,8 +438,8 @@ class Acciones_gasto_Test extends EmpresaTestCase
             $por_id[$fila['id']] = $fila;
         }
 
-        $this->assertFalse($por_id[1]['se_puede_usar']);
-        $this->assertEquals(OpcionesDeCargaIaHelper::MOTIVOS_NO_USABLES['cheque'], $por_id[1]['motivo']);
+        $this->assertTrue($por_id[1]['se_puede_usar']);
+        $this->assertArrayNotHasKey('motivo', $por_id[1]);
     }
 
     /**

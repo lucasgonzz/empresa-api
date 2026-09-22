@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaPermisoEmpleadoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
@@ -325,7 +326,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_pago',
-                'description'  => 'Arma la tarjeta de un pago de un cliente (cobro) o a un proveedor, sobre su cuenta corriente, para que la persona la confirme: NO registra nada. Con fecha futura arma una tarea para cobrar o pagar ese día. Los cheques, la tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan desde la pantalla. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un pago de un cliente (cobro) o a un proveedor, sobre su cuenta corriente, para que la persona la confirme: NO registra nada. Con fecha futura arma una tarea para cobrar o pagar ese día. Con CHEQUE se puede: mandá la fila de pago con su objeto `cheque` (número, banco y fecha de vencimiento), sin caja — un cheque no entra a ninguna caja al cargarse. Lo que sigue siendo de la pantalla es ENDOSAR un cheque que ya te dieron, la tarjeta de crédito y los cobros en otra moneda que la de la cuenta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1140,6 +1141,30 @@ class HerramientasDeCarga
                     'required'   => ['items', 'cliente'],
                 ],
             ],
+            [
+                'name'         => 'proponer_permiso_de_empleado',
+                'description'  => 'Arma la tarjeta para DARLE o SACARLE un permiso a un empleado, por el mismo camino que la pantalla de Empleados. El empleado va por su nombre y el permiso por su nombre como lo muestra la pantalla ("Listar ventas") o por su código ("sale.index"). 🔴 SIEMPRE deja tarjeta para confirmar, aunque el dueño tenga el modo directo prendido y aunque te pidan que lo hagas sin preguntar: la pantalla reemplaza la lista entera de permisos y un cambio mal hecho deja a alguien sin poder trabajar, y nadie se entera hasta que llega. La tarjeta muestra CON QUÉ PERMISOS QUEDA el empleado: cuando la respuesta vuelva, contá eso. Solo la puede usar el dueño o un administrador. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'empleado'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del empleado, como lo dijo la persona.',
+                        ],
+                        'permiso'     => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del permiso como lo muestra la pantalla de Empleados, o su código. "Ver las ventas" es "Listar ventas" (sale.index).',
+                        ],
+                        'accion'      => [
+                            'type'        => 'string',
+                            'enum'        => ['dar', 'sacar'],
+                            'description' => 'Si se le da el permiso o se le saca.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['empleado', 'permiso', 'accion'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1543,6 +1568,11 @@ class HerramientasDeCarga
                     PropuestaPresupuestoIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
 
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: los permisos de un empleado SIEMPRE dejan
+            // tarjeta, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES).
+            case 'proponer_permiso_de_empleado':
+                return self::resultado(PropuestaPermisoEmpleadoIaHelper::proponer($contexto, $assistant_message, $input));
+
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
 
@@ -1768,7 +1798,43 @@ class HerramientasDeCarga
                     ],
                     'caja_id'           => [
                         'type'        => 'integer',
-                        'description' => 'Caja a la que va. Si no la mandás se usa la caja por defecto; si no hay, la herramienta te pide preguntarla.',
+                        'description' => 'Caja a la que va. Si no la mandás se usa la caja por defecto; si no hay, la herramienta te pide preguntarla. 🔴 Con un cheque NO se manda: un cheque no entra a ninguna caja al cargarse.',
+                    ],
+                    /*
+                     * Misión asistente-capacidades-y-hilos (22/9/2026): el cheque. Va adentro de la
+                     * fila y no como una herramienta aparte porque ES una fila del mismo array de
+                     * métodos de pago del mismo endpoint — el camino de ejecución ya lo soportaba
+                     * (`ChequeHelper::crear_cheque()`), lo que faltaba era poder describirlo.
+                     */
+                    'cheque'            => [
+                        'type'        => 'object',
+                        'description' => 'Solo cuando el método de pago es un cheque. Sin esto, el cheque se guardaría sin número, sin banco y sin fecha, y nadie podría reconocerlo después en la pantalla de Cheques.',
+                        'properties'  => [
+                            'numero'        => [
+                                'type'        => 'string',
+                                'description' => 'Número del cheque, tal como está impreso.',
+                            ],
+                            'banco'         => [
+                                'type'        => 'string',
+                                'description' => 'Banco del cheque, como lo dijo la persona ("Banco Nación").',
+                            ],
+                            'fecha_pago'    => [
+                                'type'        => 'string',
+                                'description' => 'AAAA-MM-DD. Es el VENCIMIENTO: la fecha a partir de la cual se puede cobrar.',
+                            ],
+                            'fecha_emision' => [
+                                'type'        => 'string',
+                                'description' => 'AAAA-MM-DD. Si no la dicen, es hoy.',
+                            ],
+                            'es_echeq'      => [
+                                'type'        => 'boolean',
+                                'description' => 'true si es un e-cheq (electrónico).',
+                            ],
+                            'notes'         => [
+                                'type' => 'string',
+                            ],
+                        ],
+                        'required'    => ['numero', 'banco', 'fecha_pago'],
                     ],
                 ],
                 'required'   => ['metodo_de_pago_id'],

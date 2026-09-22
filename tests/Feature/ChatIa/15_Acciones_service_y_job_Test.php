@@ -75,6 +75,8 @@ class Acciones_service_y_job_Test extends TestCase
         'mostrar_imagenes_de_articulos',
         // Misión asistente-ventas-y-fotos (21/9/2026): las ventas sin cobrar del negocio, al final.
         'consultar_ventas_sin_cobrar',
+        // Misión asistente-capacidades-y-hilos (22/9/2026): el link del PDF, después de aquélla.
+        'consultar_link_de_pdf',
     ];
 
     /** @var User */
@@ -699,10 +701,12 @@ class Acciones_service_y_job_Test extends TestCase
         // consultar_bancos_de_cheques, proponer_unificar_bancos_de_cheques) + las 5 de
         // asistente-omnisciente (21/9/2026: que_puedo_cargar, proponer_alta, proponer_edicion,
         // proponer_baja, proponer_venta) + proponer_foto_articulo (asistente-ventas-y-fotos,
-        // 21/9/2026). El número se toca SOLO cuando se agrega o se saca una
+        // 21/9/2026) + las 4 de asistente-capacidades-y-hilos (22/9/2026:
+        // proponer_movimiento_de_stock, proponer_stock_en_deposito, proponer_presupuesto,
+        // proponer_permiso_de_empleado). El número se toca SOLO cuando se agrega o se saca una
         // herramienta a propósito: si se mueve sin que nadie lo haya pedido, es que algo se
         // declaró (o se borró) de más.
-        $this->assertCount(28, HerramientasDeCarga::definiciones());
+        $this->assertCount(32, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -740,10 +744,21 @@ class Acciones_service_y_job_Test extends TestCase
             array_slice(HerramientasDeCarga::nombres(), 22, 5)
         );
 
-        // ...y la de asistente-ventas-y-fotos al final de todo.
+        // ...la de asistente-ventas-y-fotos después de ellas...
         $this->assertSame(
             ['proponer_foto_articulo'],
-            array_slice(HerramientasDeCarga::nombres(), 27)
+            array_slice(HerramientasDeCarga::nombres(), 27, 1)
+        );
+
+        // ...y las cuatro de asistente-capacidades-y-hilos al final de todo.
+        $this->assertSame(
+            [
+                'proponer_movimiento_de_stock',
+                'proponer_stock_en_deposito',
+                'proponer_presupuesto',
+                'proponer_permiso_de_empleado',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 28)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

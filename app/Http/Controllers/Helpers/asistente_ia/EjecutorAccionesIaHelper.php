@@ -646,6 +646,13 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_PRESUPUESTO:
                 return PropuestaPresupuestoIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Los permisos de un empleado, por `EmployeeController::update()`. Nunca llega acá
+             * desde la auto-confirmación: su tipo está en NUNCA_AUTO_CONFIRMABLES.
+             */
+            case AiMessageAction::TIPO_PERMISO_EMPLEADO:
+                return PropuestaPermisoEmpleadoIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

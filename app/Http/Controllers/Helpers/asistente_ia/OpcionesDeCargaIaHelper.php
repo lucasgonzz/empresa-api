@@ -43,13 +43,26 @@ class OpcionesDeCargaIaHelper {
     const METODO_SIN_CAJA_ID = 1;
 
     /**
-     * Tipos de método de pago que el asistente NO carga (decisión de la misión): el cheque pide banco,
-     * fecha de cobro y número, y la tarjeta de crédito recargo y cuotas. Se cargan desde la pantalla.
+     * Slug del tipo de método de pago "Cheque" (`c_a_payment_method_types`, CAPaymentMethodTypeSeeder).
+     * Es el que `PaymentMethodHelper::attach_payment_methods()` mira para llamar a
+     * `ChequeHelper::crear_cheque()`.
+     */
+    const SLUG_CHEQUE = 'cheque';
+
+    /**
+     * Tipos de método de pago que el asistente NO carga: la tarjeta de crédito pide recargo y
+     * cuotas, y la retención los datos del certificado. Se cargan desde la pantalla.
+     *
+     * ⚠️ EL CHEQUE SALIÓ DE ESTA LISTA EL 22/9/2026 (misión asistente-capacidades-y-hilos). Estaba
+     * acá porque "pide banco, fecha de cobro y número" — datos que el asistente no tenía forma de
+     * pedir. Ahora sí: `PagosIaHelper` los valida y los manda en la fila, y el camino de ejecución
+     * ya los soportaba sin tocar una línea (`ChequeHelper::crear_cheque` los lee del payload). El
+     * mensaje #46 del 22/9 en demo3 —"los pagos con cheque no los puedo cargar desde acá"— era
+     * exactamente este renglón.
      *
      * @var array<string,string>
      */
     const MOTIVOS_NO_USABLES = [
-        'cheque'             => 'Los cheques se cargan desde la pantalla.',
         'tarjeta_de_credito' => 'Los cobros con tarjeta de crédito (recargo y cuotas) se cargan desde la pantalla.',
         /*
          * La retención pide los datos del certificado que da el cliente (impuesto, número, fecha,
@@ -504,12 +517,40 @@ class OpcionesDeCargaIaHelper {
             return self::MOTIVOS_NO_USABLES[$metodo->type->slug];
         }
 
-        if ((int) $metodo->id === self::METODO_SIN_CAJA_ID) {
+        /*
+         * 🔴 Y LA REGLA POR ID YA NO ALCANZA AL CHEQUE (misión asistente-capacidades-y-hilos,
+         * 22/9/2026). La regla existe porque una fila con monto y sin caja es plata que no impacta
+         * en ninguna caja — pero para un CHEQUE eso no es un defecto, es lo correcto: un cheque no
+         * mueve caja al cargarse (la plata se mueve recién con `PUT /cheque/cobrar` o `/pagar`), y
+         * por eso mismo la pantalla no le dibuja el selector de caja. El id 1 del catálogo es
+         * justamente el Cheque, así que sin esta excepción la capacidad nueva quedaba muerta por
+         * una regla escrita para otra cosa. El resto de los métodos sin caja siguen afuera.
+         */
+        if ((int) $metodo->id === self::METODO_SIN_CAJA_ID && !self::es_cheque($metodo)) {
 
             return 'Ese método de pago se carga desde la pantalla.';
         }
 
         return null;
+    }
+
+    /**
+     * true si el método de pago es del tipo Cheque, que es el que dispara
+     * `ChequeHelper::crear_cheque()` en `PaymentMethodHelper::attach_payment_methods()`.
+     *
+     * 🔴 Por el SLUG del tipo y nunca por el id: `current_acount_payment_methods` es una tabla
+     * GLOBAL sin `user_id`, pero los ids no están garantizados entre instalaciones (el catálogo se
+     * siembra y se puede editar desde ABM). El slug es lo único estable, y es lo que mira el
+     * backend.
+     *
+     * @param  \App\Models\CurrentAcountPaymentMethod|null  $metodo  Con `type` cargado.
+     * @return bool
+     */
+    static function es_cheque($metodo) {
+
+        return !is_null($metodo)
+            && !is_null($metodo->type)
+            && (string) $metodo->type->slug === self::SLUG_CHEQUE;
     }
 
     /**
