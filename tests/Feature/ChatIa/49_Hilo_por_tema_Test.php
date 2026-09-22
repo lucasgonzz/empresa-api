@@ -8,6 +8,7 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
+use App\Models\AiTokenUsage;
 use Carbon\Carbon;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -661,6 +662,45 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
         $respuesta = $this->mandar(['texto' => 'Seguimos con lo de las pastinas de ayer'])->assertStatus(202);
 
         $this->assertNotEquals((int) $vieja->id, (int) $respuesta->json('ai_conversation_id'));
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * 🔴 Un negocio que se pasó del tope de su plan se contesta con el texto de límite SIN gastar
+     * una llamada a la API — y la decisión de hilo ES una llamada a la API. Sin esta guarda, el
+     * corte por tope dejaba de ser un corte: seguía pagándose una llamada por turno.
+     *
+     * @group asistente-hilos
+     * @test
+     */
+    public function con_el_tope_del_plan_superado_no_se_gasta_la_llamada()
+    {
+        $vigente = $this->conversacion_con_historia();
+
+        $this->comercio->plan_ia_tope_interacciones_diarias = 2;
+        $this->comercio->save();
+
+        for ($i = 0; $i < 2; $i++) {
+
+            AiTokenUsage::create([
+                'user_id'                     => $this->comercio->id,
+                'auth_user_id'                => $this->comercio->id,
+                'proceso'                     => 'chat_mensaje',
+                'proveedor'                   => 'anthropic',
+                'modelo'                      => 'claude-modelo-fake',
+                'input_tokens'                => 10,
+                'output_tokens'               => 10,
+                'cache_creation_input_tokens' => 0,
+                'cache_read_input_tokens'     => 0,
+            ]);
+        }
+
+        $this->responde('nueva');
+
+        $respuesta = $this->mandar(['texto' => 'Sacale a Brisa el permiso de ver las ventas'])->assertStatus(202);
+
+        $this->assertEquals((int) $vigente->id, (int) $respuesta->json('ai_conversation_id'));
 
         Http::assertNothingSent();
     }

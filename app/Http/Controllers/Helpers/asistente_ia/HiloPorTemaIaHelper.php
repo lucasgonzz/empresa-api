@@ -166,8 +166,12 @@ class HiloPorTemaIaHelper
          * borrada o de otro dueño, AsistenteCanalHelper lo ignora y cae acá — pero el dueño citó
          * igual, y abrirle un hilo nuevo por un id que no se pudo honrar sería lo peor de los dos
          * mundos.
+         *
+         * `(int) > 0` es el MISMO criterio de AsistenteCanalHelper::conversacion_pedida(): un solo
+         * significado de "el admin citó algo" en los dos lados. Con un `!== ''` pelado, un
+         * `ai_conversation_id` en 0 o vacío contaría como cita y apagaría el corte para siempre.
          */
-        if (!is_null($ai_conversation_id_del_admin) && trim((string) $ai_conversation_id_del_admin) !== '') {
+        if ((int) $ai_conversation_id_del_admin > 0) {
 
             return 'el admin mandó ai_conversation_id (el dueño citó un mensaje)';
         }
