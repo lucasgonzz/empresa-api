@@ -25,7 +25,15 @@ use Illuminate\Support\Facades\DB;
  * RecolectorDia::ventas() y ::devoluciones(); el test los compara contra recolectar() del mismo día.
  *
  * Las agrupaciones (día, semana, mes, sucursal, vendedor, método de pago, cliente, artículo, rubro,
- * proveedor) corren en SQL sobre ese mismo builder, con tope de 100 grupos y `grupos_encontrados`.
+ * proveedor, facturada) corren en SQL sobre ese mismo builder, con tope de 100 grupos y
+ * `grupos_encontrados`.
+ *
+ * Misión asistente-ventas-y-fotos (21/9/2026): se suman `agrupar_por = facturada` —el comprobante
+ * de ARCA, con el criterio canónico del sistema y la doble regla de la consolidación, ver
+ * expresion_facturada()— y el parámetro `metodo_de_pago`, que ACOTA el conjunto en vez de solo
+ * agruparlo, para poder cruzar "cuánto le vendí con tarjeta a Fulano". Y se escriben las tres
+ * aclaraciones que el modelo venía inventando: qué es el "vendedor", qué cae en "Sin sucursal" y
+ * por qué la cuenta corriente es un grupo único (ver nota_de_la_agrupacion()).
  *
  * ⚠️ DÓLARES. RecolectorDia solo sabe de pesos, así que para `moneda = dolares` el criterio de
  * fecha se replica acá (consulta_en_dolares()) con las mismas dos puertas. Las devoluciones y la
@@ -43,8 +51,23 @@ class ResumenDeVentasIaHelper
     /** Id del método de pago "Efectivo", el default histórico de una venta sin método cargado. */
     const METODO_PAGO_DEFAULT_ID = RecolectorDia::METODO_PAGO_DEFAULT_ID;
 
-    /** Agrupaciones válidas. */
-    const AGRUPACIONES = ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor'];
+    /**
+     * Agrupaciones válidas.
+     *
+     * 🔴 `facturada` VA AL FINAL Y LO NUEVO SE AGREGA ATRÁS: este array se interpola tal cual en el
+     * `enum` de la definición de la tool, que es el prefijo que cachea AsistenteIaService::
+     * con_cache_control(). Reordenarlo tira el caché de todas las conversaciones.
+     */
+    const AGRUPACIONES = ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor', 'facturada'];
+
+    /** Etiqueta del grupo de las ventas con comprobante de ARCA (ver expresion_facturada()). */
+    const ETIQUETA_FACTURADA = 'Facturada ante ARCA';
+
+    /** Etiqueta del grupo de las que no lo tienen. */
+    const ETIQUETA_SIN_FACTURAR = 'Sin facturar';
+
+    /** Etiqueta del grupo único de lo vendido a cuenta corriente (ver por_metodo_de_pago()). */
+    const METODO_CUENTA_CORRIENTE = 'Cuenta corriente';
 
     /**
      * EL RESUMEN.
@@ -54,9 +77,10 @@ class ResumenDeVentasIaHelper
      * @param  string       $hasta        AAAA-MM-DD (inclusive).
      * @param  string|null  $agrupar_por  Una de AGRUPACIONES, o null para los totales solos.
      * @param  string       $moneda       'pesos' (default, el conjunto de Rendimiento) o 'dolares'.
+     * @param  string|null  $metodo_de_pago  Nombre del método de pago que ACOTA el conjunto, o null.
      * @return array<string, mixed>  Con la clave `error` cuando el pedido no se puede atender
      */
-    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos'): array
+    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null): array
     {
         $owner = User::find($owner_id);
 
@@ -104,6 +128,30 @@ class ResumenDeVentasIaHelper
             ? $recolector->ventas_del_periodo($owner, $inicio, $fin)
             : self::consulta_en_dolares($owner, $inicio, $fin);
 
+        // Cuántas quedaron afuera por estar en la otra moneda: que el modelo no diga "vendiste X"
+        // sin saber que hay ventas en dólares que no están en ese X.
+        $otra = $moneda === 'pesos'
+            ? self::consulta_en_dolares($owner, $inicio, $fin)
+            : $recolector->ventas_del_periodo($owner, $inicio, $fin);
+
+        $filtro = self::filtro_de_metodo_de_pago($metodo_de_pago);
+
+        if (isset($filtro['error'])) {
+
+            return ['error' => $filtro['error']];
+        }
+
+        /*
+         * El filtro por método de pago se aplica ANTES que nada, sobre los dos conjuntos: así los
+         * totales, las agrupaciones y el conteo de la otra moneda hablan todos del mismo recorte.
+         * Aplicarlo después dejaría un total filtrado con grupos sin filtrar, que es la clase de
+         * respuesta que nadie puede detectar mirándola.
+         */
+        if (! is_null($filtro['metodo'])) {
+            $ventas = self::acotar_por_metodo_de_pago($ventas, $filtro);
+            $otra = self::acotar_por_metodo_de_pago($otra, $filtro);
+        }
+
         $totales = self::totales($owner, $ventas, $inicio, $fin, $moneda);
 
         $respuesta = [
@@ -115,12 +163,6 @@ class ResumenDeVentasIaHelper
 
         $respuesta = array_merge($respuesta, $totales);
 
-        // Cuántas quedaron afuera por estar en la otra moneda: que el modelo no diga "vendiste X"
-        // sin saber que hay ventas en dólares que no están en ese X.
-        $otra = $moneda === 'pesos'
-            ? self::consulta_en_dolares($owner, $inicio, $fin)
-            : $recolector->ventas_del_periodo($owner, $inicio, $fin);
-
         $respuesta['ventas_en_otra_moneda'] = [
             'cantidad' => (int) (clone $otra)->count(),
             'moneda'   => $moneda === 'pesos' ? 'dolares' : 'pesos',
@@ -128,6 +170,24 @@ class ResumenDeVentasIaHelper
 
         if ($moneda === 'dolares') {
             $respuesta['aviso'] = 'En dolares no se calculan devoluciones ni lo que fue a cuenta corriente: esos dos van en null.';
+        }
+
+        if (! is_null($filtro['metodo'])) {
+            $respuesta['filtrado_por_metodo_de_pago'] = $filtro['etiqueta'];
+
+            /*
+             * 🔴 LOS IMPORTES SIGUEN SIENDO EL TOTAL DE CADA VENTA, NO LA PARTE PAGADA CON ESE
+             * MÉTODO. El filtro elige VENTAS que tocaron el método; una venta pagada mitad en
+             * efectivo y mitad con tarjeta entra entera en las dos. Para repartir la plata entre
+             * métodos está agrupar_por = metodo_de_pago, que sí prorratea por el pivot. Sin este
+             * aviso el modelo suma los dos filtros y le informa al dueño más plata de la que vendió.
+             */
+            $respuesta['aviso_del_filtro'] = 'Son las ventas que TOCARON ese metodo de pago, y cada importe es el total de la venta, no la parte pagada con ese metodo: una venta pagada con dos metodos entra entera en los dos. Para repartir la plata entre metodos va agrupar_por = metodo_de_pago.';
+
+            // devoluciones se calcula sobre el período entero y no sobre el conjunto, así que con un
+            // filtro encima sería un número de otro universo: va en null y se dice por qué.
+            $respuesta['devoluciones'] = null;
+            $respuesta['aviso_de_devoluciones'] = 'Con el filtro por metodo de pago las devoluciones no se pueden acotar: van en null.';
         }
 
         if ($agrupar_por !== '') {
@@ -244,6 +304,141 @@ class ResumenDeVentasIaHelper
     }
 
     /**
+     * El método de pago de la CABECERA de una venta, con el default histórico: una venta sin método
+     * cargado se lee como Efectivo. Es la misma expresión que usa por_metodo_de_pago() para las
+     * ventas sin pivot, extraída para que el filtro (C3) y la agrupación no puedan divergir.
+     *
+     * @return string
+     */
+    protected static function expresion_de_metodo_de_cabecera(): string
+    {
+        return 'CASE WHEN COALESCE(sales.current_acount_payment_method_id, 0) > 0 THEN sales.current_acount_payment_method_id ELSE ' . (int) self::METODO_PAGO_DEFAULT_ID . ' END';
+    }
+
+    /**
+     * RESUELVE EL `metodo_de_pago` QUE PIDIÓ EL MODELO, por nombre.
+     *
+     * Misión asistente-ventas-y-fotos (21/9/2026, C3). Hasta hoy el método de pago solo se podía
+     * AGRUPAR: para "cuánto le vendí con tarjeta a Fulano" el modelo tenía que pedir dos resúmenes y
+     * cruzarlos a mano, que es justo lo que no sabe hacer. Con este parámetro el método ACOTA el
+     * conjunto y se combina con cualquier `agrupar_por`.
+     *
+     * ⚠️ `current_acount_payment_methods` es una tabla GLOBAL, sin `user_id` (así la lee la pantalla,
+     * ver OpcionesDeCargaIaHelper::metodos_de_pago()). Por eso la búsqueda por nombre no se scopea
+     * por comercio: lo que sí es de cada comercio son las VENTAS, y eso ya lo filtra el conjunto.
+     *
+     * 🔴 "Cuenta corriente" NO es una fila de esa tabla: es el grupo único con el que
+     * por_metodo_de_pago() representa lo vendido a cuenta corriente, donde en el momento de la venta
+     * no hay método de pago sino una deuda. Se acepta igual como filtro, porque es exactamente lo
+     * que el dueño pregunta ("cuánto vendí fiado"), y se resuelve contra el mismo conjunto que usa
+     * la agrupación.
+     *
+     * @param  string|null  $nombre
+     * @return array<string, mixed>  ['metodo' => null|'cuenta_corriente'|'mostrador', 'metodo_id' => ?int, 'etiqueta' => ?string] o ['error' => ...]
+     */
+    protected static function filtro_de_metodo_de_pago($nombre): array
+    {
+        $vacio = ['metodo' => null, 'metodo_id' => null, 'etiqueta' => null];
+
+        $texto = is_null($nombre) ? '' : trim((string) $nombre);
+
+        if ($texto === '') {
+
+            return $vacio;
+        }
+
+        $plano = mb_strtolower($texto);
+
+        if (strpos($plano, 'cuenta corriente') !== false || strpos($plano, 'cta corriente') !== false || $plano === 'fiado') {
+
+            return ['metodo' => 'cuenta_corriente', 'metodo_id' => null, 'etiqueta' => self::METODO_CUENTA_CORRIENTE];
+        }
+
+        // Los comodines del LIKE se escapan: un nombre con "%" buscaría cualquier cosa.
+        $escapado = addcslashes($texto, '%_\\');
+
+        $candidatos = DB::table('current_acount_payment_methods')
+            ->where('name', 'LIKE', '%' . $escapado . '%')
+            ->orderBy('id')
+            ->get(['id', 'name']);
+
+        if ($candidatos->count() > 1) {
+            // Un nombre exacto desempata: "Efectivo" no tiene por qué chocar con "Efectivo dólar".
+            $exactos = $candidatos->filter(function ($fila) use ($plano) {
+                return mb_strtolower(trim((string) $fila->name)) === $plano;
+            })->values();
+
+            if ($exactos->count() === 1) {
+                $candidatos = $exactos;
+            }
+        }
+
+        if ($candidatos->count() === 0) {
+            $todos = DB::table('current_acount_payment_methods')->orderBy('id')->pluck('name')->all();
+
+            return ['error' => 'No hay ningun metodo de pago que se llame "' . $texto . '". Los que existen son: ' . implode(', ', $todos) . '. Tambien podes filtrar por "' . self::METODO_CUENTA_CORRIENTE . '".'];
+        }
+
+        if ($candidatos->count() > 1) {
+            $nombres = [];
+
+            foreach ($candidatos as $fila) {
+                $nombres[] = (string) $fila->name;
+            }
+
+            return ['error' => 'Hay mas de un metodo de pago que encaja con "' . $texto . '": ' . implode(', ', $nombres) . '. Preguntale a la persona cual y volve a llamar con el nombre exacto.'];
+        }
+
+        $metodo = $candidatos->first();
+
+        return ['metodo' => 'mostrador', 'metodo_id' => (int) $metodo->id, 'etiqueta' => (string) $metodo->name];
+    }
+
+    /**
+     * ACOTA EL CONJUNTO A LAS VENTAS QUE TOCARON ESE MÉTODO DE PAGO.
+     *
+     * Espeja por_metodo_de_pago(): una venta de mostrador entra si tiene una fila del pivot
+     * `current_acount_payment_method_sale` con ese método, o —si no tiene ninguna fila de pivot— si
+     * el método de su cabecera es ese (con el default Efectivo). Lo vendido a cuenta corriente no
+     * pasa por ninguna de las dos: es su propio grupo, y su filtro es el mismo predicado que usa la
+     * agrupación.
+     *
+     * 🔴 LO QUE ESTO NO HACE, Y ESTÁ DICHO EN LA RESPUESTA: no prorratea. Devuelve ventas enteras,
+     * así que una venta pagada mitad en efectivo y mitad con tarjeta aparece completa en los dos
+     * filtros. Quien quiera repartir la plata usa agrupar_por = metodo_de_pago, que sí suma por el
+     * pivot.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @param  array  $filtro  El que devolvió filtro_de_metodo_de_pago().
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected static function acotar_por_metodo_de_pago($ventas, array $filtro)
+    {
+        if ($filtro['metodo'] === 'cuenta_corriente') {
+
+            return self::ventas_a_cuenta_corriente($ventas);
+        }
+
+        $metodo_id = (int) $filtro['metodo_id'];
+        $expresion_metodo = self::expresion_de_metodo_de_cabecera();
+
+        return self::ventas_de_mostrador($ventas)->where(function ($q) use ($metodo_id, $expresion_metodo) {
+            $q->whereExists(function ($pivot) use ($metodo_id) {
+                $pivot->selectRaw('1')
+                    ->from('current_acount_payment_method_sale')
+                    ->whereColumn('current_acount_payment_method_sale.sale_id', 'sales.id')
+                    ->where('current_acount_payment_method_sale.current_acount_payment_method_id', $metodo_id);
+            })->orWhere(function ($sin_pivot) use ($metodo_id, $expresion_metodo) {
+                $sin_pivot->whereNotExists(function ($pivot) {
+                    $pivot->selectRaw('1')
+                        ->from('current_acount_payment_method_sale')
+                        ->whereColumn('current_acount_payment_method_sale.sale_id', 'sales.id');
+                })->whereRaw($expresion_metodo . ' = ?', [$metodo_id]);
+            });
+        });
+    }
+
+    /**
      * Un RecolectorDia con `devoluciones()` expuesta.
      *
      * RecolectorDia::devoluciones() es protected y tiene la resolución de moneda de una nota de
@@ -345,12 +540,13 @@ class ResumenDeVentasIaHelper
         $fecha = self::expresion_de_fecha($owner);
 
         $expresiones = [
-            'dia'      => 'DATE(' . $fecha . ')',
-            'semana'   => 'YEARWEEK(' . $fecha . ', 3)',
-            'mes'      => "DATE_FORMAT(" . $fecha . ", '%Y-%m')",
-            'sucursal' => 'COALESCE(sales.address_id, 0)',
-            'vendedor' => 'COALESCE(sales.employee_id, 0)',
-            'cliente'  => 'COALESCE(sales.client_id, 0)',
+            'dia'       => 'DATE(' . $fecha . ')',
+            'semana'    => 'YEARWEEK(' . $fecha . ', 3)',
+            'mes'       => "DATE_FORMAT(" . $fecha . ", '%Y-%m')",
+            'sucursal'  => 'COALESCE(sales.address_id, 0)',
+            'vendedor'  => 'COALESCE(sales.employee_id, 0)',
+            'cliente'   => 'COALESCE(sales.client_id, 0)',
+            'facturada' => self::expresion_facturada(),
         ];
 
         $expresion = $expresiones[$agrupar_por];
@@ -387,7 +583,90 @@ class ResumenDeVentasIaHelper
             ];
         }
 
-        return self::ordenar_y_topear(array_values($grupos));
+        $resultado = self::ordenar_y_topear(array_values($grupos));
+
+        $nota = self::nota_de_la_agrupacion($agrupar_por);
+
+        if (! is_null($nota)) {
+            $resultado['nota'] = $nota;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * LO QUE UNA AGRUPACIÓN NO DICE Y EL MODELO IBA A ASUMIR. Tres etiquetas mienten si se leen
+     * literales, y las tres se aclaran acá en vez de cambiar la columna que agrupa:
+     *
+     * - `vendedor` agrupa por `sales.employee_id`, que es QUIEN CARGÓ la venta en el sistema, no el
+     *   vendedor comisionista (`sales.seller_id`, que es otra tabla y otro reporte). En un comercio
+     *   donde carga siempre el mismo usuario, "ventas por vendedor" da un solo grupo con el 100% y
+     *   el dueño lo lee como que vende una sola persona. 🔴 Decisión de Lucas del 21/9/2026: la
+     *   columna SE MANTIENE —es la que la pantalla de Rendimiento usa— y lo que se corrige es lo que
+     *   se dice de ella.
+     *
+     * - `sucursal` agrupa por `sales.address_id`, que es NULLABLE: toda venta cargada sin sucursal
+     *   cae en "Sin sucursal", y en un negocio de una sola sucursal eso puede ser el 100% de las
+     *   ventas. Sin el aviso se lee como un dato faltante o como una sucursal borrada.
+     *
+     * - `facturada` mira el comprobante de ARCA, no el cobro: una venta facturada puede estar impaga
+     *   y una cobrada puede no estar facturada.
+     *
+     * @param  string  $agrupar_por
+     * @return string|null
+     */
+    protected static function nota_de_la_agrupacion(string $agrupar_por)
+    {
+        if ($agrupar_por === 'vendedor') {
+
+            return 'vendedor es el USUARIO QUE CARGO la venta en el sistema (sales.employee_id), no el vendedor comisionista: son dos cosas distintas y esta es la que usa el reporte de Rendimiento. Si todas las ventas las carga la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona.';
+        }
+
+        if ($agrupar_por === 'sucursal') {
+
+            return 'la sucursal de una venta es opcional: todo lo que se cargo sin sucursal cae en "Sin sucursal", y en un negocio de una sola sucursal eso puede ser el 100%. No lo leas como un dato perdido ni como una sucursal borrada.';
+        }
+
+        if ($agrupar_por === 'facturada') {
+
+            return 'facturada es si la venta tiene comprobante de ARCA con CAE, no si se cobro: una venta facturada puede estar impaga y una cobrada puede no estar facturada. Una venta incluida en una consolidacion AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa.';
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿ESTA VENTA TIENE COMPROBANTE DE ARCA? Devuelve la expresión SQL que da 1 o 0.
+     *
+     * 🔴 EL CRITERIO ES `afip_tickets.cae` NO VACÍO, NUNCA `sales.total_facturado`.
+     * `total_facturado` es un decimal ACUMULATIVO: `AfipWsHelper::update_sale_total_facturado()` le
+     * suma al facturar y `AfipNotaCreditoHelper` le resta al anular, así que una venta facturada y
+     * después anulada queda en `0` —igual que una que nunca se facturó— y una facturada dos veces
+     * queda en el doble. Contar con esa columna da dos grupos plausibles y falsos. El criterio
+     * canónico del sistema es el de `AfipTicketController::problemas_al_facturar()`: `cae` nulo o
+     * vacío = no facturada, aunque `resultado` diga 'A'.
+     *
+     * 🔴 Y LA CONSOLIDACIÓN AFIP TIENE DOBLE REGLA. Una venta consolidada NO tiene ticket propio: su
+     * comprobante lo emitió la venta CONTENEDORA, y la relación es `consolidacion_facturacion_id`.
+     * Mirar solo el ticket propio las contaría a todas como "sin facturar", que es exactamente el
+     * error que el comerciante no puede detectar —son ventas reales, facturadas de verdad—. Por eso
+     * el segundo EXISTS. (Las contenedoras ya están fuera del conjunto por `soloVentasReales()`, que
+     * es lo correcto para los montos: su plata ya está en las ventas que agrupan.)
+     *
+     * Los tickets borrados no cuentan: `AfipTicket` usa SoftDeletes y `problemas_al_facturar()` los
+     * excluye solo, por el modelo. Acá la query es cruda, así que el `deleted_at` va escrito.
+     *
+     * @return string
+     */
+    protected static function expresion_facturada(): string
+    {
+        $con_cae = 'afip_tickets.deleted_at IS NULL AND afip_tickets.cae IS NOT NULL AND afip_tickets.cae <> \'\'';
+
+        $propio = 'EXISTS (SELECT 1 FROM afip_tickets WHERE afip_tickets.sale_id = sales.id AND ' . $con_cae . ')';
+
+        $de_la_consolidacion = 'EXISTS (SELECT 1 FROM afip_tickets WHERE afip_tickets.sale_id = sales.consolidacion_facturacion_id AND ' . $con_cae . ')';
+
+        return 'CASE WHEN (' . $propio . ' OR ' . $de_la_consolidacion . ') THEN 1 ELSE 0 END';
     }
 
     /**
@@ -465,6 +744,11 @@ class ResumenDeVentasIaHelper
 
         $id = (int) $grupo;
 
+        if ($agrupar_por === 'facturada') {
+
+            return $id === 1 ? self::ETIQUETA_FACTURADA : self::ETIQUETA_SIN_FACTURAR;
+        }
+
         if ($agrupar_por === 'sucursal') {
             return $id > 0 && isset($nombres[$id]) ? $nombres[$id] : 'Sin sucursal';
         }
@@ -502,7 +786,7 @@ class ResumenDeVentasIaHelper
             ->selectRaw('current_acount_payment_method_id as metodo_id, COUNT(DISTINCT sale_id) as cantidad, COALESCE(SUM(amount - COALESCE(discount_amount, 0)), 0) as total')
             ->get();
 
-        $expresion_metodo = 'CASE WHEN COALESCE(sales.current_acount_payment_method_id, 0) > 0 THEN sales.current_acount_payment_method_id ELSE ' . (int) self::METODO_PAGO_DEFAULT_ID . ' END';
+        $expresion_metodo = self::expresion_de_metodo_de_cabecera();
 
         $sin_pivot = (clone $mostrador)
             ->whereNotExists(function ($q) {
@@ -554,13 +838,25 @@ class ResumenDeVentasIaHelper
 
         if (! is_null($totales['a_cuenta_corriente']) && $totales['a_cuenta_corriente'] > 0) {
             $grupos[] = [
-                'etiqueta' => 'Cuenta corriente',
+                'etiqueta' => self::METODO_CUENTA_CORRIENTE,
                 'cantidad' => (int) self::ventas_a_cuenta_corriente($ventas)->count(),
                 'total'    => (float) $totales['a_cuenta_corriente'],
             ];
         }
 
-        return self::ordenar_y_topear($grupos);
+        $resultado = self::ordenar_y_topear($grupos);
+
+        /*
+         * 🔴 EL LÍMITE QUE EL MODELO IBA A OMITIR, Y ES PLATA. Lo vendido a cuenta corriente entra
+         * como UN grupo y no se desglosa por cómo se cobró después: en el momento de la venta no hay
+         * método de pago, hay una deuda, y el puente cobro→venta no existe (decisión de Lucas,
+         * 21/9/2026: queda así). Sin decirlo, el asistente contesta "cobraste X en efectivo" cuando
+         * buena parte de lo cobrado en efectivo entró como pago de cuenta corriente y está en el
+         * otro grupo.
+         */
+        $resultado['nota'] = 'el grupo "' . self::METODO_CUENTA_CORRIENTE . '" es lo VENDIDO a cuenta corriente y no se desglosa por como se cobro despues: en el momento de la venta no hay metodo de pago, hay una deuda. Y una venta pagada con dos metodos cuenta en los dos grupos, con la parte que le toca a cada uno.';
+
+        return $resultado;
     }
 
     /**

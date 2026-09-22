@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\User;
@@ -1840,7 +1841,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro o proveedor. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -1852,6 +1853,15 @@ CONFIRMACION;
                             'enum' => ResumenDeVentasIaHelper::AGRUPACIONES,
                         ],
                         'moneda' => ['type' => 'string', 'description' => 'pesos (default) o dolares.', 'enum' => ['pesos', 'dolares']],
+                        /*
+                         * C3 de la misión asistente-ventas-y-fotos: el método ACOTA el conjunto, y se
+                         * combina con cualquier agrupar_por. Antes solo se podía agrupar, así que
+                         * "cuánto le vendí con tarjeta a Fulano" no tenía forma de contestarse.
+                         */
+                        'metodo_de_pago' => [
+                            'type' => 'string',
+                            'description' => 'Nombre del método de pago, para dejar SOLO las ventas que lo tocaron (se combina con agrupar_por: metodo_de_pago "Tarjeta" + agrupar_por "cliente" contesta a quién le vendiste con tarjeta). También vale "Cuenta corriente" para quedarte con lo vendido fiado. 🔴 Cada importe sigue siendo el TOTAL de la venta, no la parte pagada con ese método: una venta pagada con dos métodos entra entera en los dos filtros, así que no sumes dos llamadas. Si el nombre no existe o encaja con varios, la respuesta trae "error" con los que hay: preguntá cuál y volvé a llamar.',
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -1861,7 +1871,8 @@ CONFIRMACION;
                         isset($input['desde']) ? $input['desde'] : null,
                         isset($input['hasta']) ? $input['hasta'] : null,
                         isset($input['agrupar_por']) ? (string) $input['agrupar_por'] : null,
-                        isset($input['moneda']) ? (string) $input['moneda'] : 'pesos'
+                        isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
+                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null
                     );
                 },
             ],
@@ -1909,6 +1920,28 @@ CONFIRMACION;
                     $ids = is_array($input['articulo_ids'] ?? null) ? $input['articulo_ids'] : [];
 
                     return AdjuntosIaHelper::imagenes_de_articulos((int) $owner_id, array_map('intval', $ids));
+                },
+            ],
+            /*
+             * 🔴 DE ACÁ PARA ABAJO, LO DE LA MISIÓN asistente-ventas-y-fotos (21/9/2026), Y VA AL
+             * FINAL POR EL MISMO MOTIVO DE SIEMPRE: el orden de este array es el prefijo que cachea
+             * con_cache_control().
+             */
+            [
+                'name' => 'consultar_ventas_sin_cobrar',
+                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'dias' => [
+                            'type' => 'integer',
+                            'description' => 'Antigüedad mínima de la venta, en días. 0 (el default) son todas. Usalo para "lo que me deben hace más de 30 días". Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, (int) ($input['dias'] ?? 0));
                 },
             ],
         ];

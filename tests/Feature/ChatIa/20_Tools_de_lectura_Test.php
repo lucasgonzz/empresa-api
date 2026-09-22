@@ -106,6 +106,8 @@ class Tools_de_lectura_Test extends TestCase
             'consultar_resumen_de_ventas'              => ['desde' => now()->subDays(7)->format('Y-m-d'), 'hasta' => now()->format('Y-m-d'), 'agrupar_por' => 'dia'],
             'consultar_reporte_contable'               => ['reporte' => 'estado_resultados', 'desde' => now()->subDays(30)->format('Y-m-d'), 'hasta' => now()->format('Y-m-d')],
             'mostrar_imagenes_de_articulos'            => ['articulo_ids' => [$articulo->id]],
+            // Misión asistente-ventas-y-fotos (21/9/2026): la de ventas sin cobrar a nivel negocio.
+            'consultar_ventas_sin_cobrar'              => ['dias' => 0],
         ];
 
         $nombres = $this->service->nombres_de_lectura();
