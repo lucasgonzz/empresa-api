@@ -116,6 +116,115 @@ class SaleHelper extends Controller {
         return null;
     }
 
+    /**
+     * El `created_at` que se va a guardar en un ALTA, a partir de la fecha que eligio el usuario.
+     *
+     * 🔴 ES EL UNICO LUGAR DONDE SE INTERPRETA EL CAMPO, para los dos flujos que lo usan: el alta
+     * de una venta (`SaleController::store()`) y el alta de una compra a proveedor
+     * (`ProviderOrderController::store()`). Si aparece un tercero, llama a este metodo; no se
+     * copia el parseo.
+     *
+     * 🔴 POR QUE LA HORA ACTUAL Y NO MEDIANOCHE. Un `<input type="date">` manda solo `YYYY-MM-DD`.
+     * Guardar eso tal cual dejaria TODAS las ventas del dia a las `00:00:00`, y eso rompe tres
+     * cosas que hoy funcionan:
+     *   (a) el cierre de caja por turno (`ResumenCajaController:69-78` acota por `desde`/`hasta`
+     *       CON hora, no por dia);
+     *   (b) la guarda anti-duplicados del doble clic (`SaleController::venta_ya_cread()`, que
+     *       mira una ventana de 5 segundos alrededor de este mismo instante);
+     *   (c) el desempate por `created_at` de los movimientos de cuenta corriente.
+     * Con la hora actual, el caso normal —el usuario no toca el campo, la fecha es hoy— guarda
+     * exactamente lo mismo que hoy: cero cambio de comportamiento en el 99% de las ventas.
+     *
+     * 🔴 POR QUE LISTA BLANCA Y NO PARSEO LIBRE. Medido el 21/9/2026: reasignar un `created_at`
+     * que viajo como ISO con `Z` lo corre +3 horas (`toArray()` serializa en UTC y al volver a
+     * asignarlo se reinterpreta en la zona local). Por eso esto NO es un `try/catch` alrededor de
+     * `Carbon::parse()` que acepte cualquier cosa parseable: se acepta EXACTAMENTE `YYYY-MM-DD` y
+     * nada mas. Cualquier otro valor —null, vacio, un ISO con `Z`, basura, una fecha imposible
+     * como `2026-13-45`— cae al comportamiento de siempre: `Carbon::now()`.
+     *
+     * @param  mixed  $valor  Lo que mando el front en la clave `created_at`.
+     * @return \Carbon\Carbon
+     */
+    static function resolver_created_at($valor) {
+        $ahora = Carbon::now();
+
+        $dia = Self::dia_pedido($valor);
+
+        if (is_null($dia)) {
+            return $ahora;
+        }
+
+        return Carbon::create($dia[0], $dia[1], $dia[2], $ahora->hour, $ahora->minute, $ahora->second);
+    }
+
+    /**
+     * El `created_at` que hay que guardar en un UPDATE, o null si no hay nada que tocar.
+     *
+     * En el update "la hora actual" no significa nada: el registro ya tiene su hora, que es cuando
+     * se cargo de verdad. Asi que aca solo se le cambia el DIA y se conserva la hora, los minutos
+     * y los segundos originales.
+     *
+     * Devuelve null —o sea "no toques `created_at`"— en los dos casos en que no hay nada pedido:
+     * cuando el valor no pasa la lista blanca (ver `resolver_created_at()`) y cuando el dia pedido
+     * es el mismo que el guardado. Lo segundo no es una optimizacion: reescribir el mismo dia con
+     * la hora de ahora le correria la hora a la venta sin que nadie lo haya pedido.
+     *
+     * @param  mixed  $created_at_guardado  El `created_at` que tiene hoy el registro (Carbon o string).
+     * @param  mixed  $valor                Lo que mando el front en la clave `created_at`.
+     * @return \Carbon\Carbon|null
+     */
+    static function resolver_created_at_de_update($created_at_guardado, $valor) {
+        $dia = Self::dia_pedido($valor);
+
+        if (is_null($dia)) {
+            return null;
+        }
+
+        // Un registro sin `created_at` no tiene hora que conservar: vale lo mismo que un alta.
+        if (is_null($created_at_guardado)) {
+            return Self::resolver_created_at($valor);
+        }
+
+        $guardado = $created_at_guardado instanceof Carbon
+                        ? $created_at_guardado->copy()
+                        : new Carbon($created_at_guardado);
+
+        if ($guardado->format('Y-m-d') === sprintf('%04d-%02d-%02d', $dia[0], $dia[1], $dia[2])) {
+            return null;
+        }
+
+        return $guardado->copy()->setDate($dia[0], $dia[1], $dia[2]);
+    }
+
+    /**
+     * La lista blanca: devuelve [anio, mes, dia] si el valor es EXACTAMENTE un `YYYY-MM-DD` que
+     * existe en el calendario, y null en cualquier otro caso.
+     *
+     * El `checkdate()` no sobra: `2026-13-45` pasa el regex y no es una fecha. Y el regex tampoco
+     * sobra: sin el, un ISO con `Z` entraria por `explode('-')` y terminaria guardando un dia con
+     * la hora corrida.
+     *
+     * @param  mixed  $valor
+     * @return array|null
+     */
+    protected static function dia_pedido($valor) {
+        if (!is_string($valor) || preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/', $valor) !== 1) {
+            return null;
+        }
+
+        $partes = explode('-', $valor);
+
+        $anio = (int) $partes[0];
+        $mes  = (int) $partes[1];
+        $dia  = (int) $partes[2];
+
+        if (!checkdate($mes, $dia, $anio)) {
+            return null;
+        }
+
+        return [$anio, $mes, $dia];
+    }
+
     static function check_guardad_cuenta_corriente_despues_de_facturar($sale, $instance) {
         if (UserHelper::hasExtencion('guardad_cuenta_corriente_despues_de_facturar')
             && !Self::al_cliente_se_le_factura_en_el_acto($sale) ) {
