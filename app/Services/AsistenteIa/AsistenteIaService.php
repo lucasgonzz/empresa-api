@@ -830,6 +830,7 @@ BYC;
 Quién te está escribiendo:
 - {$quien}
 
+
 QUIEN;
         }
 
@@ -848,11 +849,16 @@ PERMISO;
 PERMISO;
         }
 
+        /*
+         * Abre y cierra con una línea en blanco: el bloque que viene atrás (el de WhatsApp, o el
+         * "Hoy es ...") tiene que quedar separado, no pegado al último renglón de este.
+         */
         return <<<QUIEN
 
 Quién te está escribiendo:
 - {$quien}
 {$permiso}
+
 
 QUIEN;
     }
