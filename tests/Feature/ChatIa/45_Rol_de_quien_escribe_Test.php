@@ -100,13 +100,23 @@ class Rol_de_quien_escribe_Test extends TestCase
          * 🔴 La regla de permiso NO se sacó: sigue en el bloque de carga y PermisosIaHelper sigue
          * siendo la guarda real. Lo único que se agregó es el dato de quién escribe. Si alguien
          * "simplifica" sacando la regla, este assert lo denuncia.
+         *
+         * El renglón dice "el dueño o un administrador" y no "el dueño" a secas desde el chequeo
+         * adversarial del 21/9/2026: la herramienta de la foto chequea PermisosIaHelper::es_admin(),
+         * que es dueño O admin_access. Decir "solo el dueño" era mentirle al modelo sobre la regla
+         * real, y con eso se negaba solo ante un administrador.
          */
-        $this->assertStringContainsString('La foto de una sucursal solo la puede asignar el dueño', $texto);
+        $this->assertStringContainsString('La foto de una sucursal solo la pueden asignar el dueño o un administrador', $texto);
     }
 
     /**
-     * Un empleado sin `admin_access` sí puede recibir la negativa, y el prompt se lo dice — pero el
-     * resto lo sigue decidiendo la herramienta, no el modelo.
+     * Un empleado sin `admin_access` es EL ÚNICO rol que sí puede recibir la negativa, y el prompt se
+     * lo dice — pero el resto lo sigue decidiendo la herramienta, no el modelo.
+     *
+     * 🔴 Este es el test que fija que la instrucción "NO te niegues por permiso" NO le llega al
+     * empleado raso. Es el complemento del de abajo (el administrador SÍ la recibe): los dos juntos
+     * dibujan la frontera exacta de `PermisosIaHelper::es_admin()`, que es la que chequean las
+     * herramientas que dicen "solo el dueño".
      *
      * @group chat-ia
      * @test
@@ -128,7 +138,19 @@ class Rol_de_quien_escribe_Test extends TestCase
 
     /**
      * `admin_access` es admin pero no dueño: el mismo criterio que `PermisosIaHelper::es_admin()` y
-     * que el `is_admin` de la SPA. Se dice que no es el dueño, porque no lo es.
+     * que el `is_admin` de la SPA. Se dice que no es el dueño, porque no lo es — PERO recibe la misma
+     * instrucción de no negarse que el dueño.
+     *
+     * 🔴 POR QUÉ ESTE TEST CAMBIÓ (chequeo adversarial del 21/9/2026). La primera versión afirmaba
+     * `assertStringNotContainsString('NO te niegues por permiso')` para el administrador, y eso
+     * fijaba la conducta EQUIVOCADA: las herramientas que dicen "solo el dueño" —la foto de sucursal,
+     * la de categoría, el diseño de PDF— chequean `PermisosIaHelper::es_admin()`, que es dueño O
+     * `admin_access`. O sea que el sistema SÍ autoriza al administrador, y con el prompt diciéndole
+     * al modelo "decile que eso lo tiene que hacer el dueño" el administrador recibía un rechazo
+     * inventado sin que la herramienta se llamara nunca: el mismo bug que esta misión vino a cerrar
+     * para el dueño, reproducido para el otro rol. La rama permisiva del prompt pasó de `es_dueno` a
+     * `es_admin`, y este test ahora afirma lo que el sistema hace de verdad. No se acomodó la
+     * aserción para que pasara: se corrigió porque lo que afirmaba era falso.
      *
      * @group chat-ia
      * @test
@@ -145,7 +167,13 @@ class Rol_de_quien_escribe_Test extends TestCase
         $this->assertStringContainsString('Ana Administrativa', $texto);
         $this->assertStringContainsString('acceso de administrador', $texto);
         $this->assertStringContainsString('No es el dueño', $texto);
-        $this->assertStringNotContainsString('NO te niegues por permiso', $texto);
+
+        // Lo tiene: el sistema lo autoriza, así que el prompt no puede hacerlo negarse por su cuenta.
+        $this->assertStringContainsString('NO te niegues por permiso', $texto);
+
+        // Y el texto habla de "tenerlo", no de "ser el dueño": el administrador no lo es y el prompt no lo afirma.
+        $this->assertStringContainsString('esta persona lo tiene', $texto);
+        $this->assertStringNotContainsString('lo tiene que hacer el dueño', $texto);
     }
 
     /**

@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
@@ -646,7 +647,7 @@ Qué podés cargar, siempre con una tarjeta que la persona confirma:
 - Si la persona no tiene permiso para algo, decile que no tiene permiso para cargarlo desde
   su usuario.
 - Nunca muestres ni pidas números internos (ids).
-- La foto de una sucursal solo la puede asignar el dueño. La foto la saco sola de las
+- La foto de una sucursal solo la pueden asignar el dueño o un administrador. La foto la saco sola de las
   que la persona mandó en la conversación; no se la pidas.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
@@ -762,7 +763,7 @@ BYC;
      *
      * 🔴 POR QUÉ EXISTE ESTE BLOQUE (misión asistente-ventas-y-fotos, 21/9/2026). El prompt le
      * contaba al modelo el nombre del negocio, el tono y la fecha, pero NUNCA quién le hablaba. Y el
-     * bloque de carga dice "la foto de una sucursal solo la puede asignar el dueño". Con esas dos
+     * bloque de carga dice que la foto de una sucursal solo la asigna el dueño. Con esas dos
      * cosas juntas el modelo asume lo peor y se niega SOLO: medido en producción el 21/9, el dueño
      * pidió por WhatsApp asignarle una foto a una sucursal y recibió "solo el dueño puede hacerlo"
      * en una sola vuelta de `ai_token_usages` —o sea, sin haber llamado la herramienta ni una vez—,
@@ -834,10 +835,18 @@ Quién te está escribiendo:
 QUIEN;
         }
 
-        if ($es_dueno) {
+        /*
+         * 🔴 La rama permisiva es `es_admin` y NO `es_dueno`, aunque el bloque de carga hable del
+         * "dueño": las herramientas que dicen eso —la foto de sucursal, la de categoría, el diseño
+         * de PDF— chequean `PermisosIaHelper::es_admin()`, o sea dueño O `admin_access`. Con
+         * `es_dueno` acá, a un administrador el modelo le contestaba "eso lo tiene que hacer el
+         * dueño" sin llamar a la herramienta que lo habría dejado pasar — exactamente el mismo
+         * rechazo inventado que esta misión vino a cerrar, reproducido para el otro rol.
+         */
+        if ($es_admin) {
             $permiso = <<<PERMISO
 - 🔴 NO te niegues por permiso. Donde una regla diga "solo el dueño puede" —la foto de una
-  sucursal, por ejemplo—, esta persona ES el dueño: llamá igual a la herramienta. Si de verdad
+  sucursal, por ejemplo—, esta persona lo tiene: llamá igual a la herramienta. Si de verdad
   no se puede, el motivo te lo devuelve ella y recién ahí lo contás, tal cual. Contestar "eso
   solo lo puede hacer el dueño" sin haber llamado a ninguna herramienta es un error.
 PERMISO;
@@ -1322,11 +1331,17 @@ CONFIRMACION;
      * elemento a este array, y olvidarse una punta dejó de ser posible. Es el mismo movimiento que
      * ya había hecho HerramientasDeCarga con sus definiciones y su despacho.
      *
-     * El `handler` recibe (array $input, int $owner_id) y devuelve los DATOS crudos: el json_encode
-     * con su fallback vive centralizado en contenido_de_tool_result() y la defensa del enum `dias`
-     * en dias_del_enum(), en vez de repetidos ocho y tres veces. La clave `handler` va siempre
-     * ÚLTIMA: herramientas_de_lectura() la saca, y lo que viaja a la API queda con el mismo orden
-     * de claves de siempre.
+     * El `handler` recibe (array $input, int $owner_id, AiConversation $conversation) y devuelve los
+     * DATOS crudos: el json_encode con su fallback vive centralizado en contenido_de_tool_result() y
+     * la defensa del enum `dias` en dias_del_enum(), en vez de repetidos ocho y tres veces. La clave
+     * `handler` va siempre ÚLTIMA: herramientas_de_lectura() la saca, y lo que viaja a la API queda
+     * con el mismo orden de claves de siempre.
+     *
+     * ⚠️ El tercer argumento (la conversación) se agregó el 21/9/2026 para las tools que tienen que
+     * saber QUIÉN pregunta y no solo de qué negocio (consultar_ventas_sin_cobrar recorta el conjunto
+     * por persona como la pantalla). Los handlers que no lo necesitan lo siguen ignorando: PHP no se
+     * queja de un argumento de más en un Closure, así que declararlo es opcional y ninguno de los
+     * anteriores cambió de firma.
      *
      * 🔴 EL ORDEN DE ESTE ARRAY ES PARTE DEL CACHÉ DE PROMPT (ver build_tools): no se reordena.
      *
@@ -1935,19 +1950,33 @@ CONFIRMACION;
              */
             [
                 'name' => 'consultar_ventas_sin_cobrar',
-                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
+                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. 0 (el default) son todas. Usalo para "lo que me deben hace más de 30 días". Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
+                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás, vale el mismo umbral que la pantalla "Ventas sin cobrar" le aplica a esta persona; mandá 0 para pedir todas. Usalo para "lo que me deben hace más de 30 días". Ojo: una venta con su propio umbral de alerta cargado se rige por el suyo, no por este.',
                         ],
                     ],
                     'required' => [],
                 ],
-                'handler' => function (array $input, $owner_id) {
-                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, (int) ($input['dias'] ?? 0));
+                /*
+                 * 🔴 La persona sale de la conversación y no del dueño: el conjunto se recorta por
+                 * QUIÉN pregunta, como en la pantalla. `ContextoDeCargaIa` es el mismo resolutor que
+                 * usan las herramientas de carga (auth_user_id → User), para que "quién es esta
+                 * persona" tenga una sola definición en el asistente. `dias` viaja null cuando el
+                 * modelo no lo mandó, para que el helper aplique la cascada por rol en vez de leer
+                 * un 0 que el modelo nunca pidió.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    $dias = isset($input['dias']) ? (int) $input['dias'] : null;
+
+                    $persona = ($conversation instanceof AiConversation)
+                        ? ContextoDeCargaIa::de_la_conversacion($conversation)->persona
+                        : null;
+
+                    return VentasSinCobrarIaHelper::ventas_sin_cobrar((int) $owner_id, $dias, $persona);
                 },
             ],
         ];
@@ -2123,8 +2152,10 @@ CONFIRMACION;
 
                 if (! is_null($handler)) {
                     // Las dos puntas de una tool de lectura (su definición y su handler) son la
-                    // misma entrada de registro_de_lectura(): acá solo se la invoca.
-                    $datos = call_user_func($handler, $tool_input, $owner_id);
+                    // misma entrada de registro_de_lectura(): acá solo se la invoca. La conversación
+                    // va tercera para las tools que recortan por QUIÉN pregunta (ver el docblock
+                    // del registro); las demás la ignoran sin declararla.
+                    $datos = call_user_func($handler, $tool_input, $owner_id, $conversation);
 
                     /*
                      * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del

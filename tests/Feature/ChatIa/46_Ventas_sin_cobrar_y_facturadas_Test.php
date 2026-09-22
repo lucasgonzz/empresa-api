@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AfipTicket;
 use App\Models\Article;
 use App\Models\Client;
+use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\Sale;
@@ -115,6 +116,9 @@ class Ventas_sin_cobrar_y_facturadas_Test extends TestCase
 
         // Y dice de qué universo habla, que es lo que el modelo iba a inventar.
         $this->assertStringContainsString('no genero deuda', $resultado['criterio']);
+
+        // Sin persona (el llamador habla por el negocio) no hay recorte, y lo declara.
+        $this->assertEquals('Todas las ventas del negocio.', $resultado['alcance']);
     }
 
     /**
@@ -175,6 +179,186 @@ class Ventas_sin_cobrar_y_facturadas_Test extends TestCase
 
         $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0)['ventas_sin_cobrar']);
         $this->assertEquals(1, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 30)['ventas_sin_cobrar']);
+    }
+
+    /**
+     * 🔴 LA MONEDA (chequeo adversarial del 21/9/2026). `current_acounts.moneda_id` viene NULL en toda
+     * deuda nacida de una venta —`CurrentAcountFromSaleHelper::crear_current_acount()` nunca la
+     * escribe— y la moneda real está en `credit_accounts.moneda_id`, que es adonde cae el accesor
+     * del modelo. El agregado filtraba con `COALESCE(moneda_id, 1)` sobre la fila pelada, así que
+     * TODA la deuda se contaba como pesos y `ventas_en_otra_moneda` daba 0 fijo: a un comercio con
+     * ventas en dólares se le sumaban pesos y dólares como si fueran la misma unidad.
+     *
+     * La prueba de que era un defecto: en la misma respuesta, `venta_mas_vieja` SÍ resolvía la moneda
+     * por el accesor, así que una venta en dólares venía con `en_pesos = false` y su deuda ya sumada
+     * al total "en pesos". Por eso acá la de dólares es a propósito la más vieja: las dos puntas
+     * tienen que decir lo mismo.
+     *
+     * Las filas se siembran EXACTAMENTE como quedan en producción: `moneda_id` NULL en la cuenta
+     * corriente y la moneda solo en la `credit_account`. Sembrarla en la fila haría pasar el test con
+     * el código roto.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function una_venta_en_dolares_no_entra_en_el_total_en_pesos_y_se_cuenta_aparte()
+    {
+        $cliente = Client::create(['name' => 'Cliente bimonetario', 'user_id' => $this->comercio->id]);
+
+        // Una cuenta por moneda, como las deja el sistema (model_name + model_id + moneda_id).
+        $cuenta_pesos = CreditAccount::create(['model_name' => 'client', 'model_id' => $cliente->id, 'moneda_id' => 1, 'saldo' => 0, 'user_id' => $this->comercio->id]);
+        $cuenta_dolares = CreditAccount::create(['model_name' => 'client', 'model_id' => $cliente->id, 'moneda_id' => 2, 'saldo' => 0, 'user_id' => $this->comercio->id]);
+
+        $this->venta_impaga($cliente, 1000, 1000, now()->subDays(10), ['credit_account_id' => $cuenta_pesos->id]);
+
+        // La de dólares, y la más vieja de las dos.
+        $this->venta_impaga($cliente, 300, 300, now()->subDays(50), ['credit_account_id' => $cuenta_dolares->id], ['moneda_id' => 2]);
+
+        // Y una sin credit_account (dato viejo): sin moneda en ningún lado se lee como pesos.
+        $this->venta_impaga($cliente, 200, 200, now()->subDays(5));
+
+        $resultado = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id);
+
+        $this->assertArrayNotHasKey('error', $resultado, json_encode($resultado));
+        $this->assertEquals(3, $resultado['ventas_sin_cobrar']);
+
+        // 1000 + 200: los 300 dólares NO son pesos y no se suman.
+        $this->assertEquals(1200.0, $resultado['total_pendiente_en_pesos']);
+        $this->assertEquals(1, $resultado['ventas_en_otra_moneda']);
+
+        $this->assertEquals(1200.0, $resultado['clientes'][0]['pendiente_en_pesos']);
+        $this->assertEquals(3, $resultado['clientes'][0]['ventas_sin_cobrar']);
+        $this->assertEquals(1, $resultado['clientes'][0]['ventas_en_otra_moneda']);
+
+        // 🔴 Las dos puntas coinciden: la más vieja es la de dólares y viene dicha como tal.
+        $this->assertEquals(300.0, $resultado['venta_mas_vieja']['pendiente']);
+        $this->assertEquals(2, $resultado['venta_mas_vieja']['moneda_id']);
+        $this->assertFalse($resultado['venta_mas_vieja']['en_pesos']);
+    }
+
+    // ------------------------------------------------------------------ C1, el alcance por persona
+
+    /**
+     * 🔴 EL AISLAMIENTO ADENTRO DEL COMERCIO (chequeo adversarial del 21/9/2026). La pantalla
+     * "Ventas sin cobrar" arranca con `ver_solo_las_ventas_suyas = true` y solo lo apaga para el dueño
+     * o para quien tenga `ver_alertas_de_todos_los_empleados`. La tool pasaba `employee_id = null`
+     * siempre: un vendedor que en la pantalla ve únicamente lo suyo le preguntaba al asistente y
+     * recibía el total del negocio, el ranking de deudores con nombre y monto, y la venta más vieja de
+     * cualquier compañero.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_vendedor_sin_permiso_de_ver_todo_recibe_solo_sus_ventas()
+    {
+        $vendedor = $this->empleado('Vendedor C');
+        $companero = $this->empleado('Companero C');
+
+        $suyo = Client::create(['name' => 'Cliente del vendedor', 'user_id' => $this->comercio->id]);
+        $ajeno = Client::create(['name' => 'Cliente del companero', 'user_id' => $this->comercio->id]);
+
+        // Lo suyo: dos ventas, la más vieja de las suyas tiene 20 días.
+        $this->venta_impaga($suyo, 1000, 1000, now()->subDays(20), [], ['employee_id' => $vendedor->id]);
+        $this->venta_impaga($suyo, 500, 500, now()->subDays(3), [], ['employee_id' => $vendedor->id]);
+
+        // Lo del compañero: más plata y más vieja, y NO tiene que aparecer.
+        $this->venta_impaga($ajeno, 9000, 9000, now()->subDays(90), [], ['employee_id' => $companero->id]);
+
+        // Y una del dueño (sin employee_id): tampoco es del vendedor.
+        $this->venta_impaga($ajeno, 700, 700, now()->subDays(30));
+
+        $resultado = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0, $vendedor);
+
+        $this->assertArrayNotHasKey('error', $resultado, json_encode($resultado));
+        $this->assertEquals(2, $resultado['ventas_sin_cobrar']);
+        $this->assertEquals(1500.0, $resultado['total_pendiente_en_pesos']);
+
+        // El ranking no nombra al cliente del compañero.
+        $this->assertEquals(1, $resultado['clientes_con_deuda']);
+        $this->assertEquals('Cliente del vendedor', $resultado['clientes'][0]['cliente']);
+
+        // La más vieja es la más vieja DE LAS SUYAS, no la de 90 días del compañero.
+        $this->assertEquals('Cliente del vendedor', $resultado['venta_mas_vieja']['cliente']);
+        $this->assertEquals(20, $resultado['venta_mas_vieja']['dias_sin_cobrar']);
+
+        // Y la respuesta le dice al modelo que NO es el total del negocio.
+        $this->assertStringContainsString('SOLO las ventas', $resultado['alcance']);
+    }
+
+    /**
+     * El dueño ve todo, y también quien tiene `ver_alertas_de_todos_los_empleados`: los dos casos en
+     * que la pantalla apaga el recorte. Un administrador SIN ese permiso, en cambio, ve solo lo suyo,
+     * porque la pantalla tampoco le muestra más (se copia lo que hace, no lo que uno esperaría).
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_dueno_y_quien_ve_alertas_de_todos_reciben_todo_el_negocio()
+    {
+        $vendedor = $this->empleado('Vendedor todo');
+        $supervisor = $this->empleado('Supervisor todo', ['ver_alertas_de_todos_los_empleados' => 1]);
+        $admin_sin_permiso = $this->empleado('Admin sin permiso', ['admin_access' => 1]);
+
+        $cliente = Client::create(['name' => 'Cliente alcance', 'user_id' => $this->comercio->id]);
+
+        $this->venta_impaga($cliente, 1000, 1000, now()->subDays(10), [], ['employee_id' => $vendedor->id]);
+        $this->venta_impaga($cliente, 2000, 2000, now()->subDays(10), [], ['employee_id' => $supervisor->id]);
+        $this->venta_impaga($cliente, 4000, 4000, now()->subDays(10));
+
+        $dueno = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0, $this->comercio);
+        $this->assertEquals(3, $dueno['ventas_sin_cobrar']);
+        $this->assertEquals(7000.0, $dueno['total_pendiente_en_pesos']);
+        $this->assertEquals('Todas las ventas del negocio.', $dueno['alcance']);
+
+        $todos = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0, $supervisor);
+        $this->assertEquals(3, $todos['ventas_sin_cobrar']);
+        $this->assertEquals(7000.0, $todos['total_pendiente_en_pesos']);
+
+        // admin_access no alcanza: la pantalla le recorta igual, y acá también.
+        $admin = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0, $admin_sin_permiso);
+        $this->assertEquals(0, $admin['ventas_sin_cobrar']);
+        $this->assertEquals(0.0, $admin['total_pendiente_en_pesos']);
+        $this->assertNull($admin['venta_mas_vieja']);
+    }
+
+    /**
+     * Sin `dias` del modelo vale la cascada por rol de la pantalla, y un `dias` explícito la pisa: es
+     * el mismo orden del controller, donde el `?dias=N` del query string pisa la cascada.
+     *
+     * 🔴 Y la única diferencia a propósito con la pantalla: una cascada que termina en null (ninguna
+     * de las columnas configurada, que es lo normal) es "todas" y no "ninguna". Con null en el
+     * `INTERVAL ? DAY` la query compartida no devuelve ninguna fila, y el asistente le diría al dueño
+     * "no tenés nada sin cobrar" con el negocio lleno de deuda.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function sin_dias_del_modelo_vale_la_cascada_por_rol_y_el_dias_explicito_la_pisa()
+    {
+        $cliente = Client::create(['name' => 'Cliente cascada', 'user_id' => $this->comercio->id]);
+
+        $this->venta_impaga($cliente, 1000, 1000, now()->subDays(40));
+        $this->venta_impaga($cliente, 500, 500, now()->subDays(2));
+
+        // Nada configurado: la cascada da null y eso es "todas", no "ninguna".
+        $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $this->comercio)['ventas_sin_cobrar']);
+
+        // El dueño configuró 30 días para administradores: sin `dias` del modelo, vale eso.
+        $this->comercio->dias_alertar_administradores_ventas_no_cobradas = 30;
+        $this->comercio->dias_alertar_empleados_ventas_no_cobradas = 1;
+        $this->comercio->save();
+
+        $this->assertEquals(1, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $this->comercio)['ventas_sin_cobrar']);
+
+        // Y el `dias` explícito del modelo lo pisa.
+        $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, 0, $this->comercio)['ventas_sin_cobrar']);
+
+        // Un empleado con columna propia usa la suya (35 → solo la de 40 días); sin columna, la de empleados del dueño (1 → las dos).
+        $con_umbral = $this->empleado('Empleado con umbral', ['ver_alertas_de_todos_los_empleados' => 1, 'dias_alertar_empleados_ventas_no_cobradas' => 35]);
+        $sin_umbral = $this->empleado('Empleado sin umbral', ['ver_alertas_de_todos_los_empleados' => 1]);
+
+        $this->assertEquals(1, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $con_umbral)['ventas_sin_cobrar']);
+        $this->assertEquals(2, VentasSinCobrarIaHelper::ventas_sin_cobrar($this->comercio->id, null, $sin_umbral)['ventas_sin_cobrar']);
     }
 
     // ------------------------------------------------------------------ C2
@@ -466,6 +650,23 @@ class Ventas_sin_cobrar_y_facturadas_Test extends TestCase
         }
 
         return $venta;
+    }
+
+    /**
+     * Un empleado del comercio (`owner_id` = el dueño), con los flags que se le pasen.
+     *
+     * @param  string  $nombre
+     * @param  array   $extra
+     * @return User
+     */
+    protected function empleado($nombre, array $extra = [])
+    {
+        return User::create(array_merge([
+            'name'     => $nombre,
+            'email'    => 'ventas-c-emp-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $this->comercio->id,
+        ], $extra));
     }
 
     /**
