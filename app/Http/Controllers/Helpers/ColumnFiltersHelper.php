@@ -444,20 +444,50 @@ class ColumnFiltersHelper
             return null;
         }
 
+        // La key sale del request: no se invoca cualquier metodo publico del modelo. Un `save_id`
+        // o `touch_id` llamaria a save()/touch() heredados de Eloquent y escribiria en la base.
+        // Solo se acepta un metodo publico declarado en el propio modelo, sin parametros obligatorios.
+        $reflection = new \ReflectionMethod($instance, $relation_method);
+
+        if (!$reflection->isPublic()
+            || $reflection->isStatic()
+            || $reflection->getNumberOfRequiredParameters() > 0
+            || $reflection->getDeclaringClass()->getName() === \Illuminate\Database\Eloquent\Model::class) {
+            return null;
+        }
+
         $relation = $instance->$relation_method();
 
+        // MorphTo extiende BelongsTo pero no tiene una tabla ni un owner key fijos.
         if (!($relation instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo)
+            || $relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
             || $relation->getForeignKeyName() !== $key) {
             return null;
         }
 
         $related = $relation->getRelated();
 
+        // Auto-referencia (ej: users.owner_id -> users): la subconsulta pisaria el nombre de la
+        // tabla externa y quedaria sin correlacionar. No se aplica el chequeo extra.
+        if ($related->getTable() === $instance->getTable()) {
+            return null;
+        }
+
+        // Si la relacion se declara con withTrashed() el listado SI muestra el registro borrado:
+        // ahi un borrado no cuenta como "en blanco", solo el inexistente.
+        $muestra_borrados = in_array(
+            \Illuminate\Database\Eloquent\SoftDeletingScope::class,
+            $relation->getQuery()->removedScopes(),
+            true
+        );
+
         return [
             'table'      => $related->getTable(),
             'owner_key'  => $relation->getOwnerKeyName(),
             'own_table'  => $instance->getTable(),
-            'deleted_at' => method_exists($related, 'getDeletedAtColumn') ? $related->getDeletedAtColumn() : null,
+            'deleted_at' => (!$muestra_borrados && method_exists($related, 'getDeletedAtColumn'))
+                ? $related->getDeletedAtColumn()
+                : null,
         ];
     }
 

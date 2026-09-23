@@ -2,9 +2,13 @@
 
 namespace Tests\Feature\Busqueda;
 
+use App\Http\Controllers\Helpers\ColumnFiltersHelper;
 use App\Models\Article;
+use App\Models\ArticlePurchase;
 use App\Models\Category;
+use App\Models\Image;
 use App\Models\Provider;
+use App\Models\User;
 
 /**
  * Filtro "En blanco" / "Que no este en blanco" cuando el FK apunta a un registro borrado.
@@ -119,6 +123,70 @@ class Filtro_En_Blanco_Con_Relacion_Borrada_Test extends BusquedaTestCase
             $ids,
             'con proveedor borrado el listado lo muestra vacio: no puede estar en "no en blanco"'
         );
+    }
+
+    /**
+     * SQL que el helper arma para un filtro "en blanco" sobre `$key` de `$model`.
+     *
+     * @param string $model_class
+     * @param string $model_param
+     * @param string $key
+     * @return string
+     */
+    protected function sql_en_blanco($model_class, $model_param, $key)
+    {
+        $resultado = ColumnFiltersHelper::apply(
+            $model_class::query(),
+            [['key' => $key, 'type' => 'search', 'en_blanco' => true]],
+            $model_param,
+            $model_class
+        );
+
+        return $resultado['models']->toSql();
+    }
+
+    /**
+     * Una relacion declarada con withTrashed() SI muestra el registro borrado en el listado: ahi un
+     * borrado no es "en blanco", solo el inexistente (no se agrega el chequeo de deleted_at).
+     *
+     * @group busqueda
+     * @test
+     */
+    public function una_relacion_con_withtrashed_no_trata_al_borrado_como_en_blanco()
+    {
+        $sql = $this->sql_en_blanco(ArticlePurchase::class, 'article_purchase', 'article_id');
+
+        $this->assertStringContainsString('not exists', $sql, 'el inexistente sigue siendo "en blanco"');
+        $this->assertStringNotContainsString('`articles`.`deleted_at` is null', $sql, 'un articulo borrado se ve en el listado de compras');
+    }
+
+    /**
+     * Auto-referencias y polimorficas no llevan el chequeo extra (daria SQL sin correlacionar o
+     * invalido): el filtro se comporta como antes.
+     *
+     * @group busqueda
+     * @test
+     */
+    public function auto_referencias_y_polimorficas_no_agregan_el_chequeo_de_relacion()
+    {
+        $this->assertStringNotContainsString('not exists', $this->sql_en_blanco(User::class, 'user', 'owner_id'));
+        $this->assertStringNotContainsString('not exists', $this->sql_en_blanco(Image::class, 'image', 'imageable_id'));
+    }
+
+    /**
+     * La key sale del request: un `save_id` no puede terminar llamando a Model::save().
+     *
+     * @group busqueda
+     * @test
+     */
+    public function una_key_que_coincide_con_un_metodo_de_eloquent_no_ejecuta_nada()
+    {
+        $antes = Article::withTrashed()->count();
+
+        $sql = $this->sql_en_blanco(Article::class, 'article', 'save_id');
+
+        $this->assertStringNotContainsString('not exists', $sql);
+        $this->assertEquals($antes, Article::withTrashed()->count(), 'no debe insertarse ninguna fila');
     }
 
     /**
