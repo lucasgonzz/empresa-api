@@ -792,8 +792,16 @@ class SaleController extends Controller
                 $model->forzar_total_monto              = SaleHelper::normalized_forzar_total_monto($request);
             }
 
+            /*
+                El valor anterior se lee ANTES de asignar el nuevo: el helper reabre la venta solo si
+                la fecha pasa de vacia a cargada. Se persiste con el `save()` de mas abajo.
+            */
+            $fecha_entrega_anterior                     = $model->fecha_entrega;
+
             $model->fecha_entrega                       = $request->fecha_entrega;
-            
+
+            SaleHelper::reabrir_si_se_asigna_fecha_de_entrega($model, $fecha_entrega_anterior, $request->fecha_entrega);
+
             /*
                 Se PRESERVA el valor guardado si el request no trae la clave, igual que
                 `BudgetController::update()` y a diferencia de como estaba hasta el 17/9/2026

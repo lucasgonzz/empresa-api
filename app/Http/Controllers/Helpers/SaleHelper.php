@@ -117,6 +117,44 @@ class SaleHelper extends Controller {
     }
 
     /**
+     * Reabre una venta terminada cuando, editandola, se le asigna una fecha de entrega que antes no
+     * tenia. Muta el modelo pero NO lo guarda: lo persiste el `save()` que ya hace `update()`.
+     *
+     * Una venta nacida de un pedido de la tienda queda `terminada = 1` porque el pedido no traia
+     * fecha (`CreateSaleOrderHelper::is_terminada()`); si despues se le pone fecha, tiene que
+     * aparecer en Por entregar, que solo lista `terminada = 0`. `store()` ya resuelve esto en el
+     * alta con `get_terminada()`; el update nunca recalculaba nada.
+     *
+     * Solo reabre si la fecha anterior estaba vacia: cambiar una fecha por otra no reabre una venta
+     * que alguien marco terminada a mano, y con la misma fecha no hay nada que decidir. Sin la
+     * extension `ventas_con_fecha_de_entrega` no hace nada (mismo criterio que `get_terminada()`).
+     * No toca `confirmed`, `to_check` ni `checked`: son del circuito de chequeo de deposito.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  mixed  $fecha_anterior  Valor de `fecha_entrega` ANTES de asignar el nuevo.
+     * @param  mixed  $fecha_nueva
+     * @return bool  true si reabrio la venta.
+     */
+    static function reabrir_si_se_asigna_fecha_de_entrega($sale, $fecha_anterior, $fecha_nueva) {
+        if (!empty($fecha_anterior) || empty($fecha_nueva)) {
+            return false;
+        }
+
+        if (!$sale->terminada) {
+            return false;
+        }
+
+        if (!UserHelper::hasExtencion('ventas_con_fecha_de_entrega')) {
+            return false;
+        }
+
+        $sale->terminada    = 0;
+        $sale->terminada_at = null;
+
+        return true;
+    }
+
+    /**
      * El `created_at` que se va a guardar en un ALTA, a partir de la fecha que eligio el usuario.
      *
      * 🔴 ES EL UNICO LUGAR DONDE SE INTERPRETA EL CAMPO, para los dos flujos que lo usan: el alta
