@@ -505,6 +505,14 @@ class BudgetController extends Controller
      */
     public function confirmar($id) {
 
+        /*
+            El usuario se resuelve ANTES de abrir la transacción (misión
+            cuenta-corriente-carrera-y-velocidad, 23/9/2026): puede leer la base, y adentro esa
+            lectura común sería la primera de la transacción, antes de los candados del presupuesto y
+            de la cuenta corriente.
+        */
+        $user_id = $this->userId();
+
         DB::beginTransaction();
 
         try {
@@ -520,7 +528,7 @@ class BudgetController extends Controller
                 pestañas. La exclusion tiene que estar acá.
             */
             $model = Budget::where('id', $id)
-                            ->where('user_id', $this->userId())
+                            ->where('user_id', $user_id)
                             ->lockForUpdate()
                             ->first();
 

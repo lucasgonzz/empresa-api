@@ -342,8 +342,6 @@ class SaleController extends Controller
 
         DB::beginTransaction();
 
-        $candado = 'crear_venta_'.$this->userId();
-
         try {
 
             /*

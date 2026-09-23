@@ -51,27 +51,34 @@ class DevolucionesController extends Controller
         try {
 
             /*
-                🔴 Candado sobre la venta y re-validación CON candado, como primera lectura de la
-                transacción (auditoría de stock, 5/9/2026). El chequeo de arriba frena el reintento
-                secuencial; éste frena el doble clic simultáneo: el segundo request espera acá a que
-                el primero commitee y recién entonces cuenta lo ya devuelto (con lecturas FOR UPDATE,
-                que ven lo último commiteado y no la foto de la transacción). Si no cierra, la
-                excepción propia cae en su catch y responde 422 con el motivo.
+                🔴 Primero el candado de la VENTA y enseguida el de la CUENTA CORRIENTE del cliente,
+                antes de cualquier lectura común (misión cuenta-corriente-carrera-y-velocidad,
+                23/9/2026). La nota de crédito entra a la cadena de saldos del cliente y se imputa
+                contra sus débitos: sin el candado de la cuenta podía intercalarse con otra escritura
+                sobre la misma cuenta, que es la carrera de Fenix. Mismo orden que la edición de venta:
+                venta, después cuenta. La venta se bloquea acá, y no recién en exigir(), porque
+                exigir() lee el concepto de stock "Nota de credito" con una lectura común antes de sus
+                lecturas con candado: el candado de la cuenta tiene que ir antes que esa lectura.
+                Ver CuentaCorrienteLock.
             */
-            if ($request->sale_id && ($request->regresar_stock || $request->update_unidades_devueltas)) {
-                ValidarDevolucionHelper::exigir($request->sale_id, $request->items);
+            if ($request->sale_id) {
+                Sale::withTrashed()->where('id', $request->sale_id)->lockForUpdate()->first(['id']);
+            }
+
+            if ($request->generar_current_acount && !is_null($request->client_id)) {
+                CuentaCorrienteLock::bloquear('client', $request->client_id);
             }
 
             /*
-                🔴 Candado de la cuenta corriente del cliente, después del de la venta y antes de
-                cualquier lectura común (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026).
-                La nota de crédito entra a la cadena de saldos del cliente y se imputa contra sus
-                débitos: sin esto podía intercalarse con otra escritura sobre la misma cuenta, que
-                es la carrera de Fenix. Mismo orden que la edición de venta: venta, después cuenta.
-                Ver CuentaCorrienteLock.
+                🔴 Re-validación CON candado (auditoría de stock, 5/9/2026). El chequeo de arriba
+                frena el reintento secuencial; éste frena el doble clic simultáneo: el segundo request
+                espera al primero en el candado de la venta y recién entonces cuenta lo ya devuelto
+                (con lecturas FOR UPDATE, que ven lo último commiteado y no la foto de la
+                transacción). Si no cierra, la excepción propia cae en su catch y responde 422 con el
+                motivo.
             */
-            if ($request->generar_current_acount && !is_null($request->client_id)) {
-                CuentaCorrienteLock::bloquear('client', $request->client_id);
+            if ($request->sale_id && ($request->regresar_stock || $request->update_unidades_devueltas)) {
+                ValidarDevolucionHelper::exigir($request->sale_id, $request->items);
             }
 
             $model_id = null;
