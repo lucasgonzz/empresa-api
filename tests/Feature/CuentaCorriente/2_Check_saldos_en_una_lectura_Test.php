@@ -95,6 +95,37 @@ class Check_saldos_en_una_lectura_Test extends EmpresaTestCase
     }
 
     /**
+     * Un movimiento sin debe ni haber es un ancla: conserva su saldo guardado y el siguiente arranca
+     * de ahí, como hizo siempre checkSaldos(). Caso real de Fenix: "A cta saldo inicial ($170.000)".
+     * Uno en NULL arranca de 0, igual que antes.
+     *
+     * @test
+     */
+    public function un_movimiento_sin_debe_ni_haber_es_un_ancla()
+    {
+        list($cliente, $cuenta) = $this->cliente_con_cuenta($this->app['auth']->user()->id, 'Ancla');
+
+        $t = Carbon::parse('2026-09-03 10:00:00');
+
+        $venta = $this->movimiento($cuenta, ['detalle' => 'Venta', 'debe' => 1000, 'saldo' => null, 'created_at' => $t->copy()]);
+        $ancla = $this->movimiento($cuenta, ['detalle' => 'A cta saldo inicial ($170.000)', 'saldo' => 170000, 'created_at' => $t->copy()->addMinute()]);
+        $despues = $this->movimiento($cuenta, ['detalle' => 'Pago', 'haber' => 20000, 'saldo' => null, 'created_at' => $t->copy()->addMinutes(2)]);
+        $ancla_null = $this->movimiento($cuenta, ['detalle' => 'Nota de debito', 'saldo' => null, 'created_at' => $t->copy()->addMinutes(3)]);
+        $ultimo = $this->movimiento($cuenta, ['detalle' => 'Venta', 'debe' => 30, 'saldo' => null, 'created_at' => $t->copy()->addMinutes(4)]);
+
+        CurrentAcountHelper::checkSaldos($cuenta->id);
+
+        $this->assertEqualsWithDelta(1000, (float) $venta->fresh()->saldo, 0.001);
+        $this->assertEqualsWithDelta(170000, (float) $ancla->fresh()->saldo, 0.001, 'El ancla conserva su saldo.');
+        $this->assertEqualsWithDelta(150000, (float) $despues->fresh()->saldo, 0.001, 'El siguiente arranca del ancla.');
+        $this->assertNull($ancla_null->fresh()->saldo, 'Un ancla en NULL no se toca.');
+        $this->assertEqualsWithDelta(30, (float) $ultimo->fresh()->saldo, 0.001, 'Después de un ancla en NULL se arranca de 0.');
+        $this->assertEqualsWithDelta(30, (float) $cuenta->fresh()->saldo, 0.001);
+
+        $this->assertNull(CurrentAcountHelper::primer_corte_de_la_cadena($cuenta->id), 'Las anclas no son cortes.');
+    }
+
+    /**
      * @test
      */
     public function la_cantidad_de_consultas_no_crece_con_los_movimientos()

@@ -560,8 +560,9 @@ class CurrentAcountHelper {
      *     CUENTA. Adentro de un request el candado ya lo tomó la entrada y acá es gratis; lo que cubre
      *     es a los comandos y jobs que recalculan cuentas en el fondo, que ahora esperan al request que
      *     está escribiendo esa misma cuenta en vez de pisarle la cadena con una lectura vieja.
-     *   - Un movimiento sin debe ni haber queda con el saldo del anterior (antes no se tocaba y el
-     *     siguiente arrancaba de lo que tuviera guardado).
+     *   - Un movimiento sin debe ni haber (hay pocos: un "A cta saldo inicial" o una nota de débito
+     *     vacía) es un ANCLA, igual que antes: conserva su saldo guardado y el siguiente arranca de ahí.
+     *     Ver es_ancla().
      *
      * La firma y la semántica de `$from_current_acount` no cambiaron: con un movimiento de arranque se
      * recalculan los posteriores (`>` o, con `$mayor_o_igual`, `>=` por `created_at`) partiendo del
@@ -641,6 +642,13 @@ class CurrentAcountHelper {
 
         foreach ($current_acounts as $current_acount) {
 
+            if (Self::es_ancla($current_acount)) {
+                // Conserva su saldo guardado y la cadena sigue desde ahí (un NULL arranca de 0, que
+                // es lo que pasaba con el getSaldo() de antes).
+                $saldo = (float) $current_acount->saldo;
+                continue;
+            }
+
             $saldo = Numbers::redondear($saldo + Self::aporte_al_saldo($current_acount));
 
             if (is_null($current_acount->saldo) || abs((float) $current_acount->saldo - $saldo) > 0.001) {
@@ -675,8 +683,10 @@ class CurrentAcountHelper {
      * El primer movimiento donde la cadena de saldos de una cuenta no cierra, o null si cierra
      * entera. Solo lee.
      *
-     * Una cadena está cortada cuando un movimiento no provisorio tiene el saldo en NULL, o cuando su
-     * saldo no es el GUARDADO del anterior más su aporte (`aporte_al_saldo()`), con tolerancia. Mismo
+     * Una cadena está cortada cuando un movimiento no provisorio con debe o haber tiene el saldo en
+     * NULL, o cuando su saldo no es el GUARDADO del anterior más su aporte (`aporte_al_saldo()`), con
+     * tolerancia. Un ancla (sin debe ni haber, ver es_ancla()) nunca es un corte: la cadena sigue
+     * desde su saldo guardado, igual que en checkSaldos(). Mismo
      * orden y mismo filtro que checkSaldos(): `created_at, id` e `is_provisorio = 0`; el primero
      * arranca de 0. La usa el comando `cuenta_corriente:reparar_cadenas` (misión
      * cuenta-corriente-carrera-y-velocidad, 23/9/2026).
@@ -699,6 +709,11 @@ class CurrentAcountHelper {
 
         foreach ($filas as $fila) {
 
+            if (Self::es_ancla($fila)) {
+                $saldo_anterior = (float) $fila->saldo;
+                continue;
+            }
+
             $esperado = Numbers::redondear($saldo_anterior + Self::aporte_al_saldo($fila));
 
             if (is_null($fila->saldo) || abs((float) $fila->saldo - $esperado) > $tolerancia) {
@@ -717,6 +732,22 @@ class CurrentAcountHelper {
         }
 
         return null;
+    }
+
+    /**
+     * Si un movimiento es un ANCLA de la cadena: no provisorio, sin debe ni haber. Conserva su saldo
+     * guardado y el siguiente arranca de ahí; es el comportamiento que tuvo siempre checkSaldos(), y
+     * se mantiene a propósito (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026): medido en la
+     * flota, hay 4 filas así con dato real (en Fenix un "A cta saldo inicial ($170.000)" y una nota de
+     * débito vacía, una nota de débito en Masquito y otra en Trama). Recalcularlas como "saldo del
+     * anterior" le cambiaba el saldo final a esas cuentas en el despliegue.
+     *
+     * @param  object  $current_acount  Modelo o fila con `debe` y `haber`.
+     * @return bool
+     */
+    static function es_ancla($current_acount) {
+
+        return is_null($current_acount->debe) && is_null($current_acount->haber);
     }
 
     /**

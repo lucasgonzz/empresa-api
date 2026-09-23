@@ -112,7 +112,8 @@ trait ArmaCadenas
 
     /**
      * La cadena cierra: cada saldo es el anterior más el debe (o menos el haber), arrancando en 0,
-     * y el saldo de la cuenta es el del último movimiento.
+     * salvo las anclas (sin debe ni haber), que conservan el suyo; y el saldo de la cuenta es el del
+     * último movimiento.
      *
      * @param  int     $credit_account_id
      * @param  string  $contexto
@@ -123,6 +124,13 @@ trait ArmaCadenas
         $esperado = 0.0;
 
         foreach ($this->filas_de_la_cadena($credit_account_id) as $fila) {
+
+            // Un movimiento sin debe ni haber es un ancla: conserva su saldo y la cadena sigue desde
+            // ahí (el comportamiento de siempre, que la misión mantiene a propósito).
+            if (is_null($fila->debe) && is_null($fila->haber)) {
+                $esperado = (float) $fila->saldo;
+                continue;
+            }
 
             if (!is_null($fila->debe)) {
                 $esperado = round($esperado + (float) $fila->debe, 2);
