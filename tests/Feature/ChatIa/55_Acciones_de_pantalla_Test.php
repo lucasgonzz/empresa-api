@@ -19,7 +19,9 @@ use App\Models\AperturaCaja;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\Budget;
+use App\Models\Buyer;
 use App\Models\Caja;
+use App\Models\Cheque;
 use App\Models\Client;
 use App\Models\CurrentAcountPaymentMethod;
 use App\Models\CurrentAcountPaymentMethodDiscount;
@@ -66,6 +68,11 @@ use Tests\EmpresaTestCase;
  * - 🔴 Tenencia de los ids de la ruta: un id de otro dueño (o inexistente) corta con `error` al
  *   proponer y al leer, sin tarjeta; y una tarjeta cuyo registro cambia de dueño antes del clic
  *   corta con 422 sin llamar al controller. Un {param} que no es un id (una fecha) no se mira.
+ * - 🔴 Las CLASES de la segunda vuelta del verificador (23/9/2026): la tenencia se decide sobre la
+ *   ruta que el router RESUELVE (el id metido en la ruta, otro nombre de {param}, una barra
+ *   codificada), nada sensible de la respuesta llega al modelo ni a la tarjeta, editar una venta
+ *   siempre confirma, los ids del cuerpo se miran todos (`model_id`, listas, anidados, booleanos) y
+ *   una consulta no deja nada escrito.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
  *
@@ -179,6 +186,30 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $this->assertArrayNotHasKey('is_error', $resultados[0], 'La herramienta devolvió una falla técnica: ' . $resultados[0]['content']);
 
         return json_decode($resultados[0]['content'], true);
+    }
+
+    /**
+     * Como herramienta(), pero devuelve también el JSON CRUDO del tool_result: es lo que el modelo
+     * lee, y es donde tiene que faltar lo que no puede ver.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant
+     * @param  string  $herramienta
+     * @param  array  $input
+     * @return array{0: array, 1: string}
+     */
+    protected function herramienta_cruda($conversation, $assistant, $herramienta, array $input)
+    {
+        $resultados = $this->service->execute_tool_calls([[
+            'type'  => 'tool_use',
+            'id'    => 'toolu_' . uniqid(),
+            'name'  => $herramienta,
+            'input' => $input,
+        ]], $conversation, $assistant);
+
+        $this->assertArrayNotHasKey('is_error', $resultados[0], 'La herramienta devolvió una falla técnica: ' . $resultados[0]['content']);
+
+        return [json_decode($resultados[0]['content'], true), (string) $resultados[0]['content']];
     }
 
     /**
@@ -1599,5 +1630,491 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
 
         $this->assertSame(0, (int) DB::table('cajas')->where('id', $caja->id)->value('abierta'), 'No se llamó a CajaController::abrir_caja()');
         $this->assertSame(0, DB::table('apertura_cajas')->where('caja_id', $caja->id)->count());
+    }
+
+    // ---------------------------------------------------------------------
+    // La segunda vuelta del verificador (23/9/2026): las CLASES, no los ejemplos
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 B-1: la tenencia se decide sobre la ruta que el router RESUELVE y los valores que LIGA, no
+     * sobre los nombres que escribió el modelo. Las cuatro formas con las que el verificador leyó la
+     * venta de otro dueño cortan con `error` de ajeno y sin un solo dato de la venta; y del lado de
+     * la escritura, una propuesta con el id metido en la ruta queda ejecutable (la tarjeta guarda la
+     * ruta resuelta y los valores ligados) y se ejecuta.
+     *
+     * @test
+     */
+    public function la_tenencia_se_decide_sobre_la_ruta_resuelta_y_no_sobre_lo_que_escribio_el_modelo()
+    {
+        $otro = $this->otro_dueno();
+
+        $venta_ajena = Sale::create(['user_id' => $otro->id, 'observations' => 'P55-venta-ajena-secreta']);
+        $venta_propia = Sale::create(['user_id' => $this->dueno->id, 'observations' => 'P55 venta propia']);
+
+        $this->assertNotNull(Catalogo::declaracion('GET', 'api/sale/{sale}'), 'Leer una venta por la pantalla está en el catálogo');
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $variantes = [
+            'el id ya metido en la ruta'                        => ['ruta' => 'api/sale/' . $venta_ajena->id],
+            'otro nombre de parámetro'                          => ['ruta' => 'api/sale/{id}', 'parametros' => ['id' => $venta_ajena->id]],
+            'la ruta adentro de un {param}'                     => ['ruta' => 'api/{x}', 'parametros' => ['x' => 'sale/' . $venta_ajena->id]],
+            'el id ajeno en la ruta y uno propio en parametros' => ['ruta' => 'api/sale/' . $venta_ajena->id, 'parametros' => ['sale' => $venta_propia->id]],
+        ];
+
+        foreach ($variantes as $nombre => $input) {
+
+            list($respuesta, $crudo) = $this->herramienta_cruda($conversation, $assistant, 'consultar_por_pantalla', $input);
+
+            $this->assertFalse($respuesta['ok'], $nombre . ': ' . $crudo);
+            $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $respuesta['error'], $nombre . ': ' . $crudo);
+            $this->assertStringNotContainsString('P55-venta-ajena-secreta', $crudo, $nombre . ': la venta ajena viajó en la respuesta');
+        }
+
+        // La guarda no cierra de más: la venta propia, por esas mismas formas, se lee.
+        foreach ([['ruta' => 'api/sale/' . $venta_propia->id], ['ruta' => 'api/sale/{id}', 'parametros' => ['id' => $venta_propia->id]]] as $input) {
+
+            list($propia, $crudo_propia) = $this->herramienta_cruda($conversation, $assistant, 'consultar_por_pantalla', $input);
+
+            $this->assertTrue(!empty($propia['ok']), $crudo_propia);
+            $this->assertSame('api/sale/' . $venta_propia->id, $propia['ruta'], 'Lo que se llamó es la ruta resuelta con su valor');
+            $this->assertStringContainsString('P55 venta propia', $crudo_propia);
+        }
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        // Del lado de la escritura: una caja ajena con el id metido en la ruta no deja tarjeta...
+        $caja_ajena = Caja::create(['num' => 1, 'name' => 'Caja ajena P55 ruta', 'user_id' => $otro->id]);
+
+        $ajena = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'PUT', 'ruta' => 'api/abrir-caja/' . $caja_ajena->id, 'descripcion' => 'Abrir la caja',
+        ]);
+
+        $this->assertFalse(!empty($ajena['ok']), 'La caja ajena con el id en la ruta dejó tarjeta: ' . json_encode($ajena));
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $ajena['error']);
+        $this->assertSame(0, (int) $caja_ajena->fresh()->abierta);
+
+        // ...con otro nombre de {param}, la tarjeta queda con el nombre de la ruta resuelta...
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::RESUELTO);
+
+        $caja_otro_nombre = $this->caja_de_prueba('Caja P55 otro nombre');
+
+        $otro_nombre = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'PUT', 'ruta' => 'api/abrir-caja/{id}', 'parametros' => ['id' => $caja_otro_nombre->id], 'descripcion' => 'Abrir la caja con otro nombre de parámetro',
+        ]);
+
+        $this->assertTrue(!empty($otro_nombre['ok']), json_encode($otro_nombre));
+        $this->assertSame(['caja_id' => $caja_otro_nombre->id], AiMessageAction::find($otro_nombre['tarjeta_id'])->datos['parametros']);
+
+        // ...y la propia con el id metido en la ruta queda EJECUTABLE: antes la tarjeta guardaba
+        // `{caja_id}` sin valor, su renglón lo mostraba literal y al confirmar faltaba el parámetro.
+        $caja = $this->caja_de_prueba('Caja P55 id en la ruta');
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'PUT', 'ruta' => 'api/abrir-caja/' . $caja->id, 'descripcion' => 'Abrir la caja con el id en la ruta',
+        ]);
+
+        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
+        $this->assertStringContainsString('PUT api/abrir-caja/' . $caja->id, $propuesta['resumen']);
+
+        $tarjeta = AiMessageAction::find($propuesta['tarjeta_id']);
+
+        $this->assertSame(['metodo' => 'PUT', 'ruta' => 'api/abrir-caja/{caja_id}', 'parametros' => ['caja_id' => $caja->id], 'cuerpo' => []], $tarjeta->datos);
+        $this->assertSame('PUT api/abrir-caja/' . $caja->id, $tarjeta->presentacion['renglones'][0]['valor'], 'El renglón muestra la URI concreta, no {caja_id}');
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $propuesta['tarjeta_id']);
+
+        $confirmacion->assertStatus(200);
+        $this->assertSame('Hecho: PUT api/abrir-caja/' . $caja->id, $confirmacion->json('model.resultado.texto'));
+        $this->assertSame(1, (int) $caja->fresh()->abierta);
+        $this->assertSame(0, (int) $caja_otro_nombre->fresh()->abierta, 'La otra tarjeta sigue sin confirmar');
+    }
+
+    /**
+     * 🔴 B-2: nada sensible de la respuesta llega al modelo ni queda en la tarjeta, venga por la
+     * relación que venga. `GET api/client/{client}` trae el comprador (Buyer no tiene $hidden) y
+     * `GET api/sale/{sale}` además el empleado (User::$hidden no incluye visible_password): la
+     * pantalla los recibe, el asistente no. Los modelos no se tocan.
+     *
+     * @test
+     */
+    public function nada_sensible_de_la_respuesta_llega_al_modelo_ni_queda_en_la_tarjeta()
+    {
+        $empleado = User::create([
+            'name'             => 'Empleado P55 sensible',
+            'email'            => 'empleado-p55-' . uniqid() . '@test.local',
+            'password'         => Hash::make('x'),
+            'visible_password' => 'p55-empleado-secreto',
+            'owner_id'         => $this->dueno->id,
+        ]);
+
+        $cliente = Client::create(['name' => 'Cliente P55 con comprador', 'user_id' => $this->dueno->id]);
+
+        $comprador = Buyer::create([
+            'name'                    => 'Comprador P55 sensible',
+            'email'                   => 'comprador-p55-' . uniqid() . '@test.local',
+            'user_id'                 => $this->dueno->id,
+            'comercio_city_client_id' => $cliente->id,
+            'password'                => Hash::make('y'),
+            'visible_password'        => 'p55-comprador-secreto',
+            'verification_code'       => 'p55-codigo-de-verificacion',
+        ]);
+
+        $venta = Sale::create(['user_id' => $this->dueno->id, 'employee_id' => $empleado->id, 'buyer_id' => $comprador->id, 'client_id' => $cliente->id]);
+
+        $secretos = ['p55-empleado-secreto', 'p55-comprador-secreto', 'p55-codigo-de-verificacion'];
+
+        // Sin esto el test no probaría nada: los modelos SÍ entregan esos datos (y no se tocan).
+        $crudo_del_modelo = json_encode(Sale::withAll()->find($venta->id));
+
+        foreach ($secretos as $secreto) {
+            $this->assertStringContainsString($secreto, $crudo_del_modelo, 'El modelo ya no entrega "' . $secreto . '": revisar este test');
+        }
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $lecturas = [
+            'el cliente' => ['ruta' => 'api/client/{client}', 'parametros' => ['client' => $cliente->id], 'se_ve' => 'Comprador P55 sensible'],
+            'la venta'   => ['ruta' => 'api/sale/{sale}', 'parametros' => ['sale' => $venta->id], 'se_ve' => 'Empleado P55 sensible'],
+        ];
+
+        foreach ($lecturas as $nombre => $lectura) {
+
+            list($respuesta, $crudo) = $this->herramienta_cruda($conversation, $assistant, 'consultar_por_pantalla', ['ruta' => $lectura['ruta'], 'parametros' => $lectura['parametros']]);
+
+            $this->assertTrue(!empty($respuesta['ok']), $nombre . ': ' . $crudo);
+            $this->assertFalse($respuesta['recortado'], $nombre . ': la respuesta vino recortada y el test no vería todo');
+
+            // La relación viaja (la limpieza no se lleva todo)...
+            $this->assertStringContainsString($lectura['se_ve'], $crudo, $nombre);
+
+            // ...sin las claves sensibles ni sus valores.
+            foreach ($secretos as $secreto) {
+                $this->assertStringNotContainsString($secreto, $crudo, $nombre . ': "' . $secreto . '" llegó al modelo');
+            }
+
+            foreach (['"visible_password"', '"verification_code"', '"password"'] as $clave) {
+                $this->assertStringNotContainsString($clave, $crudo, $nombre . ': la clave ' . $clave . ' llegó al modelo');
+            }
+        }
+
+        // Y lo mismo en el `resultado` de una tarjeta ejecutada: delivery-info responde la venta entera.
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::RESUELTO);
+
+        $this->assertNotNull(Catalogo::declaracion('PUT', 'api/sale/{sale_id}/delivery-info'));
+
+        $propuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo'      => 'PUT',
+            'ruta'        => 'api/sale/{sale_id}/delivery-info',
+            'parametros'  => ['sale_id' => $venta->id],
+            'cuerpo'      => ['first_name' => 'Destinatario P55', 'locality' => 'Rosario'],
+            'descripcion' => 'Cargar los datos de envío de la venta',
+        ]);
+
+        $this->assertTrue(!empty($propuesta['ok']), json_encode($propuesta));
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $propuesta['tarjeta_id']);
+
+        $confirmacion->assertStatus(200);
+        $this->assertSame('confirmada', $confirmacion->json('model.estado'));
+        $this->assertSame('Empleado P55 sensible', $confirmacion->json('model.resultado.respuesta.model.employee.name'), 'La relación viaja en el resultado, sin lo sensible');
+
+        $guardado = (string) DB::table('ai_message_actions')->where('id', $propuesta['tarjeta_id'])->value('resultado');
+
+        foreach ($secretos as $secreto) {
+            $this->assertStringNotContainsString($secreto, $confirmacion->getContent(), '"' . $secreto . '" en la respuesta del clic');
+            $this->assertStringNotContainsString($secreto, $guardado, '"' . $secreto . '" quedó guardado en la tarjeta');
+        }
+
+        foreach (['visible_password', 'verification_code'] as $clave) {
+            $this->assertStringNotContainsString($clave, $guardado, 'la clave ' . $clave . ' quedó guardada en la tarjeta');
+        }
+    }
+
+    /**
+     * 🔴 B-3: editar una venta ya cargada SIEMPRE confirma, también en "directo". `PUT api/sale/{sale}`
+     * con `save_nota_credito` emite una nota de crédito ante ARCA y con `send_mail` le manda el
+     * comprobante al cliente: la tarjeta queda propuesta, con su aviso, y la venta no cambia.
+     *
+     * @test
+     */
+    public function editar_una_venta_siempre_confirma_incluso_en_directo()
+    {
+        $declaracion = Catalogo::declaracion('PUT', 'api/sale/{sale}');
+
+        $this->assertSame('SaleController@update', $declaracion['accion']);
+        $this->assertTrue($declaracion['siempre_confirma']);
+        $this->assertStringContainsString('nota de crédito ante ARCA', $declaracion['motivo_confirmacion']);
+        $this->assertStringContainsString('avisarle al cliente', $declaracion['motivo_confirmacion']);
+
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        $venta = Sale::create(['user_id' => $this->dueno->id, 'observations' => 'P55 venta a editar']);
+
+        $antes = (array) DB::table('sales')->where('id', $venta->id)->first();
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo'      => 'PUT',
+            'ruta'        => 'api/sale/{sale}',
+            'parametros'  => ['sale' => $venta->id],
+            'cuerpo'      => ['observations' => 'P55 editada', 'save_nota_credito' => true, 'send_mail' => true],
+            'descripcion' => 'Editar la venta',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertArrayNotHasKey('estado', $respuesta, 'Una respuesta con "estado" es la de confirmar_del_agente: la edición se ejecutó sola en "directo".');
+        $this->assertTrue($respuesta['requiere_confirmacion']);
+        $this->assertStringContainsString('nota de crédito', $respuesta['motivo_confirmacion']);
+
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->estado_guardado());
+        $this->assertStringContainsString('nota de crédito', $tarjeta->presentacion['aviso']);
+        $this->assertStringContainsString('"directo"', $tarjeta->presentacion['aviso']);
+
+        $this->assertEquals($antes, (array) DB::table('sales')->where('id', $venta->id)->first(), 'La venta no cambió');
+
+        // Y el prompt de "directo" la nombra entre lo que siempre deja tarjeta.
+        $prompt = $this->service->build_system_prompt($conversation, $this->dueno->fresh(), true);
+
+        $this->assertStringContainsString('editar una venta ya cargada', $prompt);
+    }
+
+    /**
+     * 🔴 I-4: los ids del cuerpo, todos. Las cuatro que el verificador ejecutó en "directo" sobre
+     * registros de otro comercio —un `model_id` en dos rutas de "hijo de", una lista `article_ids`
+     * y un `cheque_id: true` (Cheque::find(true) es el cheque 1)— cortan con `error`, no dejan
+     * tarjeta y no tocan nada. Lo propio, por el mismo camino, pasa.
+     *
+     * @test
+     */
+    public function los_ids_del_cuerpo_se_miran_todos_model_id_listas_y_booleanos()
+    {
+        $otro = $this->otro_dueno();
+
+        $articulo_ajeno = Article::create(['name' => 'Artículo ajeno P55 I4', 'user_id' => $otro->id, 'status' => 'active', 'final_price' => 150, 'cost' => 100, 'stock' => 1, 'iva_id' => 2]);
+        $proveedor_ajeno = Provider::create(['name' => 'Proveedor ajeno P55 I4', 'user_id' => $otro->id, 'num' => 1]);
+
+        // El cheque 1, de otro comercio: es el que resuelve `Cheque::find(true)`.
+        if (is_null(Cheque::find(1))) {
+            Cheque::forceCreate(['id' => 1, 'user_id' => $otro->id, 'amount' => 100, 'numero' => 'P55-UNO']);
+        } else {
+            DB::table('cheques')->where('id', 1)->update(['user_id' => $otro->id, 'estado_manual' => null]);
+        }
+
+        $precio_antes = DB::table('articles')->where('id', $articulo_ajeno->id)->value('final_price');
+
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $casos = [
+            'model_id de un artículo ajeno'  => ['POST', 'api/article-discount', ['model_id' => $articulo_ajeno->id, 'percentage' => 10, 'show_in_online' => 0]],
+            'model_id de un proveedor ajeno' => ['POST', 'api/provider-price-list', ['model_id' => $proveedor_ajeno->id, 'name' => 'Lista P55', 'percentage' => 10]],
+            'article_ids con uno ajeno'      => ['POST', 'api/sale-tax', ['name' => 'Impuesto P55', 'percentage' => 3, 'apply_to_all' => 0, 'activo' => 1, 'article_ids' => [$articulo_ajeno->id]]],
+            'cheque_id booleano'             => ['PUT', 'api/cheque/rechazar', ['cheque_id' => true, 'rechazado_observaciones' => 1]],
+        ];
+
+        foreach ($casos as $nombre => $caso) {
+
+            $this->assertNotNull(Catalogo::declaracion($caso[0], $caso[1]), $caso[1] . ' está en el catálogo');
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+                'metodo' => $caso[0], 'ruta' => $caso[1], 'cuerpo' => $caso[2], 'descripcion' => $nombre,
+            ]);
+
+            $this->assertFalse($respuesta['ok'], $nombre . ': ' . json_encode($respuesta));
+            $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $respuesta['error'], $nombre);
+            $this->assertArrayNotHasKey('estado', $respuesta, $nombre . ': se ejecutó');
+        }
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'Nada dejó tarjeta ni se ejecutó');
+
+        $this->assertEquals($precio_antes, DB::table('articles')->where('id', $articulo_ajeno->id)->value('final_price'), 'El precio del artículo ajeno no se recalculó');
+        $this->assertSame(0, DB::table('article_discounts')->where('article_id', $articulo_ajeno->id)->count());
+        $this->assertSame(0, DB::table('provider_price_lists')->where('provider_id', $proveedor_ajeno->id)->count());
+        $this->assertSame(0, DB::table('article_sale_tax')->where('article_id', $articulo_ajeno->id)->count());
+        $this->assertNull(DB::table('cheques')->where('id', 1)->value('estado_manual'), 'El cheque 1, ajeno, no se rechazó');
+
+        // Lo propio, por el mismo camino, pasa (en "resuelto", para que no se ejecute).
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::RESUELTO);
+
+        $articulo_propio = Article::create(['name' => 'Artículo propio P55 I4', 'user_id' => $this->dueno->id, 'status' => 'active', 'final_price' => 150, 'cost' => 100, 'stock' => 1, 'iva_id' => 2]);
+
+        $propio = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'POST', 'ruta' => 'api/article-discount', 'cuerpo' => ['model_id' => $articulo_propio->id, 'percentage' => 5, 'show_in_online' => 0], 'descripcion' => 'Descuento propio',
+        ]);
+
+        $this->assertTrue(!empty($propio['ok']), json_encode($propio));
+    }
+
+    /**
+     * 🔴 I-4, la clase entera contra el recorrido del cuerpo: los ids anidados, las listas, los
+     * empleados, los decimales, los booleanos y la basura cortan; el `model_id` va a la tabla que le
+     * da el CÓDIGO del controller y no al `model_name` que mande el modelo; uno que no se puede
+     * atribuir es no verificable al escribir y pasa al leer; y lo propio —con sus "sin valor", sus
+     * catálogos globales y las claves que no dicen su tabla— pasa.
+     *
+     * @test
+     */
+    public function el_recorrido_del_cuerpo_cubre_la_clase_y_deja_pasar_lo_propio()
+    {
+        $otro = $this->otro_dueno();
+
+        $articulo_ajeno = Article::create(['name' => 'Artículo ajeno P55 recorrido', 'user_id' => $otro->id, 'status' => 'active', 'final_price' => 1, 'cost' => 1, 'stock' => 1, 'iva_id' => 2]);
+        $articulo_propio = Article::create(['name' => 'Artículo propio P55 recorrido', 'user_id' => $this->dueno->id, 'status' => 'active', 'final_price' => 1, 'cost' => 1, 'stock' => 1, 'iva_id' => 2]);
+        $cliente_ajeno = Client::create(['name' => 'Cliente ajeno P55 recorrido', 'user_id' => $otro->id]);
+        $cliente_propio = Client::create(['name' => 'Cliente propio P55 recorrido', 'user_id' => $this->dueno->id]);
+        $empleado_ajeno = User::create(['name' => 'Empleado ajeno P55', 'email' => 'empleado-ajeno-p55-' . uniqid() . '@test.local', 'password' => Hash::make('x'), 'owner_id' => $otro->id]);
+        $empleado_propio = $this->empleado_raso();
+
+        list($conversation) = $this->conversacion();
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $editar_venta = Catalogo::declaracion('PUT', 'api/sale/{sale}');
+
+        $rechazos = [
+            'el id de un renglón (lista bajo articles)' => ['articles' => [['id' => $articulo_ajeno->id, 'amount' => 1]]],
+            'un x_id adentro de un objeto'              => ['sale' => ['client_id' => $cliente_ajeno->id]],
+            'un x_id con una lista adentro'             => ['client_id' => [$cliente_propio->id, $cliente_ajeno->id]],
+            'un x_ids'                                  => ['article_ids' => [$articulo_propio->id, $articulo_ajeno->id]],
+            'el empleado de otro comercio'              => ['employee_id' => $empleado_ajeno->id],
+            'un decimal'                                => ['client_id' => (float) $cliente_propio->id],
+            'un booleano'                               => ['client_id' => true],
+            'un texto con basura'                       => ['client_id' => $cliente_propio->id . 'x'],
+        ];
+
+        foreach ($rechazos as $nombre => $cuerpo) {
+            try {
+                EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, $editar_venta, [], $cuerpo);
+                $this->fail($nombre . ': tenía que cortar');
+            } catch (AccionIaException $e) {
+                $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $e->getMessage(), $nombre);
+            }
+        }
+
+        /*
+         * El model_id va a la tabla que le da el CÓDIGO: en article-discount el controller lo
+         * escribe como `article_id`, así que un `model_name: client` no lo salva aunque el mismo
+         * número sea un cliente PROPIO. Se arma a propósito un id que es las dos cosas.
+         */
+        $mismo_id = max((int) DB::table('articles')->max('id'), (int) DB::table('clients')->max('id')) + 1000;
+
+        Article::forceCreate(['id' => $mismo_id, 'name' => 'Artículo ajeno P55 mismo id', 'user_id' => $otro->id, 'status' => 'active', 'final_price' => 1, 'cost' => 1, 'stock' => 1, 'iva_id' => 2]);
+        Client::forceCreate(['id' => $mismo_id, 'name' => 'Cliente propio P55 mismo id', 'user_id' => $this->dueno->id]);
+
+        $casos_model_id = [
+            'un model_name que no es lo que el controller escribe' => ['POST', 'api/article-discount', ['model_name' => 'client', 'model_id' => $mismo_id], EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO],
+            'el model_name de un cliente ajeno'                    => ['POST', 'api/credit-account/limite-credito', ['model_name' => 'client', 'model_id' => $cliente_ajeno->id, 'moneda_id' => 1], EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO],
+            'un model_id sin tabla en una escritura'               => ['POST', 'api/current-acount/nota-credito', ['model_id' => $cliente_propio->id], EjecutorAccionDePantallaIaHelper::MENSAJE_NO_VERIFICABLE],
+        ];
+
+        foreach ($casos_model_id as $nombre => $caso) {
+
+            $declaracion = Catalogo::declaracion($caso[0], $caso[1]);
+
+            $this->assertNotNull($declaracion, $caso[1] . ' está en el catálogo');
+
+            try {
+                EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, $declaracion, [], $caso[2]);
+                $this->fail($nombre . ': tenía que cortar');
+            } catch (AccionIaException $e) {
+                $this->assertSame($caso[3], $e->getMessage(), $nombre);
+            }
+        }
+
+        // Lo no verificable solo corta al ESCRIBIR: el mismo model_id en una lectura pasa.
+        EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, array_merge(Catalogo::declaracion('POST', 'api/current-acount/nota-credito'), ['metodo' => 'GET']), [], ['model_id' => $cliente_propio->id]);
+
+        // Lo propio pasa: renglones, empleados (y el dueño mismo), "sin valor", catálogos globales
+        // y claves que no dicen su tabla (`returned_items`).
+        $global_id = DB::table('current_acount_payment_methods')->orderBy('id')->value('id');
+
+        EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, $editar_venta, [], [
+            'articles'                       => [['id' => $articulo_propio->id, 'amount' => 2]],
+            'client_id'                      => $cliente_propio->id,
+            'employee_id'                    => $empleado_propio->id,
+            'moneda_id'                      => 1,
+            'category_id'                    => 0,
+            'brand_id'                       => null,
+            'provider_id'                    => '',
+            'sub_category_id'                => '0',
+            'current_acount_payment_methods' => [['id' => $global_id, 'amount' => 10]],
+            'returned_items'                 => [['id' => 999999999, 'returned_amount' => 1]],
+            'sale'                           => ['client_id' => $cliente_propio->id],
+        ]);
+
+        EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, $editar_venta, [], ['employee_id' => $this->dueno->id]);
+        EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, Catalogo::declaracion('POST', 'api/article-discount'), [], ['model_id' => $articulo_propio->id, 'percentage' => 5]);
+        EjecutorAccionDePantallaIaHelper::verificar_tenencia($contexto, Catalogo::declaracion('POST', 'api/credit-account/limite-credito'), [], ['model_name' => 'client', 'model_id' => $cliente_propio->id, 'moneda_id' => 1]);
+
+        $this->assertNotNull($global_id, 'Hay métodos de pago de cuenta corriente (el catálogo global del caso propio)');
+    }
+
+    /**
+     * 🔴 I-5: una consulta no puede escribir, y eso se cierra por CLASE y no por lista: el
+     * controller de un GET corre adentro de una transacción que se deshace siempre.
+     * `company-performance` sin fechas borra el informe del día y lo regenera
+     * (CompanyPerformanceController::check_tiempo_ultima_creada(); no hace TRUNCATE ni DDL, que se
+     * saltearían el rollback): se envejece el que hay para que lo haga seguro, y la base queda
+     * igual. Los dos GET del "?" del precio, que recalculan y guardan a propósito, salen del
+     * catálogo con su motivo.
+     *
+     * @test
+     */
+    public function una_consulta_no_deja_nada_escrito_aunque_el_get_escriba()
+    {
+        foreach (['api/article/final-price-description/{id}', 'api/article/price-type-description/{id}/{price_type_id}'] as $ruta) {
+            $this->assertNull(Catalogo::declaracion('GET', $ruta), $ruta);
+            $this->assertSame('recalcula y guarda el precio: no es una consulta', Catalogo::motivo_de_exclusion('GET', $ruta), $ruta);
+        }
+
+        $this->assertNotNull(Catalogo::declaracion('GET', 'api/company-performance/{mes_inicio?}/{mes_fin?}'), 'El informe del día sigue siendo una lectura del catálogo');
+
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::CAUTELOSO);
+
+        DB::table('company_performances')->where('user_id', $this->dueno->id)->where('from_today', 1)->update(['created_at' => now()->subDays(2)]);
+
+        $antes = DB::table('company_performances')->where('user_id', $this->dueno->id)->orderBy('id')->pluck('id')->all();
+        $max_antes = (int) DB::table('company_performances')->max('id');
+        $nivel_antes = DB::transactionLevel();
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'consultar_por_pantalla', ['ruta' => 'api/company-performance/{mes_inicio?}/{mes_fin?}']);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertSame(201, $respuesta['status'], 'Corrió el camino "sin fechas", el que regenera el informe del día');
+
+        $this->assertSame($antes, DB::table('company_performances')->where('user_id', $this->dueno->id)->orderBy('id')->pluck('id')->all(), 'Los informes del dueño quedaron como estaban');
+        $this->assertSame($max_antes, (int) DB::table('company_performances')->max('id'), 'No quedó ningún informe nuevo');
+        $this->assertSame($nivel_antes, DB::transactionLevel(), 'La conexión volvió al nivel de transacción de antes');
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * Menores de la segunda vuelta: Zipnova queda afuera por credenciales (y no de casualidad por el
+     * `zip` del patrón de archivos), y la etiqueta es un archivo solo cuando es el PDF del envío:
+     * las medidas de etiqueta y el remitente de una venta entran.
+     *
+     * @test
+     */
+    public function zipnova_queda_afuera_por_credenciales_y_la_etiqueta_solo_es_archivo_si_es_el_pdf()
+    {
+        foreach ([['POST', 'api/integraciones/zipnova/conectar'], ['POST', 'api/integraciones/zipnova/disconnect'], ['PUT', 'api/integraciones/zipnova/config'], ['POST', 'api/integraciones/zipnova/origenes'], ['POST', 'api/integraciones/zipnova/cotizar-prueba'], ['GET', 'api/integraciones/zippin/connect']] as $par) {
+            $this->assertNull(Catalogo::declaracion($par[0], $par[1]), $par[0] . ' ' . $par[1]);
+            $this->assertSame('credenciales: Zippin / Zipnova', Catalogo::motivo_de_exclusion($par[0], $par[1]), $par[0] . ' ' . $par[1]);
+        }
+
+        $this->assertNull(Catalogo::declaracion('GET', 'api/envio/{id}/etiqueta'));
+        $this->assertStringContainsString('archivo', (string) Catalogo::motivo_de_exclusion('GET', 'api/envio/{id}/etiqueta'));
+
+        foreach ([['GET', 'api/etiqueta-medidas'], ['POST', 'api/etiqueta-medidas'], ['DELETE', 'api/etiqueta-medidas/{id}'], ['PUT', 'api/sale/{sale_id}/etiqueta-sender']] as $par) {
+            $this->assertNotNull(Catalogo::declaracion($par[0], $par[1]), $par[0] . ' ' . $par[1] . ' no es un archivo y filtra por dueño');
+        }
     }
 }

@@ -754,7 +754,8 @@ VERDAD;
   saltearlas: borrar algo (proponer_baja y proponer_borrado_por_pantalla), la actualización masiva
   de artículos, la unificación de bancos de los cheques, los permisos de un empleado, y las
   acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
-  devolución con nota de crédito) o tocan muchos artículos de un saque: la respuesta te lo dice con
+  devolución con nota de crédito, editar una venta ya cargada —puede emitir una nota de crédito y
+  avisarle al cliente—) o tocan muchos artículos de un saque: la respuesta te lo dice con
   requiere_confirmacion. En esas seis decí que dejaste la tarjeta para confirmar, aunque la persona
   te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
   registros de un saque, un comprobante emitido ante ARCA no se borra, y un permiso mal cambiado

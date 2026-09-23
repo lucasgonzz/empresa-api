@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionDePantallaIaHelper a
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -31,13 +32,21 @@ use Illuminate\Support\Facades\Log;
  *     pantalla acá es "puede todo lo que puede el dueño".
  *   - Ningún {param} obligatorio puede faltar, y la `descripcion` es obligatoria: es el título de
  *     la tarjeta, lo único que la persona lee antes de confirmar.
- *   - 🔴 Los ids de la ruta tienen que ser del dueño (EjecutorAccionDePantallaIaHelper::
- *     verificar_tenencia()): un id ajeno o inexistente contesta `error` en el acto, sin tarjeta.
- *   - 🔴 Lo que está en Catalogo::SIEMPRE_CONFIRMAN (hoy AFIP) deja tarjeta en los tres modos: la
- *     respuesta lleva `requiere_confirmacion`, que quizas_auto_confirmar() respeta.
+ *   - 🔴 La ruta se RESUELVE con el router (EjecutorAccionDePantallaIaHelper::resolver()) y todo lo
+ *     demás sale de la ruta resuelta: la fila del catálogo, la extensión y la tenencia de los ids
+ *     que el router LIGA (verificar_tenencia_de_la_llamada()) y de los del cuerpo. Un id ajeno o
+ *     inexistente contesta `error` en el acto, sin tarjeta, lo haya escrito el modelo en
+ *     `parametros`, metido en la ruta o con otro nombre de {param}.
+ *   - 🔴 La tarjeta guarda la ruta RESUELTA con sus {param} y los valores LIGADOS, no lo que
+ *     escribió el modelo: una propuesta con el id metido en la ruta (`api/abrir-caja/12`) queda
+ *     ejecutable y su renglón dice `PUT api/abrir-caja/12`, no `{caja_id}` literal.
+ *   - 🔴 Lo que está en Catalogo::SIEMPRE_CONFIRMAN (AFIP, editar una venta, las masivas) deja
+ *     tarjeta en los tres modos: la respuesta lleva `requiere_confirmacion`, que
+ *     quizas_auto_confirmar() respeta.
  *
  * 🔴 El GET corre en el acto SIN tarjeta, así que tiene que autenticar a la persona igual que la
- * confirmación por texto (ver autenticado_como()).
+ * confirmación por texto (ver autenticado_como()), y 🔴 corre adentro de una transacción que se
+ * deshace siempre: una consulta no puede dejar nada escrito (ver consultar()).
  */
 class PropuestaAccionDePantallaIaHelper
 {
@@ -95,23 +104,48 @@ class PropuestaAccionDePantallaIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
         }
 
-        $declaracion = self::declaracion_para($contexto, 'GET', $ruta, $parametros, $consulta);
+        $resuelta = self::resolver_para($contexto, 'GET', $ruta, $parametros, $consulta);
 
-        if (RespuestaDeCargaIa::es_negativa($declaracion)) {
+        if (RespuestaDeCargaIa::es_negativa($resuelta)) {
 
-            return $declaracion;
+            return $resuelta;
         }
+
+        // Se llama a la ruta RESUELTA con los valores que el router ligó, no a la que escribió el
+        // modelo (llamar() igual la vuelve a resolver y a verificar).
+        $ruta_resuelta = $resuelta['declaracion']['ruta'];
+
+        $parametros_ligados = Ejecutor::parametros_para_guardar($resuelta['parametros']);
+
+        /*
+         * 🔴 UNA CONSULTA NO PUEDE DEJAR NADA ESCRITO: lo que un GET escriba se deshace
+         * (verificador de la misión, segunda vuelta, 23/9/2026). Con el dueño en "cauteloso",
+         * `GET api/article/final-price-description/{id}` le recalculó y le guardó el precio a un
+         * artículo y `GET company-performance` sin fechas borró y regeneró el informe del día. Salir
+         * a buscar los GET que escriben de a uno no cierra nada —aparece el próximo—, así que el
+         * controller corre adentro de una transacción que se revierte SIEMPRE, haya salido bien o
+         * mal. Lo que esto no deshace es lo que no vive en la base (un mail, un HTTP, un job en
+         * Redis), y lo que un controller cierre con un commit implícito de MySQL (TRUNCATE, DDL):
+         * ningún GET del catálogo hace eso hoy (company-performance tampoco; revisado el 23/9).
+         */
+        $nivel = DB::transactionLevel();
+
+        DB::beginTransaction();
 
         try {
 
-            $llamada = self::autenticado_como($persona, function () use ($contexto, $ruta, $parametros, $consulta) {
+            $llamada = self::autenticado_como($persona, function () use ($contexto, $ruta_resuelta, $parametros_ligados, $consulta) {
 
-                return Ejecutor::llamar($contexto, 'GET', $ruta, $parametros, $consulta);
+                return Ejecutor::llamar($contexto, 'GET', $ruta_resuelta, $parametros_ligados, $consulta);
             });
 
         } catch (AccionIaException $e) {
 
             return RespuestaDeCargaIa::error($e->getMessage());
+
+        } finally {
+
+            self::deshacer_lo_escrito($nivel);
         }
 
         return [
@@ -219,14 +253,25 @@ class PropuestaAccionDePantallaIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
         }
 
-        $declaracion = self::declaracion_para($contexto, $metodo, $ruta, $parametros, $cuerpo);
+        $resuelta = self::resolver_para($contexto, $metodo, $ruta, $parametros, $cuerpo);
 
-        if (RespuestaDeCargaIa::es_negativa($declaracion)) {
+        if (RespuestaDeCargaIa::es_negativa($resuelta)) {
 
-            return $declaracion;
+            return $resuelta;
         }
 
-        $uri_concreta = Catalogo::uri_concreta($declaracion['ruta'], $parametros);
+        $declaracion = $resuelta['declaracion'];
+
+        /*
+         * 🔴 La tarjeta guarda la ruta RESUELTA (con sus {param}) y los valores que el router LIGÓ,
+         * no lo que escribió el modelo. Antes guardaba la ruta del catálogo con los `parametros`
+         * del modelo: una propuesta con el id metido en la ruta (`api/abrir-caja/12`) quedaba con
+         * `{caja_id}` y sin valor —no se podía ejecutar y su renglón mostraba `{caja_id}` literal—,
+         * y una con otro nombre de {param} guardaba un nombre que la ruta no tiene.
+         */
+        $parametros_ligados = Ejecutor::parametros_para_guardar($resuelta['parametros']);
+
+        $uri_concreta = Catalogo::uri_concreta($declaracion['ruta'], $parametros_ligados);
 
         $accion_legible = $metodo.' '.$uri_concreta;
 
@@ -261,7 +306,7 @@ class PropuestaAccionDePantallaIaHelper
             [
                 'metodo'     => $metodo,
                 'ruta'       => $declaracion['ruta'],
-                'parametros' => $parametros,
+                'parametros' => $parametros_ligados,
                 'cuerpo'     => $cuerpo,
             ],
             [
@@ -280,22 +325,24 @@ class PropuestaAccionDePantallaIaHelper
     // -------------------------------------------------------------------------------------------
 
     /**
-     * La fila del catálogo para la acción pedida, o la respuesta negativa si no se puede pedir: le
-     * faltan {param}, no está en el catálogo (con el motivo si está excluida), o exige una
-     * extensión que el dueño no tiene.
+     * La acción pedida, RESUELTA por el router (EjecutorAccionDePantallaIaHelper::resolver(): la
+     * ruta, la fila del catálogo y los valores ligados), o la respuesta negativa si no se puede
+     * pedir: le faltan {param}, ninguna ruta del catálogo la atiende (con el motivo si está
+     * excluida), exige una extensión que el dueño no tiene, o toca un registro de otro dueño.
      *
-     * La extensión se chequea acá, al proponer, y también en el ejecutor al confirmar: el error
-     * tiene que salir en el acto para que el modelo lo cuente, no recién cuando la persona toca
-     * Confirmar.
+     * La extensión y la tenencia se chequean acá, al proponer, y también en el ejecutor al
+     * confirmar: el error tiene que salir en el acto para que el modelo lo cuente, no recién cuando
+     * la persona toca Confirmar.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $metodo  Ya normalizado.
      * @param  string  $ruta
      * @param  array  $parametros
      * @param  array  $cuerpo  El cuerpo (o la query, si es GET): sus ids también se verifican.
-     * @return array  La declaración, o RespuestaDeCargaIa::faltan() / ::error().
+     * @return array  Lo de resolver() ({ruta, request, declaracion, parametros, uri}), o
+     *                RespuestaDeCargaIa::faltan() / ::error().
      */
-    protected static function declaracion_para(ContextoDeCargaIa $contexto, $metodo, $ruta, array $parametros, array $cuerpo)
+    protected static function resolver_para(ContextoDeCargaIa $contexto, $metodo, $ruta, array $parametros, array $cuerpo)
     {
         $faltan = Catalogo::parametros_que_faltan(Catalogo::normalizar_ruta($ruta), $parametros);
 
@@ -306,9 +353,9 @@ class PropuestaAccionDePantallaIaHelper
             }, $faltan));
         }
 
-        $declaracion = Catalogo::resolver_ruta($metodo, Catalogo::uri_concreta($ruta, $parametros));
+        $resuelta = Ejecutor::resolver($metodo, $ruta, $parametros, $cuerpo);
 
-        if (is_null($declaracion)) {
+        if (is_null($resuelta)) {
 
             $motivo = Catalogo::motivo_de_exclusion($metodo, $ruta);
 
@@ -325,26 +372,62 @@ class PropuestaAccionDePantallaIaHelper
             return RespuestaDeCargaIa::error(Ejecutor::MENSAJE_NO_DISPONIBLE.' No hay ninguna ruta '.$metodo.' '.Catalogo::normalizar_ruta($ruta).' en el sistema (o existe con otro método): buscala con que_acciones_de_pantalla_hay y pasá la ruta tal cual.');
         }
 
+        // La extensión de la ruta RESUELTA, no la de la que escribió el modelo.
+        $declaracion = $resuelta['declaracion'];
+
         if (!is_null($declaracion['extension']) && !PermisosIaHelper::tiene_extencion($contexto->owner, $declaracion['extension'])) {
 
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_extencion(str_replace('_', ' ', $declaracion['extension'])));
         }
 
         /*
-         * La tenencia de los ids de la ruta y del cuerpo, también al proponer: un id ajeno o
-         * inexistente se rechaza en el acto y no deja tarjeta. El ejecutor la vuelve a mirar al
-         * confirmar.
+         * La tenencia de los ids que el router LIGÓ y de los del cuerpo, también al proponer: un id
+         * ajeno o inexistente se rechaza en el acto y no deja tarjeta. El ejecutor la vuelve a
+         * mirar al confirmar.
          */
         try {
 
-            Ejecutor::verificar_tenencia($contexto, $declaracion, $parametros, $cuerpo);
+            Ejecutor::verificar_tenencia_de_la_llamada($contexto, $resuelta, $parametros, $cuerpo);
 
         } catch (AccionIaException $e) {
 
             return RespuestaDeCargaIa::error($e->getMessage());
         }
 
-        return $declaracion;
+        return $resuelta;
+    }
+
+    /**
+     * Deshace todo lo que se escribió desde que consultar() abrió su transacción, aunque el
+     * controller haya dejado transacciones propias abiertas: se vuelve exactamente al nivel de
+     * antes (en un test, el savepoint del test; en el job, el ROLLBACK de verdad). DB::rollBack()
+     * sin nivel volvería uno solo, y una transacción que el controller dejó abierta dejaría a la
+     * nuestra abierta también, con todo lo que siga en el job adentro y sin commit.
+     *
+     * @param  int  $nivel  DB::transactionLevel() de antes de abrirla.
+     * @return void
+     */
+    protected static function deshacer_lo_escrito($nivel)
+    {
+        try {
+
+            if (DB::transactionLevel() > (int) $nivel) {
+
+                DB::rollBack((int) $nivel);
+
+                return;
+            }
+
+            // Un controller que hace commit de más cierra también la transacción de la consulta:
+            // ahí ya no hay qué deshacer, y queda escrito en el log para encontrarlo.
+            Log::warning('PropuestaAccionDePantallaIaHelper: una consulta cerró su propia transacción; lo que haya escrito quedó', [
+                'nivel' => $nivel,
+            ]);
+
+        } catch (\Throwable $e) {
+
+            Log::error('PropuestaAccionDePantallaIaHelper: no se pudo deshacer lo que escribió una consulta -- '.$e->getMessage());
+        }
     }
 
     // -------------------------------------------------------------------------------------------

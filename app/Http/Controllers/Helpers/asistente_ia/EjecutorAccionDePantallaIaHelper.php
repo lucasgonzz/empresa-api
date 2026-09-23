@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper as Catalogo;
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Escritura;
 use App\Models\AiMessageAction;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,6 +32,9 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  *
  * Lo que este ejecutor pone alrededor, que el controller no hace:
  *
+ *   - 🔴 La ruta se RESUELVE con el router antes de decidir nada (resolver()), y todo lo que decide
+ *     —la fila del catálogo, la extensión, la tenencia— sale de ESA ruta y de los valores que el
+ *     router liga, no de lo que escribió el modelo. Ver "LA RUTA QUE MANDA", más abajo.
  *   - 🔴 El catálogo se vuelve a consultar al ejecutar, no solo al proponer. Una tarjeta guarda la
  *     ruta con sus {param}; si esa ruta salió del catálogo (una exclusión nueva, un cambio de
  *     rutas) entre la propuesta y el clic, se corta con 422 y no se llama a nada.
@@ -42,18 +46,35 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  *     acá (el clic por sanctum, la confirmación por texto y la consulta GET en el acto) la ponen
  *     con Auth::setUser() antes.
  *   - La respuesta del controller se interpreta: un status >= 400 es un rechazo de negocio (422 con
- *     su `message`), no una falla técnica; y el cuerpo viaja recortado a LARGO_MAXIMO caracteres,
- *     porque la respuesta más pesada del sistema (el índice de artículos) mide megabytes.
+ *     su `message`), no una falla técnica; 🔴 se le sacan las claves sensibles (ver "NADA
+ *     SENSIBLE", más abajo); y el cuerpo viaja recortado a LARGO_MAXIMO caracteres, porque la
+ *     respuesta más pesada del sistema (el índice de artículos) mide megabytes.
+ *
+ * 🔴 LA RUTA QUE MANDA ES LA QUE EL ROUTER RESUELVE (verificador de la misión, segunda vuelta,
+ * 23/9/2026). La primera versión recorría los {param} por el nombre que había escrito el modelo y
+ * salteaba el que no encontraba, y consultar_por_pantalla le pasaba al router la ruta tal como
+ * vino. Resultado demostrado: con `ruta: "api/sale/4898"` (el id ya metido en la ruta), con
+ * `api/sale/{id}` (otro nombre de parámetro), con `api/{x}` y `x = "sale/4898"` (una barra
+ * codificada que el router decodifica), o con el id ajeno en la ruta y un parámetro PROPIO en
+ * `parametros`, la guarda no miraba nada y `GET api/sale/{sale}` devolvía la venta de OTRO dueño
+ * entera (`fullModel()` no filtra por dueño). Ahora lo que mandó el modelo en `ruta` y `parametros`
+ * solo sirve para ARMAR la URI concreta: resolver() la matchea con el mismo matcher que después corre
+ * la acción, y la tenencia se verifica sobre `$route->parameters()` —los valores que el router
+ * efectivamente ligó, por los nombres de la ruta resuelta, que son los que el controller recibe—.
+ * La propuesta hace lo mismo y guarda en la tarjeta esa ruta y esos valores, así que una tarjeta
+ * con el id metido en la ruta queda ejecutable.
  *
  * 🔴 TENENCIA DE LOS IDS DE LA RUTA (verificar_tenencia()). Los controllers de pantalla resuelven
  * casi todos por `Model::find($id)` sin filtrar por dueño (hallazgo del 16/9/2026 sobre
  * ComboController; acá mismo `CajaController::destroy()` y `UserController::set_eliminar_articulos_offline()`).
  * Una persona nunca manda un id ajeno desde su pantalla; un modelo sí puede inventarlo, y en las
  * bases compartidas (51 comercios en `u767360347_empresa`) eso es tocar el negocio de otro. Por eso,
- * antes de llamar al controller —y también al proponer, para avisar en el acto—, cada {param} de la
- * ruta cuyo valor es un entero se resuelve a su tabla como lo hace CatalogoDeEscrituraIaHelper
+ * antes de llamar al controller —y también al proponer, para avisar en el acto—, cada {param}
+ * ligado se resuelve a su tabla como lo hace CatalogoDeEscrituraIaHelper
  * (`Str::plural(str_replace('-', '_', <primer segmento después de api/>))`) y, si esa tabla existe
  * y tiene `user_id`, la fila tiene que ser del dueño; si no existe o es ajena, 422 MENSAJE_AJENO.
+ * Lo que el modelo mandó con el nombre de un {param} de la ruta resuelta también se mira: un
+ * `true` se escribe "1" en la URI, y el router liga la fila 1 aunque `true` no sea un id.
  *
  * Cómo se elige la tabla de cada {param}, y por qué así (medido sobre las 520 acciones con
  * parámetros de este router): `{id}` → el recurso del primer segmento (`api/budget/{id}/anular` →
@@ -72,13 +93,43 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  * (`apertura_caja_id` → apertura_cajas → `caja_id` → cajas): esa fila padre tiene que ser del
  * dueño. Si ninguna columna llega a un dueño —un catálogo global como current_acount_payment_methods
  * o unidad_medidas, compartido por todos los comercios de la base— una ESCRITURA se rechaza con
- * MENSAJE_NO_VERIFICABLE y una lectura pasa.
+ * MENSAJE_NO_VERIFICABLE y una lectura pasa. `users` tampoco tiene `user_id`, y ahí la regla es
+ * otra: la fila es del negocio si es el dueño o uno de sus empleados (verificar_usuario()).
  *
- * Los ids del CUERPO (`id`, `*_id` de primer nivel) también se verifican: `PUT api/cheque/rechazar`
- * con el `cheque_id` de otro dueño lo dejaba rechazado. Ahí lo no verificable se deja pasar (son
- * referencias a catálogos como `moneda_id` o `afip_tipo_comprobante_id`), y 0, null y '' son "sin
- * valor". Lo que la guarda sigue sin decidir: ids anidados en el cuerpo (los renglones de una
- * venta) y tablas que no existen con el nombre derivado.
+ * 🔴 LOS IDS DEL CUERPO, TODOS (verificar_cuerpo(); verificador, segunda vuelta). La guarda miraba
+ * solo `id` y `*_id` escalares de primer nivel, y así, con el dueño en "directo":
+ * `POST api/article-discount` con el `model_id` de un artículo ajeno le recalculó el precio,
+ * `POST api/provider-price-list` le creó una lista a un proveedor ajeno, `POST api/sale-tax` ató
+ * artículos ajenos con `article_ids`, y `PUT api/cheque/rechazar` con `cheque_id: true` rechazó el
+ * cheque 1 de otro comercio (`Cheque::find(true)` es el id 1). Ahora el cuerpo (o la query, si es
+ * GET) se recorre hasta PROFUNDIDAD_DEL_CUERPO niveles:
+ *   - `x_id` → `Str::plural(x)`; `x_ids`, o un `x_id` con una lista adentro → cada elemento contra
+ *     lo mismo; `user_id`, `employee_id`, `owner_id` y sus compuestos → `users`
+ *     (PATRON_ID_DE_USUARIO: `employee_id` derivaría `employees`, que no existe);
+ *   - `id` adentro de un objeto que cuelga de la clave `P` —suelto o como elemento de una lista—
+ *     → la tabla `P` si existe, si no `Str::plural(P)`; el `id` de primer nivel → la tabla de la
+ *     ruta resuelta;
+ *   - `model_id` (la convención de la SPA para "hijo de") → la tabla que le da el CÓDIGO del
+ *     controller (`'article_id' => $request->model_id`), y si el código no lo dice, la del
+ *     `model_name` hermano o, en último caso, la del prefijo de la ruta (tabla_del_model_id());
+ *   - null, '', 0 y '0' son "sin valor"; un booleano, un decimal o un texto que no es un entero,
+ *     en una clave con tabla derivable, es MENSAJE_AJENO; un entero se verifica como un {param}.
+ *     Un catálogo global sin padre (`moneda_id`, `iva_id`) se deja pasar, SALVO el `model_id` de
+ *     una escritura: ese dice sobre qué registro se escribe, y si no se lo puede atribuir a un
+ *     dueño se rechaza con MENSAJE_NO_VERIFICABLE.
+ * Lo que la guarda sigue sin decidir: ids más hondos que PROFUNDIDAD_DEL_CUERPO, y claves cuyo nombre
+ * no dice su tabla (`returned_items[].id`, sin tabla `returned_items`).
+ *
+ * 🔴 NADA SENSIBLE CRUZA AL MODELO NI QUEDA EN LA TARJETA (sin_claves_sensibles(); verificador,
+ * segunda vuelta). `GET api/client/{client}` traía la `visible_password` y el `verification_code`
+ * del comprador (la relación `buyer`: Buyer no tiene $hidden) y `GET api/sale/{sale}` además la
+ * `visible_password` del empleado (User::$hidden no la incluye). La pantalla recibe esos datos
+ * porque los modelos no los esconden, y los modelos NO se tocan: el SPA depende de lo que
+ * devuelven. El asistente, en cambio, no los puede ver ni guardar. Por eso el borde es acá, adentro
+ * de llamar(): antes del recorte, se saca de la respuesta toda clave que matchee
+ * EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES —el mismo regex que protege el catálogo de lectura—, a
+ * cualquier profundidad. Como consultar, ejecutar y el `resultado.respuesta` de la tarjeta salen
+ * todos de llamar(), no hay un camino que se lo saltee.
  *
  * Sus dos tipos van en EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS: un controller de pantalla
  * puede abrir su propia transacción, soltar un candado, disparar un job o un broadcast, y nada de
@@ -98,14 +149,42 @@ class EjecutorAccionDePantallaIaHelper
 
     const MENSAJE_NO_VERIFICABLE = 'No se puede verificar que ese registro sea de este negocio.';
 
-    /** @var array<string, string>  [tabla => 'ok' | 'sin_user_id' | 'no_existe'], por proceso. */
-    protected static $tablas = [];
-
     /**
      * Largo máximo (en caracteres) del JSON de la respuesta que viaja al modelo y queda en la
      * tarjeta. Pasado eso se corta el texto y se marca `recortado: true`.
      */
     const LARGO_MAXIMO = 30000;
+
+    /**
+     * Hasta cuántos niveles de anidamiento se buscan ids en el cuerpo (cada array cuenta, también
+     * una lista): `cheque_id` es nivel 1, `sale.client_id` nivel 2, `articles[0].id` nivel 3. Es
+     * lo que arma la SPA para un renglón de una venta o de un pedido; más hondo no lee ningún
+     * controller del catálogo, y recorrer sin tope es una consulta por hoja.
+     */
+    const PROFUNDIDAD_DEL_CUERPO = 3;
+
+    /**
+     * Las claves de id que apuntan a `users` aunque no se llamen como la tabla: el dueño y sus
+     * empleados son filas de users. Sin esto `employee_id` derivaría `employees`, que no existe, y
+     * el empleado de otro comercio pasaría sin mirar (CajaController, RoadMapController y
+     * SaleController::update() lo guardan tal cual viene).
+     */
+    const PATRON_ID_DE_USUARIO = '/(^|_)(user|employee|owner)_id$/';
+
+    /**
+     * Cómo dice el CÓDIGO de un controller a qué tabla va el `model_id`:
+     * `'article_id' => $request->model_id` (o con input('model_id') / $request['model_id']). El
+     * lado derecho no cruza una coma ni un punto y coma: el tokenizer de cuerpo_del_metodo() junta
+     * dos renglones cuando saca un comentario del final de uno, y sin ese tope la clave de un
+     * renglón se pegaría al `model_id` del siguiente.
+     */
+    const PATRON_MODEL_ID_EN_EL_CODIGO = '/\'([a-z0-9_]+)_id\'\s*=>[^,;\n]*?\$request(?:->model_id\b|->input\(\s*\'model_id\'\s*\)|\[\s*\'model_id\'\s*\])/';
+
+    /** @var array<string, string>  [tabla => 'ok' | 'sin_user_id' | 'no_existe'], por proceso. */
+    protected static $tablas = [];
+
+    /** @var array<string, array<int, string>>  [Clase@metodo => tablas del model_id según su código], por proceso. */
+    protected static $tablas_del_model_id = [];
 
     /**
      * Ejecuta la acción de una tarjeta (accion_pantalla o borrado_pantalla) al confirmarla.
@@ -157,11 +236,11 @@ class EjecutorAccionDePantallaIaHelper
     }
 
     /**
-     * Llama a la ruta como la llamaría la pantalla y devuelve lo que respondió.
+     * Llama a la ruta como la llamaría la pantalla y devuelve lo que respondió, sin claves sensibles.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $metodo  GET | POST | PUT | DELETE (PATCH se pliega en PUT).
-     * @param  string  $uri  La ruta del catálogo, con sus {param}.
+     * @param  string  $uri  La ruta, con sus {param} (o ya con valores): solo sirve para armar la URI.
      * @param  array  $parametros  Los valores de los {param}, por nombre.
      * @param  array  $cuerpo  El cuerpo del request (o la query string, si es GET).
      * @return array{status: int, cuerpo: array, recortado: bool, uri: string}
@@ -184,14 +263,19 @@ class EjecutorAccionDePantallaIaHelper
             throw new AccionIaException(422, 'Falta el parámetro '.$faltan[0].' de la ruta.');
         }
 
-        $uri_concreta = Catalogo::uri_concreta($uri, $parametros);
+        /*
+         * 🔴 La declaración que manda es la de la ruta que el router RESUELVE, y la tenencia se mira
+         * sobre los valores que ESA ruta liga (ver resolver() y el docblock de la clase). Si la
+         * ruta que atiende la URI no está en el catálogo —o no hay ninguna—, no se corre nada.
+         */
+        $resuelta = self::resolver($metodo, $uri, $parametros, $cuerpo);
 
-        $declaracion = Catalogo::resolver_ruta($metodo, $uri_concreta);
-
-        if (is_null($declaracion)) {
+        if (is_null($resuelta)) {
 
             throw new AccionIaException(422, self::MENSAJE_NO_DISPONIBLE);
         }
+
+        $declaracion = $resuelta['declaracion'];
 
         if (!is_null($declaracion['extension']) && !PermisosIaHelper::tiene_extencion($contexto->owner, $declaracion['extension'])) {
 
@@ -200,40 +284,33 @@ class EjecutorAccionDePantallaIaHelper
 
         // Se vuelve a verificar acá y no solo al proponer: el registro pudo cambiar de dueño entre
         // la tarjeta y el clic, y una tarjeta se puede forjar.
-        self::verificar_tenencia($contexto, $declaracion, $parametros, $cuerpo);
+        self::verificar_tenencia_de_la_llamada($contexto, $resuelta, $parametros, $cuerpo);
 
         if (is_null($contexto->persona) || is_null(Auth::id()) || (int) Auth::id() !== (int) $contexto->persona->id) {
 
             throw new AccionIaException(500, self::MENSAJE_SIN_AUTENTICAR);
         }
 
-        $request = Request::create('/'.$uri_concreta, $metodo, $cuerpo);
-
-        $request->headers->set('Accept', 'application/json');
+        $request = $resuelta['request'];
+        $ruta = $resuelta['ruta'];
+        $uri_concreta = $resuelta['uri'];
 
         $request->setUserResolver(function () {
             return Auth::user();
         });
 
-        try {
-
-            $ruta = Route::getRoutes()->match($request);
-
-        } catch (HttpExceptionInterface $e) {
-
-            throw new AccionIaException(422, self::MENSAJE_NO_DISPONIBLE);
-        }
-
         /*
-         * Defensa en profundidad: lo que matcheó tiene que ser la ruta del catálogo que se resolvió
-         * arriba. Si no coincide, algo cambió entre las dos consultas y no se corre nada.
+         * La instancia de Route es compartida por todo el proceso: se la vuelve a ligar a ESTE
+         * request justo antes de correrla, y si lo que queda ligado no es exactamente lo que se
+         * verificó arriba, no se corre nada. Es defensa en profundidad: hoy no hay camino que la
+         * religue en el medio, y el día que lo haya esto lo corta en vez de correr otra cosa.
          */
-        if ($ruta->uri() !== $declaracion['ruta']) {
+        $ruta->bind($request);
+
+        if ($ruta->parameters() !== $resuelta['parametros']) {
 
             throw new AccionIaException(422, self::MENSAJE_NO_DISPONIBLE);
         }
-
-        $ruta->bind($request);
 
         // request() y la fachada Request tienen que ver ESTE request mientras corre el controller;
         // después vuelve el original, que es el del clic (o ninguno, en el job).
@@ -295,6 +372,14 @@ class EjecutorAccionDePantallaIaHelper
 
         list($status, $cuerpo_respuesta) = self::interpretar($respuesta);
 
+        /*
+         * 🔴 Lo sensible sale ACÁ, antes del recorte y antes de volver: la pantalla recibe la
+         * contraseña visible de un comprador o de un empleado porque los modelos no la esconden
+         * (y no se tocan, el SPA depende de lo que devuelven), pero al modelo no le llega y en la
+         * tarjeta no queda. Ver el docblock de la clase.
+         */
+        $cuerpo_respuesta = self::sin_claves_sensibles($cuerpo_respuesta);
+
         list($cuerpo_respuesta, $recortado) = self::recortar($cuerpo_respuesta);
 
         return [
@@ -306,20 +391,171 @@ class EjecutorAccionDePantallaIaHelper
     }
 
     // -------------------------------------------------------------------------------------------
+    // La ruta resuelta
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Resuelve una llamada como la resolvería el router para la pantalla: arma la URI concreta con
+     * la ruta y los parámetros que vinieron, la matchea con el MISMO matcher que después corre la
+     * acción y liga los parámetros de la ruta que la atiende. Lo usan llamar() y la propuesta
+     * (PropuestaAccionDePantallaIaHelper), así la tarjeta guarda exactamente la ruta y los valores
+     * que después se ejecutan.
+     *
+     * 🔴 Lo que vino en `$ruta` / `$parametros` solo sirve para armar la URI: la fila del catálogo,
+     * la extensión y la tenencia salen de lo que devuelve esto (ver el docblock de la clase).
+     *
+     * @param  string  $metodo
+     * @param  string  $ruta  Como la mandó el modelo o como la guardó la tarjeta.
+     * @param  array  $parametros
+     * @param  array  $cuerpo  El cuerpo (o la query, si es GET): viaja en el request.
+     * @return array|null  {ruta: \Illuminate\Routing\Route, request: Request, declaracion: array,
+     *                     parametros: array (los ligados, por nombre), uri: string (la concreta)};
+     *                     null si ninguna ruta atiende esa URI con ese método o si la que la atiende
+     *                     no está en el catálogo.
+     */
+    public static function resolver($metodo, $ruta, array $parametros, array $cuerpo = [])
+    {
+        $metodo = Catalogo::normalizar_metodo($metodo);
+
+        if (!in_array($metodo, Catalogo::METODOS, true)) {
+
+            return null;
+        }
+
+        $uri_concreta = Catalogo::uri_concreta((string) $ruta, $parametros);
+
+        if ($uri_concreta === '') {
+
+            return null;
+        }
+
+        $request = Request::create('/'.$uri_concreta, $metodo, $cuerpo);
+
+        $request->headers->set('Accept', 'application/json');
+
+        try {
+
+            $encontrada = Route::getRoutes()->match($request);
+
+        } catch (HttpExceptionInterface $e) {
+
+            // No hay ruta, o no con ese método: para el asistente es "no disponible".
+            return null;
+
+        } catch (\Throwable $e) {
+
+            Log::warning('EjecutorAccionDePantallaIaHelper: no se pudo resolver una ruta', [
+                'metodo' => $metodo,
+                'uri'    => $uri_concreta,
+                'error'  => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        /*
+         * La fila del catálogo de ESTA ruta, exacta. declaracion() tolera otro nombre de {param}, y
+         * para una ruta excluida podría devolver la fila de otra ruta con la misma forma: si la
+         * fila no es la de la ruta que el router eligió, no se corre nada.
+         */
+        $declaracion = Catalogo::declaracion($metodo, $encontrada->uri());
+
+        if (is_null($declaracion) || $declaracion['ruta'] !== $encontrada->uri()) {
+
+            return null;
+        }
+
+        // match() ya la ligó, pero declaracion() pudo matchear otra URI contra la misma instancia
+        // de Route (es compartida): se la liga de nuevo a ESTE request antes de leer los valores.
+        $encontrada->bind($request);
+
+        return [
+            'ruta'        => $encontrada,
+            'request'     => $request,
+            'declaracion' => $declaracion,
+            'parametros'  => $encontrada->parameters(),
+            'uri'         => $uri_concreta,
+        ];
+    }
+
+    /**
+     * Los parámetros ligados como se guardan en la tarjeta: un id escrito con dígitos vuelve a ser
+     * entero (el router liga todo como texto, y la tarjeta dice `caja_id: 12` como lo habría
+     * mandado la pantalla); lo demás, tal cual. Un número que no entra en un entero queda como
+     * texto: castearlo lo cambiaría.
+     *
+     * @param  array  $ligados  Los de resolver().
+     * @return array
+     */
+    public static function parametros_para_guardar(array $ligados): array
+    {
+        $guardar = [];
+
+        foreach ($ligados as $nombre => $valor) {
+
+            if (is_string($valor) && preg_match('/^[1-9][0-9]*$/D', $valor) === 1 && (string) (int) $valor === $valor) {
+
+                $valor = (int) $valor;
+            }
+
+            $guardar[$nombre] = $valor;
+        }
+
+        return $guardar;
+    }
+
+    // -------------------------------------------------------------------------------------------
     // Tenencia
     // -------------------------------------------------------------------------------------------
 
     /**
-     * Exige que cada id que viaja en la ruta, y cada `id` / `*_id` de primer nivel del cuerpo (o de
-     * la query, si es GET), sea una fila del dueño (ver el docblock de la clase). Lo llaman llamar()
-     * antes del controller y la propuesta antes de armar la tarjeta.
+     * La tenencia de una llamada ya resuelta (ver resolver()): los valores que el router LIGÓ, por
+     * los nombres de la ruta resuelta —los que el controller va a recibir—, el cuerpo, y además lo
+     * que el modelo mandó con el nombre de un {param} de esa ruta.
+     *
+     * Lo último no sobra: Catalogo::uri_concreta() escribe un booleano como "1", así que
+     * `caja_id: true` llega ligado como la caja 1 —que puede ser del dueño— aunque `true` no sea un
+     * id. null y '' se saltean: son "no vino", la URI ni los escribe.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $resuelta  Lo que devolvió resolver().
+     * @param  array  $parametros_del_modelo  Los `parametros` tal como vinieron.
+     * @param  array  $cuerpo  El cuerpo, o la query si es GET.
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    public static function verificar_tenencia_de_la_llamada(ContextoDeCargaIa $contexto, array $resuelta, array $parametros_del_modelo, array $cuerpo)
+    {
+        self::verificar_tenencia($contexto, $resuelta['declaracion'], $resuelta['parametros'], $cuerpo);
+
+        $mandados = [];
+
+        foreach ($parametros_del_modelo as $nombre => $valor) {
+
+            if (is_null($valor) || (is_string($valor) && trim($valor) === '')) {
+
+                continue;
+            }
+
+            $mandados[$nombre] = $valor;
+        }
+
+        self::verificar_tenencia($contexto, $resuelta['declaracion'], $mandados);
+    }
+
+    /**
+     * Exige que cada id de la ruta, y cada id del cuerpo (o de la query, si es GET), sea una fila
+     * del dueño (ver el docblock de la clase). `$parametros` son los valores POR LOS NOMBRES DE LA
+     * RUTA DE `$declaracion`: llamar() y la propuesta le pasan los que ligó el router
+     * (verificar_tenencia_de_la_llamada()).
      *
      * Los ids de la ruta son el REGISTRO SOBRE EL QUE SE ACTÚA: si su tabla no tiene `user_id` y
      * tampoco se llega al dueño por sus padres, una escritura se rechaza como no verificable. Los
      * ids del cuerpo son referencias (a qué venta, a qué proveedor): un catálogo global sin padre
      * (`moneda_id`, `iva_id`, `afip_tipo_comprobante_id`) no se puede rechazar sin romper cargas
-     * legítimas, así que ahí lo no verificable se deja pasar. Y 0, null y '' en el cuerpo son "sin
-     * valor" (la SPA los manda así para una relación vacía), no un id.
+     * legítimas, así que ahí lo no verificable se deja pasar — salvo el `model_id` de una escritura
+     * (ver verificar_cuerpo()).
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $declaracion  La fila del catálogo (ruta, metodo, accion).
@@ -341,6 +577,7 @@ class EjecutorAccionDePantallaIaHelper
 
         foreach ($m[1] as $nombre) {
 
+            // Un {param} opcional que no se ligó no le llega al controller: no hay qué decidir.
             if (!array_key_exists($nombre, $parametros)) {
 
                 continue;
@@ -363,43 +600,205 @@ class EjecutorAccionDePantallaIaHelper
             self::verificar_fila($contexto, $tabla, $parametros[$nombre], $escritura);
         }
 
-        foreach ($cuerpo as $clave => $valor) {
+        if (count($cuerpo)) {
 
-            if (!is_string($clave) || !is_scalar($valor) || is_bool($valor)) {
+            $vistos = [];
 
-                continue;
+            self::verificar_cuerpo($contexto, $cuerpo, 1, null, $declaracion, $ruta, $escritura, $tabla_del_modelo, $vistos);
+        }
+    }
+
+    /**
+     * Recorre el cuerpo (o la query) hasta PROFUNDIDAD_DEL_CUERPO niveles y verifica cada id que
+     * encuentra contra la tabla de su clave (las reglas, en el docblock de la clase).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $nodo  El nivel que se recorre.
+     * @param  int  $nivel  1 para las claves de primer nivel.
+     * @param  string|null  $padre  La clave con nombre más cercana de la que cuelga este nivel.
+     * @param  array  $declaracion
+     * @param  string  $ruta  Ya normalizada.
+     * @param  bool  $escritura
+     * @param  string|null  $tabla_del_modelo
+     * @param  array  $vistos  [tabla|valor|exigir => true]: lo ya verificado no se vuelve a consultar.
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_cuerpo(ContextoDeCargaIa $contexto, array $nodo, int $nivel, $padre, array $declaracion, string $ruta, bool $escritura, $tabla_del_modelo, array &$vistos)
+    {
+        foreach ($nodo as $clave => $valor) {
+
+            if (is_string($clave)) {
+
+                $destino = self::destino_de_la_clave($clave, $nodo, $padre, $declaracion, $ruta, $escritura, $tabla_del_modelo);
+
+                if (!is_null($destino)) {
+
+                    foreach (self::valores_de($valor) as $uno) {
+
+                        self::verificar_valor_del_cuerpo($contexto, $destino, $uno, $vistos);
+                    }
+                }
             }
 
-            // 0, null y '' son "sin valor" en el cuerpo, no un id que verificar.
-            if (trim((string) $valor) === '' || trim((string) $valor) === '0') {
+            if (is_array($valor) && $nivel < self::PROFUNDIDAD_DEL_CUERPO) {
 
-                continue;
-            }
-
-            if ($clave === 'id') {
-
-                $tabla = self::tabla_del_parametro($ruta, 'id', $tabla_del_modelo);
-
-            } elseif (Str::endsWith($clave, '_id')) {
-
-                $tabla = self::tabla_si_existe(Str::plural(substr($clave, 0, -3)));
-
-            } else {
-
-                continue;
-            }
-
-            if (!is_null($tabla)) {
-
-                self::verificar_fila($contexto, $tabla, $valor, false);
+                self::verificar_cuerpo($contexto, $valor, $nivel + 1, is_string($clave) ? $clave : $padre, $declaracion, $ruta, $escritura, $tabla_del_modelo, $vistos);
             }
         }
     }
 
     /**
+     * Qué verificar para una clave del cuerpo: null si la clave no es de un id; si no,
+     * `{tabla: string|null, exigir: bool}`, donde `tabla` null quiere decir que no se pudo
+     * derivar y `exigir` que, sin dueño, se rechaza (solo el `model_id` de una escritura).
+     *
+     * @param  string  $clave
+     * @param  array  $hermanos  El objeto que contiene la clave (para el `model_name` del `model_id`).
+     * @param  string|null  $padre
+     * @param  array  $declaracion
+     * @param  string  $ruta
+     * @param  bool  $escritura
+     * @param  string|null  $tabla_del_modelo
+     * @return array|null
+     */
+    protected static function destino_de_la_clave(string $clave, array $hermanos, $padre, array $declaracion, string $ruta, bool $escritura, $tabla_del_modelo)
+    {
+        if ($clave === 'model_id') {
+
+            // 🔴 El model_id de una escritura dice SOBRE QUÉ registro se escribe: sin dueño, no pasa.
+            return ['tabla' => self::tabla_del_model_id($hermanos, $declaracion, $ruta), 'exigir' => $escritura];
+        }
+
+        if ($clave === 'id') {
+
+            // El `id` de primer nivel es el registro de la ruta; uno anidado, el de la clave de la
+            // que cuelga (`articles[0].id` → articles).
+            $tabla = is_null($padre)
+                ? self::tabla_del_parametro($ruta, 'id', $tabla_del_modelo)
+                : self::tabla_de_la_lista($padre);
+
+            return ['tabla' => $tabla, 'exigir' => false];
+        }
+
+        if (Str::endsWith($clave, '_ids')) {
+
+            return ['tabla' => self::tabla_de_la_clave(substr($clave, 0, -1)), 'exigir' => false];
+        }
+
+        if (Str::endsWith($clave, '_id')) {
+
+            return ['tabla' => self::tabla_de_la_clave($clave), 'exigir' => false];
+        }
+
+        return null;
+    }
+
+    /**
+     * Los valores a verificar de una clave de id: el valor mismo si es escalar (o null), y si es un
+     * array, cada elemento que no sea a su vez un array (`article_ids: [4, 5]`, o un `cheque_id`
+     * con una lista, que `find()` también acepta). Lo anidado más adentro lo recorre verificar_cuerpo().
+     *
+     * @param  mixed  $valor
+     * @return array
+     */
+    protected static function valores_de($valor): array
+    {
+        if (!is_array($valor)) {
+
+            return [$valor];
+        }
+
+        $valores = [];
+
+        foreach ($valor as $elemento) {
+
+            if (!is_array($elemento)) {
+
+                $valores[] = $elemento;
+            }
+        }
+
+        return $valores;
+    }
+
+    /**
+     * Verifica un valor de una clave de id del cuerpo contra su destino.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $destino  {tabla, exigir} de destino_de_la_clave().
+     * @param  mixed  $valor
+     * @param  array  $vistos
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_valor_del_cuerpo(ContextoDeCargaIa $contexto, array $destino, $valor, array &$vistos)
+    {
+        // null, '', 0 y '0' son "sin valor" (la SPA los manda así para una relación vacía), no un id.
+        if (self::sin_valor($valor)) {
+
+            return;
+        }
+
+        if (is_null($destino['tabla'])) {
+
+            /*
+             * Sin tabla derivable no hay qué verificar (un código externo, un contador)... salvo el
+             * model_id de una escritura: ese es el registro sobre el que se escribe, y si no se sabe
+             * de qué tabla es, tampoco se sabe de quién es.
+             */
+            if ($destino['exigir']) {
+
+                throw new AccionIaException(422, self::MENSAJE_NO_VERIFICABLE);
+            }
+
+            return;
+        }
+
+        $visto = $destino['tabla'].'|'.gettype($valor).':'.(is_scalar($valor) ? (string) $valor : '').'|'.($destino['exigir'] ? '1' : '0');
+
+        if (isset($vistos[$visto])) {
+
+            return;
+        }
+
+        self::verificar_fila($contexto, $destino['tabla'], $valor, (bool) $destino['exigir']);
+
+        $vistos[$visto] = true;
+    }
+
+    /**
+     * true si el valor es "sin valor" en un cuerpo: null, '', 0 o '0' (los textos, sin espacios
+     * alrededor). Un booleano NO: `false` no es una relación vacía que mande la pantalla, y
+     * `true` es el id 1 para un find().
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function sin_valor($valor): bool
+    {
+        if (is_null($valor)) {
+
+            return true;
+        }
+
+        if (is_bool($valor) || !is_scalar($valor)) {
+
+            return false;
+        }
+
+        $texto = trim((string) $valor);
+
+        return $texto === '' || $texto === '0';
+    }
+
+    /**
      * Una fila tiene que ser del dueño: por su `user_id` si la tabla lo tiene, y si no, por el
      * `user_id` de sus padres (`*_id` → tabla padre), con dos saltos como máximo
-     * (`apertura_caja_id` → apertura_cajas → `caja_id` → cajas).
+     * (`apertura_caja_id` → apertura_cajas → `caja_id` → cajas). `users` tiene su propia regla
+     * (verificar_usuario()).
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $tabla  Una tabla que existe.
@@ -415,6 +814,13 @@ class EjecutorAccionDePantallaIaHelper
         if (!self::es_id($valor)) {
 
             throw new AccionIaException(422, self::MENSAJE_AJENO);
+        }
+
+        if ($tabla === 'users') {
+
+            self::verificar_usuario($contexto, $valor);
+
+            return;
         }
 
         if (self::estado_de_la_tabla($tabla) === 'ok') {
@@ -439,6 +845,29 @@ class EjecutorAccionDePantallaIaHelper
         if (!self::tenencia_por_padres($contexto, (array) $fila, 2) && $exigir_verificable) {
 
             throw new AccionIaException(422, self::MENSAJE_NO_VERIFICABLE);
+        }
+    }
+
+    /**
+     * Un id de `users` es del negocio si es el dueño o uno de sus empleados (`owner_id`). users no
+     * tiene `user_id`, y subir por sus padres (`plan_id`, `address_id`...) no dice nada de para
+     * quién trabaja la persona.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $valor  Un id ya validado con es_id().
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_usuario(ContextoDeCargaIa $contexto, $valor)
+    {
+        $fila = DB::table('users')->where('id', (int) $valor)->first(['id', 'owner_id']);
+
+        $dueno = (int) $contexto->owner_id;
+
+        if (is_null($fila) || ((int) $fila->id !== $dueno && (int) $fila->owner_id !== $dueno)) {
+
+            throw new AccionIaException(422, self::MENSAJE_AJENO);
         }
     }
 
@@ -539,14 +968,16 @@ class EjecutorAccionDePantallaIaHelper
     }
 
     /**
-     * La tabla si existe (con o sin `user_id`), o null.
+     * La tabla si existe (con o sin `user_id`), o null. Solo se consultan nombres en minúsculas
+     * con guiones bajos: una clave del cuerpo como `Articles` no la lee ningún controller, y en
+     * Windows MySQL la encontraría igual (tablas sin distinguir mayúsculas) y en Linux no.
      *
      * @param  string|null  $tabla
      * @return string|null
      */
     protected static function tabla_si_existe($tabla)
     {
-        if (!is_string($tabla) || $tabla === '') {
+        if (!is_string($tabla) || preg_match('/^[a-z][a-z0-9_]*$/', $tabla) !== 1) {
 
             return null;
         }
@@ -555,20 +986,178 @@ class EjecutorAccionDePantallaIaHelper
     }
 
     /**
-     * true si el valor es un id: un entero positivo escrito solo con dígitos, sin signo, sin
-     * decimales y sin nada pegado ('161x' no es un id aunque MySQL lo castee a 161).
+     * La tabla de una clave `x_id` (de la ruta o del cuerpo): `users` para las de PATRON_ID_DE_USUARIO,
+     * y si no `Str::plural(x)`, si existe.
+     *
+     * @param  string  $clave  Termina en `_id`.
+     * @return string|null
+     */
+    protected static function tabla_de_la_clave(string $clave)
+    {
+        if (preg_match(self::PATRON_ID_DE_USUARIO, $clave) === 1) {
+
+            return self::tabla_si_existe('users');
+        }
+
+        return self::tabla_si_existe(Str::plural(substr($clave, 0, -3)));
+    }
+
+    /**
+     * La tabla del `id` de un objeto que cuelga de la clave `$padre`: si el padre es una clave de
+     * ids (`article_ids: [{id}]`), la de esa clave; si no, la tabla `$padre` si existe, y si no,
+     * su plural (`articles` → articles, `client` → clients). null si nada de eso es una tabla
+     * (`returned_items`, `form`).
+     *
+     * @param  string  $padre
+     * @return string|null
+     */
+    protected static function tabla_de_la_lista(string $padre)
+    {
+        if (Str::endsWith($padre, '_ids')) {
+
+            return self::tabla_de_la_clave(substr($padre, 0, -1));
+        }
+
+        if (Str::endsWith($padre, '_id')) {
+
+            return self::tabla_de_la_clave($padre);
+        }
+
+        $directa = self::tabla_si_existe($padre);
+
+        return is_null($directa) ? self::tabla_si_existe(Str::plural($padre)) : $directa;
+    }
+
+    /**
+     * La tabla del `model_id` de un cuerpo, en este orden:
+     *   1. la que le da el CÓDIGO del controller (`'article_id' => $request->model_id`): si es una
+     *      sola, manda, aunque venga un `model_name` que diga otra cosa, porque es la que el
+     *      controller va a escribir;
+     *   2. si el código la reparte según el model_name (`'client_id' => $request->model_name ==
+     *      'client' ? $request->model_id : null`), la del `model_name` hermano, siempre que sea una
+     *      de esas;
+     *   3. si el código no dice nada (se lo pasa a un helper junto con el model_name, como
+     *      `limite-credito`), la del `model_name` hermano;
+     *   4. y si tampoco hay `model_name`, la del prefijo del primer segmento de la ruta antes del
+     *      primer guion (`article-discount` → articles).
+     * null si nada de eso da una tabla que exista.
+     *
+     * 🔴 Por qué el código primero y no el prefijo de la ruta: en `api/provider-order-discount`,
+     * `provider-order-extra-cost` y `provider-order-afip-ticket` el prefijo dice `providers` y el
+     * controller escribe `provider_order_id`; en `api/description` el prefijo dice `descriptions` y
+     * el controller escribe `article_id`. Verificar contra la tabla equivocada rechaza lo legítimo
+     * o, peor, deja pasar el pedido de otro dueño cuyo número coincide con un proveedor propio. Y
+     * por qué el código antes que el `model_name`: si no, `model_name: "client"` con el id de un
+     * cliente propio pasaría la guarda en `article-discount`, que lo usa como `article_id`.
+     *
+     * @param  array  $hermanos  El objeto que contiene el `model_id`.
+     * @param  array  $declaracion
+     * @param  string  $ruta  Ya normalizada.
+     * @return string|null
+     */
+    protected static function tabla_del_model_id(array $hermanos, array $declaracion, string $ruta)
+    {
+        $del_codigo = self::tablas_del_model_id_en_el_codigo(isset($declaracion['accion']) ? (string) $declaracion['accion'] : '');
+
+        $del_nombre = null;
+
+        if (isset($hermanos['model_name']) && is_string($hermanos['model_name']) && trim($hermanos['model_name']) !== '') {
+
+            $del_nombre = self::tabla_si_existe(Str::plural(Str::snake(class_basename(trim($hermanos['model_name'])))));
+        }
+
+        if (count($del_codigo) === 1) {
+
+            return $del_codigo[0];
+        }
+
+        if (count($del_codigo) > 1) {
+
+            return !is_null($del_nombre) && in_array($del_nombre, $del_codigo, true) ? $del_nombre : null;
+        }
+
+        if (!is_null($del_nombre)) {
+
+            return $del_nombre;
+        }
+
+        $segmentos = explode('/', $ruta);
+
+        $prefijo = isset($segmentos[1]) ? explode('-', $segmentos[1])[0] : '';
+
+        return $prefijo === '' ? null : self::tabla_si_existe(Str::plural($prefijo));
+    }
+
+    /**
+     * Las tablas a las que el código del método del controller manda el `model_id`
+     * (PATRON_MODEL_ID_EN_EL_CODIGO), sin repetir; [] si no lo dice o no se pudo leer el código.
+     * Cacheado por proceso.
+     *
+     * @param  string  $accion  Clase@metodo, sin el namespace App\Http\Controllers.
+     * @return array<int, string>
+     */
+    protected static function tablas_del_model_id_en_el_codigo(string $accion): array
+    {
+        if (isset(self::$tablas_del_model_id[$accion])) {
+
+            return self::$tablas_del_model_id[$accion];
+        }
+
+        $tablas = [];
+
+        if (strpos($accion, '@') !== false) {
+
+            list($clase, $metodo) = explode('@', $accion, 2);
+
+            $completa = class_exists('App\Http\Controllers\\'.$clase) ? 'App\Http\Controllers\\'.$clase : $clase;
+
+            $codigo = null;
+
+            try {
+
+                $codigo = Escritura::cuerpo_del_metodo($completa, $metodo);
+
+            } catch (\Throwable $e) {
+
+                $codigo = null;
+            }
+
+            if (is_string($codigo) && preg_match_all(self::PATRON_MODEL_ID_EN_EL_CODIGO, $codigo, $m)) {
+
+                foreach ($m[1] as $columna) {
+
+                    $tabla = self::tabla_de_la_clave($columna.'_id');
+
+                    if (!is_null($tabla) && !in_array($tabla, $tablas, true)) {
+
+                        $tablas[] = $tabla;
+                    }
+                }
+            }
+        }
+
+        self::$tablas_del_model_id[$accion] = $tablas;
+
+        return $tablas;
+    }
+
+    /**
+     * true si el valor es un id: un entero positivo, o un texto escrito solo con dígitos, sin signo,
+     * sin decimales y sin nada pegado ('161x' no es un id aunque MySQL lo castee a 161; "161\n"
+     * tampoco, por eso el `D`). Un decimal no es un id aunque sea redondo: 12.0 no es lo que manda
+     * la pantalla, y un booleano menos (`find(true)` es el id 1).
      *
      * @param  mixed  $valor
      * @return bool
      */
     protected static function es_id($valor): bool
     {
-        if (is_bool($valor) || !is_scalar($valor)) {
+        if (is_bool($valor) || is_float($valor) || !is_scalar($valor)) {
 
             return false;
         }
 
-        return preg_match('/^[1-9][0-9]*$/', (string) $valor) === 1;
+        return preg_match('/^[1-9][0-9]*$/D', (string) $valor) === 1;
     }
 
     /**
@@ -597,7 +1186,7 @@ class EjecutorAccionDePantallaIaHelper
 
         if (Str::endsWith($nombre, '_id')) {
 
-            return self::tabla_si_existe(Str::plural(substr($nombre, 0, -3)));
+            return self::tabla_de_la_clave($nombre);
         }
 
         // El propio recurso: `{id}`, o el parámetro con el nombre (o el singular del inflector,
@@ -705,6 +1294,63 @@ class EjecutorAccionDePantallaIaHelper
         $decodificado = $json === false ? null : json_decode($json, true);
 
         return [200, is_array($decodificado) ? $decodificado : ['texto' => $json === false ? '' : $json]];
+    }
+
+    /**
+     * La respuesta sin ninguna clave sensible, a cualquier profundidad (ver el docblock de la
+     * clase): toda clave de un objeto cuyo nombre matchee EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES
+     * se va con su valor. Las posiciones de una lista no son nombres y no se miran.
+     *
+     * @param  mixed  $valor
+     * @return mixed
+     */
+    protected static function sin_claves_sensibles($valor)
+    {
+        if ($valor instanceof \stdClass) {
+
+            $limpio = new \stdClass();
+
+            foreach (get_object_vars($valor) as $clave => $hijo) {
+
+                if (!self::es_clave_sensible($clave)) {
+
+                    $limpio->{$clave} = self::sin_claves_sensibles($hijo);
+                }
+            }
+
+            return $limpio;
+        }
+
+        if (!is_array($valor)) {
+
+            return $valor;
+        }
+
+        $limpio = [];
+
+        foreach ($valor as $clave => $hijo) {
+
+            if (is_string($clave) && self::es_clave_sensible($clave)) {
+
+                continue;
+            }
+
+            $limpio[$clave] = self::sin_claves_sensibles($hijo);
+        }
+
+        return $limpio;
+    }
+
+    /**
+     * true si el nombre de la clave es de un dato sensible (contraseña, token, clave, código de
+     * verificación...), con el mismo regex que protege el catálogo de lectura.
+     *
+     * @param  mixed  $clave
+     * @return bool
+     */
+    protected static function es_clave_sensible($clave): bool
+    {
+        return preg_match(EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES, (string) $clave) === 1;
     }
 
     /**

@@ -40,7 +40,9 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  *     de la cuenta (`PUT user/{id}` dispara el recálculo de TODOS los precios).
  *   - Credenciales: métodos de pago de la tienda (las claves de Mercado Pago), conectores, AFIP,
  *     empleados (con su contraseña), la escritura sobre compradores de la tienda, y las
- *     integraciones (Mercado Pago, Zippin, Tienda Nube, Mercado Libre).
+ *     integraciones (Mercado Pago, Zippin / Zipnova, Tienda Nube, Mercado Libre). Lo que igual
+ *     viaja en una respuesta (la contraseña de un comprador por la relación `buyer` de un cliente)
+ *     lo saca el ejecutor antes de que llegue al modelo: ver EjecutorAccionDePantallaIaHelper.
  *   - Lo que manda mensajes a terceros: por URI (`send`, `enviar`), por controller
  *     (`Whatsapp*Send*`, `*Mail*`, `RecordatorioCobro*`) y por método (`@send_*`, `@enviar_*`).
  *     Decisión de la misión: mandar mensajes a terceros sigue afuera del asistente.
@@ -62,15 +64,17 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  * motivo_de_exclusion() dice por qué, para que la herramienta se lo cuente al modelo.
  *
  * 🔴 LO QUE ENTRA PERO SIEMPRE SE CONFIRMA (SIEMPRE_CONFIRMAN): una acción puede estar en el
- * catálogo y aun así no poder correr sola con el dueño en "directo". Hoy es todo lo de AFIP: emitir
- * un comprobante ante ARCA es irreversible (se reversa con una nota de crédito, no borrándolo).
- * Cada fila lleva `siempre_confirma` y `motivo_confirmacion`, que_acciones_de_pantalla_hay los
- * muestra, y PropuestaAccionDePantallaIaHelper marca la respuesta con `requiere_confirmacion`, que
- * es lo que quizas_auto_confirmar() respeta sin que HerramientasDeCarga sepa nada de AFIP.
+ * catálogo y aun así no poder correr sola con el dueño en "directo". Es todo lo de AFIP (emitir un
+ * comprobante ante ARCA es irreversible: se reversa con una nota de crédito, no borrándolo), lo que
+ * factura sin decir "afip" (consolidar, devolver, EDITAR UNA VENTA YA CARGADA, que puede emitir una
+ * nota de crédito y avisarle al cliente) y las masivas o pesadas. Cada fila lleva
+ * `siempre_confirma` y `motivo_confirmacion`, que_acciones_de_pantalla_hay los muestra, y
+ * PropuestaAccionDePantallaIaHelper marca la respuesta con `requiere_confirmacion`, que es lo que
+ * quizas_auto_confirmar() respeta sin que HerramientasDeCarga sepa nada de AFIP.
  *
- * La tenencia de los ids que viajan en la ruta no la decide el catálogo sino el ejecutor
- * (EjecutorAccionDePantallaIaHelper::verificar_tenencia()), a partir de los nombres de los {param}
- * que este catálogo declara.
+ * La tenencia de los ids no la decide el catálogo sino el ejecutor
+ * (EjecutorAccionDePantallaIaHelper::resolver() y verificar_tenencia()), sobre la ruta que el
+ * router RESUELVE y los valores que LIGA, no sobre los nombres que escribió el modelo.
  *
  * Cacheado por proceso (olvidar() para los tests). El orden es estable —por ruta y después por
  * método— para que la paginación de lista() no cambie entre llamadas.
@@ -138,7 +142,13 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#whatsapp-bot/config#'                       => 'credenciales: la configuración del bot lleva la clave de Kapso y el secreto del webhook',
         '#online-configuration#'                      => 'credenciales: la configuración de la tienda lleva la contraseña del mail y el secreto de Google',
         '#mercado-?pago#'                             => 'credenciales: Mercado Pago',
-        '#zippin#'                                    => 'credenciales: Zippin / Zipnova',
+        /*
+         * Zipnova es el nombre nuevo de Zippin (misión zipnova-envios, 14/9/2026) y sus rutas
+         * (`integraciones/zipnova/conectar`, `config`...) guardan la cuenta del comercio. Antes el
+         * patrón decía solo `zippin` y esas rutas quedaban afuera de casualidad, por el `zip` del
+         * patrón de archivos: con el motivo equivocado, y a un retoque de ese patrón de entrar.
+         */
+        '#zippin|zipnova#'                            => 'credenciales: Zippin / Zipnova',
         '#tienda-?nube#'                              => 'credenciales: Tienda Nube',
         '#meli#'                                      => 'credenciales: Mercado Libre',
         // ── Mensajes a terceros ───────────────────────────────────────────────────────────────
@@ -151,6 +161,15 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#^POST api/message$#'                        => 'manda un mensaje al comprador de la tienda, sin filtrar el comprador por dueño',
         // ── GET con efectos ───────────────────────────────────────────────────────────────────
         '#^GET api/(article/set-online/|article/set-featured/|check-saldos/|message/set-read/|google/custom-search/aumentar-contador)#' => 'GET con efectos: desde el chat una consulta no puede escribir',
+        /*
+         * El botón "?" del precio (verificador de la misión, segunda vuelta, 23/9/2026): los dos
+         * llaman a ArticleHelper::setFinalPrice() con `$guardar_cambios = true`, así que un GET le
+         * recalcula y le GUARDA el precio al artículo (medido: `final_price` y `price` a null con el
+         * dueño en "cauteloso"). La consulta ya corre adentro de una transacción que se deshace
+         * (PropuestaAccionDePantallaIaHelper::consultar()), pero una ruta que escribe a propósito no
+         * se ofrece como lectura: se la saca con su motivo.
+         */
+        '#^GET api/article/(final-price|price-type)-description/#' => 'recalcula y guarda el precio: no es una consulta',
         // ── Masivas por POST/PUT (con el dueño en "directo" se ejecutarían sin tarjeta) ───────
         '#^PUT api/delete/#'                          => 'borrado en masa por PUT: un borrado va por proponer_baja o por proponer_borrado_por_pantalla, que siempre confirman',
         '#article/reset-stock#'                       => 'masiva: deja en 0 el stock de una lista de artículos de un saque',
@@ -170,8 +189,14 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#\{model_name\}#'                            => 'endpoint genérico de la SPA: el modelo viaja en el parámetro y la lista negra no lo ve',
         // ── Sincronización offline de la SPA ──────────────────────────────────────────────────
         '#articles-por-defecto|article/deleted-models|articles-ultimos-actualizados#' => 'sincronización offline de la SPA: trae el catálogo entero',
-        // ── Archivos (etiqueta, logo y raster: la etiqueta del envío es un PDF y el logo del ticket un raster) ──
-        '#pdf|excel|export|download|print|imagen|image|foto|file|csv|zip|qr|etiqueta|logo|raster#' => 'devuelve o recibe un archivo, y desde el chat un archivo no se ve ni se adjunta',
+        /*
+         * ── Archivos (etiqueta, logo y raster: la etiqueta del envío es un PDF y el logo del ticket un raster) ──
+         * `etiqueta$` va anclado a propósito: el archivo es `GET api/envio/{id}/etiqueta` (el PDF de
+         * Zipnova), y `etiqueta-medidas` (las medidas de etiqueta del dueño) y
+         * `sale/{sale_id}/etiqueta-sender` (el remitente de la venta) no son archivos y filtran por
+         * dueño en el controller. Con `etiqueta` suelto quedaban afuera con un motivo falso.
+         */
+        '#pdf|excel|export|download|print|imagen|image|foto|file|csv|zip|qr|etiqueta$|logo|raster#' => 'devuelve o recibe un archivo, y desde el chat un archivo no se ve ni se adjunta',
         // ── Sincronización y Claude ───────────────────────────────────────────────────────────
         '#admin-sync#'                                => 'la sincronización con el admin de ComercioCity',
         '#claude/#'                                   => 'la API interna para Claude',
@@ -196,10 +221,10 @@ class CatalogoDeAccionesDePantallaIaHelper
 
     /**
      * LAS QUE ENTRAN PERO SIEMPRE DEJAN TARJETA, en los tres modos: `[patrón => motivo]`, evaluadas
-     * sobre `"METODO uri"` y sobre `Clase@metodo`, sin distinguir mayúsculas. Decisión de la misión
-     * asistente-mcp (22/9/2026): emitir un comprobante ante ARCA no se deshace, así que ni el modo
-     * "directo" lo ejecuta solo. El patrón es ancho a propósito: agarra también los comprobantes de
-     * compras y la configuración fiscal, y ahí confirmar de más no cuesta nada.
+     * sobre `"METODO uri"` y sobre `Clase@metodo` (el `#afip#` sin distinguir mayúsculas). Decisión
+     * de la misión asistente-mcp (22/9/2026): emitir un comprobante ante ARCA no se deshace, así que
+     * ni el modo "directo" lo ejecuta solo. El `#afip#` es ancho a propósito: agarra también los
+     * comprobantes de compras y la configuración fiscal, y ahí confirmar de más no cuesta nada.
      *
      * @var array<string, string>
      */
@@ -208,6 +233,15 @@ class CatalogoDeAccionesDePantallaIaHelper
         // Las dos que facturan sin decir "afip" en la ruta (verificador de la misión, 23/9/2026).
         '#consolidar-facturacion#'   => 'consolida la facturación y emite comprobantes ante ARCA: no se deshace',
         '#^POST api/devoluciones$#'  => 'una devolución puede emitir una nota de crédito ante ARCA: no se deshace',
+        /*
+         * La clase de la de arriba (verificador, segunda vuelta, 23/9/2026): editar una venta YA
+         * CARGADA por `PUT api/sale/{sale}` con `save_nota_credito` llega a
+         * SaleHelper::checkNotaCredito() y emite una nota de crédito ante ARCA
+         * (SaleController::update(), ~585 → SaleHelper, ~874/1001), y con `send_mail` le manda el
+         * comprobante al cliente (~654). Las dos cosas dependen de claves del cuerpo que arma el
+         * modelo: se confirma siempre, no "cuando el cuerpo trae save_nota_credito".
+         */
+        '#^PUT api/sale/\{sale\}$#'  => 'editar una venta puede emitir una nota de crédito ante ARCA y avisarle al cliente: siempre se confirma',
         // Masivas, irreversibles o pesadas que en "directo" correrían sin tarjeta (verificador, 23/9/2026).
         '#^PUT api/provider/\{id\}/(propagar|sincronizar)-descuentos$#' => 'toca los descuentos y los precios de todos los artículos del proveedor de un saque',
         '#^PUT api/article/change-provider$#'                            => 'cambia el proveedor del artículo y rearma sus descuentos: no se deshace con un clic',
