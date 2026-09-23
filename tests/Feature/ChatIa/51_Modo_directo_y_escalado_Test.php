@@ -762,9 +762,17 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
         $this->assertStringNotContainsString('Vos nunca registrás nada', $prompts['directo']);
         $this->assertStringNotContainsString('Una venta NUNCA se hace sola', $prompts['directo']);
 
-        /* Y las tres que igual dejan tarjeta están nombradas, para que no lo discuta. */
+        /* Y las que igual dejan tarjeta están nombradas, para que no lo discuta. */
         $this->assertStringContainsString('proponer_baja', $prompts['directo']);
         $this->assertStringContainsString('incluso en "directo"', $prompts['directo']);
+
+        /*
+         * Misión asistente-mcp (22/9/2026): el borrado por pantalla es la quinta que sigue dejando
+         * tarjeta en "directo", y las acciones de pantalla que no borran se hacen en el acto.
+         */
+        $this->assertStringContainsString('proponer_borrado_por_pantalla', $prompts['directo']);
+        $this->assertStringContainsString('CINCO cosas siguen dejando tarjeta SIEMPRE', $prompts['directo']);
+        $this->assertStringContainsString('las acciones de pantalla que no borran', $prompts['directo']);
 
         /* En los otros dos, lo de siempre — más la salida para el que pide "sin preguntar". */
         foreach (['cauteloso', 'resuelto'] as $modo) {
@@ -1065,6 +1073,9 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
             'que_puedo_cargar',
             'cancelar_carga_pendiente',
             'resumir_datos',
+            // Misión asistente-mcp (22/9/2026): las dos de lectura de las acciones de pantalla.
+            'que_acciones_de_pantalla_hay',
+            'consultar_por_pantalla',
             '',
         ] as $herramienta) {
             $this->assertFalse(HerramientasDeCarga::es_de_carga($herramienta), $herramienta);
