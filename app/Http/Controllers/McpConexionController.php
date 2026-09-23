@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\TransientToken;
 
 /**
@@ -108,10 +109,24 @@ class McpConexionController extends Controller
             return response()->json(['message' => 'No se pudo resolver la persona o el dueño de la cuenta.'], 409);
         }
 
-        // Una clave viva por persona: la anterior deja de autenticar en este mismo request.
-        $persona->tokens()->where('name', self::NOMBRE)->delete();
+        /*
+         * Una clave viva por persona, EN ESTE ORDEN y en una transacción: primero nace la nueva y
+         * después se borran las anteriores (todas las `mcp` menos la recién creada). Al revés —
+         * borrar y después crear— si createToken() fallaba la persona quedaba sin ninguna clave y
+         * con un 500 (hallazgo del verificador del contrato, 23/9/2026). Con la transacción, o
+         * pasan las dos cosas o no pasa ninguna.
+         */
+        $nuevo = DB::transaction(function () use ($persona) {
 
-        $nuevo = $persona->createToken(self::NOMBRE, self::HABILIDADES);
+            $creado = $persona->createToken(self::NOMBRE, self::HABILIDADES);
+
+            $persona->tokens()
+                    ->where('name', self::NOMBRE)
+                    ->where('id', '<>', $creado->accessToken->id)
+                    ->delete();
+
+            return $creado;
+        });
 
         $token = $nuevo->plainTextToken;
         $url = $this->url_del_servidor($dueno);
@@ -174,7 +189,10 @@ class McpConexionController extends Controller
      *   valor de la variable.
      * - API de Anthropic: el fragmento del body con las DOS mitades —`mcp_servers` y el
      *   `mcp_toolset` en `tools`—, porque sin la segunda la API rechaza el request con un error de
-     *   validación; y arriba, como comentario, el header beta que el request tiene que llevar.
+     *   validación. 🔴 Es JSON PURO, sin ningún comentario adentro: lo que la persona copia se pega
+     *   en un body y un `//` lo rompe hasta que alguien lo borre (hallazgo del verificador del
+     *   contrato, 23/9/2026). El aviso del header beta que el request tiene que llevar va aparte,
+     *   en `anthropic_api_nota`, que la SPA muestra si viene (agregado compatible).
      *
      * @param  string  $url
      * @param  string  $token
@@ -198,28 +216,28 @@ class McpConexionController extends Controller
             ],
         ], $opciones);
 
-        $anthropic_api = '// El request lleva el header anthropic-beta: ' . self::ANTHROPIC_BETA . "\n"
-            . json_encode([
-                'mcp_servers' => [
-                    [
-                        'type'                => 'url',
-                        'url'                 => $url,
-                        'name'                => self::NOMBRE_DEL_SERVIDOR,
-                        'authorization_token' => $token,
-                    ],
+        $anthropic_api = json_encode([
+            'mcp_servers' => [
+                [
+                    'type'                => 'url',
+                    'url'                 => $url,
+                    'name'                => self::NOMBRE_DEL_SERVIDOR,
+                    'authorization_token' => $token,
                 ],
-                'tools'       => [
-                    [
-                        'type'            => 'mcp_toolset',
-                        'mcp_server_name' => self::NOMBRE_DEL_SERVIDOR,
-                    ],
+            ],
+            'tools'       => [
+                [
+                    'type'            => 'mcp_toolset',
+                    'mcp_server_name' => self::NOMBRE_DEL_SERVIDOR,
                 ],
-            ], $opciones);
+            ],
+        ], $opciones);
 
         return [
-            'claude_code'    => $claude_code,
-            'claude_desktop' => (string) $claude_desktop,
-            'anthropic_api'  => $anthropic_api,
+            'claude_code'        => $claude_code,
+            'claude_desktop'     => (string) $claude_desktop,
+            'anthropic_api'      => (string) $anthropic_api,
+            'anthropic_api_nota' => 'El request lleva el header anthropic-beta: ' . self::ANTHROPIC_BETA . '.',
         ];
     }
 

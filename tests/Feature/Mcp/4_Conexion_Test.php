@@ -37,6 +37,13 @@ class Conexion_Test extends TestCase
     /** Slug de la extensión que gatea el módulo IA. */
     const SLUG = 'asistente_ia';
 
+    /**
+     * El formato de `creada_at` / `ultimo_uso_at` del contrato 2: ISO 8601 con la zona explícita
+     * ("2026-09-23T10:00:00-03:00"), que es lo que la SPA parsea con moment. Ni el formato de
+     * MySQL ni el de toJSON() con microsegundos y "Z" (hallazgo del verificador del contrato).
+     */
+    const ISO_8601_CON_ZONA = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/';
+
     /** @var User */
     protected $dueno;
 
@@ -96,6 +103,8 @@ class Conexion_Test extends TestCase
         $this->assertTrue($primero->json('activa'));
         $this->assertEquals('mcp', $primero->json('nombre'));
         $this->assertNotNull($primero->json('creada_at'));
+        // ISO 8601 con zona, que es lo que la SPA parsea con moment: nunca el formato de MySQL ni el "Z" de toJSON().
+        $this->assertMatchesRegularExpression(self::ISO_8601_CON_ZONA, $primero->json('creada_at'));
         $this->assertNull($primero->json('ultimo_uso_at'));
         $this->assertStringEndsWith('/api/mcp', $primero->json('url'));
 
@@ -137,7 +146,7 @@ class Conexion_Test extends TestCase
         $url = (string) $respuesta->json('url');
         $ejemplos = $respuesta->json('ejemplos');
 
-        $this->assertEquals(['claude_code', 'claude_desktop', 'anthropic_api'], array_keys($ejemplos));
+        $this->assertEquals(['claude_code', 'claude_desktop', 'anthropic_api', 'anthropic_api_nota'], array_keys($ejemplos));
 
         // Claude Code: el comando completo, con transporte http y el header.
         $this->assertEquals(
@@ -154,14 +163,14 @@ class Conexion_Test extends TestCase
         $this->assertEquals('Bearer ' . $token, $desktop['mcpServers']['comerciocity']['env']['AUTH_HEADER']);
         $this->assertStringNotContainsString('Authorization: Bearer', $ejemplos['claude_desktop'], 'El header con espacio NO va inline en los args.');
 
-        // API de Anthropic: el comentario del header beta arriba, y abajo las DOS mitades del body.
-        $lineas = explode("\n", $ejemplos['anthropic_api']);
+        // API de Anthropic: JSON PURO (se pega en un body tal cual) con las DOS mitades, y la nota
+        // del header beta APARTE: un comentario adentro del JSON lo rompe hasta que alguien lo borre.
+        $body = json_decode($ejemplos['anthropic_api'], true);
 
-        $this->assertStringContainsString('anthropic-beta: mcp-client-2025-11-20', $lineas[0]);
-
-        $body = json_decode(implode("\n", array_slice($lineas, 1)), true);
-
-        $this->assertIsArray($body, 'Después del comentario, JSON válido.');
+        $this->assertSame(JSON_ERROR_NONE, json_last_error(), 'El ejemplo de la API tiene que ser JSON válido tal cual se copia.');
+        $this->assertIsArray($body);
+        $this->assertStringStartsWith('{', $ejemplos['anthropic_api'], 'Sin ninguna línea de comentario antes del JSON.');
+        $this->assertEquals('El request lleva el header anthropic-beta: mcp-client-2025-11-20.', $ejemplos['anthropic_api_nota']);
         $this->assertEquals('url', $body['mcp_servers'][0]['type']);
         $this->assertEquals($url, $body['mcp_servers'][0]['url']);
         $this->assertEquals('comerciocity', $body['mcp_servers'][0]['name']);
@@ -199,6 +208,7 @@ class Conexion_Test extends TestCase
 
         $this->assertTrue($con_clave->json('activa'));
         $this->assertNotNull($con_clave->json('creada_at'));
+        $this->assertMatchesRegularExpression(self::ISO_8601_CON_ZONA, $con_clave->json('creada_at'));
         $this->assertNull($con_clave->json('ultimo_uso_at'), 'Todavía no se usó.');
         $this->assertArrayNotHasKey('token', $con_clave->json(), 'El token viaja UNA vez, en el POST.');
     }
