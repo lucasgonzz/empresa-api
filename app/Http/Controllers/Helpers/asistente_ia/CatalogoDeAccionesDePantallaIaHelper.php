@@ -132,7 +132,10 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#afip-information#'                          => 'credenciales: los datos de AFIP del negocio',
         '#afip-.*(cert|key|token)#'                   => 'credenciales: certificados y claves de AFIP',
         '#employee#'                                  => 'credenciales: los empleados llevan contraseña y permisos (para un permiso está proponer_permiso_de_empleado)',
-        '#^(POST|PUT|DELETE) api/buyer(/|$)#'         => 'credenciales: las cuentas de la tienda online llevan contraseña (leerlas sí se puede)',
+        // Buyer no tiene $hidden: hasta un GET devuelve password, visible_password y verification_code.
+        '#api/buyer(/|$)#'                            => 'credenciales: las cuentas de la tienda online llevan contraseña, y el modelo la devuelve entera',
+        '#whatsapp-bot/config#'                       => 'credenciales: la configuración del bot lleva la clave de Kapso y el secreto del webhook',
+        '#online-configuration#'                      => 'credenciales: la configuración de la tienda lleva la contraseña del mail y el secreto de Google',
         '#mercado-?pago#'                             => 'credenciales: Mercado Pago',
         '#zippin#'                                    => 'credenciales: Zippin / Zipnova',
         '#tienda-?nube#'                              => 'credenciales: Tienda Nube',
@@ -150,6 +153,15 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#articles-pre-import/update-articles#'       => 'masiva: aplica el pre-import a todos los artículos alcanzados',
         // ── Ya tienen herramienta propia (las de recurso van por HERRAMIENTAS_PROPIAS) ────────
         '#api/pdf-column-profiles#'                   => 'tiene su herramienta: proponer_cambio_en_diseno_pdf',
+        /*
+         * ── Los endpoints genéricos de la SPA ──────────────────────────────────────────────
+         * 🔴 `search/{model_name}`, `global-search/{model_name}`, `previus-next/{model_name}`,
+         * `papelera/{model_name}`, `masive-update/{model_name}`... reciben el MODELO en el parámetro,
+         * así que ninguno de los patrones de arriba lo ve: `POST api/search/user` devolvía todos
+         * los usuarios de la base, de otros dueños incluidos, con la contraseña visible (medido por
+         * el verificador de la misión el 23/9/2026). Afuera enteros.
+         */
+        '#\{model_name\}#'                            => 'endpoint genérico de la SPA: el modelo viaja en el parámetro y la lista negra no lo ve',
         // ── Archivos ──────────────────────────────────────────────────────────────────────────
         '#pdf|excel|export|download|print|imagen|image|foto|file|csv|zip|qr#' => 'devuelve o recibe un archivo, y desde el chat un archivo no se ve ni se adjunta',
         // ── Sincronización y Claude ───────────────────────────────────────────────────────────
@@ -182,7 +194,10 @@ class CatalogoDeAccionesDePantallaIaHelper
      * @var array<string, string>
      */
     const SIEMPRE_CONFIRMAN = [
-        '#afip#i' => 'emite un comprobante ante ARCA: no se deshace',
+        '#afip#i'                    => 'emite un comprobante ante ARCA: no se deshace',
+        // Las dos que facturan sin decir "afip" en la ruta (verificador de la misión, 23/9/2026).
+        '#consolidar-facturacion#'   => 'consolida la facturación y emite comprobantes ante ARCA: no se deshace',
+        '#^POST api/devoluciones$#'  => 'una devolución puede emitir una nota de crédito ante ARCA: no se deshace',
     ];
 
     /**
@@ -199,6 +214,8 @@ class CatalogoDeAccionesDePantallaIaHelper
         'PUT api/article-update-addresses' => 'proponer_stock_en_deposito',
         'POST api/pending-completed'       => 'proponer_marcar_tarea_hecha',
         'POST api/budget'                  => 'proponer_presupuesto',
+        // `UpdateController` ES la actualización masiva (MasiveUpdateHelper::encolar_actualizacion()).
+        'PUT api/update/{model_name}'      => 'proponer_actualizacion_masiva',
     ];
 
     /**
@@ -766,6 +783,13 @@ class CatalogoDeAccionesDePantallaIaHelper
     {
         $texto = $metodo.' '.$uri;
 
+        // Primero la ruta exacta con herramienta propia: es el motivo más útil para el modelo, y
+        // un patrón más ancho (el de `{model_name}`) no tiene que taparlo.
+        if (isset(self::HERRAMIENTAS_PROPIAS[$texto])) {
+
+            return 'tiene su herramienta: '.self::HERRAMIENTAS_PROPIAS[$texto];
+        }
+
         foreach (self::EXCLUIDAS as $patron => $motivo) {
 
             if (preg_match($patron, $texto)) {
@@ -780,11 +804,6 @@ class CatalogoDeAccionesDePantallaIaHelper
 
                 return $motivo;
             }
-        }
-
-        if (isset(self::HERRAMIENTAS_PROPIAS[$texto])) {
-
-            return 'tiene su herramienta: '.self::HERRAMIENTAS_PROPIAS[$texto];
         }
 
         $abm = self::motivo_del_abm_generico($metodo, $uri);

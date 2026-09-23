@@ -1163,6 +1163,121 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $this->assertTrue(!empty($propia['ok']), json_encode($propia));
     }
 
+    // ---------------------------------------------------------------------
+    // Lo que encontró el verificador del catálogo (23/9/2026): bloqueantes
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 B1/B2: las rutas genéricas de la SPA reciben el modelo en `{model_name}` y la lista negra
+     * no las veía: `POST api/search/user` devolvía todos los usuarios de la base con la contraseña
+     * visible. Ninguna ruta con `{model_name}` entra; `PUT api/update/{model_name}` además dice que
+     * ES la actualización masiva.
+     *
+     * @test
+     */
+    public function las_rutas_genericas_por_model_name_no_estan_en_el_catalogo()
+    {
+        $this->assertNull(Catalogo::declaracion('POST', 'api/search/{model_name}/{_filters?}/{paginate?}'));
+        $this->assertNull(Catalogo::declaracion('POST', 'api/search/user'));
+        $this->assertNull(Catalogo::declaracion('POST', 'api/global-search/{model_name}'));
+        $this->assertNull(Catalogo::declaracion('DELETE', 'api/current-acount/{model_name}/{id}'));
+        $this->assertStringContainsString('endpoint genérico', Catalogo::motivo_de_exclusion('POST', 'api/search/{model_name}/{_filters?}/{paginate?}'));
+
+        foreach (Catalogo::todas() as $fila) {
+            $this->assertStringNotContainsString('{model_name}', $fila['ruta'], $fila['metodo'] . ' ' . $fila['ruta']);
+        }
+
+        $this->assertNull(Catalogo::declaracion('PUT', 'api/update/{model_name}'));
+        $this->assertStringContainsString('proponer_actualizacion_masiva', Catalogo::motivo_de_exclusion('PUT', 'api/update/{model_name}'));
+        // Y el motivo de la masiva por PUT que ya estaba sigue siendo el suyo, no el genérico.
+        $this->assertStringContainsString('proponer_borrado_por_pantalla', Catalogo::motivo_de_exclusion('PUT', 'api/delete/{model_name}'));
+    }
+
+    /**
+     * 🔴 B3: dos rutas emiten comprobantes ante ARCA sin decir "afip" en la URI.
+     *
+     * @test
+     */
+    public function consolidar_facturacion_y_devoluciones_siempre_confirman()
+    {
+        foreach (['POST api/sales/consolidar-facturacion', 'POST api/devoluciones'] as $accion) {
+            list($metodo, $ruta) = explode(' ', $accion);
+            $declaracion = Catalogo::declaracion($metodo, $ruta);
+            $this->assertNotNull($declaracion, $accion);
+            $this->assertTrue($declaracion['siempre_confirma'], $accion);
+            $this->assertStringContainsString('ARCA', $declaracion['motivo_confirmacion'], $accion);
+        }
+
+        // La lectura de devoluciones no es la emisión: no se marca.
+        $indice = Catalogo::declaracion('GET', 'api/devoluciones');
+
+        if (!is_null($indice)) {
+            $this->assertFalse($indice['siempre_confirma']);
+        }
+    }
+
+    /**
+     * 🔴 B4: credenciales que habían quedado adentro. Buyer no tiene $hidden (devuelve la
+     * contraseña hasta en un GET), WhatsappBotConfig lleva la clave de Kapso y el secreto del
+     * webhook, y la configuración de la tienda lleva la contraseña del mail y el secreto de Google.
+     *
+     * @test
+     */
+    public function las_credenciales_del_bot_la_configuracion_online_y_los_compradores_no_estan()
+    {
+        foreach ([['GET', 'api/buyer'], ['GET', 'api/buyer/{buyer}'], ['GET', 'api/whatsapp-bot/config'], ['PUT', 'api/whatsapp-bot/config'], ['GET', 'api/online-configuration'], ['PUT', 'api/online-configuration/{id}']] as $par) {
+            $this->assertNull(Catalogo::declaracion($par[0], $par[1]), $par[0] . ' ' . $par[1]);
+            $this->assertStringContainsString('credenciales', (string) Catalogo::motivo_de_exclusion($par[0], $par[1]), $par[0] . ' ' . $par[1]);
+        }
+    }
+
+    /**
+     * 🔴 B5: la tenencia no se saltea con un id que no es solo dígitos. `'<ajeno>x'` matchea el
+     * router y MySQL lo castea al id ajeno en el find(): con tabla derivable, lo que no es un
+     * entero se rechaza, al proponer y al confirmar.
+     *
+     * @test
+     */
+    public function un_id_que_no_es_solo_digitos_no_saltea_la_tenencia()
+    {
+        $otro = $this->otro_dueno();
+
+        $ajena = Caja::create(['num' => 1, 'name' => 'Caja ajena B5', 'user_id' => $otro->id]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        foreach ([$ajena->id . 'x', '0', '-' . $ajena->id, $ajena->id . '.0', ' ' . $ajena->id] as $valor) {
+
+            $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+                'metodo' => 'PUT', 'ruta' => 'api/abrir-caja/{caja_id}', 'parametros' => ['caja_id' => $valor], 'descripcion' => 'Abrir la caja',
+            ]);
+
+            $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $respuesta['error'], 'valor ' . json_encode($valor));
+        }
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        // Y una tarjeta forjada con ese valor corta al confirmar, sin abrir la caja ajena.
+        $forjada = AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $assistant->id,
+            'user_id'            => $this->dueno->id,
+            'auth_user_id'       => $this->dueno->id,
+            'tipo'               => AiMessageAction::TIPO_ACCION_PANTALLA,
+            'clave'              => 'pantalla:forjada-b5',
+            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['metodo' => 'PUT', 'ruta' => 'api/abrir-caja/{caja_id}', 'parametros' => ['caja_id' => $ajena->id . 'x'], 'cuerpo' => []],
+            'presentacion'       => ['titulo' => 'Forjada B5', 'renglones' => [], 'aviso' => null],
+        ]);
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $forjada->id);
+
+        $confirmacion->assertStatus(422);
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $confirmacion->json('model.error_mensaje'));
+        $this->assertSame(0, (int) $ajena->fresh()->abierta, 'La caja ajena tenía que seguir cerrada');
+        $this->assertSame(0, DB::table('apertura_cajas')->where('caja_id', $ajena->id)->count());
+    }
+
     /**
      * 🔴 La tenencia se vuelve a mirar al confirmar: si el registro cambió de dueño entre la tarjeta
      * y el clic (o la tarjeta se forjó con un id ajeno), 422 sin llamar al controller.

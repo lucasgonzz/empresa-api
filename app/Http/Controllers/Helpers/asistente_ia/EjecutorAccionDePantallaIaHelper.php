@@ -307,19 +307,25 @@ class EjecutorAccionDePantallaIaHelper
                 continue;
             }
 
-            $valor = $parametros[$nombre];
-
-            // Solo lo que es un id: fechas, códigos, nombres de modelo y flags no se miran.
-            if (is_bool($valor) || !is_scalar($valor) || !ctype_digit((string) $valor)) {
-
-                continue;
-            }
-
+            // Sin tabla derivable (fechas, códigos, contadores) no hay qué decidir.
             $tabla = self::tabla_del_parametro($ruta, $nombre);
 
             if (is_null($tabla)) {
 
                 continue;
+            }
+
+            $valor = $parametros[$nombre];
+
+            /*
+             * 🔴 Con tabla derivable, el valor TIENE que ser un entero. Antes un valor que no era
+             * solo dígitos se salteaba "porque no es un id", y el verificador de la misión abrió la
+             * caja de otro dueño con `caja_id = <ajeno>x`: el router matchea igual y MySQL castea
+             * '161x' a 161 en el find() del controller. Lo que no es un id, con tabla, se rechaza.
+             */
+            if (!self::es_id($valor)) {
+
+                throw new AccionIaException(422, self::MENSAJE_AJENO);
             }
 
             $user_id = DB::table($tabla)->where('id', (int) $valor)->value('user_id');
@@ -329,6 +335,23 @@ class EjecutorAccionDePantallaIaHelper
                 throw new AccionIaException(422, self::MENSAJE_AJENO);
             }
         }
+    }
+
+    /**
+     * true si el valor es un id: un entero positivo escrito solo con dígitos, sin signo, sin
+     * decimales y sin nada pegado ('161x' no es un id aunque MySQL lo castee a 161).
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function es_id($valor): bool
+    {
+        if (is_bool($valor) || !is_scalar($valor)) {
+
+            return false;
+        }
+
+        return preg_match('/^[1-9][0-9]*$/', (string) $valor) === 1;
     }
 
     /**
