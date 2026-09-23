@@ -82,25 +82,57 @@ class AddCuentaCorrienteIndexes extends Migration
     /**
      * Run the migrations.
      *
+     * 🔴 UN SOLO ALTER POR TABLA, y con `lock_wait_timeout` de 30 segundos. Un ALTER TABLE espera el
+     * candado de metadata de la tabla detrás de cualquier transacción abierta que la haya leído, y
+     * MIENTRAS ESPERA encola toda consulta nueva a esa tabla. Con el default del servidor (un año),
+     * un ALTER sobre `current_acounts` trabado detrás de una transacción larga congela la cuenta
+     * corriente de todos los comercios de la base (en la compartida, 51). Con 30 segundos, si no
+     * consigue el candado falla y suelta la cola; la migración es idempotente y se reintenta. Un
+     * ALTER por tabla con todos sus índices (en lugar de uno por índice, que es lo que genera
+     * `Schema::table`) es una sola espera y una sola reconstrucción por tabla.
+     *
      * @return void
      */
     public function up()
     {
-        foreach ($this->indices() as $tabla => $indices) {
+        $lock_wait_timeout_anterior = $this->lock_wait_timeout_de_la_sesion();
 
-            if (!Schema::hasTable($tabla)) {
-                continue;
+        DB::statement('SET SESSION lock_wait_timeout = 30');
+
+        try {
+
+            foreach ($this->indices() as $tabla => $indices) {
+
+                if (!Schema::hasTable($tabla)) {
+                    continue;
+                }
+
+                $agregar = [];
+
+                foreach ($indices as $nombre => $columnas) {
+
+                    if ($this->hay_que_crear($tabla, $nombre, $columnas)) {
+                        $agregar[] = 'ADD INDEX `'.$nombre.'` (`'.implode('`, `', $columnas).'`)';
+                    }
+                }
+
+                if (count($agregar)) {
+                    DB::statement('ALTER TABLE `'.$tabla.'` '.implode(', ', $agregar));
+                }
             }
 
-            foreach ($indices as $nombre => $columnas) {
-                $this->crear_indice($tabla, $nombre, $columnas);
+        } finally {
+
+            // La sesión la comparten las migraciones que vengan después en la misma corrida.
+            if (!is_null($lock_wait_timeout_anterior)) {
+                DB::statement('SET SESSION lock_wait_timeout = '.(int) $lock_wait_timeout_anterior);
             }
         }
     }
 
     /**
      * Reverse the migrations. Solo borra los índices que creó ESTA migración (por nombre): un índice
-     * equivalente que ya estaba con otro nombre no es suyo.
+     * equivalente que ya estaba con otro nombre no es suyo. También un ALTER por tabla.
      *
      * @return void
      */
@@ -112,43 +144,52 @@ class AddCuentaCorrienteIndexes extends Migration
                 continue;
             }
 
+            $borrar = [];
+
             foreach (array_keys($indices) as $nombre) {
 
-                if (!$this->existe_el_indice($tabla, $nombre)) {
-                    continue;
+                if ($this->existe_el_indice($tabla, $nombre)) {
+                    $borrar[] = 'DROP INDEX `'.$nombre.'`';
                 }
+            }
 
-                Schema::table($tabla, function (Blueprint $table) use ($nombre) {
-                    $table->dropIndex($nombre);
-                });
+            if (count($borrar)) {
+                DB::statement('ALTER TABLE `'.$tabla.'` '.implode(', ', $borrar));
             }
         }
     }
 
     /**
-     * Crea el índice si las columnas existen y si no hay ya uno que empiece por las mismas columnas.
+     * Si hay que crear el índice: las columnas existen y no hay uno con ese nombre ni uno que empiece
+     * por las mismas columnas.
      *
      * @param  string             $tabla
      * @param  string             $nombre
      * @param  array<int,string>  $columnas
-     * @return void
+     * @return bool
      */
-    private function crear_indice($tabla, $nombre, $columnas)
+    private function hay_que_crear($tabla, $nombre, $columnas)
     {
         foreach ($columnas as $columna) {
 
             if (!Schema::hasColumn($tabla, $columna)) {
-                return;
+                return false;
             }
         }
 
-        if ($this->existe_el_indice($tabla, $nombre) || $this->hay_un_indice_equivalente($tabla, $columnas)) {
-            return;
-        }
+        return !$this->existe_el_indice($tabla, $nombre) && !$this->hay_un_indice_equivalente($tabla, $columnas);
+    }
 
-        Schema::table($tabla, function (Blueprint $table) use ($nombre, $columnas) {
-            $table->index($columnas, $nombre);
-        });
+    /**
+     * El `lock_wait_timeout` de la sesión, para devolverlo al terminar. Null si no se pudo leer.
+     *
+     * @return int|null
+     */
+    private function lock_wait_timeout_de_la_sesion()
+    {
+        $fila = DB::selectOne('SELECT @@SESSION.lock_wait_timeout AS valor');
+
+        return is_null($fila) ? null : (int) $fila->valor;
     }
 
     /**
