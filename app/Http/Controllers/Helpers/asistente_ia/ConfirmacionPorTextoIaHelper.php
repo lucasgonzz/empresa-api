@@ -220,8 +220,12 @@ class ConfirmacionPorTextoIaHelper
          * propuesta en la pantalla y DELIBERADAMENTE no confirmada —la persona la miró y no la
          * tocó— se podía confirmar después desde WhatsApp, que es justo lo contrario de lo que esa
          * persona decidió.
+         *
+         * Misión asistente-mcp (22/9/2026): el canal MCP también confirma por texto (no tiene
+         * botones), así que la pregunta es confirma_por_texto() y no es_de_whatsapp(). Lo que
+         * sigue rebotando es lo propuesto en la PANTALLA.
          */
-        if (!$propuso->es_de_whatsapp()) {
+        if (!$propuso->confirma_por_texto()) {
 
             return RespuestaDeCargaIa::error(self::MENSAJE_OTRO_CANAL);
         }
