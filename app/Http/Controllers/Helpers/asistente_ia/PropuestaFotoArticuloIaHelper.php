@@ -39,12 +39,17 @@ use Intervention\Image\ImageManager;
  *    al ecommerce del cliente vinculado ni a Mercado Libre, y nadie se entera hasta que el dueño
  *    pregunta por qué el producto sigue sin foto en su tienda. Están enumeradas en ejecutar().
  *
- * 🔴 Y NO SE AUTO-CONFIRMA NUNCA, ni con el dueño en modo "resuelto" (decisión de Lucas, 21/9/2026).
- * No está en HerramientasDeCarga::AUTO_CONFIRMABLES y su `case` en ejecutar() no pasa por
- * quizas_auto_confirmar(). El motivo es la diferencia con la sucursal: acá el destino se INFIERE de
- * un nombre que el dueño puede decir inexacto, y una foto puesta en el artículo equivocado se
- * PUBLICA (dispara Tienda Nube y Mercado Libre). La de sucursal no puede equivocarse de destino —hay
- * pocas, se eligen por nombre completo y no se publican en ningún lado.
+ * 🔴 Y NO SE AUTO-CONFIRMA CON EL DUEÑO EN "RESUELTO" (decisión de Lucas, 21/9/2026), aunque la de
+ * SUCURSAL sí: no está en HerramientasDeCarga::AUTO_CONFIRMABLES. El motivo es la diferencia con la
+ * sucursal: acá el destino se INFIERE de un nombre que el dueño puede decir inexacto, y una foto
+ * puesta en el artículo equivocado se PUBLICA (dispara Tienda Nube y Mercado Libre). La de sucursal
+ * no puede equivocarse de destino —hay pocas, se eligen por nombre completo y no se publican en
+ * ningún lado.
+ *
+ * ⚠️ Con el dueño en "directo" (misión asistente-capacidades-y-hilos, 22/9/2026) sí se ejecuta
+ * sola: entra en AUTO_CONFIRMABLES_DIRECTO y su `case` pasa por quizas_auto_confirmar(), que es
+ * quien mira el modo. Ahí el dueño ya pidió a conciencia, una vez y desde la configuración, que sus
+ * cargas se hagan sin tarjeta.
  *
  * 🔴 LA FOTO NO SALE DEL PROMPT: SALE DE LAS IMÁGENES SIN GESTIONAR DE LA CONVERSACIÓN, igual que
  * la de sucursal y que la compra con factura. En la práctica esas fotos solo existen en el canal

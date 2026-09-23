@@ -65,9 +65,20 @@ class ColumnFiltersHelper
                         // $models = $models->whereNull($filter['key'])
                         //                 ->orWhere($filter['key'], 0);
 
-                        $models = $models->where(function ($subquery) use ($filter) {
+                        // "En blanco" tiene que coincidir con lo que el listado MUESTRA en blanco:
+                        // ademas de FK nulo o 0, un FK que apunta a un registro borrado (soft
+                        // delete) o inexistente. Ver relation_for_blank_check().
+                        $relation_info = self::relation_for_blank_check($model_name, $filter['key']);
+
+                        $models = $models->where(function ($subquery) use ($filter, $relation_info) {
                             $subquery->whereNull($filter['key'])
                                         ->orWhere($filter['key'], 0);
+
+                            if ($relation_info) {
+                                $subquery->orWhereNotExists(function ($related_query) use ($filter, $relation_info) {
+                                    self::where_related_is_alive($related_query, $filter['key'], $relation_info);
+                                });
+                            }
                         });
 
 
@@ -111,9 +122,19 @@ class ColumnFiltersHelper
                     if ($filter['type'] == 'select'
                         || $filter['type'] == 'search') {
 
-                        $models = $models->where(function ($subquery) use ($filter) {
+                        // Inverso exacto de en_blanco: FK cargado Y el registro relacionado existe y
+                        // no esta borrado (ver relation_for_blank_check()).
+                        $relation_info = self::relation_for_blank_check($model_name, $filter['key']);
+
+                        $models = $models->where(function ($subquery) use ($filter, $relation_info) {
                             $subquery->whereNotNull($filter['key'])
                                         ->where($filter['key'], '!=', 0);
+
+                            if ($relation_info) {
+                                $subquery->whereExists(function ($related_query) use ($filter, $relation_info) {
+                                    self::where_related_is_alive($related_query, $filter['key'], $relation_info);
+                                });
+                            }
                         });
 
                         $used_filters[] = [
@@ -390,6 +411,106 @@ class ColumnFiltersHelper
         }
 
         return ['models' => $models, 'used_filters' => $used_filters];
+    }
+
+    /**
+     * Resuelve la relacion belongsTo detras de un filtro select/search por FK ("<relacion>_id"),
+     * para que "en blanco" / "no en blanco" coincidan con lo que el listado muestra.
+     *
+     * Causa del bug (servian, 23/9/2026): el listado embebe la relacion (ej: `provider`) y un
+     * registro borrado con soft delete no se carga, asi que la celda se ve vacia — pero el FK sigue
+     * apuntando al registro borrado (`ProviderController::destroy` no toca los articulos). El filtro
+     * miraba solo `FK IS NULL OR FK = 0` y esos articulos no aparecian nunca. En servian2 eran
+     * 29.682 articulos con proveedor borrado.
+     *
+     * Devuelve null cuando la key no es un belongsTo resoluble cuyo FK sea justamente la key: en
+     * ese caso el filtro se comporta exactamente como antes.
+     *
+     * @param string $model_name Clase Eloquent del modelo filtrado.
+     * @param string $key        Key del filtro (ej: provider_id).
+     * @return array|null ['table' => tabla relacionada, 'owner_key' => pk referenciada,
+     *                     'own_table' => tabla filtrada, 'deleted_at' => columna soft delete o null]
+     */
+    protected static function relation_for_blank_check($model_name, $key)
+    {
+        if (!is_string($key) || strlen($key) <= 3 || substr($key, -3) !== '_id') {
+            return null;
+        }
+
+        $relation_method = substr($key, 0, -3);
+        $instance = new $model_name();
+
+        if (!method_exists($instance, $relation_method)) {
+            return null;
+        }
+
+        // La key sale del request: no se invoca cualquier metodo publico del modelo. Un `save_id`
+        // o `touch_id` llamaria a save()/touch() heredados de Eloquent y escribiria en la base.
+        // Solo se acepta un metodo publico declarado en el propio modelo, sin parametros obligatorios.
+        $reflection = new \ReflectionMethod($instance, $relation_method);
+
+        if (!$reflection->isPublic()
+            || $reflection->isStatic()
+            || $reflection->getNumberOfRequiredParameters() > 0
+            || $reflection->getDeclaringClass()->getName() === \Illuminate\Database\Eloquent\Model::class) {
+            return null;
+        }
+
+        $relation = $instance->$relation_method();
+
+        // MorphTo extiende BelongsTo pero no tiene una tabla ni un owner key fijos.
+        if (!($relation instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo)
+            || $relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
+            || $relation->getForeignKeyName() !== $key) {
+            return null;
+        }
+
+        $related = $relation->getRelated();
+
+        // Auto-referencia (ej: users.owner_id -> users): la subconsulta pisaria el nombre de la
+        // tabla externa y quedaria sin correlacionar. No se aplica el chequeo extra.
+        if ($related->getTable() === $instance->getTable()) {
+            return null;
+        }
+
+        // Si la relacion se declara con withTrashed() el listado SI muestra el registro borrado:
+        // ahi un borrado no cuenta como "en blanco", solo el inexistente.
+        $muestra_borrados = in_array(
+            \Illuminate\Database\Eloquent\SoftDeletingScope::class,
+            $relation->getQuery()->removedScopes(),
+            true
+        );
+
+        return [
+            'table'      => $related->getTable(),
+            'owner_key'  => $relation->getOwnerKeyName(),
+            'own_table'  => $instance->getTable(),
+            'deleted_at' => (!$muestra_borrados && method_exists($related, 'getDeletedAtColumn'))
+                ? $related->getDeletedAtColumn()
+                : null,
+        ];
+    }
+
+    /**
+     * Condiciones de la subconsulta EXISTS: el registro relacionado existe y no esta borrado.
+     *
+     * @param \Illuminate\Database\Query\Builder $related_query Subconsulta del EXISTS.
+     * @param string                             $key           FK en la tabla filtrada.
+     * @param array                              $relation_info Salida de relation_for_blank_check().
+     * @return void
+     */
+    protected static function where_related_is_alive($related_query, $key, array $relation_info)
+    {
+        $related_query->select(\Illuminate\Support\Facades\DB::raw(1))
+            ->from($relation_info['table'])
+            ->whereColumn(
+                $relation_info['table'].'.'.$relation_info['owner_key'],
+                $relation_info['own_table'].'.'.$key
+            );
+
+        if ($relation_info['deleted_at']) {
+            $related_query->whereNull($relation_info['table'].'.'.$relation_info['deleted_at']);
+        }
     }
 
     /**

@@ -894,10 +894,26 @@ class WhatsappChatController extends Controller
             $mime = 'application/octet-stream';
         }
 
-        return response()->file($disk->path($media_path), [
+        $respuesta = response()->file($disk->path($media_path), [
             'Content-Type'           => $mime,
             'X-Content-Type-Options' => 'nosniff',
         ]);
+
+        /*
+         * 🔴 setPrivate() SOBRE LA RESPUESTA YA ARMADA, no un header `Cache-Control` en el array
+         * de arriba. BinaryFileResponse nace con `$public = true` y su constructor llama a
+         * setPublic() DESPUES de cargar esos headers: un `private` puesto ahi sale como
+         * `max-age=300, public`. Los otros dos headers si funcionan desde el array — el unico
+         * que no se puede setear asi es Cache-Control. Medido el 22/9/2026 en el endpoint de
+         * las fotos del asistente, que tenia este mismo bug.
+         *
+         * Esto sirve el adjunto de un chat de WhatsApp con un comprador: fotos y comprobantes
+         * que mando una persona real, de un chat privado del comercio.
+         */
+        $respuesta->setPrivate();
+        $respuesta->setMaxAge(300);
+
+        return $respuesta;
     }
 
     /**

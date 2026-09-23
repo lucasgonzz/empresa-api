@@ -108,6 +108,10 @@ class Tools_de_lectura_Test extends TestCase
             'mostrar_imagenes_de_articulos'            => ['articulo_ids' => [$articulo->id]],
             // Misión asistente-ventas-y-fotos (21/9/2026): la de ventas sin cobrar a nivel negocio.
             'consultar_ventas_sin_cobrar'              => ['dias' => 0],
+            // Misión asistente-capacidades-y-hilos (22/9/2026): el link del PDF de un comprobante.
+            // El número no existe a propósito: acá se prueba que la tool corre y contesta, no que
+            // encuentre una venta (eso lo cubre 53_Presupuesto_y_link_de_pdf_Test).
+            'consultar_link_de_pdf'                    => ['tipo' => 'venta', 'numero' => 999999],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

@@ -44,8 +44,25 @@ use Illuminate\Support\Facades\Auth;
  * El límite de crédito NO: ese 422 vuelve como texto de la tarjeta, porque el saldo cambia
  * entre la propuesta y el clic y es el controller el que tiene la última palabra.
  *
- * NUNCA SE AUTO-CONFIRMA: `venta` no entra en `HerramientasDeCarga::AUTO_CONFIRMABLES`, esté el
- * dueño en la confianza que esté. Una venta mueve stock y plata.
+ * NO SE AUTO-CONFIRMA CON "CAUTELOSO" NI CON "RESUELTO": `venta` no entra en
+ * `HerramientasDeCarga::AUTO_CONFIRMABLES`. Una venta mueve stock y plata.
+ *
+ * ⚠️ SÍ se ejecuta sola con el dueño en "directo" (misión asistente-capacidades-y-hilos,
+ * 22/9/2026): entra en `AUTO_CONFIRMABLES_DIRECTO` y su `case` en ejecutar() pasa por
+ * quizas_auto_confirmar(), que es quien mira el modo. Ese modo se prende a mano desde la
+ * configuración del asistente y el default sigue siendo "resuelto", así que nadie lo tiene sin
+ * haberlo pedido. Lo que NO se auto-ejecuta en ningún modo es borrar (proponer_baja), la
+ * actualización masiva y la unificación de bancos: ver NUNCA_AUTO_CONFIRMABLES.
+ */
+/*
+ * ⚠️ SIETE MÉTODOS DE ESTA CLASE SON `public` Y NO `protected`, Y ES A PROPÓSITO (misión
+ * asistente-capacidades-y-hilos, 22/9/2026): `resolver_cliente`, `resolver_lista_de_precios`,
+ * `resolver_renglones`, `resolver_descuento`, `resolver_sucursal`, `renglon_de_articulo` y
+ * `porcentaje` los usa también `PropuestaPresupuestoIaHelper`. Un presupuesto de VENDER es la
+ * MISMA pantalla que una venta hasta el momento de cobrar: mismos renglones, misma cascada de
+ * precios por lista, mismo catálogo de descuentos y misma sucursal. Copiar esos resolvedores en el
+ * otro archivo sería tener dos criterios de precio para la misma pantalla, que es exactamente la
+ * clase de error que el repo ya tiene aprendida.
  */
 class PropuestaVentaIaHelper
 {
@@ -475,7 +492,7 @@ class PropuestaVentaIaHelper
      * @param  mixed  $valor
      * @return \App\Models\Client|null|array
      */
-    protected static function resolver_cliente(ContextoDeCargaIa $contexto, $valor)
+    public static function resolver_cliente(ContextoDeCargaIa $contexto, $valor)
     {
         if (EntradaDeCargaIa::vacio($valor)) {
 
@@ -667,7 +684,8 @@ class PropuestaVentaIaHelper
             return RespuestaDeCargaIa::error('No hay un método de pago que se llame "' . $nombre . '".', ['metodos_de_pago' => self::opciones_de_metodos($metodos)]);
         }
 
-        $motivo = OpcionesDeCargaIaHelper::motivo_no_usable($elegido);
+        // 🔴 En venta, y no el general: el cheque se puede en un PAGO pero no acá (ver el helper).
+        $motivo = OpcionesDeCargaIaHelper::motivo_no_usable_en_venta($elegido);
 
         if (!is_null($motivo)) {
 
@@ -803,7 +821,7 @@ class PropuestaVentaIaHelper
      * @param  string  $nombre
      * @return \App\Models\PriceType|null|array
      */
-    protected static function resolver_lista_de_precios(ContextoDeCargaIa $contexto, $cliente, $nombre)
+    public static function resolver_lista_de_precios(ContextoDeCargaIa $contexto, $cliente, $nombre)
     {
         $nombre = trim((string) $nombre);
 
@@ -934,7 +952,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return array<int, array<string, mixed>>|array  Renglones (vacío si alguno quedó pendiente), o la respuesta negativa.
      */
-    protected static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones)
+    public static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones)
     {
         if (!is_array($items) || !count($items)) {
 
@@ -1189,7 +1207,7 @@ class PropuestaVentaIaHelper
      * @param  mixed  $valor
      * @return \App\Models\Discount|null|array
      */
-    protected static function resolver_descuento(ContextoDeCargaIa $contexto, $cliente, $valor)
+    public static function resolver_descuento(ContextoDeCargaIa $contexto, $cliente, $valor)
     {
         if (EntradaDeCargaIa::vacio($valor)) {
 
@@ -1271,7 +1289,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return \App\Models\Address|null|array
      */
-    protected static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre, array &$faltan, array &$opciones)
+    public static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre, array &$faltan, array &$opciones)
     {
         $sucursales = Address::where('user_id', $contexto->owner_id)->orderBy('id')->get();
 
@@ -1773,7 +1791,7 @@ class PropuestaVentaIaHelper
      * @param  array  $renglon
      * @return string
      */
-    protected static function renglon_de_articulo(array $renglon): string
+    public static function renglon_de_articulo(array $renglon): string
     {
         $subtotal = round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2);
 
@@ -1853,10 +1871,17 @@ class PropuestaVentaIaHelper
 
         $usables = [];
 
-        foreach (OpcionesDeCargaIaHelper::opciones_de_metodos($metodos) as $opcion) {
+        /*
+         * 🔴 El filtro es el DE VENTA, no el general: desde el 22/9/2026 el cheque se puede usar en
+         * un pago de cuenta corriente, pero no en el cobro de una venta (ver
+         * OpcionesDeCargaIaHelper::motivo_no_usable_en_venta). Ofrecerlo acá terminaría en un cheque
+         * en blanco, sin número ni banco.
+         */
+        foreach ($metodos as $metodo) {
 
-            if (!empty($opcion['se_puede_usar'])) {
-                $usables[] = ['nombre' => $opcion['nombre']];
+            if (is_null(OpcionesDeCargaIaHelper::motivo_no_usable_en_venta($metodo))) {
+
+                $usables[] = ['nombre' => (string) $metodo->name];
             }
         }
 
@@ -1923,7 +1948,7 @@ class PropuestaVentaIaHelper
      * @param  float  $porcentaje
      * @return string
      */
-    protected static function porcentaje($porcentaje): string
+    public static function porcentaje($porcentaje): string
     {
         return self::numero((float) $porcentaje);
     }

@@ -71,6 +71,32 @@ class EjecutorAccionesIaHelper {
         AiMessageAction::TIPO_EDICION,
         AiMessageAction::TIPO_BAJA,
         AiMessageAction::TIPO_VENTA,
+        /*
+         * El presupuesto, por el mismo motivo (misión asistente-capacidades-y-hilos, 22/9/2026):
+         * `BudgetController::store()` abre su PROPIA transacción con `DB::beginTransaction()` y la
+         * cierra con `commit()`, que anidado adentro de otra sólo decrementa el contador — y encima
+         * emite `sendAddModelNotification`, un broadcast que saldría antes de que el presupuesto
+         * exista para nadie más. Con la transacción del ejecutor ya cerrada, el controller corre
+         * igual que cuando lo llama la pantalla.
+         *
+         * ⚠️ Las DOS DE STOCK no están acá y es a propósito: `StockMovementController::crear()` y
+         * `ArticleController::update_addresses_stock()` no abren transacción propia y lo único que
+         * despachan es una fila de cola (`SyncToTNArticle` / `SyncToMeliArticle`) y, en el caso del
+         * stock que entra, un `ProcessSendAdviseMail`. Quedan en el camino de una sola transacción,
+         * como el gasto, el pago y la compra.
+         */
+        AiMessageAction::TIPO_PRESUPUESTO,
+        /*
+         * Las acciones de pantalla (misión asistente-mcp, 22/9/2026), por definición: llaman a
+         * CUALQUIER controller de la pantalla, y entre ellos están los que abren su propia
+         * transacción (`BudgetController::confirmar()` y `anular()`), los que sueltan un candado,
+         * los que despachan un job o un broadcast. Con la transacción del ejecutor abierta, el
+         * `commit()` del controller sólo bajaría el contador y el aviso saldría antes de que el dato
+         * exista para nadie más. Van en dos etapas para que cada controller corra en las mismas
+         * condiciones en las que corre cuando lo llama la pantalla.
+         */
+        AiMessageAction::TIPO_ACCION_PANTALLA,
+        AiMessageAction::TIPO_BORRADO_PANTALLA,
     ];
 
     /**
@@ -611,6 +637,43 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_FOTO_ARTICULO:
                 return PropuestaFotoArticuloIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026). Las dos de stock llaman al mismo
+             * controller que usa el Listado (`StockMovementController::store()` y
+             * `ArticleController::update_addresses_stock()`) y CONFIRMAN el resultado leyendo el
+             * pivot después: los dos endpoints devuelven 201/200 pase lo que pase, incluso sin
+             * haber hecho nada. Ver el docblock de PropuestaStockIaHelper.
+             */
+            case AiMessageAction::TIPO_MOVIMIENTO_STOCK:
+                return PropuestaStockIaHelper::ejecutar_movimiento($contexto, $accion);
+
+            case AiMessageAction::TIPO_STOCK_DEPOSITO:
+                return PropuestaStockIaHelper::ejecutar_stock_en_deposito($contexto, $accion);
+
+            /*
+             * El presupuesto va por `BudgetController::store()`, que abre su PROPIA transacción y
+             * emite la notificación de alta: por eso su tipo está en TIPOS_DE_DOS_ETAPAS.
+             */
+            case AiMessageAction::TIPO_PRESUPUESTO:
+                return PropuestaPresupuestoIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Los permisos de un empleado, por `EmployeeController::update()`. Nunca llega acá
+             * desde la auto-confirmación: su tipo está en NUNCA_AUTO_CONFIRMABLES.
+             */
+            case AiMessageAction::TIPO_PERMISO_EMPLEADO:
+                return PropuestaPermisoEmpleadoIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Las acciones de pantalla (misión asistente-mcp, 22/9/2026): la misma ruta y el mismo
+             * controller que llama la pantalla, resueltos con el matcher del router. El borrado
+             * nunca llega acá desde la auto-confirmación: su tipo está en NUNCA_AUTO_CONFIRMABLES.
+             * Los dos tipos están en TIPOS_DE_DOS_ETAPAS (ver ahí por qué).
+             */
+            case AiMessageAction::TIPO_ACCION_PANTALLA:
+            case AiMessageAction::TIPO_BORRADO_PANTALLA:
+                return EjecutorAccionDePantallaIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

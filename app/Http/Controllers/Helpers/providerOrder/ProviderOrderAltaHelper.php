@@ -45,7 +45,8 @@ class ProviderOrderAltaHelper
      *                        provider_order_status_id, modo_facturacion, total_with_iva,
      *                        total_from_provider_order_afip_tickets, days_to_advise, update_stock,
      *                        update_prices, precios_incluyen_iva, moneda_id,
-     *                        generate_current_acount, numero_comprobante, childrens, articles.
+     *                        generate_current_acount, numero_comprobante, created_at, childrens,
+     *                        articles.
      * @return \App\Models\ProviderOrder
      */
     public static function crear(array $datos)
@@ -56,7 +57,24 @@ class ProviderOrderAltaHelper
 
         $model = DB::transaction(function () use ($datos, $controller, $user_id) {
 
-            $model = ProviderOrder::create([
+            /*
+             * La fecha de creación elegida por el usuario (misión fecha-creacion-editable,
+             * 22/9/2026), y va aparte del array a propósito, NO como una clave más.
+             *
+             * 🔴 UN `'created_at' => null` NO ES LO MISMO QUE NO MANDAR LA CLAVE. `ProviderOrder`
+             * tiene `$guarded = []`, así que la clave entra al modelo; y Eloquent solo completa
+             * `created_at` con la hora de ahora si el atributo NO está sucio
+             * (`updateTimestamps()`). Asignarlo en null lo ensucia igual, así que la compra
+             * quedaría insertada con la columna en NULL en vez de la fecha de hoy. Por eso la
+             * clave se agrega únicamente cuando hay valor: un llamador que no habla de la fecha
+             * —el asistente de WhatsApp, por ejemplo— tiene que seguir cayendo en el default de
+             * Eloquent, exactamente como hasta hoy.
+             */
+            $created_at = self::valor($datos, 'created_at');
+
+            $datos_created_at = is_null($created_at) ? [] : ['created_at' => $created_at];
+
+            $model = ProviderOrder::create(array_merge([
                 'num'                                       => $controller->num('provider_orders', $user_id),
                 'modo_facturacion'                          => self::valor($datos, 'modo_facturacion'),
                 'total_with_iva'                            => self::valor($datos, 'total_with_iva'),
@@ -72,7 +90,7 @@ class ProviderOrderAltaHelper
                 'address_id'                                => self::valor($datos, 'address_id'),
                 'numero_comprobante'                        => self::valor($datos, 'numero_comprobante'),
                 'user_id'                                   => $user_id,
-            ]);
+            ], $datos_created_at));
 
             $controller->updateRelationsCreated('provider_order', $model->id, self::valor($datos, 'childrens'));
 

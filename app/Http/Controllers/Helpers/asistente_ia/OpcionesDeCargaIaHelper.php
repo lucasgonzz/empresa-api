@@ -43,13 +43,30 @@ class OpcionesDeCargaIaHelper {
     const METODO_SIN_CAJA_ID = 1;
 
     /**
-     * Tipos de método de pago que el asistente NO carga (decisión de la misión): el cheque pide banco,
-     * fecha de cobro y número, y la tarjeta de crédito recargo y cuotas. Se cargan desde la pantalla.
+     * Slug del tipo de método de pago "Cheque" (`c_a_payment_method_types`, CAPaymentMethodTypeSeeder).
+     * Es el que `PaymentMethodHelper::attach_payment_methods()` mira para llamar a
+     * `ChequeHelper::crear_cheque()`.
+     */
+    const SLUG_CHEQUE = 'cheque';
+
+    /**
+     * Tipos de método de pago que el asistente NO carga: la tarjeta de crédito pide recargo y
+     * cuotas, y la retención los datos del certificado. Se cargan desde la pantalla.
+     *
+     * ⚠️ EL CHEQUE SALIÓ DE ESTA LISTA EL 22/9/2026 (misión asistente-capacidades-y-hilos). Estaba
+     * acá porque "pide banco, fecha de cobro y número" — datos que el asistente no tenía forma de
+     * pedir. Ahora sí: `PagosIaHelper` los valida y los manda en la fila, y el camino de ejecución
+     * ya los soportaba sin tocar una línea (`ChequeHelper::crear_cheque` los lee del payload). El
+     * mensaje #46 del 22/9 en demo3 —"los pagos con cheque no los puedo cargar desde acá"— era
+     * exactamente este renglón.
+     *
+     * 🔴 PERO SIGUE SIN PODERSE EN EL COBRO DE UNA VENTA, y eso vive en motivo_no_usable_en_venta():
+     * ahí el cobro viaja por el método único del select, que no lleva los datos del cheque. Esta
+     * constante es la lista del PAGO; la venta tiene la suya, que es ésta más el cheque.
      *
      * @var array<string,string>
      */
     const MOTIVOS_NO_USABLES = [
-        'cheque'             => 'Los cheques se cargan desde la pantalla.',
         'tarjeta_de_credito' => 'Los cobros con tarjeta de crédito (recargo y cuotas) se cargan desde la pantalla.',
         /*
          * La retención pide los datos del certificado que da el cliente (impuesto, número, fecha,
@@ -504,12 +521,73 @@ class OpcionesDeCargaIaHelper {
             return self::MOTIVOS_NO_USABLES[$metodo->type->slug];
         }
 
-        if ((int) $metodo->id === self::METODO_SIN_CAJA_ID) {
+        /*
+         * 🔴 Y LA REGLA POR ID YA NO ALCANZA AL CHEQUE (misión asistente-capacidades-y-hilos,
+         * 22/9/2026). La regla existe porque una fila con monto y sin caja es plata que no impacta
+         * en ninguna caja — pero para un CHEQUE eso no es un defecto, es lo correcto: un cheque no
+         * mueve caja al cargarse (la plata se mueve recién con `PUT /cheque/cobrar` o `/pagar`), y
+         * por eso mismo la pantalla no le dibuja el selector de caja. El id 1 del catálogo es
+         * justamente el Cheque, así que sin esta excepción la capacidad nueva quedaba muerta por
+         * una regla escrita para otra cosa. El resto de los métodos sin caja siguen afuera.
+         */
+        if ((int) $metodo->id === self::METODO_SIN_CAJA_ID && !self::es_cheque($metodo)) {
 
             return 'Ese método de pago se carga desde la pantalla.';
         }
 
         return null;
+    }
+
+    /**
+     * Por qué el asistente no puede cobrar UNA VENTA con ese método, o null si puede.
+     *
+     * 🔴 ES LA MISMA REGLA MÁS UNA: EL CHEQUE, QUE SÍ SE PUEDE EN UN PAGO PERO NO EN UNA VENTA
+     * (misión asistente-capacidades-y-hilos, 22/9/2026). El motivo no es una preferencia: el cobro
+     * de una venta viaja por el camino del método ÚNICO del select —`current_acount_payment_method_id`
+     * y `caja_id`, con `selected_payment_methods` vacío—, que NO tiene dónde poner el número, el
+     * banco ni las fechas del cheque. `attach_payment_methods()` crea el cheque igual, porque solo
+     * mira el slug del tipo, y todas las columnas de `cheques` son nullable: quedaría un cheque en
+     * blanco, sin número ni banco, imposible de reconciliar y sin ningún error en ningún lado. Un
+     * pago de cuenta corriente sí puede, porque ahí la fila lleva esos datos (PagosIaHelper::
+     * fila_de_cheque).
+     *
+     * @param  \App\Models\CurrentAcountPaymentMethod  $metodo  Con `type` cargado.
+     * @return string|null
+     */
+    static function motivo_no_usable_en_venta($metodo) {
+
+        $motivo = self::motivo_no_usable($metodo);
+
+        if (!is_null($motivo)) {
+
+            return $motivo;
+        }
+
+        if (self::es_cheque($metodo)) {
+
+            return 'Una venta cobrada con cheque se hace desde Vender: el cobro de la venta no lleva el número, el banco ni la fecha del cheque, y quedaría un cheque en blanco. Un PAGO de cuenta corriente con cheque sí lo puedo cargar.';
+        }
+
+        return null;
+    }
+
+    /**
+     * true si el método de pago es del tipo Cheque, que es el que dispara
+     * `ChequeHelper::crear_cheque()` en `PaymentMethodHelper::attach_payment_methods()`.
+     *
+     * 🔴 Por el SLUG del tipo y nunca por el id: `current_acount_payment_methods` es una tabla
+     * GLOBAL sin `user_id`, pero los ids no están garantizados entre instalaciones (el catálogo se
+     * siembra y se puede editar desde ABM). El slug es lo único estable, y es lo que mira el
+     * backend.
+     *
+     * @param  \App\Models\CurrentAcountPaymentMethod|null  $metodo  Con `type` cargado.
+     * @return bool
+     */
+    static function es_cheque($metodo) {
+
+        return !is_null($metodo)
+            && !is_null($metodo->type)
+            && (string) $metodo->type->slug === self::SLUG_CHEQUE;
     }
 
     /**

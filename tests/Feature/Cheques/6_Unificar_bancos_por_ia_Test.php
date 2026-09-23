@@ -431,19 +431,44 @@ class Unificar_bancos_por_ia_Test extends ChequesTestCase
     /**
      * Las dos herramientas están declaradas y despachadas (las dos puntas del mismo archivo).
      *
+     * 🔴 ESTE TEST NO PUEDE AFIRMAR QUE SON LAS DOS ÚLTIMAS DEL CATÁLOGO, y hasta el 22/9/2026 lo
+     * hacía (`array_slice($nombres, -2)`), con lo cual quedó ROJO en `develop` sin que nadie lo
+     * notara: vive fuera del filtro `ChatIa` que corren las misiones del asistente.
+     *
+     * Lo rompió la regla que el propio repo impone. Toda herramienta nueva se agrega AL FINAL del
+     * array, porque el request a la API se renderiza tools → system → messages y el caché de prompt
+     * es por prefijo de bytes: mover una de lugar tira el caché entero. O sea que "ser las dos
+     * últimas" es una propiedad que cualquier misión posterior rompe **haciendo lo correcto** — y de
+     * hecho la rompieron las cinco herramientas de `asistente-omnisciente` (21/9) y las cuatro de
+     * `asistente-capacidades-y-hilos` (22/9).
+     *
+     * El invariante que sí importa, y que es el que el docblock siempre dijo, es que las dos estén
+     * declaradas, despachadas y juntas, con su esquema. Eso es lo que se afirma ahora. Que lo nuevo
+     * vaya al final se sostiene con la regla escrita, no atando un test de cheques al largo del
+     * catálogo.
+     *
      * @test
      */
-    public function las_dos_herramientas_estan_declaradas_al_final_y_despachadas()
+    public function las_dos_herramientas_estan_declaradas_juntas_y_despachadas()
     {
         $nombres = HerramientasDeCarga::nombres();
 
-        $this->assertEquals(['consultar_bancos_de_cheques', 'proponer_unificar_bancos_de_cheques'], array_slice($nombres, -2));
+        $consultar = array_search('consultar_bancos_de_cheques', $nombres);
+        $proponer_i = array_search('proponer_unificar_bancos_de_cheques', $nombres);
+
+        $this->assertNotFalse($consultar, 'consultar_bancos_de_cheques no está declarada');
+        $this->assertNotFalse($proponer_i, 'proponer_unificar_bancos_de_cheques no está declarada');
+
+        /* Juntas y en ese orden: primero se consultan los textos libres, después se proponen los grupos. */
+        $this->assertSame($consultar + 1, $proponer_i, 'Las dos herramientas de cheques dejaron de estar una al lado de la otra');
+
         $this->assertTrue(HerramientasDeCarga::maneja('consultar_bancos_de_cheques'));
         $this->assertTrue(HerramientasDeCarga::maneja('proponer_unificar_bancos_de_cheques'));
 
         $definiciones = HerramientasDeCarga::definiciones();
-        $proponer = $definiciones[count($definiciones) - 1];
+        $proponer = $definiciones[$proponer_i];
 
+        $this->assertSame('proponer_unificar_bancos_de_cheques', $proponer['name']);
         $this->assertEquals(['grupos'], $proponer['input_schema']['required']);
         $this->assertEquals(['banco', 'textos'], $proponer['input_schema']['properties']['grupos']['items']['required']);
     }

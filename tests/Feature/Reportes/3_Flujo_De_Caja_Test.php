@@ -2,7 +2,10 @@
 
 namespace Tests\Feature\Reportes;
 
+use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Models\Cheque;
+use App\Models\CreditAccount;
+use App\Models\CurrentAcount;
 use App\Models\Expense;
 use App\Models\MovimientoCaja;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -603,6 +606,234 @@ class Flujo_De_Caja_Test extends EmpresaTestCase
         $flujo = $this->pedir_flujo_caja('2021-08-01', '2021-08-31');
 
         $this->assertEqualsWithDelta(6000 + 9000, (float) $flujo['total_ingresos'], self::DELTA);
+    }
+
+    /**
+     * Test 9 (misión flujo-caja-desglose-duplicado, 22/9/2026) — 🔴 El desglose por caja/método del
+     * Flujo de Caja no puede repetir el mismo método cuando "sin caja" quedó guardado de dos formas
+     * distintas para el mismo período: una venta de mostrador cobrada con `caja_id = 0` y una
+     * cobranza de cuenta corriente con el MISMO método de pago, cuyo `caja_id` normaliza a `null`.
+     *
+     * Cómo se arma cada lado:
+     * - Mostrador: `crear_venta_cobrada()` con `selected_payment_methods` vacío y el método/caja a
+     *   nivel raíz del request, para pisar la rama de "método único" de
+     *   `SaleHelper::attachSelectedPaymentMethods()` — esa rama adjunta `caja_id` TAL CUAL viene del
+     *   request (sin normalizar), a diferencia de la rama de reparto. Es la misma vía por la que
+     *   `caja_por_defecto.js:389` manda un `0` real cuando no hay caja candidata.
+     * - Cuenta corriente: `cobrar_cuenta_corriente()` del trait no permite forzar `caja_id` (siempre
+     *   manda una caja real), así que el pago se arma a mano acá — mismo criterio que ya usa el test
+     *   4 de este archivo para `Cheque::create()` cuando el trait no cubre el escenario. Se manda
+     *   `caja_id = 0` en la fila del método de pago: `PaymentMethodHelper::attach_payment_methods()`
+     *   (que SÍ normaliza, a diferencia de la rama de mostrador de arriba) lo guarda como `null` en
+     *   el pivot — que es justo cómo entra siempre este dato en el sistema real.
+     *
+     * Antes del fix, `combinar_desglose_caja_metodo()` armaba las claves "metodo-0" (mostrador) y
+     * "metodo-" (cta cte) sin normalizar: dos filas separadas para el mismo método, cada una con una
+     * parte de la plata — el defecto real que reportó Secure Point (screenshot adjunto por Lucas,
+     * 22/9/2026: "Sin caja asignada · Efectivo"/"Mercado Pago" aparecía dos veces, sumando al total
+     * correcto pero mal agrupado). Después del fix, las dos claves normalizan a "metodo-" y se
+     * funden en una sola fila con el total sumado.
+     *
+     * @group reportes
+     * @test
+     */
+    public function venta_de_mostrador_con_caja_0_y_cobranza_de_cuenta_corriente_se_funden_en_una_fila()
+    {
+        $this->fijar_reloj_en('2021-09-10 10:00:00');
+
+        $metodo_efectivo = $this->resolver_metodo_pago_por_nombre(TestingFerreteriaSeeder::PAGO_EFECTIVO);
+
+        // Venta de mostrador: caja_id = 0 a nivel raíz del request, sin reparto (selected_payment_methods
+        // vacío), para pisar la rama de "método único" que NO normaliza caja_id al adjuntar el pivot.
+        $venta_mostrador = $this->crear_venta_cobrada(
+            TestingFerreteriaSeeder::CAJA_EFECTIVO,
+            TestingFerreteriaSeeder::PAGO_EFECTIVO,
+            50000,
+            [
+                'selected_payment_methods'         => [],
+                'current_acount_payment_method_id' => $metodo_efectivo->id,
+                'caja_id'                           => 0,
+            ]
+        );
+
+        $this->assertEqualsWithDelta(
+            0,
+            (int) $venta_mostrador->caja_id,
+            self::DELTA,
+            'Guard: la venta de este test tiene que haber quedado con caja_id = 0 (0 o null son "sin caja" en este sistema), o el resto del test no prueba el escenario real.'
+        );
+
+        // Cobranza de cuenta corriente, mismo método, armada a mano (ver docblock de arriba).
+        $cliente = $this->resolver_cliente_por_nombre(TestingFerreteriaSeeder::CLIENTE_CC);
+
+        CreditAccountHelper::crear_credit_accounts('client', $cliente->id);
+
+        $credit_account = CreditAccount::where('model_name', 'client')
+                                        ->where('model_id', $cliente->id)
+                                        ->where('moneda_id', 1)
+                                        ->first();
+
+        if (is_null($credit_account)) {
+            $this->fail('No se pudo resolver la credit_account (moneda 1) del cliente "'.TestingFerreteriaSeeder::CLIENTE_CC.'".');
+        }
+
+        $response = $this->postJson('api/current-acount/pago', [
+            'description'                     => 'Cobro escenario de test — flujo-caja-desglose-duplicado',
+            'credit_account_id'               => $credit_account->id,
+            'is_provisorio'                    => 0,
+            'model_name'                       => 'client',
+            'model_id'                         => $cliente->id,
+            'haber'                             => 20000,
+            'current_date'                      => 1,
+            'current_acount_payment_methods'  => [
+                [
+                    'current_acount_payment_method_id' => $metodo_efectivo->id,
+                    'amount'                             => 20000,
+                    'caja_id'                             => 0,
+                ],
+            ],
+        ]);
+
+        if ($response->getStatusCode() !== 201) {
+            $this->fail('POST api/current-acount/pago devolvió '.$response->getStatusCode().'. Cuerpo completo: '.$response->getContent());
+        }
+
+        $pago_id = json_decode($response->getContent(), true)['current_acount']['id'];
+
+        try {
+            $pago = CurrentAcount::find($pago_id);
+            $pago->loadMissing('current_acount_payment_methods');
+            $caja_id_pivot_cc = $pago->current_acount_payment_methods->first()->pivot->caja_id;
+
+            $this->assertNull(
+                $caja_id_pivot_cc,
+                'Guard: el pivot de la cobranza de cuenta corriente tiene que haber normalizado caja_id a null, o el resto del test no prueba el escenario real. Valor encontrado: '.var_export($caja_id_pivot_cc, true)
+            );
+
+            $flujo = $this->pedir_flujo_caja('2021-09-01', '2021-09-30');
+
+            $filas_del_metodo = [];
+            foreach ($flujo['ingresos_por_caja_metodo'] as $fila) {
+                if ((int) $fila['current_acount_payment_method_id'] === (int) $metodo_efectivo->id) {
+                    $filas_del_metodo[] = $fila;
+                }
+            }
+
+            $this->assertCount(
+                1,
+                $filas_del_metodo,
+                'BUG: el desglose por caja/método tiene que fundir la venta de mostrador (caja_id 0) y la '.
+                'cobranza de cuenta corriente (caja_id null) del mismo método en una sola fila, no dejarlas '.
+                'separadas. Filas encontradas: '.json_encode($filas_del_metodo)
+            );
+
+            $this->assertEqualsWithDelta(
+                50000 + 20000,
+                (float) $filas_del_metodo[0]['total'],
+                self::DELTA,
+                'El total de la fila fundida tiene que ser la suma de la venta de mostrador (50000) y la cobranza de cuenta corriente (20000) — la plata no se pierde ni se duplica, solo estaba mal agrupada.'
+            );
+
+            $this->assertNull(
+                $filas_del_metodo[0]['caja_id'],
+                'La fila fundida tiene que normalizar caja_id a null (0 y null son "sin caja" en este sistema).'
+            );
+        } finally {
+            CurrentAcount::where('id', $pago_id)->each(function ($pago) {
+                $pago->current_acount_payment_methods()->detach();
+                $pago->delete();
+            });
+        }
+    }
+
+    /**
+     * Test 10 (misión flujo-caja-desglose-duplicado, 22/9/2026 — adenda post-chequeo independiente)
+     * — 🔴 El mismo bug del test anterior, pero del lado de EGRESOS: `gastos_pagados()` (la función
+     * que alimenta `egresos_por_caja_metodo()`) es una implementación de agrupamiento PARALELA e
+     * INDEPENDIENTE de `combinar_desglose_caja_metodo()` — no la reusa — y tenía el mismo patrón de
+     * clave sin normalizar.
+     *
+     * Cómo se arma cada lado (los dos SIN `current_acount_payment_method_id`, así que los dos
+     * mapean al método 3 = Efectivo por la misma convención legacy que ya documenta
+     * `gastos_pagados()`, regla 09 — no hace falta resolver un método de pago a mano):
+     * - Gasto "caja 0": `crear_gasto()` del trait, sin `payment_methods` (default `[]`) — sin
+     *   ninguna fila en el pivot, cae en la rama legacy de `gastos_pagados()`, que lee
+     *   `expenses.caja_id` directo. `ExpenseHelper::crear()` SIEMPRE guarda `caja_id = 0` ahí, sin
+     *   excepción — es la convención vigente para "sin caja" en un gasto nuevo.
+     * - Gasto "caja null": sembrado directo con `Expense::create()` (mismo criterio que ya usa el
+     *   test 4 de este archivo para `Cheque::create()`, cuando el trait no cubre el escenario) con
+     *   `caja_id = null` — la convención de los gastos HISTÓRICOS, de antes de que
+     *   `ExpenseHelper::crear()`/`ExpenseController::update()` empezaran a forzar `0` siempre. Lo
+     *   confirma la migración `2025_11_29_153444_migrate_data_to_expense_payment_method_table.php`,
+     *   que convierte `caja_id` `null → 0` explícitamente al migrar datos viejos al pivot: prueba de
+     *   que antes de esa migración `null` era un valor real en `expenses.caja_id`.
+     *
+     * @group reportes
+     * @test
+     */
+    public function gasto_con_caja_0_y_gasto_historico_con_caja_null_se_funden_en_una_fila()
+    {
+        $this->fijar_reloj_en('2021-11-10 10:00:00');
+
+        $gasto_caja_0 = $this->crear_gasto(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO, 12000);
+
+        $this->assertEqualsWithDelta(
+            0,
+            (int) $gasto_caja_0->caja_id,
+            self::DELTA,
+            'Guard: el gasto de este test tiene que haber quedado con caja_id = 0 (ExpenseHelper::crear() lo fuerza siempre), o el resto del test no prueba el escenario real.'
+        );
+
+        $usuario = $this->usuario_de_testing();
+        $concepto = $this->resolver_concepto_gasto_por_nombre(TestingFerreteriaSeeder::CONCEPTO_GASTO_OPERATIVO);
+
+        $gasto_historico = Expense::create([
+            'expense_concept_id' => $concepto->id,
+            'amount'              => 8000,
+            'moneda_id'           => 1,
+            'importe_iva'         => 0,
+            'observations'        => 'Escenario de test — gasto histórico con caja_id null (flujo-caja-desglose-duplicado)',
+            'user_id'             => $usuario->id,
+            'caja_id'             => null,
+        ]);
+
+        // Se registra en la lista del trait para que limpiar_escenarios() lo borre (detach + delete),
+        // igual que si hubiera pasado por crear_gasto() — aunque este vino de Expense::create() directo.
+        $this->gastos_creados_por_escenarios[] = $gasto_historico->id;
+
+        $this->assertNull(
+            $gasto_historico->caja_id,
+            'Guard: el gasto histórico sembrado para este test tiene que tener caja_id null, o el resto del test no prueba el escenario real.'
+        );
+
+        $flujo = $this->pedir_flujo_caja('2021-11-01', '2021-11-30');
+
+        $filas_metodo_3 = [];
+        foreach ($flujo['egresos_por_caja_metodo'] as $fila) {
+            if ((int) $fila['current_acount_payment_method_id'] === 3) {
+                $filas_metodo_3[] = $fila;
+            }
+        }
+
+        $this->assertCount(
+            1,
+            $filas_metodo_3,
+            'BUG: el desglose de egresos por caja/método tiene que fundir el gasto con caja_id 0 y el gasto '.
+            'histórico con caja_id null (mismo método, "sin caja" en cualquiera de sus dos formas) en una sola '.
+            'fila, no dejarlas separadas. Filas encontradas: '.json_encode($filas_metodo_3)
+        );
+
+        $this->assertEqualsWithDelta(
+            12000 + 8000,
+            (float) $filas_metodo_3[0]['total'],
+            self::DELTA,
+            'El total de la fila fundida tiene que ser la suma del gasto con caja 0 (12000) y el gasto histórico con caja null (8000).'
+        );
+
+        $this->assertNull(
+            $filas_metodo_3[0]['caja_id'],
+            'La fila fundida tiene que normalizar caja_id a null (0 y null son "sin caja" en este sistema).'
+        );
     }
 
     /**

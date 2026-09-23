@@ -1967,7 +1967,16 @@ class ConsultasSistemaIaHelper
      */
     public static function stock_por_deposito(int $owner_id, string $busqueda, int $limite = 0): array
     {
-        $limite = self::limite_pedido($limite);
+        /*
+         * 🔴 ACÁ EL DEFAULT NO ES MAX_RESULTS, Y ES A PROPÓSITO (misión asistente-capacidades-y-hilos,
+         * 22/9/2026). El 22/9 en demo3 el agente negó la sucursal "Florida" —"no me figura entre las
+         * del negocio"— y dos mensajes después la listó para la venta: el recorte a 20 la había
+         * dejado afuera, sin que nada lo dijera. Una sucursal que no viaja se lee como una sucursal
+         * que no existe, así que esta consulta arranca en el techo duro y no en el tope de siempre.
+         * Las otras consultas devuelven una PÁGINA de un conjunto grande; ésta devuelve el REPARTO
+         * completo de un artículo, que es un dato chico y que solo sirve entero.
+         */
+        $limite = self::limite_pedido($limite > 0 ? $limite : self::TOPE_DURO_DE_RESULTADOS);
 
         $articulo = self::resolver_articulo($owner_id, $busqueda);
 
@@ -1983,14 +1992,23 @@ class ConsultasSistemaIaHelper
         }
 
         // Las sucursales del comercio son las addresses del dueño, igual que en AddressController
-        // y en RecolectorStock. (La tabla también guarda domicilios de compradores de la tienda,
-        // que llevan buyer_id y no son del dueño.)
+        // y en RecolectorStock.
+        //
+        // 🔴 Y EL whereNull('buyer_id') NO ES DECORACIÓN. La tabla `addresses` guarda TAMBIÉN los
+        // domicilios de los compradores de la tienda (los escribe `tienda-api`, que comparte la
+        // base), y esas filas llevan el `user_id` del dueño además de su `buyer_id`: sin este
+        // filtro entraban al listado como si fueran sucursales, se comían el cupo y empujaban
+        // afuera a las sucursales de verdad.
+        //
+        // ⚠️ `AddressController::index()` NO hace este corte (solo filtra por `user_id`): el ABM de
+        // Sucursales tiene el mismo problema y no se toca desde acá. Queda anotado en el informe.
         $sucursales = DB::table('addresses')
             ->leftJoin('address_article', function ($join) use ($articulo) {
                 $join->on('address_article.address_id', '=', 'addresses.id')
                     ->where('address_article.article_id', '=', (int) $articulo->id);
             })
             ->where('addresses.user_id', $owner_id)
+            ->whereNull('addresses.buyer_id')
             ->orderBy('addresses.id')
             ->get([
                 'addresses.id as address_id',
@@ -2021,7 +2039,7 @@ class ConsultasSistemaIaHelper
 
         $mostradas = array_slice($todas, 0, $limite);
 
-        return [
+        $respuesta = [
             'articulo'                  => (string) $articulo->name,
             'articulo_id'               => (int) $articulo->id,
             'trabaja_con_depositos'     => count($todas) >= 2,
@@ -2034,6 +2052,21 @@ class ConsultasSistemaIaHelper
             'stock_sumado_por_deposito' => round($repartido, 2),
             'depositos'                 => $mostradas,
         ];
+
+        /*
+         * 🔴 Y SI IGUAL RECORTA, LO DICE. Con el techo en 100 hace falta un negocio de más de cien
+         * sucursales para llegar acá, pero el modo de fallar del 22/9 fue justamente un recorte
+         * callado: la respuesta no se puede leer como "estas son todas" cuando no lo son. El texto
+         * va en `aviso` para que el modelo lo repita en vez de negar una sucursal que existe.
+         */
+        if (count($mostradas) < count($todas)) {
+
+            $respuesta['aviso'] = 'Esta lista está recortada: el negocio tiene ' . count($todas)
+                . ' depósitos y acá viajan los primeros ' . count($mostradas)
+                . '. Si el que buscás no está, decí que la lista está recortada, nunca que el depósito no existe.';
+        }
+
+        return $respuesta;
     }
 
     /**

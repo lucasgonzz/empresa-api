@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
@@ -21,9 +22,14 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesCategoriasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaOfertaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPagoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaPermisoEmpleadoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaAccionDePantallaIaHelper;
 use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -40,7 +46,12 @@ use Illuminate\Support\Facades\Log;
  * consultar y unificar los bancos de los cheques. La misión asistente-omnisciente (21/9/2026)
  * sumó cinco más después de esas: el ABM genérico (que_puedo_cargar, proponer_alta,
  * proponer_edicion, proponer_baja) y proponer_venta. La misión asistente-ventas-y-fotos (21/9/2026)
- * sumó proponer_foto_articulo después de esas. Van al final porque el orden es parte
+ * sumó proponer_foto_articulo después de esas. La misión asistente-capacidades-y-hilos (22/9/2026)
+ * sumó cuatro más (los dos de stock, el presupuesto y el permiso de un empleado). La misión
+ * asistente-mcp (22/9/2026) sumó las cuatro ACCIONES DE PANTALLA al final de todo:
+ * que_acciones_de_pantalla_hay, consultar_por_pantalla, proponer_accion_de_pantalla y
+ * proponer_borrado_por_pantalla, la herramienta genérica que llama a la misma ruta que llama la
+ * pantalla (ver CatalogoDeAccionesDePantallaIaHelper). Van al final porque el orden es parte
  * del caché de prompt (ver build_tools()).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
@@ -72,25 +83,31 @@ class HerramientasDeCarga
      * 🔴 LA ACTUALIZACIÓN MASIVA NO ESTÁ NI VA A ESTAR ACÁ. Reescribe precios, márgenes, stock o
      * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
      * que ver cuántos alcanza y confirmar (decisión de Lucas, misión asistente-masivas-imagenes-y-
-     * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(), y el test 26 fija
-     * las dos cosas. Lo mismo para unificar los bancos de los cheques (misión
+     * remito). Su `case` en ejecutar() tampoco pasa por quizas_auto_confirmar(): eso lo fijan los
+     * tests 36 y 51, que leen el archivo; el test 26 cuida la lista, no el `case`. Lo mismo para
+     * unificar los bancos de los cheques (misión
      * cheques-endoso-y-bancos): toca N cheques de un saque y decide a qué banco va cada texto.
      * Antes de sumar un tipo acá, tiene que cumplir las dos condiciones de arriba.
      *
-     * 🔴 TAMPOCO ENTRAN LAS GENÉRICAS (alta, edicion, baja) NI LA VENTA (misión asistente-omnisciente,
-     * 21/9/2026): crean, cambian o borran datos del negocio por el controller de la pantalla, y una
-     * baja no se deshace. Sus `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), y el
-     * test 36 fija las dos cosas.
+     * 🔴 TAMPOCO ENTRAN LAS GENÉRICAS (alta, edicion, baja), NI LA VENTA (misión
+     * asistente-omnisciente, 21/9/2026), NI LA FOTO DE UN ARTÍCULO (misión asistente-ventas-y-fotos,
+     * 21/9/2026), aunque la foto de SUCURSAL sí esté acá arriba. No es una inconsistencia: la
+     * sucursal se elige entre unas pocas y por su nombre completo —no puede errarle al destino— y su
+     * foto no sale publicada en ningún lado; la del artículo se resuelve INFIRIENDO de un nombre que
+     * el dueño puede decir inexacto, y si le erra, la foto equivocada se PUBLICA (dispara Tienda
+     * Nube y Mercado Libre, y se replica en el catálogo de los comercios vinculados).
      *
-     * 🔴 Y TAMPOCO ENTRA LA FOTO DE UN ARTÍCULO (`TIPO_FOTO_ARTICULO`, misión asistente-ventas-y-fotos,
-     * 21/9/2026), aunque la de SUCURSAL sí esté acá arriba. No es una inconsistencia, es la
-     * diferencia que importa: la sucursal se elige entre unas pocas y por su nombre completo —no
-     * puede errarle al destino—, y su foto no sale publicada en ningún lado. La del artículo se
-     * resuelve INFIRIENDO de un nombre que el dueño puede decir inexacto, y si le erra, la foto
-     * equivocada se PUBLICA: dispara Tienda Nube y Mercado Libre, y además se replica en el catálogo
-     * de los comercios vinculados. Decisión explícita de Lucas del 21/9/2026: confirma siempre la
-     * persona, esté en "resuelto" o no. Su `case` en ejecutar() tampoco pasa por
-     * quizas_auto_confirmar().
+     * ⚠️ DESDE EL 22/9/2026 ESTA LISTA ES LA DEL MODO "RESUELTO" Y NADA MÁS. El modo "directo"
+     * (misión asistente-capacidades-y-hilos) tiene la suya, AUTO_CONFIRMABLES_DIRECTO, y ahí sí
+     * entran las genéricas de alta y edición, la venta y la foto de un artículo — el dueño lo prendió
+     * a conciencia desde la configuración. Lo que cambió con esa misión es que los `case` de esas
+     * propuestas SÍ pasan por quizas_auto_confirmar(): quién se ejecuta lo decide el modo adentro de
+     * la puerta, no la ausencia de la llamada. Los únicos `case` que siguen sin pasar por ahí son
+     * los de NUNCA_AUTO_CONFIRMABLES —cinco desde el 22/9/2026: el permiso de un empleado y, con la
+     * misión asistente-mcp del mismo día, el borrado por pantalla—, y
+     * eso lo fijan los tests 36, 51 y 55 LEYENDO ESTE ARCHIVO como texto plano (el `switch` no es
+     * introspectable de otra forma). El test 26 también cuida la masiva, pero solo por la
+     * constante: no lee el archivo, así que no cubre la tercera guarda.
      *
      * @var array<int, string>
      */
@@ -100,6 +117,116 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_IMAGENES_ARTICULOS,
         AiMessageAction::TIPO_DISENO_PDF,
     ];
+
+    /**
+     * Los tipos que el modo "directo" ejecuta en el acto, sin dejar tarjeta (misión
+     * asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * 🔴 POR QUÉ EXISTE ESTA LISTA, Y POR QUÉ NO ES UNA FRASE EN EL CHAT. El 22/9/2026 Lucas le
+     * pidió TRES VECES al agente, explícito, que dejara de pedirle confirmación, y el mensaje
+     * siguiente del agente volvió a pedirle una. Un pago le costó 2 vueltas, una venta 4 y un alta
+     * de proveedor 3 (y ni siquiera se creó). La decisión de Lucas fue prenderlo desde la
+     * CONFIGURACIÓN del asistente, una vez y a conciencia: una frase suelta en la conversación la
+     * puede escribir cualquier texto que devuelva una tool —la observación de un pedido, el chat de
+     * un comprador de la tienda— y eso sería una puerta a ejecutar cargas sin que nadie las pida.
+     *
+     * Empieza con los cuatro de "resuelto" (en "directo" siguen valiendo, no se pierde ninguno) y
+     * sigue con lo que suma este modo. Los agregados van al FINAL: es la misma regla del caché de
+     * prompt que vale para las tools, y además deja que dos misiones en paralelo sumen tipos sin
+     * pisarse.
+     *
+     * 🔴 LO QUE NO ESTÁ ACÁ NO ESTÁ POR ERROR, está por decisión (ver NUNCA_AUTO_CONFIRMABLES).
+     *
+     * @var array<int, string>
+     */
+    const AUTO_CONFIRMABLES_DIRECTO = [
+        AiMessageAction::TIPO_FOTO_SUCURSAL,
+        AiMessageAction::TIPO_IMAGENES_CATEGORIAS,
+        AiMessageAction::TIPO_IMAGENES_ARTICULOS,
+        AiMessageAction::TIPO_DISENO_PDF,
+        AiMessageAction::TIPO_GASTO,
+        AiMessageAction::TIPO_PAGO,
+        AiMessageAction::TIPO_TAREA_NUEVA,
+        AiMessageAction::TIPO_TAREA_EDITAR,
+        AiMessageAction::TIPO_TAREA_COMPLETAR,
+        AiMessageAction::TIPO_COMBO,
+        AiMessageAction::TIPO_OFERTA,
+        AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+        AiMessageAction::TIPO_FOTO_ARTICULO,
+        AiMessageAction::TIPO_ALTA,
+        AiMessageAction::TIPO_EDICION,
+        AiMessageAction::TIPO_VENTA,
+        /*
+         * Las capacidades nuevas de la misión asistente-capacidades-y-hilos (22/9/2026), atrás de
+         * lo que había. Las tres son reversibles con otra carga del mismo peso: mover stock entre
+         * dos depósitos del mismo negocio no cambia el stock total, dejar el stock de un depósito
+         * en un número se vuelve a cambiar igual, y un presupuesto no toca stock ni caja ni cuenta
+         * corriente (eso pasa recién al confirmarlo desde la pantalla de Presupuestos).
+         *
+         * 🔴 TIPO_PERMISO_EMPLEADO NO ESTÁ ACÁ, y está en NUNCA_AUTO_CONFIRMABLES: ver ahí.
+         */
+        AiMessageAction::TIPO_MOVIMIENTO_STOCK,
+        AiMessageAction::TIPO_STOCK_DEPOSITO,
+        AiMessageAction::TIPO_PRESUPUESTO,
+        /*
+         * Las acciones de pantalla que NO borran (misión asistente-mcp, 22/9/2026), atrás de lo que
+         * había. Con el dueño en "directo", lo que la pantalla hace por POST o PUT se hace en el acto
+         * igual que el resto de las cargas de este modo: es lo que "literalmente todo lo que se
+         * hace desde la interfaz" significa cuando el dueño ya pidió que no le pregunten. Lo que
+         * pudiera ser masivo o irreversible por POST/PUT no entra al catálogo (ver
+         * CatalogoDeAccionesDePantallaIaHelper::EXCLUIDAS), así que no llega hasta acá.
+         *
+         * 🔴 TIPO_BORRADO_PANTALLA NO ESTÁ ACÁ, y está en NUNCA_AUTO_CONFIRMABLES: ver ahí.
+         */
+        AiMessageAction::TIPO_ACCION_PANTALLA,
+    ];
+
+    /**
+     * Los tipos que NO se auto-ejecutan en NINGÚN modo, ni siquiera en "directo" (decisión de
+     * Lucas, misión asistente-capacidades-y-hilos).
+     *
+     * 🔴 `baja`: 31 de las 40 entidades del catálogo de escritura NO usan SoftDeletes. Borrar una
+     * lista de precios deja a los clientes que la tenían colgados y no hay vuelta atrás — no es
+     * "reversible con otra carga", es irreversible. La confirma siempre la persona.
+     * 🔴 `actualizacion_masiva`: toca TODOS los artículos que cumplen un filtro de un saque. La
+     * persona tiene que ver cuántos alcanza antes de que pase.
+     * 🔴 `unificar_bancos_cheques`: toca N cheques de un saque y decide a qué banco va cada texto.
+     * 🔴 `permiso_empleado` (22/9/2026): `EmployeeController::update()` REEMPLAZA la lista entera de
+     * permisos (`sync([])` y después un attach por permiso) y reescribe la contraseña en cada
+     * llamada (`password = bcrypt($request->visible_password)`). Una tarjeta mal armada deja a un
+     * empleado sin ninguno de sus permisos o directamente sin poder entrar al sistema, y eso no lo
+     * nota nadie hasta que esa persona llega a trabajar. No es reversible con otra carga: es
+     * reversible con otra carga *si alguien se entera*. Por eso, aunque el dueño tenga el modo
+     * directo prendido, esta tarjeta se confirma siempre, y su presentación dice con qué lista de
+     * permisos queda el empleado, no solo cuál se toca.
+     * 🔴 `borrado_pantalla` (misión asistente-mcp, 22/9/2026): un DELETE de cualquier pantalla del
+     * sistema. Es la hermana de `baja` con menos información todavía: acá ni siquiera se conoce la
+     * tabla como para decir si el modelo usa SoftDeletes o qué queda colgado. Lo que no se puede
+     * deshacer lo confirma siempre la persona.
+     *
+     * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
+     * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
+     * `case` en ejecutar() tampoco pasan por quizas_auto_confirmar(), que es la tercera guarda. Las
+     * dos primeras las fijan los tests 26, 36 y 51 por la constante; la tercera, solo el 36 y el
+     * 51, que son los que leen este archivo como texto plano.
+     *
+     * @var array<int, string>
+     */
+    const NUNCA_AUTO_CONFIRMABLES = [
+        AiMessageAction::TIPO_BAJA,
+        AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
+        AiMessageAction::TIPO_UNIFICAR_BANCOS,
+        AiMessageAction::TIPO_PERMISO_EMPLEADO,
+        AiMessageAction::TIPO_BORRADO_PANTALLA,
+    ];
+
+    /**
+     * Lo que se le dice al modelo cuando la auto-ejecución de una tarjeta lanzó: ver el 🔴 del
+     * catch de quizas_auto_confirmar().
+     */
+    const NOTA_AUTO_EJECUCION_FALLIDA = 'No se pudo ejecutar en el acto por una falla del sistema, '
+        . 'así que quedó como tarjeta para que la persona la confirme. Decile exactamente eso: NO '
+        . 'digas que ya está cargado ni inventes otro motivo.';
 
     /**
      * Definiciones con su input_schema para la API de Anthropic.
@@ -228,7 +355,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_pago',
-                'description'  => 'Arma la tarjeta de un pago de un cliente (cobro) o a un proveedor, sobre su cuenta corriente, para que la persona la confirme: NO registra nada. Con fecha futura arma una tarea para cobrar o pagar ese día. Los cheques, la tarjeta de crédito y los cobros en otra moneda que la de la cuenta se cargan desde la pantalla. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un pago de un cliente (cobro) o a un proveedor, sobre su cuenta corriente, para que la persona la confirme: NO registra nada. Con fecha futura arma una tarea para cobrar o pagar ese día. Con CHEQUE se puede: mandá la fila de pago con su objeto `cheque` (número, banco y fecha de vencimiento), sin caja — un cheque no entra a ninguna caja al cargarse. Lo que sigue siendo de la pantalla es ENDOSAR un cheque que ya te dieron, la tarjeta de crédito y los cobros en otra moneda que la de la cuenta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -913,6 +1040,273 @@ class HerramientasDeCarga
                     'required'   => [],
                 ],
             ],
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026), al FINAL de lo que había: el orden
+             * del array es el prefijo del caché de prompt de Anthropic y lo nuevo nunca se
+             * intercala. Son las cuatro capacidades que el agente contestó que no podía hacer el
+             * 22/9 en demo3 (mensajes #24, #42, #56 y #44) y que la pantalla sí hace.
+             */
+            [
+                'name'         => 'proponer_movimiento_de_stock',
+                'description'  => 'Arma la tarjeta para MOVER stock de un artículo de un depósito (o sucursal) a otro, por el mismo camino que el modal "Movimiento de depósitos" del Listado. La cantidad va SIEMPRE en positivo y el sistema la resta del origen y la suma al destino: no mandes números negativos ni la llames dos veces. El artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) y los depósitos por su nombre, como los devuelve consultar_stock_por_deposito. 🔴 Sirve para MOVER, no para cargar: si el artículo todavía no tiene stock en el depósito de origen, la respuesta te lo dice y ahí va proponer_stock_en_deposito. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'articulo'      => [
+                            'type'        => 'string',
+                            'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                        ],
+                        'articulo_id'   => [
+                            'type'        => 'integer',
+                            'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                        ],
+                        'cantidad'      => [
+                            'type'        => 'number',
+                            'description' => 'Cuántas unidades se mueven. Siempre mayor a 0.',
+                        ],
+                        'desde'         => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del depósito o sucursal de donde SALE el stock.',
+                        ],
+                        'hacia'         => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del depósito o sucursal al que ENTRA el stock.',
+                        ],
+                        'observaciones' => [
+                            'type' => 'string',
+                        ],
+                        'reemplaza_a'   => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['cantidad', 'desde', 'hacia'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_stock_en_deposito',
+                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 a Florida" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                        ],
+                        'articulo_id' => [
+                            'type'        => 'integer',
+                            'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                        ],
+                        'deposito'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito.',
+                        ],
+                        'cantidad'    => [
+                            'type'        => 'number',
+                            'description' => 'Cuántas unidades. Con modo sumar o restar es cuánto se mueve; con modo fijar es en cuánto queda.',
+                        ],
+                        'modo'        => [
+                            'type'        => 'string',
+                            'enum'        => ['sumar', 'restar', 'fijar'],
+                            'description' => 'Qué hacer con la cantidad. Si no lo mandás se toma "fijar".',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['deposito', 'cantidad', 'modo'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_presupuesto',
+                'description'  => 'Arma la tarjeta de un PRESUPUESTO por el mismo camino que el "guardar como presupuesto" de la pantalla de Vender: NO vende nada y NO descuenta stock. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. 🔴 El cliente es obligatorio: un presupuesto es para alguien, y de ahí sale la lista de precios. Un presupuesto no toca stock, ni caja, ni cuenta corriente: eso pasa recién cuando la persona lo confirma desde la pantalla de Presupuestos, y eso NO lo hacés vos. Después de crearlo podés pasar el link del PDF con consultar_link_de_pdf. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'items'                => [
+                            'type'        => 'array',
+                            'description' => 'Los renglones del presupuesto, uno por artículo.',
+                            'minItems'    => 1,
+                            'maxItems'    => 50,
+                            'items'       => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'articulo'        => [
+                                        'type'        => 'string',
+                                        'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.',
+                                    ],
+                                    'articulo_id'     => [
+                                        'type'        => 'integer',
+                                        'description' => 'Id del artículo, solo si otra herramienta lo devolvió.',
+                                    ],
+                                    'cantidad'        => [
+                                        'type'        => 'number',
+                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                    ],
+                                    'precio_unitario' => [
+                                        'type'        => 'number',
+                                        'description' => 'Solo si la persona dictó un precio distinto al de la lista. Mayor a 0.',
+                                    ],
+                                ],
+                                'required'   => ['cantidad'],
+                            ],
+                        ],
+                        'cliente'              => [
+                            'type'        => ['string', 'integer'],
+                            'description' => 'Nombre del cliente (o su id si otra herramienta lo devolvió). Es obligatorio.',
+                        ],
+                        'lista_de_precios'     => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la lista de precios, solo si la persona pidió una distinta a la del cliente.',
+                        ],
+                        'descuento_porcentaje' => [
+                            'type'        => 'number',
+                            'description' => 'Descuento sobre el total, en porcentaje (0 a 100).',
+                        ],
+                        'observaciones'        => [
+                            'type' => 'string',
+                        ],
+                        'sucursal'             => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una.',
+                        ],
+                        'reemplaza_a'          => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['items', 'cliente'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_permiso_de_empleado',
+                'description'  => 'Arma la tarjeta para DARLE o SACARLE un permiso a un empleado, por el mismo camino que la pantalla de Empleados. El empleado va por su nombre y el permiso por su nombre como lo muestra la pantalla ("Listar ventas") o por su código ("sale.index"). 🔴 SIEMPRE deja tarjeta para confirmar, aunque el dueño tenga el modo directo prendido y aunque te pidan que lo hagas sin preguntar: la pantalla reemplaza la lista entera de permisos y un cambio mal hecho deja a alguien sin poder trabajar, y nadie se entera hasta que llega. La tarjeta muestra CON QUÉ PERMISOS QUEDA el empleado: cuando la respuesta vuelva, contá eso. Solo la puede usar el dueño o un administrador. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'empleado'    => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del empleado, como lo dijo la persona.',
+                        ],
+                        'permiso'     => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del permiso como lo muestra la pantalla de Empleados, o su código. "Ver las ventas" es "Listar ventas" (sale.index).',
+                        ],
+                        'accion'      => [
+                            'type'        => 'string',
+                            'enum'        => ['dar', 'sacar'],
+                            'description' => 'Si se le da el permiso o se le saca.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['empleado', 'permiso', 'accion'],
+                ],
+            ],
+            /*
+             * Misión asistente-mcp (22/9/2026), al FINAL de lo que había: las ACCIONES DE PANTALLA.
+             * "Literalmente todo lo que se hace desde la interfaz" es la misma ruta y el mismo
+             * controller que llama la pantalla, con las mismas reglas de confirmación que el resto
+             * de las cargas. El catálogo (qué rutas entran y cuáles no, con motivo) vive en
+             * CatalogoDeAccionesDePantallaIaHelper y se consulta bajo demanda con la primera de las
+             * cuatro, NO en el enum del esquema: el bloque de definiciones viaja entero en cada
+             * vuelta y es el prefijo del caché.
+             */
+            [
+                'name'         => 'que_acciones_de_pantalla_hay',
+                'description'  => 'Devuelve el catálogo de ACCIONES DE PANTALLA: todo lo que se hace desde las pantallas del sistema y no tiene herramienta propia (abrir o cerrar una caja, confirmar o anular un presupuesto, editar una venta, facturar, marcar un pedido, cambiar una preferencia...). Cada acción trae el método (GET lee; POST y PUT hacen; DELETE borra), la `ruta` con sus {parámetros}, el módulo, las `claves` que el controller lee del cuerpo (best-effort: puede leer más o menos de lo que dice) y la extensión que exige, si alguna. Devuelve de a 40 por página: filtrá con `buscar` (una o más palabras, sin importar acentos; las rutas están en inglés: caja, budget, sale, article, client, provider, order...) y con `metodo`. 🔴 La `ruta` que devuelve, con sus {param} TAL CUAL, es la que hay que pasarle a consultar_por_pantalla, proponer_accion_de_pantalla y proponer_borrado_por_pantalla. Nunca la uses para lo que ya tiene herramienta propia (gastos, pagos, tareas, ventas nuevas, presupuestos nuevos, el ABM genérico...): esas rutas no están en el catálogo.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'buscar' => [
+                            'type'        => 'string',
+                            'description' => 'Una o más palabras que tienen que estar en la ruta, el módulo o la acción ("caja", "cerrar caja", "budget confirmar"). Sin buscar trae todas, paginadas.',
+                        ],
+                        'metodo' => [
+                            'type'        => 'string',
+                            'enum'        => ['GET', 'POST', 'PUT', 'DELETE'],
+                            'description' => 'Solo las acciones de este método. Sin metodo trae todos.',
+                        ],
+                        'pagina' => [
+                            'type'        => 'integer',
+                            'description' => 'Qué página de 40 traer. Si no la mandás, la primera.',
+                        ],
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'consultar_por_pantalla',
+                'description'  => 'Lee lo que una pantalla del sistema ve, llamando a la misma ruta GET que llama la pantalla (una de que_acciones_de_pantalla_hay). Se ejecuta en el acto y no deja tarjeta: es de LECTURA. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros` y los filtros que la pantalla manda en la query (fechas, per_page, búsqueda) en `consulta`. Devuelve el JSON de la pantalla; si es muy largo viene recortado (`recortado: true`): pedí menos con `consulta` (per_page, un rango de fechas) o usá una ruta más específica. Para los datos del negocio que ya tienen herramienta propia (stock, clientes, ventas, cuentas corrientes, tareas) usá esa herramienta, que viene resumida y es más barata.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'ruta'       => [
+                            'type'        => 'string',
+                            'description' => 'La ruta GET como la devuelve que_acciones_de_pantalla_hay, con sus {param} tal cual (ej. "api/caja/{id}/liquidaciones-pendientes").',
+                        ],
+                        'parametros' => [
+                            'type'                 => 'object',
+                            'description'          => 'Los valores de los {param} de la ruta, por nombre: {"id": 12}.',
+                            'additionalProperties' => true,
+                        ],
+                        'consulta'   => [
+                            'type'                 => 'object',
+                            'description'          => 'Los filtros de la pantalla, como viajan en la query string: {"per_page": 50, "from_date": "2026-09-01"}.',
+                            'additionalProperties' => true,
+                        ],
+                    ],
+                    'required'   => ['ruta'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_accion_de_pantalla',
+                'description'  => 'Arma la tarjeta para HACER algo por la misma ruta POST o PUT que usa una pantalla del sistema (una de que_acciones_de_pantalla_hay), para que la persona la confirme: NO hace nada por sí sola. Al confirmar corre el mismo controller que la pantalla, autenticado como la persona; lo que la pantalla rechazaría (validación, permisos, un registro que no existe) vuelve como `error`. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros`, lo que la pantalla manda en el formulario en `cuerpo` (las `claves` del catálogo son una guía) y una `descripcion` de UNA línea que diga qué hace esta acción: es el título que la persona lee en la tarjeta, así que tiene que ser fiel y concreta ("Abrir la caja Efectivo", "Confirmar el presupuesto N° 12"). Con la confianza en "directo" se ejecuta en el acto. Para BORRAR está proponer_borrado_por_pantalla, y para leer, consultar_por_pantalla. Nunca la uses para lo que ya tiene herramienta propia. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'metodo'      => [
+                            'type' => 'string',
+                            'enum' => ['POST', 'PUT'],
+                        ],
+                        'ruta'        => [
+                            'type'        => 'string',
+                            'description' => 'La ruta como la devuelve que_acciones_de_pantalla_hay, con sus {param} tal cual (ej. "api/cerrar-caja/{caja_id}").',
+                        ],
+                        'parametros'  => [
+                            'type'                 => 'object',
+                            'description'          => 'Los valores de los {param} de la ruta, por nombre: {"caja_id": 12}.',
+                            'additionalProperties' => true,
+                        ],
+                        'cuerpo'      => [
+                            'type'                 => 'object',
+                            'description'          => 'Lo que la pantalla manda en el cuerpo del request, con las claves que lee el controller. Vacío si la ruta no lleva cuerpo.',
+                            'additionalProperties' => true,
+                        ],
+                        'descripcion' => [
+                            'type'        => 'string',
+                            'description' => 'Qué hace esta acción, en una línea y en español, tal como lo va a leer la persona en la tarjeta.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['metodo', 'ruta', 'descripcion'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_borrado_por_pantalla',
+                'description'  => 'Arma la tarjeta para BORRAR un registro por la misma ruta DELETE que usa una pantalla del sistema (una de que_acciones_de_pantalla_hay), para que la persona la confirme: NO borra nada. 🔴 SIEMPRE deja tarjeta, en los tres modos de confianza y aunque te pidan que lo hagas sin preguntar: si el sistema no manda ese registro a la papelera, no se deshace. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros` y una `descripcion` de UNA línea que diga QUÉ se borra (es el título de la tarjeta). Para lo que está en que_puedo_cargar usá proponer_baja, que además dice qué queda colgado. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'ruta'        => [
+                            'type'        => 'string',
+                            'description' => 'La ruta DELETE como la devuelve que_acciones_de_pantalla_hay, con sus {param} tal cual (ej. "api/caja/{caja}").',
+                        ],
+                        'parametros'  => [
+                            'type'                 => 'object',
+                            'description'          => 'Los valores de los {param} de la ruta, por nombre: {"caja": 12}.',
+                            'additionalProperties' => true,
+                        ],
+                        'descripcion' => [
+                            'type'        => 'string',
+                            'description' => 'Qué se borra, en una línea y en español, tal como lo va a leer la persona en la tarjeta.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['ruta', 'descripcion'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1049,10 +1443,16 @@ class HerramientasDeCarga
          * que el corte por canal va acá: en el sistema la confirmación es el botón —una IA que
          * pueda confirmar sola lo que propuso le saca la decisión a la persona— y las fotos no
          * existen. Ver el docblock de definiciones_de_whatsapp().
+         *
+         * Misión asistente-mcp (22/9/2026): el canal MCP tampoco tiene botones, así que confirmar_ y
+         * cancelar_carga_pendiente también se despachan para él — la pregunta pasa a ser
+         * confirma_por_texto() (WhatsApp o MCP). proponer_compra_con_factura sigue en esta lista y
+         * pasa la guarda para MCP, pero el servidor MCP no la declara: sin fotos de WhatsApp solo
+         * podría contestar "no tengo ninguna foto".
          */
         if (in_array($tool_name, array_column(self::definiciones_de_whatsapp(), 'name'), true)) {
 
-            if (!($assistant_message instanceof AiMessage) || !$assistant_message->es_de_whatsapp()) {
+            if (!($assistant_message instanceof AiMessage) || !$assistant_message->confirma_por_texto()) {
 
                 return [
                     'content'  => 'Tool desconocida: '.$tool_name,
@@ -1081,29 +1481,75 @@ class HerramientasDeCarga
                 $dias = EntradaDeCargaIa::valor($input, 'dias');
                 return self::resultado(ConsultasDeCargaIaHelper::tareas($contexto, EntradaDeCargaIa::texto($input, 'busqueda'), is_null($dias) ? 30 : (int) $dias));
 
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026): las ocho que mueven plata, agenda o
+             * catálogo pasan por la puerta única. Quién se ejecuta solo lo decide el MODO del dueño
+             * dentro de quizas_auto_confirmar(): con "cauteloso" y "resuelto" queda la tarjeta, como
+             * hasta hoy; solo con "directo" se ejecutan en el acto.
+             */
             case 'proponer_gasto':
-                return self::resultado(PropuestaGastoIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaGastoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_pago':
-                return self::resultado(PropuestaPagoIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaPagoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_tarea':
-                return self::resultado(PropuestaTareaIaHelper::proponer_tarea($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaTareaIaHelper::proponer_tarea($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_cambios_en_tarea':
-                return self::resultado(PropuestaTareaIaHelper::proponer_cambios($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaTareaIaHelper::proponer_cambios($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_marcar_tarea_hecha':
-                return self::resultado(PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaTareaIaHelper::proponer_marcar_hecha($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_combo':
-                return self::resultado(PropuestaComboIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaComboIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_oferta':
-                return self::resultado(PropuestaOfertaIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaOfertaIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_compra_con_factura':
-                return self::resultado(PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaCompraConFacturaIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_foto_sucursal':
                 return self::resultado(self::quizas_auto_confirmar(
@@ -1164,31 +1610,42 @@ class HerramientasDeCarga
 
 
             /*
-             * Misión asistente-omnisciente (21/9/2026). 🔴 Las cuatro propuestas van SIN
-             * quizas_auto_confirmar(), a propósito: crear, cambiar o borrar datos del negocio, y
-             * vender, lo confirma siempre la persona (ver AUTO_CONFIRMABLES). La venta la implementa
-             * el constructor C (contrato §4); acá solo se wirea por nombre y firma.
+             * Misión asistente-omnisciente (21/9/2026), corrida a tres modos por la misión
+             * asistente-capacidades-y-hilos (22/9/2026): el alta, la edición y la venta pasan por la
+             * puerta única y solo se ejecutan solas con el dueño en "directo". 🔴 La BAJA no: va SIN
+             * la auto-confirmación del agente, en ningún modo, porque 31 de las 40 entidades no
+             * tienen SoftDeletes y un borrado no se deshace (ver NUNCA_AUTO_CONFIRMABLES).
              */
             case 'que_puedo_cargar':
                 return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad')));
 
             case 'proponer_alta':
-                return self::resultado(PropuestaGenericaIaHelper::proponer_alta(
+                return self::resultado(self::quizas_auto_confirmar(
                     $contexto,
+                    $conversation,
                     $assistant_message,
-                    EntradaDeCargaIa::valor($input, 'entidad'),
-                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
-                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    PropuestaGenericaIaHelper::proponer_alta(
+                        $contexto,
+                        $assistant_message,
+                        EntradaDeCargaIa::valor($input, 'entidad'),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    )
                 ));
 
             case 'proponer_edicion':
-                return self::resultado(PropuestaGenericaIaHelper::proponer_edicion(
+                return self::resultado(self::quizas_auto_confirmar(
                     $contexto,
+                    $conversation,
                     $assistant_message,
-                    EntradaDeCargaIa::valor($input, 'entidad'),
-                    EntradaDeCargaIa::valor($input, 'registro'),
-                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
-                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    PropuestaGenericaIaHelper::proponer_edicion(
+                        $contexto,
+                        $assistant_message,
+                        EntradaDeCargaIa::valor($input, 'entidad'),
+                        EntradaDeCargaIa::valor($input, 'registro'),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cambios')),
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    )
                 ));
 
             case 'proponer_baja':
@@ -1201,21 +1658,118 @@ class HerramientasDeCarga
                 ));
 
             case 'proponer_venta':
-                return self::resultado(PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a')));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a'))
+                ));
 
             /*
-             * Misión asistente-ventas-y-fotos (21/9/2026). 🔴 Va SIN la auto-confirmación del
-             * agente, a propósito, aunque la foto de SUCURSAL de arriba sí pase por ahí: la del
-             * artículo siempre deja tarjeta (ver el docblock de AUTO_CONFIRMABLES).
-             *
-             * El nombre de esa función no se escribe acá: `36_Guardas_de_las_cargas_genericas_Test`
-             * lee ESTE archivo como texto y corta el bloque de cada `case` hasta el `case`
-             * siguiente, así que un comentario puesto entre dos casos se le atribuye al de arriba
-             * —`proponer_venta`— y lo da por auto-confirmable. Nombrarla en prosa dice lo mismo sin
-             * romper esa lectura.
+             * Misión asistente-ventas-y-fotos (21/9/2026), revisada el 22/9 por la misión
+             * asistente-capacidades-y-hilos: la foto de un artículo SIGUE sin auto-confirmarse en
+             * "resuelto" (se publica en la tienda, dispara Tienda Nube y Mercado Libre y se replica
+             * en los comercios vinculados: su tipo no está en AUTO_CONFIRMABLES), pero en "directo"
+             * sí, porque ahí el dueño ya pidió a conciencia que las cargas se hagan solas. Las dos
+             * cosas las decide el modo adentro de la puerta única.
              */
             case 'proponer_foto_articulo':
-                return self::resultado(PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input));
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * Misión asistente-capacidades-y-hilos (22/9/2026). Las dos de stock pasan por la
+             * puerta única: con el dueño en "directo" se hacen en el acto, y en los otros dos modos
+             * dejan tarjeta. Mover stock entre dos depósitos del mismo negocio no cambia el stock
+             * total ni toca plata, y dejarlo en un número se deshace con otra carga igual de barata.
+             */
+            case 'proponer_movimiento_de_stock':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaStockIaHelper::proponer_movimiento($contexto, $assistant_message, $input)
+                ));
+
+            case 'proponer_stock_en_deposito':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaStockIaHelper::proponer_stock_en_deposito($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * El presupuesto también pasa por la puerta: no toca stock, ni caja, ni cuenta
+             * corriente (eso pasa recién al confirmarlo desde la pantalla de Presupuestos), así que
+             * uno de más se borra. Ver PropuestaPresupuestoIaHelper.
+             */
+            case 'proponer_presupuesto':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaPresupuestoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: los permisos de un empleado SIEMPRE dejan
+            // tarjeta, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES).
+            case 'proponer_permiso_de_empleado':
+                return self::resultado(PropuestaPermisoEmpleadoIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * Misión asistente-mcp (22/9/2026): las acciones de pantalla. Las dos primeras son de
+             * lectura y contestan en el acto; la de POST/PUT pasa por la puerta única, como el
+             * resto de lo que hace la pantalla; la de DELETE no (ver más abajo).
+             */
+            case 'que_acciones_de_pantalla_hay':
+                $pagina = EntradaDeCargaIa::valor($input, 'pagina');
+                return self::resultado(CatalogoDeAccionesDePantallaIaHelper::lista(
+                    EntradaDeCargaIa::texto($input, 'buscar'),
+                    EntradaDeCargaIa::texto($input, 'metodo'),
+                    is_null($pagina) ? 1 : (int) $pagina
+                ));
+
+            case 'consultar_por_pantalla':
+                return self::resultado(PropuestaAccionDePantallaIaHelper::consultar(
+                    $contexto,
+                    EntradaDeCargaIa::texto($input, 'ruta'),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'parametros')),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'consulta'))
+                ));
+
+            case 'proponer_accion_de_pantalla':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaAccionDePantallaIaHelper::proponer(
+                        $contexto,
+                        $assistant_message,
+                        EntradaDeCargaIa::texto($input, 'metodo'),
+                        EntradaDeCargaIa::texto($input, 'ruta'),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'parametros')),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cuerpo')),
+                        EntradaDeCargaIa::texto($input, 'descripcion'),
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    )
+                ));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: un borrado por pantalla SIEMPRE deja
+            // tarjeta, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES): no se conoce ni la tabla.
+            case 'proponer_borrado_por_pantalla':
+                return self::resultado(PropuestaAccionDePantallaIaHelper::proponer_borrado(
+                    $contexto,
+                    $assistant_message,
+                    EntradaDeCargaIa::texto($input, 'ruta'),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'parametros')),
+                    EntradaDeCargaIa::texto($input, 'descripcion'),
+                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                ));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
@@ -1279,14 +1833,79 @@ class HerramientasDeCarga
     }
 
     /**
-     * Si la propuesta recién creada es de un tipo auto-confirmable Y el dueño está en "resuelto", la
-     * confirma en el acto y devuelve el resultado ejecutado; si no, devuelve la propuesta tal cual
-     * (queda como una tarjeta más, para confirmar a mano). Misión foto-sucursal-y-asistente-configurable.
+     * Los tipos que se auto-ejecutan con ESE modo de confianza, ya filtrados por los que no se
+     * auto-ejecutan nunca (misión asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * Un modo que no se reconoce —"cauteloso", una columna vacía o un valor viejo— devuelve la lista
+     * vacía: sin modo legible no se ejecuta nada solo, que es exactamente lo que hacía el `!==
+     * 'resuelto'` de antes de esta misión.
+     *
+     * @param  string  $confianza
+     * @return array<int, string>
+     */
+    public static function auto_confirmables_de($confianza): array
+    {
+        $confianza = (string) $confianza;
+
+        if ($confianza === ConfianzaDelAgenteIaHelper::DIRECTO) {
+
+            $lista = self::AUTO_CONFIRMABLES_DIRECTO;
+
+        } elseif ($confianza === ConfianzaDelAgenteIaHelper::RESUELTO) {
+
+            $lista = self::AUTO_CONFIRMABLES;
+
+        } else {
+
+            return [];
+        }
+
+        // 🔴 La segunda guarda de NUNCA_AUTO_CONFIRMABLES: ver el docblock de esa constante.
+        return array_values(array_diff($lista, self::NUNCA_AUTO_CONFIRMABLES));
+    }
+
+    /**
+     * true si la herramienta es una CARGA: una que propone una tarjeta o la que confirma una
+     * pendiente (misión asistente-capacidades-y-hilos, 22/9/2026).
+     *
+     * La usa el loop de AsistenteIaService para saber que el turno "tocó" una carga y tiene que
+     * seguir con el modelo Profundo. Va por el prefijo `proponer_` a propósito: una capacidad nueva
+     * que respete el nombre de la casa queda cubierta sin tocar este método. Las consultas
+     * (`consultar_*`, `contar_*`, `que_puedo_cargar`) y la cancelación NO son cargas: una consulta
+     * de solo lectura nunca tiene por qué encarecerse.
+     *
+     * @param  string  $tool_name
+     * @return bool
+     */
+    public static function es_de_carga($tool_name): bool
+    {
+        $tool_name = (string) $tool_name;
+
+        if (strpos($tool_name, 'proponer_') === 0) {
+
+            return true;
+        }
+
+        return $tool_name === 'confirmar_carga_pendiente';
+    }
+
+    /**
+     * Si la propuesta recién creada es de un tipo que el MODO DE CONFIANZA del dueño auto-ejecuta,
+     * la confirma en el acto y devuelve el resultado ejecutado; si no, devuelve la propuesta tal
+     * cual (queda como una tarjeta más, para confirmar a mano). Misión
+     * foto-sucursal-y-asistente-configurable, corrida a tres modos el 22/9/2026.
      *
      * 🔴 Es la única puerta a la auto-ejecución. Una respuesta negativa de proponer() (faltan datos,
      * sin permiso, sin foto) no tiene tarjeta_id y sale sin tocar nada. Y el catch es la red: si la
      * confirmación en el acto lanzara, la tarjeta ya quedó propuesta y la persona la puede confirmar
      * a mano — la carga nunca se pierde por auto-ejecutar.
+     *
+     * 🔴 Y EL CATCH LE AVISA AL MODELO QUE NO SE EJECUTÓ. Antes devolvía la propuesta muda, y en
+     * "resuelto" eso era casi inofensivo. En "directo" no: el prompt le dijo al modelo que sus
+     * cargas se hacen solas, así que una propuesta muda es justo lo que lo lleva a escribir "listo,
+     * ya lo cargué" sobre algo que quedó sin hacer — el defecto más grave del 22/9 en demo3 (cuatro
+     * anuncios de "quedó registrado" contra cero ventas, cero compras y cero proveedores). La nota
+     * dice qué pasó de verdad y le prohíbe inventar el motivo.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiConversation  $conversation
@@ -1303,7 +1922,9 @@ class HerramientasDeCarga
 
         $tipo = isset($respuesta['tipo']) ? (string) $respuesta['tipo'] : '';
 
-        if (!in_array($tipo, self::AUTO_CONFIRMABLES, true)) {
+        $owner = $contexto->owner;
+
+        if (!in_array($tipo, self::auto_confirmables_de(ConfianzaDelAgenteIaHelper::guardada($owner)), true)) {
 
             return $respuesta;
         }
@@ -1319,11 +1940,16 @@ class HerramientasDeCarga
             return $respuesta;
         }
 
-        $owner = $contexto->owner;
-
-        // Solo "resuelto" auto-ejecuta; "cauteloso" (y cualquier otro valor, o dueño nulo) deja la
-        // tarjeta propuesta.
-        if (is_null($owner) || (string) $owner->agente_confianza !== 'resuelto') {
+        /*
+         * 🔴 NI SI LA MISMA CARGA YA SE CONFIRMÓ HACE UN INSTANTE (misión
+         * asistente-capacidades-y-hilos, 22/9/2026). `confirmada_parecida` es la defensa contra el
+         * doble registro de AccionesIaHelper: hay una tarjeta CONFIRMADA con la misma clave,
+         * resuelta después del mensaje que disparó esta respuesta. Con la confirmación a mano eso
+         * era un aviso —la persona miraba y decidía—, pero en "directo" auto-ejecutar encima es,
+         * lisa y llanamente, cargar el mismo gasto o la misma venta dos veces. Se deja la tarjeta
+         * con su aviso y decide la persona, que es lo que esa guarda vino a garantizar.
+         */
+        if (!empty($respuesta['confirmada_parecida'])) {
 
             return $respuesta;
         }
@@ -1334,11 +1960,14 @@ class HerramientasDeCarga
 
         } catch (\Throwable $e) {
 
-            Log::warning('HerramientasDeCarga: no se pudo auto-confirmar una tarjeta en modo resuelto', [
+            Log::warning('HerramientasDeCarga: no se pudo auto-confirmar una tarjeta', [
                 'ai_conversation_id' => (int) $conversation->id,
                 'tarjeta_id'         => (int) $respuesta['tarjeta_id'],
+                'confianza'          => ConfianzaDelAgenteIaHelper::guardada($owner),
                 'error'              => $e->getMessage(),
             ]);
+
+            $respuesta['nota'] = self::NOTA_AUTO_EJECUCION_FALLIDA;
 
             return $respuesta;
         }
@@ -1367,7 +1996,43 @@ class HerramientasDeCarga
                     ],
                     'caja_id'           => [
                         'type'        => 'integer',
-                        'description' => 'Caja a la que va. Si no la mandás se usa la caja por defecto; si no hay, la herramienta te pide preguntarla.',
+                        'description' => 'Caja a la que va. Si no la mandás se usa la caja por defecto; si no hay, la herramienta te pide preguntarla. 🔴 Con un cheque NO se manda: un cheque no entra a ninguna caja al cargarse.',
+                    ],
+                    /*
+                     * Misión asistente-capacidades-y-hilos (22/9/2026): el cheque. Va adentro de la
+                     * fila y no como una herramienta aparte porque ES una fila del mismo array de
+                     * métodos de pago del mismo endpoint — el camino de ejecución ya lo soportaba
+                     * (`ChequeHelper::crear_cheque()`), lo que faltaba era poder describirlo.
+                     */
+                    'cheque'            => [
+                        'type'        => 'object',
+                        'description' => 'Solo cuando el método de pago es un cheque. Sin esto, el cheque se guardaría sin número, sin banco y sin fecha, y nadie podría reconocerlo después en la pantalla de Cheques.',
+                        'properties'  => [
+                            'numero'        => [
+                                'type'        => 'string',
+                                'description' => 'Número del cheque, tal como está impreso.',
+                            ],
+                            'banco'         => [
+                                'type'        => 'string',
+                                'description' => 'Banco del cheque, como lo dijo la persona ("Banco Nación").',
+                            ],
+                            'fecha_pago'    => [
+                                'type'        => 'string',
+                                'description' => 'AAAA-MM-DD. Es el VENCIMIENTO: la fecha a partir de la cual se puede cobrar.',
+                            ],
+                            'fecha_emision' => [
+                                'type'        => 'string',
+                                'description' => 'AAAA-MM-DD. Si no la dicen, es hoy.',
+                            ],
+                            'es_echeq'      => [
+                                'type'        => 'boolean',
+                                'description' => 'true si es un e-cheq (electrónico).',
+                            ],
+                            'notes'         => [
+                                'type' => 'string',
+                            ],
+                        ],
+                        'required'    => ['numero', 'banco', 'fecha_pago'],
                     ],
                 ],
                 'required'   => ['metodo_de_pago_id'],

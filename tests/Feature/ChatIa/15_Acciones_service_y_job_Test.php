@@ -75,6 +75,8 @@ class Acciones_service_y_job_Test extends TestCase
         'mostrar_imagenes_de_articulos',
         // Misión asistente-ventas-y-fotos (21/9/2026): las ventas sin cobrar del negocio, al final.
         'consultar_ventas_sin_cobrar',
+        // Misión asistente-capacidades-y-hilos (22/9/2026): el link del PDF, después de aquélla.
+        'consultar_link_de_pdf',
     ];
 
     /** @var User */
@@ -285,8 +287,20 @@ class Acciones_service_y_job_Test extends TestCase
 
         $prompt = Http::recorded()[0][0]->data()['system'][0]['text'];
 
-        // Misión asistente-masivas-imagenes-y-remito (19/9/2026): las tres cargas nuevas también.
-        foreach (['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda', 'imágenes para las categorías', 'actualización masiva de artículos', 'diseño de PDF'] as $lo_que_se_carga) {
+        /*
+         * Misión asistente-masivas-imagenes-y-remito (19/9/2026): las tres cargas nuevas también.
+         *
+         * 🔴 Y la misión asistente-capacidades-y-hilos (22/9/2026) suma las suyas, que es la mitad
+         * del arreglo: el 22/9 el agente contestó diez veces "no puedo" sobre cosas que la pantalla
+         * hace, y el motivo es que el prompt no las nombraba. Una capacidad que existe y que el
+         * prompt no enumera es una capacidad que el modelo no usa.
+         */
+        $lo_nuevo = ['CHEQUE', 'un PRESUPUESTO', 'MOVER STOCK', 'CARGARLE STOCK', 'UN PERMISO a un empleado', 'consultar_link_de_pdf'];
+
+        // Misión asistente-mcp (22/9/2026): las acciones de pantalla y sus cuatro herramientas.
+        $lo_nuevo = array_merge($lo_nuevo, ['ACCIONES DE PANTALLA', 'que_acciones_de_pantalla_hay', 'consultar_por_pantalla', 'proponer_accion_de_pantalla', 'proponer_borrado_por_pantalla']);
+
+        foreach (array_merge(['un combo', 'una oferta', 'Gastos', 'pagos de clientes', 'pagos a proveedores', 'tareas nuevas de la agenda', 'imágenes para las categorías', 'actualización masiva de artículos', 'diseño de PDF'], $lo_nuevo) as $lo_que_se_carga) {
             $this->assertStringContainsString(
                 $lo_que_se_carga,
                 $prompt,
@@ -699,10 +713,14 @@ class Acciones_service_y_job_Test extends TestCase
         // consultar_bancos_de_cheques, proponer_unificar_bancos_de_cheques) + las 5 de
         // asistente-omnisciente (21/9/2026: que_puedo_cargar, proponer_alta, proponer_edicion,
         // proponer_baja, proponer_venta) + proponer_foto_articulo (asistente-ventas-y-fotos,
-        // 21/9/2026). El número se toca SOLO cuando se agrega o se saca una
-        // herramienta a propósito: si se mueve sin que nadie lo haya pedido, es que algo se
-        // declaró (o se borró) de más.
-        $this->assertCount(28, HerramientasDeCarga::definiciones());
+        // 21/9/2026) + las 4 de asistente-capacidades-y-hilos (22/9/2026:
+        // proponer_movimiento_de_stock, proponer_stock_en_deposito, proponer_presupuesto,
+        // proponer_permiso_de_empleado) + las 4 de asistente-mcp (22/9/2026: las acciones de
+        // pantalla, que_acciones_de_pantalla_hay, consultar_por_pantalla,
+        // proponer_accion_de_pantalla, proponer_borrado_por_pantalla). El número se toca SOLO
+        // cuando se agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya
+        // pedido, es que algo se declaró (o se borró) de más.
+        $this->assertCount(36, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -740,10 +758,32 @@ class Acciones_service_y_job_Test extends TestCase
             array_slice(HerramientasDeCarga::nombres(), 22, 5)
         );
 
-        // ...y la de asistente-ventas-y-fotos al final de todo.
+        // ...la de asistente-ventas-y-fotos después de ellas...
         $this->assertSame(
             ['proponer_foto_articulo'],
-            array_slice(HerramientasDeCarga::nombres(), 27)
+            array_slice(HerramientasDeCarga::nombres(), 27, 1)
+        );
+
+        // ...las cuatro de asistente-capacidades-y-hilos después de aquélla...
+        $this->assertSame(
+            [
+                'proponer_movimiento_de_stock',
+                'proponer_stock_en_deposito',
+                'proponer_presupuesto',
+                'proponer_permiso_de_empleado',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 28, 4)
+        );
+
+        // ...y las cuatro acciones de pantalla de asistente-mcp al final de todo.
+        $this->assertSame(
+            [
+                'que_acciones_de_pantalla_hay',
+                'consultar_por_pantalla',
+                'proponer_accion_de_pantalla',
+                'proponer_borrado_por_pantalla',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 32)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

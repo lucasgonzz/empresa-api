@@ -2386,12 +2386,16 @@ class ContabilidadRepository
         $resultado = [];
 
         foreach ($legacy as $row) {
-            $key = $row->current_acount_payment_method_id.'-'.$row->caja_id;
+            // normalizar_caja_id(): misma convención dual 0/null que combinar_desglose_caja_metodo()
+            // (ver su PHPDoc) — acá el 0 lo pone ExpenseController.php:91/161/122 y la migración
+            // 2025_11_29_153444_..., que maneja explícitamente null→0 al migrar datos históricos.
+            $caja_id = self::normalizar_caja_id($row->caja_id);
+            $key = $row->current_acount_payment_method_id.'-'.$caja_id;
 
             if (!isset($resultado[$key])) {
                 $resultado[$key] = [
                     'current_acount_payment_method_id' => (int) $row->current_acount_payment_method_id,
-                    'caja_id'                            => $row->caja_id,
+                    'caja_id'                            => $caja_id,
                     'total'                               => 0.0,
                 ];
             }
@@ -2409,7 +2413,10 @@ class ContabilidadRepository
                     continue;
                 }
 
-                $caja_id = $payment_method->pivot->caja_id ?: $expense->caja_id;
+                // normalizar_caja_id() DESPUES del fallback pivot->caja_id ?: expense->caja_id: el
+                // fallback elige CUAL caja_id crudo usar, la normalizacion decide si ese resultado
+                // cuenta como "sin caja" (mismo criterio que combinar_desglose_caja_metodo()).
+                $caja_id = self::normalizar_caja_id($payment_method->pivot->caja_id ?: $expense->caja_id);
                 $key = $payment_method->id.'-'.$caja_id;
 
                 if (!isset($resultado[$key])) {
@@ -2506,12 +2513,13 @@ class ContabilidadRepository
         $resultado = [];
 
         foreach ($legacy as $row) {
-            $key = $row->current_acount_payment_method_id.'-'.$row->caja_id;
+            $caja_id = self::normalizar_caja_id($row->caja_id);
+            $key = $row->current_acount_payment_method_id.'-'.$caja_id;
 
             if (!isset($resultado[$key])) {
                 $resultado[$key] = [
                     'current_acount_payment_method_id' => (int) $row->current_acount_payment_method_id,
-                    'caja_id'                            => $row->caja_id,
+                    'caja_id'                            => $caja_id,
                     'total'                               => 0.0,
                 ];
             }
@@ -2529,7 +2537,9 @@ class ContabilidadRepository
                     continue;
                 }
 
-                $caja_id = isset($payment_method->pivot->caja_id) ? $payment_method->pivot->caja_id : null;
+                $caja_id = self::normalizar_caja_id(
+                    isset($payment_method->pivot->caja_id) ? $payment_method->pivot->caja_id : null
+                );
                 $key = $payment_method->id.'-'.$caja_id;
 
                 if (!isset($resultado[$key])) {
@@ -2545,6 +2555,26 @@ class ContabilidadRepository
         }
 
         return $resultado;
+    }
+
+    /**
+     * Normaliza `caja_id` para el agrupamiento del desglose caja/método: en este sistema "sin
+     * caja" se guarda a veces como `NULL` (cuenta corriente, que no tiene columna propia de caja;
+     * o el selector manual de la SPA) y a veces como `0` (cuando `caja_por_defecto.js` no
+     * encuentra una caja candidata). Sin esta normalización, `combinar_desglose_caja_metodo()`
+     * arma claves distintas ("3-0" vs "3-") para lo que es la misma fila de "sin caja asignada",
+     * y el desglose termina repitiendo el mismo método con montos parciales en vez de fundirlos.
+     *
+     * @param  int|string|null $caja_id
+     * @return int|string|null
+     */
+    private static function normalizar_caja_id($caja_id)
+    {
+        if (is_null($caja_id) || (int) $caja_id === 0) {
+            return null;
+        }
+
+        return $caja_id;
     }
 
     /**

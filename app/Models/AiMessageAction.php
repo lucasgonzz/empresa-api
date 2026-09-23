@@ -124,6 +124,66 @@ class AiMessageAction extends Model
      */
     const TIPO_FOTO_ARTICULO = 'foto_articulo';
 
+    /*
+     * Las cuatro capacidades nuevas de la misión asistente-capacidades-y-hilos (22/9/2026), que
+     * tapan cuatro de los diez "no puedo" que el agente contestó el 22/9 en demo3. Van al FINAL de
+     * la lista por la misma razón que las tools: cada misión suma lo suyo atrás de lo que había.
+     */
+
+    /**
+     * Mover stock de un depósito a otro (mensaje #24 del diagnóstico). Es el mismo movimiento que
+     * hace el modal "Movimiento de depósitos" del Listado, por `POST api/stock-movement`.
+     */
+    const TIPO_MOVIMIENTO_STOCK = 'movimiento_stock';
+
+    /**
+     * Dejar el stock de UN depósito en un número (mensaje #42). Es la única vía que además puede
+     * ABRIR un depósito para un artículo que todavía no lo tenía.
+     */
+    const TIPO_STOCK_DEPOSITO = 'stock_deposito';
+
+    /**
+     * Crear un presupuesto (mensaje #56), por el mismo `POST api/budget` que usa la pantalla de
+     * Vender con "guardar como presupuesto". 🔴 No toca stock, ni caja, ni cuenta corriente: eso
+     * pasa recién al confirmarlo desde la pantalla de Presupuestos.
+     */
+    const TIPO_PRESUPUESTO = 'presupuesto';
+
+    /**
+     * Darle o sacarle un permiso a un empleado (mensaje #44), por `PUT api/employee/{id}`.
+     *
+     * 🔴 ESTE NO SE AUTO-EJECUTA EN NINGÚN MODO, ni siquiera en "directo": está en
+     * HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES. El endpoint reemplaza la lista ENTERA de
+     * permisos y reescribe la contraseña en cada llamada, así que una tarjeta mal armada deja a un
+     * empleado sin permisos o sin poder entrar. Lo confirma siempre una persona, mirando qué queda.
+     */
+    const TIPO_PERMISO_EMPLEADO = 'permiso_empleado';
+
+    /*
+     * Las acciones de pantalla de la misión asistente-mcp (22/9/2026): "literalmente todo lo que se
+     * hace desde la interfaz", llamando a la misma ruta y al mismo controller que llama la pantalla
+     * (CatalogoDeAccionesDePantallaIaHelper decide cuáles; EjecutorAccionDePantallaIaHelper las
+     * corre). Van al FINAL de la lista por la misma razón que las tools: cada misión suma lo suyo
+     * atrás de lo que había.
+     */
+
+    /**
+     * Una acción POST o PUT de una pantalla (abrir o cerrar una caja, confirmar o anular un
+     * presupuesto, editar una venta, facturar...). `datos` guarda {metodo, ruta con sus {param},
+     * parametros, cuerpo}. Entra en HerramientasDeCarga::AUTO_CONFIRMABLES_DIRECTO: con el dueño en
+     * "directo" se ejecuta en el acto, como el resto de lo que hace la pantalla; en los otros dos
+     * modos deja tarjeta.
+     */
+    const TIPO_ACCION_PANTALLA = 'accion_pantalla';
+
+    /**
+     * Un DELETE de una pantalla. 🔴 Está en HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES: deja
+     * tarjeta en los TRES modos, igual que proponer_baja y por el mismo motivo: si el modelo detrás
+     * de esa ruta no usa SoftDeletes, el borrado no se deshace, y acá ni siquiera se conoce la
+     * tabla como para avisar qué queda colgado.
+     */
+    const TIPO_BORRADO_PANTALLA = 'borrado_pantalla';
+
     protected $guarded = [];
 
     /**

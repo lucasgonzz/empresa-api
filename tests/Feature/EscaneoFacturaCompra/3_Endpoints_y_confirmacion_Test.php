@@ -1340,6 +1340,22 @@ class Endpoints_y_confirmacion_Test extends EmpresaTestCase
 
         $propia->assertStatus(200);
 
+        /*
+         * 🔴 Y NO CACHEABLE POR UN INTERMEDIARIO. Esto sirve la factura escaneada de un proveedor,
+         * con su CUIT, su razon social y los precios de compra: un proxy o una CDN que la guarde y
+         * se la sirva a otro comercio es el peor final posible para este archivo.
+         *
+         * La asercion es sobre `private` y no sobre el header entero porque el bug que cubre es
+         * puntual: `response()->file()` arma un BinaryFileResponse que nace con `$public = true` y
+         * llama a setPublic() DESPUES de cargar los headers que se le pasaron, asi que un
+         * 'Cache-Control' => 'private' puesto en ese array sale como 'max-age=300, public'. Medido
+         * el 22/9/2026 en el endpoint gemelo de las fotos del asistente, que tenia el mismo bug.
+         */
+        $cache_control = $propia->headers->get('Cache-Control');
+
+        $this->assertStringContainsString('private', (string) $cache_control, 'La factura escaneada sale cacheable por un intermediario: ' . $cache_control);
+        $this->assertStringNotContainsString('public', (string) $cache_control, 'La factura escaneada sale marcada como publica: ' . $cache_control);
+
         /* Una foto de otro comercio no existe para este usuario. */
         $ajeno       = $this->otro_comercio();
         $compra_ajena = $this->crear_compra(['user_id' => $ajeno->id]);

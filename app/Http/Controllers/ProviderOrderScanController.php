@@ -556,7 +556,23 @@ class ProviderOrderScanController extends Controller
             return response()->json(['message' => 'No se encontro la imagen'], 404);
         }
 
-        return response()->file($ruta_completa);
+        $respuesta = response()->file($ruta_completa);
+
+        /*
+         * 🔴 setPrivate() SOBRE LA RESPUESTA YA ARMADA, no un header `Cache-Control` en el array
+         * de response()->file(). BinaryFileResponse nace con `$public = true` y su constructor
+         * llama a setPublic() DESPUES de cargar los headers que se le pasaron, asi que un
+         * `private` puesto ahi sale como `max-age=300, public` — lo contrario de lo que se quiso.
+         * Medido en el endpoint gemelo de AiConversationController el 22/9/2026.
+         *
+         * Aca importa tanto como alla: esto sirve la FACTURA ESCANEADA de un proveedor, con su
+         * CUIT, su razon social y los precios de compra. Un proxy o una CDN intermedia
+         * guardandola y sirviendosela a otro comercio es el peor final posible para este archivo.
+         */
+        $respuesta->setPrivate();
+        $respuesta->setMaxAge(300);
+
+        return $respuesta;
     }
 
     /* ------------------------------------------------------------------ */

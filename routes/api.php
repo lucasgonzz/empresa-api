@@ -1134,6 +1134,18 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
         Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
         Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
 
+        /*
+         * El binario de una foto que el dueño mandó por WhatsApp (misión
+         * asistente-capacidades-y-hilos, P5). Es la `url` que viaja en `imagenes` de cada mensaje.
+         *
+         * 🔴 VA ACÁ ADENTRO Y NO EN NINGÚN LADO PÚBLICO: la foto vive en el disco `local`
+         * (privado) y puede ser la factura de un proveedor, con CUIT y precios de compra. Mismo
+         * gate que el resto del chat, y adentro la misma tenencia doble. Va POR ID DE MENSAJE y no
+         * colgada de la conversación porque la SPA tiene el mensaje a mano y no siempre la
+         * conversación (el globo optimista del POST); la conversación igual se chequea adentro.
+         */
+        Route::get('ai-mensajes/{message_id}/imagen/{orden}', 'AiConversationController@imagen_de_mensaje');
+
         // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
         // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
         // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que
@@ -1156,6 +1168,30 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
          */
         Route::get('articles/{id}/ficha-asistente', 'ArticleController@ficha_asistente');
         Route::get('clients/{id}/para-cuenta-corriente', 'ClientController@para_cuenta_corriente');
+
+        /*
+         * El servidor MCP (misión asistente-mcp, 22/9/2026): el mismo asistente, expuesto por el
+         * Model Context Protocol para que Claude Desktop, Claude Code, la API de Anthropic o
+         * cualquier cliente MCP se conecten AL SISTEMA DE ESTE CLIENTE y vean exactamente las
+         * mismas herramientas que la pantalla (tools/list es el registro, tools/call es el
+         * despacho, resources/* es el catálogo de entidades). JSON-RPC 2.0 sobre POST; GET
+         * contesta 405 (no hay streams); DELETE cierra la sesión.
+         *
+         * 🔴 VA EN ESTE GATE Y NO EN EL auth:sanctum GRANDE porque un cliente MCP ES la persona
+         * que abre el chat, con un token personal en vez de la cookie: lo que puede hacer desde
+         * Claude Desktop es lo que puede hacer desde el panel, ni más ni menos. Por eso pide la
+         * extensión y pasa por solo_el_dueno_ia, y encima McpController exige que el token tenga
+         * la habilidad `mcp` (un token de otro uso no entra).
+         *
+         * `mcp/conexion` es la administración de esa clave desde el modal de configuración del
+         * asistente (crear, ver el estado, revocar); el token viaja UNA sola vez, al crearlo.
+         */
+        Route::post('mcp', 'McpController@post');
+        Route::get('mcp', 'McpController@get');
+        Route::delete('mcp', 'McpController@delete');
+        Route::get('mcp/conexion', 'McpConexionController@estado');
+        Route::post('mcp/conexion', 'McpConexionController@crear');
+        Route::delete('mcp/conexion', 'McpConexionController@revocar');
     });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes

@@ -47,6 +47,20 @@ class ConfirmacionPorTextoIaHelper
     const MENSAJE_OTRO_CANAL = 'Esa carga la propusiste en el sistema, así que se confirma desde ahí con el botón.';
 
     /**
+     * La nota que acompaña a toda carga ya ejecutada.
+     *
+     * 🔴 LE DICE AL MODELO DE DÓNDE SACA EL NÚMERO, Y ES POR UN CASO REAL. El 22/9/2026 en demo3 el
+     * agente escribió "Quedó registrada la venta número 4882": esa venta existe, pero es del
+     * 28/10/2025 — ese día no se creó ninguna. El número salió de su redacción, no de ninguna
+     * herramienta. Lo único que tiene que repetir es `resultado`, que es lo que devolvió la
+     * ejecución de verdad (para una venta, "Venta N° 1234 registrada", armado con el `num` que
+     * contestó SaleController::store()). Si `resultado` viene vacío, no hay número que decir.
+     */
+    const NOTA_EJECUTADA = 'Ahora sí quedó registrado. Contale a la persona lo que dice `resultado`, '
+        . 'en una línea. 🔴 El número, el nombre y el total salen DE AHÍ, palabra por palabra: no los '
+        . 'saques de tu memoria ni de la conversación, y si `resultado` no trae número, no digas ninguno.';
+
+    /**
      * Confirma una carga propuesta en un turno anterior y devuelve el resultado para el tool_result.
      *
      * @param  \App\Models\AiConversation  $conversation
@@ -92,18 +106,26 @@ class ConfirmacionPorTextoIaHelper
     }
 
     /**
-     * Auto-ejecuta en el acto una tarjeta que el agente acaba de proponer, cuando el dueño está en
-     * modo "resuelto" (misión foto-sucursal-y-asistente-configurable, 17/9/2026).
+     * Auto-ejecuta en el acto una tarjeta que el agente acaba de proponer, cuando el MODO DE
+     * CONFIANZA del dueño lo permite (misión foto-sucursal-y-asistente-configurable, 17/9/2026;
+     * corrida a tres modos por asistente-capacidades-y-hilos, 22/9/2026).
      *
      * 🔴 A DIFERENCIA DE confirmar(), NO PASA POR rechazo(): la guarda del "mismo turno" y la del
      * "otro canal" existen para la confirmación que pide la PERSONA, y acá la decisión ya la tomó el
-     * dueño al elegir "resuelto". Esta confirmación es DELIBERADAMENTE en el mismo turno, con el
-     * assistant todavía 'pendiente', así que usa EjecutorAccionesIaHelper::confirmar_en_el_turno()
-     * (que salta la guarda de mensaje 'listo'). Lo que sí se mantiene es autenticar a la persona: los
-     * helpers de plata leen la sesión, y esto corre adentro del job sin request.
+     * dueño al elegir su modo en la configuración. Esta confirmación es DELIBERADAMENTE en el mismo
+     * turno, con el assistant todavía 'pendiente', así que usa
+     * EjecutorAccionesIaHelper::confirmar_en_el_turno() (que salta la guarda de mensaje 'listo'). Lo
+     * que sí se mantiene es autenticar a la persona: los helpers de plata leen la sesión, y esto
+     * corre adentro del job sin request.
      *
-     * Solo la llama HerramientasDeCarga tras crear una tarjeta cuyo tipo está en AUTO_CONFIRMABLES,
-     * que hoy es únicamente la foto de sucursal (inocua y reversible). Devuelve el resultado ejecutado
+     * ⚠️ Eso vale IGUAL para el modo "directo", que es el que más cargas auto-ejecuta: sigue sin
+     * pasar por rechazo(), así que MENSAJE_MISMO_TURNO no lo frena, y la guarda sigue intacta para
+     * la confirmación por texto de los otros dos modos (el "dale" del dueño por WhatsApp). El test 51
+     * lo fija con las dos puntas: el modo directo ejecuta en el mismo turno y un
+     * confirmar_carga_pendiente del mismo turno sigue rebotando con MENSAJE_MISMO_TURNO.
+     *
+     * Solo la llama HerramientasDeCarga tras crear una tarjeta cuyo tipo está en la lista del modo
+     * del dueño (AUTO_CONFIRMABLES o AUTO_CONFIRMABLES_DIRECTO). Devuelve el resultado ejecutado
      * para que la IA le diga a la persona "ya la asigné" en vez de "te dejé la tarjeta".
      *
      * @param  \App\Models\AiConversation  $conversation
@@ -198,8 +220,12 @@ class ConfirmacionPorTextoIaHelper
          * propuesta en la pantalla y DELIBERADAMENTE no confirmada —la persona la miró y no la
          * tocó— se podía confirmar después desde WhatsApp, que es justo lo contrario de lo que esa
          * persona decidió.
+         *
+         * Misión asistente-mcp (22/9/2026): el canal MCP también confirma por texto (no tiene
+         * botones), así que la pregunta es confirma_por_texto() y no es_de_whatsapp(). Lo que
+         * sigue rebotando es lo propuesto en la PANTALLA.
          */
-        if (!$propuso->es_de_whatsapp()) {
+        if (!$propuso->confirma_por_texto()) {
 
             return RespuestaDeCargaIa::error(self::MENSAJE_OTRO_CANAL);
         }
@@ -285,7 +311,7 @@ class ConfirmacionPorTextoIaHelper
                 'tarjeta_id' => (int) $accion_id,
                 'estado'     => is_null($model) ? null : (string) $model->estado,
                 'resultado'  => $texto,
-                'nota'       => 'Ahora sí quedó registrado. Contale a la persona el resultado, en una línea.',
+                'nota'       => self::NOTA_EJECUTADA,
             ];
         }
 

@@ -162,7 +162,24 @@ class AsistenteController extends Controller
             return $this->respuesta_del_turno($ya_estaba);
         }
 
-        $conversation = AsistenteCanalHelper::conversacion($dueno, $request->input('ai_conversation_id'));
+        /*
+         * 🔴 EL TOPE DEL PLAN SE MIDE ACÁ ARRIBA, ANTES DE ELEGIR LA CONVERSACIÓN. Un negocio que
+         * se pasó del tope se contesta con el texto de límite SIN gastar una llamada a la API — y
+         * la decisión de hilo (HiloPorTemaIaHelper) ES una llamada a la API. Se calcula una sola
+         * vez y se reusa más abajo, así que no cuesta una consulta de más.
+         */
+        $supero_el_tope = TopeDeTokensHelper::estado($dueno)['supero'];
+
+        /*
+         * 🔴 Y un audio que Kapso no pudo transcribir NO dice nada del tema: viaja como texto
+         * vacío para que HiloPorTemaIaHelper no lo tome por un pedido nuevo (el literal
+         * AUDIO_SIN_TRANSCRIPCION tiene 23 caracteres y pasaría el umbral de largo). El mensaje
+         * igual se guarda con su texto real unas líneas más abajo: esto es solo con qué se decide
+         * el hilo.
+         */
+        $texto_del_tema = ($sin_transcribir || $supero_el_tope) ? '' : $texto;
+
+        $conversation = AsistenteCanalHelper::conversacion($dueno, $request->input('ai_conversation_id'), $texto_del_tema);
 
         /*
          * Mismo criterio que AiConversationController::send_message(): el título se infiere solo
@@ -234,8 +251,11 @@ class AsistenteController extends Controller
          * job ni gastar una llamada a la API. El assistant nace 'listo' con el wamid ya puesto, así
          * que un reintento del admin con el mismo wamid sigue siendo idempotente, y el admin lee el
          * texto por el polling de siempre. Sin tope configurado no corta.
+         *
+         * El estado se midió arriba, antes de elegir la conversación (ver el 🔴 de allá): una sola
+         * consulta para las dos decisiones.
          */
-        if (TopeDeTokensHelper::estado($dueno)['supero']) {
+        if ($supero_el_tope) {
 
             $assistant_message->contenido = TopeDeTokensHelper::MENSAJE_LIMITE;
             $assistant_message->estado = 'listo';
