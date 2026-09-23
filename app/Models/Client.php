@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\AjustesDeClienteEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Notifications\Notifiable;
@@ -13,9 +14,44 @@ class Client extends Model
     
     protected $guarded = [];
 
+    /**
+     * `discounts` y `surchages` van en el withAll porque la SPA los necesita en TODOS los lugares
+     * donde llega un cliente: el listado genérico hace `model[prop.key].length` sin guarda para
+     * las props belongs_to_many, y Vender los activa solos al elegir el cliente del buscador.
+     * Entran por `AjustesDeClienteEsquemaHelper` y no como dos cadenas más de la lista: sin las
+     * tablas (ventana del deploy) el listado de clientes no puede dejar de abrir.
+     */
     function scopeWithAll($query) {
-        $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer', 'credit_accounts.moneda');
+        $query->with(array_merge(
+            ['iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer', 'credit_accounts.moneda'],
+            AjustesDeClienteEsquemaHelper::relaciones_de_cliente()
+        ));
         // $query->with('iva_condition', 'price_type', 'location', 'comercio_city_user', 'buyer')->withCount('current_acounts');
+    }
+
+    /**
+     * Descuentos de venta vinculados al cliente (misión descuentos-recargos-por-cliente,
+     * 23/9/2026), tabla `client_discount`. Vender los prende solos al elegir el cliente y la
+     * tienda ajusta con ellos los precios del comprador vinculado.
+     *
+     * SIN `withTrashed()` a propósito: un descuento borrado deja de aplicarse, en Vender y en la
+     * tienda. Lo que ya se vendió o se pidió conserva su porcentaje en su propio pivot
+     * (`discount_sale`, `discount_order`), así que no hace falta arrastrar el borrado acá.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsToMany
+     */
+    public function discounts() {
+        return $this->belongsToMany(Discount::class);
+    }
+
+    /**
+     * Recargos de venta vinculados al cliente, tabla `client_surchage`. Mismo criterio que
+     * `discounts()`.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsToMany
+     */
+    public function surchages() {
+        return $this->belongsToMany(Surchage::class);
     }
 
     public function provincia() {
