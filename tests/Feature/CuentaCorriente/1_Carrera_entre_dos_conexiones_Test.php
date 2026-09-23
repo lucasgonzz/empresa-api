@@ -228,9 +228,13 @@ class Carrera_entre_dos_conexiones_Test extends TestCase
 
         DB::connection(self::CONEXION_A)->statement('SET SESSION innodb_lock_wait_timeout = 1');
 
-        $this->assertFalse($this->alta_en_la_vecina_espera($cuenta_a, $cuenta_b_pesos, $cliente_b, null), 'En READ COMMITTED el alta en la cuenta de otro cliente no puede esperar al recálculo.');
-
+        // Primero RR y después RC, y no al revés: el alta de RC se inserta y se borra, y hasta que
+        // InnoDB purga esa fila borrada queda en el índice entre A y B. Un recálculo de A en RR
+        // cortaría el hueco en ESA fila y el alta siguiente caería después de ella, fuera del hueco
+        // bloqueado: el test daría verde o rojo según cuándo purgue el servidor.
         $this->assertTrue($this->alta_en_la_vecina_espera($cuenta_a, $cuenta_b_pesos, $cliente_b, 'REPEATABLE READ'), 'En REPEATABLE READ el candado de hueco frena el alta en la cuenta vecina: es el motivo del cambio de nivel.');
+
+        $this->assertFalse($this->alta_en_la_vecina_espera($cuenta_a, $cuenta_b_pesos, $cliente_b, null), 'En READ COMMITTED el alta en la cuenta de otro cliente no puede esperar al recálculo.');
     }
 
     /**
