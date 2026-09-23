@@ -764,6 +764,81 @@ class Reimpresion_Ticket_Sin_Vinculo_Test extends EmpresaTestCase
         );
     }
 
+    /**
+     * Caso 6 bis — el `iva_negocio` es TEXTO LIBRE y los tickets viejos lo traen con otra escritura.
+     * El barrido de produccion del 23/9/2026 encontro 'Responsable Inscripto' (otra mayuscula) y
+     * un 'RRII'. Comparado por literal, el primero se trataria como "no responsable inscripto" y
+     * el comprobante saldria SIN discriminar el IVA.
+     *
+     *  - Sin distinguir mayusculas ni espacios de los bordes, 'Responsable Inscripto' DISCRIMINA
+     *    igual que 'Responsable inscripto'.
+     *  - Lo que no es ninguna de las tres condiciones ('RRII') corta con un mensaje que lo nombra:
+     *    no se adivina.
+     *
+     * @test
+     */
+    public function el_iva_negocio_se_lee_sin_distinguir_mayusculas_y_lo_desconocido_no_se_adivina()
+    {
+        $venta = $this->crear_venta(1105);
+        $this->agregar_articulo($venta, 1105, '10.5');
+
+        foreach (['Responsable Inscripto', 'RESPONSABLE INSCRIPTO', '  responsable inscripto '] as $texto) {
+
+            $ticket = $this->crear_ticket($venta, [
+                'cuit_negocio' => self::CUIT_SIN_CONFIG,
+                'iva_negocio'  => $texto,
+            ]);
+
+            $importes = $this->importes_de_reimpresion($ticket);
+
+            $this->assertEqualsWithDelta(
+                105.00,
+                (float) $importes['iva'],
+                self::DELTA,
+                'con iva_negocio "'.$texto.'" tiene que discriminar el IVA como cualquier Responsable inscripto'
+            );
+        }
+
+        foreach (['monotributista', 'EXENTO'] as $texto) {
+
+            $ticket = $this->crear_ticket($venta, [
+                'cuit_negocio' => self::CUIT_SIN_CONFIG,
+                'iva_negocio'  => $texto,
+            ]);
+
+            $this->assertEqualsWithDelta(
+                0.00,
+                (float) $this->importes_de_reimpresion($ticket)['iva'],
+                self::DELTA,
+                'con iva_negocio "'.$texto.'" NO discrimina IVA'
+            );
+        }
+
+        $desconocido = $this->crear_ticket($venta, [
+            'cuit_negocio' => self::CUIT_SIN_CONFIG,
+            'iva_negocio'  => 'RRII',
+            'cbte_numero'  => '00888',
+        ]);
+
+        /** @var \Throwable|null $excepcion Lo que tiro el calculador. */
+        $excepcion = null;
+
+        try {
+            $this->importes_de_reimpresion($desconocido);
+        } catch (\Throwable $e) {
+            $excepcion = $e;
+        }
+
+        $this->assertInstanceOf(
+            RuntimeException::class,
+            $excepcion,
+            'un iva_negocio que no se reconoce ("RRII") no se adivina: tiene que cortar, no devolver importes'
+        );
+
+        $this->assertStringContainsString('"RRII"', $excepcion->getMessage(), 'el mensaje nombra el texto que no reconocio');
+        $this->assertStringContainsString('00888', $excepcion->getMessage(), 'y nombra el ticket');
+    }
+
     // -----------------------------------------------------------------------------------------
     // El PDF
     // -----------------------------------------------------------------------------------------
