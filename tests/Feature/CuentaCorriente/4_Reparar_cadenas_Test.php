@@ -150,6 +150,14 @@ class Reparar_cadenas_Test extends EmpresaTestCase
 
         $this->assertEqualsWithDelta(250, (float) $cuenta_c->fresh()->saldo, 0.01);
         $this->assertEqualsWithDelta(250, (float) $cliente_d->fresh()->saldo_pesos, 0.01);
+
+        // Una cuenta SIN movimientos y con saldo no se toca: no hay cadena contra la cual comparar.
+        list($cliente_v, $cuenta_v) = $this->cliente_con_cuenta($user_id, 'Sin movimientos');
+
+        DB::table('credit_accounts')->where('id', $cuenta_v->id)->update(['saldo' => 1234.5]);
+
+        $this->assertStringContainsString('A reparar: 0', $this->correr(['--credit_account_id' => $cuenta_v->id, '--aplicar' => true]));
+        $this->assertEqualsWithDelta(1234.5, (float) $cuenta_v->fresh()->saldo, 0.01);
     }
 
     /**

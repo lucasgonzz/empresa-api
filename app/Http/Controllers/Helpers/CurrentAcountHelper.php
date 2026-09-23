@@ -740,7 +740,7 @@ class CurrentAcountHelper {
      * coinciden. Solo lee. La usa `cuenta_corriente:reparar_cadenas`.
      *
      * El saldo final de la cadena es el del último movimiento no provisorio en orden `created_at, id`
-     * (0 si no hay ninguno, o si el último es un ancla en NULL): exactamente lo que checkSaldos()
+     * (0 si el último es un ancla en NULL): exactamente lo que checkSaldos()
      * deja en la cuenta y en el dueño. El dueño se busca con el modelo, igual que set_model_saldo():
      * uno borrado no se mira, porque checkSaldos() tampoco lo actualiza.
      *
@@ -757,7 +757,15 @@ class CurrentAcountHelper {
                     ->orderBy('id', 'DESC')
                     ->first(['saldo']);
 
-        $saldo_de_la_cadena = is_null($ultimo) ? 0.0 : (float) $ultimo->saldo;
+        if (is_null($ultimo)) {
+            // Sin movimientos no hay cadena contra la cual comparar. Una cuenta así con saldo
+            // (visto en el fixture de testing: "Cliente Contado" con 7.834,20 y cero movimientos)
+            // puede ser un saldo cargado por fuera de la cuenta corriente; ponerla en 0 en masa, en
+            // el despliegue, sería borrar un dato que nadie pidió tocar. Se deja como está.
+            return null;
+        }
+
+        $saldo_de_la_cadena = (float) $ultimo->saldo;
 
         $saldo_del_duenio = null;
 
