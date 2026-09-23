@@ -13,9 +13,12 @@ use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaAccionDePantallaIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Http\Controllers\BudgetController;
 use App\Models\AiMessageAction;
 use App\Models\Article;
+use App\Models\Budget;
 use App\Models\Caja;
+use App\Models\Client;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
@@ -51,6 +54,12 @@ use Tests\EmpresaTestCase;
  * - Al confirmar una tarjeta cuya ruta ya no está en el catálogo → 422 MENSAJE_NO_DISPONIBLE; el
  *   rechazo de la pantalla llega como 422 con SU mensaje y la tarjeta sigue propuesta.
  * - Los dos tipos van en dos etapas, y el ejecutor exige la persona autenticada.
+ * - 🔴 Lo de AFIP (Catalogo::SIEMPRE_CONFIRMAN) deja tarjeta incluso en "directo": emitir un
+ *   comprobante ante ARCA no se deshace. Sin tocar ARCA: alcanza con que la tarjeta quede
+ *   propuesta y que `afip_tickets` y `sales` no cambien.
+ * - 🔴 Tenencia de los ids de la ruta: un id de otro dueño (o inexistente) corta con `error` al
+ *   proponer y al leer, sin tarjeta; y una tarjeta cuyo registro cambia de dueño antes del clic
+ *   corta con 422 sin llamar al controller. Un {param} que no es un id (una fecha) no se mira.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
  *
@@ -233,6 +242,20 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
     }
 
     /**
+     * Otro comercio, para los registros ajenos.
+     *
+     * @return User
+     */
+    protected function otro_dueno()
+    {
+        return User::create([
+            'name'     => 'Otro comercio P55',
+            'email'    => 'otro-p55-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+        ]);
+    }
+
+    /**
      * Un empleado raso del dueño (sin admin_access).
      *
      * @return User
@@ -278,9 +301,10 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
             $this->assertContains($fila['metodo'], Catalogo::METODOS);
             $this->assertDoesNotMatchRegularExpression('#pdf|excel|export|download|print|imagen|image|foto|file|csv|zip|qr#', $fila['ruta'], $fila['ruta']);
             $this->assertStringNotContainsString('ai-conversations', $fila['ruta']);
-            foreach (['metodo', 'ruta', 'accion', 'modulo', 'parametros', 'claves', 'extension'] as $clave) {
+            foreach (['metodo', 'ruta', 'accion', 'modulo', 'parametros', 'claves', 'extension', 'siempre_confirma', 'motivo_confirmacion'] as $clave) {
                 $this->assertArrayHasKey($clave, $fila);
             }
+            $this->assertSame(is_null($fila['motivo_confirmacion']) ? false : true, $fila['siempre_confirma'], $fila['ruta']);
         }
 
         // Lo que sí entra: la caja y los presupuestos (menos su store, que es proponer_presupuesto).
@@ -907,31 +931,44 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
     }
 
     /**
-     * El rechazo de la pantalla llega como 422 con SU mensaje (un 404 del controller también es un
-     * rechazo), y la tarjeta vuelve a 'propuesta' con el motivo: es el camino de dos etapas.
+     * El rechazo de la pantalla llega como 422 con SU mensaje, y la tarjeta vuelve a 'propuesta'
+     * con el motivo: es el camino de dos etapas. Se usa un presupuesto REAL del dueño, sin
+     * confirmar, y se le pide anularlo: `BudgetController::anular()` lo rechaza con su 422 (un id
+     * inexistente ya no llega hasta el controller: lo frena antes la tenencia).
      *
      * @test
      */
     public function el_rechazo_de_la_pantalla_llega_como_422_con_su_mensaje_y_la_tarjeta_sigue_propuesta()
     {
-        list($conversation, $assistant) = $this->conversacion();
+        $cliente = Client::where('user_id', $this->dueno->id)->first();
 
-        // Proponer no mira si el registro existe: eso lo dice la pantalla al confirmar.
-        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
-            'metodo'      => 'POST',
-            'ruta'        => 'api/budget/{id}/confirmar',
-            'parametros'  => ['id' => 999999999],
-            'descripcion' => 'Confirmar el presupuesto que no existe',
+        $this->assertNotNull($cliente, 'El fixture trae clientes');
+
+        $presupuesto = Budget::create([
+            'client_id'        => $cliente->id,
+            'user_id'          => $this->dueno->id,
+            'budget_status_id' => BudgetController::ESTADO_SIN_CONFIRMAR,
         ]);
 
-        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        list($conversation, $assistant) = $this->conversacion();
+
+        // Proponer no mira el estado del presupuesto: eso lo dice la pantalla al confirmar.
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo'      => 'POST',
+            'ruta'        => 'api/budget/{id}/anular',
+            'parametros'  => ['id' => $presupuesto->id],
+            'descripcion' => 'Anular el presupuesto',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
 
         $confirmacion = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
 
         $confirmacion->assertStatus(422);
-        $this->assertSame('El presupuesto no existe.', $confirmacion->json('model.error_mensaje'), 'El mensaje es el de BudgetController::confirmar(), tal cual');
+        $this->assertSame('El presupuesto no esta confirmado.', $confirmacion->json('model.error_mensaje'), 'El mensaje es el de BudgetController::anular(), tal cual');
         $this->assertSame('propuesta', $confirmacion->json('model.estado'));
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado(), 'La reserva de las dos etapas se soltó');
+        $this->assertSame(BudgetController::ESTADO_SIN_CONFIRMAR, (int) $presupuesto->fresh()->budget_status_id);
     }
 
     /**
@@ -973,6 +1010,193 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         }
 
         $this->assertSame(0, (int) $caja->fresh()->abierta);
+        $this->assertSame(0, DB::table('apertura_cajas')->where('caja_id', $caja->id)->count());
+    }
+
+    // ---------------------------------------------------------------------
+    // Lo que siempre se confirma, y la tenencia de los ids de la ruta
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 FACTURAR SIEMPRE CONFIRMA, EN LOS TRES MODOS (decisión de la misión, 23/9/2026): emitir un
+     * comprobante ante ARCA no se deshace. La puerta es `requiere_confirmacion` en la respuesta de
+     * la propuesta, que quizas_auto_confirmar() respeta antes de mirar el modo.
+     *
+     * No se toca ARCA: el `sale_id` no existe, así que aunque la puerta fallara, makeAfipTicket()
+     * devolvería `response(null, 200)` sin instanciar MakeAfipTicket. Lo que se mide es que la
+     * tarjeta quede propuesta y que `afip_tickets` y `sales` no cambien.
+     *
+     * @test
+     */
+    public function una_accion_que_emite_comprobantes_ante_arca_siempre_deja_tarjeta_incluso_en_directo()
+    {
+        // El catálogo la marca, y a una acción común no.
+        $declaracion = Catalogo::declaracion('POST', 'api/afip-ticket');
+
+        $this->assertNotNull($declaracion, 'Facturar tiene que estar en el catálogo');
+        $this->assertSame('SaleController@makeAfipTicket', $declaracion['accion']);
+        $this->assertTrue($declaracion['siempre_confirma']);
+        $this->assertStringContainsString('ARCA', $declaracion['motivo_confirmacion']);
+        $this->assertFalse(Catalogo::declaracion('PUT', 'api/abrir-caja/{caja_id}')['siempre_confirma']);
+        $this->assertNull(Catalogo::declaracion('PUT', 'api/abrir-caja/{caja_id}')['motivo_confirmacion']);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        // que_acciones_de_pantalla_hay lo muestra y dice cómo leerlo.
+        $lista = $this->herramienta($conversation, $assistant, 'que_acciones_de_pantalla_hay', ['buscar' => 'afip-ticket', 'metodo' => 'POST']);
+
+        $facturar = null;
+
+        foreach ($lista['acciones'] as $accion) {
+            if ($accion['ruta'] === 'api/afip-ticket') {
+                $facturar = $accion;
+            }
+        }
+
+        $this->assertNotNull($facturar);
+        $this->assertTrue($facturar['siempre_confirma']);
+        $this->assertStringContainsString('siempre_confirma', $lista['como_sigo']);
+
+        // Con el dueño en "directo", la tarjeta queda propuesta y nada se ejecuta.
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::DIRECTO);
+
+        $tickets_antes = DB::table('afip_tickets')->count();
+        $ventas_antes = DB::table('sales')->count();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo'      => 'POST',
+            'ruta'        => 'api/afip-ticket',
+            'cuerpo'      => ['sale_id' => 999999999],
+            'descripcion' => 'Facturar la venta',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertArrayNotHasKey('estado', $respuesta, 'Una respuesta con "estado" es la de confirmar_del_agente: facturar pasó por la auto-ejecución.');
+        $this->assertTrue($respuesta['requiere_confirmacion']);
+        $this->assertStringContainsString('ARCA', $respuesta['motivo_confirmacion']);
+        $this->assertStringContainsString('ARCA', $respuesta['aviso']);
+        $this->assertSame('La tarjeta queda para que la persona la confirme. No digas que ya está cargado.', $respuesta['nota']);
+
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame(AiMessageAction::TIPO_ACCION_PANTALLA, $tarjeta->tipo);
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->estado_guardado());
+        $this->assertStringContainsString('ARCA', $tarjeta->presentacion['aviso']);
+        $this->assertStringContainsString('"directo"', $tarjeta->presentacion['aviso']);
+        $this->assertSame(999999999, $tarjeta->datos['cuerpo']['sale_id']);
+
+        $this->assertSame($tickets_antes, DB::table('afip_tickets')->count(), 'No se emitió ningún comprobante');
+        $this->assertSame($ventas_antes, DB::table('sales')->count());
+
+        // Y una acción común en "directo" sigue ejecutándose sola: la puerta es por acción, no global.
+        $caja = $this->caja_de_prueba('Caja P55 afip directo');
+
+        $comun = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo'      => 'PUT',
+            'ruta'        => 'api/abrir-caja/{caja_id}',
+            'parametros'  => ['caja_id' => $caja->id],
+            'descripcion' => 'Abrir la caja',
+        ]);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, $comun['estado']);
+        $this->assertSame(1, (int) $caja->fresh()->abierta);
+    }
+
+    /**
+     * 🔴 TENENCIA DE LOS IDS DE LA RUTA, al proponer y al leer: un id ajeno o inexistente corta
+     * con `error` sin tarjeta y sin tocar nada; un {param} que no es un id no se mira.
+     *
+     * @test
+     */
+    public function un_id_de_otro_dueno_o_inexistente_corta_con_error_al_proponer_y_al_leer_sin_dejar_tarjeta()
+    {
+        $otro = $this->otro_dueno();
+
+        $ajena = Caja::create(['num' => 1, 'name' => 'Caja ajena P55', 'user_id' => $otro->id]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        foreach ([$ajena->id, 999999999] as $id) {
+
+            $accion = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+                'metodo' => 'PUT', 'ruta' => 'api/abrir-caja/{caja_id}', 'parametros' => ['caja_id' => $id], 'descripcion' => 'Abrir la caja',
+            ]);
+
+            $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $accion['error'], 'id ' . $id);
+
+            $borrado = $this->herramienta($conversation, $assistant, 'proponer_borrado_por_pantalla', [
+                'ruta' => 'api/caja/{caja}', 'parametros' => ['caja' => $id], 'descripcion' => 'Borrar la caja',
+            ]);
+
+            $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $borrado['error'], 'id ' . $id);
+
+            $lectura = $this->herramienta($conversation, $assistant, 'consultar_por_pantalla', [
+                'ruta' => 'api/caja/{id}/liquidaciones-pendientes', 'parametros' => ['id' => $id],
+            ]);
+
+            $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $lectura['error'], 'id ' . $id);
+        }
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'Nada de esto dejó tarjeta');
+        $this->assertNotNull(Caja::find($ajena->id));
+        $this->assertSame(0, (int) $ajena->fresh()->abierta);
+
+        // Un {param} que no es un id (una fecha) no se mira: la lectura pasa. El rango es de 2020 a
+        // propósito: sin presupuestos adentro la respuesta es chica y no se recorta.
+        $presupuestos = $this->herramienta($conversation, $assistant, 'consultar_por_pantalla', [
+            'ruta'       => 'api/budget/from-date/{from_date}/{until_date?}',
+            'parametros' => ['from_date' => '2020-01-01', 'until_date' => '2020-01-31'],
+        ]);
+
+        $this->assertTrue(!empty($presupuestos['ok']), json_encode($presupuestos));
+        $this->assertSame('api/budget/from-date/2020-01-01/2020-01-31', $presupuestos['ruta']);
+        $this->assertFalse($presupuestos['recortado']);
+        $this->assertSame([], $presupuestos['respuesta']['models']);
+
+        // Y el id propio pasa.
+        $mia = $this->caja_de_prueba('Caja P55 propia');
+
+        $propia = $this->herramienta($conversation, $assistant, 'consultar_por_pantalla', [
+            'ruta' => 'api/caja/{id}/liquidaciones-pendientes', 'parametros' => ['id' => $mia->id],
+        ]);
+
+        $this->assertTrue(!empty($propia['ok']), json_encode($propia));
+    }
+
+    /**
+     * 🔴 La tenencia se vuelve a mirar al confirmar: si el registro cambió de dueño entre la tarjeta
+     * y el clic (o la tarjeta se forjó con un id ajeno), 422 sin llamar al controller.
+     *
+     * @test
+     */
+    public function una_tarjeta_cuyo_registro_cambia_de_dueno_antes_de_confirmar_corta_con_422()
+    {
+        $otro = $this->otro_dueno();
+
+        $caja = $this->caja_de_prueba('Caja P55 que cambia de dueño');
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo'      => 'PUT',
+            'ruta'        => 'api/abrir-caja/{caja_id}',
+            'parametros'  => ['caja_id' => $caja->id],
+            'descripcion' => 'Abrir la caja',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+
+        // La caja pasa a otro negocio entre la tarjeta y el clic.
+        DB::table('cajas')->where('id', $caja->id)->update(['user_id' => $otro->id]);
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $confirmacion->assertStatus(422);
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $confirmacion->json('model.error_mensaje'));
+        $this->assertSame('propuesta', $confirmacion->json('model.estado'));
+
+        $this->assertSame(0, (int) DB::table('cajas')->where('id', $caja->id)->value('abierta'), 'No se llamó a CajaController::abrir_caja()');
         $this->assertSame(0, DB::table('apertura_cajas')->where('caja_id', $caja->id)->count());
     }
 }
