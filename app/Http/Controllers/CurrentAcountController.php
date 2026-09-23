@@ -7,6 +7,7 @@ use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
 use App\Http\Controllers\Helpers\ChequeHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\CurrentAcountDeletePagoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -64,8 +65,40 @@ class CurrentAcountController extends Controller
         return response()->json(['models' => $models], 200);
     }
 
+    /**
+     * El botón "Chequear saldos": recalcula la cadena y las imputaciones de la cuenta.
+     *
+     * 🔴 Con transacción y con el candado de la cuenta (misión cuenta-corriente-carrera-y-velocidad,
+     * 23/9/2026). Es el botón que se usa justamente para arreglar una cadena rota; si corriera a la
+     * vez que un guardado sobre la misma cuenta podía volver a romperla, y un corte a mitad dejaba
+     * los débitos reseteados y sin imputar.
+     *
+     * @param  int  $credit_account_id
+     * @return \Illuminate\Http\JsonResponse|null
+     */
     function check_saldos_y_pagos($credit_account_id) {
-        CurrentAcountHelper::check_saldos_y_pagos($credit_account_id);
+
+        $duenio = CuentaCorrienteLock::duenio_de_la_cuenta($credit_account_id);
+
+        DB::beginTransaction();
+
+        try {
+
+            CuentaCorrienteLock::bloquear_duenio($duenio);
+
+            CurrentAcountHelper::check_saldos_y_pagos($credit_account_id);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
+            report($e);
+
+            return response()->json(['error' => true], 500);
+        }
     }
 
     public function pago(Request $request) {
@@ -400,32 +433,107 @@ class CurrentAcountController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     public function notaCredito(Request $request) {
-        $nota_credito = CurrentAcountHelper::notaCredito($request->credit_account_id, $request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
-        CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
+
+        /*
+         * 🔴 Transacción + candado de la cuenta corriente como primera sentencia (misión
+         * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Hasta hoy la nota de crédito de monto
+         * libre corría sin transacción: podía intercalarse con otra escritura sobre la misma cuenta
+         * (la carrera de Fenix) y un corte a mitad dejaba la NC creada sin imputar. El dueño se
+         * resuelve ANTES de abrir la transacción (ver CuentaCorrienteLock).
+         */
+        $duenio = $this->duenio_del_movimiento($request);
+
+        DB::beginTransaction();
+
+        try {
+
+            CuentaCorrienteLock::bloquear_duenio($duenio);
+
+            $nota_credito = CurrentAcountHelper::notaCredito($request->credit_account_id, $request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
+            CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
+            report($e);
+
+            return response()->json(['error' => true], 500);
+        }
+
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_credito], 201);
     }
 
 
     public function notaDebito(Request $request) {
-        $nota_debito = CurrentAcount::create([
-            'detalle'           => 'Nota de debito',
-            'description'       => $request->description,
-            'debe'              => $request->debe,
-            'status'            => 'sin_pagar',
-            'client_id'         => $request->model_name == 'client' ? $request->model_id : null,
-            'provider_id'       => $request->model_name == 'provider' ? $request->model_id : null,
-            'user_id'           => $this->userId(),
-            'credit_account_id' => $request->credit_account_id,
-        ]);
-        $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $nota_debito) + $request->debe;
-        $nota_debito->save();
 
-        CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
-        CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
+        // Mismo tratamiento que notaCredito(): transacción y candado de la cuenta al entrar.
+        $duenio = $this->duenio_del_movimiento($request);
+
+        DB::beginTransaction();
+
+        try {
+
+            CuentaCorrienteLock::bloquear_duenio($duenio);
+
+            $nota_debito = CurrentAcount::create([
+                'detalle'           => 'Nota de debito',
+                'description'       => $request->description,
+                'debe'              => $request->debe,
+                'status'            => 'sin_pagar',
+                'client_id'         => $request->model_name == 'client' ? $request->model_id : null,
+                'provider_id'       => $request->model_name == 'provider' ? $request->model_id : null,
+                'user_id'           => $this->userId(),
+                'credit_account_id' => $request->credit_account_id,
+            ]);
+            $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $nota_debito) + $request->debe;
+            $nota_debito->save();
+
+            CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
+            CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
+            report($e);
+
+            return response()->json(['error' => true], 500);
+        }
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         return response()->json(['current_acount' => $nota_debito], 201);
+    }
+
+    /**
+     * El dueño de la cuenta corriente sobre la que escribe un request de la pantalla de cuenta
+     * corriente, para bloquearla con CuentaCorrienteLock.
+     *
+     * La SPA manda `model_name` y `model_id`; si no vinieran, se resuelve por `credit_account_id`.
+     * 🔴 Se llama ANTES de abrir la transacción: resolverlo por la cuenta es una lectura común, y
+     * adentro fijaría la foto de la base antes de esperar el candado.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return array|null  ['model_name' => ..., 'model_id' => ...]
+     */
+    protected function duenio_del_movimiento(Request $request) {
+
+        if (!empty($request->model_name) && !empty($request->model_id)) {
+
+            return [
+                'model_name'    => $request->model_name,
+                'model_id'      => $request->model_id,
+            ];
+        }
+
+        return CuentaCorrienteLock::duenio_de_la_cuenta($request->credit_account_id);
     }
 
     function updateDebe(Request $request) {
@@ -491,43 +599,70 @@ class CurrentAcountController extends Controller
             $metodos_para_compensacion = $current_acount->current_acount_payment_methods;
         }
 
-        if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
+        /*
+         * 🔴 La baja va en una transacción con el candado de la cuenta como primera sentencia
+         * (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Borra el movimiento y
+         * recalcula la cadena y las imputaciones de toda la cuenta: sin transacción, un corte a
+         * mitad dejaba los débitos reseteados sin imputar, y sin candado podía intercalarse con
+         * otra escritura sobre la misma cuenta. El dueño se resuelve antes de abrirla.
+         */
+        $duenio = CuentaCorrienteLock::duenio_de_la_cuenta($current_acount->credit_account_id);
 
-            // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
-            // $ct->deletePago();
-            if ($current_acount->status == 'nota_credito') {
-                NotaCreditoHelper::resetUnidadesDevueltas($current_acount);
+        DB::beginTransaction();
+
+        try {
+
+            CuentaCorrienteLock::bloquear_duenio($duenio);
+
+            if ($current_acount->status == 'pago_from_client' || $current_acount->status == 'nota_credito') {
+
+                // $ct = new CurrentAcountDeletePagoHelper($model_name, $current_acount);
+                // $ct->deletePago();
+                if ($current_acount->status == 'nota_credito') {
+                    NotaCreditoHelper::resetUnidadesDevueltas($current_acount);
+                }
+                // $current_acount->pagando_a()->detach();
+                CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);
+
+            } else {
+                // CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount, $model_name);
             }
-            // $current_acount->pagando_a()->detach();
-            CurrentAcountHelper::updateSellerCommissionsStatus($current_acount);
 
-        } else {
-            // CurrentAcountDeleteNotaDebitoHelper::deleteNotaDebito($current_acount, $model_name);
+            $credit_account_id = $current_acount->credit_account_id;
+
+            /** Texto de referencia para el movimiento de caja (se conserva antes del delete). */
+            $notas_compensacion = 'Eliminación de pago en cuenta corriente';
+            if (! is_null($current_acount->num_receipt)) {
+                $notas_compensacion .= ' N° '.$current_acount->num_receipt;
+            }
+
+            $current_acount->delete();
+
+            if ($compensar_caja && ! is_null($metodos_para_compensacion) && $metodos_para_compensacion->count()) {
+                $helper_caja_compensacion->crear_movimientos_compensacion(
+                    $metodos_para_compensacion,
+                    DeleteCajaCompensacionHelper::MODEL_TYPE_CURRENT_ACOUNT,
+                    $model_name,
+                    $notas_compensacion,
+                    $current_acount->id
+                );
+            }
+
+            CurrentAcountHelper::checkSaldos($credit_account_id);
+
+            CurrentAcountHelper::checkPagos($credit_account_id, true);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
+            report($e);
+
+            return response()->json(['error' => true], 500);
         }
-
-        $credit_account_id = $current_acount->credit_account_id;
-
-        /** Texto de referencia para el movimiento de caja (se conserva antes del delete). */
-        $notas_compensacion = 'Eliminación de pago en cuenta corriente';
-        if (! is_null($current_acount->num_receipt)) {
-            $notas_compensacion .= ' N° '.$current_acount->num_receipt;
-        }
-
-        $current_acount->delete();
-
-        if ($compensar_caja && ! is_null($metodos_para_compensacion) && $metodos_para_compensacion->count()) {
-            $helper_caja_compensacion->crear_movimientos_compensacion(
-                $metodos_para_compensacion,
-                DeleteCajaCompensacionHelper::MODEL_TYPE_CURRENT_ACOUNT,
-                $model_name,
-                $notas_compensacion,
-                $current_acount->id
-            );
-        }
-        
-        CurrentAcountHelper::checkSaldos($credit_account_id);
-        
-        CurrentAcountHelper::checkPagos($credit_account_id, true);
 
         // $this->sendAddModelNotification($model_name, $model_id, false);
     }

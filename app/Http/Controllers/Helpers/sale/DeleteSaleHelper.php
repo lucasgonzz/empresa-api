@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Http\Controllers\Helpers\puntos\PuntosCanjeHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
@@ -88,6 +89,15 @@ class DeleteSaleHelper {
 
 				return false;
 			}
+
+			/*
+				🔴 Candado de la cuenta corriente del cliente, después del de la venta (el mismo orden
+				que la edición: venta, después cuenta). Misión cuenta-corriente-carrera-y-velocidad,
+				23/9/2026: la baja saca el movimiento de la venta y recalcula la cadena del cliente, y
+				sin esto podía correr a la vez que otra escritura sobre la misma cuenta. Ver
+				CuentaCorrienteLock.
+			*/
+			CuentaCorrienteLock::bloquear('client', $viva->client_id);
 
 			Self::ejecutar_baja($model, $instance, $compensar_caja, $payment_methods, $helper_caja);
 

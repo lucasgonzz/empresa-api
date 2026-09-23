@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Article;
 use App\Models\ArticleSurchage;
@@ -904,7 +905,15 @@ class NewProviderOrderHelper {
     function set_current_acount() {
 
         if ($this->provider_order->generate_current_acount) {
-            
+
+            /*
+             * Candado de la cuenta corriente del proveedor (misión cuenta-corriente-carrera-y-velocidad,
+             * 23/9/2026). El alta y la edición de la compra ya lo tomaron al abrir su transacción y acá
+             * es gratis; va igual en el punto por el que pasa toda compra que escribe la cuenta, para
+             * que un camino nuevo nazca cubierto. Ver CuentaCorrienteLock.
+             */
+            CuentaCorrienteLock::bloquear('provider', $this->provider_order->provider_id);
+
             $current_acount = CurrentAcount::where('provider_order_id', $this->provider_order->id)
                                             ->first();
 

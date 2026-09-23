@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
@@ -38,6 +39,16 @@ class CurrentAcountFromSaleHelper extends Controller {
     }
 
     function crear_current_acount() {
+
+        /*
+         * Candado de la cuenta corriente del cliente (misión cuenta-corriente-carrera-y-velocidad,
+         * 23/9/2026), ANTES de insertar el movimiento. La venta de Vender, la edición y la baja ya lo
+         * tomaron al abrir su transacción y acá es gratis; lo que cubre este es el resto de los
+         * caminos por los que una venta entra a la cuenta (confirmar un presupuesto o un pedido,
+         * facturar con "guardar en cuenta corriente después de facturar", restaurar de la
+         * papelera): todos pasan por acá. Ver CuentaCorrienteLock.
+         */
+        CuentaCorrienteLock::bloquear('client', $this->sale->client_id);
 
         $debe = $this->sale->total;
 

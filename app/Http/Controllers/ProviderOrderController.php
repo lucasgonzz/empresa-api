@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\ProviderOrderHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Pdf\ProviderOrderPdf;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
@@ -130,7 +131,17 @@ class ProviderOrderController extends Controller
          */
         $model = DB::transaction(function () use ($request, $id) {
 
-            $model = ProviderOrder::find($id);
+            /*
+             * 🔴 Candado sobre la compra y después sobre la cuenta corriente del proveedor, como
+             * primeras sentencias de la transacción (misión cuenta-corriente-carrera-y-velocidad,
+             * 23/9/2026). La compra se lee CON candado —el mismo orden que la edición de una venta:
+             * primero el comprobante, después la cuenta— y se bloquean los dos proveedores, el que
+             * tenía y el que queda: si cambia, el movimiento sale de una cuenta y entra en la otra.
+             * Ver CuentaCorrienteLock.
+             */
+            $model = ProviderOrder::where('id', $id)->lockForUpdate()->first();
+
+            CuentaCorrienteLock::bloquear('provider', [$model->provider_id, $request->provider_id]);
 
             $ya_se_actualizo_stock = $model->update_stock;
 
@@ -182,15 +193,29 @@ class ProviderOrderController extends Controller
 
     public function destroy($id) {
         $model = ProviderOrder::find($id);
-        
-        ProviderOrderHelper::deleteCurrentAcount($model);
-        ProviderOrderHelper::resetArticlesStock($model);
 
-        // if (!is_null($model->provider)) {
-        //     $model->provider->pagos_checkeados = 0;
-        //     $model->provider->save();
-        // }
-        $model->delete();
+        /*
+         * 🔴 La baja de la compra saca su movimiento de la cuenta corriente del proveedor y
+         * recalcula la cadena: va en una transacción con el candado de la cuenta como primera
+         * sentencia (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Hasta hoy corría sin
+         * transacción, y un corte a mitad dejaba la cuenta sin el movimiento y sin recalcular.
+         * DB::transaction hace el rollback y relanza: la excepción sigue llegando al handler
+         * global y al reporter.
+         */
+        DB::transaction(function () use ($model) {
+
+            CuentaCorrienteLock::bloquear('provider', $model->provider_id);
+
+            ProviderOrderHelper::deleteCurrentAcount($model);
+            ProviderOrderHelper::resetArticlesStock($model);
+
+            // if (!is_null($model->provider)) {
+            //     $model->provider->pagos_checkeados = 0;
+            //     $model->provider->save();
+            // }
+            $model->delete();
+        });
+
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('ProviderOrder', $model->id);
         return response(null);

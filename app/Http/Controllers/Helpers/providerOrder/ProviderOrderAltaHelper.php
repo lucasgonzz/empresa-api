@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\providerOrder;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\ProviderOrder;
 use App\Services\DemoEventoEmitter;
 use Illuminate\Support\Facades\DB;
@@ -56,6 +57,13 @@ class ProviderOrderAltaHelper
         $user_id = (int) self::valor($datos, 'user_id');
 
         $model = DB::transaction(function () use ($datos, $controller, $user_id) {
+
+            /*
+             * 🔴 Candado de la cuenta corriente del proveedor como primera sentencia de la
+             * transacción (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026): la compra entra
+             * a su cadena de saldos. Ver CuentaCorrienteLock.
+             */
+            CuentaCorrienteLock::bloquear('provider', self::valor($datos, 'provider_id'));
 
             /*
              * La fecha de creación elegida por el usuario (misión fecha-creacion-editable,

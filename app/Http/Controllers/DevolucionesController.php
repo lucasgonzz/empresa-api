@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\Devoluciones\RegresarStockHelper;
 use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
@@ -59,6 +60,18 @@ class DevolucionesController extends Controller
             */
             if ($request->sale_id && ($request->regresar_stock || $request->update_unidades_devueltas)) {
                 ValidarDevolucionHelper::exigir($request->sale_id, $request->items);
+            }
+
+            /*
+                🔴 Candado de la cuenta corriente del cliente, después del de la venta y antes de
+                cualquier lectura común (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026).
+                La nota de crédito entra a la cadena de saldos del cliente y se imputa contra sus
+                débitos: sin esto podía intercalarse con otra escritura sobre la misma cuenta, que
+                es la carrera de Fenix. Mismo orden que la edición de venta: venta, después cuenta.
+                Ver CuentaCorrienteLock.
+            */
+            if ($request->generar_current_acount && !is_null($request->client_id)) {
+                CuentaCorrienteLock::bloquear('client', $request->client_id);
             }
 
             $model_id = null;

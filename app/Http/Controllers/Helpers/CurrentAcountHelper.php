@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\puntos\PuntosAcumulacionHelper;
 use App\Models\Article;
 use App\Models\Check;
@@ -182,6 +183,17 @@ class CurrentAcountHelper {
     // }
 
     static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null, $descriptions = null) {
+
+        /*
+         * Candado de la cuenta corriente (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026).
+         * Los llamadores que escriben desde un request ya lo tomaron al abrir su transacción
+         * (Devoluciones, la NC de monto libre, la edición de venta): acá es gratis. Va igual en el
+         * punto por el que pasan TODAS las notas de crédito, para que un camino nuevo nazca
+         * cubierto. Sin dueño (devolución sin cliente) no bloquea nada.
+         */
+        if (!is_null($model_name) && !is_null($model_id)) {
+            CuentaCorrienteLock::bloquear($model_name, $model_id);
+        }
 
         $moneda_id = Self::get_moneda_id($credit_account_id, $sale_id);
 
