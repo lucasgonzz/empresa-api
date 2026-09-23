@@ -168,8 +168,10 @@ class CatalogoDeAccionesDePantallaIaHelper
          * el verificador de la misión el 23/9/2026). Afuera enteros.
          */
         '#\{model_name\}#'                            => 'endpoint genérico de la SPA: el modelo viaja en el parámetro y la lista negra no lo ve',
-        // ── Archivos ──────────────────────────────────────────────────────────────────────────
-        '#pdf|excel|export|download|print|imagen|image|foto|file|csv|zip|qr#' => 'devuelve o recibe un archivo, y desde el chat un archivo no se ve ni se adjunta',
+        // ── Sincronización offline de la SPA ──────────────────────────────────────────────────
+        '#articles-por-defecto|article/deleted-models|articles-ultimos-actualizados#' => 'sincronización offline de la SPA: trae el catálogo entero',
+        // ── Archivos (etiqueta, logo y raster: la etiqueta del envío es un PDF y el logo del ticket un raster) ──
+        '#pdf|excel|export|download|print|imagen|image|foto|file|csv|zip|qr|etiqueta|logo|raster#' => 'devuelve o recibe un archivo, y desde el chat un archivo no se ve ni se adjunta',
         // ── Sincronización y Claude ───────────────────────────────────────────────────────────
         '#admin-sync#'                                => 'la sincronización con el admin de ComercioCity',
         '#claude/#'                                   => 'la API interna para Claude',
@@ -840,7 +842,18 @@ class CatalogoDeAccionesDePantallaIaHelper
             $cuerpo = null;
         }
 
-        if (is_string($cuerpo) && (strpos($cuerpo, '->file(') !== false || strpos($cuerpo, 'hasFile(') !== false)) {
+        /*
+         * Route::resource declara create/edit/show (y a veces store/update/destroy) para
+         * controllers que nunca los escribieron: 260 de las rutas del router apuntan a un método
+         * que no existe y ejecutarlas da 500. cuerpo_del_metodo() devuelve null justamente cuando no
+         * hay clase o método: esas no entran.
+         */
+        if (is_null($cuerpo)) {
+
+            return 'la ruta no tiene método en el controller: ejecutarla daría 500';
+        }
+
+        if (strpos($cuerpo, '->file(') !== false || strpos($cuerpo, 'hasFile(') !== false) {
 
             return 'sube un archivo, y desde el chat no se puede adjuntar';
         }

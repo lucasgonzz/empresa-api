@@ -414,21 +414,22 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $this->assertSame('api/cerrar-caja/{caja_id}', $dos_palabras['acciones'][0]['ruta']);
         $this->assertSame('CajaController@cerrar_caja', $dos_palabras['acciones'][0]['accion']);
 
-        // Por método y por página: la segunda página de los DELETE.
-        $borrados = $this->herramienta($conversation, $assistant, 'que_acciones_de_pantalla_hay', ['metodo' => 'DELETE', 'pagina' => 2]);
+        // Por método y por página: la segunda página de los GET (los DELETE son menos de 40 desde
+        // que las rutas de Route::resource sin método quedaron afuera).
+        $lecturas = $this->herramienta($conversation, $assistant, 'que_acciones_de_pantalla_hay', ['metodo' => 'GET', 'pagina' => 2]);
 
-        $this->assertGreaterThan(40, $borrados['encontradas']);
-        $this->assertSame(2, $borrados['pagina']);
-        $this->assertGreaterThanOrEqual(2, $borrados['paginas']);
-        $this->assertNotEmpty($borrados['acciones']);
+        $this->assertGreaterThan(40, $lecturas['encontradas']);
+        $this->assertSame(2, $lecturas['pagina']);
+        $this->assertGreaterThanOrEqual(2, $lecturas['paginas']);
+        $this->assertNotEmpty($lecturas['acciones']);
 
-        foreach ($borrados['acciones'] as $accion) {
-            $this->assertSame('DELETE', $accion['metodo']);
+        foreach ($lecturas['acciones'] as $accion) {
+            $this->assertSame('GET', $accion['metodo']);
         }
 
-        $primera = $this->herramienta($conversation, $assistant, 'que_acciones_de_pantalla_hay', ['metodo' => 'DELETE', 'pagina' => 1]);
+        $primera = $this->herramienta($conversation, $assistant, 'que_acciones_de_pantalla_hay', ['metodo' => 'GET', 'pagina' => 1]);
 
-        $this->assertNotSame($primera['acciones'][0]['ruta'], $borrados['acciones'][0]['ruta'], 'La página 2 no repite la 1');
+        $this->assertNotSame($primera['acciones'][0]['ruta'], $lecturas['acciones'][0]['ruta'], 'La página 2 no repite la 1');
 
         // Sin resultados: lo dice y explica dónde buscar.
         $nada = $this->herramienta($conversation, $assistant, 'que_acciones_de_pantalla_hay', ['buscar' => 'zzzz-no-existe-p55']);
@@ -1523,6 +1524,44 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         // I7: el candado de sesión.
         $this->assertNull(Catalogo::declaracion('POST', 'api/user/last-activity'));
         $this->assertStringContainsString('sesión', (string) Catalogo::motivo_de_exclusion('POST', 'api/user/last-activity'));
+    }
+
+    // ---------------------------------------------------------------------
+    // Lo que encontró el verificador del catálogo (23/9/2026): menores
+    // ---------------------------------------------------------------------
+
+    /**
+     * m1, m2 y m6: toda acción del catálogo apunta a un método que existe (las rutas de
+     * Route::resource sin método daban 500), la etiqueta del envío y el logo del ticket son
+     * archivos, y la sincronización offline de la SPA no es una consulta.
+     *
+     * @test
+     */
+    public function toda_accion_tiene_metodo_y_los_archivos_y_la_sincronizacion_offline_quedan_afuera()
+    {
+        foreach (Catalogo::todas() as $fila) {
+            list($clase, $metodo) = explode('@', $fila['accion'], 2);
+            $this->assertTrue(method_exists('App\Http\Controllers\\' . $clase, $metodo), $fila['metodo'] . ' ' . $fila['ruta'] . ' apunta a ' . $fila['accion'] . ', que no existe');
+        }
+
+        // Route::resource('caja') declara create y edit, y CajaController no los tiene.
+        $this->assertNull(Catalogo::declaracion('GET', 'api/caja/create'));
+        $this->assertStringContainsString('no tiene método', (string) Catalogo::motivo_de_exclusion('GET', 'api/caja/create'));
+        $this->assertNull(Catalogo::declaracion('GET', 'api/caja/{caja}/edit'));
+
+        // La etiqueta del envío es un PDF y el logo del ticket un raster.
+        $this->assertNull(Catalogo::declaracion('GET', 'api/envio/{id}/etiqueta'));
+        $this->assertStringContainsString('archivo', (string) Catalogo::motivo_de_exclusion('GET', 'api/envio/{id}/etiqueta'));
+
+        // La sincronización offline trae el catálogo entero.
+        foreach (['api/articles-por-defecto', 'api/article/deleted-models/{last_updated}', 'api/articles-ultimos-actualizados'] as $ruta) {
+            $this->assertNull(Catalogo::declaracion('GET', $ruta), $ruta);
+            $this->assertStringContainsString('sincronización offline', (string) Catalogo::motivo_de_exclusion('GET', $ruta), $ruta);
+        }
+
+        $conteo = Catalogo::conteo();
+
+        $this->assertGreaterThan(200, $conteo['excluidas_por_motivo']['la ruta no tiene método en el controller: ejecutarla daría 500']);
     }
 
     /**

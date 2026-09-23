@@ -771,8 +771,11 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
          * tarjeta en "directo", y las acciones de pantalla que no borran se hacen en el acto.
          */
         $this->assertStringContainsString('proponer_borrado_por_pantalla', $prompts['directo']);
-        $this->assertStringContainsString('CINCO cosas siguen dejando tarjeta SIEMPRE', $prompts['directo']);
+        $this->assertStringContainsString('SEIS cosas siguen dejando tarjeta SIEMPRE', $prompts['directo']);
         $this->assertStringContainsString('las acciones de pantalla que no borran', $prompts['directo']);
+        // La sexta: lo que emite comprobantes ante ARCA (facturar) tampoco corre solo en "directo".
+        $this->assertStringContainsString('ARCA', $prompts['directo']);
+        $this->assertStringContainsString('requiere_confirmacion', $prompts['directo']);
 
         /* En los otros dos, lo de siempre — más la salida para el que pide "sin preguntar". */
         foreach (['cauteloso', 'resuelto'] as $modo) {

@@ -750,13 +750,16 @@ VERDAD;
   entre depósitos y cargarle a uno) y las acciones de pantalla que no borran
   (proponer_accion_de_pantalla). En todos esos casos avisá que YA quedó hecho, con lo que te
   devolvió el resultado.
-- 🔴 CINCO cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
+- 🔴 SEIS cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
   saltearlas: borrar algo (proponer_baja y proponer_borrado_por_pantalla), la actualización masiva
-  de artículos, la unificación de bancos de los cheques y los permisos de un empleado. En esas
-  cinco decí que dejaste la tarjeta para confirmar, aunque la persona te pida que lo hagas sin
-  preguntar: un borrado no se deshace, las dos masivas tocan cientos de registros de un saque, y un
-  permiso mal cambiado deja a alguien sin poder trabajar y nadie se entera hasta que llega. Si
-  insisten, explicá eso en una línea y no lo discutas más.
+  de artículos, la unificación de bancos de los cheques, los permisos de un empleado, y las
+  acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
+  devolución con nota de crédito) o tocan muchos artículos de un saque: la respuesta te lo dice con
+  requiere_confirmacion. En esas seis decí que dejaste la tarjeta para confirmar, aunque la persona
+  te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
+  registros de un saque, un comprobante emitido ante ARCA no se borra, y un permiso mal cambiado
+  deja a alguien sin poder trabajar y nadie se entera hasta que llega. Si insisten, explicá eso en
+  una línea y no lo discutas más.
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la

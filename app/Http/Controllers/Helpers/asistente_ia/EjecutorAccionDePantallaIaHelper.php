@@ -261,6 +261,13 @@ class EjecutorAccionDePantallaIaHelper
 
             throw $e;
 
+        } catch (HttpExceptionInterface $e) {
+
+            // Un abort(403) / abort(404) del controller es un rechazo de negocio, no una falla técnica.
+            $mensaje = trim((string) $e->getMessage());
+
+            throw new AccionIaException(422, $mensaje === '' ? self::MENSAJE_RECHAZO : $mensaje);
+
         } catch (\Throwable $e) {
 
             Log::error('EjecutorAccionDePantallaIaHelper: el controller lanzó al ejecutar una acción de pantalla', [
@@ -277,6 +284,12 @@ class EjecutorAccionDePantallaIaHelper
             if (!is_null($request_anterior)) {
 
                 app()->instance('request', $request_anterior);
+
+            } else {
+
+                // En el job no había request: no se deja el sintético bindeado, o los helpers que
+                // corran después en el mismo proceso verían un GET falso.
+                app()->forgetInstance('request');
             }
         }
 
