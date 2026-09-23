@@ -495,7 +495,18 @@ class ProcessArticleChunk implements ShouldQueue
     function update_import_status() {
         $inicio = microtime(true);
 
-        // Actualización ATÓMICA (evita que los workers se pisen)
+        $ahora = now();
+
+        /*
+         * Actualización ATÓMICA (evita que los workers se pisen).
+         *
+         * 🔴 `updated_at` va a mano: `DB::table()->update()` NO toca los timestamps de Eloquent, y
+         * el watchdog `imports:detectar-colgadas` decide si una importación está colgada mirando
+         * cuánto hace que no se actualiza. Sin esta línea solo se movía en el primer y el último
+         * lote: en Servian (23/9/2026) una importación de 97 lotes de ~33 s cada uno (~55 min)
+         * quedó marcada `fallo` a los 45 min y después terminó 97/97. Mismo criterio que
+         * ProcessProviderOrderArticleImport::avanzar_progreso().
+         */
         DB::table('import_statuses')
             ->where('id', $this->import_status_id)
             ->update([
@@ -505,6 +516,7 @@ class ProcessArticleChunk implements ShouldQueue
                 'updated_models'     => DB::raw('updated_models + ' . (int) $this->import_result->updated_count),
                 'filas_procesadas'   => DB::raw('filas_procesadas + ' . (int) $this->import_result->filas_procesadas),
                 'articles_repetidos' => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
+                'updated_at'         => $ahora,
             ]);
 
         // Traigo el estado actualizado y seteo status correctamente (luego de incrementar contadores)
@@ -523,7 +535,8 @@ class ProcessArticleChunk implements ShouldQueue
             }
 
             if ($import_status->status !== $new_status) {
-                ImportStatus::where('id', $this->import_status_id)->update([
+                /* Un `fallo` no se pisa: ver where_no_esta_en_fallo(). */
+                self::where_no_esta_en_fallo(ImportStatus::where('id', $this->import_status_id))->update([
                     'status' => $new_status,
                 ]);
             }
@@ -611,7 +624,8 @@ class ProcessArticleChunk implements ShouldQueue
         }
 
         if ($import_status->status !== $new_status) {
-            ImportStatus::where('id', $this->import_status_id)->update([
+            /* Un `fallo` no se pisa: ver where_no_esta_en_fallo(). */
+            self::where_no_esta_en_fallo(ImportStatus::where('id', $this->import_status_id))->update([
                 'status' => $new_status,
             ]);
         }
@@ -643,10 +657,41 @@ class ProcessArticleChunk implements ShouldQueue
         }
 
         if ($import_history->status !== $new_status) {
-            ImportHistory::where('id', $this->import_history_id)->update([
+            /* Un `fallo` no se pisa: ver where_no_esta_en_fallo(). */
+            self::where_no_esta_en_fallo(ImportHistory::where('id', $this->import_history_id))->update([
                 'status' => $new_status,
             ]);
         }
+    }
+
+    /**
+     * Acota un recálculo de `status` a las filas que NO están en `fallo`.
+     *
+     * 🔴 Una importación marcada fallida —por el watchdog `imports:detectar-colgadas` o por
+     * ImportFailureHandler— no vuelve a `en_proceso` ni a `completado`/`terminado` por un lote
+     * que ya estaba en vuelo. Antes, ese lote recalculaba el estado al terminar y "resucitaba"
+     * la importación: el guard del arranque (`status == 'fallo'` en handle()) ya no la veía, la
+     * chain seguía, y el registro de procesos quedaba en `fallo` para siempre (no acepta avances
+     * de un proceso cerrado) → el panel decía "Falló" de algo que siguió corriendo (Servian,
+     * 23/9/2026). Con esto el lote siguiente corta en ese guard.
+     *
+     * Va en el WHERE del update y no como un `if` antes: el watchdog puede marcar el `fallo`
+     * entre la lectura del estado y la escritura, y el WHERE lo resuelve la base en el mismo
+     * UPDATE. Los contadores atómicos (processed_chunks + 1, etc.) NO pasan por acá: siguen
+     * sumando, porque reflejan trabajo que efectivamente se hizo en la base.
+     *
+     * El `whereNull` es porque `import_histories.status` es nullable: un `status != 'fallo'` a
+     * secas deja afuera los NULL (en SQL, NULL != 'fallo' no es verdadero) y cambiaría el
+     * comportamiento de esas filas, que hasta hoy sí se actualizaban.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private static function where_no_esta_en_fallo($query)
+    {
+        return $query->where(function ($q) {
+            $q->whereNull('status')->orWhere('status', '!=', 'fallo');
+        });
     }
 
 
@@ -707,8 +752,12 @@ class ProcessArticleChunk implements ShouldQueue
 
     function update_import_history() {
 
+        $ahora = now();
 
-        // Actualización ATÓMICA (evita que los workers se pisen)
+        /*
+         * Actualización ATÓMICA (evita que los workers se pisen). `updated_at` a mano por lo mismo
+         * que en update_import_status(): el watchdog mira justamente `import_histories.updated_at`.
+         */
         DB::table('import_histories')
             ->where('id', $this->import_history_id)
             ->update([
@@ -720,6 +769,7 @@ class ProcessArticleChunk implements ShouldQueue
                 'articles_repetidos'                 => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
                 /* Acumular artículos creados con código repetido de cada chunk. */
                 'created_with_repeated_code_count'   => DB::raw('created_with_repeated_code_count + ' . (int) $this->import_result->created_with_repeated_code_count),
+                'updated_at'                         => $ahora,
             ]);
 
         // Traigo el estado actualizado y seteo status correctamente
@@ -733,7 +783,8 @@ class ProcessArticleChunk implements ShouldQueue
             }
 
             if ($import_history->status !== $new_status) {
-                ImportHistory::where('id', $this->import_history_id)->update([
+                /* Un `fallo` no se pisa: ver where_no_esta_en_fallo(). */
+                self::where_no_esta_en_fallo(ImportHistory::where('id', $this->import_history_id))->update([
                     'status' => $new_status,
                 ]);
             }
