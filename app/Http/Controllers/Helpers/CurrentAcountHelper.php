@@ -672,6 +672,54 @@ class CurrentAcountHelper {
     }
 
     /**
+     * El primer movimiento donde la cadena de saldos de una cuenta no cierra, o null si cierra
+     * entera. Solo lee.
+     *
+     * Una cadena está cortada cuando un movimiento no provisorio tiene el saldo en NULL, o cuando su
+     * saldo no es el GUARDADO del anterior más su aporte (`aporte_al_saldo()`), con tolerancia. Mismo
+     * orden y mismo filtro que checkSaldos(): `created_at, id` e `is_provisorio = 0`; el primero
+     * arranca de 0. La usa el comando `cuenta_corriente:reparar_cadenas` (misión
+     * cuenta-corriente-carrera-y-velocidad, 23/9/2026).
+     *
+     * @param  int    $credit_account_id
+     * @param  float  $tolerancia
+     * @return array|null  current_acount_id, detalle, created_at, saldo_guardado, saldo_esperado y
+     *                     diferencia (guardado − esperado; null si el guardado es NULL).
+     */
+    static function primer_corte_de_la_cadena($credit_account_id, $tolerancia = 0.05) {
+
+        $filas = DB::table('current_acounts')
+                    ->where('credit_account_id', $credit_account_id)
+                    ->where('is_provisorio', 0)
+                    ->orderBy('created_at', 'ASC')
+                    ->orderBy('id', 'ASC')
+                    ->get(['id', 'detalle', 'debe', 'haber', 'saldo', 'created_at']);
+
+        $saldo_anterior = 0.0;
+
+        foreach ($filas as $fila) {
+
+            $esperado = Numbers::redondear($saldo_anterior + Self::aporte_al_saldo($fila));
+
+            if (is_null($fila->saldo) || abs((float) $fila->saldo - $esperado) > $tolerancia) {
+
+                return [
+                    'current_acount_id' => $fila->id,
+                    'detalle'           => $fila->detalle,
+                    'created_at'        => $fila->created_at,
+                    'saldo_guardado'    => is_null($fila->saldo) ? null : (float) $fila->saldo,
+                    'saldo_esperado'    => $esperado,
+                    'diferencia'        => is_null($fila->saldo) ? null : Numbers::redondear((float) $fila->saldo - $esperado),
+                ];
+            }
+
+            $saldo_anterior = (float) $fila->saldo;
+        }
+
+        return null;
+    }
+
+    /**
      * Lo que un movimiento le suma a la cadena de saldos: su debe, menos su haber, o nada. Mismo
      * criterio que usó siempre checkSaldos(): si tiene debe cuenta el debe, aunque también tenga
      * haber. Lo comparten el recálculo y la detección de cadenas cortadas, para que no puedan
