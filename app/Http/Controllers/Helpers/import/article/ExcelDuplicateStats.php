@@ -23,12 +23,26 @@ use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 class ExcelDuplicateStats
 {
     /**
-     * Tamaño máximo de lote para la consulta whereIn a la base de datos.
-     * Evita saturar el stack de MySQL con archivos muy grandes.
+     * Tamaño máximo de lote para la consulta whereIn de crossCheckProviderCodes().
+     *
+     * Tiene que quedar POR DEBAJO de `eq_range_index_dive_limit` (200 por defecto en MySQL 8).
+     * MySQL solo estima bajando por el índice (index dives) cuando el IN tiene MENOS rangos que
+     * ese límite: con 200 exactos ya estima con las estadísticas del índice (el manual lo dice
+     * al revés: para permitir dives de hasta N valores, hay que ponerlo en N + 1). Con dives elige
+     * bien `articles_user_provider_code_index`; con estadísticas, en un catálogo grande, puede
+     * elegir otro plan. 100 deja margen de sobra.
+     *
+     * ⚠️ Es una DEFENSA, no el arreglo del corte de Servian del 23/9/2026. Ese corte lo causó la
+     * mezcla de int y string en el IN (medido en producción, ver el comentario del strval en
+     * crossCheckProviderCodes()): con todos los valores como string, el mismo IN de 5000 usó el
+     * índice. Bajar el lote sin el strval no lo hubiera arreglado.
+     *
+     * Costo: 29k códigos son ~290 consultas de milisegundos cada una por índice. Si alguien
+     * sube este número, que antes suba `eq_range_index_dive_limit` en todos los servidores.
      *
      * @var int
      */
-    protected const DB_CHUNK_SIZE = 5000;
+    protected const DB_CHUNK_SIZE = 100;
 
     /**
      * Cantidad máxima de ejemplos que se incluyen en cada lista de valores duplicados.
@@ -400,7 +414,26 @@ class ExcelDuplicateStats
             ];
         }
 
-        /* Partimos en lotes de DB_CHUNK_SIZE para no reventar la consulta whereIn. */
+        /*
+         * 🔴 Todos los códigos viajan como STRING. Los códigos salen de array_keys() de un array
+         * indexado por el valor de la celda, y PHP convierte en int toda clave con forma de entero
+         * ("12345" → 12345); lo mismo vuelve de excel_analysis_runs.codigos_proveedor (JSON).
+         * Laravel bindea un int como PDO::PARAM_INT, y MySQL, al comparar la columna varchar
+         * provider_code contra un número, compara numéricamente: no puede usar el índice para ese
+         * IN (warning 1739, "Cannot use range access ... due to type or collation conversion") y
+         * recorre todos los artículos del usuario, con lotes de cualquier tamaño. Y encima cuenta
+         * de más: "777" del Excel matchea un "0777" de la base, que la importación no matchea.
+         *
+         * Es la causa del corte de Servian del 23/9/2026 (568k artículos; el análisis del Excel
+         * quedó en "Falló"). Medido en producción sobre la consulta real del slow log: 42 de los
+         * 5000 valores del IN viajaron como enteros, el EXPLAIN dio `ref` por
+         * `articles_user_id_foreign` (325k filas estimadas; 686.402 examinadas en el corte) y la
+         * cortó el `max_execution_time` global del VPS (120 s). La misma consulta, con esos 42
+         * valores entre comillas, tardó 0,73 s.
+         */
+        $provider_codes = array_map('strval', array_values($provider_codes));
+
+        /* Partimos en lotes de DB_CHUNK_SIZE: el porqué del tamaño está en su docblock. */
         $db_chunks = array_chunk($provider_codes, self::DB_CHUNK_SIZE);
 
         foreach ($db_chunks as $chunk) {

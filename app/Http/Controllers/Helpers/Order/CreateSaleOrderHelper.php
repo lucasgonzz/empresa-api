@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\Order;
 
+use App\Http\Controllers\Helpers\AjustesDeClienteEsquemaHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -106,13 +107,22 @@ class CreateSaleOrderHelper {
 
         $request->items = [];
 
+        /*
+            Los descuentos y recargos del cliente con los que la tienda priceó el pedido (mision
+            descuentos-recargos-por-cliente, 23/9/2026). Solo existen en un pedido de la tienda
+            propia: Tienda Nube y Mercado Libre traen otro modelo, sin esas relaciones.
+        */
+        $ajustes = Self::ajustes_del_pedido($order, $from_tienda_nube, $from_meli);
+
+        $factor = Self::factor_de_ajustes($ajustes);
+
         foreach ($order->articles as $article) {
             $request->items[] = [
                 'id'                => $article->id,
                 'name'              => $article->name,
                 'amount'            => $article->pivot->amount,
                 'cost'              => $article->pivot->cost ?? $article->cost,
-                'price_vender'      => $article->pivot->price,
+                'price_vender'      => Self::precio_sin_ajustes($article->pivot->price, $factor),
                 /*
                     🔴 La variante del renglon del pedido (`article_order.variant_id`, un id de
                     `article_variants`) tiene que llegar a la venta (auditoria de stock, 5/9/2026).
@@ -143,7 +153,7 @@ class CreateSaleOrderHelper {
                     'name'              => $promo->name,
                     'cost'              => $promo->pivot->cost,
                     'amount'            => $promo->pivot->amount,
-                    'price_vender'      => $promo->pivot->price,
+                    'price_vender'      => Self::precio_sin_ajustes($promo->pivot->price, $factor),
                     'is_promocion_vinoteca'        => true
                 ];
             }
@@ -173,17 +183,135 @@ class CreateSaleOrderHelper {
                     'name'              => $combo->name,
                     'cost'              => $combo->pivot->cost,
                     'amount'            => $combo->pivot->amount,
-                    'price_vender'      => $combo->pivot->price,
+                    'price_vender'      => Self::precio_sin_ajustes($combo->pivot->price, $factor),
                     'articles'          => Self::componentes_del_combo($combo),
                     'is_combo'          => true
                 ];
             }
         }
 
-        $request->discounts = [];
-        $request->surchages = [];
+        /*
+            Sin ajustes esto es `[]` y `[]`, exactamente lo de antes de la mision: un pedido sin
+            pivots (tienda vieja, comprador sin cliente, cliente sin condiciones) da la misma venta
+            de siempre.
+        */
+        $request->discounts = $ajustes['discounts'];
+        $request->surchages = $ajustes['surchages'];
 
         SaleHelper::attachProperies($sale, $request);
+    }
+
+    /**
+     * Los descuentos y recargos del pedido en la forma en que `SaleHelper::attachDiscounts()` /
+     * `attachSurchages()` los esperan: `[['id' => .., 'percentage' => ..]]`.
+     *
+     * El porcentaje es el del PIVOT del pedido (la foto que sacó la tienda al crearlo), nunca el
+     * del descuento de hoy: si el dueño lo cambió o lo borró después, los precios del pedido se
+     * calcularon igual con el viejo, y es ése el que hay que deshacer y colgar de la venta.
+     *
+     * Solo se toman los porcentajes usables —descuento `0 < d <= 100`, recargo `r > 0`—, que es
+     * lo mismo que la tienda considera al pricear: uno que no se usó para calcular no puede
+     * usarse para deshacer.
+     *
+     * @param  \App\Models\Order|mixed  $order
+     * @param  bool  $from_tienda_nube
+     * @param  bool  $from_meli
+     * @return array{discounts: array<int,array<string,mixed>>, surchages: array<int,array<string,mixed>>}
+     */
+    static function ajustes_del_pedido($order, $from_tienda_nube, $from_meli) {
+
+        $ajustes = ['discounts' => [], 'surchages' => []];
+
+        if ($from_tienda_nube || $from_meli) {
+            return $ajustes;
+        }
+
+        // 🔴 La guarda va ANTES de tocar la relacion: sin la tabla, `$order->discounts` revienta
+        // y el pedido no se podria confirmar.
+        if (!AjustesDeClienteEsquemaHelper::hay_tablas_de_pedido()) {
+            return $ajustes;
+        }
+
+        foreach ($order->discounts as $discount) {
+
+            $percentage = (float) $discount->pivot->percentage;
+
+            if ($percentage > 0 && $percentage <= 100) {
+                $ajustes['discounts'][] = [
+                    'id'         => $discount->id,
+                    'percentage' => $percentage,
+                ];
+            }
+        }
+
+        foreach ($order->surchages as $surchage) {
+
+            $percentage = (float) $surchage->pivot->percentage;
+
+            if ($percentage > 0) {
+                $ajustes['surchages'][] = [
+                    'id'         => $surchage->id,
+                    'percentage' => $percentage,
+                ];
+            }
+        }
+
+        return $ajustes;
+    }
+
+    /**
+     * `Π(1 − d/100) × Π(1 + r/100)`: la misma composicion que `SaleHelper::getTotalSale()` y
+     * `vender_set_total.js` (descuentos primero, recargos despues, todos compuestos) y la misma con
+     * la que la tienda priceó los renglones. Sin ajustes da 1.
+     *
+     * @param  array  $ajustes  Lo que devuelve `ajustes_del_pedido()`.
+     * @return float
+     */
+    static function factor_de_ajustes($ajustes) {
+
+        $factor = 1;
+
+        foreach ($ajustes['discounts'] as $discount) {
+            $factor *= (1 - $discount['percentage'] / 100);
+        }
+
+        foreach ($ajustes['surchages'] as $surchage) {
+            $factor *= (1 + $surchage['percentage'] / 100);
+        }
+
+        return $factor;
+    }
+
+    /**
+     * El precio del renglon SIN los ajustes del cliente: `round(precio / factor, 2)`.
+     *
+     * 🔴 NO LO SIMPLIFIQUES A PASAR EL PRECIO DEL PEDIDO TAL CUAL. En el pedido el renglon ya viene
+     * ajustado (la tienda cobro 945 por un articulo de 1000 con 10% de descuento y 5% de recargo),
+     * pero la venta lleva ADEMAS los descuentos y recargos colgados en `discount_sale` /
+     * `sale_surchage`. Con el renglon a 945 y los pivots encima, cada camino que recalcula el total
+     * desde la venta —`SaleHelper::getTotalSale()` al confirmar una venta chequeada, los puntos
+     * (`PuntosBaseHelper`) y sobre todo la factura (`AfipItemCalculator`, que aplica los
+     * porcentajes renglon por renglon)— los aplicaria DOS VECES y el comprobante saldria por
+     * 945 × 0,9 × 1,05 = 893,03. Llevando el renglon a 1000 la venta queda igual a una hecha en
+     * Vender con esos ajustes, y todo recalculo da 945 (± centavos del redondeo).
+     *
+     * Y tampoco lo "simplifiques" sacando los pivots de la venta para dejar el 945: la venta
+     * tiene que decir QUE descuentos y recargos se le hicieron al cliente, igual que una de Vender.
+     *
+     * Con factor 1 (sin ajustes) o no positivo (un descuento del 100%: el renglon ya es 0 y no hay
+     * precio que reconstruir) el precio pasa sin tocar.
+     *
+     * @param  float|string|null  $precio
+     * @param  float  $factor
+     * @return float|string|null
+     */
+    static function precio_sin_ajustes($precio, $factor) {
+
+        if ($factor == 1 || $factor <= 0 || !is_numeric($precio)) {
+            return $precio;
+        }
+
+        return round($precio / $factor, 2);
     }
 
     /**
