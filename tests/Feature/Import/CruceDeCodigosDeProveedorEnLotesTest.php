@@ -130,6 +130,57 @@ class CruceDeCodigosDeProveedorEnLotesTest extends EmpresaTestCase
     }
 
     /**
+     * Los códigos numéricos viajan a MySQL como string, no como int.
+     *
+     * analyze() arma la lista con array_keys() de un array indexado por la celda, y PHP convierte
+     * "12345" en la clave int 12345. Bindeado como int, MySQL compara la columna varchar
+     * numéricamente: no puede usar `articles_user_provider_code_index` para el IN (warning 1739) y
+     * recorre todo el catálogo del usuario, sea cual sea el tamaño del lote. Y cuenta de más: el
+     * 777 del Excel matchea el "0777" de la base, que la importación (índice por clave de array)
+     * nunca matchea.
+     *
+     * @test
+     */
+    public function los_codigos_numericos_se_consultan_como_string_y_no_matchean_ceros_a_la_izquierda()
+    {
+        $mismo = $this->crear_proveedor('Proveedor del Excel (códigos numéricos)');
+
+        $this->crear_articulo($this->user_id, '12345', $mismo->id);
+        $this->crear_articulo($this->user_id, '0777', $mismo->id);
+
+        /* Exactamente como los arma analyze(): claves de un array indexado por el valor de la celda. */
+        $codigos = array_keys(['12345' => 1, '777' => 1, 'ABC-1' => 1]);
+
+        $this->assertSame('integer', gettype($codigos[0]), 'el escenario pide las claves numéricas convertidas a int, como en analyze()');
+
+        $bindings_del_in = [];
+
+        DB::listen(function ($consulta) use (&$bindings_del_in) {
+            if (stripos($consulta->sql, 'from `articles`') === false || stripos($consulta->sql, '`provider_code` in') === false) {
+                return;
+            }
+
+            /* El primer binding es el user_id; el resto, los valores del IN. */
+            $bindings_del_in = array_merge($bindings_del_in, array_slice($consulta->bindings, 1));
+        });
+
+        $resultado = ExcelDuplicateStats::crossCheckProviderCodes($codigos, $mismo->id, $this->user_id);
+
+        $this->assertCount(3, $bindings_del_in, 'no se vio la consulta del cruce: el test no está mirando lo que dice');
+
+        foreach ($bindings_del_in as $valor) {
+            $this->assertIsString(
+                $valor,
+                'el código ' . var_export($valor, true) . ' viajó como ' . gettype($valor) . ': MySQL no puede usar el índice de provider_code para ese IN'
+            );
+        }
+
+        /* Solo "12345": el "777" del Excel no es el "0777" de la base. */
+        $this->assertSame(1, $resultado['provider_codes_existentes_mismo_proveedor']);
+        $this->assertSame(0, $resultado['provider_codes_existentes_otros_proveedores']);
+    }
+
+    /**
      * @param  int $posicion
      * @return string
      */

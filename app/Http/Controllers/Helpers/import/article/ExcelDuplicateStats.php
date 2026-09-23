@@ -412,6 +412,18 @@ class ExcelDuplicateStats
             ];
         }
 
+        /*
+         * 🔴 Todos los códigos viajan como STRING. Los códigos salen de array_keys() de un array
+         * indexado por el valor de la celda, y PHP convierte en int toda clave con forma de entero
+         * ("12345" → 12345); lo mismo vuelve de excel_analysis_runs.codigos_proveedor (JSON).
+         * Laravel bindea un int como PDO::PARAM_INT, y MySQL, al comparar la columna varchar
+         * provider_code contra un número, compara numéricamente: no puede usar el índice para ese
+         * IN (warning 1739, "Cannot use range access ... due to type or collation conversion") y
+         * recorre todos los artículos del usuario, con lotes de cualquier tamaño. Y encima cuenta
+         * de más: "777" del Excel matchea un "0777" de la base, que la importación no matchea.
+         */
+        $provider_codes = array_map('strval', array_values($provider_codes));
+
         /* Partimos en lotes de DB_CHUNK_SIZE: el porqué del tamaño está en su docblock. */
         $db_chunks = array_chunk($provider_codes, self::DB_CHUNK_SIZE);
 
