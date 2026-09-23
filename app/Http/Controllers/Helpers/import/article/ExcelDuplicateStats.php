@@ -25,23 +25,24 @@ class ExcelDuplicateStats
     /**
      * Tamaño máximo de lote para la consulta whereIn de crossCheckProviderCodes().
      *
-     * 200 no es un número redondo: es `eq_range_index_dive_limit`, 200 por defecto en MySQL 8.
-     * Con hasta 200 valores en el IN, el optimizador estima cuántas filas trae cada uno bajando
-     * por el índice (index dives) y elige bien `articles_user_provider_code_index`. Con más, deja
-     * de bajar y estima con las estadísticas del índice, que en un catálogo grande pueden ser
-     * malas y llevarlo a elegir otro plan.
+     * Tiene que quedar POR DEBAJO de `eq_range_index_dive_limit` (200 por defecto en MySQL 8).
+     * MySQL solo estima bajando por el índice (index dives) cuando el IN tiene MENOS rangos que
+     * ese límite: con 200 exactos ya estima con las estadísticas del índice (el manual lo dice
+     * al revés: para permitir dives de hasta N valores, hay que ponerlo en N + 1). Con dives elige
+     * bien `articles_user_provider_code_index`; con estadísticas, en un catálogo grande, puede
+     * elegir otro plan. 100 deja margen de sobra.
      *
      * ⚠️ Es una DEFENSA, no el arreglo del corte de Servian del 23/9/2026. Ese corte lo causó la
      * mezcla de int y string en el IN (medido en producción, ver el comentario del strval en
      * crossCheckProviderCodes()): con todos los valores como string, el mismo IN de 5000 usó el
      * índice. Bajar el lote sin el strval no lo hubiera arreglado.
      *
-     * Costo: 29k códigos son ~145 consultas de milisegundos cada una por índice. Si alguien
-     * sube este número, que primero suba `eq_range_index_dive_limit` en todos los servidores.
+     * Costo: 29k códigos son ~290 consultas de milisegundos cada una por índice. Si alguien
+     * sube este número, que antes suba `eq_range_index_dive_limit` en todos los servidores.
      *
      * @var int
      */
-    protected const DB_CHUNK_SIZE = 200;
+    protected const DB_CHUNK_SIZE = 100;
 
     /**
      * Cantidad máxima de ejemplos que se incluyen en cada lista de valores duplicados.

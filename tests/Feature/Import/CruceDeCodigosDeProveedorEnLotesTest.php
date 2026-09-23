@@ -12,18 +12,25 @@ use Tests\EmpresaTestCase;
 
 /**
  * Misión `importaciones-largas-y-cruce-de-codigos` (23/9/2026): el cruce de provider_codes del
- * análisis de Excel (`ExcelDuplicateStats::crossCheckProviderCodes()`) consulta en lotes de a 200.
+ * análisis de Excel (`ExcelDuplicateStats::crossCheckProviderCodes()`) manda los códigos como
+ * string y consulta en lotes de a 100.
  *
- * Con lotes de 5000, en Servian (568k artículos) MySQL pasó el límite de
- * `eq_range_index_dive_limit` (200), estimó mal, examinó 686.402 filas y la consulta murió a los
- * 120 s del `max_execution_time` del VPS: el análisis quedó en "Falló". El porqué completo está en
- * el docblock de `DB_CHUNK_SIZE`.
+ * El corte de Servian del 23/9/2026 (568k artículos, el análisis del Excel en "Falló") lo causó
+ * la mezcla de int y string en el IN, no el tamaño del lote. Medido en producción sobre la
+ * consulta real del slow log: 42 de los 5000 valores viajaron como enteros, MySQL no pudo usar
+ * `articles_user_provider_code_index` (el EXPLAIN dio `ref` por `articles_user_id_foreign`,
+ * 325k filas estimadas) y la consulta la cortó el `max_execution_time` del VPS (120 s); con esos
+ * 42 valores entre comillas, la misma consulta tardó 0,73 s. Eso lo cubre el segundo test.
+ *
+ * El lote de 100 es una defensa aparte: MySQL solo hace index dives con MENOS valores en el IN
+ * que `eq_range_index_dive_limit` (200 por defecto). El porqué completo está en el docblock de
+ * `DB_CHUNK_SIZE`.
  *
  * Lo que protege:
- *  - ninguna consulta a `articles` lleva más de 200 valores en el IN (lo mira `DB::listen`, así
+ *  - ninguna consulta a `articles` lleva más de 100 valores en el IN (lo mira `DB::listen`, así
  *    que no depende de la constante sino de lo que de verdad sale hacia MySQL);
- *  - partir en más lotes no cambia los conteos: los códigos que caen justo en los bordes de lote
- *    (199/200/201, 399/400) cuentan igual, un código con artículos en los dos proveedores cuenta
+ *  - partir en más lotes no cambia los conteos: los códigos que caen sobre bordes de lote
+ *    (100, 199/200/201, 399/400) cuentan igual, un código con artículos en los dos proveedores cuenta
  *    en los dos contadores, y un artículo de OTRO usuario no cuenta.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union
@@ -33,10 +40,13 @@ use Tests\EmpresaTestCase;
  */
 class CruceDeCodigosDeProveedorEnLotesTest extends EmpresaTestCase
 {
-    /** Tope que tiene que respetar cada IN: `eq_range_index_dive_limit` por defecto. */
-    const MAXIMO_POR_IN = 200;
+    /**
+     * Tope que tiene que respetar cada IN: el tamaño de lote elegido, con margen por debajo de
+     * `eq_range_index_dive_limit` (200), que tiene que quedar ESTRICTAMENTE por encima.
+     */
+    const MAXIMO_POR_IN = 100;
 
-    /** Cantidad de códigos del "Excel": cruza dos bordes de lote (200 y 400). */
+    /** Cantidad de códigos del "Excel": cruza cuatro bordes de lote (100, 200, 300 y 400). */
     const CANTIDAD_DE_CODIGOS = 450;
 
     /** @var int */
@@ -50,7 +60,7 @@ class CruceDeCodigosDeProveedorEnLotesTest extends EmpresaTestCase
     }
 
     /** @test */
-    public function el_cruce_parte_en_lotes_de_a_lo_sumo_200_y_cuenta_igual()
+    public function el_cruce_parte_en_lotes_de_a_lo_sumo_100_y_cuenta_igual()
     {
         $mismo = $this->crear_proveedor('Proveedor del Excel (cruce en lotes)');
         $otro  = $this->crear_proveedor('Otro proveedor (cruce en lotes)');
@@ -69,7 +79,7 @@ class CruceDeCodigosDeProveedorEnLotesTest extends EmpresaTestCase
 
         /*
          * Posición en la lista => proveedores del usuario que tienen ese código. Los índices están
-         * elegidos sobre los bordes de lote: 199 | 200 y 399 | 400.
+         * elegidos sobre los bordes de lote de 100: 100 (primero del segundo lote), 199 | 200 y 399 | 400.
          */
         $escenario = [
             0   => [$mismo->id],
@@ -115,12 +125,12 @@ class CruceDeCodigosDeProveedorEnLotesTest extends EmpresaTestCase
             $this->assertLessThanOrEqual(
                 self::MAXIMO_POR_IN,
                 $tamanio,
-                'una consulta a articles llevó ' . $tamanio . ' valores en el IN: con más de 200 MySQL deja de hacer index dives y puede recorrer todo el catálogo'
+                'una consulta a articles llevó ' . $tamanio . ' valores en el IN: el lote es de 100, y desde 200 MySQL ya no hace index dives y puede recorrer todo el catálogo'
             );
         }
 
         $this->assertSame(self::CANTIDAD_DE_CODIGOS, array_sum($tamanios_de_in), 'algún código no se consultó');
-        $this->assertCount(3, $tamanios_de_in, '450 códigos en lotes de 200 son 3 consultas');
+        $this->assertCount(5, $tamanios_de_in, '450 códigos en lotes de 100 son 5 consultas');
 
         /* 0, 100, 200, 201, 399 y 449. */
         $this->assertSame(6, $resultado['provider_codes_existentes_mismo_proveedor']);
