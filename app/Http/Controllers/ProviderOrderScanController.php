@@ -12,6 +12,7 @@ use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderAfipTicketIva;
 use App\Models\ProviderOrderScan;
 use App\Models\ProviderOrderScanImage;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -275,6 +276,197 @@ class ProviderOrderScanController extends Controller
         }
 
         return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * GET /api/provider-order-scan/historial/{provider_order_id}
+     *
+     * Todos los escaneos que tuvo una compra, en cualquier estado y el más nuevo primero
+     * (misión historial-escaneos-compra). Es lo que abre el botón "Historial" del listado de
+     * compras: el botón rojo solo alcanza al escaneo pendiente de revisar, y un escaneo ya
+     * confirmado, descartado o fallido no tenía ninguna forma de volver a verse.
+     *
+     * Solo lectura. No devuelve el `resultado` crudo sino un resumen acotado (artículos, datos
+     * del comprobante y qué se asentó): el historial se muestra en una tabla, no se edita. Para
+     * corregir y confirmar un escaneo pendiente el frontend reusa `show()` y el modal de revisión.
+     *
+     * Tenencia: se filtra por el user_id del owner, igual que el resto del controlador. Una
+     * compra ajena o inexistente devuelve lista vacía, no 404: no hay motivo para confirmarle a
+     * nadie si un id existe en otro comercio.
+     *
+     * @param  int  $provider_order_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function historial($provider_order_id)
+    {
+        $owner_id = $this->userId();
+
+        $scans = ProviderOrderScan::where('user_id', $owner_id)
+                                    ->where('provider_order_id', (int) $provider_order_id)
+                                    ->orderBy('id', 'DESC')
+                                    ->get();
+
+        if ($scans->isEmpty()) {
+            return response()->json(['models' => []], 200);
+        }
+
+        /* Las fotos de todos los escaneos en una sola consulta, agrupadas por escaneo. */
+        $imagenes_por_escaneo = ProviderOrderScanImage::whereIn('provider_order_scan_id', $scans->pluck('id')->all())
+                                                        ->where('user_id', $owner_id)
+                                                        ->orderBy('orden', 'ASC')
+                                                        ->get()
+                                                        ->groupBy('provider_order_scan_id');
+
+        /* Nombre de quien lanzó cada escaneo (puede ser el dueño o un empleado). */
+        $auth_user_ids = $scans->pluck('auth_user_id')->filter()->unique()->all();
+        $nombres       = User::whereIn('id', $auth_user_ids)->pluck('name', 'id');
+
+        $models = [];
+
+        foreach ($scans as $scan) {
+
+            $imagenes = [];
+
+            if (isset($imagenes_por_escaneo[$scan->id])) {
+                foreach ($imagenes_por_escaneo[$scan->id] as $image) {
+                    $imagenes[] = [
+                        'orden'           => (int) $image->orden,
+                        'nombre_original' => $image->nombre_original,
+                    ];
+                }
+            }
+
+            $resultado = is_array($scan->resultado) ? $scan->resultado : [];
+            $articulos = $this->resumen_de_articulos($this->articulos_del_resultado($scan->resultado));
+
+            $usuario = null;
+
+            if (!is_null($scan->auth_user_id) && isset($nombres[$scan->auth_user_id])) {
+                $usuario = $nombres[$scan->auth_user_id];
+            }
+
+            $models[] = [
+                'uuid'               => $scan->uuid,
+                'created_at'         => $scan->created_at,
+                'gestionado_at'      => $scan->gestionado_at,
+                'usuario'            => $usuario,
+                'estado_visible'     => $this->estado_visible($scan),
+                'error'              => $scan->error,
+                'cantidad_imagenes'  => count($imagenes),
+                'cantidad_articulos' => count($articulos),
+                'imagenes'           => $imagenes,
+                'aplicado'           => is_array($scan->aplicado) ? $scan->aplicado : null,
+                'factura'            => $this->resumen_de_factura(isset($resultado['factura']) ? $resultado['factura'] : null),
+                'articulos'          => $articulos,
+            ];
+        }
+
+        return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * En qué situación está un escaneo, dicha para el historial.
+     *
+     * Combina `estado` (cómo terminó la lectura) con `resultado_gestion` (qué hizo el usuario
+     * después) en un solo valor, para que el frontend no tenga que rederivarlo. El caso
+     * "para_revisar" usa el mismo criterio que el botón rojo (esta_pendiente_de_revisar()).
+     *
+     * 'sin_terminar' es un escaneo que quedó en 'pendiente'/'procesando' hace más de
+     * MINUTOS_ESCANEO_EN_CURSO: el job tiene un timeout de 10 minutos, así que no está corriendo,
+     * está abandonado. Mostrarlo como "en proceso" para siempre sería mentirle al usuario.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @return string  en_proceso | sin_terminar | para_revisar | confirmado | descartado | error
+     */
+    protected function estado_visible($scan)
+    {
+        if ($scan->resultado_gestion === 'confirmado') {
+            return 'confirmado';
+        }
+
+        if ($scan->resultado_gestion === 'descartado') {
+            return 'descartado';
+        }
+
+        if ($scan->estado === 'error') {
+            return 'error';
+        }
+
+        if ($scan->esta_pendiente_de_revisar()) {
+            return 'para_revisar';
+        }
+
+        if (in_array($scan->estado, self::ESTADOS_EN_CURSO)) {
+
+            $limite = now()->subMinutes(self::MINUTOS_ESCANEO_EN_CURSO);
+
+            if (!is_null($scan->created_at) && $scan->created_at->lt($limite)) {
+                return 'sin_terminar';
+            }
+
+            return 'en_proceso';
+        }
+
+        /* Cualquier estado que no conozcamos se ve como el más prudente: todavía sin resolver. */
+        return 'en_proceso';
+    }
+
+    /**
+     * Recorta la lista de artículos de un resultado a lo que el historial muestra.
+     *
+     * @param  array  $articulos
+     * @return array
+     */
+    protected function resumen_de_articulos($articulos)
+    {
+        $resumen = [];
+
+        foreach ($articulos as $articulo) {
+
+            if (!is_array($articulo)) {
+                continue;
+            }
+
+            $resumen[] = [
+                'codigo_proveedor' => isset($articulo['codigo_proveedor']) ? $articulo['codigo_proveedor'] : null,
+                'bar_code'         => isset($articulo['bar_code']) ? $articulo['bar_code'] : null,
+                'nombre'           => isset($articulo['nombre']) ? $articulo['nombre'] : null,
+                'cantidad'         => isset($articulo['cantidad']) ? $articulo['cantidad'] : null,
+                'costo_unitario'   => isset($articulo['costo_unitario']) ? $articulo['costo_unitario'] : null,
+            ];
+        }
+
+        return $resumen;
+    }
+
+    /**
+     * Datos del comprobante que el historial muestra, o null si el escaneo no leyó ninguno.
+     *
+     * @param  mixed  $factura
+     * @return array|null
+     */
+    protected function resumen_de_factura($factura)
+    {
+        if (!is_array($factura)) {
+            return null;
+        }
+
+        $resumen = [
+            'tipo_comprobante'    => isset($factura['tipo_comprobante']) ? $factura['tipo_comprobante'] : null,
+            'code'                => isset($factura['code']) ? $factura['code'] : null,
+            'issued_at'           => isset($factura['issued_at']) ? $factura['issued_at'] : null,
+            'emisor_razon_social' => isset($factura['emisor_razon_social']) ? $factura['emisor_razon_social'] : null,
+            'total'               => isset($factura['total']) ? $factura['total'] : null,
+        ];
+
+        /* Sin ningún dato leído no hay nada que mostrar: null en vez de un objeto de nulls. */
+        foreach ($resumen as $valor) {
+            if (!is_null($valor)) {
+                return $resumen;
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -18,6 +18,26 @@ class ProviderOrder extends Model
 
     function scopeWithAll($query) {
         $query->with('articles.addresses', 'articles.images', 'provider', 'provider_order_afip_tickets.provider_order_afip_ticket_ivas', 'provider_order_status', 'provider_order_extra_costs', 'provider_order_discounts');
+
+        /*
+         * Cuántos escaneos de factura tuvo la compra (misión historial-escaneos-compra). Es un
+         * count por SQL y no la relación cargada: el listado solo necesita saber SI hay
+         * historial para mostrar el botón, no traer los resultados de cada escaneo (que pesan
+         * decenas de KB). El detalle se pide recién al abrir el historial.
+         * Llega como `provider_order_scans_count`.
+         */
+        $query->withCount('provider_order_scans');
+    }
+
+    /**
+     * Los escaneos de factura que tuvo la compra, en cualquier estado (misión
+     * historial-escaneos-compra). Solo lectura desde acá: quien los crea y los gestiona es
+     * ProviderOrderScanController.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    function provider_order_scans() {
+        return $this->hasMany(ProviderOrderScan::class);
     }
 
     function provider_order_discounts() {
