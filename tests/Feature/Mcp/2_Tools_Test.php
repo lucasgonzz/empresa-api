@@ -454,4 +454,80 @@ class Tools_Test extends McpTestCase
         $this->assertEquals('listo', $ultimo->estado);
         $this->assertStringStartsWith('Faltan datos:', (string) $ultimo->contenido);
     }
+
+    /**
+     * 🔴 Una LECTURA que vive en HerramientasDeCarga (consultar_proveedores, que_puedo_cargar…) no
+     * escribe nada: ni mensajes ni last_message_at. Antes del arreglo dejaba el par con el JSON crudo
+     * como contenido, igual que una carga (hallazgo del verificador del servidor, 23/9/2026).
+     *
+     * @group mcp
+     * @test
+     */
+    public function una_lectura_de_herramientas_de_carga_no_escribe_nada()
+    {
+        Provider::create(['name' => 'Proveedor solo lectura MCP', 'user_id' => $this->dueno->id]);
+
+        $sesion = $this->inicializar();
+
+        $conversation = $this->conversacion_de($sesion);
+
+        $last_message_at_antes = (string) $conversation->last_message_at;
+
+        $this->assertTrue(HerramientasDeCarga::maneja('consultar_proveedores'), 'La premisa del test: es una tool de HerramientasDeCarga.');
+        $this->assertFalse(HerramientasDeCarga::es_de_carga('consultar_proveedores'), '…pero de lectura.');
+
+        $respuesta = $this->tool('consultar_proveedores', ['busqueda' => 'solo lectura MCP'], $sesion);
+
+        $respuesta->assertStatus(200);
+
+        $this->assertFalse($respuesta->json('result.isError'));
+        $this->assertStringContainsString('Proveedor solo lectura MCP', (string) $respuesta->json('result.content.0.text'), 'La lectura se ejecutó de verdad.');
+
+        $catalogo = $this->tool('que_puedo_cargar', [], $sesion, 2);
+
+        $this->assertFalse($catalogo->json('result.isError'));
+
+        $this->assertEquals(0, AiMessage::where('ai_conversation_id', $conversation->id)->count(), 'Una lectura no deja mensajes.');
+
+        $conversation->refresh();
+
+        $this->assertEquals($last_message_at_antes, (string) $conversation->last_message_at, 'Ni mueve last_message_at.');
+    }
+
+    /**
+     * cancelar_carga_pendiente SÍ deja su par (toca una tarjeta y el dueño tiene que ver quién la
+     * cerró) y la tarjeta queda cancelada sin ejecutar nada.
+     *
+     * @group mcp
+     * @test
+     */
+    public function cancelar_carga_pendiente_deja_su_par_y_cancela_la_tarjeta()
+    {
+        $flete = $this->subcategoria('Flete a cancelar MCP');
+
+        $sesion = $this->inicializar();
+
+        $conversation = $this->conversacion_de($sesion);
+
+        $gastos_antes = Expense::where('user_id', $this->dueno->id)->count();
+
+        $propuesta = $this->estructurado($this->tool('proponer_gasto', $this->argumentos_de_gasto($flete, 900), $sesion, 'p1'));
+
+        $this->assertTrue($propuesta['ok'], json_encode($propuesta));
+        $this->assertEquals(2, AiMessage::where('ai_conversation_id', $conversation->id)->count(), 'La propuesta deja su par.');
+
+        $cancelacion = $this->estructurado($this->tool('cancelar_carga_pendiente', ['tarjeta_id' => $propuesta['tarjeta_id']], $sesion, 'p2'));
+
+        $this->assertTrue($cancelacion['ok'], json_encode($cancelacion));
+        $this->assertEquals(AiMessageAction::ESTADO_CANCELADA, $cancelacion['estado']);
+        $this->assertEquals(AiMessageAction::ESTADO_CANCELADA, AiMessageAction::find($propuesta['tarjeta_id'])->estado_guardado());
+        $this->assertEquals($gastos_antes, Expense::where('user_id', $this->dueno->id)->count(), 'Cancelar no registra nada.');
+
+        $this->assertEquals(4, AiMessage::where('ai_conversation_id', $conversation->id)->count(), 'La cancelación también deja su par.');
+
+        $ultimo = AiMessage::where('ai_conversation_id', $conversation->id)->orderBy('id', 'DESC')->first();
+
+        $this->assertEquals('listo', $ultimo->estado);
+        $this->assertEquals('Carga cancelada.', (string) $ultimo->contenido, 'El panel dice que se canceló, no la nota al modelo que habla de "registrado".');
+    }
 }

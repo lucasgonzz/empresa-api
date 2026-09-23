@@ -138,6 +138,10 @@ class McpController extends Controller
 
             $params = isset($mensaje['params']) && is_array($mensaje['params']) ? $mensaje['params'] : [];
 
+            // Definida ANTES del try: el catch la lee para el log, y si abrir() lanza en el primer
+            // mensaje todavía no se asignó (hallazgo del verificador: notice adentro del catch → 500).
+            $de_este_mensaje = null;
+
             try {
 
                 if ($metodo === 'initialize') {

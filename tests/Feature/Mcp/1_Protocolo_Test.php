@@ -3,6 +3,7 @@
 namespace Tests\Feature\Mcp;
 
 use App\Models\AiConversation;
+use App\Services\AsistenteIa\HerramientasDeCarga;
 use App\Services\AsistenteIa\Mcp\McpServidor;
 
 /**
@@ -401,5 +402,46 @@ class Protocolo_Test extends McpTestCase
         $this->rpc('tools/list', [], 2)->assertStatus(200);
 
         $this->assertEquals($antes, AiConversation::where('auth_user_id', $this->dueno->id)->count());
+    }
+
+    /**
+     * 🔴 Las instrucciones no mienten ni quedan viejas: la lista de lo que SIEMPRE deja tarjeta se
+     * deriva de HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES (cuando otra misión suma un tipo, como el
+     * borrado por pantalla, entra solo), suma facturar, y no promete un rechazo que por MCP no existe
+     * (las tres guardas de la confirmación por texto se cumplen por construcción, porque el 'user'
+     * posterior lo escribe el propio servidor): lo que se le pide al modelo es que respete a la persona.
+     *
+     * @group mcp
+     * @test
+     */
+    public function las_instrucciones_derivan_lo_que_siempre_confirma_y_no_prometen_un_rechazo()
+    {
+        $respuesta = $this->rpc('initialize', ['protocolVersion' => '2025-06-18', 'capabilities' => [], 'clientInfo' => ['name' => 'x', 'version' => '0']]);
+
+        $respuesta->assertStatus(200);
+
+        $instrucciones = (string) $respuesta->json('result.instructions');
+
+        $this->assertNotEmpty(HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES);
+
+        foreach (HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES as $tipo) {
+
+            $nombre = isset(McpServidor::NOMBRES_DE_LO_QUE_SIEMPRE_CONFIRMA[$tipo])
+                ? McpServidor::NOMBRES_DE_LO_QUE_SIEMPRE_CONFIRMA[$tipo]
+                : $tipo;
+
+            $this->assertStringContainsString($nombre, $instrucciones, 'Falta nombrar el tipo ' . $tipo . ' entre lo que siempre deja tarjeta.');
+        }
+
+        // El tipo que sumó la misión de las acciones de pantalla, leído de la constante y no a mano.
+        $this->assertContains('borrado_pantalla', HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES);
+        $this->assertStringContainsString('borrar por una acción de pantalla', $instrucciones);
+
+        $this->assertStringContainsString('facturar (emitir un comprobante ante ARCA)', $instrucciones);
+        $this->assertStringContainsString('Lo que SIEMPRE deja tarjeta, en cualquier modo:', $instrucciones);
+
+        $this->assertStringNotContainsString('te la rechaza', $instrucciones, 'Por MCP la confirmación en la misma respuesta NO se rechaza: no hay que prometerlo.');
+        $this->assertStringContainsString('recién cuando te diga que sí en un mensaje suyo', $instrucciones);
+        $this->assertStringContainsString('El sistema confía en que respetes esto', $instrucciones);
     }
 }

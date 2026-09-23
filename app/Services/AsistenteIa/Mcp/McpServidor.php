@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageAction;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
@@ -30,8 +31,11 @@ use Carbon\Carbon;
  * guardas de ConfirmacionPorTextoIaHelper::rechazo() —otro ai_message_id, el que propuso está
  * 'listo', el 'user' que dispara es posterior— se cumplen solas con el par: la propuesta vive en el
  * assistant de la llamada N (ya 'listo' al terminar), y la confirmación llega en la llamada N+1 con
- * su propio 'user' posterior. No se toca ninguna guarda. Las lecturas pasan null como mensaje y no
- * escriben nada: un cliente charlatán que consulta stock cien veces no infla ai_messages.
+ * su propio 'user' posterior. No se toca ninguna guarda. Las lecturas no escriben nada: las del
+ * registro de AsistenteIaService van con null como mensaje, y las que viven en HerramientasDeCarga
+ * (consultar_proveedores, que_puedo_cargar…) con una instancia SIN GUARDAR que solo existe para pasar
+ * la puerta del flag (ver deja_registro()). Un cliente charlatán que consulta cien veces no infla
+ * ai_messages ni mueve last_message_at.
  */
 class McpServidor
 {
@@ -52,6 +56,28 @@ class McpServidor
 
     /** Largo máximo del content que se guarda como contenido del assistant cuando no hay resumen. */
     const LARGO_CONTENIDO = 2000;
+
+    /**
+     * Cómo se le nombra al modelo cada tipo de HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES en las
+     * instrucciones. La lista de "lo que SIEMPRE deja tarjeta" se DERIVA de esa constante y no se
+     * escribe a mano: cuando otra misión suma un tipo (como pasó con el borrado por pantalla), las
+     * instrucciones lo ganan solas; un tipo que todavía no tenga nombre acá sale con su literal.
+     *
+     * @var array<string, string>
+     */
+    const NOMBRES_DE_LO_QUE_SIEMPRE_CONFIRMA = [
+        AiMessageAction::TIPO_BAJA                 => 'borrar algo',
+        AiMessageAction::TIPO_ACTUALIZACION_MASIVA => 'la actualización masiva de artículos',
+        AiMessageAction::TIPO_UNIFICAR_BANCOS      => 'unificar los bancos de los cheques',
+        AiMessageAction::TIPO_PERMISO_EMPLEADO     => 'los permisos de un empleado',
+        AiMessageAction::TIPO_BORRADO_PANTALLA     => 'borrar por una acción de pantalla',
+    ];
+
+    /**
+     * Lo que siempre confirma la persona y NO es un tipo de tarjeta de la lista de arriba: facturar
+     * (emitir un comprobante ante ARCA) se hace por una acción de pantalla que confirma siempre.
+     */
+    const OTRAS_QUE_SIEMPRE_CONFIRMAN = ['facturar (emitir un comprobante ante ARCA)'];
 
     /**
      * true si es una de las versiones de VERSIONES.
@@ -210,18 +236,40 @@ class McpServidor
 
         if (!HerramientasDeCarga::maneja($name)) {
 
+            // Una lectura del registro de AsistenteIaService: sin mensaje, y no escribe nada.
             return self::resultado_de_tool($servicio->execute_tool_calls([$bloque], $conversation, null));
         }
 
         /*
          * 🔴 Defensa en profundidad de la tenencia: McpSesionHelper::resolver() ya filtró por la
-         * persona, pero una carga escribe en nombre de quien firma la conversación
-         * (ContextoDeCargaIa lee auth_user_id), así que se vuelve a comparar acá, en el único
-         * punto donde el MCP escribe.
+         * persona, pero todo lo que vive en HerramientasDeCarga corre en nombre de quien firma la
+         * conversación (ContextoDeCargaIa lee auth_user_id: es la persona cuyos permisos se espejan
+         * y en cuyo nombre se escribe), así que se vuelve a comparar acá.
          */
         if ((int) $conversation->auth_user_id !== (int) $persona->id) {
 
             throw new McpError(-32602, 'La sesión no es de la persona autenticada: volvé a inicializar.');
+        }
+
+        if (!self::deja_registro($name)) {
+
+            /*
+             * 🔴 UNA LECTURA QUE VIVE EN HerramientasDeCarga TAMPOCO ESCRIBE NADA (consultar_proveedores,
+             * consultar_tareas, que_puedo_cargar, contar_articulos_por_filtro, consultar_por_pantalla…).
+             * execute_tool_calls() exige un assistant con acciones_habilitadas para despachar CUALQUIER
+             * tool de ese archivo, y HerramientasDeCarga::ejecutar() le pregunta el canal a ese mismo
+             * mensaje: se le pasa una instancia SIN GUARDAR, que cumple las tres cosas (instanceof, el
+             * flag y confirma_por_texto()) y no toca la base. Antes de este arreglo (hallazgo del
+             * verificador, 23/9/2026) un consultar_proveedores dejaba dos filas con el JSON crudo como
+             * contenido y movía last_message_at, igual que una carga.
+             */
+            $sin_guardar = new AiMessage([
+                'rol'                  => 'assistant',
+                'acciones_habilitadas' => true,
+                'canal'                => AiMessage::CANAL_MCP,
+            ]);
+
+            return self::resultado_de_tool($servicio->execute_tool_calls([$bloque], $conversation, $sin_guardar));
         }
 
         AiMessage::create([
@@ -360,9 +408,9 @@ class McpServidor
             '',
             '- Las consultar_*, que_puedo_*, resumir_*, mostrar_* y contar_* leen. Usalas todo lo que haga falta antes de contestar.',
             '- Las proponer_* ARMAN una carga (un gasto, un pago, una venta, un alta, una edición...). Qué pasa después depende del modo de confianza que el dueño eligió en la configuración de su asistente. Hoy está en "' . $modo . '":',
-            '  · cauteloso o resuelto: la carga queda como una tarjeta pendiente y la respuesta trae tarjeta_id. Se confirma en una llamada POSTERIOR con confirmar_carga_pendiente, recién después de que la persona te diga que sí — o el dueño la confirma desde la pantalla del sistema. Nunca la confirmes en la misma respuesta en la que la propusiste: te la rechaza.',
+            '  · cauteloso o resuelto: la carga queda como una tarjeta pendiente y la respuesta trae tarjeta_id. Se confirma en una llamada POSTERIOR con confirmar_carga_pendiente — o el dueño la confirma desde la pantalla del sistema. No confirmes una carga que la persona todavía no vio ni aprobó: proponé, decile los datos exactos, y llamá a confirmar_carga_pendiente recién cuando te diga que sí en un mensaje suyo. El sistema confía en que respetes esto.',
             '  · directo: la mayoría se ejecutan en el acto y la respuesta lo dice (estado "confirmada").',
-            '  Borrar (proponer_baja), la actualización masiva de artículos, unificar los bancos de los cheques y los permisos de un empleado SIEMPRE dejan tarjeta, en cualquier modo.',
+            '  Lo que SIEMPRE deja tarjeta, en cualquier modo: ' . self::lo_que_siempre_confirma() . '.',
             '- Nunca digas que algo quedó cargado si la respuesta no lo dice. Un número, un nombre o un total de algo registrado sale de `resultado`, palabra por palabra: no lo saques de tu memoria ni de la conversación.',
             '- Si una respuesta trae `faltan`, preguntá eso; si trae `error`, contá ese motivo tal cual y no lo reemplaces por otro.',
             '- Con cancelar_carga_pendiente das de baja una tarjeta que la persona rechazó.',
@@ -377,6 +425,57 @@ class McpServidor
         ];
 
         return implode("\n", $lineas);
+    }
+
+    /**
+     * true si la tool deja registro en la conversación: las que CUELGAN una tarjeta (proponer_*),
+     * la que la ejecuta (confirmar_carga_pendiente) y la que la cierra (cancelar_carga_pendiente).
+     * Todo lo demás que vive en HerramientasDeCarga es lectura y no escribe nada (ver tools_call).
+     *
+     * es_de_carga() no incluye la cancelación a propósito —para el loop interno cancelar no es una
+     * carga que encarezca el turno—, pero acá sí deja registro: toca una tarjeta y el dueño tiene
+     * que ver en el panel quién la cerró.
+     *
+     * @param  string  $name
+     * @return bool
+     */
+    protected static function deja_registro($name): bool
+    {
+        return HerramientasDeCarga::es_de_carga($name) || (string) $name === 'cancelar_carga_pendiente';
+    }
+
+    /**
+     * "borrar algo, la actualización masiva de artículos, …, y facturar (emitir un comprobante ante
+     * ARCA)": lo que siempre confirma la persona, derivado de NUNCA_AUTO_CONFIRMABLES (con el nombre
+     * de NOMBRES_DE_LO_QUE_SIEMPRE_CONFIRMA, o el literal del tipo si no tiene) más lo que no es un
+     * tipo de tarjeta.
+     *
+     * @return string
+     */
+    public static function lo_que_siempre_confirma(): string
+    {
+        $nombres = [];
+
+        foreach (HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES as $tipo) {
+
+            $nombres[] = isset(self::NOMBRES_DE_LO_QUE_SIEMPRE_CONFIRMA[$tipo])
+                ? self::NOMBRES_DE_LO_QUE_SIEMPRE_CONFIRMA[$tipo]
+                : (string) $tipo;
+        }
+
+        foreach (self::OTRAS_QUE_SIEMPRE_CONFIRMAN as $otra) {
+
+            $nombres[] = $otra;
+        }
+
+        if (count($nombres) === 1) {
+
+            return $nombres[0];
+        }
+
+        $ultimo = array_pop($nombres);
+
+        return implode(', ', $nombres) . ' y ' . $ultimo;
     }
 
     /**
@@ -420,10 +519,12 @@ class McpServidor
      * Lo que queda como contenido del assistant en el panel: una línea que el dueño pueda leer.
      *
      * El orden importa: `resumen` (la propuesta en una línea), `error` (el motivo de negocio),
-     * `resultado` (lo que quedó registrado cuando se ejecutó: "Gasto N° 12 registrado"), `faltan`
-     * (qué habría que decir), `nota` (la instrucción al modelo, que es lo menos legible) y, si no
-     * hay nada de eso, el content recortado. `resultado` va antes que `nota` a propósito: en una
-     * carga ejecutada las dos vienen, y la nota es un párrafo dirigido al modelo.
+     * `resultado` (lo que quedó registrado cuando se ejecutó: "Gasto N° 12 registrado"), `estado`
+     * (cuando se tocó una tarjeta sin texto de resultado: "Carga cancelada."), `faltan` (qué habría
+     * que decir), `nota` (la instrucción al modelo, que es lo menos legible) y, si no hay nada de
+     * eso, el content recortado. `resultado` y `estado` van antes que `nota` a propósito: en una
+     * carga ejecutada o cancelada la nota también viene, y es un párrafo dirigido al modelo (para la
+     * cancelación, encima, dice "quedó registrado").
      *
      * @param  array  $tool_result
      * @return string
@@ -442,6 +543,11 @@ class McpServidor
 
                     return trim($decodificado[$clave]);
                 }
+            }
+
+            if (isset($decodificado['estado']) && is_string($decodificado['estado']) && trim($decodificado['estado']) !== '') {
+
+                return 'Carga ' . trim($decodificado['estado']) . '.';
             }
 
             if (isset($decodificado['faltan']) && is_array($decodificado['faltan']) && count($decodificado['faltan'])) {
