@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\Afip\CondicionIvaReceptorHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\Utf8Helper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\AfipError;
 use App\Models\AfipObservation;
 use App\Models\AfipTicket;
@@ -21,6 +22,7 @@ use App\Models\Article;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class AfipWsfeHelper extends Controller
@@ -845,10 +847,27 @@ class AfipWsfeHelper extends Controller
             if ($this->afip_ticket->afip_ticket->resultado == 'A' 
                 && !is_null($this->afip_ticket->client)
                 && !$this->afip_ticket->client->pasar_ventas_a_la_cuenta_corriente_sin_esperar_a_facturar) {
-                $this->afip_ticket->save_current_acount = 1;
-                $this->afip_ticket->save();
+                /*
+                 * 🔴 En una transacción CORTA, solo alrededor de la escritura de la cuenta corriente,
+                 * con el candado del cliente como primera sentencia (misión
+                 * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Este camino corre después de
+                 * hablar con ARCA y sin transacción: el candado de CurrentAcountFromSaleHelper no
+                 * hacía nada (logueaba un warning en cada factura) y el movimiento entraba a la cuenta
+                 * sin serializar con las otras escrituras del mismo cliente. La llamada a ARCA queda
+                 * AFUERA a propósito: una transacción abierta durante una llamada de red retiene los
+                 * candados todo lo que tarde la red.
+                 */
+                $venta = $this->afip_ticket;
 
-                SaleHelper::create_current_acount($this->afip_ticket);
+                DB::transaction(function () use ($venta) {
+
+                    CuentaCorrienteLock::bloquear('client', $venta->client_id);
+
+                    $venta->save_current_acount = 1;
+                    $venta->save();
+
+                    SaleHelper::create_current_acount($venta);
+                });
             }
 
         }

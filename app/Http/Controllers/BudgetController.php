@@ -354,6 +354,15 @@ class BudgetController extends Controller
         try {
 
             /*
+                🔴 Candado de la cuenta corriente del cliente que tenía y del que queda, como primera
+                sentencia (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Guardar un
+                presupuesto confirmado borra la venta vieja y crea la nueva (BudgetHelper::checkStatus),
+                con su stock y su movimiento: la cuenta tiene que quedar tomada ANTES del stock, el mismo
+                orden que la edición de una venta. Ver CuentaCorrienteLock.
+            */
+            CuentaCorrienteLock::bloquear('client', [$model->client_id, $request->client_id]);
+
+            /*
                 Se lee el estado GUARDADO antes de pisarlo con el del request: es lo que despues permite
                 saber si el estado cambio de verdad en este update.
             */

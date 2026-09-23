@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use InvalidArgumentException;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\Article;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -172,6 +173,16 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
 
     public function collection(Collection $rows)
     {
+        /*
+         * 🔴 Candado de la cuenta corriente del proveedor como primera sentencia (misión
+         * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Laravel Excel corre el import adentro de
+         * una transacción (`excel.transactions.handler = db`), y el import crea artículos y mueve
+         * stock antes de llegar a procesar_pedido() -> set_current_acount(): si el candado se tomara
+         * recién ahí, el orden sería stock -> dueño, el inverso de los demás caminos. Fuera de una
+         * transacción el candado no hace nada (ver CuentaCorrienteLock).
+         */
+        CuentaCorrienteLock::bloquear('provider', $this->provider_order->provider_id);
+
         $this->precargar_indice_de_articulos($rows);
 
         $num_row = 1;

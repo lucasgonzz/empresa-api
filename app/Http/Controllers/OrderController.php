@@ -174,7 +174,24 @@ class OrderController extends Controller
              * CurrentAcountFromSaleHelper lo pide deja el mismo orden que la edición de una venta
              * (cuenta antes que stock) y evita que las dos se esperen en círculo.
              */
-            CuentaCorrienteLock::bloquear('client', $client_id_del_pedido);
+            $clientes_a_bloquear = [$client_id_del_pedido];
+
+            if (OrderStatusHelper::es_la_cancelacion($nombre_desde, $nombre_hacia)) {
+
+                /*
+                 * Al cancelar se da de baja la venta del pedido: el orden es el mismo que en
+                 * SaleController (update y destroy), VENTA -> DUEÑO. Primero la venta, con candado, y
+                 * después la cuenta de su cliente (que es el que importa para la baja, aunque el
+                 * comprador hoy esté vinculado a otro).
+                 */
+                $ventas_del_pedido = Sale::where('order_id', $model->id)->lockForUpdate()->get(['id', 'client_id']);
+
+                foreach ($ventas_del_pedido as $venta_del_pedido_bloqueada) {
+                    $clientes_a_bloquear[] = $venta_del_pedido_bloqueada->client_id;
+                }
+            }
+
+            CuentaCorrienteLock::bloquear('client', $clientes_a_bloquear);
 
             /**
              * Este endpoint acepta payloads PARCIALES: cada campo se toca solo si la request lo trae.

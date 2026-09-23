@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Exception;
@@ -111,6 +112,15 @@ class ConsolidarFacturacionHelper extends Controller
         DB::beginTransaction();
 
         try {
+
+            /*
+             * Candado de la cuenta corriente del cliente como primera sentencia (misión
+             * cuenta-corriente-carrera-y-velocidad, 23/9/2026). La consolidada no genera movimiento,
+             * pero lee y marca las ventas del cliente y copia sus renglones: con el dueño tomado
+             * primero, el orden es el mismo que en el resto de los caminos (dueño antes que ventas y
+             * stock). Ver CuentaCorrienteLock.
+             */
+            CuentaCorrienteLock::bloquear('client', $client_id);
 
             /** Carga las ventas con sus artículos y datos de pivot para copiarlos. */
             $ventas_originales = Sale::whereIn('id', $sale_ids)

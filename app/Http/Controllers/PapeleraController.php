@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\RestoreSaleFromPapeleraHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Models\Sale;
@@ -71,6 +72,12 @@ class PapeleraController extends Controller
         }
 
         DB::transaction(function () use ($model, $model_name) {
+
+            // Dueño antes que stock (ver bloquear_cuentas_de_ventas()).
+            if ($model_name === Sale::class) {
+                CuentaCorrienteLock::bloquear('client', $model->client_id);
+            }
+
             $this->aplicar_restauracion_soft_delete($model, $model_name);
         });
 
@@ -95,7 +102,14 @@ class PapeleraController extends Controller
 
         $user_id = $this->userId();
 
-        DB::transaction(function () use ($model_name, $ids, $user_id) {
+        /** Clientes de las ventas del lote, resueltos antes de abrir la transacción. */
+        $client_ids = $model_name === Sale::class
+                        ? Sale::onlyTrashed()->where('user_id', $user_id)->whereIn('id', $ids)->whereNotNull('client_id')->distinct()->pluck('client_id')->all()
+                        : [];
+
+        DB::transaction(function () use ($model_name, $ids, $user_id, $client_ids) {
+
+            $this->bloquear_cuentas_de_ventas($client_ids);
 
             foreach ($ids as $model_id) {
 
@@ -141,7 +155,22 @@ class PapeleraController extends Controller
 
         $user_id = $this->userId();
 
-        DB::transaction(function () use ($request, $_model_name, $search_controller, $model_name, $user_id) {
+        /*
+         * Los clientes de TODAS las ventas en papelera del comercio, no solo las que coinciden con el
+         * filtro: el filtro lo resuelve la búsqueda por lotes adentro del bucle (y cada lote sale de
+         * la papelera al restaurarse), así que no se puede saber de antemano cuáles van a ser. Es un
+         * superconjunto a propósito: bloquear de más en una restauración masiva, que es rara, es
+         * mejor que tomar un candado de cuenta DESPUÉS del stock y esperarse en círculo con una
+         * edición de venta.
+         */
+        $client_ids = $model_name === Sale::class
+                        ? Sale::onlyTrashed()->where('user_id', $user_id)->whereNotNull('client_id')->distinct()->pluck('client_id')->all()
+                        : [];
+
+        DB::transaction(function () use ($request, $_model_name, $search_controller, $model_name, $user_id, $client_ids) {
+
+            $this->bloquear_cuentas_de_ventas($client_ids);
+
             while (true) {
                 // Forzamos page=1 en cada vuelta para drenar la papelera en bloques.
                 $request->merge(['page' => 1]);
@@ -165,6 +194,22 @@ class PapeleraController extends Controller
         });
 
         return response(null, 200);
+    }
+
+    /**
+     * Candado de las cuentas corrientes de los clientes de las ventas que se van a restaurar, todos
+     * juntos, en orden ascendente y AL PRINCIPIO de la transacción (misión
+     * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Restaurar una venta vuelve a descontar stock
+     * y después la mete en la cuenta corriente; si el candado de la cuenta se tomara recién ahí
+     * (CurrentAcountFromSaleHelper), el orden sería stock -> cuenta, el inverso de la edición de una
+     * venta (cuenta -> stock), y dos requests así se pueden esperar en círculo. Ver CuentaCorrienteLock.
+     *
+     * @param  array<int,int>  $client_ids
+     * @return void
+     */
+    protected function bloquear_cuentas_de_ventas($client_ids) {
+
+        CuentaCorrienteLock::bloquear('client', $client_ids);
     }
 
     /**
