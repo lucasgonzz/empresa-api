@@ -23,12 +23,24 @@ use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 class ExcelDuplicateStats
 {
     /**
-     * Tamaño máximo de lote para la consulta whereIn a la base de datos.
-     * Evita saturar el stack de MySQL con archivos muy grandes.
+     * Tamaño máximo de lote para la consulta whereIn de crossCheckProviderCodes().
+     *
+     * 🔴 200 no es un número redondo: es `eq_range_index_dive_limit`, 200 por defecto en MySQL 8.
+     * Con hasta 200 valores en el IN, el optimizador estima cuántas filas trae cada uno bajando
+     * por el índice (index dives) y elige bien `articles_user_provider_code_index`. Con más, deja
+     * de bajar y estima con las estadísticas del índice, que en un catálogo grande pueden ser muy
+     * malas: puede terminar eligiendo recorrer todo el catálogo del usuario.
+     *
+     * Pasó en Servian el 23/9/2026 con lotes de 5000: 568k artículos, la consulta examinó 686.402
+     * filas y la cortó el `max_execution_time` global del VPS (120 s) — el análisis del Excel
+     * quedó en "Falló". La misma consulta, minutos después, usó el índice y tardó 0,3 s.
+     *
+     * Costo: 29k códigos son ~145 consultas de milisegundos cada una por índice. Si alguien
+     * sube este número, que primero suba `eq_range_index_dive_limit` en todos los servidores.
      *
      * @var int
      */
-    protected const DB_CHUNK_SIZE = 5000;
+    protected const DB_CHUNK_SIZE = 200;
 
     /**
      * Cantidad máxima de ejemplos que se incluyen en cada lista de valores duplicados.
@@ -400,7 +412,7 @@ class ExcelDuplicateStats
             ];
         }
 
-        /* Partimos en lotes de DB_CHUNK_SIZE para no reventar la consulta whereIn. */
+        /* Partimos en lotes de DB_CHUNK_SIZE: el porqué del tamaño está en su docblock. */
         $db_chunks = array_chunk($provider_codes, self::DB_CHUNK_SIZE);
 
         foreach ($db_chunks as $chunk) {
