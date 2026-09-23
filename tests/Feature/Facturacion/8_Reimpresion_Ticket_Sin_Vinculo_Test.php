@@ -3,6 +3,7 @@
 namespace Tests\Feature\Facturacion;
 
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\AfipHelper\AfipImportesCalculator;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\SaleTicketPdf;
 use App\Models\AfipInformation;
@@ -12,6 +13,7 @@ use App\Models\Sale;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\DB;
+use ReflectionMethod;
 use RuntimeException;
 use Tests\EmpresaTestCase;
 
@@ -32,8 +34,13 @@ use Tests\EmpresaTestCase;
  *
  *   - `AfipTicket::getAfipInformationAttribute()`: si no hay vinculo, busca UNA configuracion con
  *     ese cuit y ese punto de venta, del mismo duenio. Cero o mas de una, devuelve null.
- *   - `AfipImportesCalculator::condicion_iva_del_emisor()`: si tampoco hay configuracion, usa el
- *     `iva_negocio` del ticket; y si tampoco, corta con un mensaje que dice que ticket es.
+ *   - `AfipTicket::condicion_iva_del_emisor()`: la condicion de IVA del emisor, en este orden: el
+ *     vinculo real; lo que el ticket guardo al emitirse (`iva_negocio`); la configuracion hallada
+ *     por respaldo. El calculador de importes la usa para discriminar el IVA y el ticket de 80mm
+ *     para imprimirla: una sola fuente, el comprobante no se contradice. Si no hay ninguna, el
+ *     calculador corta con un mensaje que dice que ticket es.
+ *   - `SaleTicketPdf::afipInformation()`: si no hay configuracion, imprime el bloque fiscal con
+ *     las columnas del propio ticket (cuit, punto de venta, numero, CAE) en vez de omitirlo.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  COMO SE EJERCITA
@@ -839,6 +846,205 @@ class Reimpresion_Ticket_Sin_Vinculo_Test extends EmpresaTestCase
         $this->assertStringContainsString('00888', $excepcion->getMessage(), 'y nombra el ticket');
     }
 
+    /**
+     * Caso 6 ter — 🔴 la condicion que el ticket GUARDO al emitirse gana sobre la configuracion
+     * hallada por respaldo. El emisor puede haber cambiado de condicion desde entonces: un
+     * monotributista que hoy es Responsable inscripto. Una Factura C reimpresa con la condicion de
+     * HOY saldria con el IVA discriminado, y esa factura nunca lo discrimino: error fiscal.
+     *
+     * @test
+     */
+    public function la_condicion_que_el_ticket_guardo_gana_sobre_la_configuracion_hallada_por_respaldo()
+    {
+        // HOY el emisor es Responsable inscripto...
+        $this->crear_config('Responsable inscripto');
+
+        $venta = $this->crear_venta(1105);
+        $this->agregar_articulo($venta, 1105, '10.5');
+
+        // ...pero este ticket se emitio cuando era Monotributista (Factura C).
+        $ticket = $this->crear_ticket($venta, [
+            'iva_negocio' => 'Monotributista',
+            'cbte_letra'  => 'C',
+            'cbte_tipo'   => '11',
+        ]);
+
+        $this->assertNull($ticket->afip_information_id, 'ESCENARIO MAL ARMADO: el ticket tiene que llegar sin vinculo');
+        $this->assertNotNull($ticket->afip_information, 'ESCENARIO MAL ARMADO: el respaldo tiene que encontrar la configuracion');
+        $this->assertSame(
+            'Responsable inscripto',
+            $ticket->afip_information->iva_condition->name,
+            'ESCENARIO MAL ARMADO: la configuracion de hoy es Responsable inscripto'
+        );
+
+        $this->assertSame(
+            'Monotributista',
+            $ticket->condicion_iva_del_emisor(),
+            'la condicion del ticket es la que guardo al emitirse, no la que tiene hoy la configuracion'
+        );
+
+        $importes = $this->importes_de_reimpresion($ticket);
+
+        $this->assertEqualsWithDelta(
+            0.00,
+            (float) $importes['iva'],
+            self::DELTA,
+            'EL DEFECTO EN UNA LINEA: una Factura C emitida por un monotributista NO discrimina IVA, '.
+            'aunque hoy la configuracion diga Responsable inscripto'
+        );
+        $this->assertEqualsWithDelta(1105.00, (float) $importes['total'], self::DELTA, 'y el total no cambia');
+    }
+
+    /**
+     * Caso 6 quater — con el VINCULO REAL la configuracion sigue ganando sobre lo que el ticket
+     * guardo: es el comportamiento de siempre, y no cambia para ningun ticket que tenga la FK.
+     *
+     * @test
+     */
+    public function con_el_vinculo_real_la_configuracion_sigue_ganando_sobre_lo_guardado()
+    {
+        $config = $this->crear_config('Responsable inscripto');
+
+        $venta = $this->crear_venta(1105);
+
+        $ticket = $this->crear_ticket($venta, [
+            'afip_information_id' => $config->id,
+            'iva_negocio'         => 'Monotributista',
+        ]);
+
+        $this->assertSame(
+            'Responsable inscripto',
+            $ticket->condicion_iva_del_emisor(),
+            'con la FK cargada manda la configuracion, como antes de este arreglo'
+        );
+    }
+
+    /**
+     * Caso 6 quinquies — un `iva_negocio` que no se reconoce ('RRII') no se adivina, pero si hay
+     * una configuracion hallada por respaldo, ella DESEMPATA. Sin configuracion, la condicion es null.
+     *
+     * @test
+     */
+    public function un_iva_negocio_desconocido_lo_desempata_la_configuracion_y_sin_ella_es_null()
+    {
+        $venta = $this->crear_venta(1105);
+        $this->agregar_articulo($venta, 1105, '10.5');
+
+        // Sin configuracion: 'RRII' no se adivina.
+        $sin_config = $this->crear_ticket($venta, ['cuit_negocio' => self::CUIT_SIN_CONFIG, 'iva_negocio' => 'RRII']);
+        $this->assertNull($sin_config->condicion_iva_del_emisor(), '"RRII" sin configuracion no se adivina');
+
+        // Sin nada guardado y sin configuracion: tampoco.
+        $vacio = $this->crear_ticket($venta, ['cuit_negocio' => self::CUIT_SIN_CONFIG, 'iva_negocio' => null]);
+        $this->assertNull($vacio->condicion_iva_del_emisor(), 'sin configuracion ni iva_negocio no hay condicion');
+
+        // Con una configuracion hallada por respaldo, desempata.
+        $this->crear_config('Responsable inscripto');
+        $con_config = $this->crear_ticket($venta, ['iva_negocio' => 'RRII']);
+
+        $this->assertSame(
+            'Responsable inscripto',
+            $con_config->condicion_iva_del_emisor(),
+            'con "RRII" guardado y una configuracion unica del mismo emisor, la configuracion desempata'
+        );
+        $this->assertEqualsWithDelta(
+            105.00,
+            (float) $this->importes_de_reimpresion($con_config)['iva'],
+            self::DELTA,
+            'y el calculador discrimina el IVA como Responsable inscripto'
+        );
+    }
+
+    /**
+     * Caso 6 sexies — el calculador tambien recibe OBJETOS QUE NO SON un ticket: los helpers viejos
+     * (`HelperController`, el comando `SetIvaDebito`) le pasan a `AfipHelper` una `Sale`. Para ella
+     * vale lo de siempre, su configuracion fiscal directa, y no se rompe por no tener el metodo del
+     * modelo del ticket.
+     *
+     * @test
+     */
+    public function un_objeto_que_no_es_un_ticket_usa_su_configuracion_directa()
+    {
+        $venta = $this->crear_venta(1105);
+
+        $metodo = new ReflectionMethod(AfipImportesCalculator::class, 'condicion_iva_del_emisor');
+        $metodo->setAccessible(true);
+        $calculador = new AfipImportesCalculator();
+
+        $con_config = Sale::find($venta->id);
+        $con_config->setRelation('afip_information', $this->config_en_memoria('Monotributista'));
+
+        $this->assertSame(
+            'Monotributista',
+            $metodo->invoke($calculador, $con_config),
+            'una Sale con configuracion fiscal directa resuelve su condicion'
+        );
+
+        $this->expectException(RuntimeException::class);
+        $metodo->invoke($calculador, Sale::find($venta->id));
+    }
+
+    /**
+     * Arma el ticket de 80mm (`SaleTicketPdf`) de un ticket AFIP y lo devuelve como TEXTO del PDF.
+     *
+     * ⚠️ POR QUE UN ESPIA: el constructor real de `SaleTicketPdf` termina en `Output(); exit;` y
+     * mataria el proceso de PHPUnit en el acto, sin resumen y sin rojo. El espia arma el PDF con
+     * los MISMOS pasos del constructor real (mismo `Header()`, `items()` y `Footer()`, que son lo
+     * que se mide) y lo devuelve con `Output('S')` en vez de mandarlo a la salida. Con la
+     * compresion apagada el texto de las celdas queda legible en el binario.
+     *
+     * Dos cosas se saltean a proposito, porque son de red y no del defecto: el QR (le pega a
+     * api.qrserver.com) y el logo (baja una imagen de una URL).
+     *
+     * Se declara ADENTRO de un metodo por lo mismo que en tests/Feature/ForzarTotal/7: los archivos
+     * de `Pdf/` hacen `require` de fpdf y no pueden convivir dos en un mismo proceso.
+     *
+     * @param  \App\Models\Sale $venta Venta del ticket.
+     * @param  \App\Models\AfipTicket $ticket Ticket AFIP a imprimir.
+     * @return string El PDF, como texto.
+     */
+    protected function pdf_de_80mm($venta, $ticket)
+    {
+        $espia = new class(Sale::find($venta->id), $ticket) extends SaleTicketPdf {
+
+            /** El PDF armado, como texto. */
+            public $pdf_generado = null;
+
+            public function __construct($sale, $afip_ticket = null)
+            {
+                $this->line_height = 5;
+                $this->user = UserHelper::getFullModel();
+                // Sin logo: bajarlo es una llamada de red y no es lo que se esta midiendo.
+                $this->user->image_url = null;
+                $this->sale = $sale;
+                $this->afip_ticket = $afip_ticket;
+                $this->x_incial = 4;
+                $this->ancho = $this->user->sale_ticket_width;
+                $this->cell_ancho = $this->ancho - 8;
+                $this->name_font_size = 12;
+                $this->price_font_size = 10;
+
+                // El constructor de FPDF, no el de SaleTicketPdf: ese termina en `exit`.
+                \FPDF::__construct('P', 'mm', [$this->ancho, $this->getPdfHeight()]);
+                $this->SetCompression(false);
+                $this->SetAutoPageBreak(false);
+                $this->b = 0;
+
+                $this->AddPage();
+                $this->items();
+
+                $this->pdf_generado = $this->Output('S');
+            }
+
+            /** El QR de ARCA le pega a un servicio externo: fuera de este test. */
+            public function qr()
+            {
+            }
+        };
+
+        return $espia->pdf_generado;
+    }
+
     // -----------------------------------------------------------------------------------------
     // El PDF
     // -----------------------------------------------------------------------------------------
@@ -877,44 +1083,7 @@ class Reimpresion_Ticket_Sin_Vinculo_Test extends EmpresaTestCase
 
         $this->assertNull($ticket->afip_information_id, 'ESCENARIO MAL ARMADO: el ticket tiene que llegar sin vinculo');
 
-        $espia = new class(Sale::find($venta->id), $ticket) extends SaleTicketPdf {
-
-            /** El PDF armado, como texto. */
-            public $pdf_generado = null;
-
-            public function __construct($sale, $afip_ticket = null)
-            {
-                $this->line_height = 5;
-                $this->user = UserHelper::getFullModel();
-                // Sin logo: bajarlo es una llamada de red y no es lo que se esta midiendo.
-                $this->user->image_url = null;
-                $this->sale = $sale;
-                $this->afip_ticket = $afip_ticket;
-                $this->x_incial = 4;
-                $this->ancho = $this->user->sale_ticket_width;
-                $this->cell_ancho = $this->ancho - 8;
-                $this->name_font_size = 12;
-                $this->price_font_size = 10;
-
-                // El constructor de FPDF, no el de SaleTicketPdf: ese termina en `exit`.
-                \FPDF::__construct('P', 'mm', [$this->ancho, $this->getPdfHeight()]);
-                $this->SetCompression(false);
-                $this->SetAutoPageBreak(false);
-                $this->b = 0;
-
-                $this->AddPage();
-                $this->items();
-
-                $this->pdf_generado = $this->Output('S');
-            }
-
-            /** El QR de ARCA le pega a un servicio externo: fuera de este test. */
-            public function qr()
-            {
-            }
-        };
-
-        $pdf = $espia->pdf_generado;
+        $pdf = $this->pdf_de_80mm($venta, $ticket);
 
         $this->assertIsString($pdf);
         $this->assertSame(
@@ -947,6 +1116,63 @@ class Reimpresion_Ticket_Sin_Vinculo_Test extends EmpresaTestCase
             'Imp Neto Gravado',
             $pdf,
             'el pie tiene que discriminar el IVA: el emisor es Responsable inscripto'
+        );
+    }
+
+    /**
+     * Caso 10 — 🔴 un ticket cuya configuracion NO se puede resolver (se borro, o hay dos iguales)
+     * igual imprime el bloque fiscal con lo que guardo en sus propias columnas: cuit, punto de
+     * venta, condicion de IVA, numero y CAE. Antes de esto el bloque se salteaba en silencio y la
+     * reimpresion salia sin CAE, con pinta de comprobante que no es fiscal. Solo la razon social
+     * (que vive unicamente en la configuracion) no se imprime.
+     *
+     * Y el pie es consistente con el encabezado: si imprime "IVA: Monotributista", no discrimina IVA.
+     *
+     * @test
+     */
+    public function un_ticket_sin_configuracion_resoluble_imprime_el_bloque_fiscal_con_sus_propias_columnas()
+    {
+        $venta = $this->crear_venta(1105);
+        $this->agregar_articulo($venta, 1105, '10.5');
+
+        $ticket = $this->crear_ticket($venta, [
+            'cuit_negocio' => self::CUIT_SIN_CONFIG,
+            'iva_negocio'  => 'Monotributista',
+            'punto_venta'  => '41',
+            'cbte_numero'  => '00654',
+            'cae'          => '70999888777666',
+            'cbte_letra'   => 'C',
+        ]);
+
+        $this->assertNull($ticket->afip_information, 'ESCENARIO MAL ARMADO: con ese cuit no puede haber ninguna configuracion');
+
+        $pdf = $this->pdf_de_80mm($venta, $ticket);
+
+        $this->assertSame('%PDF', substr($pdf, 0, 4), 'tiene que ser un PDF');
+
+        foreach ([
+            'IVA: Monotributista',
+            'Cuit: '.self::CUIT_SIN_CONFIG,
+            'Punto de venta: 41',
+            'N° comprobante: 00654',
+            'CAE: 70999888777666',
+            'Vto cae: ',
+            'Tipo comprobante: C',
+        ] as $linea) {
+            // El PDF guarda el texto en latin1 (la clase base decodifica el UTF-8 al imprimir): el
+            // "°" de "N° comprobante" no son los mismos bytes que en este archivo.
+            $this->assertStringContainsString(
+                utf8_decode($linea),
+                $pdf,
+                'EL DEFECTO EN UNA LINEA: sin configuracion resoluble el bloque fiscal se omitia entero y la '.
+                'reimpresion salia sin CAE. Falta: '.$linea
+            );
+        }
+
+        $this->assertStringNotContainsString(
+            'Razon social',
+            $pdf,
+            'la razon social vive solo en la configuracion: sin ella, esa linea no se imprime'
         );
     }
 }

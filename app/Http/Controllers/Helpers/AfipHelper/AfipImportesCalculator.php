@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\AfipSelectedPaymentMethodsHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
+use App\Models\AfipTicket;
 use Illuminate\Support\Facades\Log;
 
 class AfipImportesCalculator
@@ -90,91 +91,79 @@ class AfipImportesCalculator
     }
 
     /**
-     * Condicion de IVA del emisor del comprobante, con respaldo para los tickets viejos.
+     * Condicion de IVA del emisor del comprobante.
      *
-     * Orden de resolucion:
-     *  1. La configuracion fiscal del ticket (`afip_information`, que para un ticket sin
-     *     `afip_information_id` se busca por cuit y punto de venta) con su `iva_condition`.
-     *  2. La condicion que el ticket guardo al emitirse (`iva_negocio`). Es el mismo texto que
-     *     `iva_condition->name`, pero como texto libre puede venir con otra escritura: se
-     *     normaliza (ver `condicion_iva_reconocida()`) y lo que no se reconoce corta.
+     * La resolucion vive en el modelo (`AfipTicket::condicion_iva_del_emisor()`): es la MISMA que usa
+     * el ticket de 80mm para imprimirla, asi el comprobante nunca se contradice (imprime una
+     * condicion y discrimina el IVA con otra). El orden esta en el docblock de ese metodo. Aca solo
+     * se decide que hacer cuando no hay ninguna: cortar con un mensaje que nombra el ticket.
      *
      * 🔴 NUNCA se asume 'Responsable inscripto' por defecto. Discriminar IVA de mas en un
      * comprobante es un error fiscal, y un default tranquilizador es justo lo que esconde el dato
-     * que falta. Si no hay ni la configuracion ni la condicion guardada, se corta con un mensaje
-     * que dice que ticket es y que le falta: es mejor que el "Trying to get property of non-object"
-     * que salia antes, que no nombraba nada.
+     * que falta. Es mejor el mensaje que dice que ticket es y que le falta que el "Trying to get
+     * property of non-object" que salia antes, que no nombraba nada.
      *
-     * @param \App\Models\AfipTicket $afip_ticket Ticket cuyo emisor se necesita conocer.
+     * @param \App\Models\AfipTicket|\App\Models\Sale $afip_ticket Ticket cuyo emisor se necesita conocer.
      * @return string Nombre de la condicion de IVA ('Responsable inscripto', 'Exento', etc.).
-     * @throws \RuntimeException Si el ticket no tiene ni la configuracion ni `iva_negocio`, o si este
-     *                           no es una condicion que se reconozca.
+     * @throws \RuntimeException Si no hay ni configuracion ni una condicion guardada que se reconozca.
      */
     private function condicion_iva_del_emisor($afip_ticket)
     {
-        /** @var \App\Models\AfipInformation|null $afip_information Configuracion fiscal, con su respaldo. */
-        $afip_information = $afip_ticket->afip_information;
+        // Helpers viejos (HelperController, SetIvaDebito) le pasan a AfipHelper una Sale en lugar de
+        // un ticket: para ella vale lo de siempre, su configuracion fiscal directa.
+        if (!($afip_ticket instanceof AfipTicket)) {
 
-        if (!is_null($afip_information) && !is_null($afip_information->iva_condition)) {
-            return $afip_information->iva_condition->name;
+            /** @var \App\Models\AfipInformation|null $afip_information Configuracion fiscal del objeto. */
+            $afip_information = $afip_ticket->afip_information;
+
+            if (!is_null($afip_information) && !is_null($afip_information->iva_condition)) {
+                return $afip_information->iva_condition->name;
+            }
+
+            throw $this->excepcion_sin_condicion_de_iva($afip_ticket);
         }
 
-        /** @var string $iva_negocio Condicion de IVA que el ticket guardo al emitirse. */
-        $iva_negocio = trim((string) $afip_ticket->iva_negocio);
+        /** @var string|null $condicion Lo que resuelve el modelo. */
+        $condicion = $afip_ticket->condicion_iva_del_emisor();
 
-        if ($iva_negocio !== '') {
-            return $this->condicion_iva_reconocida($iva_negocio, $afip_ticket);
+        if (!is_null($condicion)) {
+            return $condicion;
         }
 
-        throw new \RuntimeException(
-            'AfipImportesCalculator: el ticket N° '.$afip_ticket->cbte_numero.' (id '.$afip_ticket->id.', '.
-            'punto de venta '.$afip_ticket->punto_venta.') no tiene la configuración fiscal del emisor '.
-            'ni su condición de IVA guardada, así que no se puede saber si discrimina IVA. '.
-            'Hay que cargarle la configuración fiscal (afip_information_id) o la condición de IVA '.
-            '(iva_negocio) para poder calcular sus importes.'
-        );
+        throw $this->excepcion_sin_condicion_de_iva($afip_ticket);
     }
 
     /**
-     * Nombre canonico de una condicion de IVA que un ticket guardo como texto libre (`iva_negocio`).
+     * Excepcion para cuando no se puede saber la condicion de IVA del emisor. Distingue los dos
+     * motivos, porque piden arreglos distintos: que no haya nada guardado, o que lo guardado sea un
+     * texto que no se reconoce ('RRII'): ahi no se adivina, y el mensaje nombra el texto.
      *
-     * Ese campo no es una FK: es texto, y los tickets viejos traen variantes que el calculador NO
-     * reconoce por literal ('Responsable Inscripto' con otra mayuscula, 'RRII', etc.). El barrido de
-     * produccion del 23/9/2026 las encontro. Compararlas tal cual con 'Responsable inscripto' las
-     * trataria como "no responsable inscripto" y el comprobante saldria SIN discriminar el IVA.
-     *
-     * 🔴 Por eso: se compara sin distinguir mayusculas ni espacios de los bordes, y un texto que no
-     * es ninguna de las tres condiciones que se emiten (Responsable inscripto, Monotributista,
-     * Exento) CORTA con un mensaje que lo nombra. No se adivina: no se sabe si 'RRII' es
-     * Responsable inscripto, y equivocarse aca es un error fiscal en un comprobante ya autorizado.
-     *
-     * @param string $iva_negocio Texto guardado en el ticket (ya sin espacios en los bordes ni vacio).
-     * @param \App\Models\AfipTicket $afip_ticket Ticket del que sale, solo para nombrarlo en el mensaje.
-     * @return string 'Responsable inscripto', 'Monotributista' o 'Exento', con esa escritura exacta.
-     * @throws \RuntimeException Si el texto no es ninguna de las tres.
+     * @param \App\Models\AfipTicket|\App\Models\Sale $afip_ticket Ticket del que se trata.
+     * @return \RuntimeException
      */
-    private function condicion_iva_reconocida($iva_negocio, $afip_ticket)
+    private function excepcion_sin_condicion_de_iva($afip_ticket)
     {
-        /** @var array<string, string> Texto en minusculas => nombre canonico que compara el calculador. */
-        $conocidas = [
-            'responsable inscripto' => 'Responsable inscripto',
-            'monotributista'        => 'Monotributista',
-            'exento'                => 'Exento',
-        ];
+        /** @var string $iva_negocio Lo que el ticket guardo como condicion de IVA, si algo. */
+        $iva_negocio = trim((string) $afip_ticket->iva_negocio);
 
-        $clave = mb_strtolower($iva_negocio, 'UTF-8');
+        /** @var string $quien Como se nombra el ticket en el mensaje. */
+        $quien = 'el ticket N° '.$afip_ticket->cbte_numero.' (id '.$afip_ticket->id.', punto de venta '.$afip_ticket->punto_venta.')';
 
-        if (isset($conocidas[$clave])) {
-            return $conocidas[$clave];
+        if ($iva_negocio !== '') {
+            return new \RuntimeException(
+                'AfipImportesCalculator: '.$quien.' guardó la condición de IVA "'.$iva_negocio.'", '.
+                'que no se reconoce (se esperaba Responsable inscripto, Monotributista o Exento), y no tiene '.
+                'una configuración fiscal de la que sacarla. No se adivina si discrimina IVA: hay que '.
+                'cargarle la configuración fiscal (afip_information_id) o corregir su condición de IVA '.
+                '(iva_negocio).'
+            );
         }
 
-        throw new \RuntimeException(
-            'AfipImportesCalculator: el ticket N° '.$afip_ticket->cbte_numero.' (id '.$afip_ticket->id.', '.
-            'punto de venta '.$afip_ticket->punto_venta.') guardó la condición de IVA "'.$iva_negocio.'", '.
-            'que no se reconoce (se esperaba Responsable inscripto, Monotributista o Exento), y no tiene '.
-            'una configuración fiscal de la que sacarla. No se adivina si discrimina IVA: hay que '.
-            'cargarle la configuración fiscal (afip_information_id) o corregir su condición de IVA '.
-            '(iva_negocio).'
+        return new \RuntimeException(
+            'AfipImportesCalculator: '.$quien.' no tiene la configuración fiscal del emisor '.
+            'ni su condición de IVA guardada, así que no se puede saber si discrimina IVA. '.
+            'Hay que cargarle la configuración fiscal (afip_information_id) o la condición de IVA '.
+            '(iva_negocio) para poder calcular sus importes.'
         );
     }
 

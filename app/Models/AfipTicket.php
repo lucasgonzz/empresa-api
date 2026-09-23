@@ -89,6 +89,14 @@ class AfipTicket extends Model
     protected $afip_information_de_respaldo = null;
 
     /**
+     * Configuraciones duplicadas que ya se avisaron en el log en este proceso (ver
+     * `afip_information_por_cuit_y_punto_venta()`), para avisar una sola vez por cada una.
+     *
+     * @var array<string, bool>
+     */
+    protected static $ambiguas_avisadas = [];
+
+    /**
      * Configuracion fiscal (`AfipInformation`) del emisor de este comprobante, con respaldo para
      * los tickets viejos que no tienen `afip_information_id`.
      *
@@ -126,6 +134,83 @@ class AfipTicket extends Model
     }
 
     /**
+     * Condicion de IVA del emisor de este comprobante ('Responsable inscripto', 'Monotributista',
+     * 'Exento'), o null si no se puede saber. Es la UNICA fuente: la usan el calculador de
+     * importes (para decidir si se discrimina el IVA) y el ticket de 80mm (para imprimirla), asi
+     * las dos cosas nunca se contradicen en el mismo comprobante.
+     *
+     * Orden de resolucion:
+     *  1. La configuracion fiscal REAL del ticket (la de su `afip_information_id`), con su
+     *     `iva_condition`. Con cualquier ticket que tenga el vinculo esto es lo unico que pasa:
+     *     comportamiento identico al de siempre.
+     *  2. La condicion que el ticket guardo al emitirse (`iva_negocio`), si es una de las tres que
+     *     se emiten. 🔴 Va ANTES que la configuracion encontrada por respaldo: el emisor puede haber
+     *     cambiado de condicion desde entonces (un monotributista que paso a Responsable inscripto),
+     *     y reimprimir una Factura C con el IVA discriminado por la condicion de HOY es un error
+     *     fiscal. Lo que el ticket guardo es lo que era cierto el dia que se autorizo.
+     *  3. La condicion de la configuracion que se encuentra por cuit y punto de venta (respaldo).
+     *     Sirve cuando `iva_negocio` trae un texto que no se reconoce ('RRII'): ahi la configuracion
+     *     desempata en vez de adivinar.
+     *  4. null. Quien lo necesita decide: el calculador corta con un mensaje, el ticket omite la linea.
+     *
+     * @return string|null
+     */
+    public function condicion_iva_del_emisor()
+    {
+        // 1. El vinculo real, sin pasar por el respaldo.
+        $propia = $this->getRelationValue('afip_information');
+
+        if (!is_null($propia) && !is_null($propia->iva_condition)) {
+            return $propia->iva_condition->name;
+        }
+
+        // 2. Lo que el propio ticket guardo cuando se emitio.
+        $guardada = self::normalizar_condicion_iva($this->iva_negocio);
+
+        if (!is_null($guardada)) {
+            return $guardada;
+        }
+
+        // 3. La configuracion que se encuentra por cuit y punto de venta.
+        $respaldo = $this->afip_information_por_cuit_y_punto_venta();
+
+        if (!is_null($respaldo) && !is_null($respaldo->iva_condition)) {
+            return $respaldo->iva_condition->name;
+        }
+
+        return null;
+    }
+
+    /**
+     * Nombre canonico de una condicion de IVA guardada como texto libre (`iva_negocio`), o null si
+     * no es ninguna de las tres que se emiten.
+     *
+     * Ese campo no es una FK: es texto, y los tickets viejos lo traen con otra escritura. El
+     * barrido de produccion del 23/9/2026 encontro 'Responsable Inscripto' (otra mayuscula) y un
+     * 'RRII'. Comparado por literal, el primero se trataria como "no responsable inscripto" y el
+     * comprobante saldria SIN discriminar el IVA.
+     *
+     * 🔴 Se compara sin distinguir mayusculas ni espacios de los bordes, y lo que no es ninguna de
+     * las tres condiciones devuelve null: NO se adivina que 'RRII' sea Responsable inscripto.
+     *
+     * @param string|null $texto Valor de `iva_negocio`.
+     * @return string|null 'Responsable inscripto', 'Monotributista' o 'Exento', con esa escritura exacta.
+     */
+    public static function normalizar_condicion_iva($texto)
+    {
+        /** @var array<string, string> Texto en minusculas => nombre canonico. */
+        $conocidas = [
+            'responsable inscripto' => 'Responsable inscripto',
+            'monotributista'        => 'Monotributista',
+            'exento'                => 'Exento',
+        ];
+
+        $clave = mb_strtolower(trim((string) $texto), 'UTF-8');
+
+        return isset($conocidas[$clave]) ? $conocidas[$clave] : null;
+    }
+
+    /**
      * Busca la configuracion fiscal de un ticket sin vinculo por el cuit y el punto de venta que
      * el propio ticket guardo cuando se emitio.
      *
@@ -157,7 +242,8 @@ class AfipTicket extends Model
 
         /**
          * @var string $firma Identifica lo que se busco. Si alguno de estos datos cambia en la
-         * instancia (o se hace `refresh()`), el cache deja de valer y se vuelve a resolver.
+         * instancia, el cache deja de valer y se vuelve a resolver. (Ojo: `refresh()` NO limpia el
+         * cache; solo importa si cambian estos datos, y ese cambio ya lo invalida.)
          */
         $firma = $cuit.'|'.(int) $punto_venta.'|'.$this->sale_id.'|'.$this->sale_nota_credito_id;
 
@@ -188,11 +274,21 @@ class AfipTicket extends Model
             if ($encontradas->count() === 1) {
                 $resultado = $encontradas->first();
             } else if ($encontradas->count() > 1) {
-                Log::warning(
-                    'AfipTicket '.$this->id.': tiene mas de una configuracion fiscal con el cuit '.$cuit.
-                    ' y el punto de venta '.(int) $punto_venta.'. No se elige ninguna: el ticket se lee sin '.
-                    'configuracion fiscal. Para que salga completo hay que dejar una sola.'
-                );
+
+                // Un aviso por cuit + punto de venta + duenio y por proceso: un export de miles de
+                // tickets de la misma configuracion duplicada no tiene que escribir miles de lineas.
+                $clave_del_aviso = $cuit.'|'.(int) $punto_venta.'|'.$duenio_id;
+
+                if (!isset(self::$ambiguas_avisadas[$clave_del_aviso])) {
+
+                    self::$ambiguas_avisadas[$clave_del_aviso] = true;
+
+                    Log::warning(
+                        'AfipTicket '.$this->id.': hay mas de una configuracion fiscal con el cuit '.$cuit.
+                        ' y el punto de venta '.(int) $punto_venta.'. No se elige ninguna: los tickets de ese '.
+                        'emisor se leen sin configuracion fiscal. Para que salgan completos hay que dejar una sola.'
+                    );
+                }
             }
         }
 
