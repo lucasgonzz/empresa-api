@@ -41,7 +41,7 @@ class Client extends Model
      * @return \Illuminate\Database\Eloquent\Relations\BelongsToMany
      */
     public function discounts() {
-        return $this->belongsToMany(Discount::class);
+        return $this->belongsToMany(Discount::class)->withTimestamps();
     }
 
     /**
@@ -51,7 +51,7 @@ class Client extends Model
      * @return \Illuminate\Database\Eloquent\Relations\BelongsToMany
      */
     public function surchages() {
-        return $this->belongsToMany(Surchage::class);
+        return $this->belongsToMany(Surchage::class)->withTimestamps();
     }
 
     public function provincia() {
