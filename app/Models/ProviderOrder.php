@@ -18,6 +18,52 @@ class ProviderOrder extends Model
 
     function scopeWithAll($query) {
         $query->with('articles.addresses', 'articles.images', 'provider', 'provider_order_afip_tickets.provider_order_afip_ticket_ivas', 'provider_order_status', 'provider_order_extra_costs', 'provider_order_discounts');
+
+        /*
+         * Cuántos escaneos de factura tuvo la compra (misión historial-escaneos-compra). Es un
+         * count por SQL y no la relación cargada: el listado solo necesita saber SI hay
+         * historial para mostrar el botón, no traer los resultados de cada escaneo (que pesan
+         * decenas de KB). El detalle se pide recién al abrir el historial.
+         * Llega como `provider_order_scans_count`.
+         */
+        if (self::tabla_de_escaneos_existe()) {
+            $query->withCount('provider_order_scans');
+        }
+    }
+
+    /**
+     * ¿Existe la tabla `provider_order_scans` en la base de este cliente?
+     *
+     * 🔴 Sin esta guarda, un cliente al que le falta esa migración (hay bases con huecos en la
+     * tabla `migrations`, ver el gap histórico de clientes migrados) dejaría con error 500 TODO
+     * el módulo de compras —el listado, el show, el PDF—, cuando antes solo fallaba el endpoint
+     * propio del escaneo. El contador es un extra de presentación: si la tabla no está, la
+     * compra viaja sin él y el botón de historial simplemente no aparece.
+     *
+     * Se memoriza por proceso: es una consulta al information_schema y el listado la llamaría
+     * en cada request.
+     *
+     * @return bool
+     */
+    protected static function tabla_de_escaneos_existe() {
+        static $existe = null;
+
+        if (is_null($existe)) {
+            $existe = \Illuminate\Support\Facades\Schema::hasTable('provider_order_scans');
+        }
+
+        return $existe;
+    }
+
+    /**
+     * Los escaneos de factura que tuvo la compra, en cualquier estado (misión
+     * historial-escaneos-compra). Solo lectura desde acá: quien los crea y los gestiona es
+     * ProviderOrderScanController.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    function provider_order_scans() {
+        return $this->hasMany(ProviderOrderScan::class);
     }
 
     function provider_order_discounts() {

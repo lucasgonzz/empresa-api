@@ -1411,6 +1411,9 @@ Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\Error
 Route::middleware(['auth:sanctum', 'check_extencion_empresa:escaneo_factura_compra'])->group(function () {
     Route::get('provider-order-scan/pendientes', 'ProviderOrderScanController@pendientes');
     Route::get('provider-order-scan/en-curso',   'ProviderOrderScanController@en_curso');
+    // Historial de escaneos de una compra (misión historial-escaneos-compra). Tiene dos segmentos,
+    // así que no choca con '{uuid}', pero se declara junto a los fijos por orden y legibilidad.
+    Route::get('provider-order-scan/historial/{provider_order_id}', 'ProviderOrderScanController@historial');
     Route::post('provider-order-scan',           'ProviderOrderScanController@store');
     Route::get('provider-order-scan/{uuid}',     'ProviderOrderScanController@show');
     Route::get('provider-order-scan/{uuid}/imagen/{orden}', 'ProviderOrderScanController@imagen');

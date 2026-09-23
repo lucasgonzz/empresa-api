@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\AjustesDeClienteEsquemaHelper;
 use App\Http\Controllers\Helpers\Order\ComboEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
@@ -38,7 +39,41 @@ class Order extends Model
 
         $relaciones = ['order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'cupon', 'buyer', 'payment_method.payment_method_type', 'delivery_zone', 'payment_card_info', 'promocion_vinotecas.images', 'envio'];
 
-        $query->with(array_merge($relaciones, ComboEsquemaHelper::relaciones_de_combos()));
+        $query->with(array_merge(
+            $relaciones,
+            ComboEsquemaHelper::relaciones_de_combos(),
+            AjustesDeClienteEsquemaHelper::relaciones_de_pedido()
+        ));
+    }
+
+    /**
+     * Descuentos del cliente con los que la tienda priceó este pedido (misión
+     * descuentos-recargos-por-cliente, 23/9/2026), tabla `discount_order`. Los escribe `tienda-api`
+     * al crear el pedido; el ERP los muestra en el pedido y se los pasa a la venta al confirmar.
+     *
+     * `withTrashed()` y `percentage` en el pivot van juntos: si el dueño borra o cambia el
+     * descuento después de que entró el pedido, el pedido tiene que seguir mostrando —y la venta
+     * recibiendo— el porcentaje con el que se calcularon sus precios, no el de hoy. Sin el
+     * `withTrashed()` el descuento borrado desaparecería de la relación y la venta nacería con los
+     * renglones mal (ver `CreateSaleOrderHelper::ajustes_del_pedido()`).
+     *
+     * Leela por `CreateSaleOrderHelper::ajustes_del_pedido()` o con la guarda de
+     * `AjustesDeClienteEsquemaHelper`: en una base sin la tabla, acceder a la relación revienta.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsToMany
+     */
+    function discounts() {
+        return $this->belongsToMany(Discount::class)->withTrashed()->withPivot('percentage');
+    }
+
+    /**
+     * Recargos del cliente con los que la tienda priceó este pedido, tabla `order_surchage`.
+     * Mismo criterio que `discounts()`.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsToMany
+     */
+    function surchages() {
+        return $this->belongsToMany(Surchage::class)->withTrashed()->withPivot('percentage');
     }
 
     function promocion_vinotecas() {

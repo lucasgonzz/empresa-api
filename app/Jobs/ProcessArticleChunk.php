@@ -192,6 +192,14 @@ class ProcessArticleChunk implements ShouldQueue
                 return;
             }
 
+            /*
+             * El lote arrancó: se nota en `updated_at` de las dos tablas aunque el status no
+             * cambie. Con el refresco del final (update_import_status/update_import_history), el
+             * hueco que ve el watchdog `imports:detectar-colgadas` pasa a ser max(espera en cola,
+             * duración de un lote) y no la suma de los dos.
+             */
+            $this->refrescar_actividad_al_arrancar();
+
             /* Guard de memoria: si ya arrancamos cerca del techo, fallamos con un mensaje accionable AHORA
                en vez de crashear crudo por OOM (que la cola recién detecta ~40 min después). */
             $this->verificar_memoria_disponible();
@@ -383,6 +391,26 @@ class ProcessArticleChunk implements ShouldQueue
         }
     }
 
+    /**
+     * Marca actividad en import_statuses e import_histories al arrancar el lote, sin tocar nada
+     * más. `DB::table()` a propósito: solo `updated_at`, sin eventos ni otros atributos del
+     * modelo (mismo criterio que los contadores atómicos de update_import_status()).
+     *
+     * @return void
+     */
+    private function refrescar_actividad_al_arrancar()
+    {
+        $ahora = now();
+
+        DB::table('import_statuses')
+            ->where('id', $this->import_status_id)
+            ->update(['updated_at' => $ahora]);
+
+        DB::table('import_histories')
+            ->where('id', $this->import_history_id)
+            ->update(['updated_at' => $ahora]);
+    }
+
     function recargar_article_import_result() {
         $this->import_result = ArticleImportResult::find($this->import_result->id);
     }
@@ -495,7 +523,18 @@ class ProcessArticleChunk implements ShouldQueue
     function update_import_status() {
         $inicio = microtime(true);
 
-        // Actualización ATÓMICA (evita que los workers se pisen)
+        $ahora = now();
+
+        /*
+         * Actualización ATÓMICA (evita que los workers se pisen).
+         *
+         * 🔴 `updated_at` va a mano: `DB::table()->update()` NO toca los timestamps de Eloquent, y
+         * el watchdog `imports:detectar-colgadas` decide si una importación está colgada mirando
+         * cuánto hace que no se actualiza. Sin esta línea solo se movía en el primer y el último
+         * lote: en Servian (23/9/2026) una importación de 97 lotes de ~33 s cada uno (~55 min)
+         * quedó marcada `fallo` a los 45 min y después terminó 97/97. Mismo criterio que
+         * ProcessProviderOrderArticleImport::avanzar_progreso().
+         */
         DB::table('import_statuses')
             ->where('id', $this->import_status_id)
             ->update([
@@ -505,6 +544,7 @@ class ProcessArticleChunk implements ShouldQueue
                 'updated_models'     => DB::raw('updated_models + ' . (int) $this->import_result->updated_count),
                 'filas_procesadas'   => DB::raw('filas_procesadas + ' . (int) $this->import_result->filas_procesadas),
                 'articles_repetidos' => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
+                'updated_at'         => $ahora,
             ]);
 
         // Traigo el estado actualizado y seteo status correctamente (luego de incrementar contadores)
@@ -707,8 +747,12 @@ class ProcessArticleChunk implements ShouldQueue
 
     function update_import_history() {
 
+        $ahora = now();
 
-        // Actualización ATÓMICA (evita que los workers se pisen)
+        /*
+         * Actualización ATÓMICA (evita que los workers se pisen). `updated_at` a mano por lo mismo
+         * que en update_import_status(): el watchdog mira justamente `import_histories.updated_at`.
+         */
         DB::table('import_histories')
             ->where('id', $this->import_history_id)
             ->update([
@@ -720,6 +764,7 @@ class ProcessArticleChunk implements ShouldQueue
                 'articles_repetidos'                 => DB::raw('articles_repetidos + ' . (int) $this->import_result->articles_repetidos),
                 /* Acumular artículos creados con código repetido de cada chunk. */
                 'created_with_repeated_code_count'   => DB::raw('created_with_repeated_code_count + ' . (int) $this->import_result->created_with_repeated_code_count),
+                'updated_at'                         => $ahora,
             ]);
 
         // Traigo el estado actualizado y seteo status correctamente

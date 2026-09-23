@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
@@ -973,13 +974,139 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
          */
         foreach ([1, 2] as $indice) {
             $this->assertSame(config('services.deepseek.model_profundo'), $bodies[$indice]['model'], 'La vuelta ' . $indice . ' no escaló.');
-            $this->assertSame('enabled', $bodies[$indice]['thinking']['type'], 'El thinking tiene que viajar con el modelo que corre.');
-            $this->assertArrayHasKey('budget_tokens', $bodies[$indice]['thinking']);
 
-            /* 🔴 El techo acompaña al modelo: si el razonamiento cuenta contra max_tokens, con los de siempre cortaría sin texto. */
-            $this->assertSame((int) config('services.deepseek.max_tokens_profundo'), $bodies[$indice]['max_tokens']);
-            $this->assertGreaterThan($bodies[0]['max_tokens'], $bodies[$indice]['max_tokens']);
+            /*
+             * 🔴 El MODELO escala, el thinking NO se prende: la vuelta 0 fue del Ágil (thinking
+             * apagado) y su tool_use no trae bloque `thinking`. DeepSeek con `enabled` rechaza ese
+             * historial con un 400 ("content[].thinking must be passed back", medido contra la API
+             * real en demo3 el 23/9/2026) y la persona ve "se me cortó la conexión" en cada
+             * reintento. Antes este test exigía `enabled` porque Http::fake no valida nada.
+             */
+            $this->assertSame('disabled', $bodies[$indice]['thinking']['type'], 'Prender el thinking con un tool_use previo sin thinking rompe contra DeepSeek.');
+            $this->assertSame(AsistenteIaService::MAX_TOKENS, $bodies[$indice]['max_tokens']);
         }
+    }
+
+    /**
+     * 🔴 REGRESIÓN DE DEMO3 (23/9/2026): un dueño en Ágil pide crear un proveedor, el modelo llama
+     * a `proponer_*`, el turno escala y la vuelta siguiente moría con un 400 de DeepSeek. Ningún
+     * request de un turno con tool_use previo sin `thinking` puede llevar `thinking: enabled`.
+     * Este chequeo mira TODOS los bodies, no una vuelta puntual: es la regla que DeepSeek aplica.
+     *
+     * @test
+     */
+    public function ninguna_vuelta_con_un_tool_use_previo_sin_thinking_manda_el_thinking_prendido()
+    {
+        $this->dueno_en_deepseek_agil();
+
+        Http::fake([
+            'api.deepseek.com/*' => Http::sequence()
+                ->push($this->tool_use('proponer_gasto', []), 200)
+                ->push($this->end_turn('¿De cuánto fue?'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion('Anotá la nafta');
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies);
+
+        foreach ($bodies as $indice => $body) {
+
+            $hay_tool_use_sin_thinking = false;
+
+            foreach ($body['messages'] as $mensaje) {
+
+                if ($mensaje['role'] !== 'assistant' || ! is_array($mensaje['content'])) {
+                    continue;
+                }
+
+                $tipos = array_column($mensaje['content'], 'type');
+
+                if (in_array('tool_use', $tipos, true) && ! in_array('thinking', $tipos, true)) {
+                    $hay_tool_use_sin_thinking = true;
+                }
+            }
+
+            if ($hay_tool_use_sin_thinking) {
+                $this->assertNotSame('enabled', $body['thinking']['type'], 'La vuelta ' . $indice . ' manda thinking prendido con un tool_use sin thinking en el historial.');
+            }
+        }
+    }
+
+    /**
+     * Lo contrario: un turno que ARRANCA con el thinking prendido (dueño en Profundo) recibe un
+     * `thinking` del modelo y lo devuelve tal cual en la vuelta siguiente, que DeepSeek acepta
+     * (medido contra la API real el 23/9/2026). El helper no tiene que apagárselo: se perdería el
+     * razonamiento de todo el turno para nada.
+     *
+     * @test
+     */
+    public function un_turno_que_arranca_pensando_conserva_el_thinking_y_lo_devuelve_al_modelo()
+    {
+        $this->dueno->agente_proveedor = 'deepseek';
+        $this->dueno->agente_pensamiento = 'profundo';
+        $this->dueno->save();
+
+        $con_thinking = $this->tool_use('consultar_proveedores', ['busqueda' => '']);
+        array_unshift($con_thinking['content'], ['type' => 'thinking', 'thinking' => 'Voy a mirar los proveedores.', 'signature' => 'firma-de-prueba']);
+
+        Http::fake([
+            'api.deepseek.com/*' => Http::sequence()
+                ->push($con_thinking, 200)
+                ->push($this->end_turn('Tenés tres proveedores.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion('¿Qué proveedores tengo?');
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies);
+        $this->assertSame('enabled', $bodies[0]['thinking']['type']);
+        $this->assertSame('enabled', $bodies[1]['thinking']['type'], 'Con el thinking devuelto en el historial no hay motivo para apagarlo.');
+
+        $mensajes = $bodies[1]['messages'];
+        $tipos    = array_column($mensajes[count($mensajes) - 2]['content'], 'type');
+
+        $this->assertContains('thinking', $tipos, 'El bloque thinking tiene que volver al proveedor tal cual vino.');
+    }
+
+    /**
+     * La regla del helper, aislada: solo el thinking `enabled` con un turno assistant que trae
+     * `tool_use` sin `thinking` se apaga; todo lo demás sale como entró.
+     *
+     * @test
+     */
+    public function el_helper_solo_apaga_el_thinking_prendido_ante_un_tool_use_sin_thinking()
+    {
+        $prendido = ['type' => 'enabled', 'budget_tokens' => 4000];
+        $tool_use = ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'x', 'input' => new \stdClass()];
+
+        $sin_pensar = [
+            ['role' => 'user', 'content' => 'hola'],
+            ['role' => 'assistant', 'content' => [$tool_use]],
+        ];
+        $pensando = [
+            ['role' => 'user', 'content' => 'hola'],
+            ['role' => 'assistant', 'content' => [['type' => 'thinking', 'thinking' => 'a', 'signature' => 'b'], $tool_use]],
+        ];
+        $solo_texto = [
+            ['role' => 'user', 'content' => 'hola'],
+            ['role' => 'assistant', 'content' => 'una respuesta vieja de la base'],
+        ];
+
+        $this->assertSame(['type' => 'disabled'], ProveedorIaHelper::thinking_apto_para_historial($prendido, $sin_pensar));
+        $this->assertSame($prendido, ProveedorIaHelper::thinking_apto_para_historial($prendido, $pensando));
+        $this->assertSame($prendido, ProveedorIaHelper::thinking_apto_para_historial($prendido, $solo_texto));
+        $this->assertSame($prendido, ProveedorIaHelper::thinking_apto_para_historial($prendido, []));
+        $this->assertSame(['type' => 'disabled'], ProveedorIaHelper::thinking_apto_para_historial(['type' => 'disabled'], $sin_pensar));
+        $this->assertNull(ProveedorIaHelper::thinking_apto_para_historial(null, $sin_pensar), 'Anthropic no lleva thinking y no se le inventa uno.');
     }
 
     /**
@@ -1053,8 +1180,13 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
         /* Y la foto viajó de verdad: si no hubiera bloque `image`, la aserción de arriba no probaría nada. */
         $this->assertSame('image', $bodies[0]['messages'][0]['content'][0]['type']);
 
-        /* El thinking sí escala, porque Flash también razona: lo que no cambia es el modelo. */
-        $this->assertSame('enabled', $bodies[1]['thinking']['type']);
+        /*
+         * El modelo no cambia (Flash con visión) y el thinking tampoco se prende: la vuelta 0 del
+         * Ágil trajo un tool_use sin bloque `thinking`, y DeepSeek rechaza con un 400 un historial
+         * así si el thinking pasa a `enabled` (medido contra la API real el 23/9/2026). Antes esta
+         * aserción exigía `enabled`, que es exactamente el pedido que rompía la factura de demo3.
+         */
+        $this->assertSame('disabled', $bodies[1]['thinking']['type']);
     }
 
     /**
