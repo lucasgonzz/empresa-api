@@ -28,6 +28,8 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaAccionDePantallaIaHelper;
 use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -44,7 +46,12 @@ use Illuminate\Support\Facades\Log;
  * consultar y unificar los bancos de los cheques. La misión asistente-omnisciente (21/9/2026)
  * sumó cinco más después de esas: el ABM genérico (que_puedo_cargar, proponer_alta,
  * proponer_edicion, proponer_baja) y proponer_venta. La misión asistente-ventas-y-fotos (21/9/2026)
- * sumó proponer_foto_articulo después de esas. Van al final porque el orden es parte
+ * sumó proponer_foto_articulo después de esas. La misión asistente-capacidades-y-hilos (22/9/2026)
+ * sumó cuatro más (los dos de stock, el presupuesto y el permiso de un empleado). La misión
+ * asistente-mcp (22/9/2026) sumó las cuatro ACCIONES DE PANTALLA al final de todo:
+ * que_acciones_de_pantalla_hay, consultar_por_pantalla, proponer_accion_de_pantalla y
+ * proponer_borrado_por_pantalla, la herramienta genérica que llama a la misma ruta que llama la
+ * pantalla (ver CatalogoDeAccionesDePantallaIaHelper). Van al final porque el orden es parte
  * del caché de prompt (ver build_tools()).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
@@ -96,8 +103,9 @@ class HerramientasDeCarga
      * a conciencia desde la configuración. Lo que cambió con esa misión es que los `case` de esas
      * propuestas SÍ pasan por quizas_auto_confirmar(): quién se ejecuta lo decide el modo adentro de
      * la puerta, no la ausencia de la llamada. Los únicos `case` que siguen sin pasar por ahí son
-     * los de NUNCA_AUTO_CONFIRMABLES —cuatro desde el 22/9/2026, con el permiso de un empleado—, y
-     * eso lo fijan los tests 36 y 51 LEYENDO ESTE ARCHIVO como texto plano (el `switch` no es
+     * los de NUNCA_AUTO_CONFIRMABLES —cinco desde el 22/9/2026: el permiso de un empleado y, con la
+     * misión asistente-mcp del mismo día, el borrado por pantalla—, y
+     * eso lo fijan los tests 36, 51 y 55 LEYENDO ESTE ARCHIVO como texto plano (el `switch` no es
      * introspectable de otra forma). El test 26 también cuida la masiva, pero solo por la
      * constante: no lee el archivo, así que no cubre la tercera guarda.
      *
@@ -160,6 +168,17 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_MOVIMIENTO_STOCK,
         AiMessageAction::TIPO_STOCK_DEPOSITO,
         AiMessageAction::TIPO_PRESUPUESTO,
+        /*
+         * Las acciones de pantalla que NO borran (misión asistente-mcp, 22/9/2026), atrás de lo que
+         * había. Con el dueño en "directo", lo que la pantalla hace por POST o PUT se hace en el acto
+         * igual que el resto de las cargas de este modo: es lo que "literalmente todo lo que se
+         * hace desde la interfaz" significa cuando el dueño ya pidió que no le pregunten. Lo que
+         * pudiera ser masivo o irreversible por POST/PUT no entra al catálogo (ver
+         * CatalogoDeAccionesDePantallaIaHelper::EXCLUIDAS), así que no llega hasta acá.
+         *
+         * 🔴 TIPO_BORRADO_PANTALLA NO ESTÁ ACÁ, y está en NUNCA_AUTO_CONFIRMABLES: ver ahí.
+         */
+        AiMessageAction::TIPO_ACCION_PANTALLA,
     ];
 
     /**
@@ -180,6 +199,10 @@ class HerramientasDeCarga
      * reversible con otra carga *si alguien se entera*. Por eso, aunque el dueño tenga el modo
      * directo prendido, esta tarjeta se confirma siempre, y su presentación dice con qué lista de
      * permisos queda el empleado, no solo cuál se toca.
+     * 🔴 `borrado_pantalla` (misión asistente-mcp, 22/9/2026): un DELETE de cualquier pantalla del
+     * sistema. Es la hermana de `baja` con menos información todavía: acá ni siquiera se conoce la
+     * tabla como para decir si el modelo usa SoftDeletes o qué queda colgado. Lo que no se puede
+     * deshacer lo confirma siempre la persona.
      *
      * No alcanza con que no estén en la lista de arriba: auto_confirmables_de() los saca igual, así
      * que sumar uno a AUTO_CONFIRMABLES_DIRECTO por distracción no lo vuelve auto-ejecutable. Y sus
@@ -194,6 +217,7 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
         AiMessageAction::TIPO_UNIFICAR_BANCOS,
         AiMessageAction::TIPO_PERMISO_EMPLEADO,
+        AiMessageAction::TIPO_BORRADO_PANTALLA,
     ];
 
     /**
@@ -1170,6 +1194,119 @@ class HerramientasDeCarga
                     'required'   => ['empleado', 'permiso', 'accion'],
                 ],
             ],
+            /*
+             * Misión asistente-mcp (22/9/2026), al FINAL de lo que había: las ACCIONES DE PANTALLA.
+             * "Literalmente todo lo que se hace desde la interfaz" es la misma ruta y el mismo
+             * controller que llama la pantalla, con las mismas reglas de confirmación que el resto
+             * de las cargas. El catálogo (qué rutas entran y cuáles no, con motivo) vive en
+             * CatalogoDeAccionesDePantallaIaHelper y se consulta bajo demanda con la primera de las
+             * cuatro, NO en el enum del esquema: el bloque de definiciones viaja entero en cada
+             * vuelta y es el prefijo del caché.
+             */
+            [
+                'name'         => 'que_acciones_de_pantalla_hay',
+                'description'  => 'Devuelve el catálogo de ACCIONES DE PANTALLA: todo lo que se hace desde las pantallas del sistema y no tiene herramienta propia (abrir o cerrar una caja, confirmar o anular un presupuesto, editar una venta, facturar, marcar un pedido, cambiar una preferencia...). Cada acción trae el método (GET lee; POST y PUT hacen; DELETE borra), la `ruta` con sus {parámetros}, el módulo, las `claves` que el controller lee del cuerpo (best-effort: puede leer más o menos de lo que dice) y la extensión que exige, si alguna. Devuelve de a 40 por página: filtrá con `buscar` (una o más palabras, sin importar acentos; las rutas están en inglés: caja, budget, sale, article, client, provider, order...) y con `metodo`. 🔴 La `ruta` que devuelve, con sus {param} TAL CUAL, es la que hay que pasarle a consultar_por_pantalla, proponer_accion_de_pantalla y proponer_borrado_por_pantalla. Nunca la uses para lo que ya tiene herramienta propia (gastos, pagos, tareas, ventas nuevas, presupuestos nuevos, el ABM genérico...): esas rutas no están en el catálogo.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'buscar' => [
+                            'type'        => 'string',
+                            'description' => 'Una o más palabras que tienen que estar en la ruta, el módulo o la acción ("caja", "cerrar caja", "budget confirmar"). Sin buscar trae todas, paginadas.',
+                        ],
+                        'metodo' => [
+                            'type'        => 'string',
+                            'enum'        => ['GET', 'POST', 'PUT', 'DELETE'],
+                            'description' => 'Solo las acciones de este método. Sin metodo trae todos.',
+                        ],
+                        'pagina' => [
+                            'type'        => 'integer',
+                            'description' => 'Qué página de 40 traer. Si no la mandás, la primera.',
+                        ],
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            [
+                'name'         => 'consultar_por_pantalla',
+                'description'  => 'Lee lo que una pantalla del sistema ve, llamando a la misma ruta GET que llama la pantalla (una de que_acciones_de_pantalla_hay). Se ejecuta en el acto y no deja tarjeta: es de LECTURA. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros` y los filtros que la pantalla manda en la query (fechas, per_page, búsqueda) en `consulta`. Devuelve el JSON de la pantalla; si es muy largo viene recortado (`recortado: true`): pedí menos con `consulta` (per_page, un rango de fechas) o usá una ruta más específica. Para los datos del negocio que ya tienen herramienta propia (stock, clientes, ventas, cuentas corrientes, tareas) usá esa herramienta, que viene resumida y es más barata.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'ruta'       => [
+                            'type'        => 'string',
+                            'description' => 'La ruta GET como la devuelve que_acciones_de_pantalla_hay, con sus {param} tal cual (ej. "api/caja/{id}/liquidaciones-pendientes").',
+                        ],
+                        'parametros' => [
+                            'type'                 => 'object',
+                            'description'          => 'Los valores de los {param} de la ruta, por nombre: {"id": 12}.',
+                            'additionalProperties' => true,
+                        ],
+                        'consulta'   => [
+                            'type'                 => 'object',
+                            'description'          => 'Los filtros de la pantalla, como viajan en la query string: {"per_page": 50, "from_date": "2026-09-01"}.',
+                            'additionalProperties' => true,
+                        ],
+                    ],
+                    'required'   => ['ruta'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_accion_de_pantalla',
+                'description'  => 'Arma la tarjeta para HACER algo por la misma ruta POST o PUT que usa una pantalla del sistema (una de que_acciones_de_pantalla_hay), para que la persona la confirme: NO hace nada por sí sola. Al confirmar corre el mismo controller que la pantalla, autenticado como la persona; lo que la pantalla rechazaría (validación, permisos, un registro que no existe) vuelve como `error`. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros`, lo que la pantalla manda en el formulario en `cuerpo` (las `claves` del catálogo son una guía) y una `descripcion` de UNA línea que diga qué hace esta acción: es el título que la persona lee en la tarjeta, así que tiene que ser fiel y concreta ("Abrir la caja Efectivo", "Confirmar el presupuesto N° 12"). Con la confianza en "directo" se ejecuta en el acto. Para BORRAR está proponer_borrado_por_pantalla, y para leer, consultar_por_pantalla. Nunca la uses para lo que ya tiene herramienta propia. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'metodo'      => [
+                            'type' => 'string',
+                            'enum' => ['POST', 'PUT'],
+                        ],
+                        'ruta'        => [
+                            'type'        => 'string',
+                            'description' => 'La ruta como la devuelve que_acciones_de_pantalla_hay, con sus {param} tal cual (ej. "api/cerrar-caja/{caja_id}").',
+                        ],
+                        'parametros'  => [
+                            'type'                 => 'object',
+                            'description'          => 'Los valores de los {param} de la ruta, por nombre: {"caja_id": 12}.',
+                            'additionalProperties' => true,
+                        ],
+                        'cuerpo'      => [
+                            'type'                 => 'object',
+                            'description'          => 'Lo que la pantalla manda en el cuerpo del request, con las claves que lee el controller. Vacío si la ruta no lleva cuerpo.',
+                            'additionalProperties' => true,
+                        ],
+                        'descripcion' => [
+                            'type'        => 'string',
+                            'description' => 'Qué hace esta acción, en una línea y en español, tal como lo va a leer la persona en la tarjeta.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['metodo', 'ruta', 'descripcion'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_borrado_por_pantalla',
+                'description'  => 'Arma la tarjeta para BORRAR un registro por la misma ruta DELETE que usa una pantalla del sistema (una de que_acciones_de_pantalla_hay), para que la persona la confirme: NO borra nada. 🔴 SIEMPRE deja tarjeta, en los tres modos de confianza y aunque te pidan que lo hagas sin preguntar: si el sistema no manda ese registro a la papelera, no se deshace. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros` y una `descripcion` de UNA línea que diga QUÉ se borra (es el título de la tarjeta). Para lo que está en que_puedo_cargar usá proponer_baja, que además dice qué queda colgado. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'ruta'        => [
+                            'type'        => 'string',
+                            'description' => 'La ruta DELETE como la devuelve que_acciones_de_pantalla_hay, con sus {param} tal cual (ej. "api/caja/{caja}").',
+                        ],
+                        'parametros'  => [
+                            'type'                 => 'object',
+                            'description'          => 'Los valores de los {param} de la ruta, por nombre: {"caja": 12}.',
+                            'additionalProperties' => true,
+                        ],
+                        'descripcion' => [
+                            'type'        => 'string',
+                            'description' => 'Qué se borra, en una línea y en español, tal como lo va a leer la persona en la tarjeta.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['ruta', 'descripcion'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -1583,6 +1720,56 @@ class HerramientasDeCarga
             // tarjeta, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES).
             case 'proponer_permiso_de_empleado':
                 return self::resultado(PropuestaPermisoEmpleadoIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * Misión asistente-mcp (22/9/2026): las acciones de pantalla. Las dos primeras son de
+             * lectura y contestan en el acto; la de POST/PUT pasa por la puerta única, como el
+             * resto de lo que hace la pantalla; la de DELETE no (ver más abajo).
+             */
+            case 'que_acciones_de_pantalla_hay':
+                $pagina = EntradaDeCargaIa::valor($input, 'pagina');
+                return self::resultado(CatalogoDeAccionesDePantallaIaHelper::lista(
+                    EntradaDeCargaIa::texto($input, 'buscar'),
+                    EntradaDeCargaIa::texto($input, 'metodo'),
+                    is_null($pagina) ? 1 : (int) $pagina
+                ));
+
+            case 'consultar_por_pantalla':
+                return self::resultado(PropuestaAccionDePantallaIaHelper::consultar(
+                    $contexto,
+                    EntradaDeCargaIa::texto($input, 'ruta'),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'parametros')),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'consulta'))
+                ));
+
+            case 'proponer_accion_de_pantalla':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaAccionDePantallaIaHelper::proponer(
+                        $contexto,
+                        $assistant_message,
+                        EntradaDeCargaIa::texto($input, 'metodo'),
+                        EntradaDeCargaIa::texto($input, 'ruta'),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'parametros')),
+                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'cuerpo')),
+                        EntradaDeCargaIa::texto($input, 'descripcion'),
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                    )
+                ));
+
+            // 🔴 SIN quizas_auto_confirmar(), a propósito: un borrado por pantalla SIEMPRE deja
+            // tarjeta, en todos los modos (ver NUNCA_AUTO_CONFIRMABLES): no se conoce ni la tabla.
+            case 'proponer_borrado_por_pantalla':
+                return self::resultado(PropuestaAccionDePantallaIaHelper::proponer_borrado(
+                    $contexto,
+                    $assistant_message,
+                    EntradaDeCargaIa::texto($input, 'ruta'),
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'parametros')),
+                    EntradaDeCargaIa::texto($input, 'descripcion'),
+                    EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                ));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
