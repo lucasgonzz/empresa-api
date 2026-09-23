@@ -57,6 +57,15 @@ class AppServiceProvider extends ServiceProvider
             'promocion_vinoteca' => 'App\Models\PromocionVinoteca',
             'client' => 'App\Models\Client',
             'provider' => 'App\Models\Provider',
+            /*
+             * Misión asistente-mcp (22/9/2026): `personal_access_tokens.tokenable` es polimórfica
+             * (morphMany de Laravel\Sanctum\HasApiTokens) y con el mapa impuesto, un modelo que
+             * no está acá no puede ser el dueño de NINGUNA relación polimórfica: User::tokens() y
+             * User::createToken() reventaban con ClassMorphViolationException. Hasta esta misión
+             * el repo no creaba tokens (el SPA se autentica por cookie), así que nadie lo notó; la
+             * clave de conexión al servidor MCP es el primer createToken() y necesita esta línea.
+             */
+            'user' => 'App\Models\User',
         ]);
 
 
