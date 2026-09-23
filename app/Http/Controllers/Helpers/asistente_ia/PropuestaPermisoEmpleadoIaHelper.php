@@ -159,8 +159,6 @@ class PropuestaPermisoEmpleadoIaHelper
             unset($finales[(int) $permiso->id]);
         }
 
-        $payload = self::payload($empleado, $finales);
-
         $nombres = self::nombres_de($finales);
 
         $renglones = [
@@ -194,14 +192,21 @@ class PropuestaPermisoEmpleadoIaHelper
             AiMessageAction::TIPO_PERMISO_EMPLEADO,
             self::clave($empleado->id, $permiso->id),
             /*
-             * ⚠️ `payload` queda guardado como registro de lo que se propuso, pero al confirmar NO
-             * se usa: se rearma con la ficha de ese momento. Lo que manda al ejecutar es `esperado`
-             * —el empleado, el permiso y si se da o se saca—, y `permiso_ids` es la lista que la
-             * tarjeta PROMETIÓ, para poder leer después qué se le dijo a la persona. Ver el 🔴 de
-             * ejecutar().
+             * 🔴 ACÁ NO SE GUARDA EL PAYLOAD, Y ES A PROPÓSITO: LLEVA LA CONTRASEÑA EN CLARO.
+             *
+             * `payload()` arma el modelo entero del empleado, y ahí adentro va su
+             * `visible_password` tal cual —el endpoint la exige, ver la trampa 2—. Guardarlo en
+             * `ai_message_actions.datos` dejaría una copia en claro de la contraseña de un empleado
+             * en una tabla de chat, viva mientras viva la fila. `datos` está en `$hidden` y no
+             * llega a la SPA, pero eso es que no se muestra, no que no esté.
+             *
+             * Y no hace falta para nada: al confirmar el payload se REARMA con la ficha de ese
+             * momento (ver el 🔴 de ejecutar()), así que lo guardado no se leía nunca. Lo que sí se
+             * guarda es el PEDIDO —qué empleado, qué permiso, si se da o se saca— y `permiso_ids`,
+             * que es la lista que la tarjeta PROMETIÓ, para poder leer después qué se le dijo a la
+             * persona.
              */
             [
-                'payload'  => $payload,
                 'esperado' => [
                     'employee_id'  => (int) $empleado->id,
                     'permiso_id'   => (int) $permiso->id,

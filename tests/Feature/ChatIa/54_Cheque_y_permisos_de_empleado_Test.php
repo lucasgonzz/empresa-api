@@ -947,6 +947,46 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 LA TARJETA NO GUARDA LA CONTRASEÑA DEL EMPLEADO.
+     *
+     * `payload()` lleva la `visible_password` en claro porque el endpoint la exige, pero eso se
+     * arma recién al confirmar y viaja al controller: en `ai_message_actions.datos` no tiene nada
+     * que hacer. `datos` está en `$hidden` y no llega a la SPA, pero eso es que no se muestra, no
+     * que no esté: quedaría una copia en claro de la clave de un empleado en una tabla de chat,
+     * viva mientras viva la fila.
+     *
+     * @test
+     */
+    public function la_tarjeta_no_guarda_la_contrasena_del_empleado()
+    {
+        $this->dar_extension(PropuestaPermisoEmpleadoIaHelper::EXTENSION);
+
+        $empleado = $this->empleado(['sale.index', 'client.index'], 'clave-secreta-p54');
+
+        list($conversation, $assistant) = $this->conversacion('Sacale el permiso de ver ventas');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_permiso_de_empleado', [
+            'empleado' => $empleado->name,
+            'permiso'  => 'sale.index',
+            'accion'   => 'sacar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $crudo = json_encode($accion->datos);
+
+        $this->assertStringNotContainsString('clave-secreta-p54', $crudo, 'La contraseña del empleado quedó guardada en la tarjeta.');
+        $this->assertStringNotContainsString('visible_password', $crudo);
+        $this->assertArrayNotHasKey('payload', $accion->datos, 'El payload no se guarda: al confirmar se rearma.');
+
+        // Y lo que sí guarda es el pedido, que es lo único que el ejecutor necesita.
+        $this->assertSame((int) $empleado->id, (int) $accion->datos['esperado']['employee_id']);
+        $this->assertSame('sacar', $accion->datos['esperado']['accion']);
+    }
+
+    /**
      * El payload lleva el modelo entero, con `id` (que es lo que `update()` lee de verdad) y la
      * `visible_password` de hoy.
      *

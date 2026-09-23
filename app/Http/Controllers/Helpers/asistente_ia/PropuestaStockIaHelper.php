@@ -507,10 +507,17 @@ class PropuestaStockIaHelper
              * ⚠️ `payload` queda guardado como registro de lo que se propuso, pero al confirmar NO
              * se usa: se rearma con los números de ese momento. Ver el 🔴 de
              * ejecutar_stock_en_deposito(). Lo que manda al ejecutar es `esperado`.
+             *
+             * 🔴 Y `esperado` GUARDA EL PEDIDO, NO SOLO SU RESULTADO: el `modo` y la `cantidad` son
+             * lo que la persona dijo ("sumale 10"), y con modo `sumar` o `restar` eso es un DELTA
+             * que se vuelve a resolver al confirmar. `final` queda como lo que la tarjeta PROMETIÓ,
+             * para poder contar la diferencia si el stock se movió en el medio.
              */
             ['payload' => $payload, 'esperado' => [
                 'article_id' => (int) $articulo->id,
                 'address_id' => (int) $deposito->id,
+                'modo'       => $modo,
+                'cantidad'   => $cantidad,
                 'final'      => $final,
             ]],
             [
@@ -572,7 +579,7 @@ class PropuestaStockIaHelper
 
         self::verificar_depositos($contexto, [$address_id]);
 
-        $final = isset($esperado['final']) ? (float) $esperado['final'] : 0.0;
+        $prometido = isset($esperado['final']) ? (float) $esperado['final'] : 0.0;
 
         $pivots = self::pivots_del_articulo($articulo->id);
 
@@ -584,10 +591,20 @@ class PropuestaStockIaHelper
          * artículo, y `UpdateAddressesStockHelper` calcula, para cada uno, la diferencia contra lo
          * que hay. Entre proponer y confirmar pueden pasar horas: si en el medio se vendió algo de
          * OTRO depósito, el payload viejo lo "corregiría" a su número anterior — un ajuste de stock
-         * que nadie pidió, en un depósito que la tarjeta ni nombra. Rearmado con los pivots de
-         * ahora, los que no cambian viajan con su valor actual (diferencia 0, no se tocan) y el que
-         * cambia va al número que la persona confirmó en la tarjeta.
+         * que nadie pidió, en un depósito que la tarjeta ni nombra.
+         *
+         * 🔴 Y EL DEPÓSITO QUE SÍ CAMBIA TAMPOCO VA CON EL ABSOLUTO CONGELADO, CUANDO LO QUE LA
+         * PERSONA PIDIÓ FUE UN DELTA. "Sumale 10" sobre Florida en 10 guarda `final = 20`; si en el
+         * medio se venden 5 por Vender, confirmar con ese 20 le devuelve las 5 unidades vendidas y
+         * la verificación de abajo daría OK, porque compararía 20 contra 20. El delta sigue siendo
+         * válido —el dueño pidió "diez más", no "dejalo en veinte"—, así que con modo `sumar` o
+         * `restar` el absoluto se RESUELVE ACÁ, sobre lo que hay ahora.
+         *
+         * Con modo `fijar` no: ahí el número que la persona confirmó ES el que quiere, y
+         * recalcularlo no querría decir nada. Ese absoluto se respeta tal cual.
          */
+        $final = self::final_al_confirmar($esperado, $antes, $prometido, $address_id);
+
         $payload = self::payload_de_stock_en_deposito(
             $articulo,
             self::depositos_del_dueno($contexto->owner_id),
@@ -616,15 +633,85 @@ class PropuestaStockIaHelper
             );
         }
 
+        $texto = 'Stock de ' . self::nombre_de_deposito_por_id($address_id) . ' actualizado: '
+            . self::numero($antes) . ' → ' . self::numero($despues);
+
+        /*
+         * 🔴 SI EL NÚMERO NO ES EL QUE DECÍA LA TARJETA, SE DICE. La persona leyó "10 → 20" y
+         * terminó en 15 porque se vendieron 5 en el medio: el delta que pidió se respetó, pero el
+         * renglón que ella miró quedó viejo. Callarlo sería dejar que el modelo repita el número de
+         * la tarjeta, que es exactamente el defecto que esta misión vino a cerrar. El texto es lo
+         * único que el modelo recibe, así que el motivo va acá.
+         */
+        if (abs($despues - $prometido) > 0.01) {
+
+            $texto .= '. Ojo: la tarjeta decía que iba a quedar en ' . self::numero($prometido)
+                . ', pero el stock de ese depósito cambió entre que te la mostré y que la confirmaste, '
+                . 'así que apliqué lo que pediste sobre lo que había ahora. Contá los números de arriba, no el de la tarjeta';
+        }
+
         return [
-            'texto' => 'Stock de ' . self::nombre_de_deposito_por_id($address_id) . ' actualizado: '
-                . self::numero($antes) . ' → ' . self::numero($despues),
+            'texto' => $texto,
             'ruta'  => [
                 'name'   => self::RUTA_LISTADO,
                 'params' => new \stdClass(),
                 'texto'  => 'Ver en el Listado',
             ],
         ];
+    }
+
+    /**
+     * El stock FINAL que se va a escribir, resuelto en el momento de confirmar.
+     *
+     * Con modo `sumar` o `restar`, sobre lo que el depósito tiene AHORA: lo que la persona pidió es
+     * un delta y el delta sigue valiendo aunque el stock se haya movido. Con modo `fijar`, el
+     * absoluto que ella confirmó, tal cual.
+     *
+     * ⚠️ Una tarjeta vieja (de antes de este arreglo) no tiene `modo` ni `cantidad` guardados: ahí
+     * se cae al absoluto prometido, que es exactamente lo que hacía antes. Es el único
+     * comportamiento posible con esos datos, y deja de pasar en cuanto la tarjeta se pide de nuevo.
+     *
+     * @param  array  $esperado
+     * @param  float  $antes  Lo que el depósito tiene ahora.
+     * @param  float  $prometido  El absoluto que dijo la tarjeta.
+     * @param  int  $address_id  Para el texto del rechazo.
+     * @return float
+     *
+     * @throws AccionIaException  422 si el delta dejaría el depósito en negativo.
+     */
+    protected static function final_al_confirmar(array $esperado, $antes, $prometido, $address_id): float
+    {
+        $modo = isset($esperado['modo']) ? (string) $esperado['modo'] : '';
+
+        $cantidad = isset($esperado['cantidad']) ? (float) $esperado['cantidad'] : 0.0;
+
+        if ($cantidad <= 0 || !in_array($modo, [self::MODO_SUMAR, self::MODO_RESTAR], true)) {
+
+            return (float) $prometido;
+        }
+
+        $final = $modo === self::MODO_SUMAR
+            ? (float) $antes + $cantidad
+            : (float) $antes - $cantidad;
+
+        $final = round($final, 2);
+
+        /*
+         * El mismo corte que al proponer, revisado de nuevo: entre la tarjeta y el clic el depósito
+         * pudo bajar, y restar sobre ese número nuevo puede dejarlo negativo. Se corta con el
+         * motivo en vez de escribir un stock imposible.
+         */
+        if ($final < 0) {
+
+            throw new AccionIaException(
+                422,
+                'En ' . self::nombre_de_deposito_por_id($address_id) . ' ahora hay ' . self::numero($antes)
+                . ' (cambió desde que armé la tarjeta): restarle ' . self::numero($cantidad)
+                . ' lo dejaría en negativo. Pedímelo de nuevo con el número que quieras.'
+            );
+        }
+
+        return $final;
     }
 
     /**

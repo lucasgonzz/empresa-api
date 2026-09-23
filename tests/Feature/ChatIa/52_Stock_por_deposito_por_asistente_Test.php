@@ -703,6 +703,131 @@ class Stock_por_deposito_por_asistente_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 LA VENTANA DEL PROPIO DEPÓSITO: "SUMALE 10" SIGUE SIENDO UN DELTA AL CONFIRMAR.
+     *
+     * Rearmar el payload arregló la deriva de los OTROS depósitos, pero el que cambia iba con el
+     * absoluto congelado al proponer. Florida en 10 + "sumale 10" guarda `final = 20`; si en el
+     * medio se venden 5, confirmar con ese 20 le devuelve las 5 unidades vendidas — y la
+     * verificación posterior daba OK, porque comparaba 20 contra 20.
+     *
+     * Lo que la persona pidió es un delta, y el delta sigue valiendo: se resuelve sobre lo que hay
+     * al confirmar.
+     *
+     * @test
+     */
+    public function sumar_se_resuelve_al_confirmar_sobre_el_stock_de_ese_momento()
+    {
+        $articulo = $this->articulo_de_prueba('zz-p52 Pastina delta');
+
+        $florida = $this->sucursal('zz-p52 Delta florida');
+
+        $this->stock_en($articulo, $florida, 10);
+
+        list($conversation, $assistant) = $this->conversacion('Sumale 10 a Florida');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p52 Pastina delta',
+            'deposito' => 'zz-p52 Delta florida',
+            'cantidad' => 10,
+            'modo'     => 'sumar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        // En el medio se venden 5 de ese mismo depósito.
+        $this->stock_en($articulo, $florida, 5);
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(
+            15,
+            $this->pivot($articulo->id, $florida->id),
+            self::DELTA,
+            'Quedó en 20: se escribió el absoluto congelado y se le devolvieron las 5 unidades vendidas.'
+        );
+
+        /*
+         * Y el texto que el modelo tiene para decir avisa que el número de la tarjeta quedó viejo:
+         * la persona leyó "10 → 20" y terminó en 15. Callarlo sería dejar que repita el 20.
+         */
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertStringContainsString('5 → 15', $accion->resultado->texto);
+        $this->assertStringContainsString('la tarjeta decía', $accion->resultado->texto);
+    }
+
+    /**
+     * 🔴 CON `fijar` NO SE RECALCULA: el número que la persona confirmó ES el que quiere.
+     *
+     * @test
+     */
+    public function fijar_respeta_el_absoluto_aunque_el_stock_haya_cambiado()
+    {
+        $articulo = $this->articulo_de_prueba('zz-p52 Pastina fijar ventana');
+
+        $deposito = $this->sucursal('zz-p52 Fijar ventana');
+
+        $this->stock_en($articulo, $deposito, 10);
+
+        list($conversation, $assistant) = $this->conversacion('Dejalo en 7');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p52 Pastina fijar ventana',
+            'deposito' => 'zz-p52 Fijar ventana',
+            'cantidad' => 7,
+            'modo'     => 'fijar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        $this->stock_en($articulo, $deposito, 3);
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $this->assertEqualsWithDelta(
+            7,
+            $this->pivot($articulo->id, $deposito->id),
+            self::DELTA,
+            'Con "fijar" el absoluto confirmado manda: 7 es 7.'
+        );
+    }
+
+    /**
+     * Y si el delta recalculado dejaría el depósito en negativo, se corta con el motivo en vez de
+     * escribir un stock imposible.
+     *
+     * @test
+     */
+    public function restar_sobre_un_stock_que_bajo_en_el_medio_no_deja_negativo()
+    {
+        $articulo = $this->articulo_de_prueba('zz-p52 Pastina delta negativo');
+
+        $deposito = $this->sucursal('zz-p52 Delta negativo');
+
+        $this->stock_en($articulo, $deposito, 10);
+
+        list($conversation, $assistant) = $this->conversacion('Sacale 8');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_stock_en_deposito', [
+            'articulo' => 'zz-p52 Pastina delta negativo',
+            'deposito' => 'zz-p52 Delta negativo',
+            'cantidad' => 8,
+            'modo'     => 'restar',
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        // En el medio se vende casi todo.
+        $this->stock_en($articulo, $deposito, 2);
+
+        $http = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $http->assertStatus(422);
+
+        $this->assertEqualsWithDelta(2, $this->pivot($articulo->id, $deposito->id), self::DELTA, 'No se tocó nada.');
+    }
+
+    /**
      * Restar resta, y fijar deja el número exacto.
      *
      * @test
