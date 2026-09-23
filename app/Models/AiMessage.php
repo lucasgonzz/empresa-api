@@ -44,6 +44,12 @@ use Illuminate\Database\Eloquent\Model;
  * idempotente el reintento del admin: si ese wamid ya entró, se devuelven los
  * ids de la primera vez en vez de crear un segundo turno y mandarle al dueño dos
  * veces la misma respuesta.
+ * Misión asistente-mcp (22/9/2026): tercer canal, 'mcp' — la tool la pidió un cliente
+ * MCP externo (Claude Desktop, Claude Code, la API de Anthropic) conectado al servidor
+ * MCP de este API con un token. Es un canal SIN BOTONES, igual que WhatsApp: la
+ * confirmación de una carga es por texto (confirmar_carga_pendiente), y por eso las
+ * guardas de canal miran confirma_por_texto() y no es_de_whatsapp(). Lo que sí es
+ * exclusivo de WhatsApp (fotos, prompt del canal) sigue preguntando por es_de_whatsapp().
  *
  * `tipo`: 'texto' | 'audio' | 'imagen' — con qué lo mandó la persona. Un audio
  * llega ya transcripto por Kapso; el que llega SIN transcribir se contesta de
@@ -61,6 +67,16 @@ class AiMessage extends Model
 
     /** Canal de un mensaje que entró por WhatsApp, empujado por el admin. */
     const CANAL_WHATSAPP = 'whatsapp';
+
+    /** Canal de un mensaje que entró por el servidor MCP (misión asistente-mcp): un cliente MCP externo con token. */
+    const CANAL_MCP = 'mcp';
+
+    /**
+     * Los canales donde NO hay tarjeta que tocar y una carga se confirma por texto (WhatsApp y
+     * MCP). El panel del chat ('sistema') no está: ahí la confirmación es el botón, y una IA que
+     * pueda confirmar sola lo que propuso le sacaría la decisión a la persona.
+     */
+    const CANALES_QUE_CONFIRMAN_POR_TEXTO = [self::CANAL_WHATSAPP, self::CANAL_MCP];
 
     /** Con qué lo mandó la persona. 'texto' es el default de la columna y lo único que hay en la pantalla. */
     const TIPO_TEXTO = 'texto';
@@ -234,5 +250,22 @@ class AiMessage extends Model
     public function es_de_whatsapp()
     {
         return (string) $this->canal === self::CANAL_WHATSAPP;
+    }
+
+    /**
+     * true si el mensaje entró por un canal sin botones (WhatsApp o MCP), donde una carga se
+     * confirma con confirmar_carga_pendiente y no con la tarjeta.
+     *
+     * 🔴 Es lo que preguntan las DOS guardas de canal (HerramientasDeCarga::ejecutar() para
+     * despachar confirmar_/cancelar_carga_pendiente, y ConfirmacionPorTextoIaHelper::rechazo()
+     * para "por texto solo se confirma lo que se propuso por texto"). Antes preguntaban
+     * es_de_whatsapp(), y con el canal MCP eso habría dejado a un cliente MCP sin forma de
+     * confirmar lo que él mismo propuso. es_de_whatsapp() queda para lo que ES de WhatsApp.
+     *
+     * @return bool
+     */
+    public function confirma_por_texto()
+    {
+        return in_array((string) $this->canal, self::CANALES_QUE_CONFIRMAN_POR_TEXTO, true);
     }
 }

@@ -1306,10 +1306,16 @@ class HerramientasDeCarga
          * que el corte por canal va acá: en el sistema la confirmación es el botón —una IA que
          * pueda confirmar sola lo que propuso le saca la decisión a la persona— y las fotos no
          * existen. Ver el docblock de definiciones_de_whatsapp().
+         *
+         * Misión asistente-mcp (22/9/2026): el canal MCP tampoco tiene botones, así que confirmar_ y
+         * cancelar_carga_pendiente también se despachan para él — la pregunta pasa a ser
+         * confirma_por_texto() (WhatsApp o MCP). proponer_compra_con_factura sigue en esta lista y
+         * pasa la guarda para MCP, pero el servidor MCP no la declara: sin fotos de WhatsApp solo
+         * podría contestar "no tengo ninguna foto".
          */
         if (in_array($tool_name, array_column(self::definiciones_de_whatsapp(), 'name'), true)) {
 
-            if (!($assistant_message instanceof AiMessage) || !$assistant_message->es_de_whatsapp()) {
+            if (!($assistant_message instanceof AiMessage) || !$assistant_message->confirma_por_texto()) {
 
                 return [
                     'content'  => 'Tool desconocida: '.$tool_name,
