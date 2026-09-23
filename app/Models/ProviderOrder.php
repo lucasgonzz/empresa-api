@@ -26,7 +26,33 @@ class ProviderOrder extends Model
          * decenas de KB). El detalle se pide recién al abrir el historial.
          * Llega como `provider_order_scans_count`.
          */
-        $query->withCount('provider_order_scans');
+        if (self::tabla_de_escaneos_existe()) {
+            $query->withCount('provider_order_scans');
+        }
+    }
+
+    /**
+     * ¿Existe la tabla `provider_order_scans` en la base de este cliente?
+     *
+     * 🔴 Sin esta guarda, un cliente al que le falta esa migración (hay bases con huecos en la
+     * tabla `migrations`, ver el gap histórico de clientes migrados) dejaría con error 500 TODO
+     * el módulo de compras —el listado, el show, el PDF—, cuando antes solo fallaba el endpoint
+     * propio del escaneo. El contador es un extra de presentación: si la tabla no está, la
+     * compra viaja sin él y el botón de historial simplemente no aparece.
+     *
+     * Se memoriza por proceso: es una consulta al information_schema y el listado la llamaría
+     * en cada request.
+     *
+     * @return bool
+     */
+    protected static function tabla_de_escaneos_existe() {
+        static $existe = null;
+
+        if (is_null($existe)) {
+            $existe = \Illuminate\Support\Facades\Schema::hasTable('provider_order_scans');
+        }
+
+        return $existe;
     }
 
     /**
