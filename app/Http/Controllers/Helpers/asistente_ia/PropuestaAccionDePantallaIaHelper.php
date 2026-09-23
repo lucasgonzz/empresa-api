@@ -31,6 +31,10 @@ use Illuminate\Support\Facades\Log;
  *     pantalla acá es "puede todo lo que puede el dueño".
  *   - Ningún {param} obligatorio puede faltar, y la `descripcion` es obligatoria: es el título de
  *     la tarjeta, lo único que la persona lee antes de confirmar.
+ *   - 🔴 Los ids de la ruta tienen que ser del dueño (EjecutorAccionDePantallaIaHelper::
+ *     verificar_tenencia()): un id ajeno o inexistente contesta `error` en el acto, sin tarjeta.
+ *   - 🔴 Lo que está en Catalogo::SIEMPRE_CONFIRMAN (hoy AFIP) deja tarjeta en los tres modos: la
+ *     respuesta lleva `requiere_confirmacion`, que quizas_auto_confirmar() respeta.
  *
  * 🔴 El GET corre en el acto SIN tarjeta, así que tiene que autenticar a la persona igual que la
  * confirmación por texto (ver autenticado_como()).
@@ -164,16 +168,8 @@ class PropuestaAccionDePantallaIaHelper
      */
     public static function proponer_borrado(ContextoDeCargaIa $contexto, AiMessage $mensaje, $ruta, array $parametros, $descripcion, $reemplaza_a = null)
     {
-        $respuesta = self::armar_tarjeta($contexto, $mensaje, 'DELETE', $ruta, $parametros, [], $descripcion, $reemplaza_a, AiMessageAction::TIPO_BORRADO_PANTALLA, self::AVISO_BORRADO);
-
-        if (RespuestaDeCargaIa::es_negativa($respuesta)) {
-
-            return $respuesta;
-        }
-
-        $respuesta['aviso'] = self::AVISO_BORRADO;
-
-        return $respuesta;
+        // El aviso de la tarjeta viaja también en la respuesta (armar_tarjeta lo suma como `aviso`).
+        return self::armar_tarjeta($contexto, $mensaje, 'DELETE', $ruta, $parametros, [], $descripcion, $reemplaza_a, AiMessageAction::TIPO_BORRADO_PANTALLA, self::AVISO_BORRADO);
     }
 
     /**
@@ -234,6 +230,29 @@ class PropuestaAccionDePantallaIaHelper
 
         $accion_legible = $metodo.' '.$uri_concreta;
 
+        /*
+         * 🔴 Lo que SIEMPRE se confirma (Catalogo::SIEMPRE_CONFIRMAN, hoy todo lo de AFIP): la
+         * respuesta lleva `requiere_confirmacion`, que es lo que quizas_auto_confirmar() respeta
+         * antes de mirar el modo del dueño, y la tarjeta lo dice en su aviso. Así una factura no
+         * sale sola ni con la confianza en "directo", sin que HerramientasDeCarga sepa de AFIP.
+         */
+        $extra = [];
+
+        if (!empty($declaracion['siempre_confirma'])) {
+
+            $texto_confirmacion = 'Esta acción siempre se confirma, también con la confianza en "directo": '.$declaracion['motivo_confirmacion'].'.';
+
+            $aviso = is_null($aviso) ? $texto_confirmacion : $aviso.' '.$texto_confirmacion;
+
+            $extra['requiere_confirmacion'] = true;
+            $extra['motivo_confirmacion'] = $texto_confirmacion;
+        }
+
+        if (!is_null($aviso)) {
+
+            $extra['aviso'] = $aviso;
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
@@ -253,7 +272,7 @@ class PropuestaAccionDePantallaIaHelper
             $reemplaza_a
         );
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $descripcion.' ('.$accion_legible.')');
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $descripcion.' ('.$accion_legible.')', $extra);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -308,6 +327,19 @@ class PropuestaAccionDePantallaIaHelper
         if (!is_null($declaracion['extension']) && !PermisosIaHelper::tiene_extencion($contexto->owner, $declaracion['extension'])) {
 
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_extencion(str_replace('_', ' ', $declaracion['extension'])));
+        }
+
+        /*
+         * La tenencia de los ids de la ruta, también al proponer: un id ajeno o inexistente se
+         * rechaza en el acto y no deja tarjeta. El ejecutor la vuelve a mirar al confirmar.
+         */
+        try {
+
+            Ejecutor::verificar_tenencia($contexto, $declaracion['ruta'], $parametros);
+
+        } catch (AccionIaException $e) {
+
+            return RespuestaDeCargaIa::error($e->getMessage());
         }
 
         return $declaracion;

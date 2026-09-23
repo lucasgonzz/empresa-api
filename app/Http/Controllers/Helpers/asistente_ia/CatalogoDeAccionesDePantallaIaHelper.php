@@ -61,6 +61,17 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  * Lo excluido no aparece en el catálogo, declaracion() devuelve null para eso y
  * motivo_de_exclusion() dice por qué, para que la herramienta se lo cuente al modelo.
  *
+ * 🔴 LO QUE ENTRA PERO SIEMPRE SE CONFIRMA (SIEMPRE_CONFIRMAN): una acción puede estar en el
+ * catálogo y aun así no poder correr sola con el dueño en "directo". Hoy es todo lo de AFIP: emitir
+ * un comprobante ante ARCA es irreversible (se reversa con una nota de crédito, no borrándolo).
+ * Cada fila lleva `siempre_confirma` y `motivo_confirmacion`, que_acciones_de_pantalla_hay los
+ * muestra, y PropuestaAccionDePantallaIaHelper marca la respuesta con `requiere_confirmacion`, que
+ * es lo que quizas_auto_confirmar() respeta sin que HerramientasDeCarga sepa nada de AFIP.
+ *
+ * La tenencia de los ids que viajan en la ruta no la decide el catálogo sino el ejecutor
+ * (EjecutorAccionDePantallaIaHelper::verificar_tenencia()), a partir de los nombres de los {param}
+ * que este catálogo declara.
+ *
  * Cacheado por proceso (olvidar() para los tests). El orden es estable —por ruta y después por
  * método— para que la paginación de lista() no cambie entre llamadas.
  *
@@ -159,6 +170,19 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#[Mm]ail#'               => 'manda mensajes a terceros (mail)',
         '#RecordatorioCobro#'     => 'manda mensajes a terceros (recordatorios de cobro)',
         '#@(send|enviar)#i'       => 'manda mensajes a terceros',
+    ];
+
+    /**
+     * LAS QUE ENTRAN PERO SIEMPRE DEJAN TARJETA, en los tres modos: `[patrón => motivo]`, evaluadas
+     * sobre `"METODO uri"` y sobre `Clase@metodo`, sin distinguir mayúsculas. Decisión de la misión
+     * asistente-mcp (22/9/2026): emitir un comprobante ante ARCA no se deshace, así que ni el modo
+     * "directo" lo ejecuta solo. El patrón es ancho a propósito: agarra también los comprobantes de
+     * compras y la configuración fiscal, y ahí confirmar de más no cuesta nada.
+     *
+     * @var array<string, string>
+     */
+    const SIEMPRE_CONFIRMAN = [
+        '#afip#i' => 'emite un comprobante ante ARCA: no se deshace',
     ];
 
     /**
@@ -269,7 +293,7 @@ class CatalogoDeAccionesDePantallaIaHelper
 
         } else {
 
-            $como_sigo = 'Elegí la acción y pasale su `ruta` TAL CUAL (con los {param}) a consultar_por_pantalla (GET), proponer_accion_de_pantalla (POST o PUT) o proponer_borrado_por_pantalla (DELETE), con los valores de los {param} en `parametros`. Las `claves` son las que el controller lee del cuerpo, best-effort: puede leer más o menos de lo que dice.';
+            $como_sigo = 'Elegí la acción y pasale su `ruta` TAL CUAL (con los {param}) a consultar_por_pantalla (GET), proponer_accion_de_pantalla (POST o PUT) o proponer_borrado_por_pantalla (DELETE), con los valores de los {param} en `parametros`. Las `claves` son las que el controller lee del cuerpo, best-effort: puede leer más o menos de lo que dice. Una acción con `siempre_confirma: true` deja tarjeta aunque la confianza esté en "directo" (`motivo_confirmacion` dice por qué): no digas que quedó hecha.';
 
             if ($paginas > 1) {
 
@@ -677,14 +701,18 @@ class CatalogoDeAccionesDePantallaIaHelper
                     continue;
                 }
 
+                $motivo_confirmacion = self::motivo_de_confirmacion($metodo, $uri, $accion);
+
                 $catalogo[$clave] = [
-                    'metodo'     => $metodo,
-                    'ruta'       => $uri,
-                    'accion'     => $accion,
-                    'modulo'     => self::modulo_de($clase),
-                    'parametros' => array_values($ruta->parameterNames()),
-                    'claves'     => self::claves_de($clase, $metodo_php),
-                    'extension'  => $extension,
+                    'metodo'              => $metodo,
+                    'ruta'                => $uri,
+                    'accion'              => $accion,
+                    'modulo'              => self::modulo_de($clase),
+                    'parametros'          => array_values($ruta->parameterNames()),
+                    'claves'              => self::claves_de($clase, $metodo_php),
+                    'extension'           => $extension,
+                    'siempre_confirma'    => !is_null($motivo_confirmacion),
+                    'motivo_confirmacion' => $motivo_confirmacion,
                 ];
             }
         }
@@ -780,6 +808,28 @@ class CatalogoDeAccionesDePantallaIaHelper
         if (is_string($cuerpo) && (strpos($cuerpo, '->file(') !== false || strpos($cuerpo, 'hasFile(') !== false)) {
 
             return 'sube un archivo, y desde el chat no se puede adjuntar';
+        }
+
+        return null;
+    }
+
+    /**
+     * El motivo por el que una acción del catálogo deja tarjeta en los tres modos, o null si se
+     * rige por el modo de confianza como las demás (ver SIEMPRE_CONFIRMAN).
+     *
+     * @param  string  $metodo
+     * @param  string  $uri
+     * @param  string  $accion  Clase@metodo sin namespace.
+     * @return string|null
+     */
+    protected static function motivo_de_confirmacion(string $metodo, string $uri, string $accion)
+    {
+        foreach (self::SIEMPRE_CONFIRMAN as $patron => $motivo) {
+
+            if (preg_match($patron, $metodo.' '.$uri) || preg_match($patron, $accion)) {
+
+                return $motivo;
+            }
         }
 
         return null;

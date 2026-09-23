@@ -8,8 +8,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\ImplicitRouteBinding;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
@@ -42,11 +45,28 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  *     su `message`), no una falla técnica; y el cuerpo viaja recortado a LARGO_MAXIMO caracteres,
  *     porque la respuesta más pesada del sistema (el índice de artículos) mide megabytes.
  *
- * 🔴 NO CHEQUEA TENENCIA POR SÍ MISMO, y hay que decirlo: los controllers de pantalla resuelven casi
- * todos por `Model::find($id)` sin filtrar por dueño (hallazgo del 16/9/2026 sobre ComboController).
- * El genérico lo tapa porque conoce la tabla y el `user_id`; acá la ruta puede ser cualquiera y el
- * id cualquier segmento, así que la acción de pantalla hace exactamente lo que haría la pantalla
- * con ese id — ni más ni menos. Es el mismo agujero que tiene la SPA, no uno nuevo, y se declara.
+ * 🔴 TENENCIA DE LOS IDS DE LA RUTA (verificar_tenencia()). Los controllers de pantalla resuelven
+ * casi todos por `Model::find($id)` sin filtrar por dueño (hallazgo del 16/9/2026 sobre
+ * ComboController; acá mismo `CajaController::destroy()` y `UserController::set_eliminar_articulos_offline()`).
+ * Una persona nunca manda un id ajeno desde su pantalla; un modelo sí puede inventarlo, y en las
+ * bases compartidas (51 comercios en `u767360347_empresa`) eso es tocar el negocio de otro. Por eso,
+ * antes de llamar al controller —y también al proponer, para avisar en el acto—, cada {param} de la
+ * ruta cuyo valor es un entero se resuelve a su tabla como lo hace CatalogoDeEscrituraIaHelper
+ * (`Str::plural(str_replace('-', '_', <primer segmento después de api/>))`) y, si esa tabla existe
+ * y tiene `user_id`, la fila tiene que ser del dueño; si no existe o es ajena, 422 MENSAJE_AJENO.
+ *
+ * Cómo se elige la tabla de cada {param}, y por qué así (medido sobre las 520 acciones con
+ * parámetros de este router): `{id}` → el recurso del primer segmento (`api/budget/{id}/anular` →
+ * budgets); `{x_id}` → `xs` (`{article_id}` → articles, aunque la ruta sea `api/price-change/...`);
+ * el parámetro del propio recurso (`{caja}` en `api/caja/{caja}`, `{cuotum}` en `api/cuota/...`) →
+ * ese recurso; cualquier otro nombre → su propio plural, y nada más. Ese "nada más" es a propósito:
+ * caer al primer segmento para `{ultimos_movimientos}` o `{value}` chequearía un contador contra
+ * `stock_movements.id` y rechazaría lecturas válidas.
+ *
+ * Lo que la guarda NO decide, dicho en voz alta: una tabla que no existe con ese nombre, o que no
+ * tiene `user_id` (afip_tickets, apertura_cajas, article_discounts, los estados y catálogos
+ * globales), se deja pasar, y los ids que viajan en el CUERPO (un `sale_id` en un POST) no se
+ * miran. Ahí la acción hace lo que haría la pantalla con ese id.
  *
  * Sus dos tipos van en EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS: un controller de pantalla
  * puede abrir su propia transacción, soltar un candado, disparar un job o un broadcast, y nada de
@@ -61,6 +81,11 @@ class EjecutorAccionDePantallaIaHelper
     const MENSAJE_RECHAZO = 'La pantalla rechazó la acción.';
 
     const MENSAJE_SIN_REGISTRO = 'No existe el registro que pide la ruta.';
+
+    const MENSAJE_AJENO = 'Ese registro no es de este negocio o no existe.';
+
+    /** @var array<string, string>  [tabla => 'ok' | 'sin_user_id' | 'no_existe'], por proceso. */
+    protected static $tablas = [];
 
     /**
      * Largo máximo (en caracteres) del JSON de la respuesta que viaja al modelo y queda en la
@@ -159,6 +184,10 @@ class EjecutorAccionDePantallaIaHelper
             throw new AccionIaException(422, PermisosIaHelper::mensaje_sin_extencion(str_replace('_', ' ', $declaracion['extension'])));
         }
 
+        // Se vuelve a verificar acá y no solo al proponer: el registro pudo cambiar de dueño entre
+        // la tarjeta y el clic, y una tarjeta se puede forjar.
+        self::verificar_tenencia($contexto, $declaracion['ruta'], $parametros);
+
         if (is_null($contexto->persona) || is_null(Auth::id()) || (int) Auth::id() !== (int) $contexto->persona->id) {
 
             throw new AccionIaException(500, self::MENSAJE_SIN_AUTENTICAR);
@@ -247,6 +276,137 @@ class EjecutorAccionDePantallaIaHelper
             'recortado' => $recortado,
             'uri'       => $uri_concreta,
         ];
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Tenencia
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Exige que cada {param} entero de la ruta sea una fila del dueño, cuando la tabla a la que
+     * apunta se puede derivar y tiene `user_id` (ver el docblock de la clase). Lo llaman llamar()
+     * antes del controller y la propuesta antes de armar la tarjeta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $ruta  La ruta del catálogo, con sus {param}.
+     * @param  array  $parametros  Los valores, por nombre.
+     * @return void
+     *
+     * @throws AccionIaException  422 MENSAJE_AJENO si la fila no existe o es de otro dueño.
+     */
+    public static function verificar_tenencia(ContextoDeCargaIa $contexto, string $ruta, array $parametros)
+    {
+        $ruta = Catalogo::normalizar_ruta($ruta);
+
+        preg_match_all('/\{([a-zA-Z_][a-zA-Z0-9_]*)\??\}/', $ruta, $m);
+
+        foreach ($m[1] as $nombre) {
+
+            if (!array_key_exists($nombre, $parametros)) {
+
+                continue;
+            }
+
+            $valor = $parametros[$nombre];
+
+            // Solo lo que es un id: fechas, códigos, nombres de modelo y flags no se miran.
+            if (is_bool($valor) || !is_scalar($valor) || !ctype_digit((string) $valor)) {
+
+                continue;
+            }
+
+            $tabla = self::tabla_del_parametro($ruta, $nombre);
+
+            if (is_null($tabla)) {
+
+                continue;
+            }
+
+            $user_id = DB::table($tabla)->where('id', (int) $valor)->value('user_id');
+
+            if (is_null($user_id) || (int) $user_id !== (int) $contexto->owner_id) {
+
+                throw new AccionIaException(422, self::MENSAJE_AJENO);
+            }
+        }
+    }
+
+    /**
+     * La tabla scopeada por dueño a la que apunta un {param} de la ruta, o null si no se puede
+     * decidir (no hay tabla con ese nombre, o la tabla no tiene `user_id`). Las reglas están en el
+     * docblock de la clase.
+     *
+     * @param  string  $ruta  Ya normalizada.
+     * @param  string  $nombre  El nombre del {param}.
+     * @return string|null
+     */
+    protected static function tabla_del_parametro(string $ruta, string $nombre)
+    {
+        $segmentos = explode('/', $ruta);
+
+        $segmento = isset($segmentos[1]) ? str_replace('-', '_', $segmentos[1]) : '';
+
+        $recurso = $segmento === '' ? null : Str::plural($segmento);
+
+        if ($nombre === 'id') {
+
+            $candidatas = [$recurso];
+
+        } elseif (Str::endsWith($nombre, '_id')) {
+
+            $candidatas = [Str::plural(substr($nombre, 0, -3))];
+
+        } else {
+
+            $candidatas = [Str::plural($nombre)];
+
+            // El parámetro del propio recurso, con el singular que inventó el inflector
+            // (`{cuotum}` para `api/cuota`): va al recurso.
+            if (!is_null($recurso) && Str::singular($segmento) === $nombre) {
+
+                $candidatas[] = $recurso;
+            }
+        }
+
+        foreach ($candidatas as $tabla) {
+
+            if (is_null($tabla) || $tabla === '') {
+
+                continue;
+            }
+
+            if (self::estado_de_la_tabla($tabla) === 'ok') {
+
+                return $tabla;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 'ok' si la tabla existe y tiene `user_id`, 'sin_user_id' si existe sin la columna,
+     * 'no_existe' si no. Cacheado por proceso: information_schema no se consulta dos veces por la
+     * misma tabla.
+     *
+     * @param  string  $tabla
+     * @return string
+     */
+    protected static function estado_de_la_tabla(string $tabla): string
+    {
+        if (!isset(self::$tablas[$tabla])) {
+
+            if (!Schema::hasTable($tabla)) {
+
+                self::$tablas[$tabla] = 'no_existe';
+
+            } else {
+
+                self::$tablas[$tabla] = Schema::hasColumn($tabla, 'user_id') ? 'ok' : 'sin_user_id';
+            }
+        }
+
+        return self::$tablas[$tabla];
     }
 
     // -------------------------------------------------------------------------------------------
