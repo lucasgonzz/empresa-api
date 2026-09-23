@@ -70,6 +70,10 @@ class Carrera_entre_dos_conexiones_Test extends TestCase
         }
 
         if (count($this->clientes)) {
+            DB::table('current_acounts')->whereIn('client_id', $this->clientes)->delete();
+        }
+
+        if (count($this->clientes)) {
             DB::table('credit_accounts')->where('model_name', 'client')->whereIn('model_id', $this->clientes)->delete();
             DB::table('clients')->whereIn('id', $this->clientes)->delete();
         }
@@ -111,6 +115,12 @@ class Carrera_entre_dos_conexiones_Test extends TestCase
         DB::table('credit_accounts')->where('id', $cuenta->id)->update(['saldo' => 208656.80]);
 
         // B: abre transacción y hace una lectura común. Acá se fija la foto.
+        //
+        // 🔴 En REPEATABLE READ a propósito: desde esta misión la conexión corre en READ COMMITTED
+        // (config/database.php), donde cada lectura ve lo último commiteado y el checkSaldos de
+        // develop daría bien por casualidad. El test prueba el caso peor —una conexión en RR, como
+        // corría el VPS—: ahí el checkSaldos viejo da rojo y el nuevo, con lecturas FOR UPDATE, verde.
+        DB::statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
         DB::beginTransaction();
 
         $foto = DB::table('current_acounts')->where('credit_account_id', $cuenta->id)->sum('debe');
@@ -179,6 +189,107 @@ class Carrera_entre_dos_conexiones_Test extends TestCase
         }
 
         DB::rollBack();
+    }
+
+    /**
+     * El recálculo de una cuenta no frena el alta de un movimiento en la cuenta VECINA del índice,
+     * que es de otro cliente (en una base compartida, de otro comercio).
+     *
+     * En REPEATABLE READ el `SELECT ... FOR UPDATE` por rango sobre `cc_cuenta_orden_idx` toma un
+     * candado de hueco que llega hasta el primer registro de la cuenta siguiente, así que un INSERT
+     * ahí espera a que termine el recálculo. Por eso la conexión corre en READ COMMITTED
+     * (config/database.php), que no toma candados de hueco. Se prueban los dos: en RC no espera, y en
+     * RR sí (que es lo que justifica el cambio de nivel).
+     *
+     * @test
+     */
+    public function en_read_committed_el_recalculo_de_una_cuenta_no_frena_el_alta_en_la_cuenta_vecina()
+    {
+        $this->assertEquals('READ-COMMITTED', DB::selectOne('SELECT @@transaction_isolation AS nivel')->nivel, 'La conexión tiene que venir en READ COMMITTED desde config/database.php.');
+
+        list($cliente_a, $cuenta_a_pesos) = $this->cliente_commiteado('Vecina A');
+        list($cliente_b, $cuenta_b_pesos) = $this->cliente_commiteado('Vecina B');
+
+        // La cuenta en dólares de A es la última de A; la siguiente en el índice es la de pesos de B.
+        $cuenta_a = \App\Models\CreditAccount::where('model_name', 'client')->where('model_id', $cliente_a->id)->where('moneda_id', 2)->first();
+
+        $this->assertLessThan($cuenta_b_pesos->id, $cuenta_a->id);
+
+        $t = Carbon::parse('2026-09-20 10:00:00');
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->movimiento($cuenta_a, ['detalle' => 'Venta A '.$i, 'debe' => 10, 'created_at' => $t->copy()->addMinutes($i)]);
+        }
+
+        // B ya tiene movimientos: el primero de B es el registro que cierra el hueco después de A.
+        // El alta de más abajo (con fecha anterior) cae justo en ese hueco. Medido: sin un registro
+        // de B después, MySQL 8.3 no bloquea el supremum y el alta no espera ni en RR.
+        $this->movimiento($cuenta_b_pesos, ['detalle' => 'Venta B', 'debe' => 20, 'created_at' => $t->copy()->addDays(5)]);
+
+        DB::connection(self::CONEXION_A)->statement('SET SESSION innodb_lock_wait_timeout = 1');
+
+        $this->assertFalse($this->alta_en_la_vecina_espera($cuenta_a, $cuenta_b_pesos, $cliente_b, null), 'En READ COMMITTED el alta en la cuenta de otro cliente no puede esperar al recálculo.');
+
+        $this->assertTrue($this->alta_en_la_vecina_espera($cuenta_a, $cuenta_b_pesos, $cliente_b, 'REPEATABLE READ'), 'En REPEATABLE READ el candado de hueco frena el alta en la cuenta vecina: es el motivo del cambio de nivel.');
+    }
+
+    /**
+     * Abre un recálculo de la cuenta A en la conexión por defecto (sin commitear) y prueba un INSERT
+     * en la cuenta B por la otra conexión.
+     *
+     * @param  \App\Models\CreditAccount  $cuenta_a
+     * @param  \App\Models\CreditAccount  $cuenta_b
+     * @param  \App\Models\Client         $cliente_b
+     * @param  string|null                $nivel  Nivel de aislamiento para ESA transacción, o null.
+     * @return bool  true si el INSERT se quedó esperando (lock wait timeout).
+     */
+    protected function alta_en_la_vecina_espera($cuenta_a, $cuenta_b, $cliente_b, $nivel)
+    {
+        if (!is_null($nivel)) {
+            DB::statement('SET TRANSACTION ISOLATION LEVEL '.$nivel);
+        }
+
+        DB::beginTransaction();
+
+        $espero = false;
+
+        try {
+
+            CurrentAcountHelper::checkSaldos($cuenta_a->id);
+
+            try {
+
+                DB::connection(self::CONEXION_A)->table('current_acounts')->insert([
+                    'detalle'           => 'Alta en la vecina',
+                    'debe'              => 5,
+                    'status'            => 'sin_pagar',
+                    'client_id'         => $cliente_b->id,
+                    'credit_account_id' => $cuenta_b->id,
+                    'user_id'           => self::USER_ID,
+                    'is_provisorio'     => 0,
+                    'created_at'        => '2026-09-01 08:00:00',
+                    'updated_at'        => '2026-09-01 08:00:00',
+                ]);
+
+                // Se borra enseguida: si quedara, el próximo alta caería DESPUÉS de ésta en el índice,
+                // fuera del hueco que se quiere probar.
+                DB::connection(self::CONEXION_A)->table('current_acounts')->where('credit_account_id', $cuenta_b->id)->where('detalle', 'Alta en la vecina')->delete();
+
+            } catch (QueryException $e) {
+
+                $espero = strpos($e->getMessage(), 'Lock wait timeout') !== false;
+
+                if (!$espero) {
+                    throw $e;
+                }
+            }
+
+        } finally {
+
+            DB::rollBack();
+        }
+
+        return $espero;
     }
 
     /**
