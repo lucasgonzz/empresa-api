@@ -86,6 +86,17 @@ class EjecutorAccionesIaHelper {
          * como el gasto, el pago y la compra.
          */
         AiMessageAction::TIPO_PRESUPUESTO,
+        /*
+         * Las acciones de pantalla (misión asistente-mcp, 22/9/2026), por definición: llaman a
+         * CUALQUIER controller de la pantalla, y entre ellos están los que abren su propia
+         * transacción (`BudgetController::confirmar()` y `anular()`), los que sueltan un candado,
+         * los que despachan un job o un broadcast. Con la transacción del ejecutor abierta, el
+         * `commit()` del controller sólo bajaría el contador y el aviso saldría antes de que el dato
+         * exista para nadie más. Van en dos etapas para que cada controller corra en las mismas
+         * condiciones en las que corre cuando lo llama la pantalla.
+         */
+        AiMessageAction::TIPO_ACCION_PANTALLA,
+        AiMessageAction::TIPO_BORRADO_PANTALLA,
     ];
 
     /**
@@ -653,6 +664,16 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_PERMISO_EMPLEADO:
                 return PropuestaPermisoEmpleadoIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Las acciones de pantalla (misión asistente-mcp, 22/9/2026): la misma ruta y el mismo
+             * controller que llama la pantalla, resueltos con el matcher del router. El borrado
+             * nunca llega acá desde la auto-confirmación: su tipo está en NUNCA_AUTO_CONFIRMABLES.
+             * Los dos tipos están en TIPOS_DE_DOS_ETAPAS (ver ahí por qué).
+             */
+            case AiMessageAction::TIPO_ACCION_PANTALLA:
+            case AiMessageAction::TIPO_BORRADO_PANTALLA:
+                return EjecutorAccionDePantallaIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

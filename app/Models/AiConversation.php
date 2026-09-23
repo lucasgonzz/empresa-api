@@ -38,6 +38,13 @@ use Illuminate\Database\Eloquent\Model;
  *   🔴 Quién la resuelve: el admin manda `ai_conversation_id` SOLO cuando la dedujo de
  *   una cita (responder citando un mensaje del asistente reabre esa conversación); si no
  *   lo manda, decide AsistenteCanalHelper con el corte de 6 h sin hablar.
+ * - 'mcp': la abrió un cliente MCP externo (Claude Desktop, Claude Code, la API de
+ *   Anthropic…) al inicializar una sesión contra el servidor MCP de este API (misión
+ *   asistente-mcp, 22/9/2026). `mcp_sesion` guarda el Mcp-Session-Id que identifica esa
+ *   sesión (null cuando el cliente la cerró o no manda sesión). `referencia_id` queda null.
+ *   Sus mensajes tienen `ai_messages.canal = 'mcp'` y son el registro de cada tool de CARGA
+ *   que pidió el cliente: la tarjeta cuelga de ahí, y el dueño puede confirmarla desde el
+ *   panel con el botón o el cliente MCP por texto. Ver McpSesionHelper.
  *
  * `contexto` guarda el bloque de DATOS ya calculados de la sugerencia (no las
  * instrucciones de redacción): viaja como segundo bloque del system en cada
@@ -51,6 +58,9 @@ class AiConversation extends Model
 {
     /** Origen de las conversaciones que nacen de un mensaje de WhatsApp (misión asistente-por-whatsapp). */
     const ORIGEN_WHATSAPP = 'whatsapp';
+
+    /** Origen de las conversaciones que abre un cliente MCP externo al inicializar su sesión (misión asistente-mcp). */
+    const ORIGEN_MCP = 'mcp';
 
     protected $guarded = [];
 

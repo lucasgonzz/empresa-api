@@ -122,14 +122,16 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
         $nombres = HerramientasDeCarga::nombres(true);
 
         /*
-         * Treinta y dos de la pantalla más las tres del canal de WhatsApp. El número se toca SOLO
+         * Treinta y seis de la pantalla más las tres del canal de WhatsApp. El número se toca SOLO
          * cuando se agrega o se saca una herramienta a propósito: la misión
          * asistente-capacidades-y-hilos (22/9/2026) sumó cuatro al final de la lista de la pantalla
          * (proponer_movimiento_de_stock, proponer_stock_en_deposito, proponer_presupuesto y
-         * proponer_permiso_de_empleado), y son las mismas cuatro que fija
-         * ChatIa/15_Acciones_service_y_job_Test.
+         * proponer_permiso_de_empleado), y la misión asistente-mcp (22/9/2026) sumó las cuatro
+         * acciones de pantalla después de ésas (que_acciones_de_pantalla_hay,
+         * consultar_por_pantalla, proponer_accion_de_pantalla y proponer_borrado_por_pantalla). Son
+         * las mismas que fija ChatIa/15_Acciones_service_y_job_Test.
          */
-        $this->assertCount(35, $nombres, 'Treinta y dos de la pantalla más las tres del canal de WhatsApp.');
+        $this->assertCount(39, $nombres, 'Treinta y seis de la pantalla más las tres del canal de WhatsApp.');
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(

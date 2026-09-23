@@ -1168,6 +1168,30 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:asistente_ia'])->gro
          */
         Route::get('articles/{id}/ficha-asistente', 'ArticleController@ficha_asistente');
         Route::get('clients/{id}/para-cuenta-corriente', 'ClientController@para_cuenta_corriente');
+
+        /*
+         * El servidor MCP (misión asistente-mcp, 22/9/2026): el mismo asistente, expuesto por el
+         * Model Context Protocol para que Claude Desktop, Claude Code, la API de Anthropic o
+         * cualquier cliente MCP se conecten AL SISTEMA DE ESTE CLIENTE y vean exactamente las
+         * mismas herramientas que la pantalla (tools/list es el registro, tools/call es el
+         * despacho, resources/* es el catálogo de entidades). JSON-RPC 2.0 sobre POST; GET
+         * contesta 405 (no hay streams); DELETE cierra la sesión.
+         *
+         * 🔴 VA EN ESTE GATE Y NO EN EL auth:sanctum GRANDE porque un cliente MCP ES la persona
+         * que abre el chat, con un token personal en vez de la cookie: lo que puede hacer desde
+         * Claude Desktop es lo que puede hacer desde el panel, ni más ni menos. Por eso pide la
+         * extensión y pasa por solo_el_dueno_ia, y encima McpController exige que el token tenga
+         * la habilidad `mcp` (un token de otro uso no entra).
+         *
+         * `mcp/conexion` es la administración de esa clave desde el modal de configuración del
+         * asistente (crear, ver el estado, revocar); el token viaja UNA sola vez, al crearlo.
+         */
+        Route::post('mcp', 'McpController@post');
+        Route::get('mcp', 'McpController@get');
+        Route::delete('mcp', 'McpController@delete');
+        Route::get('mcp/conexion', 'McpConexionController@estado');
+        Route::post('mcp/conexion', 'McpConexionController@crear');
+        Route::delete('mcp/conexion', 'McpConexionController@revocar');
     });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes

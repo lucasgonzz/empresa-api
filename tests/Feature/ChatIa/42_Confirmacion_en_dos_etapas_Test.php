@@ -432,6 +432,12 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
      */
     public function los_tipos_de_dos_etapas_son_exactamente_los_que_llaman_a_un_controller()
     {
+        /*
+         * Misión asistente-mcp (22/9/2026): las dos acciones de pantalla también, por definición.
+         * Llaman a CUALQUIER controller de la pantalla, incluidos los que abren su propia
+         * transacción (BudgetController::confirmar() y anular()) o despachan un broadcast: es
+         * exactamente el criterio del nombre de este test.
+         */
         $this->assertSame(
             [
                 AiMessageAction::TIPO_ALTA,
@@ -439,6 +445,8 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
                 AiMessageAction::TIPO_BAJA,
                 AiMessageAction::TIPO_VENTA,
                 AiMessageAction::TIPO_PRESUPUESTO,
+                AiMessageAction::TIPO_ACCION_PANTALLA,
+                AiMessageAction::TIPO_BORRADO_PANTALLA,
             ],
             EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS
         );

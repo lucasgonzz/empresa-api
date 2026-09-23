@@ -159,6 +159,31 @@ class AiMessageAction extends Model
      */
     const TIPO_PERMISO_EMPLEADO = 'permiso_empleado';
 
+    /*
+     * Las acciones de pantalla de la misión asistente-mcp (22/9/2026): "literalmente todo lo que se
+     * hace desde la interfaz", llamando a la misma ruta y al mismo controller que llama la pantalla
+     * (CatalogoDeAccionesDePantallaIaHelper decide cuáles; EjecutorAccionDePantallaIaHelper las
+     * corre). Van al FINAL de la lista por la misma razón que las tools: cada misión suma lo suyo
+     * atrás de lo que había.
+     */
+
+    /**
+     * Una acción POST o PUT de una pantalla (abrir o cerrar una caja, confirmar o anular un
+     * presupuesto, editar una venta, facturar...). `datos` guarda {metodo, ruta con sus {param},
+     * parametros, cuerpo}. Entra en HerramientasDeCarga::AUTO_CONFIRMABLES_DIRECTO: con el dueño en
+     * "directo" se ejecuta en el acto, como el resto de lo que hace la pantalla; en los otros dos
+     * modos deja tarjeta.
+     */
+    const TIPO_ACCION_PANTALLA = 'accion_pantalla';
+
+    /**
+     * Un DELETE de una pantalla. 🔴 Está en HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES: deja
+     * tarjeta en los TRES modos, igual que proponer_baja y por el mismo motivo: si el modelo detrás
+     * de esa ruta no usa SoftDeletes, el borrado no se deshace, y acá ni siquiera se conoce la
+     * tabla como para avisar qué queda colgado.
+     */
+    const TIPO_BORRADO_PANTALLA = 'borrado_pantalla';
+
     protected $guarded = [];
 
     /**
