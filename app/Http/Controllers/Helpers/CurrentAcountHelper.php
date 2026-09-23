@@ -34,16 +34,20 @@ class CurrentAcountHelper {
 
     }
 
+    /**
+     * 🔴 Ya no es un recálculo parcial (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026).
+     * Recalculaba solo desde el antepenúltimo movimiento (las últimas 3 filas por `created_at`), así
+     * que un movimiento metido más atrás dejaba la cadena cortada. Con el índice de la cuenta y
+     * checkSaldos() en una sola lectura, la cadena entera cuesta una consulta más las filas que
+     * cambian: se recalcula entera. Queda el nombre por los llamadores que no son de esta misión
+     * (LocalImportHelper).
+     *
+     * @param  int  $credit_account_id
+     * @return void
+     */
     static function checkCurrentAcountSaldo($credit_account_id) {
 
-        $current_acounts = CurrentAcount::where('credit_account_id', $credit_account_id)
-                                        ->orderBy('created_at', 'DESC')
-                                        ->take(3)
-                                        ->get();
-        
-        if (isset($current_acounts[2])) {
-            Self::checkSaldos($credit_account_id, $current_acounts[2]);
-        }
+        Self::checkSaldos($credit_account_id);
     }
 
     static function updateSellerCommissionsStatus($pago) {
@@ -267,7 +271,17 @@ class CurrentAcountHelper {
         if (!is_null($model_name) && !is_null($model_id)) {
             $pago_helper = new CurrentAcountPagoHelper($credit_account_id, $model_name, $model_id, $nota_credito);
             $pago_helper->init();
-            Self::update_credit_account_saldo($credit_account_id);
+
+            /*
+             * 🔴 La cadena ENTERA, no solo el saldo de la cuenta (misión
+             * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Antes se copiaba el saldo del último
+             * movimiento a la cuenta y listo: si la NC no era el último movimiento (una venta con
+             * fecha posterior), todo lo que venía después quedaba sin la NC. checkSaldos() también
+             * deja la cuenta y el cliente con el saldo final, que es lo que hacía
+             * update_credit_account_saldo(). Lo cubre para todos los llamadores: la NC de monto
+             * libre, Devoluciones y la del panel de Vender.
+             */
+            Self::checkSaldos($credit_account_id);
         }
 
         /*

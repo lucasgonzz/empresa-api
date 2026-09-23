@@ -73,51 +73,59 @@ class CurrentAcountFromSaleHelper extends Controller {
         $this->current_acount->saldo = Numbers::redondear($saldo);
         $this->current_acount->save();
 
-        CurrentAcountHelper::checkCurrentAcountSaldo($this->credit_account->id);
-
         $this->update_client_saldo();
+
+        return $this->credit_account->id;
     }
 
+    /**
+     * Deja la cuenta corriente consistente después de meter el movimiento de la venta.
+     *
+     * 🔴 SIEMPRE RECALCULA LA CADENA ENTERA (misión cuenta-corriente-carrera-y-velocidad,
+     * 23/9/2026). Hasta hoy había dos atajos, y los dos dejaban cadenas cortadas:
+     *   - `es_el_ultimo_movimiento()` comparaba con `whereDate`: una venta con fecha anterior a otros
+     *     movimientos DEL MISMO DÍA se tomaba como la última, se le copiaba su saldo a la cuenta y no
+     *     se recalculaba nada de lo que venía después.
+     *   - `checkCurrentAcountSaldo()` recalculaba solo desde el antepenúltimo movimiento.
+     * Con el índice de la cuenta y checkSaldos() en una sola lectura, recalcular la cuenta entera
+     * cuesta una consulta más las filas que cambian: el atajo ya no ahorraba nada.
+     *
+     * La re-imputación (checkPagos), que es la parte cara, sigue en los mismos dos casos que antes:
+     * hay movimientos posteriores a la venta (un pago posterior puede tener que saldarla a ella antes
+     * que a otra) o el cliente tenía saldo a favor (la venta se tiene que marcar pagándose).
+     *
+     * @return void
+     */
     function update_client_saldo() {
 
-        $client_id = $this->sale->client_id;
+        CurrentAcountHelper::checkSaldos($this->credit_account->id);
 
-        if ($this->es_el_ultimo_movimiento()) {
-
-
-            $this->credit_account->saldo = $this->current_acount->saldo;
-            $this->credit_account->save();
-
-            CurrentAcountHelper::set_model_saldo($this->credit_account);
-
-            /* 
-                Si tiene saldo negativo (a favor del cliente)
-                Se ejecuta checkPagos para que se marque esta venta como pagandose
-            */
-            $this->check_saldo_a_favor();
-
-        } else {
-
-            CurrentAcountHelper::checkSaldos($this->credit_account->id);
-            CurrentAcountHelper::checkPagos($this->credit_account->id, true);
-        }
-    }
-
-    function check_saldo_a_favor() {
-        if ($this->saldo_actual < 0) {
+        if ($this->tiene_movimientos_posteriores() || $this->saldo_actual < 0) {
 
             CurrentAcountHelper::checkPagos($this->credit_account->id, true);
         }
     }
 
-    function es_el_ultimo_movimiento() {
+    /**
+     * Si hay en la cuenta algún movimiento después del de la venta, en el orden de la cadena
+     * (`created_at, id`), no por día.
+     *
+     * @return bool
+     */
+    function tiene_movimientos_posteriores() {
 
-        $current_acount = CurrentAcount::where('client_id', $this->sale->client_id)
-                                    ->where('credit_account_id', $this->credit_account->id)
-                                    ->whereDate('created_at', '>', $this->current_acount->created_at)
-                                    ->first();
+        $current_acount = $this->current_acount;
 
-        return is_null($current_acount);
+        return CurrentAcount::where('credit_account_id', $this->credit_account->id)
+                            ->where('id', '!=', $current_acount->id)
+                            ->where(function ($q) use ($current_acount) {
+                                $q->where('created_at', '>', $current_acount->created_at)
+                                  ->orWhere(function ($q2) use ($current_acount) {
+                                      $q2->where('created_at', '=', $current_acount->created_at)
+                                         ->where('id', '>', $current_acount->id);
+                                  });
+                            })
+                            ->exists();
     }
 }
 

@@ -1215,13 +1215,23 @@ class SaleHelper extends Controller {
         return 0;
     }
 
+    /**
+     * Mete la venta en la cuenta corriente de su cliente, si corresponde.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return int|null  El id de la cuenta en la que entró el movimiento, o null si no entró. Lo usa
+     *                   updateCurrentAcountsAndCommissions() para saber si la cuenta de la que salió
+     *                   el movimiento viejo es otra.
+     */
     static function create_current_acount($sale) {
         if (!is_null($sale->client_id)
             && Self::va_a_volver_a_la_cuenta_corriente($sale)) {
 
             $helper = new CurrentAcountFromSaleHelper($sale);
-            $helper->crear_current_acount();
+            return $helper->crear_current_acount();
         }
+
+        return null;
     }
 
     /**
@@ -1721,56 +1731,57 @@ class SaleHelper extends Controller {
             }
         }
 
-        Self::deleteCurrentAcountFromSale($sale);
+        $credit_account_id_anterior = Self::deleteCurrentAcountFromSale($sale);
         Self::deleteSellerCommissionsFromSale($sale);
 
-        Self::create_current_acount($sale);
-        
+        /*
+            🔴 La cuenta en la que entra el movimiento nuevo la recalcula ENTERA
+            CurrentAcountFromSaleHelper (checkSaldos siempre; checkPagos si hay movimientos
+            posteriores a la venta o saldo a favor), misión cuenta-corriente-carrera-y-velocidad,
+            23/9/2026. Hasta hoy acá se repetía check_saldos_y_pagos() cuando había movimientos
+            posteriores, o sea que en ese caso la cuenta se re-imputaba DOS veces seguidas —en Fenix,
+            dos checkPagos de ~10 s cada uno por guardado—, y cuando el helper decidía mal que la venta
+            era "la última" (comparaba por día) la única que corría era ésta.
+        */
+        $credit_account_id_nuevo = Self::create_current_acount($sale);
+
         Self::crear_comision($sale);
 
-        if (!$sale->omitir_en_cuenta_corriente) {
+        /*
+            🔴 Y la cuenta de la que SALIÓ el movimiento viejo, si no es la misma: la edición le cambió
+            el cliente o la moneda a la venta, o la venta dejó de ir a la cuenta corriente. Esa cuenta
+            perdió un débito en el medio de su cadena (y las imputaciones que lo saldaban) y nadie la
+            recalculaba: quedaba cortada desde ahí hasta que otra cosa la tocara.
+        */
+        if (!is_null($credit_account_id_anterior) && $credit_account_id_anterior != $credit_account_id_nuevo) {
 
-            // $sale->client->pagos_checkeados = 0;
-            // $sale->client->save();
+            Log::info('updateCurrentAcountsAndCommissions: el movimiento de la venta '.$sale->id.' salió de la cuenta '.$credit_account_id_anterior.'. Se la recalcula entera.');
 
-            $credit_account = CreditAccount::where('model_name', 'client')
-                                        ->where('model_id', $sale->client_id)
-                                        ->where('moneda_id', $sale->moneda_id)
-                                        ->first();
-
-            if (!is_null($credit_account)) {
-                $sale_current_acount = CurrentAcount::where('sale_id', $sale->id)
-                                                    ->where('credit_account_id', $credit_account->id)
-                                                    ->whereNull('haber')
-                                                    ->first();
-
-                $has_movimientos_posteriores = !is_null($sale_current_acount)
-                    && CurrentAcount::where('credit_account_id', $credit_account->id)
-                                    ->where('id', '!=', $sale_current_acount->id)
-                                    ->where(function ($q) use ($sale_current_acount) {
-                                        $q->where('created_at', '>', $sale_current_acount->created_at)
-                                          ->orWhere(function ($q2) use ($sale_current_acount) {
-                                              $q2->where('created_at', '=', $sale_current_acount->created_at)
-                                                 ->where('id', '>', $sale_current_acount->id);
-                                          });
-                                    })
-                                    ->exists();
-
-                if ($has_movimientos_posteriores) {
-                    Log::info('Recalculando saldos');
-                    CurrentAcountHelper::check_saldos_y_pagos($credit_account->id);
-                } else {
-                    Log::info('No se van a recalcular saldos');
-                }
-            }
+            CurrentAcountHelper::check_saldos_y_pagos($credit_account_id_anterior);
         }
 
     }
 
+    /**
+     * Saca de la cuenta corriente el movimiento (débito) de la venta, liberando los pagos dirigidos
+     * a él y sus imputaciones.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return int|null  El id de la cuenta de la que salió el movimiento, o null si no había. No
+     *                   recalcula esa cuenta: eso le toca al llamador (updateCurrentAcountsAndCommissions,
+     *                   DeleteSaleHelper), que sabe si después entra otro movimiento.
+     */
     static function deleteCurrentAcountFromSale($sale) {
         $current_acount = CurrentAcount::where('sale_id', $sale->id)
                                         ->whereNull('haber')
                                         ->first();
+
+        if (is_null($current_acount)) {
+            return null;
+        }
+
+        $credit_account_id = $current_acount->credit_account_id;
+
         if (!is_null($current_acount)) {
 
 
@@ -1799,6 +1810,8 @@ class SaleHelper extends Controller {
             $current_acount->pagado_por()->detach();
             $current_acount->delete();
         }
+
+        return $credit_account_id;
     }
 
     static function deleteSellerCommissionsFromSale($sale) {

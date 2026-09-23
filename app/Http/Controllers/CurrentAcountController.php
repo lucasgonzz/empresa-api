@@ -449,8 +449,9 @@ class CurrentAcountController extends Controller
 
             CuentaCorrienteLock::bloquear_duenio($duenio);
 
+            // notaCredito() ya termina con checkSaldos() de la cuenta entera: el recálculo parcial
+            // que venía acá (checkCurrentAcountSaldo, las últimas 3 filas) sobraba.
             $nota_credito = CurrentAcountHelper::notaCredito($request->credit_account_id, $request->form['nota_credito'], $request->form['description'], $request->model_name, $request->model_id);
-            CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
 
             DB::commit();
 
@@ -493,8 +494,12 @@ class CurrentAcountController extends Controller
             $nota_debito->saldo = CurrentAcountHelper::getSaldo($request->credit_account_id, $nota_debito) + $request->debe;
             $nota_debito->save();
 
-            CurrentAcountHelper::checkCurrentAcountSaldo($request->credit_account_id);
-            CurrentAcountHelper::update_credit_account_saldo($request->credit_account_id);
+            /*
+             * 🔴 La cadena entera (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Antes:
+             * recálculo de las últimas 3 filas + copiar el saldo del último movimiento a la cuenta.
+             * checkSaldos() hace las dos cosas para toda la cadena.
+             */
+            CurrentAcountHelper::checkSaldos($request->credit_account_id);
 
             DB::commit();
 

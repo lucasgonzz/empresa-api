@@ -132,14 +132,20 @@ class DeleteSaleHelper {
 		
 		if ($model->client_id) {
 
-		    /* 
+		    /** Cuenta de la que salió el movimiento de la venta, si salió de alguna. */
+		    $credit_account_id_del_movimiento = null;
+
+		    /** Cuenta que ya recalculó el camino de siempre (cliente + moneda de la venta), si hubo. */
+		    $credit_account_id_recalculada = null;
+
+		    /*
 		        Si no es NULL, es porque se genero nota de credito de afip.
 		        En ese caso, no se elimina la cuenta corriente de la venta
 		        Porque ya tiene la nota de credito en la C/C
-		    */ 
+		    */
 		    if (count($model->nota_credito_afip_tickets) == 0) {
 
-		        SaleHelper::deleteCurrentAcountFromSale($model);
+		        $credit_account_id_del_movimiento = SaleHelper::deleteCurrentAcountFromSale($model);
 		    }
 
 		    SaleHelper::deleteSellerCommissionsFromSale($model);
@@ -159,6 +165,22 @@ class DeleteSaleHelper {
 		            Log::info('destroy sale '.$model->id.': el cliente '.$model->client_id.' no tiene credit account para la moneda '.$model->moneda_id.'. Se saltea el chequeo de saldos.');
 		        }
 		        $instance->sendAddModelNotification('client', $model->client_id, false);
+
+		        if (!is_null($credit_account)) {
+		            $credit_account_id_recalculada = $credit_account->id;
+		        }
+		    }
+
+		    /*
+		        🔴 La cuenta de la que salió el movimiento se recalcula SIEMPRE (misión
+		        cuenta-corriente-carrera-y-velocidad, 23/9/2026), aunque no sea la de (cliente, moneda
+		        de la venta) —un movimiento que quedó en otra cuenta, o una venta sin moneda— y aunque
+		        el cliente esté borrado: perdió un débito en el medio de su cadena, y si nadie la
+		        recalcula queda cortada desde ahí.
+		    */
+		    if (!is_null($credit_account_id_del_movimiento) && $credit_account_id_recalculada != $credit_account_id_del_movimiento) {
+
+		        CurrentAcountHelper::check_saldos_y_pagos($credit_account_id_del_movimiento);
 		    }
 		}
 

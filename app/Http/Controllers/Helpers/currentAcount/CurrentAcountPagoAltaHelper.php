@@ -161,6 +161,16 @@ class CurrentAcountPagoAltaHelper {
                 Log::info('NO se chequeo cuenta corriente entera');
                 $pago_helper = new CurrentAcountPagoHelper($pedido->credit_account_id, $pedido->model_name, $pedido->model_id, $pago);
                 $pago_helper->init();
+
+                /*
+                 * 🔴 Y la cadena de saldos se recalcula ENTERA también en el cobro de todos los días
+                 * (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). "Fecha de hoy" no quiere
+                 * decir "último movimiento": una venta con fecha editable puede estar más adelante, y
+                 * el saldo de todo lo que viniera después del pago quedaba sin el pago. Con el índice
+                 * de la cuenta cuesta una consulta más las filas que cambian. La re-imputación
+                 * completa (checkPagos) sigue siendo solo de la rama de fecha pasada.
+                 */
+                CurrentAcountHelper::checkSaldos($pedido->credit_account_id);
             }
 
 
