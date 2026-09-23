@@ -64,6 +64,28 @@ return [
             // MySQL local sea MyISAM: sin InnoDB, DatabaseTransactions no revierte nada (BEGIN y
             // ROLLBACK son no-ops sobre MyISAM) y los tests se contaminan entre si.
             'engine' => env('DB_ENGINE', null),
+            // Nivel de aislamiento de la conexión: READ COMMITTED (misión
+            // cuenta-corriente-carrera-y-velocidad, 23/9/2026). Laravel lo aplica al conectar con
+            // `SET SESSION TRANSACTION ISOLATION LEVEL ...` (MySqlConnector::configureIsolationLevel,
+            // que RetryingMySqlConnector hereda por parent::connect()).
+            //
+            // Medido en producción ese día: el shared hosting (MariaDB 11.8) ya corre TODO el ERP en
+            // READ-COMMITTED (`@@transaction_isolation`), con ~40 clientes operando así; el VPS
+            // (MySQL 8.4, log_bin=0, binlog_format=ROW) corría en REPEATABLE-READ. La carrera de la
+            // cuenta corriente de Fenix (venta 54160) apareció recién cuando Fenix pasó al VPS: en RR
+            // una transacción lee la foto de su primera lectura, y además los SELECT ... FOR UPDATE
+            // por rango (el recálculo de una cuenta) toman candados de HUECO en el índice, que llegan
+            // hasta la cuenta vecina —de otro cliente, y en una base compartida de otro comercio— y
+            // frenan sus altas mientras dura el recálculo. En READ COMMITTED no hay candados de hueco
+            // y cada lectura ve lo último commiteado. Con esto el VPS queda igual que el shared.
+            //
+            // Las lecturas con candado de CurrentAcountHelper (checkSaldos, getSaldo, checkPagos) se
+            // mantienen: en RC bloquean solo las filas que coinciden, y garantizan la cadena aunque
+            // alguna conexión corra en RR. ⚠️ RC necesita binlog en ROW o MIXED si el servidor tiene
+            // el binlog prendido (con STATEMENT, InnoDB rechaza las escrituras); los dos servidores
+            // de producción cumplen. DB_ISOLATION_LEVEL permite fijar otro nivel (p. ej. "REPEATABLE READ") por
+            // instancia si hiciera falta.
+            'isolation_level' => env('DB_ISOLATION_LEVEL', 'READ COMMITTED'),
             // Conexiones persistentes (PDO::ATTR_PERSISTENT), apagadas salvo que el .env las prenda.
             //
             // El 7/9/2026 los ~31 clientes del shared hosting de Hostinger (cuenta u767360347) se

@@ -29,6 +29,7 @@ use App\Http\Controllers\Helpers\sale\AcopioHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\Devoluciones\DevolucionExcedidaException;
@@ -341,10 +342,18 @@ class SaleController extends Controller
 
         DB::beginTransaction();
 
-        Log::info($this->user(false)->name.' va a crear venta');
-        $candado = 'crear_venta_'.$this->userId();
-
         try {
+
+            /*
+             * 🔴 Candado de la cuenta corriente del cliente, como PRIMERA sentencia de la transacción
+             * (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Una venta nueva entra a la
+             * cuenta corriente del cliente, y en Fenix una venta creada mientras otra PC guardaba la
+             * edición de otra venta del mismo cliente dejó la cadena de saldos corta (Bertolissi,
+             * venta 54088). Ver CuentaCorrienteLock. Sin cliente no bloquea nada.
+             */
+            CuentaCorrienteLock::bloquear('client', $request->client_id);
+
+            Log::info($this->user(false)->name.' va a crear venta');
 
             /*
              * La fecha de creación que eligió el usuario (misión fecha-creacion-editable,
@@ -684,6 +693,19 @@ class SaleController extends Controller
                 return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
             }
 
+            /*
+             * 🔴 Candado de la cuenta corriente, inmediatamente después del de la venta y antes de
+             * cualquier lectura común (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). El
+             * orden es fijo en todos los caminos: primero la venta, después la cuenta. Es la carrera
+             * de la venta 54160 de Fenix: dos PCs editando a la vez dos ventas del MISMO cliente. El
+             * candado de la venta no las serializaba (son dos ventas distintas); éste sí.
+             *
+             * Los dos clientes, el que tenía la venta y el que queda: si la edición le cambia el
+             * cliente, el movimiento sale de una cuenta y entra en la otra. CuentaCorrienteLock los
+             * bloquea en orden ascendente.
+             */
+            CuentaCorrienteLock::bloquear('client', [$model->client_id, $request->client_id]);
+
             $previus_articles = $model->articles()->lockForUpdate()->get();
             $previus_combos = $model->combos()->lockForUpdate()->get();
             $previus_promos = $model->promocion_vinotecas()->lockForUpdate()->get();
@@ -980,6 +1002,17 @@ class SaleController extends Controller
 
             if ($model->client_id && !$model->to_check && !$model->checked) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
+            } else if (!$model->client_id && $previus_client_id) {
+
+                /*
+                 * 🔴 La edición le SACÓ el cliente a la venta (misión
+                 * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Hasta hoy (ya pasaba en develop)
+                 * este if no entraba y el movimiento de la venta quedaba en la cuenta del cliente
+                 * viejo, cobrándole una venta que ya no era suya. Se saca el movimiento y se recalcula
+                 * esa cuenta; el candado del cliente viejo se tomó al entrar (CuentaCorrienteLock, con
+                 * el cliente que tenía la venta y el que queda).
+                 */
+                SaleHelper::sacar_de_la_cuenta_corriente($model);
             }
 
             /**
@@ -1241,25 +1274,61 @@ class SaleController extends Controller
             return response()->json(['message' => $motivo], 409);
         }
 
-        SaleHelper::updateItemsPrices($model, $request->items);
-        if ($model->client_id) {
-            SaleHelper::updateCurrentAcountsAndCommissions($model);
-        }
-
         /*
-         * Puntos para clientes. Cambiar los precios de los renglones cambia el monto base de la
-         * venta, así que los puntos que otorgó dejaron de ser los que corresponden.
-         *
-         * 🔴 VA EXPLÍCITO Y NO POR REBOTE. Una venta de cuenta corriente se reconciliaba igual
-         * porque `updateCurrentAcountsAndCommissions()` termina tocando la cuenta y el enganche
-         * de `CurrentAcountPagoHelper::init()` la agarra de paso; una venta de MOSTRADOR no
-         * pasa por ninguna cuenta corriente y se quedaba con el `monto_base` y los puntos
-         * viejos para siempre. Depender del rebote es depender de un camino que la mitad de las
-         * ventas no recorre.
-         *
-         * Es idempotente y sale sin tocar la base si el comercio no tiene el módulo.
+         * 🔴 Transacción + candado de la venta y de la cuenta corriente (misión
+         * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Este camino reescribe los precios de los
+         * renglones y, con ellos, borra y recrea el movimiento de la venta en la cuenta corriente,
+         * y corría sin transacción ni candado: la misma carrera que la edición de venta de Fenix
+         * (dos requests sobre la misma cuenta, cada uno con su foto), y además un corte a mitad de
+         * camino dejaba la venta sin su movimiento. Mismo orden que update(): venta, después cuenta.
          */
-        PuntosAcumulacionHelper::reconciliar_venta($model);
+        DB::beginTransaction();
+
+        try {
+
+            $model = Sale::where('id', $id)
+                            ->lockForUpdate()
+                            ->first();
+
+            if (is_null($model)) {
+                DB::rollBack();
+                return response()->json(['message' => 'La venta no existe o ya fue eliminada.'], 404);
+            }
+
+            CuentaCorrienteLock::bloquear('client', $model->client_id);
+
+            SaleHelper::updateItemsPrices($model, $request->items);
+            if ($model->client_id) {
+                SaleHelper::updateCurrentAcountsAndCommissions($model);
+            }
+
+            /*
+             * Puntos para clientes. Cambiar los precios de los renglones cambia el monto base de la
+             * venta, así que los puntos que otorgó dejaron de ser los que corresponden.
+             *
+             * 🔴 VA EXPLÍCITO Y NO POR REBOTE. Una venta de cuenta corriente se reconciliaba igual
+             * porque `updateCurrentAcountsAndCommissions()` termina tocando la cuenta y el enganche
+             * de `CurrentAcountPagoHelper::init()` la agarra de paso; una venta de MOSTRADOR no
+             * pasa por ninguna cuenta corriente y se quedaba con el `monto_base` y los puntos
+             * viejos para siempre. Depender del rebote es depender de un camino que la mitad de las
+             * ventas no recorre.
+             *
+             * Es idempotente y sale sin tocar la base si el comercio no tiene el módulo.
+             */
+            PuntosAcumulacionHelper::reconciliar_venta($model);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            // Capturada para poder hacer rollback: sin report() no llegaría al reporter de errores
+            // (APRENDER_NO_PARCHEAR: "excepción capturada que nunca llega al reporter").
+            report($e);
+
+            return response()->json(['error' => true], 500);
+        }
 
         // $this->sendAddModelNotification('Sale', $id);
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);

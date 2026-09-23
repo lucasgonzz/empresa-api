@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\LimiteCreditoHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
 use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Pdf\OrderPdf;
 use App\Models\Order;
@@ -133,6 +134,13 @@ class OrderController extends Controller
          * ya actualizado, y un rechazo hace `DB::rollBack()` explícito para no dejar el pedido
          * confirmado sin su venta. Mismo patrón que `SaleController::update()`.
          */
+        /*
+         * El cliente del ERP al que va la venta del pedido, resuelto ANTES de abrir la transacción:
+         * es una lectura común (comprador -> cliente vinculado) y adentro fijaría la foto de la base
+         * antes de esperar el candado de la cuenta corriente de más abajo. Ver CuentaCorrienteLock.
+         */
+        $client_id_del_pedido = CreateSaleOrderHelper::get_client_id($model, false, false);
+
         DB::beginTransaction();
 
         try {
@@ -158,6 +166,32 @@ class OrderController extends Controller
              * es el lock de la fila, no releer los atributos.
              */
             Order::where('id', $model->id)->lockForUpdate()->first();
+
+            /*
+             * 🔴 Y después del pedido, el candado de la cuenta corriente del cliente (misión
+             * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Confirmar crea la venta y su
+             * movimiento; cancelar da de baja la venta y lo saca. Tomarlo acá y no recién cuando
+             * CurrentAcountFromSaleHelper lo pide deja el mismo orden que la edición de una venta
+             * (cuenta antes que stock) y evita que las dos se esperen en círculo.
+             */
+            $clientes_a_bloquear = [$client_id_del_pedido];
+
+            if (OrderStatusHelper::es_la_cancelacion($nombre_desde, $nombre_hacia)) {
+
+                /*
+                 * Al cancelar se da de baja la venta del pedido: el orden es el mismo que en
+                 * SaleController (update y destroy), VENTA -> DUEÑO. Primero la venta, con candado, y
+                 * después la cuenta de su cliente (que es el que importa para la baja, aunque el
+                 * comprador hoy esté vinculado a otro).
+                 */
+                $ventas_del_pedido = Sale::where('order_id', $model->id)->lockForUpdate()->get(['id', 'client_id']);
+
+                foreach ($ventas_del_pedido as $venta_del_pedido_bloqueada) {
+                    $clientes_a_bloquear[] = $venta_del_pedido_bloqueada->client_id;
+                }
+            }
+
+            CuentaCorrienteLock::bloquear('client', $clientes_a_bloquear);
 
             /**
              * Este endpoint acepta payloads PARCIALES: cada campo se toca solo si la request lo trae.

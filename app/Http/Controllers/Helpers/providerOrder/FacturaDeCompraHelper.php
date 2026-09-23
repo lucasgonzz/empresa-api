@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\Helpers\providerOrder;
 
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Lo que pasa alrededor de una factura de compra (`provider_order_afip_tickets`) cuando se la
@@ -213,13 +215,25 @@ class FacturaDeCompraHelper
         // mapa de cantidades previas: sin `attach_articles()` no hay delta de stock que calcular.
         $helper = new NewProviderOrderHelper($provider_order, []);
 
-        // Re-suma los totales de la compra. Con `total_from_provider_order_afip_tickets` prendido,
-        // acá es donde entra el `total` nuevo de la factura, percepciones incluidas.
-        $helper->set_totales();
+        /*
+         * 🔴 En una transacción corta con el candado de la cuenta del proveedor como primera
+         * sentencia (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Los controllers de
+         * facturas de compra que llegan acá no abren transacción, así que el candado de
+         * set_current_acount() no hacía nada y la deuda se escribía sin serializar con las otras
+         * escrituras de la misma cuenta. Si el llamador ya tiene una, esto es un savepoint.
+         */
+        DB::transaction(function () use ($helper, $provider_order) {
 
-        // Y lleva ese total a la deuda con el proveedor (`current_acounts.debe`). Es un no-op si la
-        // compra tiene `generate_current_acount` apagado.
-        $helper->set_current_acount();
+            CuentaCorrienteLock::bloquear('provider', $provider_order->provider_id);
+
+            // Re-suma los totales de la compra. Con `total_from_provider_order_afip_tickets`
+            // prendido, acá es donde entra el `total` nuevo de la factura, percepciones incluidas.
+            $helper->set_totales();
+
+            // Y lleva ese total a la deuda con el proveedor (`current_acounts.debe`). Es un no-op si
+            // la compra tiene `generate_current_acount` apagado.
+            $helper->set_current_acount();
+        });
 
         return $provider_order;
     }

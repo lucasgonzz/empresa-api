@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Pdf\BudgetPdf;
@@ -88,6 +89,14 @@ class BudgetController extends Controller
         DB::beginTransaction();
 
         try {
+
+            /*
+                🔴 Candado de la cuenta corriente del cliente como primera sentencia (misión
+                cuenta-corriente-carrera-y-velocidad, 23/9/2026): un presupuesto que nace confirmado
+                crea la venta y su movimiento en la cuenta corriente. Mismo motivo y mismo orden que
+                confirmar(). Ver CuentaCorrienteLock.
+            */
+            CuentaCorrienteLock::bloquear('client', $request->client_id);
 
             $model = Budget::create(ForzarTotalEsquemaHelper::agregar_al_payload([
                 'num'                       => $this->num('budgets'),
@@ -345,6 +354,15 @@ class BudgetController extends Controller
         try {
 
             /*
+                🔴 Candado de la cuenta corriente del cliente que tenía y del que queda, como primera
+                sentencia (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). Guardar un
+                presupuesto confirmado borra la venta vieja y crea la nueva (BudgetHelper::checkStatus),
+                con su stock y su movimiento: la cuenta tiene que quedar tomada ANTES del stock, el mismo
+                orden que la edición de una venta. Ver CuentaCorrienteLock.
+            */
+            CuentaCorrienteLock::bloquear('client', [$model->client_id, $request->client_id]);
+
+            /*
                 Se lee el estado GUARDADO antes de pisarlo con el del request: es lo que despues permite
                 saber si el estado cambio de verdad en este update.
             */
@@ -487,6 +505,14 @@ class BudgetController extends Controller
      */
     public function confirmar($id) {
 
+        /*
+            El usuario se resuelve ANTES de abrir la transacción (misión
+            cuenta-corriente-carrera-y-velocidad, 23/9/2026): puede leer la base, y adentro esa
+            lectura común sería la primera de la transacción, antes de los candados del presupuesto y
+            de la cuenta corriente.
+        */
+        $user_id = $this->userId();
+
         DB::beginTransaction();
 
         try {
@@ -502,7 +528,7 @@ class BudgetController extends Controller
                 pestañas. La exclusion tiene que estar acá.
             */
             $model = Budget::where('id', $id)
-                            ->where('user_id', $this->userId())
+                            ->where('user_id', $user_id)
                             ->lockForUpdate()
                             ->first();
 
@@ -510,6 +536,15 @@ class BudgetController extends Controller
                 DB::rollBack();
                 return response()->json(['message' => 'El presupuesto no existe.'], 404);
             }
+
+            /*
+                🔴 Candado de la cuenta corriente del cliente, después del del presupuesto y antes de
+                cualquier lectura común (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026):
+                confirmar crea la venta y su movimiento en la cuenta corriente. Tomarlo acá, y no
+                recién cuando CurrentAcountFromSaleHelper lo pide, deja el mismo orden que la edición
+                de una venta (cuenta antes que stock) y evita que las dos se esperen en círculo.
+            */
+            CuentaCorrienteLock::bloquear('client', $model->client_id);
 
             /*
                 Sin withTrashed: una venta borrada por una anulacion anterior no cuenta como venta

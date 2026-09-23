@@ -88,31 +88,50 @@ class SaleTicketPdf extends fpdf {
 
 		if (!$this->afip_ticket) return;
 
+		// Configuracion fiscal del emisor: la del ticket o, si es un ticket viejo sin vinculo, la que se
+		// encuentra por cuit y punto de venta. Puede ser null.
 		$afip_information = $this->afip_ticket->afip_information;
 
-		if (!is_null($afip_information)) {
-			$this->SetFont('Arial', '', 10);
-			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'IVA: '.$afip_information->iva_condition->name, $this->b, 1, 'L');
-			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'Cuit: '.$afip_information->cuit, $this->b, 1, 'L');
+		// 🔴 Un ticket viejo cuya configuracion no se pudo resolver (se borro, o hay dos iguales) igual
+		// guardo, en sus propias columnas, lo que este bloque necesita: cuit, punto de venta, condicion
+		// de IVA, numero y CAE. Antes el bloque entero se salteaba en silencio y la reimpresion salia
+		// SIN CAE, con pinta de comprobante que no es fiscal. Lo unico que vive solo en la configuracion
+		// es la razon social: sin ella, esa linea no se imprime.
+		$cuit = !is_null($afip_information) ? $afip_information->cuit : trim((string) $this->afip_ticket->cuit_negocio);
 
+		// Ni configuracion ni cuit guardado: no hay datos del emisor que imprimir (comportamiento de siempre).
+		if (is_null($afip_information) && $cuit === '') return;
+
+		$punto_venta = !is_null($afip_information) ? $afip_information->punto_venta : $this->afip_ticket->punto_venta;
+
+		// La misma condicion de IVA que usa el calculador para discriminar: el comprobante no se contradice.
+		$condicion_iva = $this->afip_ticket->condicion_iva_del_emisor();
+
+		$this->SetFont('Arial', '', 10);
+
+		if (!is_null($condicion_iva)) {
+			$this->x = $this->x_incial;
+			$this->Cell($this->cell_ancho, 5, 'IVA: '.$condicion_iva, $this->b, 1, 'L');
+		}
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho, 5, 'Cuit: '.$cuit, $this->b, 1, 'L');
+
+		if (!is_null($afip_information)) {
 			$this->x = $this->x_incial;
 			$this->Cell($this->cell_ancho, 5, 'Razon social: '.$afip_information->razon_social, $this->b, 1, 'L');
-			
-			$this->SetFont('Arial', 'B', 10);
-			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$afip_information->punto_venta, $this->b, 1, 'L');
-			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->afip_ticket->cbte_numero, $this->b, 1, 'L');
-			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->afip_ticket->cae, $this->b, 1, 'L');
-			$this->x = $this->x_incial;
-			$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
-
-			$this->tipo_de_comprobante();
-
 		}
+
+		$this->SetFont('Arial', 'B', 10);
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho, 5, 'Punto de venta: '.$punto_venta, $this->b, 1, 'L');
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho, 5, 'N° comprobante: '.$this->afip_ticket->cbte_numero, $this->b, 1, 'L');
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho, 5, 'CAE: '.$this->afip_ticket->cae, $this->b, 1, 'L');
+		$this->x = $this->x_incial;
+		$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
+
+		$this->tipo_de_comprobante();
 	}
 
 	function tipo_de_comprobante() {

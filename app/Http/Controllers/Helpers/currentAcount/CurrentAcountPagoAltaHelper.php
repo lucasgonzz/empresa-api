@@ -74,6 +74,16 @@ class CurrentAcountPagoAltaHelper {
          */
         $pedido = self::pedido($datos);
 
+        /*
+         * 🔴 Candado de la cuenta corriente, como primera sentencia (misión
+         * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Va ACÁ y no en cada llamador porque por
+         * acá pasan los tres caminos que registran pagos (la pantalla, el endoso del módulo de
+         * cheques y el asistente de IA), y los tres llaman adentro de su propia transacción: puesto
+         * en el alta, el candado cubre la familia por construcción. `pedido()` no lee la base, así
+         * que ésta es la primera lectura del alta. Ver CuentaCorrienteLock.
+         */
+        CuentaCorrienteLock::bloquear($pedido->model_name, $pedido->model_id);
+
         $pago = CurrentAcount::create([
             'haber'                             => self::get_haber($pedido),
             'description'                       => $pedido->description,
@@ -151,6 +161,16 @@ class CurrentAcountPagoAltaHelper {
                 Log::info('NO se chequeo cuenta corriente entera');
                 $pago_helper = new CurrentAcountPagoHelper($pedido->credit_account_id, $pedido->model_name, $pedido->model_id, $pago);
                 $pago_helper->init();
+
+                /*
+                 * 🔴 Y la cadena de saldos se recalcula ENTERA también en el cobro de todos los días
+                 * (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). "Fecha de hoy" no quiere
+                 * decir "último movimiento": una venta con fecha editable puede estar más adelante, y
+                 * el saldo de todo lo que viniera después del pago quedaba sin el pago. Con el índice
+                 * de la cuenta cuesta una consulta más las filas que cambian. La re-imputación
+                 * completa (checkPagos) sigue siendo solo de la rama de fecha pasada.
+                 */
+                CurrentAcountHelper::checkSaldos($pedido->credit_account_id);
             }
 
 

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
+use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderScanAltaHelper;
 use App\Models\Article;
 use App\Models\ProviderOrder;
@@ -821,6 +822,15 @@ class ProviderOrderScanController extends Controller
         if (is_null($scan) || !is_null($scan->gestionado_at)) {
             throw new \RuntimeException('Este escaneo ya fue gestionado.', self::CODIGO_YA_GESTIONADO);
         }
+
+        /*
+         * 🔴 Candado de la cuenta corriente del proveedor, después del escaneo y ANTES de tocar
+         * artículos o stock (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026). La confirmación
+         * termina en procesar_pedido() -> set_current_acount(), que antes tomaba el candado recién
+         * ahí, con el stock ya tocado: el orden inverso al de los demás caminos (dueño -> stock).
+         * Ver CuentaCorrienteLock.
+         */
+        CuentaCorrienteLock::bloquear('provider', $provider_order->provider_id);
 
         /*
          * Paso 5 — LA TRAMPA DEL modo_facturacion (§4.6.2). ModoFacturacionHelper, que corre en
