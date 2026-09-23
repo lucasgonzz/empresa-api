@@ -735,6 +735,66 @@ class CurrentAcountHelper {
     }
 
     /**
+     * Si el saldo guardado de la cuenta (`credit_accounts.saldo`) o el del dueño (`saldo_pesos` o
+     * `saldo_dolares`) no coincide con el saldo final de la cadena, aunque la cadena cierre. Null si
+     * coinciden. Solo lee. La usa `cuenta_corriente:reparar_cadenas`.
+     *
+     * El saldo final de la cadena es el del último movimiento no provisorio en orden `created_at, id`
+     * (0 si no hay ninguno, o si el último es un ancla en NULL): exactamente lo que checkSaldos()
+     * deja en la cuenta y en el dueño. El dueño se busca con el modelo, igual que set_model_saldo():
+     * uno borrado no se mira, porque checkSaldos() tampoco lo actualiza.
+     *
+     * @param  \App\Models\CreditAccount  $credit_account
+     * @param  float  $tolerancia
+     * @return array|null  saldo_de_la_cadena, saldo_de_la_cuenta y saldo_del_duenio (null si no se mira).
+     */
+    static function descuadre_del_saldo_final($credit_account, $tolerancia = 0.05) {
+
+        $ultimo = DB::table('current_acounts')
+                    ->where('credit_account_id', $credit_account->id)
+                    ->where('is_provisorio', 0)
+                    ->orderBy('created_at', 'DESC')
+                    ->orderBy('id', 'DESC')
+                    ->first(['saldo']);
+
+        $saldo_de_la_cadena = is_null($ultimo) ? 0.0 : (float) $ultimo->saldo;
+
+        $saldo_del_duenio = null;
+
+        $columna = null;
+
+        if ($credit_account->moneda_id == 1) {
+            $columna = 'saldo_pesos';
+        } else if ($credit_account->moneda_id == 2) {
+            $columna = 'saldo_dolares';
+        }
+
+        if (!is_null($columna)) {
+
+            $clase = GeneralHelper::getModelName($credit_account->model_name);
+
+            $duenio = class_exists($clase) ? $clase::find($credit_account->model_id) : null;
+
+            if (!is_null($duenio)) {
+                $saldo_del_duenio = (float) $duenio->{$columna};
+            }
+        }
+
+        $cuenta_descuadrada = abs((float) $credit_account->saldo - $saldo_de_la_cadena) > $tolerancia;
+        $duenio_descuadrado = !is_null($saldo_del_duenio) && abs($saldo_del_duenio - $saldo_de_la_cadena) > $tolerancia;
+
+        if (!$cuenta_descuadrada && !$duenio_descuadrado) {
+            return null;
+        }
+
+        return [
+            'saldo_de_la_cadena'    => $saldo_de_la_cadena,
+            'saldo_de_la_cuenta'    => is_null($credit_account->saldo) ? null : (float) $credit_account->saldo,
+            'saldo_del_duenio'      => $saldo_del_duenio,
+        ];
+    }
+
+    /**
      * Si un movimiento es un ANCLA de la cadena: no provisorio, sin debe ni haber. Conserva su saldo
      * guardado y el siguiente arranca de ahí; es el comportamiento que tuvo siempre checkSaldos(), y
      * se mantiene a propósito (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026): medido en la
