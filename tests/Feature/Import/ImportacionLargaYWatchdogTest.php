@@ -2,13 +2,10 @@
 
 namespace Tests\Feature\Import;
 
-use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
-use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\ArticleImportResult;
-use App\Models\BackgroundProcess;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use Carbon\Carbon;
@@ -25,14 +22,16 @@ use Tests\Import\ImportTestCase;
  * Misión `importaciones-largas-y-cruce-de-codigos` (23/9/2026): lo que pasó en Servian con las
  * importaciones 35 y 37, que el panel mostró en "Falló" y en realidad terminaron 97/97.
  *
- * DOS DEFECTOS, UNO ATRÁS DEL OTRO
- * --------------------------------
- *  1. `ProcessArticleChunk` sube los contadores con `DB::table()->update()`, que NO toca
- *     `updated_at`. El watchdog `imports:detectar-colgadas` mira justamente `updated_at`, así que
- *     una importación de ~55 min (97 lotes de ~33 s) se veía idéntica a una muerta a los 45.
- *  2. Marcada `fallo` con un lote en vuelo, ese lote recalculaba el estado al terminar y la
- *     devolvía a `en_proceso`: el guard del arranque del lote siguiente ya no la veía y la chain
- *     seguía, con el registro de procesos clavado en `fallo`.
+ * EL DEFECTO
+ * ----------
+ * `ProcessArticleChunk` sube los contadores con `DB::table()->update()`, que NO toca `updated_at`.
+ * El watchdog `imports:detectar-colgadas` mira justamente `updated_at`, así que una importación
+ * de ~55 min (97 lotes de ~33 s) se veía idéntica a una muerta a los 45. Ahora cada lote lo
+ * refresca al arrancar y al terminar.
+ *
+ * ⚠️ Lo que NO se hace, a propósito: impedir que un lote en vuelo devuelva a `en_proceso` una
+ * importación que el watchdog marcó `fallo`. Se probó y se sacó en el chequeo independiente: con
+ * un falso positivo del watchdog eso deja el catálogo importado a medias en vez de terminarlo.
  *
  * CÓMO SE ARMA EL ESCENARIO
  * -------------------------
@@ -96,10 +95,11 @@ class ImportacionLargaYWatchdogTest extends EmpresaTestCase
     /**
      * Test 1. 🔴 Una importación larga pero viva no la mata el watchdog.
      *
-     * El lote 2 arranca con `updated_at` de hace dos horas en las dos tablas (como si el lote 1
-     * hubiera terminado hace rato y el 2 viniera tardando) y NO cambia de estado (sigue
-     * `en_proceso`), así que la única escritura que puede refrescar `updated_at` es la de los
-     * contadores. Sin el fix, el watchdog corrido después la marca `fallo`.
+     * Con el lote 2 ya adentro (el alta de su ArticleImportResult, después del refresco del
+     * arranque), el `updated_at` de las dos tablas se lleva a hace dos horas: es un lote que
+     * tardó mucho. El lote NO cambia de estado (sigue `en_proceso`), así que lo único que puede
+     * devolver `updated_at` a "ahora" es la escritura de los contadores al terminar. Sin eso, el
+     * watchdog corrido después la marca `fallo`. (El refresco del arranque lo cubre el test 2.)
      *
      * El control negativo va en la MISMA corrida del watchdog: una importación activa sin lotes y
      * con `updated_at` viejo de verdad SÍ se marca. Así el test no puede pasar por un watchdog que
@@ -121,8 +121,19 @@ class ImportacionLargaYWatchdogTest extends EmpresaTestCase
 
         $hace_dos_horas = Carbon::now()->subHours(2);
 
-        DB::table('import_histories')->where('id', $import_history->id)->update(['updated_at' => $hace_dos_horas]);
-        DB::table('import_statuses')->where('id', $import_status->id)->update(['updated_at' => $hace_dos_horas]);
+        /* Envejecido con el lote ya adentro: lo que pase antes (el refresco del arranque) no lo salva. */
+        $envejecido = false;
+
+        ArticleImportResult::created(function ($resultado) use (&$envejecido, $import_history, $import_status, $hace_dos_horas) {
+            if ($envejecido) {
+                return;
+            }
+
+            $envejecido = true;
+
+            DB::table('import_histories')->where('id', $import_history->id)->update(['updated_at' => $hace_dos_horas]);
+            DB::table('import_statuses')->where('id', $import_status->id)->update(['updated_at' => $hace_dos_horas]);
+        });
 
         /* El control negativo: activa, sin lotes que la muevan, y de verdad vieja. */
         $muerta = ImportHistory::create([
@@ -137,6 +148,8 @@ class ImportacionLargaYWatchdogTest extends EmpresaTestCase
         $conflictos_antes = (int) $import_history->fresh()->conflicts_count;
 
         $lote_2->handle();
+
+        $this->assertTrue($envejecido, 'el lote 2 nunca creó su ArticleImportResult: el test no está probando lo que dice');
 
         $un_minuto_atras = Carbon::now()->subMinute();
 
@@ -182,86 +195,18 @@ class ImportacionLargaYWatchdogTest extends EmpresaTestCase
     }
 
     /**
-     * Test 2. 🔴 Un `fallo` marcado con un lote en vuelo no se resucita.
+     * Test 2. 🔴 Un lote que ARRANCA ya refresca `updated_at`, sin esperar a terminar.
      *
-     * El watchdog (o ImportFailureHandler) marca `fallo` DESPUÉS de que el lote 2 pasó el guard
-     * del arranque: se engancha al alta de su ArticleImportResult, que es lo primero que el lote
-     * hace una vez adentro. Al terminar, el lote recalcula el estado; sin el fix, lo devuelve a
-     * `en_proceso` y el lote 3 procesa como si nada.
-     *
-     * @test
-     */
-    public function un_fallo_marcado_con_un_lote_en_vuelo_no_se_resucita_y_el_siguiente_corta()
-    {
-        list($lote_1, $lote_2, $lote_3) = $this->importar_y_capturar_lotes();
-
-        $lote_1->handle();
-
-        $import_status  = $this->import_status_de_la_importacion();
-        $import_history = ImportHistory::where('import_status_id', $import_status->id)->first();
-        $user_id        = $this->user_id;
-
-        $marcado = false;
-
-        ArticleImportResult::created(function ($resultado) use (&$marcado, $import_history, $import_status, $user_id) {
-            if ($marcado) {
-                return;
-            }
-
-            $marcado = true;
-
-            ImportFailureHandler::registrar(
-                $import_history->id,
-                $import_status->id,
-                $user_id,
-                'La importación quedó sin actividad por más de 45 minutos (simulado por el test).',
-                null,
-                1
-            );
-        });
-
-        $lote_2->handle();
-
-        $this->assertTrue($marcado, 'el fallo nunca se marcó en vuelo: el test no está probando lo que dice');
-
-        $import_history = ImportHistory::find($import_history->id);
-        $import_status  = ImportStatus::find($import_status->id);
-
-        $this->assertSame('fallo', $import_history->status, 'el lote en vuelo resucitó el ImportHistory');
-        $this->assertSame('fallo', $import_status->status, 'el lote en vuelo resucitó el ImportStatus');
-
-        /* Los contadores sí suman: el trabajo del lote 2 se hizo de verdad en la base. */
-        $this->assertSame(2, (int) $import_history->processed_chunks);
-        $this->assertSame(2, (int) $import_status->processed_chunks);
-
-        /* El registro visible dice lo mismo que las dos tablas. */
-        $proceso = BackgroundProcessHelper::por_referencia($import_status, false);
-        $this->assertNotNull($proceso);
-        $this->assertSame(BackgroundProcess::STATUS_FALLO, $proceso->status);
-
-        /* El lote siguiente corta en el guard del arranque: no suma ni deja resultado. */
-        $resultados_antes = ArticleImportResult::where('import_history_id', $import_history->id)->count();
-
-        $lote_3->handle();
-
-        $this->assertSame(2, (int) ImportStatus::find($import_status->id)->processed_chunks, 'el lote 3 procesó una importación fallida');
-        $this->assertSame(2, (int) ImportHistory::find($import_history->id)->processed_chunks);
-        $this->assertSame($resultados_antes, ArticleImportResult::where('import_history_id', $import_history->id)->count());
-        $this->assertSame('fallo', ImportHistory::find($import_history->id)->status);
-        $this->assertSame('fallo', ImportStatus::find($import_status->id)->status);
-    }
-
-    /**
-     * Test 2 bis. El `fallo` solo en el ImportHistory tampoco se pisa al arrancar un lote.
-     *
-     * Es la combinación que dejan el watchdog con `import_status_id` en null y el early-return
-     * de ImportFailureHandler::registrar() (ver FinalizeArticleImportTest, caso 3): el guard del
-     * arranque mira solo el ImportStatus, así que el lote entra, y sin el fix
-     * set_import_history_status_at_chunk_start() devolvía el history a `en_proceso`.
+     * Con el refresco solo al final, el hueco que ve el watchdog es la espera en cola MÁS la
+     * duración del lote; con el refresco al arranque, es el mayor de los dos. Se mira en el
+     * momento en que el lote ya está adentro (el alta de su ArticleImportResult, lo primero que
+     * hace después del guard de `fallo` y de marcar el estado), con el `updated_at` envejecido dos
+     * horas y el status sin cambiar (sigue `en_proceso`, así que ningún update de Eloquent lo
+     * refresca de rebote).
      *
      * @test
      */
-    public function un_fallo_solo_en_el_import_history_no_lo_pisa_el_lote_que_arranca()
+    public function un_lote_que_arranca_refresca_updated_at_antes_de_procesar()
     {
         list($lote_1, $lote_2) = $this->importar_y_capturar_lotes();
 
@@ -270,21 +215,41 @@ class ImportacionLargaYWatchdogTest extends EmpresaTestCase
         $import_status  = $this->import_status_de_la_importacion();
         $import_history = ImportHistory::where('import_status_id', $import_status->id)->first();
 
-        ImportFailureHandler::registrar(
-            $import_history->id,
-            null,
-            $this->user_id,
-            'Marcado solo en el history (simulado por el test).',
-            null,
-            1
-        );
+        $this->assertSame('en_proceso', $import_history->status, 'el escenario pide que el lote 2 no cambie el status');
+        $this->assertSame('en_proceso', $import_status->status, 'el escenario pide que el lote 2 no cambie el status');
 
-        $this->assertSame('en_proceso', ImportStatus::find($import_status->id)->status, 'el escenario pide el ImportStatus activo');
+        $hace_dos_horas = Carbon::now()->subHours(2);
+
+        DB::table('import_histories')->where('id', $import_history->id)->update(['updated_at' => $hace_dos_horas]);
+        DB::table('import_statuses')->where('id', $import_status->id)->update(['updated_at' => $hace_dos_horas]);
+
+        $al_arrancar = null;
+
+        ArticleImportResult::created(function ($resultado) use (&$al_arrancar, $import_history, $import_status) {
+            if (!is_null($al_arrancar)) {
+                return;
+            }
+
+            $al_arrancar = [
+                'history' => ImportHistory::find($import_history->id)->updated_at,
+                'status'  => ImportStatus::find($import_status->id)->updated_at,
+            ];
+        });
 
         $lote_2->handle();
 
-        $this->assertSame(2, (int) ImportHistory::find($import_history->id)->processed_chunks, 'el lote 2 no corrió: el test no está probando lo que dice');
-        $this->assertSame('fallo', ImportHistory::find($import_history->id)->status, 'un lote que arrancó pisó el fallo del ImportHistory');
+        $this->assertNotNull($al_arrancar, 'el lote 2 nunca creó su ArticleImportResult: el test no está probando lo que dice');
+
+        $un_minuto_atras = Carbon::now()->subMinute();
+
+        $this->assertTrue(
+            $al_arrancar['history']->greaterThan($un_minuto_atras),
+            'al arrancar el lote, import_histories.updated_at seguía en ' . $al_arrancar['history'] . ': el watchdog ve la espera en cola más el lote entero'
+        );
+        $this->assertTrue(
+            $al_arrancar['status']->greaterThan($un_minuto_atras),
+            'al arrancar el lote, import_statuses.updated_at seguía en ' . $al_arrancar['status']
+        );
     }
 
     /**
