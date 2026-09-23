@@ -425,6 +425,68 @@ class ProveedorIaHelper
     }
 
     /**
+     * 🔴 UN TURNO NO PUEDE PASAR DE THINKING APAGADO A PRENDIDO A MITAD DE CAMINO (medido contra la
+     * API real de DeepSeek en demo3, 23/9/2026: HTTP 400 "The `content[].thinking` in the thinking
+     * mode must be passed back to the API").
+     *
+     * Con `thinking: enabled` DeepSeek exige que cada turno del assistant que trae un `tool_use`
+     * lleve también su bloque `thinking`, devuelto tal cual. Un turno que arrancó con el thinking
+     * apagado (Ágil) y ya dio una vuelta de tool_use NO tiene esos bloques —el modelo no pensó—, y
+     * no se pueden inventar. Si el loop escala a Profundo después de esa vuelta y prende el
+     * thinking, DeepSeek rechaza el pedido entero y la persona ve "se me cortó la conexión" en cada
+     * reintento (le pasó a un dueño en Ágil pidiendo crear un proveedor desde una factura: el
+     * `tool_use` de `proponer_*` dispara el escalado y la vuelta siguiente moría).
+     *
+     * Por eso, si el thinking que se quiere mandar es `enabled` y el historial ya tiene un turno
+     * assistant con `tool_use` sin bloque `thinking`, esa llamada va con el thinking apagado: el
+     * MODELO sigue siendo el escalado (Pro), solo que sin razonamiento explícito, que es lo único
+     * que DeepSeek acepta con ese historial. Un turno que arranca con el thinking prendido
+     * (dueño en Profundo) guarda los bloques que devolvió el modelo y no se toca. Sin `thinking`
+     * (Anthropic, null) y con `disabled` el resultado es el mismo que entró.
+     *
+     * @param  array|null  $thinking  El bloque que eligió modelo_del_asistente().
+     * @param  array  $messages  Los mensajes que van en este pedido.
+     * @return array|null
+     */
+    public static function thinking_apto_para_historial($thinking, array $messages)
+    {
+        if (! is_array($thinking) || ! isset($thinking['type']) || (string) $thinking['type'] !== 'enabled') {
+
+            return $thinking;
+        }
+
+        foreach ($messages as $mensaje) {
+
+            if (! is_array($mensaje) || ($mensaje['role'] ?? '') !== 'assistant' || ! isset($mensaje['content']) || ! is_array($mensaje['content'])) {
+                continue;
+            }
+
+            $tiene_tool_use = false;
+            $tiene_thinking = false;
+
+            foreach ($mensaje['content'] as $bloque) {
+
+                $tipo = is_array($bloque) && isset($bloque['type']) ? (string) $bloque['type'] : '';
+
+                if ($tipo === 'tool_use') {
+                    $tiene_tool_use = true;
+                }
+
+                if ($tipo === 'thinking' || $tipo === 'redacted_thinking') {
+                    $tiene_thinking = true;
+                }
+            }
+
+            if ($tiene_tool_use && ! $tiene_thinking) {
+
+                return ['type' => 'disabled'];
+            }
+        }
+
+        return $thinking;
+    }
+
+    /**
      * true si la respuesta fallida es un error transitorio (el proveedor saturado), que se le cuenta
      * a la persona como "sobrecargado, probá en unos segundos" y no como una falla técnica.
      *

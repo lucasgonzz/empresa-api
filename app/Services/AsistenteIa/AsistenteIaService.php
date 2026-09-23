@@ -346,7 +346,14 @@ class AsistenteIaService
              */
             $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga);
             $model    = $eleccion['modelo'];
-            $thinking = $eleccion['thinking'];
+
+            /*
+             * 🔴 El escalado puede prender el thinking DESPUÉS de una vuelta que no lo tenía, y con
+             * ese historial DeepSeek rechaza el pedido con un 400 (los turnos con tool_use tienen
+             * que devolver su bloque `thinking`, y el Ágil no lo generó). El helper lo apaga solo
+             * para esa llamada; el modelo escalado se mantiene. Ver thinking_apto_para_historial().
+             */
+            $thinking = ProveedorIaHelper::thinking_apto_para_historial($eleccion['thinking'], $messages);
 
             /*
              * El mismo payload para los dos proveedores; `agregar_thinking` solo suma la clave
@@ -847,6 +854,12 @@ AUTO_RESUELTO;
 - Nunca muestres ni pidas números internos (ids).
 - La foto de una sucursal solo la pueden asignar el dueño o un administrador. La foto la saco sola de las
   que la persona mandó en la conversación; no se la pidas.
+- 🔴 La FACTURA de un proveedor no la leés vos: la lee el escaneo del sistema, con su propia IA, cuando
+  la persona confirma la compra. Aunque la foto viaje en el mensaje, NO transcribas ni adelantes montos,
+  renglones, artículos ni datos de la factura como si los hubieras leído (un número tuyo se lee como un
+  dato confirmado y puede estar mal). Tu trabajo es armar la compra con proponer_compra_con_factura —si
+  el proveedor no existe, primero pedí lo mínimo para darlo de alta— y decir que la lectura se hace
+  después de confirmar y que los artículos se revisan desde Compras.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma
