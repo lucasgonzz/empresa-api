@@ -25,15 +25,16 @@ class ExcelDuplicateStats
     /**
      * Tamaño máximo de lote para la consulta whereIn de crossCheckProviderCodes().
      *
-     * 🔴 200 no es un número redondo: es `eq_range_index_dive_limit`, 200 por defecto en MySQL 8.
+     * 200 no es un número redondo: es `eq_range_index_dive_limit`, 200 por defecto en MySQL 8.
      * Con hasta 200 valores en el IN, el optimizador estima cuántas filas trae cada uno bajando
      * por el índice (index dives) y elige bien `articles_user_provider_code_index`. Con más, deja
-     * de bajar y estima con las estadísticas del índice, que en un catálogo grande pueden ser muy
-     * malas: puede terminar eligiendo recorrer todo el catálogo del usuario.
+     * de bajar y estima con las estadísticas del índice, que en un catálogo grande pueden ser
+     * malas y llevarlo a elegir otro plan.
      *
-     * Pasó en Servian el 23/9/2026 con lotes de 5000: 568k artículos, la consulta examinó 686.402
-     * filas y la cortó el `max_execution_time` global del VPS (120 s) — el análisis del Excel
-     * quedó en "Falló". La misma consulta, minutos después, usó el índice y tardó 0,3 s.
+     * ⚠️ Es una DEFENSA, no el arreglo del corte de Servian del 23/9/2026. Ese corte lo causó la
+     * mezcla de int y string en el IN (medido en producción, ver el comentario del strval en
+     * crossCheckProviderCodes()): con todos los valores como string, el mismo IN de 5000 usó el
+     * índice. Bajar el lote sin el strval no lo hubiera arreglado.
      *
      * Costo: 29k códigos son ~145 consultas de milisegundos cada una por índice. Si alguien
      * sube este número, que primero suba `eq_range_index_dive_limit` en todos los servidores.
@@ -421,6 +422,13 @@ class ExcelDuplicateStats
          * IN (warning 1739, "Cannot use range access ... due to type or collation conversion") y
          * recorre todos los artículos del usuario, con lotes de cualquier tamaño. Y encima cuenta
          * de más: "777" del Excel matchea un "0777" de la base, que la importación no matchea.
+         *
+         * Es la causa del corte de Servian del 23/9/2026 (568k artículos; el análisis del Excel
+         * quedó en "Falló"). Medido en producción sobre la consulta real del slow log: 42 de los
+         * 5000 valores del IN viajaron como enteros, el EXPLAIN dio `ref` por
+         * `articles_user_id_foreign` (325k filas estimadas; 686.402 examinadas en el corte) y la
+         * cortó el `max_execution_time` global del VPS (120 s). La misma consulta, con esos 42
+         * valores entre comillas, tardó 0,73 s.
          */
         $provider_codes = array_map('strval', array_values($provider_codes));
 
