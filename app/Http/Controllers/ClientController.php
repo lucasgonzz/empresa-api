@@ -8,6 +8,7 @@ use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
+use App\Http\Controllers\Helpers\AjustesDeClienteEsquemaHelper;
 use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -15,6 +16,8 @@ use App\Http\Controllers\Helpers\asistente_ia\ClienteDeMencionIaHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
 use App\Models\Client;
+use App\Models\Discount;
+use App\Models\Surchage;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -93,6 +96,8 @@ class ClientController extends Controller
         ]);
 
         CreditAccountHelper::crear_credit_accounts('client', $model->id);
+
+        $this->sincronizar_ajustes_de_venta($model, $request);
         
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 201);
@@ -154,8 +159,84 @@ class ClientController extends Controller
         $model->link_google_maps            = $request->link_google_maps;
         $model->client_reputation_id        = $request->client_reputation_id;
         $model->save();
+        $this->sincronizar_ajustes_de_venta($model, $request);
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 200);
+    }
+
+    /**
+     * Guarda los descuentos y recargos de venta vinculados al cliente (misión
+     * descuentos-recargos-por-cliente, 23/9/2026): los que Vender prende solos al elegirlo y con
+     * los que la tienda ajusta los precios de su comprador.
+     *
+     * 🔴 SOLO si el request trae la clave. `update()` reasigna todo desde el request, pero hay
+     * escritores parciales del cliente y la ficha vieja de una SPA sin desplegar no manda
+     * `discounts` ni `surchages`: si esto corriera igual, un `sync([])` —o el `detach()` con el
+     * que arranca `GeneralHelper::attachModels()`— le borraría al cliente las condiciones
+     * comerciales que cargó otro. Por eso `has()` y no un `?? []`.
+     *
+     * 🔴 Y los ids se FILTRAN al comercio: la base puede ser compartida entre varios comercios
+     * (`u767360347_empresa` tiene 51), y un id de descuento ajeno colgado de un cliente terminaría
+     * cambiando precios en Vender y en la tienda con un porcentaje que el dueño nunca creó. Un id
+     * que no es del comercio se ignora en silencio, igual que uno inexistente.
+     *
+     * Sin las tablas (ventana del deploy) no hace nada: el resto del cliente se guarda igual.
+     *
+     * @param  \App\Models\Client  $model
+     * @param  \Illuminate\Http\Request  $request
+     * @return void
+     */
+    protected function sincronizar_ajustes_de_venta($model, Request $request) {
+
+        if (!AjustesDeClienteEsquemaHelper::hay_tablas_de_cliente()) {
+            return;
+        }
+
+        if ($request->has('discounts')) {
+            $model->discounts()->sync($this->ids_del_comercio(Discount::class, $request->input('discounts')));
+        }
+
+        if ($request->has('surchages')) {
+            $model->surchages()->sync($this->ids_del_comercio(Surchage::class, $request->input('surchages')));
+        }
+    }
+
+    /**
+     * Ids (de la lista que manda la SPA) que existen, no están borrados y son del comercio.
+     *
+     * La SPA manda el modelo entero de cada descuento (props belongs_to_many del form genérico),
+     * pero se acepta también el id pelado. `null` o algo que no es lista = lista vacía, que es
+     * "sacar todos": la clave vino, así que el usuario los sacó.
+     *
+     * @param  string  $modelo
+     * @param  mixed  $items
+     * @return array<int,int>
+     */
+    protected function ids_del_comercio($modelo, $items) {
+
+        if (!is_array($items)) {
+            return [];
+        }
+
+        $ids = [];
+
+        foreach ($items as $item) {
+
+            $id = is_array($item) ? (isset($item['id']) ? $item['id'] : null) : $item;
+
+            if (is_numeric($id)) {
+                $ids[] = (int) $id;
+            }
+        }
+
+        if (count($ids) == 0) {
+            return [];
+        }
+
+        return $modelo::whereIn('id', array_unique($ids))
+                        ->where('user_id', $this->userId())
+                        ->pluck('id')
+                        ->all();
     }
 
     /**
