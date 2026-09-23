@@ -1002,6 +1002,17 @@ class SaleController extends Controller
 
             if ($model->client_id && !$model->to_check && !$model->checked) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
+            } else if (!$model->client_id && $previus_client_id) {
+
+                /*
+                 * 🔴 La edición le SACÓ el cliente a la venta (misión
+                 * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Hasta hoy (ya pasaba en develop)
+                 * este if no entraba y el movimiento de la venta quedaba en la cuenta del cliente
+                 * viejo, cobrándole una venta que ya no era suya. Se saca el movimiento y se recalcula
+                 * esa cuenta; el candado del cliente viejo se tomó al entrar (CuentaCorrienteLock, con
+                 * el cliente que tenía la venta y el que queda).
+                 */
+                SaleHelper::sacar_de_la_cuenta_corriente($model);
             }
 
             /**

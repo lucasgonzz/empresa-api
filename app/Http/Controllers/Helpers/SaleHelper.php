@@ -1763,6 +1763,31 @@ class SaleHelper extends Controller {
     }
 
     /**
+     * Saca la venta de la cuenta corriente en la que estaba y deja esa cuenta recalculada (cadena de
+     * saldos e imputaciones). Para cuando la venta deja de tener cliente: no entra a ninguna otra
+     * cuenta, así que no hay un movimiento nuevo que recalcule nada.
+     *
+     * Misión cuenta-corriente-carrera-y-velocidad (23/9/2026). El llamador tiene que haber tomado el
+     * candado de la cuenta del cliente viejo al entrar (CuentaCorrienteLock).
+     *
+     * @param  \App\Models\Sale  $sale
+     * @return int|null  El id de la cuenta de la que salió el movimiento, o null si no había.
+     */
+    static function sacar_de_la_cuenta_corriente($sale) {
+
+        $credit_account_id = Self::deleteCurrentAcountFromSale($sale);
+
+        if (!is_null($credit_account_id)) {
+
+            Log::info('SaleHelper: la venta '.$sale->id.' quedó sin cliente. Se saca su movimiento de la cuenta '.$credit_account_id.' y se la recalcula entera.');
+
+            CurrentAcountHelper::check_saldos_y_pagos($credit_account_id);
+        }
+
+        return $credit_account_id;
+    }
+
+    /**
      * Saca de la cuenta corriente el movimiento (débito) de la venta, liberando los pagos dirigidos
      * a él y sus imputaciones.
      *
