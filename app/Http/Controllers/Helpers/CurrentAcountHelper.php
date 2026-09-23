@@ -123,6 +123,20 @@ class CurrentAcountHelper {
         
         $query->where('is_provisorio', 0);
 
+        /*
+         * 🔴 Adentro de una transacción el saldo anterior se lee CON CANDADO (misión
+         * cuenta-corriente-carrera-y-velocidad, 23/9/2026). En REPEATABLE READ un SELECT común ve la
+         * foto de la base tomada en la primera lectura de la transacción, no lo último commiteado:
+         * es exactamente lo que dejó a la venta 54160 de Fenix con el saldo de una venta que la otra
+         * PC ya había cambiado. Una lectura FOR UPDATE ve siempre lo último commiteado.
+         *
+         * Fuera de una transacción cada sentencia ya ve lo último commiteado y el candado se soltaría
+         * al terminar la sentencia: no aporta nada, así que no se pide.
+         */
+        if (DB::transactionLevel() > 0) {
+            $query->lockForUpdate();
+        }
+
         if (!is_null($until_current_acount)) {
             $query->where(function ($q) use ($credit_account_id, $until_current_acount) {
                 $q->where('credit_account_id', $credit_account_id)
@@ -512,52 +526,124 @@ class CurrentAcountHelper {
         Self::checkPagos($credit_account_id);
     }
 
+    /**
+     * Recalcula la cadena de saldos de una cuenta corriente: cada movimiento no provisorio queda con
+     * el saldo del anterior más su debe (o menos su haber), en orden `created_at, id`, y la cuenta y
+     * su dueño quedan con el saldo del último.
+     *
+     * 🔴 REESCRITO EN LA MISIÓN cuenta-corriente-carrera-y-velocidad (23/9/2026). Lo que cambió y por
+     * qué:
+     *   - UNA SOLA LECTURA, CON CANDADO. Antes se leía la lista con un SELECT común y después, por
+     *     cada movimiento, el saldo del anterior con otro (`getSaldo()`): 192 movimientos en Fenix eran
+     *     193 consultas y 35 segundos, y en REPEATABLE READ todas veían la foto de la transacción, no lo
+     *     último commiteado. Eso es la carrera de la venta 54160. Ahora las filas se leen de una vez con
+     *     `FOR UPDATE` —que siempre ve lo último commiteado— y el saldo se acumula en memoria.
+     *   - EL MISMO ORDEN QUE getSaldo(). Antes el recálculo ordenaba solo por `created_at` y el saldo
+     *     anterior se buscaba por `created_at, id`: con dos movimientos en el mismo segundo los dos
+     *     órdenes podían no coincidir.
+     *   - SOLO SE GUARDAN LAS FILAS CUYO SALDO CAMBIÓ. Antes se guardaban todas.
+     *   - CORRE EN SU PROPIA TRANSACCIÓN (un savepoint, si ya hay una abierta) Y CON EL CANDADO DE LA
+     *     CUENTA. Adentro de un request el candado ya lo tomó la entrada y acá es gratis; lo que cubre
+     *     es a los comandos y jobs que recalculan cuentas en el fondo, que ahora esperan al request que
+     *     está escribiendo esa misma cuenta en vez de pisarle la cadena con una lectura vieja.
+     *   - Un movimiento sin debe ni haber queda con el saldo del anterior (antes no se tocaba y el
+     *     siguiente arrancaba de lo que tuviera guardado).
+     *
+     * La firma y la semántica de `$from_current_acount` no cambiaron: con un movimiento de arranque se
+     * recalculan los posteriores (`>` o, con `$mayor_o_igual`, `>=` por `created_at`) partiendo del
+     * saldo del movimiento anterior al primero que se recalcula, leído con una sola consulta.
+     *
+     * @param  int  $credit_account_id
+     * @param  \App\Models\CurrentAcount|null  $from_current_acount
+     * @param  bool  $mayor_o_igual
+     * @return null
+     */
     static function checkSaldos($credit_account_id, $from_current_acount = null, $mayor_o_igual = false) {
 
         if (! app()->runningInConsole()) {
             Log::info('checkSaldos para credit_account id '.$credit_account_id);
         }
 
+        DB::transaction(function () use ($credit_account_id, $from_current_acount, $mayor_o_igual) {
+
+            Self::recalcular_cadena_de_saldos($credit_account_id, $from_current_acount, $mayor_o_igual);
+        });
+
+        return null;
+    }
+
+    /**
+     * El cuerpo de checkSaldos(), ya adentro de una transacción. No llamar directo.
+     *
+     * @param  int  $credit_account_id
+     * @param  \App\Models\CurrentAcount|null  $from_current_acount
+     * @param  bool  $mayor_o_igual
+     * @return void
+     */
+    static function recalcular_cadena_de_saldos($credit_account_id, $from_current_acount, $mayor_o_igual) {
+
         $credit_account = CreditAccount::find($credit_account_id);
 
+        if (is_null($credit_account)) {
+            // Hay llamadores viejos que todavía pasan ('client', $id): antes reventaban con un
+            // "Trying to get property of non-object" y siguen reventando, pero diciendo por qué.
+            throw new \RuntimeException('checkSaldos: no existe la credit_account '.var_export($credit_account_id, true).'.');
+        }
+
+        CuentaCorrienteLock::bloquear($credit_account->model_name, $credit_account->model_id);
+
         $current_acounts = CurrentAcount::where('credit_account_id', $credit_account->id)
-                                        ->where('is_provisorio', 0)
-                                        ->orderBy('created_at', 'ASC');
+                                        ->where('is_provisorio', 0);
 
         if (!is_null($from_current_acount)) {
-            
+
             if ($mayor_o_igual) {
                 $operador = '>=';
             } else {
                 $operador = '>';
             }
-            
+
             $current_acounts = $current_acounts->where('created_at', $operador, $from_current_acount->created_at);
         }
 
-        $current_acounts = $current_acounts->get();
+        $current_acounts = $current_acounts->orderBy('created_at', 'ASC')
+                                            ->orderBy('id', 'ASC')
+                                            ->lockForUpdate()
+                                            ->get();
 
         if (! app()->runningInConsole()) {
             Log::info(count($current_acounts).' movimientos');
         }
 
+        $saldo = 0;
+
+        if (!is_null($from_current_acount) && count($current_acounts) >= 1) {
+            // El saldo del movimiento anterior al primero que se recalcula (con candado: estamos
+            // adentro de una transacción).
+            $saldo = (float) Self::getSaldo($credit_account->id, $current_acounts[0]);
+        }
+
+        $guardados = 0;
+
         foreach ($current_acounts as $current_acount) {
 
-            $saldo = Self::getSaldo($credit_account->id, $current_acount);
+            $saldo = Numbers::redondear($saldo + Self::aporte_al_saldo($current_acount));
 
-            if (!is_null($current_acount->debe)) {
-                $current_acount->saldo = Numbers::redondear($saldo + $current_acount->debe);
+            if (is_null($current_acount->saldo) || abs((float) $current_acount->saldo - $saldo) > 0.001) {
 
-            } else if (!is_null($current_acount->haber)) {
+                $current_acount->saldo = $saldo;
+                $current_acount->save();
 
-                $current_acount->saldo = Numbers::redondear($saldo - $current_acount->haber);
+                $guardados++;
             }
-
-            $current_acount->save();
         }
 
         if (count($current_acounts) >= 1) {
-            $credit_account->saldo = $current_acounts[count($current_acounts)-1]->saldo;
+            $credit_account->saldo = $saldo;
+        } else if (!is_null($from_current_acount)) {
+            // No había nada después del movimiento de arranque: el saldo de la cuenta es el del
+            // último movimiento (antes quedaba en 0 por error).
+            $credit_account->saldo = (float) Self::getSaldo($credit_account->id);
         } else {
             $credit_account->saldo = 0;
         }
@@ -567,10 +653,30 @@ class CurrentAcountHelper {
         Self::set_model_saldo($credit_account);
 
         if (! app()->runningInConsole()) {
-            Log::info('Seteando saldo de credit_account id '.$credit_account_id.' con '.$credit_account->saldo);
+            Log::info('Seteando saldo de credit_account id '.$credit_account_id.' con '.$credit_account->saldo.' ('.$guardados.' movimientos con el saldo corregido)');
+        }
+    }
+
+    /**
+     * Lo que un movimiento le suma a la cadena de saldos: su debe, menos su haber, o nada. Mismo
+     * criterio que usó siempre checkSaldos(): si tiene debe cuenta el debe, aunque también tenga
+     * haber. Lo comparten el recálculo y la detección de cadenas cortadas, para que no puedan
+     * dejar de estar de acuerdo.
+     *
+     * @param  object  $current_acount  Modelo o fila con `debe` y `haber`.
+     * @return float
+     */
+    static function aporte_al_saldo($current_acount) {
+
+        if (!is_null($current_acount->debe)) {
+            return (float) $current_acount->debe;
         }
 
-        return null;
+        if (!is_null($current_acount->haber)) {
+            return -(float) $current_acount->haber;
+        }
+
+        return 0.0;
     }
 
     static function set_model_saldo($credit_account) {
@@ -607,18 +713,49 @@ class CurrentAcountHelper {
     }
 
 
+    /**
+     * Re-imputa la cuenta entera: borra las imputaciones de todos los débitos, los deja sin pagar y
+     * vuelve a correr cada pago contra ellos, en orden.
+     *
+     * Misión cuenta-corriente-carrera-y-velocidad (23/9/2026): la lógica no cambió. Lo que cambió es
+     * que corre en su propia transacción (un savepoint si ya hay una abierta: antes, un corte a mitad
+     * dejaba los débitos reseteados y sin imputar), con el candado de la cuenta, y que los débitos y
+     * los pagos se leen CON CANDADO —ven lo último commiteado, no la foto de la transacción— y
+     * desempatando por `id`, el mismo orden de la cadena de saldos.
+     *
+     * @param  int  $credit_account_id
+     * @return void
+     */
     static function checkPagos($credit_account_id) {
+
+        DB::transaction(function () use ($credit_account_id) {
+
+            Self::reimputar_pagos($credit_account_id);
+        });
+    }
+
+    /**
+     * El cuerpo de checkPagos(), ya adentro de una transacción. No llamar directo.
+     *
+     * @param  int  $credit_account_id
+     * @return void
+     */
+    static function reimputar_pagos($credit_account_id) {
 
         if (! app()->runningInConsole()) {
             Log::info('checkPagos');
         }
 
         $credit_account = CreditAccount::find($credit_account_id);
-            
+
+        CuentaCorrienteLock::bloquear($credit_account->model_name, $credit_account->model_id);
+
         $debitos = CurrentAcount::orderBy('created_at', 'ASC')
+                                ->orderBy('id', 'ASC')
                                 ->where('credit_account_id', $credit_account_id)
                                 ->whereNotNull('debe')
                                 ->where($credit_account->model_name.'_id', $credit_account->model_id)
+                                ->lockForUpdate()
                                 ->get();
 
         $debito_ids = $debitos->pluck('id');
@@ -635,10 +772,12 @@ class CurrentAcountHelper {
         ]);
 
         $pagos = CurrentAcount::orderBy('created_at', 'ASC')
+                                    ->orderBy('id', 'ASC')
                                     ->where('is_provisorio', 0)
                                     ->whereNotNull('haber')
                                     ->where('credit_account_id', $credit_account_id)
                                     ->where($credit_account->model_name.'_id', $credit_account->model_id)
+                                    ->lockForUpdate()
                                     ->get();
 
         /*

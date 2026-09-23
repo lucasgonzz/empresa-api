@@ -13,6 +13,7 @@ use App\Models\Check;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class CurrentAcountPagoHelper {
@@ -64,10 +65,21 @@ class CurrentAcountPagoHelper {
 
         // Cargar todos los débitos pendientes de una sola vez en memoria
         // para evitar hacer 1 query por cada débito procesado en setSinPagar()
-        $this->debitos_pendientes = CurrentAcount::where('credit_account_id', $this->credit_account->id)
+        //
+        // Misión cuenta-corriente-carrera-y-velocidad (23/9/2026): adentro de una transacción se leen
+        // CON CANDADO, porque de esta lista sale a qué débitos se imputa el pago: una lectura común ve
+        // la foto de la transacción y podía imputar contra débitos que otro request ya había cambiado.
+        // Y se desempata por id, el mismo orden de la cadena de saldos.
+        $debitos_pendientes = CurrentAcount::where('credit_account_id', $this->credit_account->id)
                                                  ->whereIn('status', ['sin_pagar', 'pagandose'])
                                                  ->orderBy('created_at', 'ASC')
-                                                 ->get();
+                                                 ->orderBy('id', 'ASC');
+
+        if (DB::transactionLevel() > 0) {
+            $debitos_pendientes->lockForUpdate();
+        }
+
+        $this->debitos_pendientes = $debitos_pendientes->get();
 
         $this->setSinPagar();
     }
