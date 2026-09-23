@@ -15,11 +15,17 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Http\Controllers\BudgetController;
 use App\Models\AiMessageAction;
+use App\Models\AperturaCaja;
 use App\Models\Article;
+use App\Models\ArticleVariant;
 use App\Models\Budget;
 use App\Models\Caja;
 use App\Models\Client;
+use App\Models\CurrentAcountPaymentMethod;
+use App\Models\CurrentAcountPaymentMethodDiscount;
 use App\Models\ExtencionEmpresa;
+use App\Models\Provider;
+use App\Models\Sale;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
@@ -1022,14 +1028,18 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
      * comprobante ante ARCA no se deshace. La puerta es `requiere_confirmacion` en la respuesta de
      * la propuesta, que quizas_auto_confirmar() respeta antes de mirar el modo.
      *
-     * No se toca ARCA: el `sale_id` no existe, así que aunque la puerta fallara, makeAfipTicket()
-     * devolvería `response(null, 200)` sin instanciar MakeAfipTicket. Lo que se mide es que la
-     * tarjeta quede propuesta y que `afip_tickets` y `sales` no cambien.
+     * No se toca ARCA: la tarjeta queda propuesta y nada se ejecuta. El `sale_id` es una venta
+     * real del dueño porque la tenencia del cuerpo exige que exista y sea suya; lo que se mide es
+     * que la tarjeta quede propuesta y que `afip_tickets` y `sales` no cambien.
      *
      * @test
      */
     public function una_accion_que_emite_comprobantes_ante_arca_siempre_deja_tarjeta_incluso_en_directo()
     {
+        $venta = Sale::where('user_id', $this->dueno->id)->whereNull('deleted_at')->orderBy('id')->first();
+
+        $this->assertNotNull($venta, 'El fixture trae ventas');
+
         // El catálogo la marca, y a una acción común no.
         $declaracion = Catalogo::declaracion('POST', 'api/afip-ticket');
 
@@ -1066,7 +1076,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
             'metodo'      => 'POST',
             'ruta'        => 'api/afip-ticket',
-            'cuerpo'      => ['sale_id' => 999999999],
+            'cuerpo'      => ['sale_id' => $venta->id],
             'descripcion' => 'Facturar la venta',
         ]);
 
@@ -1083,7 +1093,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->estado_guardado());
         $this->assertStringContainsString('ARCA', $tarjeta->presentacion['aviso']);
         $this->assertStringContainsString('"directo"', $tarjeta->presentacion['aviso']);
-        $this->assertSame(999999999, $tarjeta->datos['cuerpo']['sale_id']);
+        $this->assertSame((int) $venta->id, (int) $tarjeta->datos['cuerpo']['sale_id']);
 
         $this->assertSame($tickets_antes, DB::table('afip_tickets')->count(), 'No se emitió ningún comprobante');
         $this->assertSame($ventas_antes, DB::table('sales')->count());
@@ -1276,6 +1286,243 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $confirmacion->json('model.error_mensaje'));
         $this->assertSame(0, (int) $ajena->fresh()->abierta, 'La caja ajena tenía que seguir cerrada');
         $this->assertSame(0, DB::table('apertura_cajas')->where('caja_id', $ajena->id)->count());
+    }
+
+    // ---------------------------------------------------------------------
+    // Lo que encontró el verificador del catálogo (23/9/2026): importantes
+    // ---------------------------------------------------------------------
+
+    /**
+     * I1: cinco GET que escriben (publicar en la tienda, destacar, recalcular saldos, marcar
+     * leído, quemar cuota de Google) no pueden correr "en el acto" como una consulta.
+     *
+     * @test
+     */
+    public function los_get_con_efectos_no_estan()
+    {
+        foreach (['api/article/set-online/{id}', 'api/article/set-featured/{id}', 'api/check-saldos/{credit_account_id}', 'api/message/set-read/{buyer_id}'] as $ruta) {
+            $this->assertNull(Catalogo::declaracion('GET', $ruta), $ruta);
+            $this->assertStringContainsString('GET con efectos', (string) Catalogo::motivo_de_exclusion('GET', $ruta), $ruta);
+        }
+
+        foreach (Catalogo::todas() as $fila) {
+            $this->assertDoesNotMatchRegularExpression('#article/set-online/|article/set-featured/|check-saldos/|message/set-read/|google/custom-search/aumentar-contador#', $fila['ruta'], $fila['metodo'] . ' ' . $fila['ruta']);
+        }
+    }
+
+    /**
+     * 🔴 I2: los ids del cuerpo también son del dueño. `PUT api/cheque/rechazar` con el cheque_id
+     * de otro lo dejaba rechazado; acá se mide con change-provider, que hace `Article::find($request->id)`.
+     *
+     * @test
+     */
+    public function un_id_ajeno_en_el_cuerpo_corta_al_proponer_y_al_confirmar()
+    {
+        $otro = $this->otro_dueno();
+
+        $ajeno = Article::create(['name' => 'Artículo ajeno I2', 'user_id' => $otro->id, 'status' => 'active', 'final_price' => 100, 'cost' => 50, 'stock' => 1, 'iva_id' => 2]);
+        $propio = Article::create(['name' => 'Artículo propio I2', 'user_id' => $this->dueno->id, 'status' => 'active', 'final_price' => 100, 'cost' => 50, 'stock' => 1, 'iva_id' => 2]);
+
+        $proveedor = Provider::where('user_id', $this->dueno->id)->first();
+        $proveedor_ajeno = Provider::create(['name' => 'Proveedor ajeno I2', 'user_id' => $otro->id, 'num' => 1]);
+
+        $this->assertNotNull($proveedor, 'El fixture trae proveedores');
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $proponer = function (array $cuerpo) use ($conversation, $assistant) {
+            return $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+                'metodo' => 'PUT', 'ruta' => 'api/article/change-provider', 'cuerpo' => $cuerpo, 'descripcion' => 'Cambiar el proveedor',
+            ]);
+        };
+
+        // El `id` del cuerpo va al recurso de la ruta (articles); `provider_id` a providers.
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $proponer(['id' => $ajeno->id, 'provider_id' => $proveedor->id])['error'], 'artículo ajeno');
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $proponer(['id' => $propio->id, 'provider_id' => $proveedor_ajeno->id])['error'], 'proveedor ajeno');
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $proponer(['id' => 'abc', 'provider_id' => $proveedor->id])['error'], 'id que no es un entero');
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $proponer(['id' => 999999999, 'provider_id' => $proveedor->id])['error'], 'id inexistente');
+
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        // Lo propio pasa (y 0 / null / '' en una relación son "sin valor", no un id que rechazar).
+        $ok = $proponer(['id' => $propio->id, 'provider_id' => $proveedor->id, 'category_id' => 0, 'brand_id' => null, 'sub_category_id' => '']);
+
+        $this->assertTrue(!empty($ok['ok']), json_encode($ok));
+        // change-provider está en SIEMPRE_CONFIRMAN: queda como tarjeta, no se ejecuta.
+        $this->assertTrue($ok['requiere_confirmacion']);
+
+        // Una tarjeta forjada con el id ajeno en el cuerpo corta al confirmar, sin tocar el artículo.
+        $forjada = AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $assistant->id,
+            'user_id'            => $this->dueno->id,
+            'auth_user_id'       => $this->dueno->id,
+            'tipo'               => AiMessageAction::TIPO_ACCION_PANTALLA,
+            'clave'              => 'pantalla:forjada-i2',
+            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['metodo' => 'PUT', 'ruta' => 'api/article/change-provider', 'parametros' => [], 'cuerpo' => ['id' => $ajeno->id, 'provider_id' => $proveedor->id]],
+            'presentacion'       => ['titulo' => 'Forjada I2', 'renglones' => [], 'aviso' => null],
+        ]);
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $forjada->id);
+
+        $confirmacion->assertStatus(422);
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $confirmacion->json('model.error_mensaje'));
+        $this->assertNull($ajeno->fresh()->provider_id, 'El artículo ajeno sigue sin proveedor');
+    }
+
+    /**
+     * 🔴 I3: una fila cuya tabla no tiene `user_id` se verifica por sus padres (dos saltos), el
+     * slug que no es tabla cae al modelo del controller, y un catálogo global sin padre no se
+     * escribe desde el asistente.
+     *
+     * @test
+     */
+    public function una_fila_sin_user_id_se_verifica_por_sus_padres_y_un_catalogo_global_no_se_escribe()
+    {
+        $otro = $this->otro_dueno();
+
+        $ajeno = Article::create(['name' => 'Artículo ajeno I3', 'user_id' => $otro->id, 'status' => 'active', 'final_price' => 100, 'cost' => 50, 'stock' => 1, 'iva_id' => 2]);
+        $propio = Article::create(['name' => 'Artículo propio I3', 'user_id' => $this->dueno->id, 'status' => 'active', 'final_price' => 100, 'cost' => 50, 'stock' => 1, 'iva_id' => 2]);
+
+        $variante_ajena = ArticleVariant::create(['article_id' => $ajeno->id, 'price' => 77]);
+        $variante_propia = ArticleVariant::create(['article_id' => $propio->id, 'price' => 77]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        // article_variants no tiene user_id: se sube a articles.
+        $ajena = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'PUT', 'ruta' => 'api/article-variant/{id}', 'parametros' => ['id' => $variante_ajena->id], 'cuerpo' => ['price' => 1], 'descripcion' => 'Cambiar el precio de la variante',
+        ]);
+
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $ajena['error']);
+
+        $propia = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'PUT', 'ruta' => 'api/article-variant/{id}', 'parametros' => ['id' => $variante_propia->id], 'cuerpo' => ['price' => 1], 'descripcion' => 'Cambiar el precio de la variante',
+        ]);
+
+        $this->assertTrue(!empty($propia['ok']), json_encode($propia));
+
+        // Forjada con la variante ajena: 422 y el precio no cambió.
+        $forjada = AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $assistant->id,
+            'user_id'            => $this->dueno->id,
+            'auth_user_id'       => $this->dueno->id,
+            'tipo'               => AiMessageAction::TIPO_ACCION_PANTALLA,
+            'clave'              => 'pantalla:forjada-i3',
+            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['metodo' => 'PUT', 'ruta' => 'api/article-variant/{id}', 'parametros' => ['id' => $variante_ajena->id], 'cuerpo' => ['price' => 1]],
+            'presentacion'       => ['titulo' => 'Forjada I3', 'renglones' => [], 'aviso' => null],
+        ]);
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $forjada->id);
+
+        $confirmacion->assertStatus(422);
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $confirmacion->json('model.error_mensaje'));
+        $this->assertEquals(77, (float) $variante_ajena->fresh()->price);
+
+        // Dos saltos: apertura_cajas → caja_id → cajas. La apertura de una caja ajena no se reabre...
+        $caja_ajena = Caja::create(['num' => 1, 'name' => 'Caja ajena I3', 'user_id' => $otro->id]);
+        $apertura_ajena = AperturaCaja::create(['caja_id' => $caja_ajena->id, 'saldo_apertura' => 0]);
+
+        $reabrir = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'POST', 'ruta' => 'api/apertura-caja/reabrir/{id}', 'parametros' => ['id' => $apertura_ajena->id], 'descripcion' => 'Reabrir la caja',
+        ]);
+
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $reabrir['error']);
+        $this->assertSame(0, (int) $caja_ajena->fresh()->abierta);
+
+        // ...y la propia se lee por el mismo camino.
+        $caja = $this->caja_de_prueba('Caja I3 propia');
+        $apertura = AperturaCaja::create(['caja_id' => $caja->id, 'saldo_apertura' => 0]);
+
+        $lectura = $this->herramienta($conversation, $assistant, 'consultar_por_pantalla', [
+            'ruta' => 'api/apertura-caja/show/{id}', 'parametros' => ['id' => $apertura->id],
+        ]);
+
+        $this->assertTrue(!empty($lectura['ok']), json_encode($lectura));
+
+        // Un catálogo global (current_acount_payment_methods: sin user_id, sin padre) no se borra
+        // desde acá: nadie puede decir de qué negocio es.
+        $efectivo = CurrentAcountPaymentMethod::where('name', 'Efectivo')->first();
+
+        $this->assertNotNull($efectivo);
+
+        $global = $this->herramienta($conversation, $assistant, 'proponer_borrado_por_pantalla', [
+            'ruta' => 'api/current-acount-payment-method/{current_acount_payment_method}', 'parametros' => ['current_acount_payment_method' => $efectivo->id], 'descripcion' => 'Borrar el método de pago',
+        ]);
+
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_NO_VERIFICABLE, $global['error']);
+        $this->assertNotNull(CurrentAcountPaymentMethod::find($efectivo->id));
+
+        // El slug que no es tabla cae al modelo del controller: cc-payment-method-discount →
+        // current_acount_payment_method_discounts, que SÍ tiene user_id.
+        $descuento_ajeno = CurrentAcountPaymentMethodDiscount::create(['current_acount_payment_method_id' => $efectivo->id, 'discount_percentage' => 10, 'user_id' => $otro->id]);
+
+        $descuento = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'PUT', 'ruta' => 'api/cc-payment-method-discount/{cc_payment_method_discount}', 'parametros' => ['cc_payment_method_discount' => $descuento_ajeno->id], 'cuerpo' => ['discount_percentage' => 5], 'descripcion' => 'Cambiar el descuento',
+        ]);
+
+        $this->assertSame(EjecutorAccionDePantallaIaHelper::MENSAJE_AJENO, $descuento['error']);
+
+        // Una sola tarjeta en toda la prueba: la de la variante propia (más la forjada a mano).
+        $this->assertSame(2, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * I4 a I7: Zipnova cuesta plata, las masivas por proveedor siempre confirman, los mensajes que
+     * el nombre no delata, la doble puerta y el candado de sesión.
+     *
+     * @test
+     */
+    public function zipnova_las_masivas_por_proveedor_los_mensajes_ocultos_la_doble_puerta_y_el_candado_de_sesion()
+    {
+        // I4: Zipnova, afuera por controller.
+        foreach (['POST api/envio/generar/{order_id}', 'POST api/envio/{id}/cancelar', 'POST api/envio/{id}/sincronizar'] as $accion) {
+            list($metodo, $ruta) = explode(' ', $accion);
+            $this->assertNull(Catalogo::declaracion($metodo, $ruta), $accion);
+            $this->assertStringContainsString('Zipnova', (string) Catalogo::motivo_de_exclusion($metodo, $ruta), $accion);
+        }
+
+        // I4: las que en "directo" correrían sin tarjeta y son masivas, irreversibles o pesadas.
+        foreach (['PUT api/provider/{id}/propagar-descuentos', 'PUT api/provider/{id}/sincronizar-descuentos', 'PUT api/article/change-provider', 'POST api/article-description-ai/batch-generate', 'POST api/inventory-performance/generate'] as $accion) {
+            list($metodo, $ruta) = explode(' ', $accion);
+            $declaracion = Catalogo::declaracion($metodo, $ruta);
+            $this->assertNotNull($declaracion, $accion);
+            $this->assertTrue($declaracion['siempre_confirma'], $accion);
+        }
+
+        $preview = Catalogo::declaracion('GET', 'api/provider/{id}/propagar-descuentos/preview');
+
+        if (!is_null($preview)) {
+            $this->assertFalse($preview['siempre_confirma'], 'El preview es una lectura');
+        }
+
+        // I5: mensajes que el nombre no delata.
+        foreach (['POST api/error', 'POST api/message'] as $accion) {
+            list($metodo, $ruta) = explode(' ', $accion);
+            $this->assertNull(Catalogo::declaracion($metodo, $ruta), $accion);
+            $this->assertStringContainsString('manda', (string) Catalogo::motivo_de_exclusion($metodo, $ruta), $accion);
+        }
+
+        list($conversation) = $this->conversacion();
+
+        $prompt = $this->service->build_system_prompt($conversation, $this->dueno, true);
+
+        // Un tramo que vive en una sola línea del heredoc: el prompt tiene saltos de línea adentro de la frase.
+        $this->assertStringContainsString('cliente como lo haría la pantalla', $prompt);
+        $this->assertStringContainsString('editar una venta le manda el comprobante', $prompt);
+
+        // I6: doble puerta.
+        $this->assertNull(Catalogo::declaracion('POST', 'api/current-acount/pago'));
+        $this->assertStringContainsString('proponer_pago', (string) Catalogo::motivo_de_exclusion('POST', 'api/current-acount/pago'));
+        $this->assertNull(Catalogo::declaracion('POST', 'api/article/new-article'));
+        $this->assertStringContainsString('proponer_alta', (string) Catalogo::motivo_de_exclusion('POST', 'api/article/new-article'));
+
+        // I7: el candado de sesión.
+        $this->assertNull(Catalogo::declaracion('POST', 'api/user/last-activity'));
+        $this->assertStringContainsString('sesión', (string) Catalogo::motivo_de_exclusion('POST', 'api/user/last-activity'));
     }
 
     /**

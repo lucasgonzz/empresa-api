@@ -95,7 +95,7 @@ class PropuestaAccionDePantallaIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
         }
 
-        $declaracion = self::declaracion_para($contexto, 'GET', $ruta, $parametros);
+        $declaracion = self::declaracion_para($contexto, 'GET', $ruta, $parametros, $consulta);
 
         if (RespuestaDeCargaIa::es_negativa($declaracion)) {
 
@@ -219,7 +219,7 @@ class PropuestaAccionDePantallaIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
         }
 
-        $declaracion = self::declaracion_para($contexto, $metodo, $ruta, $parametros);
+        $declaracion = self::declaracion_para($contexto, $metodo, $ruta, $parametros, $cuerpo);
 
         if (RespuestaDeCargaIa::es_negativa($declaracion)) {
 
@@ -292,9 +292,10 @@ class PropuestaAccionDePantallaIaHelper
      * @param  string  $metodo  Ya normalizado.
      * @param  string  $ruta
      * @param  array  $parametros
+     * @param  array  $cuerpo  El cuerpo (o la query, si es GET): sus ids también se verifican.
      * @return array  La declaración, o RespuestaDeCargaIa::faltan() / ::error().
      */
-    protected static function declaracion_para(ContextoDeCargaIa $contexto, $metodo, $ruta, array $parametros)
+    protected static function declaracion_para(ContextoDeCargaIa $contexto, $metodo, $ruta, array $parametros, array $cuerpo)
     {
         $faltan = Catalogo::parametros_que_faltan(Catalogo::normalizar_ruta($ruta), $parametros);
 
@@ -330,12 +331,13 @@ class PropuestaAccionDePantallaIaHelper
         }
 
         /*
-         * La tenencia de los ids de la ruta, también al proponer: un id ajeno o inexistente se
-         * rechaza en el acto y no deja tarjeta. El ejecutor la vuelve a mirar al confirmar.
+         * La tenencia de los ids de la ruta y del cuerpo, también al proponer: un id ajeno o
+         * inexistente se rechaza en el acto y no deja tarjeta. El ejecutor la vuelve a mirar al
+         * confirmar.
          */
         try {
 
-            Ejecutor::verificar_tenencia($contexto, $declaracion['ruta'], $parametros);
+            Ejecutor::verificar_tenencia($contexto, $declaracion, $parametros, $cuerpo);
 
         } catch (AccionIaException $e) {
 

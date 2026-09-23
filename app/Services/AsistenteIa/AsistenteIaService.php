@@ -797,7 +797,9 @@ AUTO_RESUELTO;
   la pantalla lo hace. Lo que queda afuera de verdad: mandar mensajes a terceros (mails,
   WhatsApps, recordatorios de cobro: esas rutas no están en el catálogo) y las credenciales
   del negocio; los cobros con tarjeta de crédito, las retenciones y los cobros en otra moneda
-  que la de la cuenta se cargan desde la pantalla.
+  que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
+  cliente como lo haría la pantalla (por ejemplo, editar una venta le manda el comprobante),
+  así que si eso importa, decíselo a la persona antes de proponerla.
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
   su número, su banco y su fecha de vencimiento, y SIN caja: un cheque no entra a ninguna
   caja hasta que lo cobrás. Si no te dijeron el número, el banco o la fecha, preguntalos: un

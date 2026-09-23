@@ -57,16 +57,28 @@ use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
  *
  * Cómo se elige la tabla de cada {param}, y por qué así (medido sobre las 520 acciones con
  * parámetros de este router): `{id}` → el recurso del primer segmento (`api/budget/{id}/anular` →
- * budgets); `{x_id}` → `xs` (`{article_id}` → articles, aunque la ruta sea `api/price-change/...`);
- * el parámetro del propio recurso (`{caja}` en `api/caja/{caja}`, `{cuotum}` en `api/cuota/...`) →
- * ese recurso; cualquier otro nombre → su propio plural, y nada más. Ese "nada más" es a propósito:
- * caer al primer segmento para `{ultimos_movimientos}` o `{value}` chequearía un contador contra
- * `stock_movements.id` y rechazaría lecturas válidas.
+ * budgets), y si ese slug no es una tabla, la del MODELO del controller
+ * (`cc-payment-method-discount` → CurrentAcountPaymentMethodDiscountController →
+ * current_acount_payment_method_discounts); `{x_id}` → `xs` (`{article_id}` → articles, aunque la
+ * ruta sea `api/price-change/...`); el parámetro del propio recurso (`{caja}` en `api/caja/{caja}`,
+ * `{cuotum}` en `api/cuota/...`) → ese recurso; cualquier otro nombre → su propio plural, y nada
+ * más. Ese "nada más" es a propósito: caer al primer segmento para `{ultimos_movimientos}` o
+ * `{value}` chequearía un contador contra `stock_movements.id` y rechazaría lecturas válidas.
  *
- * Lo que la guarda NO decide, dicho en voz alta: una tabla que no existe con ese nombre, o que no
- * tiene `user_id` (afip_tickets, apertura_cajas, article_discounts, los estados y catálogos
- * globales), se deja pasar, y los ids que viajan en el CUERPO (un `sale_id` en un POST) no se
- * miran. Ahí la acción hace lo que haría la pantalla con ese id.
+ * 🔴 Y LA FILA SE VERIFICA AUNQUE SU TABLA NO TENGA `user_id` (verificador de la misión, 23/9/2026:
+ * `PUT api/article-variant/{id}` cambió el precio de una variante ajena y
+ * `POST api/apertura-caja/reabrir/{id}` reabrió la caja de otro). Sin `user_id` se lee la fila y se
+ * sube por sus columnas `*_id` hasta una tabla que sí lo tenga, dos saltos como máximo
+ * (`apertura_caja_id` → apertura_cajas → `caja_id` → cajas): esa fila padre tiene que ser del
+ * dueño. Si ninguna columna llega a un dueño —un catálogo global como current_acount_payment_methods
+ * o unidad_medidas, compartido por todos los comercios de la base— una ESCRITURA se rechaza con
+ * MENSAJE_NO_VERIFICABLE y una lectura pasa.
+ *
+ * Los ids del CUERPO (`id`, `*_id` de primer nivel) también se verifican: `PUT api/cheque/rechazar`
+ * con el `cheque_id` de otro dueño lo dejaba rechazado. Ahí lo no verificable se deja pasar (son
+ * referencias a catálogos como `moneda_id` o `afip_tipo_comprobante_id`), y 0, null y '' son "sin
+ * valor". Lo que la guarda sigue sin decidir: ids anidados en el cuerpo (los renglones de una
+ * venta) y tablas que no existen con el nombre derivado.
  *
  * Sus dos tipos van en EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS: un controller de pantalla
  * puede abrir su propia transacción, soltar un candado, disparar un job o un broadcast, y nada de
@@ -83,6 +95,8 @@ class EjecutorAccionDePantallaIaHelper
     const MENSAJE_SIN_REGISTRO = 'No existe el registro que pide la ruta.';
 
     const MENSAJE_AJENO = 'Ese registro no es de este negocio o no existe.';
+
+    const MENSAJE_NO_VERIFICABLE = 'No se puede verificar que ese registro sea de este negocio.';
 
     /** @var array<string, string>  [tabla => 'ok' | 'sin_user_id' | 'no_existe'], por proceso. */
     protected static $tablas = [];
@@ -186,7 +200,7 @@ class EjecutorAccionDePantallaIaHelper
 
         // Se vuelve a verificar acá y no solo al proponer: el registro pudo cambiar de dueño entre
         // la tarjeta y el clic, y una tarjeta se puede forjar.
-        self::verificar_tenencia($contexto, $declaracion['ruta'], $parametros);
+        self::verificar_tenencia($contexto, $declaracion, $parametros, $cuerpo);
 
         if (is_null($contexto->persona) || is_null(Auth::id()) || (int) Auth::id() !== (int) $contexto->persona->id) {
 
@@ -283,20 +297,32 @@ class EjecutorAccionDePantallaIaHelper
     // -------------------------------------------------------------------------------------------
 
     /**
-     * Exige que cada {param} entero de la ruta sea una fila del dueño, cuando la tabla a la que
-     * apunta se puede derivar y tiene `user_id` (ver el docblock de la clase). Lo llaman llamar()
+     * Exige que cada id que viaja en la ruta, y cada `id` / `*_id` de primer nivel del cuerpo (o de
+     * la query, si es GET), sea una fila del dueño (ver el docblock de la clase). Lo llaman llamar()
      * antes del controller y la propuesta antes de armar la tarjeta.
      *
+     * Los ids de la ruta son el REGISTRO SOBRE EL QUE SE ACTÚA: si su tabla no tiene `user_id` y
+     * tampoco se llega al dueño por sus padres, una escritura se rechaza como no verificable. Los
+     * ids del cuerpo son referencias (a qué venta, a qué proveedor): un catálogo global sin padre
+     * (`moneda_id`, `iva_id`, `afip_tipo_comprobante_id`) no se puede rechazar sin romper cargas
+     * legítimas, así que ahí lo no verificable se deja pasar. Y 0, null y '' en el cuerpo son "sin
+     * valor" (la SPA los manda así para una relación vacía), no un id.
+     *
      * @param  ContextoDeCargaIa  $contexto
-     * @param  string  $ruta  La ruta del catálogo, con sus {param}.
-     * @param  array  $parametros  Los valores, por nombre.
+     * @param  array  $declaracion  La fila del catálogo (ruta, metodo, accion).
+     * @param  array  $parametros  Los valores de los {param}, por nombre.
+     * @param  array  $cuerpo  El cuerpo del request, o la query string si es GET.
      * @return void
      *
-     * @throws AccionIaException  422 MENSAJE_AJENO si la fila no existe o es de otro dueño.
+     * @throws AccionIaException  422 MENSAJE_AJENO si una fila no existe o es de otro dueño;
+     *                            422 MENSAJE_NO_VERIFICABLE si el registro sobre el que se escribe
+     *                            no se puede atribuir a ningún dueño.
      */
-    public static function verificar_tenencia(ContextoDeCargaIa $contexto, string $ruta, array $parametros)
+    public static function verificar_tenencia(ContextoDeCargaIa $contexto, array $declaracion, array $parametros, array $cuerpo = [])
     {
-        $ruta = Catalogo::normalizar_ruta($ruta);
+        $ruta = Catalogo::normalizar_ruta(isset($declaracion['ruta']) ? $declaracion['ruta'] : '');
+        $escritura = Catalogo::normalizar_metodo(isset($declaracion['metodo']) ? $declaracion['metodo'] : 'GET') !== 'GET';
+        $tabla_del_modelo = self::tabla_del_modelo_del_controller(isset($declaracion['accion']) ? (string) $declaracion['accion'] : '');
 
         preg_match_all('/\{([a-zA-Z_][a-zA-Z0-9_]*)\??\}/', $ruta, $m);
 
@@ -308,14 +334,12 @@ class EjecutorAccionDePantallaIaHelper
             }
 
             // Sin tabla derivable (fechas, códigos, contadores) no hay qué decidir.
-            $tabla = self::tabla_del_parametro($ruta, $nombre);
+            $tabla = self::tabla_del_parametro($ruta, $nombre, $tabla_del_modelo);
 
             if (is_null($tabla)) {
 
                 continue;
             }
-
-            $valor = $parametros[$nombre];
 
             /*
              * 🔴 Con tabla derivable, el valor TIENE que ser un entero. Antes un valor que no era
@@ -323,10 +347,64 @@ class EjecutorAccionDePantallaIaHelper
              * caja de otro dueño con `caja_id = <ajeno>x`: el router matchea igual y MySQL castea
              * '161x' a 161 en el find() del controller. Lo que no es un id, con tabla, se rechaza.
              */
-            if (!self::es_id($valor)) {
+            self::verificar_fila($contexto, $tabla, $parametros[$nombre], $escritura);
+        }
 
-                throw new AccionIaException(422, self::MENSAJE_AJENO);
+        foreach ($cuerpo as $clave => $valor) {
+
+            if (!is_string($clave) || !is_scalar($valor) || is_bool($valor)) {
+
+                continue;
             }
+
+            // 0, null y '' son "sin valor" en el cuerpo, no un id que verificar.
+            if (trim((string) $valor) === '' || trim((string) $valor) === '0') {
+
+                continue;
+            }
+
+            if ($clave === 'id') {
+
+                $tabla = self::tabla_del_parametro($ruta, 'id', $tabla_del_modelo);
+
+            } elseif (Str::endsWith($clave, '_id')) {
+
+                $tabla = self::tabla_si_existe(Str::plural(substr($clave, 0, -3)));
+
+            } else {
+
+                continue;
+            }
+
+            if (!is_null($tabla)) {
+
+                self::verificar_fila($contexto, $tabla, $valor, false);
+            }
+        }
+    }
+
+    /**
+     * Una fila tiene que ser del dueño: por su `user_id` si la tabla lo tiene, y si no, por el
+     * `user_id` de sus padres (`*_id` → tabla padre), con dos saltos como máximo
+     * (`apertura_caja_id` → apertura_cajas → `caja_id` → cajas).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $tabla  Una tabla que existe.
+     * @param  mixed  $valor  El id.
+     * @param  bool  $exigir_verificable  true para el registro sobre el que se ESCRIBE: si ningún
+     *                                    padre resuelve la tenencia (catálogo global), se rechaza.
+     * @return void
+     *
+     * @throws AccionIaException
+     */
+    protected static function verificar_fila(ContextoDeCargaIa $contexto, string $tabla, $valor, bool $exigir_verificable)
+    {
+        if (!self::es_id($valor)) {
+
+            throw new AccionIaException(422, self::MENSAJE_AJENO);
+        }
+
+        if (self::estado_de_la_tabla($tabla) === 'ok') {
 
             $user_id = DB::table($tabla)->where('id', (int) $valor)->value('user_id');
 
@@ -334,7 +412,133 @@ class EjecutorAccionDePantallaIaHelper
 
                 throw new AccionIaException(422, self::MENSAJE_AJENO);
             }
+
+            return;
         }
+
+        $fila = DB::table($tabla)->where('id', (int) $valor)->first();
+
+        if (is_null($fila)) {
+
+            throw new AccionIaException(422, self::MENSAJE_AJENO);
+        }
+
+        if (!self::tenencia_por_padres($contexto, (array) $fila, 2) && $exigir_verificable) {
+
+            throw new AccionIaException(422, self::MENSAJE_NO_VERIFICABLE);
+        }
+    }
+
+    /**
+     * true si al menos un padre de la fila resolvió la tenencia (y todos los que resolvieron son
+     * del dueño); false si ninguna columna `*_id` llegó a una tabla con `user_id`. Un padre de otro
+     * dueño corta con MENSAJE_AJENO.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $fila
+     * @param  int  $saltos  Cuántos niveles hacia arriba quedan por mirar.
+     * @return bool
+     *
+     * @throws AccionIaException
+     */
+    protected static function tenencia_por_padres(ContextoDeCargaIa $contexto, array $fila, int $saltos): bool
+    {
+        $alguna = false;
+
+        foreach ($fila as $columna => $valor) {
+
+            if ($columna === 'user_id' || !Str::endsWith((string) $columna, '_id') || is_null($valor) || !self::es_id($valor)) {
+
+                continue;
+            }
+
+            $padre = Str::plural(substr($columna, 0, -3));
+
+            $estado = self::estado_de_la_tabla($padre);
+
+            if ($estado === 'no_existe') {
+
+                continue;
+            }
+
+            if ($estado === 'ok') {
+
+                $user_id = DB::table($padre)->where('id', (int) $valor)->value('user_id');
+
+                if (is_null($user_id) || (int) $user_id !== (int) $contexto->owner_id) {
+
+                    throw new AccionIaException(422, self::MENSAJE_AJENO);
+                }
+
+                $alguna = true;
+
+                continue;
+            }
+
+            if ($saltos > 1) {
+
+                $fila_padre = DB::table($padre)->where('id', (int) $valor)->first();
+
+                if (!is_null($fila_padre) && self::tenencia_por_padres($contexto, (array) $fila_padre, $saltos - 1)) {
+
+                    $alguna = true;
+                }
+            }
+        }
+
+        return $alguna;
+    }
+
+    /**
+     * La tabla del modelo del controller (`CajaController` → App\Models\Caja → cajas), o null si no
+     * hay un modelo con ese nombre. Es el fallback para las rutas cuyo slug no coincide con la
+     * tabla (`cc-payment-method-discount` → current_acount_payment_method_discounts).
+     *
+     * @param  string  $accion  Clase@metodo sin namespace.
+     * @return string|null
+     */
+    protected static function tabla_del_modelo_del_controller(string $accion)
+    {
+        $clase = strtok($accion, '@');
+
+        if (!is_string($clase) || $clase === '') {
+
+            return null;
+        }
+
+        $modelo = 'App\Models\\'.preg_replace('/Controller$/', '', class_basename($clase));
+
+        if (!class_exists($modelo) || !is_subclass_of($modelo, 'Illuminate\Database\Eloquent\Model')) {
+
+            return null;
+        }
+
+        try {
+
+            $tabla = (new $modelo())->getTable();
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+
+        return self::tabla_si_existe($tabla);
+    }
+
+    /**
+     * La tabla si existe (con o sin `user_id`), o null.
+     *
+     * @param  string|null  $tabla
+     * @return string|null
+     */
+    protected static function tabla_si_existe($tabla)
+    {
+        if (!is_string($tabla) || $tabla === '') {
+
+            return null;
+        }
+
+        return self::estado_de_la_tabla($tabla) === 'no_existe' ? null : $tabla;
     }
 
     /**
@@ -355,15 +559,22 @@ class EjecutorAccionDePantallaIaHelper
     }
 
     /**
-     * La tabla scopeada por dueño a la que apunta un {param} de la ruta, o null si no se puede
-     * decidir (no hay tabla con ese nombre, o la tabla no tiene `user_id`). Las reglas están en el
-     * docblock de la clase.
+     * La tabla a la que apunta un {param} de la ruta (exista o no su `user_id`: eso lo resuelve
+     * verificar_fila()), o null si no se puede decidir porque no hay tabla con ese nombre. Las
+     * reglas están en el docblock de la clase.
+     *
+     * Para el registro del propio recurso (`{id}`, `{caja}`, `{cuotum}`) se prueba PRIMERO la
+     * tabla del slug de la URI y recién después la del modelo del controller: en
+     * `PUT api/article/{id}/variants-disponibilidad` el controller es ArticleVariantController pero
+     * el {id} es el del ARTÍCULO, y al revés (`cc-payment-method-discount`) el slug no es tabla y el
+     * modelo sí.
      *
      * @param  string  $ruta  Ya normalizada.
      * @param  string  $nombre  El nombre del {param}.
+     * @param  string|null  $tabla_del_modelo  La tabla del modelo del controller, si existe.
      * @return string|null
      */
-    protected static function tabla_del_parametro(string $ruta, string $nombre)
+    protected static function tabla_del_parametro(string $ruta, string $nombre, $tabla_del_modelo)
     {
         $segmentos = explode('/', $ruta);
 
@@ -371,40 +582,24 @@ class EjecutorAccionDePantallaIaHelper
 
         $recurso = $segmento === '' ? null : Str::plural($segmento);
 
-        if ($nombre === 'id') {
+        if (Str::endsWith($nombre, '_id')) {
 
-            $candidatas = [$recurso];
-
-        } elseif (Str::endsWith($nombre, '_id')) {
-
-            $candidatas = [Str::plural(substr($nombre, 0, -3))];
-
-        } else {
-
-            $candidatas = [Str::plural($nombre)];
-
-            // El parámetro del propio recurso, con el singular que inventó el inflector
-            // (`{cuotum}` para `api/cuota`): va al recurso.
-            if (!is_null($recurso) && Str::singular($segmento) === $nombre) {
-
-                $candidatas[] = $recurso;
-            }
+            return self::tabla_si_existe(Str::plural(substr($nombre, 0, -3)));
         }
 
-        foreach ($candidatas as $tabla) {
+        // El propio recurso: `{id}`, o el parámetro con el nombre (o el singular del inflector,
+        // `{cuotum}` para `api/cuota`) del primer segmento.
+        $es_el_recurso = $nombre === 'id'
+            || (!is_null($recurso) && (Str::plural($nombre) === $recurso || Str::singular($segmento) === $nombre));
 
-            if (is_null($tabla) || $tabla === '') {
+        if ($es_el_recurso) {
 
-                continue;
-            }
+            $tabla = self::tabla_si_existe($recurso);
 
-            if (self::estado_de_la_tabla($tabla) === 'ok') {
-
-                return $tabla;
-            }
+            return is_null($tabla) ? self::tabla_si_existe($tabla_del_modelo) : $tabla;
         }
 
-        return null;
+        return self::tabla_si_existe(Str::plural($nombre));
     }
 
     /**

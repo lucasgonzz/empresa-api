@@ -126,6 +126,7 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#token#'                                     => 'sesión y cuenta: tokens',
         '#password#'                                  => 'sesión y cuenta: contraseñas',
         '#set-comercio-city-user#'                    => 'sesión y cuenta: vincula cuentas de ComercioCity entre sí, y busca usuarios sin filtrar por dueño',
+        '#^POST api/user/last-activity$#'             => 'sesión y cuenta: renueva el candado de sesión',
         // ── Credenciales ──────────────────────────────────────────────────────────────────────
         '#api/payment-method(/|$)#'                   => 'credenciales: los métodos de pago de la tienda guardan las claves de Mercado Pago',
         '#platform-connector#'                        => 'credenciales: conectores de plataforma',
@@ -145,6 +146,11 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#enviar#'                                    => 'manda mensajes a terceros',
         '#^(POST|PUT|DELETE) api/whatsapp-chats/.*(messages|media|template)#' => 'manda mensajes a un cliente por WhatsApp',
         '#whatsapp-bot/simulate-inbound#'             => 'simula un mensaje entrante y dispara el bot de WhatsApp',
+        // Dos que el nombre no delata (verificador de la misión, 23/9/2026).
+        '#^POST api/error$#'                          => 'manda un mail a ComercioCity por cada llamada (ErrorController)',
+        '#^POST api/message$#'                        => 'manda un mensaje al comprador de la tienda, sin filtrar el comprador por dueño',
+        // ── GET con efectos ───────────────────────────────────────────────────────────────────
+        '#^GET api/(article/set-online/|article/set-featured/|check-saldos/|message/set-read/|google/custom-search/aumentar-contador)#' => 'GET con efectos: desde el chat una consulta no puede escribir',
         // ── Masivas por POST/PUT (con el dueño en "directo" se ejecutarían sin tarjeta) ───────
         '#^PUT api/delete/#'                          => 'borrado en masa por PUT: un borrado va por proponer_baja o por proponer_borrado_por_pantalla, que siempre confirman',
         '#article/reset-stock#'                       => 'masiva: deja en 0 el stock de una lista de artículos de un saque',
@@ -178,10 +184,12 @@ class CatalogoDeAccionesDePantallaIaHelper
      * @var array<string, string>
      */
     const EXCLUIDAS_POR_CONTROLLER = [
-        '#Whatsapp[A-Za-z]*Send#' => 'manda mensajes a terceros (WhatsApp)',
-        '#[Mm]ail#'               => 'manda mensajes a terceros (mail)',
-        '#RecordatorioCobro#'     => 'manda mensajes a terceros (recordatorios de cobro)',
-        '#@(send|enviar)#i'       => 'manda mensajes a terceros',
+        '#Whatsapp[A-Za-z]*Send#'                        => 'manda mensajes a terceros (WhatsApp)',
+        '#[Mm]ail#'                                      => 'manda mensajes a terceros (mail)',
+        '#RecordatorioCobro#'                            => 'manda mensajes a terceros (recordatorios de cobro)',
+        '#@(send|enviar)#i'                              => 'manda mensajes a terceros',
+        // La URI dice "envio", no "zippin": crea, cancela o sincroniza un envío real y cuesta plata.
+        '#EnvioController@(generar|cancelar|sincronizar)#' => 'crea o toca un envío real en Zipnova, que cuesta plata',
     ];
 
     /**
@@ -198,6 +206,11 @@ class CatalogoDeAccionesDePantallaIaHelper
         // Las dos que facturan sin decir "afip" en la ruta (verificador de la misión, 23/9/2026).
         '#consolidar-facturacion#'   => 'consolida la facturación y emite comprobantes ante ARCA: no se deshace',
         '#^POST api/devoluciones$#'  => 'una devolución puede emitir una nota de crédito ante ARCA: no se deshace',
+        // Masivas, irreversibles o pesadas que en "directo" correrían sin tarjeta (verificador, 23/9/2026).
+        '#^PUT api/provider/\{id\}/(propagar|sincronizar)-descuentos$#' => 'toca los descuentos y los precios de todos los artículos del proveedor de un saque',
+        '#^PUT api/article/change-provider$#'                            => 'cambia el proveedor del artículo y rearma sus descuentos: no se deshace con un clic',
+        '#article-description-ai/batch-generate#'                        => 'genera descripciones con IA para muchos artículos de un saque: consume cuota y no se deshace',
+        '#inventory-performance/generate#'                               => 'genera el informe de inventario de todo el catálogo: es un proceso pesado',
     ];
 
     /**
@@ -216,6 +229,9 @@ class CatalogoDeAccionesDePantallaIaHelper
         'POST api/budget'                  => 'proponer_presupuesto',
         // `UpdateController` ES la actualización masiva (MasiveUpdateHelper::encolar_actualizacion()).
         'PUT api/update/{model_name}'      => 'proponer_actualizacion_masiva',
+        // Doble puerta (verificador, 23/9/2026): el pago de cuenta corriente y el alta de artículo.
+        'POST api/current-acount/pago'     => 'proponer_pago',
+        'POST api/article/new-article'     => 'proponer_alta',
     ];
 
     /**
