@@ -348,6 +348,12 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
      * "Distribuidora Sur" (el LIKE iba en una sola dirección) y en "resuelto" se daba de alta un
      * duplicado. Normalizado y en las dos direcciones, contra `name` y `razon_social`.
      *
+     * ⚠️ El tercer caso cambió en el segundo chequeo adversarial (24/9/2026): era "Perez Hermanos
+     * Mayorista S.A." contra "Pérez Hnos.", que entraba por la dirección "lo guardado adentro de lo
+     * leído" y se autoejecutaba. Esa dirección ahora pregunta (ver
+     * lo_guardado_adentro_de_lo_leido_pregunta_si_es_ese), así que el caso que queda acá es el de
+     * "Hermanos" = "Hnos." con el nombre completo.
+     *
      * @group asistente-whatsapp
      * @test
      */
@@ -360,7 +366,7 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
         $casos = [
             'Distribuidora Sur S.R.L.'            => $sur,
             'DISTRIBUIDORA ANATOLIA S. R. L.'     => $turco,
-            'Perez Hermanos Mayorista S.A.'       => $perez,
+            'Perez Hermanos S.A.'                 => $perez,
         ];
 
         foreach ($casos as $leido => $esperado) {
@@ -379,6 +385,77 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
         }
 
         $this->assertSame(3, Provider::where('user_id', $this->comercio->id)->count(), 'Ningún duplicado.');
+    }
+
+    /**
+     * ⚠️ Segundo chequeo adversarial: un nombre guardado corto matcheaba cualquier razón social que
+     * lo contuviera ("Mayorista", "Juan S.A." → "juan", "Los Hermanos", "Sa-Ra" → "ra"). Para que lo
+     * guardado se reconozca ADENTRO de lo leído tiene que tener 2 palabras significativas, y aun así
+     * no se autoejecuta: se pregunta si es ése.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function lo_guardado_adentro_de_lo_leido_pregunta_si_es_ese()
+    {
+        $this->crear_proveedor('Mayorista');
+        $this->crear_proveedor('Juan S.A.');
+        $this->crear_proveedor('Los Hermanos');
+        $this->crear_proveedor('Sa-Ra');
+
+        foreach (['Distribuidora Juan Mayorista SRL', 'Los Hermanos Gomez e Hijos', 'Sa Ra Importadora'] as $leido) {
+
+            list($conversation, $generandose) = $this->escena('Fijate en la factura');
+
+            $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+                ContextoDeCargaIa::de_la_conversacion($conversation),
+                $generandose,
+                ['proveedor' => $leido]
+            );
+
+            $this->assertTrue($respuesta['ok'], $leido . ': ' . json_encode($respuesta));
+            $this->assertSame($leido, $respuesta['proveedor_nuevo'], '"' . $leido . '" no es ninguno de los nombres cortos guardados.');
+        }
+
+        $anatolia = $this->crear_proveedor('Distribuidora Anatolia');
+
+        list($conversation, $generandose) = $this->escena('Fijate en la factura');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+            ContextoDeCargaIa::de_la_conversacion($conversation),
+            $generandose,
+            ['proveedor' => 'Distribuidora Anatolia Mayorista del Sur SA']
+        );
+
+        $this->assertFalse($respuesta['ok'], 'Por la dirección floja no se autoejecuta: se pregunta.');
+        $this->assertStringContainsString('Distribuidora Anatolia', $respuesta['faltan'][0]);
+        $this->assertSame((int) $anatolia->id, (int) $respuesta['opciones']['proveedores'][0]['id']);
+    }
+
+    /**
+     * "Hermanos" y "Hnos." son el mismo token, pero "Perez" no es "Perez Hnos".
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function hermanos_es_hnos_pero_perez_no_es_perez_hnos()
+    {
+        $perez = $this->crear_proveedor('Perez');
+        $perez_hnos = $this->crear_proveedor('Pérez Hnos.');
+
+        foreach (['Perez Hermanos' => $perez_hnos, 'PEREZ HNOS' => $perez_hnos, 'Perez' => $perez] as $leido => $esperado) {
+
+            list($conversation, $generandose) = $this->escena('De ' . $leido);
+
+            $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+                ContextoDeCargaIa::de_la_conversacion($conversation),
+                $generandose,
+                ['proveedor' => $leido]
+            );
+
+            $this->assertTrue($respuesta['ok'], $leido . ': ' . json_encode($respuesta));
+            $this->assertSame((int) $esperado->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['provider_id'], $leido);
+        }
     }
 
     /**

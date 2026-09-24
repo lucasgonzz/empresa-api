@@ -33,14 +33,28 @@ class ProveedorDeLaFacturaIaHelper
     const TOPE_CANDIDATOS = 10;
 
     /**
-     * Sufijos societarios y de razón social que no distinguen a un proveedor de otro: "Distribuidora
-     * Sur S.R.L." y "Distribuidora Sur" son el mismo. "hnos" y "hermanos" van también: el dueño dice
-     * "Perez Hnos" y en la factura dice "Perez Hermanos S.A.".
+     * Sufijos societarios que no distinguen a un proveedor de otro: "Distribuidora Sur S.R.L." y
+     * "Distribuidora Sur" son el mismo.
+     *
+     * ⚠️ "hnos" y "hermanos" NO están acá (segundo chequeo adversarial, 24/9/2026): sacarlos hacía
+     * que "Perez" fuera igual a "Perez Hnos", y "Los Hermanos" quedara en "los". Se llevan a un
+     * token canónico (CANONICOS): "Pérez Hnos." = "Perez Hermanos", pero "Perez" ≠ "Perez Hnos".
      */
-    const SUFIJOS = ['sa', 'srl', 'sas', 'sh', 'sac', 'saic', 'saci', 'sca', 'scs', 'sau', 'ltda', 'cia', 'hnos', 'hermanos'];
+    const SUFIJOS = ['sa', 'srl', 'sas', 'sh', 'sac', 'saic', 'saci', 'sca', 'scs', 'sau', 'ltda', 'cia'];
+
+    /** Palabras que se escriben de varias formas y son la misma: se llevan a una sola. */
+    const CANONICOS = ['hermanos' => 'hnos', 'hnos' => 'hnos', 'hno' => 'hnos', 'hermano' => 'hnos'];
 
     /** Palabras que no alcanzan para decir que la persona nombró al proveedor. */
     const PALABRAS_VACIAS = ['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'con', 'para', 'por', 'en'];
+
+    /**
+     * Cuántas palabras significativas (de 3 letras o más, sin PALABRAS_VACIAS) tiene que tener un
+     * nombre GUARDADO para reconocerlo adentro de uno más largo leído en la factura. Con una sola, un
+     * nombre corto matcheaba todo: "Mayorista", "Juan S.A." ("juan"), "Los Hermanos", "Sa-Ra" ("ra")
+     * aparecían adentro de cualquier razón social (segundo chequeo adversarial, 24/9/2026).
+     */
+    const PALABRAS_PARA_CONTENERSE = 2;
 
     /** Cuántos mensajes de la persona se miran para saber si nombró al proveedor. */
     const MENSAJES_DE_LA_PERSONA = 10;
@@ -117,6 +131,9 @@ class ProveedorDeLaFacturaIaHelper
         $iguales = [];
         $contenidos = [];
 
+        /* Los que entraron SÓLO porque lo guardado está adentro de lo leído: ver más abajo. */
+        $solo_por_lo_guardado = [];
+
         foreach ($proveedores as $proveedor) {
 
             $nombres = self::nombres_normalizados($proveedor);
@@ -128,13 +145,29 @@ class ProveedorDeLaFacturaIaHelper
                 continue;
             }
 
+            $leido_en_guardado = false;
+            $guardado_en_leido = false;
+
             foreach ($nombres as $guardado) {
 
-                if (self::contiene($guardado, $buscado) || self::contiene($buscado, $guardado)) {
+                if (self::contiene($guardado, $buscado)) {
 
-                    $contenidos[] = $proveedor;
+                    $leido_en_guardado = true;
+                }
 
-                    break;
+                if (self::contiene($buscado, $guardado) && count(self::palabras_significativas_de($guardado)) >= self::PALABRAS_PARA_CONTENERSE) {
+
+                    $guardado_en_leido = true;
+                }
+            }
+
+            if ($leido_en_guardado || $guardado_en_leido) {
+
+                $contenidos[] = $proveedor;
+
+                if (!$leido_en_guardado) {
+
+                    $solo_por_lo_guardado[] = (int) $proveedor->id;
                 }
             }
         }
@@ -167,6 +200,20 @@ class ProveedorDeLaFacturaIaHelper
         }
 
         if (count($contenidos) === 1) {
+
+            /*
+             * ⚠️ Si el único candidato salió porque su nombre guardado está ADENTRO del leído
+             * ("Distribuidora Anatolia" adentro de "Distribuidora Anatolia Mayorista del Sur"), no se
+             * autoejecuta: se pregunta si es ése. Es la dirección más floja de las dos, y en
+             * "resuelto" una compra no confirmada iría a un proveedor que nadie eligió.
+             */
+            if (in_array((int) $contenidos[0]->id, $solo_por_lo_guardado, true)) {
+
+                return RespuestaDeCargaIa::faltan(
+                    ['si la factura es de "' . $contenidos[0]->name . '" (lo encontré porque su nombre está adentro de "' . $nombre . '"): preguntale a la persona si es ése'],
+                    ['proveedores' => self::como_opciones([$contenidos[0]])]
+                );
+            }
 
             return $contenidos[0];
         }
@@ -280,6 +327,15 @@ class ProveedorDeLaFacturaIaHelper
         $juntas = [];
         $letras = '';
 
+        /* "Hermanos", "Hno." y "Hnos." son la misma palabra (ver CANONICOS). */
+        foreach ($palabras as $i => $palabra) {
+
+            if (isset(self::CANONICOS[$palabra])) {
+
+                $palabras[$i] = self::CANONICOS[$palabra];
+            }
+        }
+
         foreach ($palabras as $palabra) {
 
             if (strlen($palabra) === 1 && !ctype_digit($palabra)) {
@@ -320,8 +376,28 @@ class ProveedorDeLaFacturaIaHelper
     }
 
     /**
+     * Las palabras significativas de un nombre YA normalizado: de tres letras o más y sin
+     * PALABRAS_VACIAS. Sin el "si no hay ninguna, todas" de palabras_significativas(): acá se
+     * cuentan para decidir si un nombre guardado alcanza para reconocerse adentro de otro.
+     *
+     * @param  string  $normalizado
+     * @return array<int, string>
+     */
+    protected static function palabras_significativas_de($normalizado)
+    {
+        if ((string) $normalizado === '') {
+
+            return [];
+        }
+
+        return array_values(array_filter(explode(' ', (string) $normalizado), function ($palabra) {
+            return mb_strlen($palabra) >= 3 && !in_array($palabra, self::PALABRAS_VACIAS, true);
+        }));
+    }
+
+    /**
      * Las palabras del nombre que alcanzan para reconocerlo en un texto: sin sufijos ni palabras
-     * vacías, de tres letras o más (con una sola palabra corta, esa misma).
+     * vacías, de tres letras o más (con ninguna, todas las que tenga).
      *
      * @param  string  $nombre
      * @return array<int, string>
