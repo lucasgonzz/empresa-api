@@ -234,6 +234,43 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Los TRES textos que la primera versión (contar palabras inglesas) borraba en el chequeo
+     * adversarial del 24/9/2026: una lista con modelos de notebooks, una lista numerada con nombres
+     * en inglés y marcas en inglés sueltas. Son datos: ninguno se toca.
+     *
+     * @test
+     */
+    public function los_datos_en_ingles_y_las_listas_no_se_tocan()
+    {
+        $herramientas = ['confirmar_carga_pendiente', 'consultar_stock_de_articulos'];
+
+        $notebooks = "Tenés 3 notebooks con stock:\n- Lenovo IdeaPad Core i5 (4 u.)\n- HP 15 Core i7 (2 u.)\n- Dell Inspiron 3520 Core i3 (1 u.)\n\n¿Querés que te pase los precios?";
+        $this->assertSame($notebooks, TextoFinalIaHelper::sanear($notebooks, $herramientas));
+
+        $numerada = "1. Cable USB to Lightning — 12 u.\n2. Funda for iPhone 15 — 3 u.\n3. Charger for the car — 5 u.";
+        $this->assertSame($numerada, TextoFinalIaHelper::sanear($numerada, $herramientas));
+
+        $marcas = 'Just For Men, Old Spice After Shave';
+        $this->assertSame($marcas, TextoFinalIaHelper::sanear($marcas, $herramientas));
+
+        // Un renglón de lista no cae ni aunque traiga un marcador: en la lista están los datos.
+        $lista_con_marcador = "Te dejo lo que encontré:\n- Let Me Be Kids, remera talle 8 — 2 u.";
+        $this->assertSame($lista_con_marcador, TextoFinalIaHelper::sanear($lista_con_marcador, $herramientas));
+    }
+
+    /**
+     * Un marcador de razonamiento adentro de una oración en castellano (dos o más palabras
+     * españolas) no alcanza para sacarla: es una cita, no un pensamiento en voz alta.
+     *
+     * @test
+     */
+    public function un_marcador_adentro_de_una_oracion_en_castellano_se_queda()
+    {
+        $this->assertFalse(TextoFinalIaHelper::es_razonamiento_filtrado('El libro se llama "Let me go" y queda uno en la tienda.', []));
+        $this->assertTrue(TextoFinalIaHelper::es_razonamiento_filtrado('I need to check the stock first.', []));
+    }
+
+    /**
      * Si limpiar dejara la respuesta vacía, se manda la original: un mensaje vacío no se puede mandar.
      *
      * @test
