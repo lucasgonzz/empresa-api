@@ -559,4 +559,144 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
         $this->assertFalse($respuesta['ok']);
         $this->assertStringContainsString('sólo se cargan en el alta de un artículo', $respuesta['error']);
     }
+
+    // ------------------------------------------------ correcciones del 24/9/2026 (g, h, l)
+
+    /**
+     * La tarjeta del alta con foto trae la miniatura (`presentacion.imagen_url`, la clave que
+     * AccionCard.vue ya pinta): el dueño ve QUÉ foto se publica antes de confirmar. Sirve para la
+     * foto del dueño y para la de internet (el endpoint no filtra por rol).
+     *
+     * @test
+     */
+    public function la_tarjeta_del_alta_con_foto_trae_la_miniatura()
+    {
+        list($conversation, $assistant, $del_dueno) = $this->conversacion('Cargá esta taza zz-g con la foto');
+
+        $this->foto($del_dueno);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'                     => 'article',
+            'datos'                       => ['name' => 'Taza zz-g'],
+            'con_foto_de_la_conversacion' => true,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $presentacion = AiMessageAction::find($respuesta['tarjeta_id'])->presentacion;
+
+        $this->assertArrayHasKey('imagen_url', $presentacion);
+        $this->assertStringContainsString('api/ai-mensajes/' . $del_dueno->id . '/imagen/1', $presentacion['imagen_url']);
+
+        list($otra, $otro_assistant) = $this->conversacion('Cargá la yerba zz-g por el código');
+
+        $de_internet = $this->foto($otro_assistant);
+
+        $respuesta = $this->herramienta($otra, $otro_assistant, 'proponer_alta', [
+            'entidad'   => 'article',
+            'datos'     => ['name' => 'Yerba zz-g'],
+            'imagen_id' => $de_internet->id,
+        ]);
+
+        $this->assertStringContainsString(
+            'api/ai-mensajes/' . $otro_assistant->id . '/imagen/1',
+            AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['imagen_url']
+        );
+    }
+
+    /**
+     * 🔴 La corrección de una tarjeta ("sí, pero cambiale el nombre") hereda la foto y la
+     * descripción de la que reemplaza si el modelo no las vuelve a mandar. En la prueba real el
+     * modelo inventó un imagen_id y reescribió la descripción.
+     *
+     * @test
+     */
+    public function la_correccion_de_un_alta_hereda_la_foto_y_la_descripcion()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá este producto');
+
+        $de_internet = $this->foto($assistant);
+
+        $descripcion = 'Yerba mate con palo, elaborada con hojas estacionadas por 12 meses. Paquete de un kilo. ' . str_repeat('Sabor intenso y parejo. ', 20);
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Yerba zz-h'],
+            'imagen_id'   => $de_internet->id,
+            'descripcion' => $descripcion,
+        ]);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+
+        $corregida = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Yerba zz-h Premium'],
+            'reemplaza_a' => $primera['tarjeta_id'],
+        ]);
+
+        $this->assertTrue($corregida['ok'], json_encode($corregida));
+
+        $extras = AiMessageAction::find($corregida['tarjeta_id'])->datos['extras'];
+
+        $this->assertSame((int) $de_internet->id, (int) $extras['imagen_id'], 'La foto se hereda de la tarjeta reemplazada.');
+        $this->assertSame(trim($descripcion), $extras['descripcion'], 'La descripción se hereda ENTERA, no recortada.');
+        $this->assertSame('internet', $extras['imagen_origen']);
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::find($primera['tarjeta_id'])->estado_guardado());
+    }
+
+    /**
+     * Un imagen_id que no existe (inventado) corta con un error claro: no cae en otra foto.
+     *
+     * @test
+     */
+    public function un_imagen_id_inventado_corta_con_un_error_claro()
+    {
+        list($conversation, $assistant, $del_dueno) = $this->conversacion('Cargá este producto');
+
+        // Hay una foto del dueño sin usar: no tiene que terminar en la tarjeta en lugar de la inventada.
+        $this->foto($del_dueno);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'   => 'article',
+            'datos'     => ['name' => 'Producto zz-h inventado'],
+            'imagen_id' => 99999310,
+        ]);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringContainsString('99999310', $respuesta['error']);
+        $this->assertStringContainsString('No inventes ids', $respuesta['error']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * Con la foto de INTERNET, la foto del código de barras que mandó el dueño ya cumplió: al
+     * ejecutar el alta se sella, para que no quede 24 horas colándose en otra carga.
+     *
+     * @test
+     */
+    public function el_alta_con_foto_de_internet_sella_la_foto_del_codigo_de_barras()
+    {
+        list($conversation, $assistant, $del_dueno) = $this->conversacion('Cargá este producto por el código de barras');
+
+        $del_codigo = $this->foto($del_dueno);
+        $de_internet = $this->foto($assistant);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'   => 'article',
+            'datos'     => ['name' => 'Galletitas zz-l'],
+            'imagen_id' => $de_internet->id,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertNull(AiMessageImagen::find($del_codigo->id)->gestionada_at, 'Proponer no sella nada todavía.');
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Galletitas zz-l')->first();
+
+        $this->anotar_archivos($articulo);
+
+        $this->assertNotNull(AiMessageImagen::find($del_codigo->id)->gestionada_at, 'La foto del código de barras queda sellada.');
+        $this->assertNotNull(AiMessageImagen::find($de_internet->id)->gestionada_at);
+    }
 }

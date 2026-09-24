@@ -83,6 +83,18 @@ class PropuestaGenericaIaHelper
             return RespuestaDeCargaIa::error('La foto y la descripción sólo se cargan en el alta de un artículo.');
         }
 
+        /*
+         * 🔴 Correcciones del 24/9/2026: una CORRECCIÓN del alta de un artículo ("sí, pero cambiale
+         * el nombre") hereda la foto y la descripción de la tarjeta que reemplaza, si el modelo no
+         * las vuelve a mandar. En la prueba real el modelo inventó un imagen_id (310) y reescribió la
+         * descripción inventando una frase, porque la línea de historial no trae el id y recorta los
+         * renglones. Ver AltaDeArticuloConFotoIaHelper::heredar().
+         */
+        if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+
+            $extras = AltaDeArticuloConFotoIaHelper::heredar($contexto, $reemplaza_a, $extras);
+        }
+
         $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $datos);
 
         if (RespuestaDeCargaIa::es_negativa($validado)) {
@@ -123,6 +135,8 @@ class PropuestaGenericaIaHelper
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
 
+        $imagen_url = null;
+
         $datos_de_la_tarjeta = [
             'entidad'   => $declaracion['entidad'],
             'operacion' => Catalogo::OP_ALTA,
@@ -150,6 +164,16 @@ class PropuestaGenericaIaHelper
                 $renglones[] = $renglon;
             }
 
+            /*
+             * La miniatura de la foto en la tarjeta del panel (`presentacion.imagen_url`, la clave
+             * opcional que AccionCard.vue ya pinta arriba de los renglones): el dueño ve QUÉ foto
+             * queda publicada antes de confirmar, sea la que mandó o la encontrada en internet.
+             */
+            if (!is_null($resueltos['imagen_url'])) {
+
+                $imagen_url = $resueltos['imagen_url'];
+            }
+
             if (!empty($resueltos['extras']['imagen_id'])) {
 
                 $aviso_de_la_foto = 'La foto también se publica en la tienda online del negocio.';
@@ -158,17 +182,24 @@ class PropuestaGenericaIaHelper
             }
         }
 
+        $presentacion = [
+            'titulo'    => Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA),
+            'renglones' => $renglones,
+            'aviso'     => $aviso,
+        ];
+
+        if (!is_null($imagen_url)) {
+
+            $presentacion['imagen_url'] = $imagen_url;
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_ALTA,
             self::clave_de_alta($declaracion, $nombre, $validado['pedidos']),
             $datos_de_la_tarjeta,
-            [
-                'titulo'    => Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA),
-                'renglones' => $renglones,
-                'aviso'     => $aviso,
-            ],
+            $presentacion,
             $reemplaza_a
         );
 

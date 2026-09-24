@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Models\AiMessage;
+use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Models\Article;
 use App\Models\Description;
@@ -107,13 +108,73 @@ class AltaDeArticuloConFotoIaHelper
     }
 
     /**
-     * Resuelve los extras al proponer: busca la foto y arma lo que se guarda en la tarjeta y los
-     * renglones que la persona ve. Devuelve la respuesta negativa si falta la foto que se pidió.
+     * Los extras que una CORRECCIÓN del alta no volvió a mandar, heredados de la tarjeta que
+     * reemplaza (correcciones del 24/9/2026).
+     *
+     * 🔴 POR QUÉ ES DETERMINISTA Y NO UNA REGLA DE PROMPT. En la prueba real, con "sí, pero cambiale
+     * el nombre" el modelo armó la tarjeta nueva con reemplaza_a e INVENTÓ `imagen_id: 310` (la línea
+     * de historial de la tarjeta dice "Foto encontrada en internet", sin id), y en otra corrida
+     * reescribió la descripción inventando una frase (la línea de historial recorta los renglones a
+     * AccionesIaHelper::LARGO_RENGLONES_HISTORIAL). Lo que el modelo no manda se toma de la tarjeta
+     * anterior tal cual estaba —la foto ya resuelta por su id, la descripción entera—; lo que manda,
+     * manda él.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $reemplaza_a
+     * @param  array  $extras  Lo que devolvió separar().
+     * @return array
+     */
+    public static function heredar(ContextoDeCargaIa $contexto, $reemplaza_a, array $extras)
+    {
+        $reemplaza_a = is_numeric($reemplaza_a) ? (int) $reemplaza_a : 0;
+
+        if ($reemplaza_a <= 0) {
+
+            return $extras;
+        }
+
+        $anterior = AiMessageAction::where('id', $reemplaza_a)
+                                    ->where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('tipo', AiMessageAction::TIPO_ALTA)
+                                    ->first();
+
+        if (is_null($anterior) || !is_array($anterior->datos) || !isset($anterior->datos['extras']) || !is_array($anterior->datos['extras'])) {
+
+            return $extras;
+        }
+
+        $de_antes = $anterior->datos['extras'];
+
+        $trae_foto = isset($extras[self::IMAGEN_ID]) || !empty($extras[self::CON_FOTO]);
+
+        if (!$trae_foto && !empty($de_antes['imagen_id'])) {
+
+            $extras[self::IMAGEN_ID] = (int) $de_antes['imagen_id'];
+
+            /* La foto del código de barras que anotó la tarjeta anterior se sigue sellando con ésta. */
+            if (!empty($de_antes['fotos_del_pedido']) && is_array($de_antes['fotos_del_pedido'])) {
+
+                $extras['fotos_del_pedido'] = $de_antes['fotos_del_pedido'];
+            }
+        }
+
+        if (!isset($extras[self::DESCRIPCION]) && isset($de_antes['descripcion']) && trim((string) $de_antes['descripcion']) !== '') {
+
+            $extras[self::DESCRIPCION] = (string) $de_antes['descripcion'];
+        }
+
+        return $extras;
+    }
+
+    /**
+     * Resuelve los extras al proponer: busca la foto y arma lo que se guarda en la tarjeta, los
+     * renglones que la persona ve y la miniatura. Devuelve la respuesta negativa si falta la foto
+     * que se pidió.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
-     * @param  array  $extras  Lo que devolvió separar().
-     * @return array  ['extras' => array, 'renglones' => array] o la respuesta negativa.
+     * @param  array  $extras  Lo que devolvió separar() (y heredar()).
+     * @return array  ['extras' => array, 'renglones' => array, 'imagen_url' => string|null] o la respuesta negativa.
      */
     public static function resolver(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $extras)
     {
@@ -126,10 +187,17 @@ class AltaDeArticuloConFotoIaHelper
 
             $imagen = FotosDeLaConversacionIaHelper::por_id($contexto, $extras[self::IMAGEN_ID]);
 
+            /*
+             * 🔴 Un imagen_id que no existe NO cae en otra foto en silencio: es casi seguro un id
+             * inventado (prueba real del 24/9/2026, el 310), y la foto que quedaría publicada sería
+             * otra que la que la persona vio.
+             */
             if (is_null($imagen)) {
 
                 return RespuestaDeCargaIa::error(
-                    'Esa foto no la encuentro entre las de esta conversación, o ya se usó. Proponé el alta sin imagen_id o con otra foto.'
+                    'La foto con imagen_id ' . (int) $extras[self::IMAGEN_ID] . ' no existe entre las de esta conversación o ya se usó. '
+                    . 'No inventes ids: usá sólo el imagen_id que te devolvió una herramienta. Si estás corrigiendo una tarjeta con '
+                    . 'reemplaza_a y la foto no cambia, no mandes imagen_id: se hereda sola.'
                 );
             }
 
@@ -145,12 +213,33 @@ class AltaDeArticuloConFotoIaHelper
             }
         }
 
+        $imagen_url = null;
+
         if (!is_null($imagen)) {
 
             $del_dueno = FotosDeLaConversacionIaHelper::la_mando_el_dueno($imagen);
 
             $guardar['imagen_id'] = (int) $imagen->id;
             $guardar['imagen_origen'] = $del_dueno ? 'conversacion' : 'internet';
+
+            /* El mismo endpoint autenticado que usa el chat para las fotos: no filtra por rol. */
+            $imagen_url = FotosDelMensajeIaHelper::url((int) $imagen->ai_message_id, (int) $imagen->orden);
+
+            /*
+             * 🔴 Con la foto de INTERNET, la foto que mandó el dueño en el pedido (la del código de
+             * barras) ya cumplió: sirvió para leer el código. Si no se sella al ejecutar, queda 24
+             * horas como "foto sin usar" y se cuela en la próxima carga (la foto de otro artículo,
+             * una página de factura). Se anotan acá y se sellan en completar().
+             */
+            if (!$del_dueno) {
+
+                $heredadas = isset($extras['fotos_del_pedido']) && is_array($extras['fotos_del_pedido']) ? $extras['fotos_del_pedido'] : [];
+
+                $guardar['fotos_del_pedido'] = array_values(array_unique(array_merge(
+                    array_map('intval', $heredadas),
+                    self::fotos_del_pedido($contexto, $mensaje)
+                )));
+            }
 
             $cuando = FotosDeLaConversacionIaHelper::cuando_llego($imagen);
 
@@ -169,7 +258,41 @@ class AltaDeArticuloConFotoIaHelper
             $renglones[] = ['etiqueta' => 'Descripción', 'valor' => self::recortar($extras[self::DESCRIPCION], self::LARGO_EN_LA_TARJETA)];
         }
 
-        return ['extras' => $guardar, 'renglones' => $renglones];
+        return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url];
+    }
+
+    /**
+     * Los ids de las fotos sin usar del mensaje del dueño que disparó esta propuesta (el último
+     * `user` anterior al assistant que propone).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @return array<int, int>
+     */
+    protected static function fotos_del_pedido(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        $pedido = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '<', (int) $mensaje->id)
+                            ->orderBy('id', 'DESC')
+                            ->value('id');
+
+        if (is_null($pedido)) {
+
+            return [];
+        }
+
+        $ids = [];
+
+        foreach (AiMessageImagen::where('ai_message_id', (int) $pedido)
+                                ->where('user_id', $contexto->owner_id)
+                                ->sinGestionar()
+                                ->pluck('id') as $id) {
+
+            $ids[] = (int) $id;
+        }
+
+        return $ids;
     }
 
     /**
@@ -220,6 +343,25 @@ class AltaDeArticuloConFotoIaHelper
             } else {
 
                 $fallas[] = 'la descripción no se pudo guardar: ' . $motivo;
+            }
+        }
+
+        /*
+         * La foto del código de barras del pedido se sella con el alta hecha, haya quedado o no la
+         * foto de internet: ver el 🔴 de resolver(). Protegido: un sello que falla no deshace nada.
+         */
+        if (!empty($extras['fotos_del_pedido']) && is_array($extras['fotos_del_pedido'])) {
+
+            try {
+
+                AsistenteImagenHelper::marcar_gestionadas(array_map('intval', $extras['fotos_del_pedido']));
+
+            } catch (\Throwable $e) {
+
+                Log::warning('AltaDeArticuloConFotoIaHelper: no se pudieron sellar las fotos del pedido', [
+                    'article_id' => (int) $articulo->id,
+                    'error'      => $e->getMessage(),
+                ]);
             }
         }
 

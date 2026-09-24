@@ -1000,13 +1000,15 @@ class CatalogoDeEscrituraIaHelper
      *
      *   - article.cost_in_dollars (misión asistente-fotos-barras-y-compras, 24/9/2026): es una MARCA,
      *     no un monto. El costo en dólares se carga poniendo el número en `cost` y prendiendo esto;
-     *     sin la explicación, el modelo buscaba dónde poner "10 dólares" y no lo encontraba.
+     *     sin la explicación, el modelo buscaba dónde poner "10 dólares" y no lo encontraba. Y dice
+     *     dónde está la cotización: en la prueba real del 24/9/2026 el modelo contestó "no tenés
+     *     cotización cargada" mirando `dolar_cotizacion_registro` vacía, con users.dollar = 1000.
      *
      * @var array<string, array<string, string>>
      */
     const DESCRIPCIONES_DE_CAMPOS = [
         'article' => [
-            'cost_in_dollars' => 'Marca que dice que `cost` está en dólares (si/no). El número va en `cost`; el precio en pesos sale del dólar del proveedor o, si no tiene, del dólar global del negocio.',
+            'cost_in_dollars' => 'Marca que dice que `cost` está en dólares (si/no). El número va en `cost`; el precio en pesos sale solo, cotizado con el dólar del proveedor (providers.dolar) o, si no tiene, con el dólar del negocio (users.dollar). La cotización NO está en el registro de cotizaciones del dólar: que ese registro esté vacío no quiere decir que falte el dólar.',
         ],
     ];
 
