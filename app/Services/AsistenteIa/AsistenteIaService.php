@@ -911,8 +911,8 @@ AUTO_RESUELTO;
   el proveedor no existe, la herramienta lo da de alta sola (no uses proponer_alta antes); la sucursal
   NO la preguntes (si no la dijo, la herramienta usa la de la persona); y si la factura dice otra razón
   social que la que dijo la persona, no lo cuestiones ni lo preguntes: manda lo que dijo la persona.
-  Después contá que el escaneo corre en segundo plano, que el sistema avisa cuando termina y que los
-  artículos se revisan desde Compras.
+  Después contá que el escaneo corre en segundo plano, que cuando termina el aviso le aparece EN EL
+  SISTEMA (en la pantalla, no por WhatsApp) y que los artículos se revisan desde Compras.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma

@@ -81,7 +81,26 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
     {
         $conversation = $this->conversacion_whatsapp();
 
-        $del_dueno = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Cargame esta factura']);
+        $this->foto_en($conversation, 'Cargame esta factura');
+
+        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => '¿De qué proveedor es?']);
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => $proveedor_dicho]);
+
+        $generandose = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        return [$conversation, $generandose];
+    }
+
+    /**
+     * Un mensaje del dueño con una foto de factura.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  string  $texto
+     * @return \App\Models\AiMessage
+     */
+    protected function foto_en($conversation, $texto)
+    {
+        $del_dueno = $this->mensaje($conversation, 'user', 'listo', ['contenido' => $texto]);
 
         $recurso = imagecreatetruecolor(40, 40);
         ob_start();
@@ -100,12 +119,7 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
             'bytes'         => strlen($binario),
         ]);
 
-        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => '¿De qué proveedor es?']);
-        $this->mensaje($conversation, 'user', 'listo', ['contenido' => $proveedor_dicho]);
-
-        $generandose = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
-
-        return [$conversation, $generandose];
+        return $del_dueno;
     }
 
     /**
@@ -324,5 +338,220 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
         $this->assertTrue($respuesta['ok'], json_encode($respuesta));
         $this->assertArrayNotHasKey('proveedor_nuevo', $respuesta, 'No es un proveedor nuevo: ya existe con esa razón social.');
         $this->assertSame((int) $proveedor->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['provider_id']);
+    }
+
+    // ------------------------------------------------ correcciones del 24/9/2026 (b, c, m)
+
+    /**
+     * 🔴 Chequeo adversarial: "Distribuidora Sur S.R.L." leído de la factura no encontraba a
+     * "Distribuidora Sur" (el LIKE iba en una sola dirección) y en "resuelto" se daba de alta un
+     * duplicado. Normalizado y en las dos direcciones, contra `name` y `razon_social`.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_proveedor_se_reconoce_normalizado_y_en_las_dos_direcciones()
+    {
+        $sur = $this->crear_proveedor('Distribuidora Sur');
+        $turco = $this->crear_proveedor('El Turco', ['razon_social' => 'Distribuidora Anatolia SRL']);
+        $perez = $this->crear_proveedor('Pérez Hnos.');
+
+        $casos = [
+            'Distribuidora Sur S.R.L.'            => $sur,
+            'DISTRIBUIDORA ANATOLIA S. R. L.'     => $turco,
+            'Perez Hermanos Mayorista S.A.'       => $perez,
+        ];
+
+        foreach ($casos as $leido => $esperado) {
+
+            list($conversation, $generandose) = $this->escena('Fijate en la factura');
+
+            $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+                ContextoDeCargaIa::de_la_conversacion($conversation),
+                $generandose,
+                ['proveedor' => $leido]
+            );
+
+            $this->assertTrue($respuesta['ok'], $leido . ': ' . json_encode($respuesta));
+            $this->assertArrayNotHasKey('proveedor_nuevo', $respuesta, '"' . $leido . '" no es un proveedor nuevo.');
+            $this->assertSame((int) $esperado->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['provider_id'], $leido);
+        }
+
+        $this->assertSame(3, Provider::where('user_id', $this->comercio->id)->count(), 'Ningún duplicado.');
+    }
+
+    /**
+     * Varios candidatos cercanos: se pregunta cuál, no se elige uno ni se crea otro.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function con_varios_proveedores_cercanos_pregunta_cual()
+    {
+        $this->crear_proveedor('Sur Norte');
+        $this->crear_proveedor('Sur Oeste');
+
+        list($conversation, $generandose) = $this->escena('Es de Sur');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+            ContextoDeCargaIa::de_la_conversacion($conversation),
+            $generandose,
+            ['proveedor' => 'Sur']
+        );
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertContains('cuál de estos proveedores es', $respuesta['faltan']);
+        $this->assertCount(2, $respuesta['opciones']['proveedores']);
+    }
+
+    /**
+     * El CUIT reconoce al proveedor cuando el nombre también salió de la factura; pero si la persona
+     * nombró a otro proveedor, manda lo que dijo la persona.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_cuit_reconoce_al_proveedor_salvo_que_la_persona_haya_nombrado_a_otro()
+    {
+        $turco = $this->crear_proveedor('El Turco', ['cuit' => '30-71234567-8']);
+
+        list($conversation, $generandose) = $this->escena('No sé de quién es, fijate vos');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+            ContextoDeCargaIa::de_la_conversacion($conversation),
+            $generandose,
+            ['proveedor' => 'Distribuidora Anatolia SA', 'cuit' => '30712345678']
+        );
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame((int) $turco->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['provider_id']);
+
+        list($otra, $otro_mensaje) = $this->escena('Es de Perez Hnos Mayorista');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+            ContextoDeCargaIa::de_la_conversacion($otra),
+            $otro_mensaje,
+            ['proveedor' => 'Perez Hnos Mayorista', 'cuit' => '30712345678']
+        );
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame('Perez Hnos Mayorista', $respuesta['proveedor_nuevo'], 'La persona nombró a otro: el CUIT de la factura no le gana.');
+    }
+
+    /**
+     * 🔴 El caso real: el dueño dijo "Perez Hnos Mayorista" y el modelo rápido mandó el emisor de la
+     * factura ("Global Sources S.A."). En "resuelto" eso se ejecutaba y creaba un proveedor que nadie
+     * pidió. Ahora queda como tarjeta, con el aviso de dónde salió el nombre.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function un_proveedor_nuevo_que_no_nombro_la_persona_queda_como_tarjeta_aunque_sea_resuelto()
+    {
+        $this->confianza('resuelto');
+
+        list($conversation, $generandose) = $this->escena('Es de Perez Hnos Mayorista');
+
+        $respuesta = $this->herramienta($conversation, $generandose, ['proveedor' => 'Global Sources S.A.']);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertArrayNotHasKey('estado', $respuesta, 'No se ejecutó: quedó la tarjeta.');
+        $this->assertTrue($respuesta['requiere_confirmacion']);
+
+        $tarjeta = AiMessageAction::where('ai_conversation_id', $conversation->id)->first();
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->estado_guardado());
+        $this->assertStringContainsString('lo leí de la factura', $tarjeta->presentacion['aviso']);
+
+        $this->assertSame(0, Provider::where('user_id', $this->comercio->id)->count(), 'No se dio de alta a nadie.');
+        $this->assertSame(0, ProviderOrder::where('user_id', $this->comercio->id)->count());
+    }
+
+    /**
+     * Al ejecutar, "ya existe" mira también la razón social: si entre la propuesta y el sí alguien
+     * dio de alta al proveedor con otro nombre pero esa razón social, no se duplica.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function al_ejecutar_el_proveedor_existente_se_reconoce_por_razon_social()
+    {
+        $this->confianza('cauteloso');
+
+        list($conversation, $generandose) = $this->escena('De Anatolia Distribuciones');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(
+            ContextoDeCargaIa::de_la_conversacion($conversation),
+            $generandose,
+            ['proveedor' => 'Anatolia Distribuciones']
+        );
+
+        $this->assertSame('Anatolia Distribuciones', $respuesta['proveedor_nuevo']);
+
+        $cargado_a_mano = $this->crear_proveedor('El Turco', ['razon_social' => 'Anatolia Distribuciones S.R.L.']);
+
+        $contestando = $this->cerrar_turno($conversation, $generandose);
+
+        $resultado = ConfirmacionPorTextoIaHelper::confirmar($conversation, $contestando, $respuesta['tarjeta_id']);
+
+        $this->assertTrue($resultado['ok'], 'Motivo: ' . json_encode($resultado));
+        $this->assertSame(1, Provider::where('user_id', $this->comercio->id)->count());
+        $this->assertSame(1, ProviderOrder::where('provider_id', $cargado_a_mano->id)->count());
+    }
+
+    /**
+     * ⚠️ Una factura de dos fotos mandadas de a una: cada foto es un turno, y en "resuelto" la
+     * segunda creaba otra compra. Con la primera recién cargada y su escaneo en curso, la segunda
+     * no crea nada y lo avisa.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_segunda_foto_de_la_misma_factura_no_crea_otra_compra()
+    {
+        $this->confianza('resuelto');
+
+        $this->crear_proveedor('Distribuidora Sur');
+
+        list($conversation, $generandose) = $this->escena('De Distribuidora Sur');
+
+        $primera = $this->herramienta($conversation, $generandose, ['proveedor' => 'Distribuidora Sur']);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, $primera['estado'], json_encode($primera));
+
+        $generandose->estado = 'listo';
+        $generandose->contenido = 'Cargué la compra.';
+        $generandose->save();
+
+        $this->foto_en($conversation, 'Y esta es la otra página');
+
+        $otro_turno = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        $segunda = $this->herramienta($conversation, $otro_turno, ['proveedor' => 'Distribuidora Sur']);
+
+        $this->assertFalse($segunda['ok']);
+        $this->assertStringContainsString('Ya cargué la compra N°', $segunda['error']);
+        $this->assertStringContainsString('agregala desde Compras', $segunda['error']);
+
+        $this->assertSame(1, ProviderOrder::where('user_id', $this->comercio->id)->count(), 'Una sola compra para la misma factura.');
+        $this->assertSame(0, AiMessageImagen::where('user_id', $this->comercio->id)->whereNull('gestionada_at')->count(), 'La foto de la página 2 no queda suelta para la próxima compra.');
+    }
+
+    /**
+     * El aviso de que terminó el escaneo es EN EL SISTEMA: por WhatsApp no llega, y el texto lo dice.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_resultado_dice_que_el_aviso_es_en_el_sistema()
+    {
+        $this->confianza('resuelto');
+
+        list($conversation, $generandose) = $this->escena();
+
+        $respuesta = $this->herramienta($conversation, $generandose, ['proveedor' => 'Mayorista Nuevo']);
+
+        $this->assertStringContainsString('en el sistema', $respuesta['resultado']);
+        $this->assertStringContainsString('no por WhatsApp', $respuesta['resultado']);
     }
 }

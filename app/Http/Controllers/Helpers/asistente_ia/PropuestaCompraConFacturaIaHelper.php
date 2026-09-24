@@ -91,6 +91,14 @@ class PropuestaCompraConFacturaIaHelper
     const ESTADO_EN_PROCESO = 'En proceso';
 
     /**
+     * Cuántos minutos después de cargar una compra con factura se considera que otra foto del mismo
+     * proveedor es una página más de esa factura y no una compra nueva (ver el 🔴 de las facturas de
+     * varias fotos en proponer()). Diez minutos cubren una tanda de fotos mandadas de a una por
+     * WhatsApp con el escaneo todavía corriendo.
+     */
+    const MINUTOS_COMPRA_RECIENTE = 10;
+
+    /**
      * Herramienta proponer_compra_con_factura.
      *
      * @param  ContextoDeCargaIa  $contexto
@@ -113,7 +121,16 @@ class PropuestaCompraConFacturaIaHelper
             );
         }
 
-        $proveedor = self::resolver_proveedor($contexto, EntradaDeCargaIa::texto($input, 'proveedor'));
+        /*
+         * Correcciones del 24/9/2026: el proveedor se reconoce NORMALIZADO y en las dos direcciones
+         * contra `name` y `razon_social` (y primero por CUIT si vino). Ver ProveedorDeLaFacturaIaHelper.
+         */
+        $proveedor = ProveedorDeLaFacturaIaHelper::resolver(
+            $contexto,
+            EntradaDeCargaIa::texto($input, 'proveedor'),
+            EntradaDeCargaIa::texto($input, 'cuit'),
+            $mensaje
+        );
 
         if (RespuestaDeCargaIa::es_negativa($proveedor)) {
 
@@ -146,6 +163,40 @@ class PropuestaCompraConFacturaIaHelper
                 'No tengo ninguna foto de factura sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la cargo.'
             );
         }
+
+        /*
+         * 🔴 UNA FACTURA DE VARIAS FOTOS NO SON VARIAS COMPRAS. Por WhatsApp cada foto es un mensaje y
+         * cada mensaje es un turno: en "resuelto", la página 2 que llega un minuto después de la 1
+         * crearía una SEGUNDA compra del mismo proveedor con otro escaneo. Si en esta conversación ya
+         * se cargó hace menos de MINUTOS_COMPRA_RECIENTE una compra de este proveedor y su escaneo
+         * sigue en curso, no se crea otra: se avisa. Las fotos de esta tanda se sellan para que no se
+         * cuelen solas en la próxima compra (la página se agrega a mano desde Compras).
+         */
+        if (is_null($proveedor_nuevo)) {
+
+            $reciente = self::compra_reciente_en_curso($contexto, $proveedor);
+
+            if (!is_null($reciente)) {
+
+                AsistenteImagenHelper::marcar_gestionadas(self::ids_de($fotos['consideradas']));
+
+                return RespuestaDeCargaIa::error(
+                    'Ya cargué la compra N° ' . $reciente->num . ' de ' . $proveedor->name . ' con la factura hace un momento y todavía se está escaneando. '
+                    . 'Si esta foto es otra página de esa factura, agregala desde Compras cuando termine el escaneo; no armé otra compra.'
+                );
+            }
+        }
+
+        /*
+         * 🔴 UN PROVEEDOR NUEVO QUE LA PERSONA NO NOMBRÓ NO SE CREA SOLO. Caso real (prueba del
+         * 24/9/2026): el dueño dijo "Perez Hnos Mayorista" y el modelo rápido mandó "Global Sources
+         * S.A.", el emisor que leyó en la factura; en "resuelto" se ejecutó y quedó dado de alta un
+         * proveedor que nadie pidió. Si el nombre no aparece en lo que escribió la persona, la compra
+         * queda como tarjeta aunque el modo sea "resuelto" o "directo" (`requiere_confirmacion`, que
+         * respeta la puerta de auto-confirmación), y la tarjeta lo dice.
+         */
+        $proveedor_no_dicho = !is_null($proveedor_nuevo)
+            && !ProveedorDeLaFacturaIaHelper::lo_dijo_la_persona($contexto, $mensaje, $nombre_proveedor);
 
         /* Nunca pregunta (decisión de Lucas, 24/9/2026): ver resolver_sucursal(). */
         $sucursal = self::resolver_sucursal($contexto, EntradaDeCargaIa::texto($input, 'sucursal'));
@@ -220,13 +271,26 @@ class PropuestaCompraConFacturaIaHelper
             AiMessageAction::TIPO_COMPRA_CON_FACTURA,
             is_null($proveedor_nuevo) ? self::clave($proveedor->id) : self::clave_de_proveedor_nuevo($nombre_proveedor),
             $datos,
-            ['titulo' => 'Compra con factura', 'renglones' => $renglones, 'aviso' => null],
+            [
+                'titulo'    => 'Compra con factura',
+                'renglones' => $renglones,
+                'aviso'     => $proveedor_no_dicho
+                    ? 'No tenés ningún proveedor "' . $nombre_proveedor . '" y no me lo nombraste: lo leí de la factura. Confirmá que sea ése antes de darlo de alta.'
+                    : null,
+            ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
         $resumen = 'Compra de ' . $nombre_proveedor . ' · ' . $cuantas . ' · ' . $que_pasa;
 
         $extra = is_null($proveedor_nuevo) ? [] : ['proveedor_nuevo' => $nombre_proveedor];
+
+        if ($proveedor_no_dicho) {
+
+            $extra['requiere_confirmacion'] = true;
+            $extra['nota'] = 'El proveedor "' . $nombre_proveedor . '" no existe y la persona no lo nombró. Quedó una tarjeta: '
+                . 'decile que no lo encontré entre sus proveedores, preguntale si es ése o cuál es, y no digas que quedó cargado.';
+        }
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
     }
@@ -419,15 +483,27 @@ class PropuestaCompraConFacturaIaHelper
          * El aviso de que el escaneo terminó ya existe y no lo escribe esto: lo manda
          * RunProviderOrderScanJob::notificar_fin() por el proceso en segundo plano.
          */
+        /*
+         * El aviso es EN EL SISTEMA (la notificación de la pantalla): por WhatsApp no llega nada
+         * cuando termina el escaneo, y el texto no puede hacerle esperar al dueño un mensaje que no
+         * va a venir.
+         *
+         * `provider_id` y `provider_order_id` no son para la persona: los lee
+         * compra_reciente_en_curso() para no crear una segunda compra con la página 2 de la misma
+         * factura.
+         */
         return [
-            'texto' => 'Compra N° ' . $orden->num . ' cargada a ' . $proveedor->name
+            'texto'             => 'Compra N° ' . $orden->num . ' cargada a ' . $proveedor->name
                 . ($creado ? ' (proveedor nuevo, lo di de alta)' : '')
-                . '. Estoy escaneando la factura en segundo plano: el sistema te avisa cuando termine y ahí revisás los artículos desde Compras.',
-            'ruta'  => [
+                . '. Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
+                . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.',
+            'ruta'              => [
                 'name'   => 'proveedores',
                 'params' => new \stdClass(),
                 'texto'  => 'Ver en Compras',
             ],
+            'provider_id'       => (int) $proveedor->id,
+            'provider_order_id' => (int) $orden->id,
         ];
     }
 
@@ -497,81 +573,55 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
-     * El proveedor que nombró el dueño; `['nuevo' => nombre]` si no hay ninguno que se llame así; o
-     * la respuesta de negocio que pide desambiguar.
-     *
-     * Se busca por `name` Y por `razon_social` (misión asistente-fotos-barras-y-compras): el dueño
-     * dice el nombre con el que lo conoce, y el que el modelo lee en la factura suele ser la razón
-     * social. Primero la coincidencia EXACTA en cualquiera de las dos; recién después la parcial.
-     *
-     * 🔴 HASTA EL 24/9/2026 ESTO NUNCA CREABA UN PROVEEDOR y contestaba "No puedo crear proveedores:
-     * cargalo desde Proveedores". Lucas lo dio vuelta ese día: si no existe, se crea en la misma
-     * ejecución de la compra (ver el docblock de la clase). La cuenta corriente, las bonificaciones y
-     * la condición fiscal quedan como las deja la pantalla con un alta de sólo el nombre.
+     * Acá vivía resolver_proveedor(): un LIKE en una sola dirección contra `name` y `razon_social`.
+     * Desde las correcciones del 24/9/2026 el proveedor lo reconoce ProveedorDeLaFacturaIaHelper,
+     * normalizado y en las dos direcciones: "Distribuidora Sur S.R.L." leído en la factura no
+     * encontraba a "Distribuidora Sur" y en "resuelto" se daba de alta un duplicado.
+     */
+
+    /**
+     * La compra de ESTE proveedor que se cargó desde esta conversación hace menos de
+     * MINUTOS_COMPRA_RECIENTE y cuyo escaneo sigue en curso, o null. Ver el 🔴 de las facturas de
+     * varias fotos en proponer().
      *
      * @param  ContextoDeCargaIa  $contexto
-     * @param  string  $nombre
-     * @return \App\Models\Provider|array
+     * @param  \App\Models\Provider  $proveedor
+     * @return \App\Models\ProviderOrder|null
      */
-    protected static function resolver_proveedor(ContextoDeCargaIa $contexto, $nombre)
+    protected static function compra_reciente_en_curso(ContextoDeCargaIa $contexto, Provider $proveedor)
     {
-        $nombre = trim((string) $nombre);
+        $recientes = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('tipo', AiMessageAction::TIPO_COMPRA_CON_FACTURA)
+                                    ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                                    ->where('resuelta_at', '>=', Carbon::now()->subMinutes(self::MINUTOS_COMPRA_RECIENTE))
+                                    ->orderBy('id', 'DESC')
+                                    ->get();
 
-        if ($nombre === '') {
+        foreach ($recientes as $accion) {
 
-            return RespuestaDeCargaIa::faltan(
-                ['de qué proveedor es la factura (si la persona no lo dijo, el emisor que leés en la factura)'],
-                ['proveedores' => self::candidatos($contexto, '')]
-            );
+            $resultado = $accion->resultado;
+
+            if (!is_object($resultado) || !isset($resultado->provider_id, $resultado->provider_order_id)) {
+
+                continue;
+            }
+
+            if ((int) $resultado->provider_id !== (int) $proveedor->id) {
+
+                continue;
+            }
+
+            $orden = ProviderOrder::where('user_id', $contexto->owner_id)
+                                    ->where('id', (int) $resultado->provider_order_id)
+                                    ->first();
+
+            if (!is_null($orden) && self::tiene_escaneo_en_curso($orden)) {
+
+                return $orden;
+            }
         }
 
-        $exactos = Provider::where('user_id', $contexto->owner_id)
-                            ->where(function ($q) use ($nombre) {
-                                $q->whereRaw('LOWER(TRIM(name)) = ?', [mb_strtolower($nombre)])
-                                  ->orWhereRaw('LOWER(TRIM(razon_social)) = ?', [mb_strtolower($nombre)]);
-                            })
-                            ->orderBy('id')
-                            ->limit(self::TOPE_CANDIDATOS)
-                            ->get();
-
-        if (count($exactos) === 1) {
-
-            return $exactos[0];
-        }
-
-        if (count($exactos) > 1) {
-
-            return RespuestaDeCargaIa::faltan(
-                ['cuál de estos proveedores es'],
-                ['proveedores' => self::como_opciones($exactos)]
-            );
-        }
-
-        $escapado = '%' . addcslashes($nombre, '%_\\') . '%';
-
-        $candidatos = Provider::where('user_id', $contexto->owner_id)
-                                ->where(function ($q) use ($escapado) {
-                                    $q->where('name', 'LIKE', $escapado)
-                                      ->orWhere('razon_social', 'LIKE', $escapado);
-                                })
-                                ->orderBy('name')
-                                ->limit(self::TOPE_CANDIDATOS)
-                                ->get();
-
-        if (count($candidatos) === 1) {
-
-            return $candidatos[0];
-        }
-
-        if (count($candidatos) === 0) {
-
-            return ['nuevo' => $nombre];
-        }
-
-        return RespuestaDeCargaIa::faltan(
-            ['cuál de estos proveedores es'],
-            ['proveedores' => self::como_opciones($candidatos)]
-        );
+        return null;
     }
 
     /**
@@ -598,14 +648,12 @@ class PropuestaCompraConFacturaIaHelper
 
         if ($nombre !== '') {
 
-            $ya_existe = Provider::where('user_id', $contexto->owner_id)
-                                    ->whereRaw('LOWER(TRIM(name)) = ?', [mb_strtolower($nombre)])
-                                    ->orderBy('id')
-                                    ->first();
+            /* Normalizado y contra `name` Y `razon_social` (correcciones del 24/9/2026). */
+            $ya_existe = ProveedorDeLaFacturaIaHelper::existente($contexto->owner_id, $nombre);
 
             if (!is_null($ya_existe)) {
 
-                return [$ya_existe, false];
+                return [Provider::find($ya_existe->id), false];
             }
         }
 
@@ -899,41 +947,6 @@ class PropuestaCompraConFacturaIaHelper
                                 ->whereIn('estado', ProviderOrderScanController::ESTADOS_EN_CURSO)
                                 ->where('created_at', '>=', Carbon::now()->subMinutes(ProviderOrderScanController::MINUTOS_ESCANEO_EN_CURSO))
                                 ->exists();
-    }
-
-    /**
-     * Los primeros proveedores del dueño, para ofrecerlos cuando el nombre no resuelve.
-     *
-     * @param  ContextoDeCargaIa  $contexto
-     * @param  string  $busqueda
-     * @return array
-     */
-    protected static function candidatos(ContextoDeCargaIa $contexto, $busqueda)
-    {
-        $query = Provider::where('user_id', $contexto->owner_id);
-
-        if (trim((string) $busqueda) !== '') {
-
-            $query->where('name', 'LIKE', '%' . addcslashes(trim((string) $busqueda), '%_\\') . '%');
-        }
-
-        return self::como_opciones($query->orderBy('name')->limit(self::TOPE_CANDIDATOS)->get());
-    }
-
-    /**
-     * @param  iterable  $proveedores
-     * @return array
-     */
-    protected static function como_opciones($proveedores)
-    {
-        $opciones = [];
-
-        foreach ($proveedores as $proveedor) {
-
-            $opciones[] = ['id' => (int) $proveedor->id, 'proveedor' => (string) $proveedor->name];
-        }
-
-        return $opciones;
     }
 
     /**

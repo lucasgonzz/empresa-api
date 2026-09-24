@@ -1369,19 +1369,28 @@ class HerramientasDeCarga
         return [
             [
                 'name'         => 'proponer_compra_con_factura',
-                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. Las fotos las saco solas de las que te mandó en esta conversación y todavía no se usaron, así que no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga: no hace falta proponer_alta antes. Si ya hay una compra de ese proveedor vacía y reciente se usa esa, y si no se crea una nueva. La sucursal no la preguntes: si la persona no la dijo, uso la suya. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Los artículos no se cargan acá: el escaneo corre en segundo plano, el sistema avisa cuando termina y la persona los revisa desde Compras. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. 🔴 El proveedor es EL QUE DIJO LA PERSONA, nunca el emisor que leés en la factura: si la factura dice otra razón social, no lo cuestiones ni lo preguntes. Recién si la persona no nombró ningún proveedor, usá el emisor de la factura. Llamala en la misma vuelta, sin preguntar nada antes: no transcribas montos, fechas ni renglones de la factura (los lee el escaneo) y no preguntes la sucursal (si no la dijo, uso la suya). Las fotos las saco solas de las que te mandó y todavía no se usaron: no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga (no uses proponer_alta antes); si no lo nombró la persona, queda una tarjeta para que lo confirme. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Los artículos no se cargan acá: el escaneo corre en segundo plano y cuando termina el aviso le aparece a la persona EN EL SISTEMA (no por WhatsApp); los revisa desde Compras. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'proveedor'   => [
                             'type'        => 'string',
-                            'description' => 'El proveedor que nombró la persona, tal como lo dijo. Si no nombró ninguno, el emisor que leés en la factura (su nombre o razón social). Si la factura dice otra razón social que la que dijo la persona, NO lo cuestiones: manda lo que dijo la persona.',
+                            'description' => 'El proveedor que nombró la persona, tal como lo dijo. Sólo si no nombró ninguno, el emisor que leés en la factura (su nombre o razón social).',
                         ],
                         'sucursal'    => [
                             'type'        => 'string',
                             'description' => 'Sucursal a la que entra la mercadería, sólo si la persona la nombró. Nunca la preguntes.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Correcciones del 24/9/2026, al FINAL de las propiedades por la regla del
+                         * prefijo del caché: el CUIT reconoce al proveedor antes que el nombre, salvo
+                         * que la persona haya nombrado a otro (ProveedorDeLaFacturaIaHelper::resolver).
+                         */
+                        'cuit'        => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el CUIT del proveedor, si la persona lo dijo o si no nombró ningún proveedor y lo leés en la factura. Sólo los dígitos.',
+                        ],
                     ],
                     'required'   => ['proveedor'],
                 ],
