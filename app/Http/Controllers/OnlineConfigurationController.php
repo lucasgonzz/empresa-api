@@ -54,6 +54,13 @@ class OnlineConfigurationController extends Controller
         // tiene que apagar el flag solo.
         $model->mostrar_stock_disponible        = $request->boolean('mostrar_stock_disponible', $model->mostrar_stock_disponible ?? true);
 
+        // Seccion "Novedades" del home y item "Marca" de la barra de navegacion de la tienda:
+        // arrancan en true porque hoy las dos cosas siempre se ven. Mismo criterio que
+        // mostrar_stock_disponible: una pantalla vieja que manda el PUT sin la clave nueva no tiene
+        // que apagar el flag solo.
+        $model->mostrar_novedades_en_home       = $request->boolean('mostrar_novedades_en_home', $model->mostrar_novedades_en_home ?? true);
+        $model->mostrar_marca_en_nav            = $request->boolean('mostrar_marca_en_nav', $model->mostrar_marca_en_nav ?? true);
+
         // Ignorar stock en la tienda online: si esta prendido, ningun articulo se muestra agotado
         // ni tiene tope de cantidad al comprar (mismo comportamiento que ya existe hoy para un
         // articulo con stock null). Arranca en false, al reves que el toggle de arriba: es un

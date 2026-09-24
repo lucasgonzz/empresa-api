@@ -59,6 +59,10 @@ class OnlineConfiguration extends Model
         'avisar_ingreso_stock_por_mail' => 'boolean',
         // Muestra u oculta el texto "Stock disponible" en la ficha del articulo de la tienda.
         'mostrar_stock_disponible' => 'boolean',
+        // Muestra u oculta la seccion "Novedades" del home de la tienda.
+        'mostrar_novedades_en_home' => 'boolean',
+        // Muestra u oculta el item "Marca" de la barra de navegacion de la tienda.
+        'mostrar_marca_en_nav' => 'boolean',
         // Si esta prendido, la tienda ignora el stock real de los articulos: ninguno se muestra
         // agotado ni tiene tope de cantidad al comprar. Arranca en false (ver la migracion): es
         // un comportamiento mas agresivo que el default de mostrar_stock_disponible.
