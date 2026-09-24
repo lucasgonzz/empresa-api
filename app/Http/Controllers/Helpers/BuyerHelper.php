@@ -445,10 +445,11 @@ class BuyerHelper
     /**
      * Expresión SQL que deja solo los dígitos de una columna de texto (teléfono, CUIT, DNI).
      *
-     * 🔴 `REPLACE` anidado y NO `REGEXP_REPLACE`: el shared hosting de los clientes es MariaDB, y
-     * ahí `REGEXP_REPLACE` no existe con la misma sintaxis (ni en las versiones viejas). Solo
-     * saca los separadores que se usan de verdad al cargar un teléfono o un CUIT; cualquier otro
-     * carácter queda y ese registro simplemente no matchea por acá.
+     * 🔴 `REPLACE` anidado y NO una sustitución por expresión regular: esa función no es portable
+     * entre los motores que hay en producción (el shared hosting de los clientes es MariaDB; MySQL
+     * 5.7 no la tiene, y MySQL 8 y MariaDB la implementan con librerías de regex distintas). `REPLACE`
+     * anda igual en todos. Solo saca los separadores que se usan de verdad al cargar un teléfono o
+     * un CUIT; cualquier otro carácter queda y ese registro simplemente no coincide por esta vía.
      *
      * `$columna` sale siempre de una lista fija de este archivo, nunca del usuario.
      *
