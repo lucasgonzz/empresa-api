@@ -18,7 +18,9 @@ namespace App\Http\Controllers\Helpers\Afip;
  *   3. no es clase A, M ni E (esas nunca van a consumidor final; la norma prohibe la leyenda en
  *      comprobantes a otros eslabones de la cadena).
  *
- * Los textos van sin guion largo: FPDF y ESC/POS imprimen en Latin-1 y el "—" sale como "?".
+ * Los textos van sin guion largo: el Cell() de FPDF pasa por utf8_decode() y el Ticket 2.0 manda
+ * Latin-1, y en los dos el "—" sale como "?". El Ticket 2.0 ademas le saca la tilde a "ALÍCUOTA"
+ * antes de imprimir (la impresora esta en PC850, ver afip_qr_iva.js del SPA); el PDF la conserva.
  */
 class LeyendaIsibCabaHelper {
 

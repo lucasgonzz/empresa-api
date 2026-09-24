@@ -504,6 +504,45 @@ class Leyenda_Isib_Caba_Test extends EmpresaTestCase
         $this->assertEquals(1, (int) $guardado->isib_caba_convenio_multilateral);
     }
 
+    /**
+     * Caso 9 bis — una alicuota fuera de rango (300 tipeado por 3,00) se rechaza con 422 en vez de
+     * guardarse en silencio como null. En el alta no crea nada; en la edicion no toca nada.
+     *
+     * @test
+     */
+    public function una_alicuota_fuera_de_rango_se_rechaza_sin_crear_ni_tocar_nada()
+    {
+        $iva_condition = IvaCondition::where('name', 'Responsable inscripto')->first();
+
+        $antes = AfipInformation::where('razon_social', 'zz Alta rechazada')->count();
+
+        $this->postJson('/api/afip-information', [
+            'iva_condition_id'   => $iva_condition->id,
+            'razon_social'       => 'zz Alta rechazada',
+            'cuit'               => self::CUIT,
+            'punto_venta'        => self::PUNTO_VENTA,
+            'isib_caba_alicuota' => 300,
+        ])->assertStatus(422)->assertJsonValidationErrors(['isib_caba_alicuota']);
+
+        $this->assertSame($antes, AfipInformation::where('razon_social', 'zz Alta rechazada')->count(), 'el alta rechazada no puede dejar un punto de venta creado');
+
+        $config = $this->crear_config(['isib_caba_alicuota' => 3]);
+
+        foreach ([300, -1, 'abc'] as $invalido) {
+            $this->putJson('/api/afip-information/'.$config->id, [
+                'iva_condition_id'   => $config->iva_condition_id,
+                'razon_social'       => 'zz No se tiene que guardar',
+                'cuit'               => $config->cuit,
+                'punto_venta'        => $config->punto_venta,
+                'isib_caba_alicuota' => $invalido,
+            ])->assertStatus(422);
+        }
+
+        $guardado = AfipInformation::find($config->id);
+        $this->assertSame('zz Razon social ISIB', $guardado->razon_social);
+        $this->assertEquals(3, (float) $guardado->isib_caba_alicuota);
+    }
+
     // -----------------------------------------------------------------------------------------
     // Donde se imprime
     // -----------------------------------------------------------------------------------------

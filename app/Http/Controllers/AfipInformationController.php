@@ -19,6 +19,7 @@ class AfipInformationController extends Controller
     }
 
     public function store(Request $request) {
+        $this->validar_isib_caba($request);
         /** Persiste configuración AFIP incluyendo nombre opcional del dueño. */
         $model = AfipInformation::create([
             // 'num'                       => $this->num('afip_information'),
@@ -46,6 +47,7 @@ class AfipInformationController extends Controller
     }
 
     public function update(Request $request, $id) {
+        $this->validar_isib_caba($request);
         $model = AfipInformation::find($id);
         $model->iva_condition_id          = $request->iva_condition_id;
         $model->razon_social              = $request->razon_social;
@@ -65,11 +67,29 @@ class AfipInformationController extends Controller
     }
 
     /**
+     * Un valor fuera de rango (300 tipeado por 3,00) se rechaza con 422 en vez de guardarse en
+     * silencio como null: el usuario veria "guardado" y la leyenda no saldria nunca. Se llama al
+     * PRINCIPIO de store/update, antes de crear o tocar nada.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return void
+     */
+    protected function validar_isib_caba(Request $request) {
+        $request->validate([
+            'isib_caba_alicuota' => 'nullable|numeric|min:0|max:100',
+        ], [
+            'isib_caba_alicuota.numeric' => 'La alícuota de Ingresos Brutos CABA tiene que ser un número (por ejemplo 3 o 3.5).',
+            'isib_caba_alicuota.min'     => 'La alícuota de Ingresos Brutos CABA no puede ser negativa.',
+            'isib_caba_alicuota.max'     => 'La alícuota de Ingresos Brutos CABA es un porcentaje: no puede pasar de 100.',
+        ]);
+    }
+
+    /**
      * Leyenda ISIB CABA (Res. 169/AGIP/2026): alicuota y Convenio Multilateral del punto de venta.
      *
      * Cada campo se toca SOLO si viene en el request: un SPA viejo (cacheado, o sin desplegar)
      * que no los conoce no los manda, y no tiene que borrarle la configuracion al negocio.
-     * La alicuota vacia, cero o invalida se guarda como null (no se imprime leyenda).
+     * La alicuota vacia o cero se guarda como null (no se imprime leyenda).
      *
      * @param \App\Models\AfipInformation $model
      * @param \Illuminate\Http\Request $request
