@@ -42,7 +42,14 @@ class ExcelNumericFormatStats
      * @param  int    $max_ejemplos       Cantidad máxima de ejemplos por columna
      * @param  array  $opciones           ['hoja' => int, 'fila_encabezado' => int|null]. TODO opcional:
      *                                    AdminSync llama a los analyzers con la firma vieja y no se toca.
-     * @return array  ['columnas' => [campo => [...stats...]], 'hay_ambiguedad' => bool]
+     * @return array  ['columnas' => [campo => [...stats...]], 'hay_ambiguedad' => bool,
+     *                 'lecturas' => [ [...por columna...] ], 'hay_lecturas' => bool]
+     *
+     * Además de 'columnas' (el punto solo ambiguo, sin cambios), en la misma pasada del Excel se
+     * arma 'lecturas': por columna, cómo se van a leer las celdas de TEXTO que traen coma, espacio o
+     * apóstrofo de miles, o que no se pueden interpretar. Es aditivo: el SPA viejo ignora esas dos
+     * claves. Los tipos son: coma_decimal, miles_coma, miles_punto_decimal_coma,
+     * miles_coma_decimal_punto, miles_espacio y no_interpretable.
      */
     public static function analyze($excel_path, array $columnas_numericas, array $nombres_columnas = [], $max_ejemplos = 6, array $opciones = [])
     {
@@ -65,6 +72,8 @@ class ExcelNumericFormatStats
         $empty_result = [
             'columnas' => [],
             'hay_ambiguedad' => false,
+            'lecturas' => [],
+            'hay_lecturas' => false,
         ];
 
         /* Sin columnas numéricas mapeadas no hay nada que analizar: ni siquiera abrimos el archivo. */
@@ -88,8 +97,15 @@ class ExcelNumericFormatStats
                 'interpretados_decimal' => 0,
                 'ejemplos_miles' => [],
                 'ejemplos_decimal' => [],
+                /* Lecturas: celdas de texto no vacías, conteo por tipo y ejemplos por tipo (con 'seq' de aparición). */
+                'celdas_texto' => 0,
+                'por_tipo' => [],
+                'ejemplos_por_tipo' => [],
             ];
         }
+
+        /* Contador de aparición de ejemplos de lecturas (para completar "en orden de aparición"). */
+        $secuencia_lecturas = 0;
 
         try {
             /* Mismo lector XLSX de OpenSpout que usa ExcelDuplicateStats / InitExcelImport. */
@@ -166,6 +182,33 @@ class ExcelNumericFormatStats
 
                     /* Valor original tal como vino del Excel, para mostrarlo en el ejemplo. */
                     $original = trim($valor);
+
+                    /*
+                     * Lecturas: coma, espacio/apóstrofo de miles o no interpretable. Va en el
+                     * mismo recorrido y NO toca nada de lo que arma 'columnas' más abajo.
+                     */
+                    $stats[$campo]['celdas_texto']++;
+                    $lectura_celda = self::clasificar_lectura($original);
+                    if (!is_null($lectura_celda)) {
+                        $tipo = $lectura_celda['tipo'];
+                        if (!isset($stats[$campo]['por_tipo'][$tipo])) {
+                            $stats[$campo]['por_tipo'][$tipo] = 0;
+                            $stats[$campo]['ejemplos_por_tipo'][$tipo] = [];
+                        }
+                        $stats[$campo]['por_tipo'][$tipo]++;
+
+                        /* Con $max_ejemplos por tipo alcanza: el reparto final nunca toma más de eso de un tipo. */
+                        if (count($stats[$campo]['ejemplos_por_tipo'][$tipo]) < $max_ejemplos) {
+                            $stats[$campo]['ejemplos_por_tipo'][$tipo][] = [
+                                'seq' => $secuencia_lecturas++,
+                                'fila' => $excel_row_number,
+                                'original' => $original,
+                                'tipo' => $tipo,
+                                'interpretable' => $lectura_celda['interpretable'],
+                                'resultado' => $lectura_celda['resultado'],
+                            ];
+                        }
+                    }
 
                     /*
                      * Mismo preg_replace de prefijo de moneda que ImportHelper::parseNumericValue,
@@ -293,10 +336,131 @@ class ExcelNumericFormatStats
             ];
         }
 
+        /*
+         * Lecturas: una entrada por columna que tenga al menos una celda de tipo distinto de
+         * "solo punto" (o sea coma, espacio/apóstrofo de miles o no interpretable).
+         */
+        $lecturas_resultado = [];
+        foreach ($stats as $campo => $data) {
+            if (empty($data['por_tipo'])) {
+                continue;
+            }
+
+            $lecturas_resultado[] = [
+                'campo' => $data['campo'],
+                'nombre_columna_excel' => $data['nombre_columna_excel'],
+                'celdas_texto' => $data['celdas_texto'],
+                'por_tipo' => $data['por_tipo'],
+                'ejemplos' => self::repartir_ejemplos_lecturas($data['ejemplos_por_tipo'], $max_ejemplos),
+            ];
+        }
+
         return [
             'columnas' => $columnas_resultado,
             'hay_ambiguedad' => !empty($columnas_resultado),
+            'lecturas' => $lecturas_resultado,
+            'hay_lecturas' => !empty($lecturas_resultado),
         ];
+    }
+
+    /**
+     * Clasifica una celda de TEXTO según cómo la va a leer la importación.
+     *
+     * Devuelve null cuando la celda es de "solo punto" (o un número plano sin separadores): esas
+     * siguen yendo únicamente por 'columnas'. Si el parseo real lanza excepción, el tipo es
+     * 'no_interpretable'. El 'resultado' sale SIEMPRE de ImportHelper::parseNumericValue (string
+     * "máquina": punto decimal y sin miles); la conversión nunca se reimplementa acá.
+     *
+     * @param  string $original Texto de la celda, ya con trim.
+     * @return array|null ['tipo' => string, 'interpretable' => bool, 'resultado' => string|null]
+     */
+    protected static function clasificar_lectura($original)
+    {
+        try {
+            $resultado = ImportHelper::parseNumericValue($original);
+        } catch (\Throwable $e) {
+            return [
+                'tipo' => 'no_interpretable',
+                'interpretable' => false,
+                'resultado' => null,
+            ];
+        }
+
+        /* Mismo prefijo de moneda que ImportHelper::parseNumericValue, para clasificar "$ 1.234,50" igual que "1.234,50". */
+        $normalizado = trim(preg_replace('/^(USD|U\$S|\$)\s*/iu', '', $original));
+
+        if (preg_match('/^[+-]?\d{1,3}([ \x{00A0}\x{202F}\'\x{2019}]\d{3})+([.,]\d+)?$/u', $normalizado) === 1) {
+            $tipo = 'miles_espacio';
+        } elseif (strpos($normalizado, ',') !== false && strpos($normalizado, '.') !== false) {
+            /* Coma y punto juntos: el de más a la derecha es el decimal. */
+            $tipo = strrpos($normalizado, ',') > strrpos($normalizado, '.')
+                ? 'miles_punto_decimal_coma'
+                : 'miles_coma_decimal_punto';
+        } elseif (strpos($normalizado, ',') !== false) {
+            $tipo = substr_count($normalizado, ',') >= 2 ? 'miles_coma' : 'coma_decimal';
+        } else {
+            /* Solo punto o número plano: no hay nada que agregar a las lecturas. */
+            return null;
+        }
+
+        return [
+            'tipo' => $tipo,
+            'interpretable' => true,
+            /*
+             * number_format en vez de (string): un costo chico como 0,00001 saldría como "1.0E-5" y
+             * la pantalla lo mostraría como "1,0E-5". Seis decimales es lo máximo que admite una
+             * columna numérica de artículos (cost), y se recortan los ceros de la derecha.
+             */
+            'resultado' => rtrim(rtrim(number_format((float) $resultado, 6, '.', ''), '0'), '.'),
+        ];
+    }
+
+    /**
+     * Elige hasta $max_ejemplos ejemplos de lecturas: primero uno de cada tipo presente (en el orden
+     * en que aparecieron), después se completa con el resto en orden de aparición, y al final se
+     * ordena por número de fila para mostrarlos de forma estable. Se quita la 'seq' interna.
+     *
+     * @param  array $ejemplos_por_tipo tipo => lista de ejemplos con 'seq'
+     * @param  int   $max_ejemplos
+     * @return array
+     */
+    protected static function repartir_ejemplos_lecturas(array $ejemplos_por_tipo, $max_ejemplos)
+    {
+        $elegidos = [];
+        $sobrantes = [];
+
+        foreach ($ejemplos_por_tipo as $lista) {
+            foreach ($lista as $indice => $ejemplo) {
+                if ($indice === 0) {
+                    $elegidos[] = $ejemplo;
+                } else {
+                    $sobrantes[] = $ejemplo;
+                }
+            }
+        }
+
+        /* Un ejemplo de cada tipo, por orden de aparición; si hay más tipos que cupos, quedan los primeros. */
+        usort($elegidos, function ($a, $b) {
+            return $a['seq'] - $b['seq'];
+        });
+        $elegidos = array_slice($elegidos, 0, $max_ejemplos);
+
+        if (count($elegidos) < $max_ejemplos) {
+            usort($sobrantes, function ($a, $b) {
+                return $a['seq'] - $b['seq'];
+            });
+            $elegidos = array_merge($elegidos, array_slice($sobrantes, 0, $max_ejemplos - count($elegidos)));
+        }
+
+        usort($elegidos, function ($a, $b) {
+            return $a['fila'] - $b['fila'];
+        });
+
+        foreach ($elegidos as $i => $ejemplo) {
+            unset($elegidos[$i]['seq']);
+        }
+
+        return array_values($elegidos);
     }
 
     /**
