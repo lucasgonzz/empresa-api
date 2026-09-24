@@ -78,8 +78,17 @@ class HerramientasDeCarga
      * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. La foto de una sucursal (se deshace desde el ABM), mandar
      * a buscar imágenes para categorías o artículos (una imagen se saca desde la ficha; la búsqueda
      * en sí no toca nada más) y cambiar las columnas de un diseño de PDF (se vuelve a cambiar desde
-     * ABM > Impresión). Todo lo que mueve plata (gastos, pagos, compras, combos, ofertas) NUNCA se
+     * ABM > Impresión). Todo lo que mueve plata (gastos, pagos, combos, ofertas) NUNCA se
      * auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la persona.
+     *
+     * 🔴 LA EXCEPCIÓN ES LA COMPRA CON FACTURA, Y ES DECISIÓN DE LUCAS (24/9/2026, misión
+     * asistente-fotos-barras-y-compras): "se ejecuta directo, sin confirmar", incluida el alta del
+     * proveedor si no existe. No rompe la regla de arriba porque esa compra NO mueve plata ni stock
+     * todavía: nace "En proceso", vacía, con `update_stock = 0` y `update_prices = 0`, y lo único que
+     * hace es colgarle la foto de la factura al escaneo. La confirmación real —qué artículos, a qué
+     * precio, qué stock entra— es la revisión del escaneo desde Compras, que sigue siendo de la
+     * persona. En "cauteloso" queda UNA tarjeta que cubre todo (proveedor nuevo incluido). En demo3
+     * (conv 12) la compra pedida de una tardó tres mensajes en armarse.
      *
      * 🔴 LA ACTUALIZACIÓN MASIVA NO ESTÁ NI VA A ESTAR ACÁ. Reescribe precios, márgenes, stock o
      * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
@@ -117,6 +126,8 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_IMAGENES_CATEGORIAS,
         AiMessageAction::TIPO_IMAGENES_ARTICULOS,
         AiMessageAction::TIPO_DISENO_PDF,
+        /* Al final, por la regla de siempre. Ver el 🔴 de la compra con factura en el docblock. */
+        AiMessageAction::TIPO_COMPRA_CON_FACTURA,
     ];
 
     /**
@@ -1358,17 +1369,17 @@ class HerramientasDeCarga
         return [
             [
                 'name'         => 'proponer_compra_con_factura',
-                'description'  => 'Arma la tarjeta para dar de alta la compra de un proveedor y cargarle la foto de la factura que la persona te mandó, para que el sistema la lea: NO registra nada. Las fotos las saco solas de las que te mandó en esta conversación y todavía no se usaron, así que no me las pases. Si ya hay una compra de ese proveedor vacía y reciente se usa esa, y si no se crea una nueva: la respuesta te dice cuál de las dos. Los artículos no se cargan acá, los revisa la persona desde Compras cuando la lectura termina. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. Las fotos las saco solas de las que te mandó en esta conversación y todavía no se usaron, así que no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga: no hace falta proponer_alta antes. Si ya hay una compra de ese proveedor vacía y reciente se usa esa, y si no se crea una nueva. La sucursal no la preguntes: si la persona no la dijo, uso la suya. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Los artículos no se cargan acá: el escaneo corre en segundo plano, el sistema avisa cuando termina y la persona los revisa desde Compras. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'proveedor'   => [
                             'type'        => 'string',
-                            'description' => 'Nombre del proveedor de la factura, tal como lo dijo la persona. Nunca lo inventes: si no lo dijo, preguntalo.',
+                            'description' => 'El proveedor que nombró la persona, tal como lo dijo. Si no nombró ninguno, el emisor que leés en la factura (su nombre o razón social). Si la factura dice otra razón social que la que dijo la persona, NO lo cuestiones: manda lo que dijo la persona.',
                         ],
                         'sucursal'    => [
                             'type'        => 'string',
-                            'description' => 'Sucursal a la que entra la mercadería. Solo hace falta si el negocio tiene más de una.',
+                            'description' => 'Sucursal a la que entra la mercadería, sólo si la persona la nombró. Nunca la preguntes.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
                     ],

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderAltaHelper;
 use App\Http\Controllers\Helpers\providerOrder\ProviderOrderScanAltaHelper;
 use App\Http\Controllers\ProviderOrderScanController;
@@ -36,6 +37,23 @@ use Carbon\Carbon;
  * compra de ese proveedor SIN NINGÚN ARTÍCULO cargado, del mismo dueño, de los últimos
  * DIAS_DE_REUSO días y sin un escaneo en curso. En cualquier otro caso se crea una nueva, y la
  * tarjeta dice cuál de las dos cosas va a pasar antes de que el dueño confirme.
+ *
+ * 🔴 DECISIONES DE LUCAS DEL 24/9/2026 (misión asistente-fotos-barras-y-compras), que dan vuelta tres
+ * cosas de la versión original. En demo3 (conv 12) la compra tardó TRES mensajes: el asistente
+ * preguntó si el proveedor era el emisor de la factura, preguntó la sucursal entre seis, y recién ahí
+ * la armó. Lo que Lucas pidió:
+ *
+ *   1. SI EL PROVEEDOR NO EXISTE, SE CREA. Ya no es un error ("cargalo desde Proveedores"): la tarjeta
+ *      lleva el proveedor nuevo y, al ejecutar, se lo da de alta por el MISMO camino que la pantalla
+ *      (EjecutorGenericoIaHelper → ProviderController::store, con su correlativo y sus cuentas
+ *      corrientes) y después se crea la compra, en la misma ejecución. El proveedor es el que nombró
+ *      la persona; si no nombró ninguno, el emisor que el modelo lee en la factura. Si la factura dice
+ *      otra razón social, NO se cuestiona: manda lo que dijo la persona.
+ *   2. LA SUCURSAL NO SE PREGUNTA. La nombrada; si no, la de quien escribe (`users.address_id`); si no,
+ *      la única; si no, ninguna. La compra nace con `update_stock = 0`, y la sucursal la exige la
+ *      pantalla al revisar el escaneo, que es cuando de verdad se mueve stock.
+ *   3. EN "RESUELTO" SE EJECUTA DIRECTO (ver HerramientasDeCarga::AUTO_CONFIRMABLES); en "cauteloso",
+ *      UNA confirmación que cubre todo, incluido el alta del proveedor.
  */
 class PropuestaCompraConFacturaIaHelper
 {
@@ -53,11 +71,13 @@ class PropuestaCompraConFacturaIaHelper
     const TOPE_CANDIDATOS = 10;
 
     /**
-     * Cuántos mensajes hacia atrás se miran para juntar las fotos de la factura.
-     *
-     * El caso real son cuatro: la foto, el "¿de qué proveedor es?", la respuesta del dueño y la
-     * propuesta. Seis deja lugar para un ida y vuelta más (por ejemplo, la sucursal) sin llegar a
-     * agarrar una foto de otro momento de la charla.
+     * ⚠️ YA NO ES LA VENTANA DE LAS FOTOS (misión asistente-fotos-barras-y-compras, 24/9/2026). Era
+     * "cuántos mensajes hacia atrás se miran", y en demo3 una foto que seguía sin usar quedó afuera
+     * porque se había charlado de más. Las fotos de la factura ahora son la ÚLTIMA TANDA que mandó
+     * el dueño en las últimas 24 horas (FotosDeLaConversacionIaHelper::ultima_tanda), sin importar
+     * cuántos mensajes hubo después. Queda como referencia de la ventana vieja: el test del hallazgo
+     * B (8_Correcciones_del_chequeo_Test) arma con ella una charla "más larga que la ventana" entre la
+     * góndola y la factura, y la góndola tiene que seguir quedando afuera — ahora por la tanda.
      */
     const MENSAJES_PARA_LAS_FOTOS = 6;
 
@@ -100,30 +120,44 @@ class PropuestaCompraConFacturaIaHelper
             return $proveedor;
         }
 
+        /*
+         * Un proveedor que no existe ya no corta (decisión de Lucas, 24/9/2026): se arma su alta con
+         * el mismo payload que mandaría la pantalla, y la tarjeta lo dice antes de confirmar.
+         */
+        $proveedor_nuevo = null;
+
+        if (is_array($proveedor)) {
+
+            $proveedor_nuevo = self::alta_del_proveedor($contexto, $proveedor['nuevo']);
+
+            if (RespuestaDeCargaIa::es_negativa($proveedor_nuevo)) {
+
+                return $proveedor_nuevo;
+            }
+        }
+
+        $nombre_proveedor = is_null($proveedor_nuevo) ? (string) $proveedor->name : $proveedor_nuevo['nombre'];
+
         $fotos = self::imagenes_sin_gestionar($contexto, $mensaje);
 
         if (!count($fotos['paginas'])) {
 
             return RespuestaDeCargaIa::error(
-                'No tengo ninguna foto de factura sin usar en los últimos mensajes. Mandámela y te la cargo.'
+                'No tengo ninguna foto de factura sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la cargo.'
             );
         }
 
+        /* Nunca pregunta (decisión de Lucas, 24/9/2026): ver resolver_sucursal(). */
         $sucursal = self::resolver_sucursal($contexto, EntradaDeCargaIa::texto($input, 'sucursal'));
 
-        if (RespuestaDeCargaIa::es_negativa($sucursal)) {
-
-            return $sucursal;
-        }
-
-        $a_reusar = self::compra_reusable($contexto, $proveedor);
+        $a_reusar = is_null($proveedor_nuevo) ? self::compra_reusable($contexto, $proveedor) : null;
 
         $imagen_ids = self::ids_de($fotos['paginas']);
 
         $consideradas_ids = self::ids_de($fotos['consideradas']);
 
         $renglones = [
-            ['etiqueta' => 'Proveedor', 'valor' => (string) $proveedor->name],
+            ['etiqueta' => 'Proveedor', 'valor' => $nombre_proveedor . (is_null($proveedor_nuevo) ? '' : ' (nuevo: lo doy de alta)')],
         ];
 
         if (!is_null($sucursal)) {
@@ -149,11 +183,21 @@ class PropuestaCompraConFacturaIaHelper
             ? 'Se crea una compra nueva'
             : 'Se usa la compra N° ' . $a_reusar->num . ', que está vacía';
 
+        if (!is_null($proveedor_nuevo)) {
+
+            $que_pasa = 'Se da de alta el proveedor y se crea una compra nueva';
+        }
+
         $renglones[] = ['etiqueta' => 'Qué se hace', 'valor' => $que_pasa];
 
         $datos = [
-            'provider_id'           => (int) $proveedor->id,
-            'proveedor'             => (string) $proveedor->name,
+            'provider_id'           => is_null($proveedor_nuevo) ? (int) $proveedor->id : null,
+            'proveedor'             => $nombre_proveedor,
+            /*
+             * El alta del proveedor tal como la ejecuta EjecutorGenericoIaHelper (entidad, operación,
+             * payload de la pantalla y lo pedido), o null si el proveedor ya existía.
+             */
+            'proveedor_nuevo'       => is_null($proveedor_nuevo) ? null : $proveedor_nuevo['alta'],
             'address_id'            => is_null($sucursal) ? null : (int) $sucursal->id,
             'sucursal'              => is_null($sucursal) ? null : self::nombre_de_sucursal($sucursal),
             'imagen_ids'            => $imagen_ids,
@@ -167,22 +211,75 @@ class PropuestaCompraConFacturaIaHelper
              * los costos de la factura distinto, y una cuenta de Responsable Inscripto quedaría 21%
              * abajo o arriba.
              */
-            'precios_incluyen_iva'  => (bool) $proveedor->precios_incluyen_iva,
+            'precios_incluyen_iva'  => is_null($proveedor_nuevo) ? (bool) $proveedor->precios_incluyen_iva : false,
         ];
 
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_COMPRA_CON_FACTURA,
-            self::clave($proveedor->id),
+            is_null($proveedor_nuevo) ? self::clave($proveedor->id) : self::clave_de_proveedor_nuevo($nombre_proveedor),
             $datos,
             ['titulo' => 'Compra con factura', 'renglones' => $renglones, 'aviso' => null],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
-        $resumen = 'Compra de ' . $proveedor->name . ' · ' . $cuantas . ' · ' . $que_pasa;
+        $resumen = 'Compra de ' . $nombre_proveedor . ' · ' . $cuantas . ' · ' . $que_pasa;
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+        $extra = is_null($proveedor_nuevo) ? [] : ['proveedor_nuevo' => $nombre_proveedor];
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
+    }
+
+    /**
+     * La clave de una compra cuyo proveedor todavía no existe: por su nombre, para que una
+     * corrección sobre la misma factura reemplace la tarjeta.
+     *
+     * @param  string  $nombre
+     * @return string
+     */
+    public static function clave_de_proveedor_nuevo($nombre)
+    {
+        return 'compra_con_factura:nuevo:' . mb_strtolower(trim((string) $nombre));
+    }
+
+    /**
+     * El alta del proveedor que no existe, armada con las MISMAS piezas que proponer_alta de
+     * `provider` (la declaración del catálogo, validar_campos y payload_de_alta): al ejecutar la
+     * corre EjecutorGenericoIaHelper por ProviderController::store, igual que la pantalla. Si la
+     * persona no puede crear proveedores, corta acá con el motivo, antes de dejar ninguna tarjeta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombre
+     * @return array  ['nombre' => string, 'alta' => array] o la respuesta negativa.
+     */
+    protected static function alta_del_proveedor(ContextoDeCargaIa $contexto, $nombre)
+    {
+        $declaracion = PropuestaGenericaIaHelper::entidad_para($contexto, 'provider', Catalogo::OP_ALTA);
+
+        if (RespuestaDeCargaIa::es_negativa($declaracion)) {
+
+            return RespuestaDeCargaIa::error(
+                'No tenés ningún proveedor que se llame "' . $nombre . '" y no lo puedo dar de alta: ' . $declaracion['error']
+            );
+        }
+
+        $validado = PropuestaGenericaIaHelper::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, ['name' => $nombre]);
+
+        if (RespuestaDeCargaIa::es_negativa($validado)) {
+
+            return $validado;
+        }
+
+        return [
+            'nombre' => trim((string) $nombre),
+            'alta'   => [
+                'entidad'   => $declaracion['entidad'],
+                'operacion' => Catalogo::OP_ALTA,
+                'payload'   => PropuestaGenericaIaHelper::payload_de_alta($declaracion, $validado['payload']),
+                'pedidos'   => $validado['pedidos'],
+            ],
+        ];
     }
 
     /**
@@ -229,9 +326,20 @@ class PropuestaCompraConFacturaIaHelper
 
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
-        $proveedor = Provider::where('user_id', $contexto->owner_id)
-                                ->where('id', isset($datos['provider_id']) ? (int) $datos['provider_id'] : 0)
-                                ->first();
+        $es_nuevo = empty($datos['provider_id']) && !empty($datos['proveedor_nuevo']) && is_array($datos['proveedor_nuevo']);
+
+        $creado = false;
+
+        if ($es_nuevo) {
+
+            list($proveedor, $creado) = self::proveedor_nuevo($contexto, $datos);
+
+        } else {
+
+            $proveedor = Provider::where('user_id', $contexto->owner_id)
+                                    ->where('id', isset($datos['provider_id']) ? (int) $datos['provider_id'] : 0)
+                                    ->first();
+        }
 
         if (is_null($proveedor)) {
 
@@ -307,8 +415,14 @@ class PropuestaCompraConFacturaIaHelper
          */
         AsistenteImagenHelper::marcar_gestionadas(self::ids_de($miradas));
 
+        /*
+         * El aviso de que el escaneo terminó ya existe y no lo escribe esto: lo manda
+         * RunProviderOrderScanJob::notificar_fin() por el proceso en segundo plano.
+         */
         return [
-            'texto' => 'Compra N° ' . $orden->num . ' creada, estoy leyendo la factura. Cuando termine la revisás desde Compras',
+            'texto' => 'Compra N° ' . $orden->num . ' cargada a ' . $proveedor->name
+                . ($creado ? ' (proveedor nuevo, lo di de alta)' : '')
+                . '. Estoy escaneando la factura en segundo plano: el sistema te avisa cuando termine y ahí revisás los artículos desde Compras.',
             'ruta'  => [
                 'name'   => 'proveedores',
                 'params' => new \stdClass(),
@@ -383,11 +497,17 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
-     * El proveedor que nombró el dueño, o la respuesta de negocio que pide desambiguar.
+     * El proveedor que nombró el dueño; `['nuevo' => nombre]` si no hay ninguno que se llame así; o
+     * la respuesta de negocio que pide desambiguar.
      *
-     * 🔴 NUNCA CREA UN PROVEEDOR. Un proveedor nuevo arrastra cuenta corriente, bonificaciones y
-     * condición fiscal: si el nombre no resuelve, se pregunta. Misma mecánica que el resto de las
-     * herramientas de carga.
+     * Se busca por `name` Y por `razon_social` (misión asistente-fotos-barras-y-compras): el dueño
+     * dice el nombre con el que lo conoce, y el que el modelo lee en la factura suele ser la razón
+     * social. Primero la coincidencia EXACTA en cualquiera de las dos; recién después la parcial.
+     *
+     * 🔴 HASTA EL 24/9/2026 ESTO NUNCA CREABA UN PROVEEDOR y contestaba "No puedo crear proveedores:
+     * cargalo desde Proveedores". Lucas lo dio vuelta ese día: si no existe, se crea en la misma
+     * ejecución de la compra (ver el docblock de la clase). La cuenta corriente, las bonificaciones y
+     * la condición fiscal quedan como las deja la pantalla con un alta de sólo el nombre.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $nombre
@@ -400,13 +520,40 @@ class PropuestaCompraConFacturaIaHelper
         if ($nombre === '') {
 
             return RespuestaDeCargaIa::faltan(
-                ['de qué proveedor es la factura'],
+                ['de qué proveedor es la factura (si la persona no lo dijo, el emisor que leés en la factura)'],
                 ['proveedores' => self::candidatos($contexto, '')]
             );
         }
 
+        $exactos = Provider::where('user_id', $contexto->owner_id)
+                            ->where(function ($q) use ($nombre) {
+                                $q->whereRaw('LOWER(TRIM(name)) = ?', [mb_strtolower($nombre)])
+                                  ->orWhereRaw('LOWER(TRIM(razon_social)) = ?', [mb_strtolower($nombre)]);
+                            })
+                            ->orderBy('id')
+                            ->limit(self::TOPE_CANDIDATOS)
+                            ->get();
+
+        if (count($exactos) === 1) {
+
+            return $exactos[0];
+        }
+
+        if (count($exactos) > 1) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál de estos proveedores es'],
+                ['proveedores' => self::como_opciones($exactos)]
+            );
+        }
+
+        $escapado = '%' . addcslashes($nombre, '%_\\') . '%';
+
         $candidatos = Provider::where('user_id', $contexto->owner_id)
-                                ->where('name', 'LIKE', '%' . addcslashes($nombre, '%_\\') . '%')
+                                ->where(function ($q) use ($escapado) {
+                                    $q->where('name', 'LIKE', $escapado)
+                                      ->orWhere('razon_social', 'LIKE', $escapado);
+                                })
                                 ->orderBy('name')
                                 ->limit(self::TOPE_CANDIDATOS)
                                 ->get();
@@ -418,19 +565,7 @@ class PropuestaCompraConFacturaIaHelper
 
         if (count($candidatos) === 0) {
 
-            return RespuestaDeCargaIa::error(
-                'No encontré ningún proveedor que se llame así. No puedo crear proveedores: cargalo desde Proveedores y volvé a pedírmelo.',
-                ['proveedores' => self::candidatos($contexto, '')]
-            );
-        }
-
-        /* Un nombre escrito completo gana sobre los parciales: "Sur" no es "Sur SRL" si existe "Sur". */
-        foreach ($candidatos as $candidato) {
-
-            if (mb_strtolower(trim((string) $candidato->name)) === mb_strtolower($nombre)) {
-
-                return $candidato;
-            }
+            return ['nuevo' => $nombre];
         }
 
         return RespuestaDeCargaIa::faltan(
@@ -440,15 +575,71 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
-     * La sucursal a la que entra la mercadería, o la respuesta de negocio que la pregunta.
+     * El proveedor de una tarjeta cuyo proveedor no existía al proponerla: se lo da de alta por el
+     * controller de la pantalla (EjecutorGenericoIaHelper), salvo que alguien lo haya creado entre la
+     * propuesta y el sí —ahí se usa ése y no se duplica—.
      *
-     * `address_id` es obligatorio en el formulario de la SPA solo si la cuenta TIENE sucursales
-     * (`required_if_models_length: 'address'`), así que una cuenta sin ninguna devuelve null y la
-     * compra se crea sin sucursal, igual que por la pantalla.
+     * Corre adentro de la transacción de la compra: si después el escaneo no puede arrancar, el
+     * rollback se lleva también al proveedor, y no queda un proveedor suelto de una compra que no
+     * existe. ProviderController::store no tiene efectos hacia afuera (su notificación de alta es un
+     * `return` vacío), así que no hay nada que quede del otro lado del rollback.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $datos
+     * @return array  [\App\Models\Provider|null, bool $creado_ahora]
+     *
+     * @throws AccionIaException
+     */
+    protected static function proveedor_nuevo(ContextoDeCargaIa $contexto, array $datos)
+    {
+        $alta = $datos['proveedor_nuevo'];
+
+        $nombre = isset($datos['proveedor']) ? trim((string) $datos['proveedor']) : '';
+
+        if ($nombre !== '') {
+
+            $ya_existe = Provider::where('user_id', $contexto->owner_id)
+                                    ->whereRaw('LOWER(TRIM(name)) = ?', [mb_strtolower($nombre)])
+                                    ->orderBy('id')
+                                    ->first();
+
+            if (!is_null($ya_existe)) {
+
+                return [$ya_existe, false];
+            }
+        }
+
+        /*
+         * Una tarjeta de alta "de mentira", sin guardar, con la forma exacta que lee el ejecutor
+         * genérico: es el mismo camino que la tarjeta #9 de demo3 (alta de proveedor desde el
+         * asistente), con las mismas guardas de permiso y la misma persona autenticada.
+         */
+        $accion_de_alta = new AiMessageAction();
+        $accion_de_alta->tipo = AiMessageAction::TIPO_ALTA;
+        $accion_de_alta->datos = $alta;
+
+        $resultado = EjecutorGenericoIaHelper::ejecutar($contexto, $accion_de_alta);
+
+        $proveedor = Provider::where('user_id', $contexto->owner_id)
+                                ->where('id', isset($resultado['id']) ? (int) $resultado['id'] : 0)
+                                ->first();
+
+        return [$proveedor, !is_null($proveedor)];
+    }
+
+    /**
+     * La sucursal a la que entra la mercadería, o null. NUNCA pregunta (decisión de Lucas,
+     * 24/9/2026): en demo3 (conv 12) la pregunta "¿a cuál de estas seis sucursales entra?" fue uno
+     * de los tres mensajes que tardó una compra que el dueño pidió de una.
+     *
+     * El orden: la que nombró la persona → la de quien escribe (`users.address_id`, la misma que usa
+     * el resto de las cargas: OpcionesDeCargaIaHelper::address_id_de_la_persona) → la única que
+     * haya → ninguna. Una compra sin sucursal es válida: nace con `update_stock = 0` y la pantalla
+     * la pide al revisar el escaneo, que es cuando de verdad se mueve stock.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $nombre
-     * @return \App\Models\Address|null|array
+     * @return \App\Models\Address|null
      */
     protected static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre)
     {
@@ -457,11 +648,6 @@ class PropuestaCompraConFacturaIaHelper
         if (count($sucursales) === 0) {
 
             return null;
-        }
-
-        if (count($sucursales) === 1) {
-
-            return $sucursales[0];
         }
 
         $nombre = trim((string) $nombre);
@@ -477,25 +663,38 @@ class PropuestaCompraConFacturaIaHelper
             }
         }
 
-        $opciones = [];
+        $de_la_persona = OpcionesDeCargaIaHelper::address_id_de_la_persona($contexto->persona);
 
-        foreach ($sucursales as $sucursal) {
+        if (!is_null($de_la_persona)) {
 
-            $opciones[] = ['id' => (int) $sucursal->id, 'sucursal' => self::nombre_de_sucursal($sucursal)];
+            foreach ($sucursales as $sucursal) {
+
+                if ((int) $sucursal->id === (int) $de_la_persona) {
+
+                    return $sucursal;
+                }
+            }
         }
 
-        return RespuestaDeCargaIa::faltan(['a qué sucursal entra la mercadería'], ['sucursales' => $opciones]);
+        if (count($sucursales) === 1) {
+
+            return $sucursales[0];
+        }
+
+        return null;
     }
 
     /**
      * Las fotos que se van a enganchar a esta factura, y TODAS las que se miraron para elegirlas.
      *
-     * 🔴 SE ACOTA POR LOS ÚLTIMOS MENSAJES, NO POR LA CONVERSACIÓN ENTERA. Sin ese corte, una foto
+     * 🔴 SE ACOTA A LA ÚLTIMA TANDA DEL DUEÑO, NO A LA CONVERSACIÓN ENTERA. Sin ese corte, una foto
      * vieja que quedó sin gestionar —el dueño mandó la foto de una góndola preguntando un precio a
      * la mañana, nadie la "usó" para nada— entraba como una página más de la factura que manda a la
-     * tarde. Nadie se entera hasta que el escaneo devuelve renglones que no existen. La ventana de
-     * MENSAJES_PARA_LAS_FOTOS alcanza de sobra para el caso real —foto, "¿de qué proveedor es?",
-     * "de Distribuidora Sur", la propuesta— y deja afuera cualquier cosa de más atrás.
+     * tarde. Nadie se entera hasta que el escaneo devuelve renglones que no existen. Hasta el
+     * 24/9/2026 el corte era una ventana de MENSAJES_PARA_LAS_FOTOS mensajes, y dejaba afuera la
+     * factura misma cuando se charlaba de más; ahora es la tanda de fotos seguidas del dueño de las
+     * últimas 24 horas (FotosDeLaConversacionIaHelper::ultima_tanda), que no depende de cuánto se
+     * habló después y sigue dejando afuera la góndola.
      *
      * 🔴 Y SE DEVUELVEN TAMBIÉN LAS QUE NO ENTRAN. Si en la ventana hay más fotos sin gestionar que
      * las que acepta un escaneo, las que sobran NO se pueden dejar libres: quedarían esperando a la
@@ -510,24 +709,8 @@ class PropuestaCompraConFacturaIaHelper
     {
         $max = self::max_paginas();
 
-        /* Los ids de los últimos mensajes de la conversación, hasta el que está proponiendo. */
-        $mensajes_recientes = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
-                                        ->where('id', '<=', $mensaje->id)
-                                        ->orderBy('id', 'DESC')
-                                        ->limit(self::MENSAJES_PARA_LAS_FOTOS)
-                                        ->pluck('id');
-
-        if (!count($mensajes_recientes)) {
-
-            return ['paginas' => [], 'consideradas' => []];
-        }
-
-        $consideradas = AiMessageImagen::where('user_id', $contexto->owner_id)
-                                        ->sinGestionar()
-                                        ->whereIn('ai_message_id', $mensajes_recientes->all())
-                                        ->orderBy('id')
-                                        ->get()
-                                        ->all();
+        /* Sólo fotos de mensajes del DUEÑO: ver el 🔴 de FotosDeLaConversacionIaHelper. */
+        $consideradas = FotosDeLaConversacionIaHelper::ultima_tanda($contexto, $mensaje);
 
         /*
          * Si sobran, se quedan las MÁS NUEVAS: son las páginas de la factura que el dueño acaba de
