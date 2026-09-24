@@ -67,12 +67,12 @@ class PropuestaFotoArticuloIaHelper
      */
     const PERMISO = 'article.update';
 
-    /**
-     * Cuántos mensajes hacia atrás se miran para encontrar la foto. Mismo criterio que la foto de
-     * sucursal y que la compra con factura: alcanza para "foto, ¿de qué artículo?, la respuesta, la
-     * propuesta" sin agarrar una foto de otro momento de la charla.
+    /*
+     * Acá vivía MENSAJES_PARA_LA_FOTO = 6: la foto se buscaba en los últimos seis mensajes. Desde la
+     * misión asistente-fotos-barras-y-compras (24/9/2026) la busca FotosDeLaConversacionIaHelper, por
+     * tiempo (24 horas) y sólo entre las que mandó el dueño: en demo3 (conv 10) la ventana de seis
+     * dejó afuera una foto que seguía sin usar y el asistente le pidió al dueño que la reenviara.
      */
-    const MENSAJES_PARA_LA_FOTO = 6;
 
     /** Tope de candidatos que se ofrecen cuando el nombre del artículo es ambiguo. */
     const TOPE_CANDIDATOS = 10;
@@ -110,7 +110,7 @@ class PropuestaFotoArticuloIaHelper
         if (is_null($foto)) {
 
             return RespuestaDeCargaIa::error(
-                'No tengo ninguna foto sin usar en los últimos mensajes. Mandámela y se la pongo al artículo.'
+                'No tengo ninguna foto tuya sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y se la pongo al artículo.'
             );
         }
 
@@ -126,6 +126,18 @@ class PropuestaFotoArticuloIaHelper
             ['etiqueta' => 'Artículo', 'valor' => $nombre],
             ['etiqueta' => 'Qué se hace', 'valor' => 'La foto se suma a las imágenes del artículo'],
         ];
+
+        /*
+         * Cuándo llegó la foto (misión asistente-fotos-barras-y-compras): con la ventana de 24 horas
+         * la foto puede ser de hace un rato largo, y la persona tiene que poder decir "esa no es"
+         * antes de que se publique.
+         */
+        $cuando = FotosDeLaConversacionIaHelper::cuando_llego($foto);
+
+        if ($cuando !== '') {
+
+            $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'La que mandaste ' . $cuando];
+        }
 
         $creada = AccionesIaHelper::crear(
             $contexto,
@@ -212,6 +224,41 @@ class PropuestaFotoArticuloIaHelper
             throw new AccionIaException(422, 'Esa foto ya se usó o no está disponible. Mandámela de nuevo.');
         }
 
+        self::asignar_imagen($contexto, $articulo, $imagen);
+
+        return [
+            'texto' => 'Foto agregada al artículo ' . self::nombre_de_articulo($articulo),
+            /*
+             * El listado de artículos, que es de donde se cargan y se sacan las fotos. Misma ruta
+             * que usa la búsqueda de imágenes por filtro (PropuestaImagenesArticulosIaHelper). En
+             * WhatsApp esta ruta no se usa: no hay navegación.
+             */
+            'ruta'  => [
+                'name'   => 'article',
+                'params' => new \stdClass(),
+                'texto'  => 'Ver el listado',
+            ],
+        ];
+    }
+
+    /**
+     * Cuelga una foto del asistente de un artículo con los CUATRO EFECTOS DE LA PANTALLA y la sella.
+     * Es el cuerpo de ejecutar(), separado en la misión asistente-fotos-barras-y-compras (24/9/2026)
+     * para que el alta de un artículo con su foto (AltaDeArticuloConFotoIaHelper) asigne la foto por
+     * el MISMO camino y no por una copia que un día se olvide uno de los cuatro efectos.
+     *
+     * La foto tiene que venir ya bloqueada por quien llama (lockForUpdate adentro de su
+     * transacción): acá no se relee.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $articulo  El modelo ENTERO (ver el comentario de ejecutar()).
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return \App\Models\Image
+     *
+     * @throws AccionIaException  422 si la foto no se puede leer o guardar.
+     */
+    public static function asignar_imagen(ContextoDeCargaIa $contexto, Article $articulo, AiMessageImagen $imagen)
+    {
         $binario = AsistenteImagenHelper::binario($imagen);
 
         if (is_null($binario)) {
@@ -265,19 +312,7 @@ class PropuestaFotoArticuloIaHelper
 
         AsistenteImagenHelper::marcar_gestionadas([(int) $imagen->id]);
 
-        return [
-            'texto' => 'Foto agregada al artículo ' . self::nombre_de_articulo($articulo),
-            /*
-             * El listado de artículos, que es de donde se cargan y se sacan las fotos. Misma ruta
-             * que usa la búsqueda de imágenes por filtro (PropuestaImagenesArticulosIaHelper). En
-             * WhatsApp esta ruta no se usa: no hay navegación.
-             */
-            'ruta'  => [
-                'name'   => 'article',
-                'params' => new \stdClass(),
-                'texto'  => 'Ver el listado',
-            ],
-        ];
+        return $image;
     }
 
     /**
@@ -379,9 +414,9 @@ class PropuestaFotoArticuloIaHelper
     }
 
     /**
-     * La foto más nueva sin gestionar de los últimos mensajes, o null. Copia literal de
-     * PropuestaFotoSucursalIaHelper::ultima_foto_sin_gestionar: se toma UNA sola, la más nueva, que
-     * es la que el dueño acaba de mandar.
+     * La foto más nueva que el DUEÑO mandó en las últimas 24 horas y no se usó, o null. Se toma UNA
+     * sola, la más nueva, que es la que acaba de mandar. La ventana y el filtro por rol viven en
+     * FotosDeLaConversacionIaHelper (ver ahí por qué dejó de ser "los últimos seis mensajes").
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje
@@ -389,22 +424,7 @@ class PropuestaFotoArticuloIaHelper
      */
     protected static function ultima_foto_sin_gestionar(ContextoDeCargaIa $contexto, AiMessage $mensaje)
     {
-        $mensajes_recientes = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
-                                        ->where('id', '<=', $mensaje->id)
-                                        ->orderBy('id', 'DESC')
-                                        ->limit(self::MENSAJES_PARA_LA_FOTO)
-                                        ->pluck('id');
-
-        if (!count($mensajes_recientes)) {
-
-            return null;
-        }
-
-        return AiMessageImagen::where('user_id', $contexto->owner_id)
-                                ->sinGestionar()
-                                ->whereIn('ai_message_id', $mensajes_recientes->all())
-                                ->orderBy('id', 'DESC')
-                                ->first();
+        return FotosDeLaConversacionIaHelper::la_mas_nueva($contexto, $mensaje);
     }
 
     /**

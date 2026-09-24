@@ -27,19 +27,18 @@ use Intervention\Image\ImageManager;
  * siempre.
  *
  * 🔴 LA FOTO NO SALE DEL PROMPT: SALE DE LAS IMÁGENES SIN GESTIONAR DE LA CONVERSACIÓN, igual que
- * PropuestaCompraConFacturaIaHelper. Se toma la última foto sin gestionar de los últimos mensajes.
+ * PropuestaCompraConFacturaIaHelper. Se toma la última foto sin gestionar que mandó el dueño.
  * En la práctica esas fotos solo existen en el canal WhatsApp (ai_message_imagenes las escribe solo
  * AdminSync\AsistenteController): desde la pantalla del sistema no hay forma de adjuntar una foto, y
  * ahí la herramienta simplemente contesta que no tiene ninguna. Se declara con las de carga igual.
  */
 class PropuestaFotoSucursalIaHelper
 {
-    /**
-     * Cuántos mensajes hacia atrás se miran para encontrar la foto. Mismo criterio que la compra con
-     * factura: alcanza para "foto, ¿de qué sucursal?, la respuesta, la propuesta" sin agarrar una
-     * foto de otro momento de la charla.
+    /*
+     * Acá vivía MENSAJES_PARA_LA_FOTO = 6. Desde la misión asistente-fotos-barras-y-compras
+     * (24/9/2026) la foto la busca FotosDeLaConversacionIaHelper: por tiempo (24 horas) y sólo
+     * entre las que mandó el dueño, igual que la foto de un artículo (ver ahí el porqué).
      */
-    const MENSAJES_PARA_LA_FOTO = 6;
 
     /** Lo que se le contesta a quien no es dueño/admin: la foto de la sucursal es config del negocio. */
     const MENSAJE_SIN_PERMISO = 'Solo el dueño puede cambiar la foto de una sucursal.';
@@ -71,7 +70,7 @@ class PropuestaFotoSucursalIaHelper
         if (is_null($foto)) {
 
             return RespuestaDeCargaIa::error(
-                'No tengo ninguna foto sin usar en los últimos mensajes. Mandámela y te la asigno a la sucursal.'
+                'No tengo ninguna foto tuya sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la asigno a la sucursal.'
             );
         }
 
@@ -235,9 +234,9 @@ class PropuestaFotoSucursalIaHelper
     }
 
     /**
-     * La foto más nueva sin gestionar de los últimos mensajes, o null. Misma mecánica acotada por
-     * ventana de mensajes que PropuestaCompraConFacturaIaHelper, pero acá se toma UNA sola: la más
-     * nueva es la que el dueño acaba de mandar.
+     * La foto más nueva que el DUEÑO mandó en las últimas 24 horas y no se usó, o null. Se toma UNA
+     * sola: la más nueva es la que acaba de mandar. La ventana y el filtro por rol viven en
+     * FotosDeLaConversacionIaHelper, compartidos con la foto de un artículo y la compra con factura.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje
@@ -245,22 +244,7 @@ class PropuestaFotoSucursalIaHelper
      */
     protected static function ultima_foto_sin_gestionar(ContextoDeCargaIa $contexto, AiMessage $mensaje)
     {
-        $mensajes_recientes = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
-                                        ->where('id', '<=', $mensaje->id)
-                                        ->orderBy('id', 'DESC')
-                                        ->limit(self::MENSAJES_PARA_LA_FOTO)
-                                        ->pluck('id');
-
-        if (!count($mensajes_recientes)) {
-
-            return null;
-        }
-
-        return AiMessageImagen::where('user_id', $contexto->owner_id)
-                                ->sinGestionar()
-                                ->whereIn('ai_message_id', $mensajes_recientes->all())
-                                ->orderBy('id', 'DESC')
-                                ->first();
+        return FotosDeLaConversacionIaHelper::la_mas_nueva($contexto, $mensaje);
     }
 
     /**
