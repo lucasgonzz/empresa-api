@@ -234,9 +234,11 @@ class PropuestaFotoSucursalIaHelper
     }
 
     /**
-     * La foto más nueva que el DUEÑO mandó en las últimas 24 horas y no se usó, o null. Se toma UNA
-     * sola: la más nueva es la que acaba de mandar. La ventana y el filtro por rol viven en
-     * FotosDeLaConversacionIaHelper, compartidos con la foto de un artículo y la compra con factura.
+     * La foto más nueva de la ÚLTIMA TANDA de fotos que mandó el dueño, o null (correcciones del
+     * 24/9/2026). No la de "cualquier foto sin usar de 24 horas", como la de un artículo: la foto
+     * de una sucursal se asigna SOLA en "resuelto" (está en HerramientasDeCarga::AUTO_CONFIRMABLES),
+     * y con la ventana de 24 horas podía llevarse una foto suelta de otro momento de la charla sin
+     * que nadie la viera. La tanda y el filtro por rol viven en FotosDeLaConversacionIaHelper.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje
@@ -244,7 +246,7 @@ class PropuestaFotoSucursalIaHelper
      */
     protected static function ultima_foto_sin_gestionar(ContextoDeCargaIa $contexto, AiMessage $mensaje)
     {
-        return FotosDeLaConversacionIaHelper::la_mas_nueva($contexto, $mensaje);
+        return FotosDeLaConversacionIaHelper::la_mas_nueva_de_la_ultima_tanda($contexto, $mensaje);
     }
 
     /**

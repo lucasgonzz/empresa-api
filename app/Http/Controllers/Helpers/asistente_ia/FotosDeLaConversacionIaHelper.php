@@ -62,16 +62,22 @@ class FotosDeLaConversacionIaHelper
     /**
      * Las fotos de la ÚLTIMA TANDA que mandó el dueño, en el orden en que las mandó.
      *
-     * Una tanda son los mensajes del dueño CON FOTOS seguidos, contando hacia atrás desde el más
-     * nuevo que tenga una foto sin usar: se corta en el primer mensaje del dueño SIN fotos. Las
-     * respuestas del asistente en el medio no cortan, porque el admin despacha un turno por cada
-     * mensaje que entra y una factura de tres páginas mandada en tres fotos llega intercalada con
-     * las respuestas de esos turnos.
+     * Una tanda son los mensajes del dueño CON FOTOS seguidos, contando hacia atrás desde el ÚLTIMO
+     * mensaje suyo que trajo fotos: se corta en el primer mensaje del dueño SIN fotos. Las respuestas
+     * del asistente en el medio no cortan, porque el admin despacha un turno por cada mensaje que
+     * entra y una factura de tres páginas mandada en tres fotos llega intercalada con las respuestas
+     * de esos turnos. De esa tanda vuelven sólo las que todavía no se usaron.
      *
      * 🔴 Es lo que reemplaza a la ventana de mensajes para la compra con factura: la distancia ya no
      * importa (la factura puede estar diez mensajes atrás, tras una charla sobre el proveedor), pero
      * una foto de otro momento de la charla —separada de la factura por un mensaje de texto del
      * dueño, como la góndola del hallazgo B— no se suma como página.
+     *
+     * 🔴 Y ARRANCA EN EL ÚLTIMO MENSAJE CON FOTOS AUNQUE YA SE HAYAN USADO (correcciones del
+     * 24/9/2026). Si arrancara en "la foto sin usar más nueva", después de cargar una factura una
+     * foto vieja que quedó suelta de la mañana pasaba a ser "la última tanda", y la foto de una
+     * sucursal —que en "resuelto" se asigna sola— se la llevaba sin que nadie la viera. Si la última
+     * tanda ya se usó entera, no hay tanda: la herramienta dice que no tiene foto y se le pide.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que está proponiendo.
@@ -79,20 +85,28 @@ class FotosDeLaConversacionIaHelper
      */
     public static function ultima_tanda(ContextoDeCargaIa $contexto, AiMessage $mensaje)
     {
-        $mas_nueva = self::la_mas_nueva($contexto, $mensaje);
+        return self::tanda_de((int) $contexto->conversation->id, (int) $contexto->owner_id, (int) $mensaje->id);
+    }
 
-        if (is_null($mas_nueva)) {
-
-            return [];
-        }
-
+    /**
+     * La última tanda (ver ultima_tanda()) con la conversación, el dueño y el tope por id, para quien
+     * no tiene un ContextoDeCargaIa a mano: el armado del historial que viaja al modelo.
+     *
+     * @param  int  $conversation_id
+     * @param  int  $owner_id
+     * @param  int  $hasta_id  Se miran los mensajes con id menor o igual a éste.
+     * @return array<int, \App\Models\AiMessageImagen>
+     */
+    public static function tanda_de($conversation_id, $owner_id, $hasta_id)
+    {
         /*
-         * Los mensajes del dueño desde el de la foto más nueva hacia atrás, dentro de las mismas
-         * HORAS: se recorren hasta el primero sin ninguna foto.
+         * Los mensajes del dueño de las últimas HORAS, del más nuevo al más viejo: se saltean los del
+         * final que no tienen fotos (el "¿de quién es?" contestado después) hasta el primero con
+         * fotos, y desde ahí se juntan hasta el primero sin fotos.
          */
-        $mensajes_del_dueno = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
+        $mensajes_del_dueno = AiMessage::where('ai_conversation_id', (int) $conversation_id)
                                         ->where('rol', 'user')
-                                        ->where('id', '<=', (int) $mas_nueva->ai_message_id)
+                                        ->where('id', '<=', (int) $hasta_id)
                                         ->where('created_at', '>=', self::desde())
                                         ->orderBy('id', 'DESC')
                                         ->withCount('imagenes')
@@ -102,7 +116,14 @@ class FotosDeLaConversacionIaHelper
 
         foreach ($mensajes_del_dueno as $del_dueno) {
 
-            if ((int) $del_dueno->imagenes_count === 0) {
+            $con_fotos = (int) $del_dueno->imagenes_count > 0;
+
+            if (!$con_fotos && !count($de_la_tanda)) {
+
+                continue;
+            }
+
+            if (!$con_fotos) {
 
                 break;
             }
@@ -115,13 +136,31 @@ class FotosDeLaConversacionIaHelper
             return [];
         }
 
-        return self::sin_gestionar($contexto, $mensaje)
-                    ->whereIn('ai_message_id', $de_la_tanda)
-                    ->orderBy('ai_message_id')
-                    ->orderBy('orden')
-                    ->orderBy('id')
-                    ->get()
-                    ->all();
+        return AiMessageImagen::where('user_id', (int) $owner_id)
+                                ->sinGestionar()
+                                ->where('created_at', '>=', self::desde())
+                                ->whereIn('ai_message_id', $de_la_tanda)
+                                ->orderBy('ai_message_id')
+                                ->orderBy('orden')
+                                ->orderBy('id')
+                                ->get()
+                                ->all();
+    }
+
+    /**
+     * La más nueva de la última tanda, o null: la foto de una SUCURSAL, que en "resuelto" se asigna
+     * sola y por eso no puede agarrar una foto suelta de otro momento (ver el segundo 🔴 de
+     * ultima_tanda()).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @return \App\Models\AiMessageImagen|null
+     */
+    public static function la_mas_nueva_de_la_ultima_tanda(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        $tanda = self::ultima_tanda($contexto, $mensaje);
+
+        return count($tanda) ? $tanda[count($tanda) - 1] : null;
     }
 
     /**

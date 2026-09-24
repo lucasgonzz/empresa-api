@@ -380,7 +380,13 @@ class PropuestaFotoArticuloIaHelper
         if (count($candidatos) === 0) {
 
             return RespuestaDeCargaIa::error(
-                'No encontré ningún artículo que se llame "' . $texto . '" ni con ese código. Buscalo con otra palabra o decime el código.'
+                'No encontré ningún artículo que se llame "' . $texto . '" ni con ese código. Buscalo con otra palabra o decime el código. '
+                /*
+                 * Correcciones del 24/9/2026: si el artículo es NUEVO, la foto va en su alta, en UNA
+                 * tarjeta. Sin esta línea el modelo proponía el alta y después la foto aparte (dos
+                 * "¿lo registro?" para un solo pedido), o insistía con esta herramienta.
+                 */
+                . 'Si es un artículo NUEVO, no va acá: proponé el alta con proponer_alta de article y con_foto_de_la_conversacion, que lo crea con la foto en una sola tarjeta.'
             );
         }
 

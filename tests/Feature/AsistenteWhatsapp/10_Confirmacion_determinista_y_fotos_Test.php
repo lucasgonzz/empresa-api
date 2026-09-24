@@ -425,4 +425,73 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
 
         $this->assertFalse($respuesta['ok']);
     }
+
+    // ------------------------------------------------ correcciones del 24/9/2026 (e, f)
+
+    /**
+     * La foto de una SUCURSAL se asigna sola en "resuelto", así que sale de la ÚLTIMA TANDA del
+     * dueño: si esa tanda ya se usó, no se lleva una foto suelta de otro momento de la charla. La
+     * de un artículo (que siempre deja tarjeta) sí la sigue encontrando.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_foto_de_sucursal_sale_de_la_ultima_tanda_y_no_de_una_foto_suelta()
+    {
+        $conversation = $this->conversacion_whatsapp();
+
+        $de_la_manana = $this->mensaje($conversation, 'user', 'listo', ['contenido' => '¿A cuánto está esto?']);
+        $suelta = $this->guardar_foto($de_la_manana);
+
+        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'Está a 1500.']);
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Gracias']);
+
+        $de_la_factura = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'La factura']);
+        $usada = $this->guardar_foto($de_la_factura);
+        AiMessageImagen::where('id', $usada->id)->update(['gestionada_at' => Carbon::now()]);
+
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Ponele una foto a la sucursal Belgrano']);
+
+        $propone = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        Address::create(['user_id' => $this->comercio->id, 'street' => 'zz-e Belgrano']);
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $de_sucursal = PropuestaFotoSucursalIaHelper::proponer($contexto, $propone, ['sucursal' => 'zz-e Belgrano']);
+
+        $this->assertFalse($de_sucursal['ok'], 'La foto de la mañana no es de la última tanda: la sucursal no se la lleva.');
+
+        $de_articulo = PropuestaFotoArticuloIaHelper::proponer($contexto, $propone, ['articulo_id' => $this->articulo('zz-e Mate')->id]);
+
+        $this->assertTrue($de_articulo['ok'], json_encode($de_articulo));
+        $this->assertSame((int) $suelta->id, (int) AiMessageAction::find($de_articulo['tarjeta_id'])->datos['imagen_id']);
+    }
+
+    /**
+     * Si el artículo no existe, la herramienta de la foto le dice al modelo que un artículo NUEVO
+     * va con proponer_alta y la foto en la misma tarjeta.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_foto_de_un_articulo_que_no_existe_manda_al_alta_con_la_foto()
+    {
+        $conversation = $this->conversacion_whatsapp();
+
+        $con_foto = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Cargá este termo nuevo con la foto']);
+        $this->guardar_foto($con_foto);
+
+        $propone = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(
+            ContextoDeCargaIa::de_la_conversacion($conversation),
+            $propone,
+            ['articulo' => 'zz-f Termo que no existe']
+        );
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringContainsString('proponer_alta', $respuesta['error']);
+        $this->assertStringContainsString('con_foto_de_la_conversacion', $respuesta['error']);
+    }
 }
