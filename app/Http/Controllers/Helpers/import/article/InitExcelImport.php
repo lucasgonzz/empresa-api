@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
@@ -13,9 +14,6 @@ use App\Models\Provider;
 use Illuminate\Bus\Batch;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
-use OpenSpout\Common\Entity\Row;
-use OpenSpout\Common\Entity\Cell;
 use Throwable;
 
 class InitExcelImport
@@ -399,56 +397,30 @@ class InitExcelImport
                 );
             }
 
-            $lectura = ExcelWorkbookReader::abrir($this->archivo_excel, $indice_de_hoja, true);
+            /*
+             * El volcado XLSX -> CSV vive en CsvDeHoja::volcar() (misión
+             * importacion-excel-motor-rapido, 24/9/2026), con el mismo código y las mismas
+             * reglas que tenía este método. asegurar_csv() lo hace UNA sola vez por hoja y
+             * lo deja al lado del XLSX: si el análisis con IA ya pasó por acá, el sidecar ya
+             * existe y esto no vuelve a leer el XLSX (medido: 25 s por cada 30.000 filas,
+             * adentro del request HTTP). Si no existe —importación clásica, AdminSync— lo
+             * genera ahora y de paso queda para la próxima.
+             *
+             * El CSV de la importación es una COPIA del sidecar con el nombre de siempre
+             * (imported_files/<nombre>_<time>.csv): los lotes lo navegan por número de línea
+             * y HojaElegidaEnImportacionTest lo lee, así que ni el nombre ni el contenido
+             * cambian respecto de antes.
+             */
+            $meta = ExcelWorkbookReader::asegurar_csv($this->archivo_excel, $indice_de_hoja);
 
-            $writer = WriterEntityFactory::createCSVWriter();
-            $writer->openToFile($this->csv_full_path);
+            $sidecar_csv = CsvDeHoja::ruta_csv($this->archivo_excel, (int) $meta['indice']);
 
-            /* Número de fila actual en el Excel (1-based) y última fila con al menos una celda con datos. */
-            $fila = 1;
-            $ultima_fila_con_contenido = 1;
-
-            foreach ($lectura->filas() as $row) {
-                $cells = [];
-                $fila_tiene_contenido = false;
-
-                foreach ($row->getCells() as $cell) {
-                    $value = $cell->getValue();
-
-                    if ($value instanceof \DateTime) {
-                        $value = $value->format('Y-m-d H:i:s');
-                    }
-
-                    if ($value === null) {
-                        $value = '';
-                    }
-
-                    $text_value = trim((string) $value);
-                    if ($text_value !== '') {
-                        $fila_tiene_contenido = true;
-                    }
-
-                    $cells[] = new Cell((string) $value);
-                }
-
-                if (count($cells) === 0) {
-                    $cells[] = new Cell('');
-                }
-
-                if ($fila_tiene_contenido) {
-                    $ultima_fila_con_contenido = $fila;
-                }
-
-                $new_row = new Row($cells, null);
-                $writer->addRow($new_row);
-
-                $fila++;
+            if (!@copy($sidecar_csv, $this->csv_full_path)) {
+                throw new \RuntimeException('No se pudo copiar el CSV de la hoja a imported_files.');
             }
 
-            $nombre_de_hoja = $lectura->nombre();
-
-            $writer->close();
-            $lectura->cerrar();
+            $ultima_fila_con_contenido = (int) $meta['ultima_fila_con_contenido'];
+            $nombre_de_hoja            = (string) $meta['nombre_hoja'];
 
             /*
              * Si el frontend envió finish_row muy alto (p. ej. 99999 en importación con IA),
