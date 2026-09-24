@@ -97,10 +97,10 @@ class ListadoVentasHelper
      *
      * Del builder base salen CINCO consultas (mas hasta dos de totales sin IVA, ver
      * `totales_sin_iva()`, que reciben el conjunto como subselect de ids), y cada una parte de un
-     * `clone` propio: el Builder de
-     * Eloquent implementa `__clone` clonando el query builder de abajo, asi que los `where` que le
-     * agrega una consulta no se le pegan a la siguiente. Sin el clone, la de conteos por solapa
-     * arrastraria las show options de la de totales y las solapas cambiarian al tocar un filtro.
+     * `clone` propio: el Builder de Eloquent implementa `__clone` clonando el query builder de
+     * abajo, asi que los `where` que le agrega una consulta no se le pegan a la siguiente. Sin el
+     * clone, la de conteos por solapa arrastraria las show options de la de totales y las solapas
+     * cambiarian al tocar un filtro.
      *
      * @param  \Illuminate\Database\Eloquent\Builder $query_base Query del controller: user + modulo + fecha.
      * @param  Request $request
