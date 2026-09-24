@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
@@ -86,6 +87,15 @@ class AsistenteIaService
      * creciente sin límite.
      */
     const MAX_CARACTERES_HISTORIAL = 24000;
+
+    /**
+     * Cuántas fotos de la última tanda del dueño vuelven a viajar cuando su último mensaje no trae
+     * ninguna, y hasta a cuántos mensajes suyos de distancia (correcciones del 24/9/2026, ver
+     * con_las_fotos_de_la_ultima_tanda()).
+     */
+    const MAX_FOTOS_DE_LA_TANDA = 3;
+
+    const MAX_MENSAJES_HASTA_LA_TANDA = 3;
 
     /** Techo de tokens de la respuesta. */
     const MAX_TOKENS = 1500;
@@ -377,6 +387,26 @@ class AsistenteIaService
          * confirmar_carga_pendiente (es justo el texto donde se inventan números).
          */
         if (! is_null($confirmacion_determinista)) {
+            $toco_una_carga = true;
+        }
+
+        /*
+         * 🔴 UN TURNO CON FOTO ARRANCA ESCALADO DESDE LA PRIMERA VUELTA (correcciones del 24/9/2026,
+         * decisión tomada por la misión asistente-fotos-barras-y-compras en nombre de Lucas). Las 17
+         * conversaciones reales mostraron que con el dueño en "ágil" las malas decisiones de un
+         * pedido con foto —cuestionar el emisor de la factura, pedir el precio de venta teniendo
+         * costo y margen, decir que no puede leer el código de barras— las toma el modelo rápido
+         * ANTES de llamar a cualquier tool de carga, así que el escalado por toca_una_carga() nunca
+         * llegaba a entrar. Con "profundo" salieron los cinco escenarios.
+         *
+         * Anthropic: el modelo de "profundo" desde la vuelta 0. DeepSeek: el Pro no ve imágenes, así
+         * que modelo_del_asistente() sigue eligiendo el modelo con visión, pero con el thinking
+         * ENABLED desde el inicio (el de profundo). Eso NO reabre el 400 de 1e9711bd: ese error era
+         * prender el thinking A MITAD de turno, con un tool_use previo sin bloque `thinking`; un turno
+         * que arranca pensando devuelve sus bloques `thinking` y thinking_apto_para_historial() los
+         * deja pasar. Se paga el modelo caro sólo en los turnos con foto, que son los de cargar algo.
+         */
+        if ($lleva_imagenes) {
             $toco_una_carga = true;
         }
 
@@ -1444,7 +1474,80 @@ CONFIRMACION;
             array_shift($turns);
         }
 
+        $turns = $this->con_las_fotos_de_la_ultima_tanda($conversation, $turns, $id_ultimo_user);
+
         return $this->turnos_para_la_api($turns);
+    }
+
+    /**
+     * Si el último mensaje del dueño NO trae foto, le vuelve a sumar en base64 las fotos sin usar de
+     * su última tanda (correcciones del 24/9/2026).
+     *
+     * 🔴 POR QUÉ. La regla de arriba (sólo el último mensaje manda sus fotos) dejaba ciego al modelo
+     * en cuanto el dueño contestaba algo: en la prueba real, dos turnos después de mandar la foto del
+     * producto el modelo le pidió "decime qué ves en la imagen". La foto que todavía no se usó es la
+     * que está en juego, así que vuelve a viajar — con tres topes para que el costo no crezca sin
+     * techo, que es lo que la regla de arriba cuida:
+     *   - sólo fotos SIN USAR de la última tanda del dueño, de las últimas 24 horas
+     *     (FotosDeLaConversacionIaHelper::tanda_de: nunca las de internet, que cuelgan del asistente);
+     *   - como mucho MAX_FOTOS_DE_LA_TANDA, las más nuevas;
+     *   - y sólo si esa tanda está a MAX_MENSAJES_HASTA_LA_TANDA mensajes del dueño o menos: más
+     *     atrás ya es otra charla, y la herramienta que la necesite la encuentra sola igual.
+     *
+     * @param  AiConversation  $conversation
+     * @param  array<int, array{role: string, texto: string, imagenes: array}>  $turns
+     * @param  int  $id_ultimo_user
+     * @return array<int, array{role: string, texto: string, imagenes: array}>
+     */
+    protected function con_las_fotos_de_la_ultima_tanda(AiConversation $conversation, array $turns, $id_ultimo_user): array
+    {
+        $ultimo = count($turns) - 1;
+
+        if ($id_ultimo_user <= 0 || $ultimo < 0 || $turns[$ultimo]['role'] !== 'user' || count($turns[$ultimo]['imagenes']) > 0) {
+            return $turns;
+        }
+
+        $tanda = FotosDeLaConversacionIaHelper::tanda_de((int) $conversation->id, (int) $conversation->user_id, (int) $id_ultimo_user);
+
+        if (! count($tanda)) {
+            return $turns;
+        }
+
+        $mensaje_de_la_tanda = 0;
+
+        foreach ($tanda as $imagen) {
+            $mensaje_de_la_tanda = max($mensaje_de_la_tanda, (int) $imagen->ai_message_id);
+        }
+
+        $del_dueno_despues = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '>', $mensaje_de_la_tanda)
+            ->where('id', '<=', (int) $id_ultimo_user)
+            ->count();
+
+        if ($del_dueno_despues > self::MAX_MENSAJES_HASTA_LA_TANDA) {
+            return $turns;
+        }
+
+        $bloques = [];
+
+        foreach (array_slice($tanda, -self::MAX_FOTOS_DE_LA_TANDA) as $imagen) {
+            $bloque = $this->bloque_de_una_imagen($imagen);
+
+            if (! is_null($bloque)) {
+                $bloques[] = $bloque;
+            }
+        }
+
+        if (! count($bloques)) {
+            return $turns;
+        }
+
+        $turns[$ultimo]['imagenes'] = $bloques;
+        $turns[$ultimo]['texto'] = trim($turns[$ultimo]['texto'] . "\n"
+            . '[Van de nuevo las fotos que mandó hace un momento y todavía no se usaron.]');
+
+        return $turns;
     }
 
     /**
@@ -1563,29 +1666,46 @@ CONFIRMACION;
         $bloques = [];
 
         foreach ($message->imagenes as $imagen) {
-            $binario = AsistenteImagenHelper::binario($imagen);
+            $bloque = $this->bloque_de_una_imagen($imagen);
 
-            if (is_null($binario)) {
-                continue;
+            if (! is_null($bloque)) {
+                $bloques[] = $bloque;
             }
-
-            $media_type = AsistenteImagenHelper::media_type($binario);
-
-            if (is_null($media_type)) {
-                continue;
-            }
-
-            $bloques[] = [
-                'type'   => 'image',
-                'source' => [
-                    'type'       => 'base64',
-                    'media_type' => $media_type,
-                    'data'       => base64_encode($binario),
-                ],
-            ];
         }
 
         return $bloques;
+    }
+
+    /**
+     * El bloque `image` en base64 de UNA foto, o null si el archivo no está o no es de un tipo que
+     * el proveedor acepte (ver el 🔴 del media_type en bloques_de_imagen()). Separado para que las
+     * fotos de la última tanda (con_las_fotos_de_la_ultima_tanda) viajen exactamente igual.
+     *
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return array<string, mixed>|null
+     */
+    protected function bloque_de_una_imagen($imagen)
+    {
+        $binario = AsistenteImagenHelper::binario($imagen);
+
+        if (is_null($binario)) {
+            return null;
+        }
+
+        $media_type = AsistenteImagenHelper::media_type($binario);
+
+        if (is_null($media_type)) {
+            return null;
+        }
+
+        return [
+            'type'   => 'image',
+            'source' => [
+                'type'       => 'base64',
+                'media_type' => $media_type,
+                'data'       => base64_encode($binario),
+            ],
+        ];
     }
 
     /**
