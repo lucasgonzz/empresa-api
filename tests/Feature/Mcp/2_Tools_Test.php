@@ -137,7 +137,13 @@ class Tools_Test extends McpTestCase
             $this->assertArrayHasKey('properties', $tool['inputSchema'], $tool['name'] . ': inputSchema.properties');
             $this->assertNotEquals('', (string) $tool['title'], $tool['name'] . ': title');
             $this->assertNotEquals('', (string) $tool['description'], $tool['name'] . ': description');
-            $this->assertFalse($tool['annotations']['openWorldHint'], $tool['name'] . ': ninguna sale del negocio');
+            // Desde el 24/9/2026 hay una tool que sí sale a internet (la búsqueda por código de
+            // barras): la premisa "ninguna sale del negocio" pasó a ser "sólo las declaradas".
+            $this->assertSame(
+                in_array($tool['name'], McpHerramientasHelper::SALEN_A_INTERNET, true),
+                $tool['annotations']['openWorldHint'],
+                $tool['name'] . ': sólo las de SALEN_A_INTERNET salen del negocio'
+            );
             $this->assertIsBool($tool['annotations']['readOnlyHint']);
             $this->assertIsBool($tool['annotations']['destructiveHint']);
 

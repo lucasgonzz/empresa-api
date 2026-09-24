@@ -24,7 +24,8 @@ use App\Services\AsistenteIa\HerramientasDeCarga;
  * Las `annotations` son pistas para el cliente MCP (la spec las declara no confiables para
  * seguridad, son para la interfaz: qué pedir confirmar, qué marcar como lectura): `readOnlyHint`
  * para lo que solo consulta, `destructiveHint` para lo que borra o reescribe de a muchos, y
- * `openWorldHint: false` en todas porque ninguna sale del negocio de este dueño.
+ * `openWorldHint: false` en todas salvo las de SALEN_A_INTERNET (desde el 24/9/2026, la búsqueda
+ * por código de barras), que son las únicas que salen del negocio de este dueño.
  */
 class McpHerramientasHelper
 {
@@ -38,6 +39,15 @@ class McpHerramientasHelper
 
     /** Prefijos de las tools que solo leen: van con readOnlyHint = true. */
     const PREFIJOS_DE_LECTURA = ['consultar_', 'que_puedo_', 'resumir_', 'mostrar_', 'contar_'];
+
+    /**
+     * Las tools que salen a internet: openWorldHint = true. La búsqueda por código de barras
+     * (misión asistente-fotos-barras-y-compras, 24/9/2026) consulta Open Food Facts y la búsqueda
+     * web de Anthropic: es la única que no se queda adentro del negocio del dueño.
+     */
+    const SALEN_A_INTERNET = [
+        'buscar_producto_por_codigo_de_barras',
+    ];
 
     /**
      * Las tools que borran o reescriben de a muchos: destructiveHint = true. Un nombre que todavía
@@ -137,7 +147,7 @@ class McpHerramientasHelper
             'annotations' => [
                 'readOnlyHint'    => self::es_de_lectura($name),
                 'destructiveHint' => in_array($name, self::DESTRUCTIVAS, true),
-                'openWorldHint'   => false,
+                'openWorldHint'   => in_array($name, self::SALEN_A_INTERNET, true),
             ],
         ];
     }
