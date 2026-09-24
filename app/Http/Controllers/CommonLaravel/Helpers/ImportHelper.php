@@ -227,15 +227,41 @@ class ImportHelper {
 		$normalized = preg_replace('/^(USD|U\$S|\$)\s*/iu', '', $original);
 		$normalized = trim($normalized);
 
-		// Caso con coma y punto: detectar cuál es el separador decimal. No se toca por
-		// $interpretacion_punto: acá no hay ambigüedad, el de más a la derecha manda.
-		if (strpos($normalized, ',') !== false && strpos($normalized, '.') !== false) {
-			if (strrpos($normalized, ',') > strrpos($normalized, '.')) {
-				$normalized = str_replace('.', '', $normalized);
-				$normalized = str_replace(',', '.', $normalized);
+		// Se pone en true cuando el formato es inequívocamente inválido (ej: "1.5,3").
+		$formato_invalido = false;
+
+		// Separador de miles con espacio, espacio de no separación (U+00A0), espacio fino de no
+		// separación (U+202F) o apóstrofo (recto o tipográfico): "1 234,50", "1'234". Solo se acepta
+		// con patrón estricto (grupos de EXACTAMENTE 3 dígitos), con o sin decimal después. Como ya
+		// hay un agrupador de miles, lo que venga después (coma o punto) es siempre el decimal: no
+		// hay nada que interpretar, y por eso $interpretacion_punto no aplica.
+		if (preg_match('/^([+-]?\d{1,3}(?:[ \x{00A0}\x{202F}\'\x{2019}]\d{3})+)(?:[.,](\d+))?$/u', $normalized, $partes) === 1) {
+			$entera = preg_replace('/[ \x{00A0}\x{202F}\'\x{2019}]/u', '', $partes[1]);
+			$decimal = isset($partes[2]) ? $partes[2] : '';
+			$normalized = $decimal !== '' ? $entera . '.' . $decimal : $entera;
+		} elseif (strpos($normalized, ',') !== false && strpos($normalized, '.') !== false) {
+			// Caso con coma y punto: el de más a la derecha es el decimal. No se toca por
+			// $interpretacion_punto: acá no hay ambigüedad. El OTRO separador solo puede estar como
+			// agrupador de miles bien formado (1 a 3 dígitos y después grupos de exactamente 3):
+			// "1.5,3" o "1,5.3" no son un número, y antes se aceptaban en silencio como 15.3.
+			$decimal_es_coma = strrpos($normalized, ',') > strrpos($normalized, '.');
+			$sep_decimal = $decimal_es_coma ? ',' : '.';
+			$sep_miles = $decimal_es_coma ? '.' : ',';
+			$posicion = strrpos($normalized, $sep_decimal);
+			$parte_entera = substr($normalized, 0, $posicion);
+			$parte_decimal = substr($normalized, $posicion + 1);
+
+			$patron_miles = '/^[+-]?\d{1,3}(' . preg_quote($sep_miles, '/') . '\d{3})+$/';
+			if (preg_match($patron_miles, $parte_entera) === 1 && preg_match('/^\d*$/', $parte_decimal) === 1) {
+				$normalized = str_replace($sep_miles, '', $parte_entera) . '.' . $parte_decimal;
 			} else {
-				$normalized = str_replace(',', '', $normalized);
+				$formato_invalido = true;
 			}
+		} elseif (substr_count($normalized, ',') >= 2 && preg_match('/^[+-]?\d{1,3}(,\d{3})+$/', $normalized) === 1) {
+			// Varias comas solas y en grupos de exactamente 3 dígitos: es separador de miles
+			// ("1,234,567"). Una sola coma NO entra acá: sigue siendo decimal ("1,234" -> 1.234),
+			// regla fija de Lucas.
+			$normalized = str_replace(',', '', $normalized);
 		} elseif (strpos($normalized, ',') !== false) {
 			// Caso con solo coma: tampoco es ambiguo, la coma siempre es decimal.
 			$normalized = str_replace(',', '.', $normalized);
@@ -255,7 +281,7 @@ class ImportHelper {
 			$normalized = str_replace('.', '', $normalized);
 		}
 
-		if (!is_numeric($normalized)) {
+		if ($formato_invalido || !is_numeric($normalized)) {
 			$row_prefix = !is_null($row_number) ? "Fila {$row_number}: " : '';
 			$field_suffix = !is_null($field_label) ? " para {$field_label}" : '';
 

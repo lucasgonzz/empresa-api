@@ -767,6 +767,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('seller-commission/saldo-inicial', 'SellerCommissionController@saldoInicial');
     Route::post('seller-commission/pago', 'SellerCommissionController@pago');
     Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');
+    // Panel de comisiones del vendedor (mision comisiones-vendedor-tablas, 24/9/2026): prefijo
+    // DISTINTO (`seller-commission-panel`) para no chocar con `seller-commission/{model_id}/
+    // {moneda_id}/{from_date}/{until_date?}`, que tambien matchearia 3-4 segmentos. Las rutas de
+    // arriba quedan intactas para un SPA sin actualizar.
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/resumen', 'SellerCommissionController@panelResumen');
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/liquidadas', 'SellerCommissionController@panelLiquidadas');
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/pendientes', 'SellerCommissionController@panelPendientes');
 
     Route::resource('sale-type', 'SaleTypeController');
 
