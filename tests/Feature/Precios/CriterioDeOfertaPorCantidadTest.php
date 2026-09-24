@@ -234,4 +234,25 @@ class CriterioDeOfertaPorCantidadTest extends TestCase
         $this->assertSame('100', Criterio::porcentaje_legible(100.00));
         $this->assertSame('', Criterio::porcentaje_legible(null));
     }
+
+    /**
+     * 🔴 Un porcentaje con espacios se anuncia igual que sin ellos.
+     *
+     * Lo encontro el chequeo cruzado contra el espejo de JS (24/9/2026, 33 bordes): con `'15 '`
+     * —un espacio AL FINAL— `resolver()` daba MODO_PORCENTAJE y `precio()` descontaba la plata,
+     * pero `porcentaje_legible()` devolvia cadena vacia, porque `is_numeric('15 ')` es **false**
+     * en PHP 7.4 (acepta el espacio adelante y no atras) y este metodo no hacia el `trim()` que
+     * `es_positivo()` si hace.
+     *
+     * O sea: la hoja de oferta para colgar en el local decia "= % de descuento", sin numero,
+     * mientras la venta descontaba el 15%. Dos criterios de "es un numero" adentro de la MISMA
+     * clase — la misma familia de error que la clase entera viene a evitar, en chiquito.
+     */
+    public function test_porcentaje_legible_con_espacios()
+    {
+        $this->assertSame(Criterio::MODO_PORCENTAJE, Criterio::resolver(null, '15 '));
+        $this->assertSame('15', Criterio::porcentaje_legible('15 '));
+        $this->assertSame('15', Criterio::porcentaje_legible(' 15'));
+        $this->assertSame('15', Criterio::porcentaje_legible('  15  '));
+    }
 }

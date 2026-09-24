@@ -162,15 +162,30 @@ class CriterioDeOfertaPorCantidadHelper
      * `15.00` -> `'15'`, `12.50` -> `'12,5'`, `7.25` -> `'7,25'`. La columna es decimal(8,2), asi
      * que sin esto todo cartel diria "15.00% de descuento".
      *
-     * Es el gemelo de `porcentaje_legible()` de `tienda-spa/src/mixins/generals.js`. Si cambia el
-     * formato de un lado, cambia del otro: es el mismo numero anunciado al mismo comprador, en el
-     * cartel del local y en la pantalla.
+     * Es el gemelo de `porcentaje_legible()` de `tienda-spa/src/mixins/generals.js` y del de
+     * `empresa-spa/src/utils/criterio_de_oferta_por_cantidad.js`. Si cambia el formato de un lado,
+     * cambia del otro: es el mismo numero anunciado al mismo comprador, en el cartel del local y
+     * en la pantalla.
+     *
+     * 🔴 EL trim() NO ES DECORATIVO, y esto se midio (24/9/2026, chequeo cruzado contra el espejo
+     * de JS sobre 33 bordes). `es_positivo()` hace trim antes de `is_numeric()`, pero
+     * `is_numeric('15 ')` con un espacio AL FINAL es **false** en PHP 7.4 (acepta el espacio
+     * adelante y no atras). Sin este trim, un porcentaje con un espacio al final resolvia
+     * MODO_PORCENTAJE y DESCONTABA la plata, y este metodo devolvia cadena vacia: la hoja de
+     * oferta para colgar en el local decia "= % de descuento", sin numero, mientras la venta si
+     * hacia el descuento. Los dos criterios de "es un numero" tienen que ser EL MISMO adentro de
+     * esta clase, no solo entre lenguajes.
      *
      * @param  mixed $valor
      * @return string
      */
     public static function porcentaje_legible($valor)
     {
+        /* El mismo trim que hace es_positivo(), y por el mismo motivo. */
+        if (is_string($valor)) {
+            $valor = trim($valor);
+        }
+
         if (!is_numeric($valor)) {
             return '';
         }
