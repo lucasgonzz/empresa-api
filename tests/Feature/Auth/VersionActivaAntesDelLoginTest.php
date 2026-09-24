@@ -159,10 +159,17 @@ class VersionActivaAntesDelLoginTest extends TestCase
 
     /**
      * Deja UN solo dueño en `users`: A, con la dirección que se pida. B pasa a ser EMPLEADO de A
-     * (UPDATE, no se borra), con su propia dirección, que no tiene que contar para nada.
+     * (UPDATE, no se borra), y la dirección de empleado no tiene que contar para nada.
+     *
+     * 🔴 TODOS los empleados de A llevan esa misma dirección de empleado: B y también los usuarios
+     * que ya traía sembrados la base, que setUp() dejó como empleados de A. No alcanza con cargarla
+     * solo en B, y se comprobó con una sonda: una implementación que "tomara prestado" el valor de
+     * un empleado cuando el dueño no tiene el suyo pasaba el test igual, porque su consulta caía en
+     * un empleado sembrado (id más bajo, sin dirección) y nunca llegaba a B. Con todos los empleados
+     * cargados da lo mismo cuál lea la implementación: si usa a alguno, se nota.
      *
      * @param  string|null  $default_version_del_dueno
-     * @param  string|null  $default_version_del_empleado
+     * @param  string|null  $default_version_del_empleado  La que llevan TODOS los empleados de A.
      * @return void
      */
     protected function armar_un_solo_dueno($default_version_del_dueno, $default_version_del_empleado = null)
@@ -171,8 +178,13 @@ class VersionActivaAntesDelLoginTest extends TestCase
             'default_version' => $default_version_del_dueno,
         ]);
 
+        // B deja de ser dueño: pasa a ser empleado de A.
         DB::table('users')->where('id', $this->dueno_b_id)->update([
-            'owner_id'        => $this->dueno_a_id,
+            'owner_id' => $this->dueno_a_id,
+        ]);
+
+        // Todos los empleados de A (B y los ya sembrados) con la misma dirección de empleado.
+        DB::table('users')->where('owner_id', $this->dueno_a_id)->update([
             'default_version' => $default_version_del_empleado,
         ]);
 
@@ -377,8 +389,8 @@ class VersionActivaAntesDelLoginTest extends TestCase
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * El dueño tiene la dirección A y un empleado tiene la B: responde A. Sirve además de prueba de
-     * que el empleado no cuenta como "un segundo dueño" (si contara, daría null).
+     * El dueño tiene la dirección A y sus empleados tienen la B: responde A. Sirve además de prueba
+     * de que los empleados no cuentan como "otro dueño" (si contaran, daría null).
      *
      * @return void
      */
@@ -393,8 +405,9 @@ class VersionActivaAntesDelLoginTest extends TestCase
     }
 
     /**
-     * El dueño no tiene dirección pero un empleado sí: se contesta null. La dirección de un
-     * empleado no se "presta" al dueño que no la tiene.
+     * El dueño no tiene dirección pero todos sus empleados sí: se contesta null. La dirección de un
+     * empleado no se "presta" al dueño que no la tiene (ver en armar_un_solo_dueno() por qué los
+     * empleados van todos cargados).
      *
      * @return void
      */
