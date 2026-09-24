@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -191,6 +192,21 @@ class PropuestaGenericaIaHelper
         if (!is_null($imagen_url)) {
 
             $presentacion['imagen_url'] = $imagen_url;
+
+            /*
+             * La referencia de la foto, para que AiMessageAction::toArray() rearme la URL en el
+             * request de la SPA: esta propuesta corre adentro del job, donde url() sale de APP_URL
+             * (ver FotosDelMensajeIaHelper::url). `imagen_url` queda como respaldo.
+             */
+            if (!empty($resueltos['extras']['imagen_id'])) {
+
+                $imagen = AiMessageImagen::find((int) $resueltos['extras']['imagen_id']);
+
+                if (!is_null($imagen)) {
+
+                    $presentacion['imagen_mensaje'] = ['ai_message_id' => (int) $imagen->ai_message_id, 'orden' => (int) $imagen->orden];
+                }
+            }
         }
 
         $creada = AccionesIaHelper::crear(
