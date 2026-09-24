@@ -559,12 +559,24 @@ class AsistenteIaService
         }
 
         /*
-         * Misión asistente-fotos-barras-y-compras (24/9/2026): fuera los párrafos de razonamiento
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): fuera las oraciones de razonamiento
          * filtrado (el del msg 136 de demo3: "Confirmation needed; no report state until
-         * confirmar_carga_pendiente returns..."). Si limpiar dejara el texto vacío, vuelve el
-         * original: ver TextoFinalIaHelper.
+         * confirmar_carga_pendiente returns..."). Ver TextoFinalIaHelper.
+         *
+         * Si limpiar deja el texto VACÍO: con una confirmación determinista hecha, la respuesta es su
+         * resultado (el modelo no escribió nada que sirva, y la carga sí se hizo); si no, vuelve el
+         * original — un mensaje vacío no se puede mandar (segundo chequeo adversarial, 24/9/2026).
          */
-        $final_text = trim(TextoFinalIaHelper::sanear(trim($final_text), $this->nombres_de_herramientas($tools)));
+        $crudo = trim($final_text);
+        $final_text = trim(TextoFinalIaHelper::limpiar($crudo, $this->nombres_de_herramientas($tools)));
+
+        if ($final_text === '' && $crudo !== '') {
+            $respaldo = is_null($confirmacion_determinista)
+                ? null
+                : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
+
+            $final_text = is_null($respaldo) ? $crudo : $respaldo;
+        }
 
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [

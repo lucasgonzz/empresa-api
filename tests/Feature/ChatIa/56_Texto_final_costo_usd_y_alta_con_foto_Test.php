@@ -259,6 +259,93 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
     }
 
     /**
+     * ⚠️ Segundo chequeo adversarial (24/9/2026): datos con marcadores en inglés que la versión por
+     * renglón todavía borraba (tienen UNA palabra española o una tilde), y razonamiento que dejaba
+     * pasar (pegado a una oración en castellano, o en una viñeta con el nombre de una herramienta).
+     *
+     * @test
+     */
+    public function por_oracion_se_quedan_los_datos_y_se_va_el_razonamiento()
+    {
+        $herramientas = ['confirmar_carga_pendiente', 'proponer_alta'];
+
+        foreach ([
+            'Stock de Let\'s Go Naranja 1L: 12 u.',
+            'Encontré: I Will Survive (DVD) — 3 u.',
+            'Precio del Now I Know (libro): $8000',
+        ] as $dato) {
+            $this->assertSame($dato, TextoFinalIaHelper::sanear($dato, $herramientas), '"' . $dato . '" es un dato.');
+        }
+
+        $this->assertSame(
+            'Te dejé la tarjeta de la compra.',
+            TextoFinalIaHelper::sanear('Te dejé la tarjeta de la compra. Let me tell the user to confirm it.', $herramientas),
+            'La oración en inglés pegada a una en castellano se va sola.'
+        );
+
+        $this->assertSame(
+            "Te armé la compra:\n- Proveedor: Distribuidora Sur",
+            TextoFinalIaHelper::sanear("Te armé la compra:\n- Need to call confirmar_carga_pendiente\n- Proveedor: Distribuidora Sur", $herramientas),
+            'Una viñeta que nombra una herramienta se va; la lista de datos se queda.'
+        );
+
+        // Y los de antes siguen igual: el msg 136 pierde sólo su párrafo en inglés.
+        $this->assertSame(
+            "Volví a armar la asignación de la foto para \"Botella Stanley de aluminio\". Confirmala y queda publicada en la tienda.\n\n"
+            . "Dejé la carga preparada: le asigna a \"Botella Stanley de aluminio\" la foto que me mandaste. ¿La registro?",
+            TextoFinalIaHelper::sanear(self::TEXTO_MSG_136, $herramientas)
+        );
+    }
+
+    /**
+     * Si limpiar deja la respuesta VACÍA y el sistema ya confirmó una carga por el "sí" de la
+     * persona, la respuesta es el resultado de esa carga (no el razonamiento en inglés original).
+     *
+     * @test
+     */
+    public function si_limpiar_deja_vacio_despues_de_una_confirmacion_va_el_resultado()
+    {
+        Http::fake([
+            'api.anthropic.com/*' => Http::response([
+                'model'       => 'claude-modelo-fake',
+                'stop_reason' => 'end_turn',
+                'content'     => [
+                    ['type' => 'text', 'text' => 'Confirmation needed; let me tell the user it is done.'],
+                ],
+                'usage'       => ['input_tokens' => 300, 'output_tokens' => 20],
+            ], 200),
+            '*' => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $propone) = $this->conversacion('Cargá la yerba zz-r4');
+
+        $respuesta = $this->herramienta($conversation, $propone, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Yerba zz-r4'],
+        ]);
+
+        $propone->contenido = 'Te dejé la tarjeta, ¿la registro?';
+        $propone->estado = 'listo';
+        $propone->save();
+
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Dale', 'estado' => 'listo']);
+
+        $contestando = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => true,
+        ]);
+
+        $texto = $this->service->responder($conversation, $contestando);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+        $this->assertStringStartsWith('Listo', $texto);
+        $this->assertStringContainsString('Yerba zz-r4', $texto);
+        $this->assertStringNotContainsString('Confirmation needed', $texto);
+    }
+
+    /**
      * Un marcador de razonamiento adentro de una oración en castellano (dos o más palabras
      * españolas) no alcanza para sacarla: es una cita, no un pensamiento en voz alta.
      *
