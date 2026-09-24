@@ -81,7 +81,11 @@ class StockEnLoteTest extends ImportTestCase
                 'stock' => 4, 'depositos' => [], 'pedidos' => [['global', 0, null]],
             ],
             'dos movimientos globales al mismo articulo' => [
-                'stock' => 0, 'depositos' => [], 'pedidos' => [['global', 5, null], ['global', 3, null]],
+                'stock' => 2, 'depositos' => [], 'pedidos' => [['global', 5, null], ['global', 3, null]],
+            ],
+            'dos depositos seguidos sobre uno existente (resultante acumulado)' => [
+                'stock' => 3, 'depositos' => ['A' => [3, null, null]],
+                'pedidos' => [['depositos', [['A', 4, null, null], ['B', 5, null, null]]]],
             ],
             'depositos abren en articulo sin stock (dos direcciones, min/max)' => [
                 'stock' => 0, 'depositos' => [],
@@ -473,10 +477,20 @@ class StockEnLoteTest extends ImportTestCase
         $this->assertSame('3.75', $decimales['stock']);
         $this->assertSame('3.75', $decimales['movimientos'][0]['observations']);
 
+        // El resultante intermedio (el del primer movimiento) es el stock corrido, no el monto.
         $dos_globales = $fotos['dos movimientos globales al mismo articulo'][1];
-        $this->assertSame('5.00', $dos_globales['movimientos'][0]['stock_resultante']);
-        $this->assertSame('8.00', $dos_globales['movimientos'][1]['stock_resultante']);
-        $this->assertSame('8.00', $dos_globales['stock']);
+        $this->assertSame('5.00', $dos_globales['movimientos'][0]['amount']);
+        $this->assertSame('7.00', $dos_globales['movimientos'][0]['stock_resultante']);
+        $this->assertSame('7', $dos_globales['movimientos'][0]['observations']);
+        $this->assertSame('10.00', $dos_globales['movimientos'][1]['stock_resultante']);
+        $this->assertSame('10.00', $dos_globales['stock']);
+
+        $dos_depositos = $fotos['dos depositos seguidos sobre uno existente (resultante acumulado)'][1];
+        $this->assertSame('4.00', $dos_depositos['movimientos'][0]['amount']);
+        $this->assertSame('7.00', $dos_depositos['movimientos'][0]['stock_resultante']);
+        $this->assertSame('12.00', $dos_depositos['movimientos'][1]['stock_resultante']);
+        $this->assertSame('12.00', $dos_depositos['stock']);
+        $this->assertCount(2, $dos_depositos['depositos']);
 
         $objetivo = $fotos['global actualizado, 20 -> objetivo 5'][1];
         $this->assertSame('-15.00', $objetivo['movimientos'][0]['amount']);
