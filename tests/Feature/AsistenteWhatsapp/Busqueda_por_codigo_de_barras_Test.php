@@ -134,6 +134,39 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
         $this->assertSame(30, $r['busquedas_restantes_hoy']);
     }
 
+    /**
+     * La ficha trae la miniatura de 400 px de lado mayor: en una botella el lado menor queda en ~170
+     * y no pasa el filtro. Se pide la original (`.full.jpg`), que es la misma foto.
+     *
+     * @test
+     */
+    public function la_foto_de_open_food_facts_se_pide_en_su_resolucion_original()
+    {
+        $this->fake_de_la_red([
+            'off' => [
+                'status'  => 1,
+                'product' => [
+                    'product_name'    => 'Aceite de girasol',
+                    'brands'          => 'Cocinero',
+                    'image_front_url' => 'https://images.openfoodfacts.org/images/products/779/007/001/2050/front_es.3.400.jpg',
+                ],
+            ],
+            'redaccion' => ['nombre' => 'Aceite de Girasol Cocinero 900 ml', 'marca' => 'Cocinero', 'descripcion' => null],
+            'imagen'    => $this->png(498, 1200),
+            'vision'    => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es el aceite.'],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_OFF, $conversacion, $assistant);
+
+        $this->assertNotNull($r['imagen_id']);
+        $this->assertSame('open_food_facts', $r['imagen_origen']);
+        $this->assertSame('https://images.openfoodfacts.org/images/products/779/007/001/2050/front_es.3.full.jpg', $r['imagen_fuente']);
+        $this->assertSame(0, BusquedaPorCodigoDeBarrasIaHelper::busquedas_web_de_hoy($this->comercio->id), 'Tampoco con foto se gasta una búsqueda web.');
+    }
+
     // ------------------------------------------------------------------ búsqueda web
 
     /** @test */
@@ -412,6 +445,11 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
 
             if (strpos($url, 'tienda.example') !== false || strpos($url, 'otra.example') !== false) {
                 return Http::response(isset($escenario['pagina']) ? $escenario['pagina'] : '', isset($escenario['pagina']) ? 200 : 404);
+            }
+
+            /* La miniatura de OFF es alta y angosta: si se la pidiera a ella, no pasaría el filtro. */
+            if (strpos($url, 'images.openfoodfacts.org') !== false && substr($url, -8) === '.400.jpg') {
+                return Http::response($this->png(166, 400), 200);
             }
 
             if (strpos($url, 'cdn.example') !== false || strpos($url, 'images.openfoodfacts.org') !== false) {

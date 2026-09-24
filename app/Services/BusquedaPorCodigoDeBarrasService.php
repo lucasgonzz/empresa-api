@@ -195,11 +195,46 @@ class BusquedaPorCodigoDeBarrasService
                 'base'       => $base,
                 'url'        => str_replace('/api/v2/product/', '/product/', $url_base) . $ean,
                 'producto'   => $producto,
-                'imagen_url' => $imagen === '' ? null : $imagen,
+                'imagen_url' => $imagen === '' ? null : $this->foto_grande_de_base_abierta($imagen),
             ];
         }
 
         return null;
+    }
+
+    /**
+     * La foto de una base abierta en su resolución original.
+     *
+     * La ficha trae la miniatura de 400 px de lado MAYOR (`front_es.3.400.jpg`), y en un producto
+     * alto —una botella— el lado menor queda en ~170 px y no pasa el filtro de LADO_MINIMO: el
+     * 24/9/2026 el aceite Cocinero (7790070012050) se quedaba sin foto por eso. La misma foto en
+     * `.full.jpg` es la original (498x1200 en ese caso).
+     *
+     * @param  string  $url
+     * @return string
+     */
+    protected function foto_grande_de_base_abierta($url)
+    {
+        return (string) preg_replace('#\.(\d+)\.(\d+)\.jpg$#i', '.$1.full.jpg', (string) $url);
+    }
+
+    /**
+     * Timeout de la descarga de una foto: las de las bases abiertas tardan mucho más que cualquier
+     * tienda. Medido el 24/9/2026 desde esta máquina: images.openfoodfacts.org tardó 15 a 25 s en
+     * empezar a mandar, la misma foto, cinco veces seguidas; con los 8 s de siempre no llegaba nunca.
+     *
+     * @param  string  $url
+     * @return int
+     */
+    protected function timeout_de_descarga($url)
+    {
+        $host = (string) parse_url((string) $url, PHP_URL_HOST);
+
+        if (preg_match('/(openfoodfacts|openbeautyfacts)\.org$/i', $host)) {
+            return 30;
+        }
+
+        return 8;
     }
 
     /**
@@ -512,7 +547,7 @@ class BusquedaPorCodigoDeBarrasService
             return null;
         }
 
-        $binario = $this->descargar($url, self::MAX_BYTES_IMAGEN);
+        $binario = $this->descargar($url, self::MAX_BYTES_IMAGEN, $this->timeout_de_descarga($url));
 
         if (is_null($binario)) {
             $this->descartes[] = $url . ': no se pudo descargar';
