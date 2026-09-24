@@ -175,6 +175,17 @@ class ProcessArticleChunk implements ShouldQueue
          * desactualizado y terminaría creando duplicados (ver prompt 03, grupo 229 —
          * caso Servian: mismo bar_code creado dos veces por dos workers distintos).
          */
+
+        /*
+         * Contexto del índice acotado (misión importacion-excel-motor-rapido, 24/9/2026), ANTES
+         * de reset_runtime(): desde acá la clave de cache del índice lleva el sufijo de esta
+         * importación (dos importaciones del mismo comercio en 60 minutos no comparten un
+         * índice acotado a otro archivo) y build() lo arma sólo con las claves del archivo
+         * (<csv>.claves, escrito por InitExcelImport). Si el archivo de claves no existe —un
+         * job encolado antes de este cambio— build() es el completo de siempre.
+         */
+        ArticleIndexCache::set_contexto_de_importacion($this->csv_path . '.claves', (string) $this->import_history_id);
+
         ArticleIndexCache::reset_runtime((int) $this->user_id);
 
         $inicio = microtime(true);

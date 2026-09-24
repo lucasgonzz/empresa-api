@@ -297,6 +297,23 @@ class ArticleImport implements ToCollection
 
         $this->set_providers($rows);
 
+        /*
+         * Modelos precargados por lote (misión importacion-excel-motor-rapido, 24/9/2026):
+         * ANTES del loop se calculan, con los mismos normalizadores del índice, los ids que
+         * las filas de este lote pueden matchear, y se cargan en tandas de 500 con las
+         * relaciones que ProcessRow lee por fila (listas, depósitos, proveedores, descuentos,
+         * recargos). find_with_index() los sirve desde ese mapa: cuatro consultas por fila con
+         * match pasan a una por cada 500 candidatos. Si algún id no está en el mapa (borrado
+         * entre el índice y el lote), se consulta como siempre.
+         */
+        $this->iniciar();
+        ArticleIndexCache::precargar_modelos(
+            (int) $this->user->id,
+            ArticleIndexCache::ids_candidatos_de_filas($rows, $this->columns, $article_index),
+            ArticleIndexCache::relaciones_de_precarga()
+        );
+        $this->terminar('precargar modelos del lote');
+
         $error_message = null;
 
         $filas_procesada = $this->start_row;

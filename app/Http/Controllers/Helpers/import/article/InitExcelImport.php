@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\import\article;
 
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
@@ -508,7 +509,124 @@ class InitExcelImport
 
         Log::info('Offsets de chunks generados: ' . count($offsets));
 
+        $this->escribir_claves_del_archivo();
+
         return $offsets;
+    }
+
+    /**
+     * Junta los conjuntos de claves del archivo y los deja en <csv>.claves, para que
+     * ArticleIndexCache::build() arme el índice de identificación SÓLO con lo que el archivo
+     * puede matchear (misión importacion-excel-motor-rapido, 24/9/2026), en vez de indexar y
+     * serializar el catálogo entero del comercio en cada lote (568.000 artículos en Servian:
+     * ~100 MB serializados por operación, 300-400 MB en RAM, 5-10 s por lote).
+     *
+     * 🔴 Con los MISMOS normalizadores que usa el índice y que usa ProcessRow al buscar:
+     * IdentifierNormalizer::normalize() para numero/bar_code/sku/provider_code (casteo literal,
+     * trim, placeholders "S/N", "-" a null) y ArticleIndexCache::normalize_name_for_match() para
+     * el nombre. Si acá se normalizara distinto, una clave del archivo no entraría al índice y
+     * la fila crearía un duplicado en silencio.
+     *
+     * Se leen con fgetcsv() todas las filas desde start_row hasta el final del CSV (no hasta
+     * finish_row): es un superconjunto barato y evita cualquier desalineación entre el conteo
+     * por líneas físicas de los offsets (fgets) y el conteo por filas CSV de los lotes
+     * (fgetcsv) si una celda trae un salto de línea. Una clave de más en el índice no cambia
+     * ningún resultado; una de menos, sí. Las filas anteriores a start_row (el encabezado)
+     * quedan afuera: sus textos no son identificadores de nada.
+     *
+     * Serializado con serialize() (no JSON): las claves numéricas del archivo ("123") tienen que
+     * volver como llegaron, y json_encode/json_decode de un array con esas claves las mezcla con
+     * las de texto. Se escribe a un temporal y se renombra al final. Si no se puede escribir, se
+     * avisa y la importación sigue con el índice completo de siempre: el archivo de claves es
+     * una optimización, no un requisito.
+     *
+     * @return void
+     */
+    protected function escribir_claves_del_archivo()
+    {
+        $ruta_claves = $this->csv_full_path . '.claves';
+
+        $claves = [
+            'ids'            => [],
+            'bar_codes'      => [],
+            'skus'           => [],
+            'provider_codes' => [],
+            'names'          => [],
+        ];
+
+        /* Columna del archivo => sección del índice; mismo mapeo que $props_to_add de ProcessRow::procesar(). */
+        $identificadores = [
+            'numero'              => 'ids',
+            'codigo_de_barras'    => 'bar_codes',
+            'sku'                 => 'skus',
+            'codigo_de_proveedor' => 'provider_codes',
+        ];
+
+        $handle = @fopen($this->csv_full_path, 'r');
+
+        if ($handle === false) {
+            Log::warning('InitExcelImport: no se pudo abrir el CSV para juntar las claves del archivo; el índice será el completo', [
+                'csv' => $this->csv_full_path,
+            ]);
+
+            return;
+        }
+
+        /* El writer de OpenSpout arranca el CSV con un BOM UTF-8: se saltea antes de parsear. */
+        if (fread($handle, 3) !== "\xEF\xBB\xBF") {
+            rewind($handle);
+        }
+
+        $filas = 0;
+
+        while (($row = fgetcsv($handle, 0, ',')) !== false) {
+            $filas++;
+
+            if ($filas < (int) $this->start_row) {
+                continue;
+            }
+
+            foreach ($identificadores as $columna => $seccion) {
+                $normalizado = IdentifierNormalizer::normalize(ImportHelper::getColumnValue($row, $columna, $this->columns));
+
+                if (!is_null($normalizado)) {
+                    $claves[$seccion][$normalizado] = true;
+                }
+            }
+
+            $nombre = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+
+            if (!is_null($nombre)) {
+                $clave_nombre = ArticleIndexCache::normalize_name_for_match($nombre);
+
+                if ($clave_nombre !== '') {
+                    $claves['names'][$clave_nombre] = true;
+                }
+            }
+        }
+
+        fclose($handle);
+
+        $temporal = $ruta_claves . '.tmp' . getmypid();
+
+        if (@file_put_contents($temporal, serialize($claves)) === false || !@rename($temporal, $ruta_claves)) {
+            @unlink($temporal);
+
+            Log::warning('InitExcelImport: no se pudo escribir el archivo de claves; el índice será el completo', [
+                'claves' => $ruta_claves,
+            ]);
+
+            return;
+        }
+
+        Log::info('InitExcelImport: claves del archivo para el índice acotado', [
+            'filas'          => $filas,
+            'ids'            => count($claves['ids']),
+            'bar_codes'      => count($claves['bar_codes']),
+            'skus'           => count($claves['skus']),
+            'provider_codes' => count($claves['provider_codes']),
+            'names'          => count($claves['names']),
+        ]);
     }
 
     function armar_jobs_de_chunks()
