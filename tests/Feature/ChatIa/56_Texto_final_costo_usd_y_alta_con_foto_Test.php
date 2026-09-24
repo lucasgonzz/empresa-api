@@ -791,4 +791,87 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
         $this->assertNotNull(AiMessageImagen::find($del_codigo->id)->gestionada_at, 'La foto del código de barras queda sellada.');
         $this->assertNotNull(AiMessageImagen::find($de_internet->id)->gestionada_at);
     }
+
+    // ------------------------------------------------ segundo chequeo adversarial (6, 7)
+
+    /**
+     * ⚠️ "Sí, pero sin foto": un `con_foto_de_la_conversacion: false` o un `imagen_id: 0` explícitos
+     * en la corrección QUITAN la foto heredada, y una `descripcion: ""` explícita quita la
+     * descripción. Antes se descartaban como "no vino nada" y la foto se seguía publicando.
+     *
+     * @test
+     */
+    public function la_correccion_puede_quitar_la_foto_y_la_descripcion_heredadas()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá este producto');
+
+        $de_internet = $this->foto($assistant);
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Yerba zz-q6'],
+            'imagen_id'   => $de_internet->id,
+            'descripcion' => 'Yerba mate con palo.',
+        ]);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+
+        $sin_foto = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'                     => 'article',
+            'datos'                       => ['name' => 'Yerba zz-q6'],
+            'con_foto_de_la_conversacion' => false,
+            'reemplaza_a'                 => $primera['tarjeta_id'],
+        ]);
+
+        $this->assertTrue($sin_foto['ok'], json_encode($sin_foto));
+
+        $tarjeta = AiMessageAction::find($sin_foto['tarjeta_id']);
+        $extras = isset($tarjeta->datos['extras']) ? $tarjeta->datos['extras'] : [];
+
+        $this->assertArrayNotHasKey('imagen_id', $extras, 'Con con_foto_de_la_conversacion:false la foto heredada se quita.');
+        $this->assertSame('Yerba mate con palo.', $extras['descripcion'], 'Lo que no se tocó se sigue heredando.');
+        $this->assertArrayNotHasKey('imagen_url', $tarjeta->presentacion);
+
+        $sin_nada = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Yerba zz-q6'],
+            'imagen_id'   => 0,
+            'descripcion' => '',
+            'reemplaza_a' => $primera['tarjeta_id'],
+        ]);
+
+        $this->assertTrue($sin_nada['ok'], json_encode($sin_nada));
+
+        $extras = AiMessageAction::find($sin_nada['tarjeta_id'])->datos;
+        $extras = isset($extras['extras']) ? $extras['extras'] : [];
+
+        $this->assertArrayNotHasKey('imagen_id', $extras, 'imagen_id:0 explícito quita la foto.');
+        $this->assertArrayNotHasKey('descripcion', $extras, 'descripcion:"" explícita quita la descripción.');
+    }
+
+    /**
+     * ⚠️ La descripción que manda el modelo se sanea al proponer: sin HTML (la tienda la pinta con
+     * v-html y va a Tienda Nube), con los espacios colapsados y con techo de 1200 caracteres.
+     *
+     * @test
+     */
+    public function la_descripcion_se_sanea_al_proponer()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá el termo');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Termo zz-q7'],
+            'descripcion' => "<p>Termo <b>de acero</b></p>\n\n\n<script>alert(1)</script>   de un   litro. " . str_repeat('Muy bueno. ', 200),
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $descripcion = AiMessageAction::find($respuesta['tarjeta_id'])->datos['extras']['descripcion'];
+
+        $this->assertStringNotContainsString('<', $descripcion);
+        $this->assertStringStartsWith('Termo de acero alert(1) de un litro.', $descripcion);
+        $this->assertStringNotContainsString('  ', $descripcion, 'Los espacios quedan colapsados.');
+        $this->assertLessThanOrEqual(1200, mb_strlen($descripcion));
+    }
 }

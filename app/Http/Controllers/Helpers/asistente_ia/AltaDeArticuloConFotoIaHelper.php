@@ -56,10 +56,18 @@ class AltaDeArticuloConFotoIaHelper
     const ENTIDAD = 'article';
 
     /**
-     * Techo de la descripción: el texto de una ficha de tienda, no un documento. Es el orden de lo
-     * que escribe la generación de descripciones por IA de la pantalla.
+     * Techo de la descripción: el texto de una ficha de tienda, no un documento. Era 5000 hasta el
+     * segundo chequeo adversarial (24/9/2026); la tienda la pinta tal cual y se sincroniza a Tienda
+     * Nube, así que un texto largo del modelo no tiene por qué llegar entero.
      */
-    const LARGO_MAXIMO_DESCRIPCION = 5000;
+    const LARGO_MAXIMO_DESCRIPCION = 1200;
+
+    /**
+     * Marcas internas de "la persona pidió QUITAR" la foto o la descripción heredadas en una
+     * corrección (ver heredar()). No viajan a la tarjeta: sólo cortan la herencia.
+     */
+    const QUITAR_FOTO = 'quitar_foto';
+    const QUITAR_DESCRIPCION = 'quitar_descripcion';
 
     /** Cuánto de la descripción se muestra en la tarjeta: la persona la ve, pero no entera. */
     const LARGO_EN_LA_TARJETA = 300;
@@ -98,13 +106,17 @@ class AltaDeArticuloConFotoIaHelper
                 unset($datos[$clave]);
             }
 
-            if (array_key_exists($clave, $input) && !EntradaDeCargaIa::vacio($input[$clave])) {
+            /*
+             * Un valor "vacío" (false, 0, "") que vino EXPLÍCITO también se toma: en un artículo es
+             * la forma de decir "sin foto" o "sin descripción" en una corrección (ver limpiar()).
+             */
+            if (array_key_exists($clave, $input) && !is_null($input[$clave])) {
 
                 $extras[$clave] = $input[$clave];
             }
         }
 
-        return [$datos, self::limpiar($extras)];
+        return [$datos, self::limpiar($extras, $es_articulo)];
     }
 
     /**
@@ -145,7 +157,7 @@ class AltaDeArticuloConFotoIaHelper
 
         $de_antes = $anterior->datos['extras'];
 
-        $trae_foto = isset($extras[self::IMAGEN_ID]) || !empty($extras[self::CON_FOTO]);
+        $trae_foto = isset($extras[self::IMAGEN_ID]) || !empty($extras[self::CON_FOTO]) || !empty($extras[self::QUITAR_FOTO]);
 
         if (!$trae_foto && !empty($de_antes['imagen_id'])) {
 
@@ -158,7 +170,7 @@ class AltaDeArticuloConFotoIaHelper
             }
         }
 
-        if (!isset($extras[self::DESCRIPCION]) && isset($de_antes['descripcion']) && trim((string) $de_antes['descripcion']) !== '') {
+        if (!isset($extras[self::DESCRIPCION]) && empty($extras[self::QUITAR_DESCRIPCION]) && isset($de_antes['descripcion']) && trim((string) $de_antes['descripcion']) !== '') {
 
             $extras[self::DESCRIPCION] = (string) $de_antes['descripcion'];
         }
@@ -483,7 +495,7 @@ class AltaDeArticuloConFotoIaHelper
      * @param  array  $extras
      * @return array
      */
-    protected static function limpiar(array $extras)
+    protected static function limpiar(array $extras, $es_articulo = true)
     {
         $limpios = [];
 
@@ -494,28 +506,79 @@ class AltaDeArticuloConFotoIaHelper
             $si = $valor === true || $valor === 1 || $valor === '1'
                 || (is_string($valor) && in_array(mb_strtolower(trim($valor)), ['si', 'sí', 'true', 'yes'], true));
 
+            $no = $valor === false || $valor === 0 || $valor === '0'
+                || (is_string($valor) && in_array(mb_strtolower(trim($valor)), ['no', 'false'], true));
+
             if ($si) {
 
                 $limpios[self::CON_FOTO] = true;
+
+            } elseif ($no && $es_articulo) {
+
+                $limpios[self::QUITAR_FOTO] = true;
             }
         }
 
-        if (array_key_exists(self::IMAGEN_ID, $extras) && is_numeric($extras[self::IMAGEN_ID]) && (int) $extras[self::IMAGEN_ID] > 0) {
+        if (array_key_exists(self::IMAGEN_ID, $extras) && is_numeric($extras[self::IMAGEN_ID])) {
 
-            $limpios[self::IMAGEN_ID] = (int) $extras[self::IMAGEN_ID];
+            if ((int) $extras[self::IMAGEN_ID] > 0) {
+
+                $limpios[self::IMAGEN_ID] = (int) $extras[self::IMAGEN_ID];
+
+            } elseif ($es_articulo) {
+
+                /* imagen_id 0 explícito = "sin foto" (segundo chequeo adversarial, 24/9/2026). */
+                $limpios[self::QUITAR_FOTO] = true;
+            }
         }
 
         if (array_key_exists(self::DESCRIPCION, $extras) && is_scalar($extras[self::DESCRIPCION])) {
 
-            $texto = trim((string) $extras[self::DESCRIPCION]);
+            $texto = self::sanear_descripcion((string) $extras[self::DESCRIPCION]);
 
             if ($texto !== '') {
 
-                $limpios[self::DESCRIPCION] = self::recortar($texto, self::LARGO_MAXIMO_DESCRIPCION);
+                $limpios[self::DESCRIPCION] = $texto;
+
+            } elseif ($es_articulo) {
+
+                /* descripcion "" explícita = "sin descripción". */
+                $limpios[self::QUITAR_DESCRIPCION] = true;
             }
         }
 
+        /*
+         * ⚠️ POR QUÉ LAS MARCAS DE QUITAR (segundo chequeo adversarial, 24/9/2026). Antes un
+         * `con_foto_de_la_conversacion: false`, un `imagen_id: 0` o una `descripcion: ""` se
+         * descartaban como "no vino nada", y heredar() volvía a poner la foto de la tarjeta
+         * reemplazada: "sí, pero sin foto" la seguía publicando. Explícito, ahora QUITA lo heredado.
+         */
+        if (!empty($limpios[self::IMAGEN_ID]) || !empty($limpios[self::CON_FOTO])) {
+
+            unset($limpios[self::QUITAR_FOTO]);
+        }
+
         return $limpios;
+    }
+
+    /**
+     * La descripción tal como puede llegar a la ficha y a la tienda: sin HTML, con los espacios
+     * colapsados y con techo de LARGO_MAXIMO_DESCRIPCION.
+     *
+     * 🔴 La tienda la pinta con v-html y se sincroniza a Tienda Nube (segundo chequeo adversarial,
+     * 24/9/2026): lo que escribe el modelo —o lo que copió de una página web en la búsqueda por
+     * código de barras— no puede meter etiquetas en el catálogo publicado.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    public static function sanear_descripcion($texto)
+    {
+        $texto = strip_tags((string) $texto);
+
+        $texto = trim((string) preg_replace('/\s+/u', ' ', $texto));
+
+        return self::recortar($texto, self::LARGO_MAXIMO_DESCRIPCION);
     }
 
     /**
