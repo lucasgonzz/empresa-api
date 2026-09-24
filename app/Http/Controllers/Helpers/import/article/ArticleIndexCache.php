@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Models\Article;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
@@ -913,18 +914,27 @@ class ArticleIndexCache
         if (count($nombres) > 0) {
             $ids_por_nombre = [];
 
-            Article::where('user_id', $user_id)
+            /*
+             * Query builder y no Eloquent, a propósito: son TODAS las filas del comercio (500.000
+             * en el catálogo de prueba) y acá sólo se compara un nombre. Hidratar 500.000 modelos
+             * Article costaba lo mismo que el índice completo entero (medido: 123 s contra 114 s
+             * del build completo); con stdClass la pasada son unos segundos. El whereNull de
+             * deleted_at reemplaza el scope de SoftDeletes que Eloquent aplicaba solo.
+             */
+            DB::table('articles')
                 ->select(['id', 'name'])
+                ->where('user_id', $user_id)
+                ->whereNull('deleted_at')
                 ->orderBy('id')
-                ->chunkById(5000, function ($articles) use (&$ids_por_nombre, &$vistos, $nombres) {
-                    foreach ($articles as $article) {
+                ->chunkById(5000, function ($filas) use (&$ids_por_nombre, &$vistos, $nombres) {
+                    foreach ($filas as $fila) {
                         /* Ya indexado por otra clave: su nombre entró con él. */
-                        if (isset($vistos[(int) $article->id])) {
+                        if (isset($vistos[(int) $fila->id])) {
                             continue;
                         }
 
-                        if (!empty($article->name) && isset($nombres[self::normalize_name_for_match($article->name)])) {
-                            $ids_por_nombre[] = (int) $article->id;
+                        if (!empty($fila->name) && isset($nombres[self::normalize_name_for_match($fila->name)])) {
+                            $ids_por_nombre[] = (int) $fila->id;
                         }
                     }
                 });
