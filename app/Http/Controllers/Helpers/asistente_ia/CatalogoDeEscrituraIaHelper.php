@@ -274,7 +274,14 @@ class CatalogoDeEscrituraIaHelper
                 'mercado_libre', 'meli_listing_type_id', 'meli_buying_mode_id', 'meli_item_condition_id', 'meli_descripcion',
                 'disponible_tienda_nube', 'requires_shipping', 'free_shipping', 'seo_title', 'seo_description', 'video_url',
                 'peso', 'profundidad', 'ancho', 'alto', 'espesor', 'modelo', 'pastilla', 'diametro', 'litros', 'cm3', 'calipers', 'juego',
-                'provider_price_list_id', 'cost_in_dollars', 'provider_cost_in_dollars', 'percentage_gain_blanco', 'costo_mano_de_obra',
+                'provider_price_list_id', 'provider_cost_in_dollars', 'percentage_gain_blanco', 'costo_mano_de_obra',
+                /*
+                 * `cost_in_dollars` SALIÓ de esta lista el 24/9/2026 (misión
+                 * asistente-fotos-barras-y-compras): en demo3 (conv 11) el dueño pidió "costo en
+                 * dólares de diez dólares" y el asistente contestó que el alta no tenía ese campo. La
+                 * pantalla sí lo tiene (el tilde "costo en dólares" de la ficha) y store()/update() lo
+                 * leen. `provider_cost_in_dollars` sigue acá: se carga desde la lista del proveedor.
+                 */
             ],
             'claves_de_pantalla' => ['price_types' => [], 'tags' => [], 'price_type_monedas' => [], 'addresses' => [], 'childrens' => []],
             // La ficha nace con "aplica el margen del proveedor" APAGADO aunque la columna tenga default 1.
@@ -988,6 +995,22 @@ class CatalogoDeEscrituraIaHelper
     ];
 
     /**
+     * Lo que el modelo tiene que saber de un campo y la etiqueta sola no dice: `[entidad => [columna
+     * => texto]]`. Viaja en que_puedo_cargar como `descripcion` del campo.
+     *
+     *   - article.cost_in_dollars (misión asistente-fotos-barras-y-compras, 24/9/2026): es una MARCA,
+     *     no un monto. El costo en dólares se carga poniendo el número en `cost` y prendiendo esto;
+     *     sin la explicación, el modelo buscaba dónde poner "10 dólares" y no lo encontraba.
+     *
+     * @var array<string, array<string, string>>
+     */
+    const DESCRIPCIONES_DE_CAMPOS = [
+        'article' => [
+            'cost_in_dollars' => 'Marca que dice que `cost` está en dólares (si/no). El número va en `cost`; el precio en pesos sale del dólar del proveedor o, si no tiene, del dólar global del negocio.',
+        ],
+    ];
+
+    /**
      * Relaciones por convención que no se resuelven con Str::plural del prefijo.
      *
      * @var array<string, array<string, string>>
@@ -1390,6 +1413,11 @@ class CatalogoDeEscrituraIaHelper
             if ($columna === 'moneda_id') {
 
                 $fila['se_acepta'] = 'pesos / dolares';
+            }
+
+            if (isset(self::DESCRIPCIONES_DE_CAMPOS[$declaracion['entidad']][$columna])) {
+
+                $fila['descripcion'] = self::DESCRIPCIONES_DE_CAMPOS[$declaracion['entidad']][$columna];
             }
 
             $campos[] = $fila;
