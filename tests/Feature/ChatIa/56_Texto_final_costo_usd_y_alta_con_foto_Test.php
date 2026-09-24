@@ -275,6 +275,36 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
         $this->assertStringContainsString('¿La registro?', $texto);
     }
 
+    /**
+     * El razonamiento en su PROPIO bloque de texto, sin saltos de línea: como los bloques se unen
+     * sin separador, sin el filtro por bloque de extract_response_text quedaría soldado al párrafo
+     * en español y el saneo por párrafo no lo vería.
+     *
+     * @test
+     */
+    public function el_razonamiento_en_un_bloque_aparte_sin_saltos_se_descarta()
+    {
+        Http::fake([
+            'api.anthropic.com/*' => Http::response([
+                'model'       => 'claude-modelo-fake',
+                'stop_reason' => 'end_turn',
+                'content'     => [
+                    ['type' => 'text', 'text' => 'Volví a armar la asignación de la foto.'],
+                    ['type' => 'text', 'text' => 'Confirmation needed; no report state until confirmar_carga_pendiente returns. Let me tell the user to confirm.'],
+                    ['type' => 'text', 'text' => ' ¿La registro?'],
+                ],
+                'usage'       => ['input_tokens' => 300, 'output_tokens' => 80],
+            ], 200),
+            '*' => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion('Ponele la foto a la botella');
+
+        $texto = $this->service->responder($conversation, $assistant);
+
+        $this->assertSame('Volví a armar la asignación de la foto. ¿La registro?', $texto);
+    }
+
     // ------------------------------------------------------------------------------------ A4
 
     /**

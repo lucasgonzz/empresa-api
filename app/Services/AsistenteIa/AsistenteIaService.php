@@ -472,7 +472,7 @@ class AsistenteIaService
             }
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
-            $final_text = $this->extract_response_text($response_body);
+            $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
             break;
         }
 
@@ -2794,18 +2794,35 @@ CONFIRMACION;
      * @param array<string, mixed> $body Respuesta JSON del proveedor (forma de Anthropic).
      * @return string
      */
-    protected function extract_response_text(array $body): string
+    protected function extract_response_text(array $body, array $nombres_de_herramientas = null): string
     {
-        $text = '';
+        $bloques = [];
 
         if (isset($body['content']) && is_array($body['content'])) {
             foreach ($body['content'] as $block) {
                 if (is_array($block) && ($block['type'] ?? '') === 'text' && isset($block['text'])) {
-                    $text .= (string) $block['text'];
+                    $bloques[] = (string) $block['text'];
                 }
             }
         }
 
-        return $text;
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): con varios bloques de texto, un bloque
+         * que ENTERO es razonamiento filtrado se descarta acá, antes de unir. Los bloques se pegan sin
+         * separador (así salen bien las respuestas de hoy), y un razonamiento que viene en su propio
+         * bloque sin salto de línea quedaría soldado al párrafo en español: el saneo por párrafo de
+         * TextoFinalIaHelper::sanear ya no lo podría separar. Siempre queda al menos un bloque.
+         */
+        if (!is_null($nombres_de_herramientas) && count($bloques) > 1) {
+            $limpios = array_values(array_filter($bloques, function ($bloque) use ($nombres_de_herramientas) {
+                return !TextoFinalIaHelper::es_razonamiento_filtrado($bloque, $nombres_de_herramientas);
+            }));
+
+            if (count($limpios)) {
+                $bloques = $limpios;
+            }
+        }
+
+        return implode('', $bloques);
     }
 }
