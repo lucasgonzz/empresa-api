@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\AltaDeArticuloConFotoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
@@ -877,7 +878,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_alta',
-                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -891,6 +892,24 @@ class HerramientasDeCarga
                             'additionalProperties' => true,
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión asistente-fotos-barras-y-compras (24/9/2026): los tres extras del alta
+                         * de un artículo, AL FINAL de las propiedades por la regla del prefijo del
+                         * caché. No van al controller: los ejecuta AltaDeArticuloConFotoIaHelper
+                         * después del alta.
+                         */
+                        'con_foto_de_la_conversacion' => [
+                            'type'        => 'boolean',
+                            'description' => 'Solo para entidad article: true para que el artículo nazca con la foto que la persona te mandó en esta conversación (la saco sola, no me la pases).',
+                        ],
+                        'imagen_id'   => [
+                            'type'        => 'integer',
+                            'description' => 'Solo para entidad article: el imagen_id de una foto que te devolvió otra herramienta (la búsqueda por código de barras). Si lo mandás, no hace falta con_foto_de_la_conversacion.',
+                        ],
+                        'descripcion' => [
+                            'type'        => 'string',
+                            'description' => 'Solo para entidad article: la descripción del producto para la ficha y la tienda online, en español.',
+                        ],
                     ],
                     'required'   => ['entidad', 'datos'],
                 ],
@@ -1620,6 +1639,16 @@ class HerramientasDeCarga
                 return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad')));
 
             case 'proponer_alta':
+                /*
+                 * Los extras del alta de un artículo (foto y descripción) se separan de `datos` acá:
+                 * no son campos de la pantalla de artículos y validar_campos() los rechazaría. Misión
+                 * asistente-fotos-barras-y-compras (24/9/2026), ver AltaDeArticuloConFotoIaHelper.
+                 */
+                list($datos_del_alta, $extras_del_alta) = AltaDeArticuloConFotoIaHelper::separar(
+                    $input,
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos'))
+                );
+
                 return self::resultado(self::quizas_auto_confirmar(
                     $contexto,
                     $conversation,
@@ -1628,8 +1657,9 @@ class HerramientasDeCarga
                         $contexto,
                         $assistant_message,
                         EntradaDeCargaIa::valor($input, 'entidad'),
-                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
-                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                        $datos_del_alta,
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a'),
+                        $extras_del_alta
                     )
                 ));
 

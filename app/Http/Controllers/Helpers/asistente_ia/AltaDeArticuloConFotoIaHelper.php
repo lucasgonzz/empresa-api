@@ -1,0 +1,390 @@
+<?php
+
+namespace App\Http\Controllers\Helpers\asistente_ia;
+
+use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
+use App\Models\Article;
+use App\Models\Description;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * El ALTA DE UN ARTÍCULO CON SU FOTO Y SU DESCRIPCIÓN, en UNA sola tarjeta (misión
+ * asistente-fotos-barras-y-compras, 24/9/2026).
+ *
+ * El caso: el dueño manda la foto de un producto y dice "cargalo". Antes eran dos tarjetas —el alta
+ * con proponer_alta y, recién con el artículo creado, la foto con proponer_foto_articulo—, o sea dos
+ * "¿lo registro?" y dos "sí" para una sola cosa que la persona pidió de una vez. Y la segunda tarjeta
+ * no se podía armar hasta que la primera se confirmara, porque el artículo todavía no existía.
+ *
+ * Ahora proponer_alta de `article` acepta tres extras opcionales, que NO van al controller (la
+ * pantalla de artículos no los recibe en su store(): la foto y la descripción se cargan después,
+ * cada una por su pantalla) sino en `datos.extras` de la tarjeta:
+ *
+ *   - `con_foto_de_la_conversacion`: la foto más nueva que el DUEÑO mandó y no se usó
+ *     (FotosDeLaConversacionIaHelper::la_mas_nueva, la misma ventana que la foto de un artículo).
+ *   - `imagen_id`: una foto puntual por su id. Es la que devuelve la búsqueda por código de barras
+ *     (constructor B de la misión), guardada como `ai_message_imagenes` colgada del mensaje del
+ *     ASISTENTE. Se valida que sea de esta conversación, del dueño y que no se haya usado.
+ *   - `descripcion`: el texto de la descripción del producto.
+ *
+ * Al confirmar, primero se crea el artículo por el controller de la pantalla (EjecutorGenericoIaHelper,
+ * igual que cualquier alta) y DESPUÉS, con el artículo ya creado, se le asigna la foto con los mismos
+ * cuatro efectos de la pantalla (PropuestaFotoArticuloIaHelper::asignar_imagen) y se crea la
+ * descripción como la crea la pantalla (ArticleDescriptionAiController::store).
+ *
+ * 🔴 SI LA FOTO O LA DESCRIPCIÓN FALLAN, EL ARTÍCULO NO SE DESHACE. El alta ya pasó por el controller
+ * de la pantalla, que pudo haber hablado con Tienda Nube: deshacerla desde acá sería borrar de este
+ * lado algo que ya salió del sistema (el mismo motivo por el que las altas van en dos etapas, ver
+ * EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS). El resultado lo dice: "creado, pero la foto no se
+ * pudo asignar: <motivo>", y la foto queda sin usar para volver a intentarla con la foto de un
+ * artículo.
+ *
+ * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
+ */
+class AltaDeArticuloConFotoIaHelper
+{
+    /** Las claves de los extras, tal como las recibe proponer_alta. */
+    const CON_FOTO = 'con_foto_de_la_conversacion';
+    const IMAGEN_ID = 'imagen_id';
+    const DESCRIPCION = 'descripcion';
+
+    /** La única entidad que acepta extras. */
+    const ENTIDAD = 'article';
+
+    /**
+     * Techo de la descripción: el texto de una ficha de tienda, no un documento. Es el orden de lo
+     * que escribe la generación de descripciones por IA de la pantalla.
+     */
+    const LARGO_MAXIMO_DESCRIPCION = 5000;
+
+    /** Cuánto de la descripción se muestra en la tarjeta: la persona la ve, pero no entera. */
+    const LARGO_EN_LA_TARJETA = 300;
+
+    /** El título de la sección de descripción, como la guarda la pantalla. */
+    const TITULO_DESCRIPCION = 'Descripción';
+
+    /**
+     * Separa los extras de lo que va al controller. Los acepta como parámetros propios de la
+     * herramienta y TAMBIÉN adentro de `datos` (el modelo a veces los pone ahí): si quedaran en
+     * `datos`, validar_campos() los rechazaría con "el campo no existe", que es verdad para la
+     * pantalla de artículos pero no para esta tarjeta.
+     *
+     * 🔴 De `datos` se sacan SÓLO si la entidad es un artículo: otra entidad puede tener de verdad
+     * un campo que se llame `descripcion`, y ése tiene que seguir yendo a su pantalla.
+     *
+     * @param  array  $input  El input crudo de la herramienta.
+     * @param  array  $datos  `datos` ya convertido a array.
+     * @return array  [$datos_sin_extras, $extras]
+     */
+    public static function separar(array $input, array $datos)
+    {
+        $extras = [];
+
+        $entidad = isset($input['entidad']) && is_scalar($input['entidad']) ? trim((string) $input['entidad']) : '';
+
+        $declaracion = $entidad === '' ? null : CatalogoDeEscrituraIaHelper::declaracion($entidad);
+
+        $es_articulo = !is_null($declaracion) && $declaracion['entidad'] === self::ENTIDAD;
+
+        foreach ([self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION] as $clave) {
+
+            if ($es_articulo && array_key_exists($clave, $datos)) {
+
+                $extras[$clave] = $datos[$clave];
+                unset($datos[$clave]);
+            }
+
+            if (array_key_exists($clave, $input) && !EntradaDeCargaIa::vacio($input[$clave])) {
+
+                $extras[$clave] = $input[$clave];
+            }
+        }
+
+        return [$datos, self::limpiar($extras)];
+    }
+
+    /**
+     * Resuelve los extras al proponer: busca la foto y arma lo que se guarda en la tarjeta y los
+     * renglones que la persona ve. Devuelve la respuesta negativa si falta la foto que se pidió.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
+     * @param  array  $extras  Lo que devolvió separar().
+     * @return array  ['extras' => array, 'renglones' => array] o la respuesta negativa.
+     */
+    public static function resolver(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $extras)
+    {
+        $guardar = [];
+        $renglones = [];
+
+        $imagen = null;
+
+        if (isset($extras[self::IMAGEN_ID])) {
+
+            $imagen = FotosDeLaConversacionIaHelper::por_id($contexto, $extras[self::IMAGEN_ID]);
+
+            if (is_null($imagen)) {
+
+                return RespuestaDeCargaIa::error(
+                    'Esa foto no la encuentro entre las de esta conversación, o ya se usó. Proponé el alta sin imagen_id o con otra foto.'
+                );
+            }
+
+        } elseif (!empty($extras[self::CON_FOTO])) {
+
+            $imagen = FotosDeLaConversacionIaHelper::la_mas_nueva($contexto, $mensaje);
+
+            if (is_null($imagen)) {
+
+                return RespuestaDeCargaIa::error(
+                    'No tengo ninguna foto tuya sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te cargo el artículo con ella.'
+                );
+            }
+        }
+
+        if (!is_null($imagen)) {
+
+            $del_dueno = FotosDeLaConversacionIaHelper::la_mando_el_dueno($imagen);
+
+            $guardar['imagen_id'] = (int) $imagen->id;
+            $guardar['imagen_origen'] = $del_dueno ? 'conversacion' : 'internet';
+
+            $cuando = FotosDeLaConversacionIaHelper::cuando_llego($imagen);
+
+            $renglones[] = [
+                'etiqueta' => 'Foto',
+                'valor'    => $del_dueno
+                    ? 'La que mandaste' . ($cuando === '' ? '' : ' (' . $cuando . ')')
+                    : 'Foto encontrada en internet',
+            ];
+        }
+
+        if (isset($extras[self::DESCRIPCION])) {
+
+            $guardar['descripcion'] = $extras[self::DESCRIPCION];
+
+            $renglones[] = ['etiqueta' => 'Descripción', 'valor' => self::recortar($extras[self::DESCRIPCION], self::LARGO_EN_LA_TARJETA)];
+        }
+
+        return ['extras' => $guardar, 'renglones' => $renglones];
+    }
+
+    /**
+     * Después del alta: le asigna la foto y le crea la descripción al artículo recién creado, y
+     * completa el texto del resultado con lo que pasó. Nunca lanza (ver el 🔴 del docblock).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $resultado  El resultado del alta (EjecutorGenericoIaHelper), con `id` y `texto`.
+     * @param  array  $extras  `datos.extras` de la tarjeta.
+     * @return array  El mismo resultado, con `texto` completado y `extras` con lo que se hizo.
+     */
+    public static function completar(ContextoDeCargaIa $contexto, array $resultado, array $extras)
+    {
+        $articulo = Article::where('user_id', $contexto->owner_id)
+                            ->where('id', isset($resultado['id']) ? (int) $resultado['id'] : 0)
+                            ->first();
+
+        if (is_null($articulo)) {
+
+            return $resultado;
+        }
+
+        $hechos = [];
+        $fallas = [];
+
+        if (!empty($extras['imagen_id'])) {
+
+            $motivo = self::asignar_foto($contexto, $articulo, (int) $extras['imagen_id']);
+
+            if (is_null($motivo)) {
+
+                $hechos[] = 'la foto';
+
+            } else {
+
+                $fallas[] = 'la foto no se pudo asignar: ' . $motivo;
+            }
+        }
+
+        if (isset($extras['descripcion']) && trim((string) $extras['descripcion']) !== '') {
+
+            $motivo = self::crear_descripcion($articulo, (string) $extras['descripcion']);
+
+            if (is_null($motivo)) {
+
+                $hechos[] = 'la descripción';
+
+            } else {
+
+                $fallas[] = 'la descripción no se pudo guardar: ' . $motivo;
+            }
+        }
+
+        $texto = isset($resultado['texto']) ? (string) $resultado['texto'] : '';
+
+        if (count($hechos)) {
+
+            $texto .= ', con ' . implode(' y ', $hechos);
+        }
+
+        if (count($fallas)) {
+
+            $texto .= ', pero ' . implode('; y ', $fallas);
+        }
+
+        $resultado['texto'] = $texto;
+        $resultado['extras'] = ['hechos' => $hechos, 'fallas' => $fallas];
+
+        return $resultado;
+    }
+
+    /**
+     * Asigna la foto con el candado de la fila (dos tarjetas no se llevan la misma foto) y los
+     * cuatro efectos de la pantalla. Devuelve null si quedó, o el motivo si no.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $articulo
+     * @param  int  $imagen_id
+     * @return string|null
+     */
+    protected static function asignar_foto(ContextoDeCargaIa $contexto, Article $articulo, $imagen_id)
+    {
+        try {
+
+            DB::transaction(function () use ($contexto, $articulo, $imagen_id) {
+
+                $imagen = AiMessageImagen::where('user_id', $contexto->owner_id)
+                                            ->where('id', (int) $imagen_id)
+                                            ->sinGestionar()
+                                            ->lockForUpdate()
+                                            ->first();
+
+                if (is_null($imagen)) {
+
+                    throw new AccionIaException(422, 'esa foto ya se usó o no está disponible');
+                }
+
+                PropuestaFotoArticuloIaHelper::asignar_imagen($contexto, $articulo, $imagen);
+            });
+
+        } catch (AccionIaException $e) {
+
+            return $e->getMessage();
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AltaDeArticuloConFotoIaHelper: no se pudo asignar la foto del artículo recién creado', [
+                'article_id' => (int) $articulo->id,
+                'imagen_id'  => (int) $imagen_id,
+                'error'      => $e->getMessage(),
+            ]);
+
+            return 'falló el sistema al guardarla';
+        }
+
+        return null;
+    }
+
+    /**
+     * Crea la descripción como ArticleDescriptionAiController::store(): una fila de `descriptions`
+     * colgada del artículo, marcada como generada por IA y revisada —la persona la vio en la tarjeta
+     * antes de confirmar, que es lo mismo que confirmar el preview de la pantalla—, y el aviso a
+     * Tienda Nube si el cliente la usa. Devuelve null si quedó, o el motivo si no.
+     *
+     * @param  \App\Models\Article  $articulo
+     * @param  string  $texto
+     * @return string|null
+     */
+    protected static function crear_descripcion(Article $articulo, $texto)
+    {
+        try {
+
+            Description::create([
+                'title'          => self::TITULO_DESCRIPCION,
+                'content'        => trim($texto),
+                'article_id'     => (int) $articulo->id,
+                'ai_generated'   => true,
+                /*
+                 * 'low' es lo que la pantalla asume cuando nadie dice la confianza: nunca se
+                 * sobreestima la certeza de un texto que redactó una IA.
+                 */
+                'ai_confidence'  => 'low',
+                'ai_sources'     => [],
+                'ai_reviewed_at' => Carbon::now(),
+            ]);
+
+            if (env('USA_TIENDA_NUBE', false)) {
+
+                dispatch(new \App\Jobs\ProcessSyncArticleDescriptionTiendaNube($articulo));
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AltaDeArticuloConFotoIaHelper: no se pudo crear la descripción del artículo recién creado', [
+                'article_id' => (int) $articulo->id,
+                'error'      => $e->getMessage(),
+            ]);
+
+            return 'falló el sistema al guardarla';
+        }
+
+        return null;
+    }
+
+    /**
+     * Normaliza los extras crudos: el sí/no, el id como entero y la descripción como texto recortado.
+     * Los vacíos se descartan.
+     *
+     * @param  array  $extras
+     * @return array
+     */
+    protected static function limpiar(array $extras)
+    {
+        $limpios = [];
+
+        if (array_key_exists(self::CON_FOTO, $extras)) {
+
+            $valor = $extras[self::CON_FOTO];
+
+            $si = $valor === true || $valor === 1 || $valor === '1'
+                || (is_string($valor) && in_array(mb_strtolower(trim($valor)), ['si', 'sí', 'true', 'yes'], true));
+
+            if ($si) {
+
+                $limpios[self::CON_FOTO] = true;
+            }
+        }
+
+        if (array_key_exists(self::IMAGEN_ID, $extras) && is_numeric($extras[self::IMAGEN_ID]) && (int) $extras[self::IMAGEN_ID] > 0) {
+
+            $limpios[self::IMAGEN_ID] = (int) $extras[self::IMAGEN_ID];
+        }
+
+        if (array_key_exists(self::DESCRIPCION, $extras) && is_scalar($extras[self::DESCRIPCION])) {
+
+            $texto = trim((string) $extras[self::DESCRIPCION]);
+
+            if ($texto !== '') {
+
+                $limpios[self::DESCRIPCION] = self::recortar($texto, self::LARGO_MAXIMO_DESCRIPCION);
+            }
+        }
+
+        return $limpios;
+    }
+
+    /**
+     * @param  string  $texto
+     * @param  int  $largo
+     * @return string
+     */
+    protected static function recortar($texto, $largo)
+    {
+        $texto = trim((string) $texto);
+
+        return mb_strlen($texto) > $largo ? rtrim(mb_substr($texto, 0, $largo - 1)) . '…' : $texto;
+    }
+}

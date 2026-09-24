@@ -1,0 +1,495 @@
+<?php
+
+namespace Tests\Feature\ChatIa;
+
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
+use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
+use App\Models\AiConversation;
+use App\Models\AiMessage;
+use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
+use App\Models\Article;
+use App\Models\Description;
+use App\Models\ExtencionEmpresa;
+use App\Models\Image;
+use App\Models\User;
+use App\Services\AsistenteIa\AsistenteIaService;
+use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Intervention\Image\ImageManager;
+use Tests\EmpresaTestCase;
+
+/**
+ * Misión asistente-fotos-barras-y-compras (24/9/2026) — A3, A4 y A5.
+ *
+ * A3: el texto que le llega a la persona sin el razonamiento filtrado. El caso real es el msg 136 de
+ * demo3, que llegó por WhatsApp con un párrafo en inglés que nombraba confirmar_carga_pendiente.
+ *
+ * A4: `cost_in_dollars` en el alta de un artículo. En demo3 (conv 11) el dueño pidió "costo en
+ * dólares de diez dólares" y el asistente contestó que el alta no tenía ese campo: estaba en
+ * `solo_lectura` del catálogo, aunque la pantalla lo carga.
+ *
+ * A5: el alta de un artículo con su foto y su descripción en UNA tarjeta, sea la foto que mandó el
+ * dueño o la que encontró en internet la búsqueda por código de barras (colgada del mensaje del
+ * asistente). Todo por el mismo camino de la pantalla: ArticleController::store para el alta, los
+ * cuatro efectos de ImageController para la foto y una fila de `descriptions` para la descripción.
+ *
+ * Corre sobre el fixture de la ferretería, igual que 35_Cargas_genericas_de_punta_a_punta_Test.
+ *
+ * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
+ *
+ * @group chat-ia
+ */
+class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
+{
+    /** El texto REAL del msg 136 de demo3 (24/9/2026), tal cual llegó al WhatsApp del dueño. */
+    const TEXTO_MSG_136 = "Volví a armar la asignación de la foto para \"Botella Stanley de aluminio\". Confirmala y queda publicada en la tienda.\n\nConfirmation needed; no report state until confirmar_carga_pendiente returns. Let me tell the user to confirm.\n\nDejé la carga preparada: le asigna a \"Botella Stanley de aluminio\" la foto que me mandaste. ¿La registro?";
+
+    /** @var User */
+    protected $dueno;
+
+    /** @var AsistenteIaService */
+    protected $service;
+
+    /** Archivos que la asignación de la foto dejó en storage/app/public. */
+    protected $archivos_a_limpiar = [];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // 🔴 Nunca la clave real del .env.testing: este archivo no sale a la red.
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+
+        Storage::fake('local');
+
+        $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+
+        $extencion = ExtencionEmpresa::where('slug', 'asistente_ia')->first();
+
+        if (is_null($extencion)) {
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'asistente_ia', 'name' => 'Asistente IA']);
+        }
+
+        $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
+
+        // En "cauteloso" el alta deja tarjeta y se confirma por el endpoint de la pantalla.
+        User::where('id', $this->dueno->id)->update(['agente_confianza' => 'cauteloso']);
+
+        $this->service = new AsistenteIaService();
+
+        Catalogo::olvidar();
+    }
+
+    protected function tearDown(): void
+    {
+        foreach ($this->archivos_a_limpiar as $nombre) {
+            $ruta = storage_path() . '/app/public/' . $nombre;
+
+            if ($nombre !== '' && is_file($ruta)) {
+                @unlink($ruta);
+            }
+        }
+
+        parent::tearDown();
+    }
+
+    /**
+     * Conversación del dueño con su pedido y el assistant pendiente con las acciones habilitadas.
+     *
+     * @param  string  $pedido
+     * @return array{0: AiConversation, 1: AiMessage, 2: AiMessage}
+     */
+    protected function conversacion($pedido = 'Cargame este producto')
+    {
+        $conversation = AiConversation::create([
+            'user_id'      => $this->dueno->id,
+            'auth_user_id' => $this->dueno->id,
+        ]);
+
+        $del_dueno = AiMessage::create([
+            'ai_conversation_id' => $conversation->id,
+            'rol'                => 'user',
+            'contenido'          => $pedido,
+            'estado'             => 'listo',
+        ]);
+
+        $assistant = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => true,
+        ]);
+
+        return [$conversation, $assistant, $del_dueno];
+    }
+
+    /**
+     * Una foto de verdad en el disco falso, colgada de un mensaje.
+     *
+     * @param  AiMessage  $mensaje
+     * @return AiMessageImagen
+     */
+    protected function foto(AiMessage $mensaje)
+    {
+        $binario = (string) (new ImageManager())->canvas(12, 12, '#0B84F8')->encode('png');
+
+        $path = 'asistente_imagenes/' . $this->dueno->id . '/' . $mensaje->id . '/1.png';
+
+        Storage::disk('local')->put($path, $binario);
+
+        return AiMessageImagen::create([
+            'ai_message_id' => $mensaje->id,
+            'user_id'       => $this->dueno->id,
+            'orden'         => 1,
+            'path'          => $path,
+            'mime'          => 'image/png',
+            'bytes'         => strlen($binario),
+        ]);
+    }
+
+    /**
+     * Llama a una herramienta por el mismo camino que el loop del servicio.
+     *
+     * @param AiConversation $conversation
+     * @param AiMessage $assistant
+     * @param string $herramienta
+     * @param array $input
+     * @return array
+     */
+    protected function herramienta($conversation, $assistant, $herramienta, array $input)
+    {
+        $resultados = $this->service->execute_tool_calls([[
+            'type'  => 'tool_use',
+            'id'    => 'toolu_' . uniqid(),
+            'name'  => $herramienta,
+            'input' => $input,
+        ]], $conversation, $assistant);
+
+        $this->assertArrayNotHasKey('is_error', $resultados[0], 'La herramienta devolvió una falla técnica: ' . $resultados[0]['content']);
+
+        return json_decode($resultados[0]['content'], true);
+    }
+
+    /**
+     * Confirma la tarjeta por el endpoint de la pantalla.
+     *
+     * @param AiConversation $conversation
+     * @param AiMessage $assistant
+     * @param int $tarjeta_id
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function confirmar($conversation, $assistant, $tarjeta_id)
+    {
+        $assistant->contenido = 'Te dejé la tarjeta para confirmar.';
+        $assistant->estado = 'listo';
+        $assistant->save();
+
+        return $this->postJson('api/ai-conversations/' . $conversation->id . '/acciones/' . $tarjeta_id . '/confirmar');
+    }
+
+    /**
+     * @param  Article  $articulo
+     * @return void
+     */
+    protected function anotar_archivos(Article $articulo)
+    {
+        foreach (Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->get() as $image) {
+            $this->archivos_a_limpiar[] = basename((string) $image->hosting_url);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------ A3
+
+    /**
+     * 🔴 El texto real del msg 136: pierde SÓLO el párrafo en inglés que nombra la herramienta.
+     *
+     * @test
+     */
+    public function el_texto_del_msg_136_pierde_solo_el_parrafo_en_ingles()
+    {
+        $limpio = TextoFinalIaHelper::sanear(self::TEXTO_MSG_136, ['confirmar_carga_pendiente', 'proponer_foto_articulo']);
+
+        $this->assertSame(
+            "Volví a armar la asignación de la foto para \"Botella Stanley de aluminio\". Confirmala y queda publicada en la tienda.\n\n"
+            . "Dejé la carga preparada: le asigna a \"Botella Stanley de aluminio\" la foto que me mandaste. ¿La registro?",
+            $limpio
+        );
+    }
+
+    /**
+     * El mismo párrafo cae aunque no nombre ninguna herramienta, sólo por ser inglés; un nombre de
+     * producto en inglés adentro de una oración en castellano se queda; y una línea de sistema cae.
+     *
+     * @test
+     */
+    public function el_ingles_cae_por_idioma_y_un_nombre_propio_en_ingles_se_queda()
+    {
+        $this->assertTrue(TextoFinalIaHelper::es_razonamiento_filtrado('Let me tell the user to confirm the card first.', []));
+
+        $this->assertFalse(TextoFinalIaHelper::es_razonamiento_filtrado('Te cargué la botella The North Face de aluminio en la categoría Camping.', []));
+
+        $this->assertTrue(TextoFinalIaHelper::es_razonamiento_filtrado('[Tarjeta #12 · Gasto · estado: confirmada]', []));
+    }
+
+    /**
+     * Si limpiar dejara la respuesta vacía, se manda la original: un mensaje vacío no se puede mandar.
+     *
+     * @test
+     */
+    public function si_no_queda_nada_se_devuelve_el_original()
+    {
+        $solo_ingles = 'Confirmation needed; let me tell the user to confirm.';
+
+        $this->assertSame($solo_ingles, TextoFinalIaHelper::sanear($solo_ingles, []));
+    }
+
+    /**
+     * De punta a punta por el loop: el proveedor devuelve el texto del msg 136 y responder()
+     * devuelve el limpio.
+     *
+     * @test
+     */
+    public function el_loop_devuelve_el_texto_limpio()
+    {
+        Http::fake([
+            'api.anthropic.com/*' => Http::response([
+                'model'       => 'claude-modelo-fake',
+                'stop_reason' => 'end_turn',
+                'content'     => [
+                    ['type' => 'text', 'text' => self::TEXTO_MSG_136],
+                ],
+                'usage'       => ['input_tokens' => 300, 'output_tokens' => 80],
+            ], 200),
+            '*' => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion('Ponele la foto a la botella');
+
+        $texto = $this->service->responder($conversation, $assistant);
+
+        $this->assertStringNotContainsString('Confirmation needed', $texto);
+        $this->assertStringNotContainsString('confirmar_carga_pendiente', $texto);
+        $this->assertStringContainsString('Volví a armar la asignación', $texto);
+        $this->assertStringContainsString('¿La registro?', $texto);
+    }
+
+    // ------------------------------------------------------------------------------------ A4
+
+    /**
+     * `cost_in_dollars` es un campo del alta de artículos, con la explicación para el modelo.
+     *
+     * @test
+     */
+    public function el_costo_en_dolares_esta_en_que_puedo_cargar_con_su_explicacion()
+    {
+        $catalogo = Catalogo::que_puedo_cargar('article');
+
+        $campo = null;
+
+        foreach ($catalogo['campos'] as $fila) {
+            if ($fila['campo'] === 'cost_in_dollars') {
+                $campo = $fila;
+            }
+        }
+
+        $this->assertNotNull($campo, 'cost_in_dollars tiene que ofrecerse en el alta de artículos.');
+        $this->assertContains(Catalogo::OP_ALTA, $campo['operaciones']);
+        $this->assertStringContainsString('dólar', $campo['descripcion']);
+
+        $this->assertNotContains('provider_cost_in_dollars', array_column($catalogo['campos'], 'campo'), 'El del proveedor sigue siendo de solo lectura.');
+    }
+
+    /**
+     * 🔴 El caso de conv 11: "costo en dólares de diez dólares". El artículo queda con la marca y el
+     * precio sale cotizado al dólar del negocio, por ArticleController::store.
+     *
+     * @test
+     */
+    public function el_alta_con_costo_en_dolares_guarda_la_marca_y_cotiza_el_precio()
+    {
+        User::where('id', $this->dueno->id)->update(['dollar' => 1000, 'cotizar_precios_en_dolares' => 1]);
+
+        list($conversation, $assistant) = $this->conversacion('Cargá la Botella zz-a4, costo en dólares de diez dólares');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => [
+                'name'            => 'Botella zz-a4',
+                'cost'            => 10,
+                'cost_in_dollars' => 'si',
+                'percentage_gain' => 50,
+                'aplicar_iva'     => 'no',
+            ],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Botella zz-a4')->first();
+
+        $this->assertNotNull($articulo);
+        $this->assertEquals(1, (int) $articulo->cost_in_dollars, 'La marca de costo en dólares tiene que quedar guardada.');
+        $this->assertGreaterThanOrEqual(10000, (float) $articulo->final_price, 'El precio sale cotizado: 10 dólares a 1000 son 10.000 pesos antes del margen.');
+    }
+
+    // ------------------------------------------------------------------------------------ A5
+
+    /**
+     * 🔴 El alta con la foto que mandó el dueño: UNA tarjeta, y al confirmar el artículo, la fila en
+     * `images` con los efectos de la pantalla y la foto sellada.
+     *
+     * @test
+     */
+    public function el_alta_con_la_foto_de_la_conversacion_crea_el_articulo_con_su_imagen()
+    {
+        list($conversation, $assistant, $del_dueno) = $this->conversacion('Cargá esta botella zz-a5 con la foto');
+
+        $foto = $this->foto($del_dueno);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'                     => 'article',
+            'datos'                       => ['name' => 'Botella zz-a5'],
+            'con_foto_de_la_conversacion' => true,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->count(), 'Una sola tarjeta: el alta lleva la foto adentro.');
+
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertSame((int) $foto->id, (int) $tarjeta->datos['extras']['imagen_id']);
+        $this->assertArrayNotHasKey('con_foto_de_la_conversacion', $tarjeta->datos['payload'], 'Los extras no van al controller.');
+        $this->assertContains('Foto', array_column($tarjeta->presentacion['renglones'], 'etiqueta'));
+
+        $confirmacion = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
+
+        $confirmacion->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Botella zz-a5')->first();
+
+        $this->assertNotNull($articulo);
+
+        $this->anotar_archivos($articulo);
+
+        $this->assertSame(1, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count());
+        $this->assertNotNull(AiMessageImagen::find($foto->id)->gestionada_at, 'La foto queda sellada.');
+        $this->assertStringContainsString('con la foto', $confirmacion->json('model.resultado.texto'));
+    }
+
+    /**
+     * La foto que la búsqueda por código de barras dejó colgada del mensaje del ASISTENTE se acepta
+     * por su imagen_id, y la tarjeta dice que es de internet.
+     *
+     * @test
+     */
+    public function el_alta_con_imagen_id_de_un_mensaje_del_asistente_la_asigna()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá este producto por el código de barras');
+
+        // La foto de internet, colgada del assistant en curso como la guarda el constructor B.
+        $de_internet = $this->foto($assistant);
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'   => 'article',
+            'datos'     => ['name' => 'Yerba zz-a5 internet', 'bar_code' => '7790387000014'],
+            'imagen_id' => $de_internet->id,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $valores = array_column(AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['renglones'], 'valor');
+
+        $this->assertContains('Foto encontrada en internet', $valores);
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Yerba zz-a5 internet')->first();
+
+        $this->assertNotNull($articulo);
+
+        $this->anotar_archivos($articulo);
+
+        $this->assertSame(1, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count());
+        $this->assertNotNull(AiMessageImagen::find($de_internet->id)->gestionada_at);
+    }
+
+    /**
+     * Un imagen_id de OTRA conversación no se acepta: el id lo manda el modelo y no puede terminar
+     * publicada una foto que no es de esta charla.
+     *
+     * @test
+     */
+    public function un_imagen_id_de_otra_conversacion_no_se_acepta()
+    {
+        list(, , $de_otra_charla) = $this->conversacion('Otra charla');
+
+        $ajena = $this->foto($de_otra_charla);
+
+        list($conversation, $assistant) = $this->conversacion('Cargá este producto');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'   => 'article',
+            'datos'     => ['name' => 'Producto zz-a5 ajeno'],
+            'imagen_id' => $ajena->id,
+        ]);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * El alta con descripción: una fila de `descriptions` colgada del artículo, como la de la
+     * pantalla. La descripción puede venir como parámetro o adentro de `datos`.
+     *
+     * @test
+     */
+    public function el_alta_con_descripcion_crea_la_descripcion_del_articulo()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá el termo con esta descripción');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => [
+                'name'        => 'Termo zz-a5',
+                'descripcion' => 'Termo de acero inoxidable de un litro, mantiene el agua caliente 24 horas.',
+            ],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+
+        $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Termo zz-a5')->first();
+
+        $this->assertNotNull($articulo);
+
+        $descripcion = Description::where('article_id', $articulo->id)->first();
+
+        $this->assertNotNull($descripcion, 'La descripción tiene que quedar colgada del artículo.');
+        $this->assertStringContainsString('acero inoxidable', $descripcion->content);
+    }
+
+    /**
+     * La foto y la descripción son sólo del alta de un artículo: en otra entidad se corta, no se
+     * ignoran en silencio.
+     *
+     * @test
+     */
+    public function los_extras_en_otra_entidad_cortan()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá el proveedor');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'provider',
+            'datos'       => ['name' => 'Proveedor zz-a5'],
+            'descripcion' => 'Uno nuevo',
+        ]);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringContainsString('sólo se cargan en el alta de un artículo', $respuesta['error']);
+    }
+}

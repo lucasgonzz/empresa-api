@@ -61,15 +61,26 @@ class PropuestaGenericaIaHelper
      * @param  mixed  $entidad
      * @param  array  $datos  [campo => valor], con las claves de que_puedo_cargar.
      * @param  mixed  $reemplaza_a
+     * @param  array  $extras  La foto y la descripción de un artículo (AltaDeArticuloConFotoIaHelper::separar).
      * @return array
      */
-    public static function proponer_alta(ContextoDeCargaIa $contexto, AiMessage $mensaje, $entidad, array $datos, $reemplaza_a = null)
+    public static function proponer_alta(ContextoDeCargaIa $contexto, AiMessage $mensaje, $entidad, array $datos, $reemplaza_a = null, array $extras = [])
     {
         $declaracion = self::entidad_para($contexto, $entidad, Catalogo::OP_ALTA);
 
         if (RespuestaDeCargaIa::es_negativa($declaracion)) {
 
             return $declaracion;
+        }
+
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): la foto y la descripción viajan en la
+         * MISMA tarjeta del alta, pero sólo un artículo las tiene. En otra entidad se corta en vez de
+         * ignorarlas: una tarjeta que se calla una parte del pedido llega a la persona como completa.
+         */
+        if (count($extras) && $declaracion['entidad'] !== AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+
+            return RespuestaDeCargaIa::error('La foto y la descripción sólo se cargan en el alta de un artículo.');
         }
 
         $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $datos);
@@ -112,17 +123,47 @@ class PropuestaGenericaIaHelper
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
 
+        $datos_de_la_tarjeta = [
+            'entidad'   => $declaracion['entidad'],
+            'operacion' => Catalogo::OP_ALTA,
+            'payload'   => $payload,
+            'pedidos'   => $validado['pedidos'],
+        ];
+
+        /*
+         * Los extras van en `datos.extras` y NO en el payload: la pantalla de artículos no los recibe
+         * en su store(). Los ejecuta AltaDeArticuloConFotoIaHelper::completar() después del alta.
+         */
+        if (count($extras)) {
+
+            $resueltos = AltaDeArticuloConFotoIaHelper::resolver($contexto, $mensaje, $extras);
+
+            if (RespuestaDeCargaIa::es_negativa($resueltos)) {
+
+                return $resueltos;
+            }
+
+            $datos_de_la_tarjeta['extras'] = $resueltos['extras'];
+
+            foreach ($resueltos['renglones'] as $renglon) {
+
+                $renglones[] = $renglon;
+            }
+
+            if (!empty($resueltos['extras']['imagen_id'])) {
+
+                $aviso_de_la_foto = 'La foto también se publica en la tienda online del negocio.';
+
+                $aviso = is_null($aviso) ? $aviso_de_la_foto : $aviso.' '.$aviso_de_la_foto;
+            }
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_ALTA,
             self::clave_de_alta($declaracion, $nombre, $validado['pedidos']),
-            [
-                'entidad'   => $declaracion['entidad'],
-                'operacion' => Catalogo::OP_ALTA,
-                'payload'   => $payload,
-                'pedidos'   => $validado['pedidos'],
-            ],
+            $datos_de_la_tarjeta,
             [
                 'titulo'    => Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA),
                 'renglones' => $renglones,
