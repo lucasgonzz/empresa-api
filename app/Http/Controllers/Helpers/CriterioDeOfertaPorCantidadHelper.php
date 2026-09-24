@@ -129,6 +129,25 @@ class CriterioDeOfertaPorCantidadHelper
      * siga al precio: si el comercio cambia el precio del articulo, el precio de la oferta cambia
      * solo, sin tocar el tramo.
      *
+     * ⚠️ ESTE METODO NO REDONDEA, Y `ArticlePriceRangeHelper::precio()` DE `tienda-api` SI. No es
+     * un descuido ni una divergencia a "unificar": es la misma regla en dos escalas distintas, y
+     * el motivo es de persistencia, no de criterio.
+     *
+     *   - En la tienda el resultado se ESCRIBE en `article_cart.price`, que es `double(20,2)`, y
+     *     la resincronizacion del carrito compara ese valor con el recien calculado para decidir
+     *     si hace un UPDATE. Sin redondear, la igualdad no da nunca y cada recalculo escribe una
+     *     fila al pedo.
+     *   - En el ERP este numero no se persiste crudo: el precio de venta lo arma el SPA
+     *     (`getPriceVender()`) y termina en `article_sale.price`, que es `decimal(25,2)` — o sea
+     *     que redondea MySQL al guardar. Meter un `round()` aca seria el UNICO redondeo intermedio
+     *     de toda la cadena de precios del ERP, que hoy no redondea en ningun paso (el
+     *     `this.redondear(price)` de `getPriceVender` esta comentado a proposito).
+     *
+     * ⚠️ Y este metodo hoy no tiene consumidor en produccion dentro de `empresa-api`: el ERP
+     * resuelve el precio en el navegador. Vive aca porque es la version canonica del criterio
+     * —la que el test fija y contra la que se compara el espejo de JS—, no porque alguien lo
+     * llame. Su par que SI se usa es `resolver()`, `normalizar_par()` y `porcentaje_legible()`.
+     *
      * @param  mixed $price       el precio absoluto del tramo
      * @param  mixed $porcentaje  el porcentaje de descuento del tramo
      * @param  mixed $precio_base el precio que la linea iba a tener
