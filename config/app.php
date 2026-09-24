@@ -240,7 +240,17 @@ return [
     'USER_ID'                                   => env('USER_ID'),
     'GUARDAR_PRECIO_DE_OTROS_PROVEEDORES'       => env('GUARDAR_PRECIO_DE_OTROS_PROVEEDORES', false),
     'CODIGOS_DE_PROVEEDOR_REPETIDOS'            => env('CODIGOS_DE_PROVEEDOR_REPETIDOS', false),
-    'ARTICLE_EXCEL_CHUNK_SIZE'                  => env('ARTICLE_EXCEL_CHUNK_SIZE', 300),
+    /*
+     * Filas por lote de la importación de artículos por Excel (un ProcessArticleChunk por lote).
+     *
+     * 300 -> 1000 (misión importacion-excel-motor-rapido, 24/9/2026): el costo fijo de cada lote
+     * dejó de ser el índice del catálogo entero (ahora es acotado al archivo y los modelos del
+     * lote se precargan de una vez), así que un lote grande ya no pesa en memoria lo que pesaba,
+     * y cada lote de menos son un job menos en la cola, dos broadcasts menos y una relectura
+     * menos. Con 100.000 filas: 100 lotes en vez de 334. Los .env que lo fijan siguen mandando
+     * (los slots en 50, Servian en 100).
+     */
+    'ARTICLE_EXCEL_CHUNK_SIZE'                  => env('ARTICLE_EXCEL_CHUNK_SIZE', 1000),
     // Fix 22/9/2026 (incidente Servian/EXPOYER, ver ArticleProviderDiscountHelper::aplicar_ficha_en_lote).
     'SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE'     => env('SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE', 200),
     'VPS'                                       => env('VPS', false),
