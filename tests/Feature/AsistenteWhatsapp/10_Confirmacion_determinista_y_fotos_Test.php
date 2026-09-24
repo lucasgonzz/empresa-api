@@ -312,20 +312,116 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * En el chat de la pantalla el sí es el botón: un "Dale" escrito ahí no confirma nada solo.
+     * 🔴 CAMBIÓ EL COMPORTAMIENTO PEDIDO (correcciones del 24/9/2026, decisión de la misión): hasta
+     * esa ronda este test se llamaba en_el_canal_del_sistema_no_confirma_por_texto y fijaba que un
+     * "Dale" TIPEADO en el panel del chat no confirmaba nada. Pero Lucas escribe también desde el
+     * panel, y ahí el modelo no tiene confirmar_carga_pendiente: el "dale" quedaba en manos de un
+     * modelo que podía decir "quedó hecho" sin hacer nada, que es el bug original. Ahora confirma por
+     * el mismo camino que el botón Confirmar, con las mismas guardas (una tarjeta, del último mensaje
+     * del asistente, de menos de 30 minutos).
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function en_el_canal_del_sistema_no_confirma_por_texto()
+    public function en_el_canal_del_sistema_un_dale_tipeado_confirma_como_el_boton()
     {
-        list($conversation, $contestando, $tarjeta_id) = $this->escena_con_tarjeta('Dale');
+        $this->proveedor_que_solo_escribe();
+
+        list($conversation, $contestando, $tarjeta_id, $articulo) = $this->escena_con_tarjeta('Dale');
 
         $contestando->canal = AiMessage::CANAL_SISTEMA;
         $contestando->save();
 
+        (new AsistenteIaService())->responder($conversation, $contestando);
+
+        $this->anotar_archivos($articulo);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+        $this->assertSame(1, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count());
+        $this->assertStringContainsString('[El sistema ya confirmó la tarjeta #' . $tarjeta_id, $this->ultimo_user_enviado());
+    }
+
+    /**
+     * Una tarjeta de más de 30 minutos no se confirma sola: el "dale" puede estar contestando otra
+     * cosa. Decide el modelo.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_tarjeta_de_mas_de_media_hora_no_se_confirma_sola()
+    {
+        list($conversation, $contestando, $tarjeta_id) = $this->escena_con_tarjeta('Dale');
+
+        AiMessageAction::where('id', $tarjeta_id)->update(['created_at' => Carbon::now()->subMinutes(31)]);
+
         $this->assertNull(ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $contestando));
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
+     * Con signo de pregunta no es un sí: "¿ok?" confirmaba porque normalizar saca los signos.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_pregunta_no_es_un_si()
+    {
+        foreach (['¿ok?', 'dale?', '¿Listo?', 'ok??'] as $pregunta) {
+            $this->assertFalse(ConfirmacionDeterministaIaHelper::es_afirmacion($pregunta), '"' . $pregunta . '" pregunta, no confirma.');
+        }
+
+        list($conversation, $contestando, $tarjeta_id) = $this->escena_con_tarjeta('¿ok?');
+
+        $this->assertNull(ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $contestando));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+    }
+
+    /**
+     * Si la confirmación por texto la rechazaría (acá: la pregunta todavía se estaba escribiendo
+     * cuando llegó el "sí", el hallazgo C de la misión asistente-por-whatsapp), no se intenta y NO
+     * viaja ninguna nota: antes la nota le hacía contarle al dueño "No podés confirmar una carga que
+     * la persona todavía no vio".
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function si_las_guardas_la_rechazan_decide_el_modelo_sin_nota()
+    {
+        $this->proveedor_que_solo_escribe();
+
+        list($conversation, $contestando, $tarjeta_id) = $this->escena_con_tarjeta('Dale');
+
+        AiMessage::where('id', AiMessageAction::find($tarjeta_id)->ai_message_id)->update(['estado' => 'pendiente']);
+
+        (new AsistenteIaService())->responder($conversation, $contestando);
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+        $this->assertStringNotContainsString('[El sistema', $this->ultimo_user_enviado());
+    }
+
+    /**
+     * 🔴 Si el modelo falla DESPUÉS de una confirmación hecha por el sistema, al dueño le llega el
+     * resultado de la carga y no "se me cortó la conexión" (que lo llevaría a pedirla de nuevo y
+     * duplicarla).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function si_el_modelo_falla_despues_de_confirmar_se_contesta_con_el_resultado()
+    {
+        Http::fake([
+            '*' => Http::response(['error' => ['type' => 'overloaded_error', 'message' => 'Overloaded']], 529),
+        ]);
+
+        list($conversation, $contestando, $tarjeta_id, $articulo) = $this->escena_con_tarjeta('Dale');
+
+        $texto = (new AsistenteIaService())->responder($conversation, $contestando);
+
+        $this->anotar_archivos($articulo);
+
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::find($tarjeta_id)->estado_guardado());
+        $this->assertStringContainsString('Foto agregada al artículo', $texto);
+        $this->assertStringStartsWith('Listo', $texto);
     }
 
     // ------------------------------------------------------------------------------------ A2

@@ -278,6 +278,51 @@ class AsistenteIaService
             ? ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $assistant_message)
             : null;
 
+        /*
+         * 🔴 SI LA CARGA YA SE HIZO, UNA FALLA DEL MODELO NO PUEDE LLEGARLE AL DUEÑO COMO ERROR
+         * (correcciones del 24/9/2026). Con la confirmación determinista la carga queda registrada
+         * ANTES de llamar al modelo; si después el proveedor de IA tira un 529 o el loop se queda sin
+         * texto, el job pintaba "se me cortó la conexión" y el dueño, con razón, volvía a pedir la
+         * carga — y se duplicaba. En ese caso la respuesta es el resultado de la carga, tal cual.
+         */
+        try {
+            return $this->responder_con_el_modelo($conversation, $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista);
+        } catch (\Throwable $e) {
+            $respaldo = is_null($confirmacion_determinista)
+                ? null
+                : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
+
+            if (is_null($respaldo)) {
+                throw $e;
+            }
+
+            Log::warning('AsistenteIaService: el modelo falló después de una confirmación determinista; se contesta con el resultado.', [
+                'ai_conversation_id' => $conversation->id,
+                'tarjeta_id'         => $confirmacion_determinista['tarjeta_id'],
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $respaldo;
+        }
+    }
+
+    /**
+     * El loop de tool use de responder(), con todo lo que responder() ya resolvió (el dueño, el flag
+     * de acciones, el canal y la confirmación determinista). Está separado sólo para que responder()
+     * pueda devolver el resultado de una carga ya confirmada si el modelo falla (ver el 🔴 de ahí).
+     *
+     * @param AiConversation $conversation
+     * @param AiMessage $assistant_message
+     * @param User|null $owner
+     * @param bool $con_acciones
+     * @param bool $es_whatsapp
+     * @param array|null $confirmacion_determinista  Lo que devolvió ConfirmacionDeterministaIaHelper::quizas_confirmar().
+     * @return string
+     *
+     * @throws AsistenteIaException
+     */
+    protected function responder_con_el_modelo(AiConversation $conversation, AiMessage $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista): string
+    {
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp);
         $messages = $this->build_messages_payload($conversation);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp);
@@ -940,6 +985,10 @@ AUTO_RESUELTO;
 {$regla_de_auto_ejecucion}
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
   pasó con cada tarjeta. No las repitas.
+- Si el mensaje de la persona termina con una nota "[El sistema ya confirmó la tarjeta...]", esa
+  carga ya la registró el sistema por su sí: contá el resultado que dice la nota, no digas que
+  dejaste una tarjeta y seguí con lo que haya quedado pendiente. Si la nota dice que no se pudo,
+  contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
     }

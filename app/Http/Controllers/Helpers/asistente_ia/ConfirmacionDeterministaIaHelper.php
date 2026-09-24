@@ -7,6 +7,7 @@ use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Services\AsistenteIa\HerramientasDeCarga;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -26,6 +27,12 @@ use Illuminate\Support\Facades\Log;
  * confirmar(): las mismas guardas, la persona autenticada, el mismo ejecutor). El modelo recibe
  * después una nota con el resultado real y lo único que hace es contarlo. Si alguien viene a
  * "simplificarlo" devolviéndoselo al modelo, vuelve el "quedó asignada" sin que nada se asigne.
+ *
+ * Desde las correcciones del 24/9/2026 vale también en el panel del chat (canal 'sistema'), donde
+ * la ejecución es la del botón Confirmar; la tarjeta tiene que tener menos de MINUTOS_MAXIMOS; un
+ * "sí" con signo de pregunta no es un sí; y si la confirmación por texto la rechazaría, no se
+ * intenta. Si el modelo falla DESPUÉS de una confirmación hecha acá, al dueño le llega el resultado
+ * (AsistenteIaService::responder()), no el error.
  *
  * Lo que NO se toca, y sigue decidiendo el modelo: un "no", una duda ("sí pero cambiale el monto"),
  * un "sí" con foto adjunta (puede ser OTRA carga), cualquier "sí" cuando hay dos o más tarjetas
@@ -64,6 +71,13 @@ class ConfirmacionDeterministaIaHelper
     const ACOMPANANTES = ['gracias', 'por favor', 'porfa', 'bueno', 'che', 'nomas', 'nada mas', 'eso'];
 
     /**
+     * Antigüedad máxima de la tarjeta que un "sí" confirma solo (correcciones del 24/9/2026). Un
+     * "dale" que llega una hora después de la pregunta puede estar contestando otra cosa que el
+     * dueño charló por otro lado; pasado este tope decide el modelo, que lee la conversación.
+     */
+    const MINUTOS_MAXIMOS = 30;
+
+    /**
      * Si el mensaje que se está contestando es un "sí" inequívoco a UNA tarjeta pendiente, la
      * confirma y devuelve lo que devolvió la confirmación; si no, null y el turno sigue como siempre.
      *
@@ -85,7 +99,16 @@ class ConfirmacionDeterministaIaHelper
                 return null;
             }
 
-            $resultado = ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, (int) $accion->id);
+            /*
+             * Por WhatsApp y MCP, el mismo camino que confirmar_carga_pendiente. En el panel del
+             * chat (canal 'sistema'), el mismo camino que el botón Confirmar: ahí el modelo no tiene
+             * confirmar_carga_pendiente, y un "Dale" TIPEADO quedaba en manos de un modelo que podía
+             * contestar "quedó hecho" sin hacer nada — el bug de demo3, en el otro canal
+             * (correcciones del 24/9/2026, Lucas escribe también desde el panel).
+             */
+            $resultado = $assistant_message->confirma_por_texto()
+                ? ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, (int) $accion->id)
+                : ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, (int) $accion->id);
 
             return [
                 'tarjeta_id' => (int) $accion->id,
@@ -134,6 +157,28 @@ class ConfirmacionDeterministaIaHelper
     }
 
     /**
+     * Lo que se le contesta al dueño si el modelo falla DESPUÉS de una confirmación hecha acá: el
+     * resultado de la carga, tal cual lo devolvió la ejecución. Null si la confirmación no salió
+     * bien (ahí no hay nada registrado que contar y el error del modelo sigue su camino).
+     *
+     * @param  array  $confirmacion  Lo que devolvió quizas_confirmar().
+     * @return string|null
+     */
+    public static function texto_de_respaldo(array $confirmacion)
+    {
+        $resultado = $confirmacion['resultado'];
+
+        if (empty($resultado['ok'])) {
+
+            return null;
+        }
+
+        $texto = isset($resultado['resultado']) ? trim((string) $resultado['resultado']) : '';
+
+        return $texto === '' ? 'Listo, quedó registrado.' : 'Listo: ' . rtrim($texto, '. ') . '.';
+    }
+
+    /**
      * true si el texto es una afirmación corta y nada más (ver AFIRMACIONES).
      *
      * @param  string|null  $texto
@@ -141,6 +186,16 @@ class ConfirmacionDeterministaIaHelper
      */
     public static function es_afirmacion($texto)
     {
+        /*
+         * 🔴 Con un signo de pregunta no es un sí: "¿ok?", "¿dale?" o "¿lo cargaste?" preguntan.
+         * Se mira ANTES de normalizar, porque normalizar saca los signos (correcciones del
+         * 24/9/2026: "¿ok?" confirmaba).
+         */
+        if (preg_match('/[?¿]/u', (string) $texto)) {
+
+            return false;
+        }
+
         $normalizado = self::normalizar((string) $texto);
 
         if ($normalizado === '' || mb_strlen($normalizado) > self::LARGO_MAXIMO) {
@@ -205,8 +260,12 @@ class ConfirmacionDeterministaIaHelper
      */
     protected static function tarjeta_a_confirmar(AiConversation $conversation, AiMessage $assistant_message)
     {
-        /* (a) Sólo en los canales sin botones: en la pantalla el sí es el botón Confirmar. */
-        if (!$assistant_message->acciones_habilitadas || !$assistant_message->confirma_por_texto()) {
+        /*
+         * (a) Con las herramientas de carga. Desde las correcciones del 24/9/2026 vale en TODOS los
+         * canales: también en el panel del chat, donde la persona puede tipear "dale" en vez de
+         * tocar el botón (ver quizas_confirmar()).
+         */
+        if (!$assistant_message->acciones_habilitadas) {
 
             return null;
         }
@@ -257,6 +316,12 @@ class ConfirmacionDeterministaIaHelper
             return null;
         }
 
+        /* Ver MINUTOS_MAXIMOS. */
+        if (is_null($accion->created_at) || $accion->created_at->lt(Carbon::now()->subMinutes(self::MINUTOS_MAXIMOS))) {
+
+            return null;
+        }
+
         /*
          * ...y propuesta por el ÚLTIMO mensaje del asistente antes de este "sí": el sí contesta la
          * pregunta que acaba de leer, no una tarjeta de hace media hora que quedó colgada.
@@ -272,7 +337,25 @@ class ConfirmacionDeterministaIaHelper
             return null;
         }
 
-        return $accion;
+        /*
+         * 🔴 Si confirmar por texto la RECHAZARÍA (la pregunta todavía no le llegó a la persona, la
+         * propusieron en la pantalla...), no se intenta: decide el modelo. Antes se intentaba y la
+         * nota le hacía contarle al dueño el rechazo técnico ("No podés confirmar una carga que la
+         * persona todavía no vio"), que no le dice nada (correcciones del 24/9/2026).
+         */
+        if ($assistant_message->confirma_por_texto()) {
+
+            return ConfirmacionPorTextoIaHelper::se_puede_confirmar_por_texto($conversation, $assistant_message, $accion->id) ? $accion : null;
+        }
+
+        /*
+         * En el panel, las guardas del botón: la pregunta ya se terminó de escribir (el mensaje que la
+         * propuso está 'listo'). Que el "sí" sea posterior ya lo garantiza que la tarjeta sea del
+         * último mensaje del asistente ANTERIOR al "sí".
+         */
+        $propuso = AiMessage::find($accion->ai_message_id);
+
+        return (!is_null($propuso) && $propuso->estado === 'listo') ? $accion : null;
     }
 
     /**
