@@ -406,7 +406,12 @@ class ExcelNumericFormatStats
         return [
             'tipo' => $tipo,
             'interpretable' => true,
-            'resultado' => (string) $resultado,
+            /*
+             * number_format en vez de (string): un costo chico como 0,00001 saldría como "1.0E-5" y
+             * la pantalla lo mostraría como "1,0E-5". Seis decimales es lo máximo que admite una
+             * columna numérica de artículos (cost), y se recortan los ceros de la derecha.
+             */
+            'resultado' => rtrim(rtrim(number_format((float) $resultado, 6, '.', ''), '0'), '.'),
         ];
     }
 

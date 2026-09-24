@@ -239,4 +239,33 @@ class FormatosNumericosLecturasTest extends TestCase
         $this->assertSame([], $resultado['lecturas']);
         $this->assertTrue($resultado['hay_ambiguedad']);
     }
+
+    /**
+     * El resultado de un ejemplo nunca sale en notación científica: "0,00001" tiene que viajar
+     * como "0.00001" y no como "1.0E-5", porque la pantalla lo muestra tal cual viene.
+     *
+     * @dataProvider casos_de_resultado_sin_notacion_cientifica
+     */
+    public function test_el_resultado_no_sale_en_notacion_cientifica($original, $esperado)
+    {
+        $metodo = new \ReflectionMethod(ExcelNumericFormatStats::class, 'clasificar_lectura');
+        $metodo->setAccessible(true);
+
+        $lectura = $metodo->invoke(null, $original);
+
+        $this->assertTrue($lectura['interpretable']);
+        $this->assertSame($esperado, $lectura['resultado']);
+    }
+
+    public function casos_de_resultado_sin_notacion_cientifica()
+    {
+        return [
+            'costo chico'           => ['0,00001',      '0.00001'],
+            'seis decimales'        => ['0,000123',     '0.000123'],
+            'decimal con ceros'     => ['12,50',        '12.5'],
+            'entero con miles'      => ['1.234.567,00', '1234567'],
+            'coma y punto'          => ['1,234.56',     '1234.56'],
+            'negativo'              => ['-1.234,5',     '-1234.5'],
+        ];
+    }
 }
