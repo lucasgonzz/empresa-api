@@ -708,7 +708,10 @@ class ArticleController extends Controller
             $original_extension = 'xlsx';
             // $original_extension = $request->file('models')->getClientOriginalExtension();
             
-            $filename = 'import_' . time() . '.' . $original_extension;
+            // Con time() a secas, dos importaciones del mismo segundo (dos usuarios, o dos corridas de tests)
+            // pisaban el mismo archivo y el CSV que sale de él (misión importacion-excel-motor-rapido, 24/9/2026).
+            // Mismo criterio que AiExcelImportController::analyze(): time() más un sufijo aleatorio.
+            $filename = 'import_' . time() . '_' . Str::random(8) . '.' . $original_extension;
             $archivo_excel_path = $request->file('models')->storeAs('imported_files', $filename);
 
             Log::info($archivo_excel_path);
