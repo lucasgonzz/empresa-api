@@ -16,6 +16,7 @@ use App\Models\ProviderOrder;
 use App\Models\ProviderOrderScan;
 use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeCarga;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 
@@ -502,7 +503,12 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
     /**
      * ⚠️ Una factura de dos fotos mandadas de a una: cada foto es un turno, y en "resuelto" la
      * segunda creaba otra compra. Con la primera recién cargada y su escaneo en curso, la segunda
-     * no crea nada y lo avisa.
+     * —una foto SOLA, sin texto, a menos de 3 minutos— no crea nada y lo avisa.
+     *
+     * ⚠️ Cambió el comportamiento pedido en el segundo chequeo adversarial (24/9/2026): la segunda
+     * foto de este test traía texto ("Y esta es la otra página") y con cualquier texto la guarda
+     * frenaba también una segunda compra legítima. Ahora la guarda sólo aplica a una foto sin texto;
+     * el caso con texto está en la_segunda_foto_con_texto_es_una_compra_nueva().
      *
      * @group asistente-whatsapp
      * @test
@@ -523,7 +529,7 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
         $generandose->contenido = 'Cargué la compra.';
         $generandose->save();
 
-        $this->foto_en($conversation, 'Y esta es la otra página');
+        $this->foto_en($conversation, '');
 
         $otro_turno = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
 
@@ -535,6 +541,77 @@ class Compra_con_proveedor_nuevo_Test extends AsistenteWhatsappTestCase
 
         $this->assertSame(1, ProviderOrder::where('user_id', $this->comercio->id)->count(), 'Una sola compra para la misma factura.');
         $this->assertSame(0, AiMessageImagen::where('user_id', $this->comercio->id)->whereNull('gestionada_at')->count(), 'La foto de la página 2 no queda suelta para la próxima compra.');
+    }
+
+    /**
+     * Con texto ("y esta otra factura") la segunda foto es una compra NUEVA del mismo proveedor,
+     * aunque la primera se esté escaneando: la guarda de las páginas no la frena ni le sella la foto.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_segunda_foto_con_texto_es_una_compra_nueva()
+    {
+        $this->confianza('resuelto');
+
+        $this->crear_proveedor('Distribuidora Sur');
+
+        list($conversation, $generandose) = $this->escena('De Distribuidora Sur');
+
+        $primera = $this->herramienta($conversation, $generandose, ['proveedor' => 'Distribuidora Sur']);
+
+        /*
+         * La primera se cargó hace un minuto (sigue adentro de los 3 y su escaneo sigue en curso). En
+         * el mismo segundo del test, además, la defensa de "carga parecida" de AccionesIaHelper la
+         * tomaría por un doble registro, cosa que con dos mensajes reales no pasa.
+         */
+        AiMessageAction::where('id', $primera['tarjeta_id'])->update(['resuelta_at' => Carbon::now()->subMinute()]);
+
+        $generandose->estado = 'listo';
+        $generandose->contenido = 'Cargué la compra.';
+        $generandose->save();
+
+        $this->foto_en($conversation, 'Y esta otra factura también de Distribuidora Sur');
+
+        $otro_turno = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        $segunda = $this->herramienta($conversation, $otro_turno, ['proveedor' => 'Distribuidora Sur']);
+
+        $this->assertTrue($segunda['ok'], json_encode($segunda));
+        $this->assertSame(2, ProviderOrder::where('user_id', $this->comercio->id)->count(), 'Dos facturas, dos compras.');
+    }
+
+    /**
+     * Una foto sola que llega más de 3 minutos después de la compra anterior tampoco se frena: ya no
+     * es "la página que faltaba".
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_foto_sola_despues_de_tres_minutos_es_una_compra_nueva()
+    {
+        $this->confianza('resuelto');
+
+        $this->crear_proveedor('Distribuidora Sur');
+
+        list($conversation, $generandose) = $this->escena('De Distribuidora Sur');
+
+        $primera = $this->herramienta($conversation, $generandose, ['proveedor' => 'Distribuidora Sur']);
+
+        AiMessageAction::where('id', $primera['tarjeta_id'])->update(['resuelta_at' => Carbon::now()->subMinutes(4)]);
+
+        $generandose->estado = 'listo';
+        $generandose->contenido = 'Cargué la compra.';
+        $generandose->save();
+
+        $this->foto_en($conversation, '');
+
+        $otro_turno = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        $segunda = $this->herramienta($conversation, $otro_turno, ['proveedor' => 'Distribuidora Sur']);
+
+        $this->assertTrue($segunda['ok'], json_encode($segunda));
+        $this->assertSame(2, ProviderOrder::where('user_id', $this->comercio->id)->count());
     }
 
     /**

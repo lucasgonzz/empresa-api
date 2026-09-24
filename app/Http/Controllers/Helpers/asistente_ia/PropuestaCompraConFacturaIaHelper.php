@@ -91,12 +91,13 @@ class PropuestaCompraConFacturaIaHelper
     const ESTADO_EN_PROCESO = 'En proceso';
 
     /**
-     * Cuántos minutos después de cargar una compra con factura se considera que otra foto del mismo
-     * proveedor es una página más de esa factura y no una compra nueva (ver el 🔴 de las facturas de
-     * varias fotos en proponer()). Diez minutos cubren una tanda de fotos mandadas de a una por
-     * WhatsApp con el escaneo todavía corriendo.
+     * Cuántos minutos después de cargar una compra con factura se considera que una foto SOLA (sin
+     * texto) del mismo proveedor es una página más de esa factura y no una compra nueva (ver el 🔴
+     * de las facturas de varias fotos en proponer()). Tres minutos cubren una tanda de fotos
+     * mandadas de a una por WhatsApp; eran diez hasta el segundo chequeo adversarial del 24/9/2026,
+     * que mostró que con diez frenaba la segunda compra legítima del mismo proveedor.
      */
-    const MINUTOS_COMPRA_RECIENTE = 10;
+    const MINUTOS_COMPRA_RECIENTE = 3;
 
     /**
      * Herramienta proponer_compra_con_factura.
@@ -167,14 +168,19 @@ class PropuestaCompraConFacturaIaHelper
         /*
          * 🔴 UNA FACTURA DE VARIAS FOTOS NO SON VARIAS COMPRAS. Por WhatsApp cada foto es un mensaje y
          * cada mensaje es un turno: en "resuelto", la página 2 que llega un minuto después de la 1
-         * crearía una SEGUNDA compra del mismo proveedor con otro escaneo. Si en esta conversación ya
-         * se cargó hace menos de MINUTOS_COMPRA_RECIENTE una compra de este proveedor y su escaneo
-         * sigue en curso, no se crea otra: se avisa. Las fotos de esta tanda se sellan para que no se
-         * cuelen solas en la próxima compra (la página se agrega a mano desde Compras).
+         * crearía una SEGUNDA compra del mismo proveedor con otro escaneo. Si el mensaje del dueño es
+         * SÓLO la foto (sin texto), llegó a menos de MINUTOS_COMPRA_RECIENTE de una compra de este
+         * proveedor cargada desde esta conversación y su escaneo sigue en curso, no se crea otra: se
+         * avisa, y las fotos de esta tanda se sellan para que no se cuelen solas en la próxima compra
+         * (la página se agrega a mano desde Compras).
+         *
+         * ⚠️ Acotada así en el segundo chequeo adversarial (24/9/2026): con cualquier mensaje y diez
+         * minutos frenaba una segunda compra LEGÍTIMA del mismo proveedor ("y esta otra factura") y
+         * encima le sellaba las fotos. Con texto, es una compra nueva.
          */
         if (is_null($proveedor_nuevo)) {
 
-            $reciente = self::compra_reciente_en_curso($contexto, $proveedor);
+            $reciente = self::compra_reciente_en_curso($contexto, $proveedor, $mensaje);
 
             if (!is_null($reciente)) {
 
@@ -580,20 +586,35 @@ class PropuestaCompraConFacturaIaHelper
      */
 
     /**
-     * La compra de ESTE proveedor que se cargó desde esta conversación hace menos de
-     * MINUTOS_COMPRA_RECIENTE y cuyo escaneo sigue en curso, o null. Ver el 🔴 de las facturas de
-     * varias fotos en proponer().
+     * La compra de ESTE proveedor que se cargó desde esta conversación hasta MINUTOS_COMPRA_RECIENTE
+     * antes del mensaje del dueño y cuyo escaneo sigue en curso, o null — y null siempre que ese
+     * mensaje traiga texto. Ver el 🔴 de las facturas de varias fotos en proponer().
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\Provider  $proveedor
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
      * @return \App\Models\ProviderOrder|null
      */
-    protected static function compra_reciente_en_curso(ContextoDeCargaIa $contexto, Provider $proveedor)
+    protected static function compra_reciente_en_curso(ContextoDeCargaIa $contexto, Provider $proveedor, AiMessage $mensaje)
     {
+        $pedido = AiMessage::where('ai_conversation_id', $contexto->conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '<', (int) $mensaje->id)
+                            ->orderBy('id', 'DESC')
+                            ->first();
+
+        /* Con texto ("y esta otra factura") es una compra nueva: la persona dijo algo. */
+        if (is_null($pedido) || trim((string) $pedido->contenido) !== '') {
+
+            return null;
+        }
+
+        $llego = is_null($pedido->created_at) ? Carbon::now() : Carbon::parse($pedido->created_at);
+
         $recientes = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
                                     ->where('tipo', AiMessageAction::TIPO_COMPRA_CON_FACTURA)
                                     ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
-                                    ->where('resuelta_at', '>=', Carbon::now()->subMinutes(self::MINUTOS_COMPRA_RECIENTE))
+                                    ->where('resuelta_at', '>=', $llego->copy()->subMinutes(self::MINUTOS_COMPRA_RECIENTE))
                                     ->orderBy('id', 'DESC')
                                     ->get();
 
