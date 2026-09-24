@@ -170,6 +170,12 @@ class PreciosEnLoteTest extends ImportTestCase
             'volcar() tenía que escribir en cuatro consultas: ' . implode("\n", $en_lote['volcar'])
         );
 
+        /* El `price = null; save()` de setFinalPrice(): en lote corre solo para A5 (precio manual
+           que hay que borrar); A4 tiene margen propio con price ya en null y costo_real sucio, y NO
+           se guarda: eso lo escribe updateMasivo(). Por artículo, A4 sí se guarda, como hoy. */
+        $this->assertSame(1, $this->consultas_que_nombran($en_lote['loop'], '/^update `articles`/i'), 'En lote, el único save() del loop es el de A5. Loop: ' . implode("\n", $en_lote['loop']));
+        $this->assertSame(2, $this->consultas_que_nombran($por_articulo['loop'], '/^update `articles`/i'), 'Por artículo se guardan A4 (costo_real sucio) y A5, como hoy.');
+
         /* Y con las relaciones precargadas, el loop no consulta ni el pivot ni el IVA por artículo. */
         $this->assertSame(0, $this->consultas_que_nombran($en_lote['loop'], '/article_price_type/i'), 'En modo lote el pivot se lee de la relación precargada, sin consultas.');
         $this->assertSame(0, $this->consultas_que_nombran($en_lote['loop'], '/from `?ivas`?/i'), 'En modo lote el IVA sale de la relación precargada, sin consultas.');
@@ -589,7 +595,7 @@ class PreciosEnLoteTest extends ImportTestCase
         $a1 = $this->recargar('A1');   /* con listas, sin cambio de precio: UPDATE de pivots, sin price_change */
         $a2 = $this->recargar('A2');   /* con listas, cambia el costo: UPDATE de pivots + price_change con listas */
         $a3 = $this->recargar('A3');   /* sin listas, cambia el costo: INSERT de pivots + price_change */
-        $a4 = $this->recargar('A4');   /* sin listas, sin cambio: INSERT de pivots, sin price_change */
+        $a4 = $this->recargar('A4');   /* sin listas, margen propio con price ya en null y costo cambiado: en lote NO se guarda (costo_real lo escribe updateMasivo), por artículo sí */
         $a5 = $this->recargar('A5');   /* precio manual + margen propio: el `price = null; save()` sigue corriendo en lote */
         $a6 = $this->recargar('A6');   /* lista B con precio fijado a mano: margen derivado, sin redondeo */
         $a9 = $this->recargar('A9');   /* sin costo ni precio */
@@ -602,6 +608,11 @@ class PreciosEnLoteTest extends ImportTestCase
 
         $a3->cost = 333;
         $a3->save();
+
+        $a4->cost            = 444;
+        $a4->percentage_gain = 20;
+        $a4->price           = null;
+        $a4->save();
 
         $a5->price           = 999;
         $a5->percentage_gain = 10;
