@@ -159,6 +159,9 @@ class Tools_Test extends McpTestCase
         $this->assertTrue($por_nombre['proponer_baja']['annotations']['destructiveHint']);
         $this->assertTrue($por_nombre['proponer_actualizacion_masiva']['annotations']['destructiveHint']);
         $this->assertTrue($por_nombre['que_puedo_consultar']['annotations']['readOnlyHint']);
+        // Misión asistente-fotos-barras-y-compras: lee aunque no empiece con un prefijo de lectura.
+        $this->assertTrue($por_nombre['buscar_producto_por_codigo_de_barras']['annotations']['readOnlyHint']);
+        $this->assertTrue($por_nombre['buscar_producto_por_codigo_de_barras']['annotations']['openWorldHint']);
         $this->assertEquals('Consultar stock de articulos', $por_nombre['consultar_stock_de_articulos']['title']);
 
         // La que en el origen tiene properties => new \stdClass() sigue siendo un objeto.

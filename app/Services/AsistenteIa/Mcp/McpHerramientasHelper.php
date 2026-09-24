@@ -41,6 +41,18 @@ class McpHerramientasHelper
     const PREFIJOS_DE_LECTURA = ['consultar_', 'que_puedo_', 'resumir_', 'mostrar_', 'contar_'];
 
     /**
+     * Las de lectura cuyo nombre no empieza con un prefijo de lectura: readOnlyHint = true.
+     *
+     * La búsqueda por código de barras (misión asistente-fotos-barras-y-compras, 24/9/2026) no toca
+     * nada del negocio: devuelve datos y, como mucho, deja guardada una foto candidata que nadie usa
+     * hasta que se confirme un alta. Va por nombre y no sumando `buscar_` a los prefijos a propósito:
+     * un prefijo marcaría como lectura a cualquier `buscar_` que venga después, lea o no.
+     */
+    const LECTURAS_POR_NOMBRE = [
+        'buscar_producto_por_codigo_de_barras',
+    ];
+
+    /**
      * Las tools que salen a internet: openWorldHint = true. La búsqueda por código de barras
      * (misión asistente-fotos-barras-y-compras, 24/9/2026) consulta Open Food Facts y la búsqueda
      * web de Anthropic: es la única que no se queda adentro del negocio del dueño.
@@ -172,6 +184,11 @@ class McpHerramientasHelper
      */
     protected static function es_de_lectura($name): bool
     {
+        if (in_array((string) $name, self::LECTURAS_POR_NOMBRE, true)) {
+
+            return true;
+        }
+
         foreach (self::PREFIJOS_DE_LECTURA as $prefijo) {
 
             if (strpos((string) $name, $prefijo) === 0) {
