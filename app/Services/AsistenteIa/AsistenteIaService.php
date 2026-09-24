@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
@@ -1141,6 +1142,8 @@ Estás hablando por WhatsApp, no por la pantalla del sistema:
   Si algo se hace desde el sistema, decí en qué parte del sistema, no qué botón apretar.
 - La mayoría de las veces te va a hablar por audio y te llega ya pasado a texto. Si te
   llega un audio sin transcribir, decilo en una línea y pedile que te lo escriba.
+- Si te manda la foto de un producto con su código de barras, SÍ podés leer los dígitos
+  impresos debajo de las barras y buscarlo en internet: usá buscar_producto_por_codigo_de_barras.
 {$confirmacion}
 WHATSAPP;
     }
@@ -2308,6 +2311,39 @@ CONFIRMACION;
                     );
                 },
             ],
+            /*
+             * 🔴 MISIÓN asistente-fotos-barras-y-compras (24/9/2026), al final por la regla del
+             * prefijo del caché. Es de LECTURA (no carga nada en el negocio) y va en todos los
+             * canales: en WhatsApp es la que sirve con la foto del producto. Sale a internet con la
+             * clave de la plataforma y tiene tope diario: todo eso vive en el helper.
+             */
+            [
+                'name' => 'buscar_producto_por_codigo_de_barras',
+                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion e imagen_id; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'codigo' => [
+                            'type'        => 'string',
+                            'description' => 'Los dígitos del código de barras: los que leés impresos debajo de las barras en la foto o los que dictó la persona. Ejemplo: "7798111212032".',
+                        ],
+                    ],
+                    'required' => ['codigo'],
+                ],
+                /*
+                 * El cuarto argumento es el assistant en curso: la foto encontrada se cuelga de él
+                 * (nunca de un mensaje 'user', ver AsistenteImagenHelper::guardar_binario()). Sin
+                 * mensaje (el MCP llama las lecturas sin uno) la búsqueda anda igual, sin foto.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    return BusquedaPorCodigoDeBarrasIaHelper::buscar(
+                        (int) $owner_id,
+                        isset($input['codigo']) ? (string) $input['codigo'] : '',
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        ($assistant_message instanceof AiMessage) ? $assistant_message : null
+                    );
+                },
+            ],
         ];
     }
 
@@ -2484,7 +2520,9 @@ CONFIRMACION;
                     // misma entrada de registro_de_lectura(): acá solo se la invoca. La conversación
                     // va tercera para las tools que recortan por QUIÉN pregunta (ver el docblock
                     // del registro); las demás la ignoran sin declararla.
-                    $datos = call_user_func($handler, $tool_input, $owner_id, $conversation);
+                    // El assistant en curso va cuarto (misión asistente-fotos-barras-y-compras): la
+                    // búsqueda por código de barras cuelga de él la foto que encuentra.
+                    $datos = call_user_func($handler, $tool_input, $owner_id, $conversation, $assistant_message);
 
                     /*
                      * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del
