@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Models\ArticleDiscount;
 use App\Models\ArticleDiscountBlanco;
 use App\Models\ArticleSurchage;
@@ -370,7 +371,12 @@ class ArticlePricesHelper {
                         );
                     }
 
-                    $article->price_types()->syncWithoutDetaching($price_type->id);
+                    /*
+                     * El syncWithoutDetaching() que ataba la lista acá se movió junto al
+                     * updateExistingPivot() de abajo (escribir_pivot_de_lista()): entre los dos
+                     * no había ninguna lectura del pivot, así que el resultado es el mismo, y en
+                     * modo lote (PreciosEnLote) las dos escrituras se registran juntas.
+                     */
 
                     /**
                      * El cierre comun con el camino principal: redondeo del usuario, recargos de la
@@ -428,13 +434,13 @@ class ArticlePricesHelper {
                      * la cuenta que reporto este bug tiene prendidas a la vez la extension de
                      * margenes por categoria, la de rangos por cantidad y la tienda.
                      */
-                    $article->price_types()->updateExistingPivot($price_type->id, [
+                    Self::escribir_pivot_de_lista($article, $price_type->id, [
                         'percentage'                => $percentage,
                         'price'                     => $final_price,
                         'final_price'               => $final_price,
                         'precio_luego_de_recargos'  => $res['precio_luego_de_recargos'],
                         'monto_ganancia'            => $res['monto_ganancia'],
-                    ]);
+                    ], true);
                 } else {
 
                     if ($describir) {
@@ -450,14 +456,15 @@ class ArticlePricesHelper {
 
                     // Categoria/subcategoria sin porcentaje: las cinco columnas en null, sin restos
                     // de un calculo anterior (un precio_luego_de_recargos viejo junto a un final_price
-                    // en null seria peor que ninguno de los dos).
-                    $article->price_types()->updateExistingPivot($price_type->id, [
+                    // en null seria peor que ninguno de los dos). Solo si el par ya existe: acá no
+                    // hay syncWithoutDetaching(), igual que siempre.
+                    Self::escribir_pivot_de_lista($article, $price_type->id, [
                         'percentage'                => null,
                         'price'                     => null,
                         'final_price'               => null,
                         'precio_luego_de_recargos'  => null,
                         'monto_ganancia'            => null,
-                    ]);
+                    ], false);
                 }
 
             }
@@ -494,7 +501,15 @@ class ArticlePricesHelper {
 
             $final_price = null;
 
-            $relation = $article->price_types()->find($price_type->id);
+            /*
+             * En modo lote (importación, PreciosEnLote) la fila del pivot se lee de la relación
+             * price_types ya cargada, con lo que este mismo lote tenga pendiente encima: es lo que
+             * find() devolvería después de esas escrituras, sin la consulta por lista. Fuera del
+             * modo lote, la consulta de siempre.
+             */
+            $relation = PreciosEnLote::esta_activo()
+                            ? PreciosEnLote::pivot_actual($article, $price_type->id)
+                            : $article->price_types()->find($price_type->id);
 
             $previus_final_price = null;
 
@@ -786,18 +801,31 @@ class ArticlePricesHelper {
 
 
 
-            $article->price_types()->syncWithoutDetaching($price_type->id);
-
-            $article->price_types()->updateExistingPivot($price_type->id, [
+            $columnas_del_pivot = [
                 'percentage'            => $percentage,
                 // 'price'                 => $price,
                 'final_price'           => $final_price,
                 'previus_final_price'   => $previus_final_price,
                 'precio_luego_de_recargos'  => $res['precio_luego_de_recargos'],
                 'monto_ganancia'  => $res['monto_ganancia'],
-            ]);
+            ];
 
-            Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
+            if (PreciosEnLote::esta_activo()) {
+
+                /*
+                 * Modo lote (importación): se registra y PreciosEnLote::volcar() lo escribe en
+                 * bloque al final del lote, con el mismo resultado que las dos consultas de abajo.
+                 */
+                PreciosEnLote::registrar_pivot($article, $price_type->id, $columnas_del_pivot);
+
+            } else {
+
+                $article->price_types()->syncWithoutDetaching($price_type->id);
+
+                $article->price_types()->updateExistingPivot($price_type->id, $columnas_del_pivot);
+
+                Log::info('Seteando price_type '.$price_type->name.' para article num: '.$article->id.' con percentage '.$percentage.'% y final_price de '.$final_price);
+            }
 
         }
 
@@ -846,7 +874,7 @@ class ArticlePricesHelper {
 
             if ($article->aplicar_iva || $es_monotributista) {
 
-                $article->load('iva');
+                Self::cargar_iva_vigente($article);
 
                 if (Self::hasIva($article)) {
 
@@ -1071,7 +1099,7 @@ class ArticlePricesHelper {
 
         if ($article->aplicar_iva || $es_monotributista) {
 
-            $article->load('iva');
+            Self::cargar_iva_vigente($article);
 
             if (Self::hasIva($article)) {
 
@@ -1095,6 +1123,65 @@ class ArticlePricesHelper {
             'price'   => $precio_con_iva,
             'des'     => $des,
         ];
+    }
+
+    /**
+     * Deja cargada la relación `iva` del artículo sin volver a consultarla cuando la que ya tiene
+     * en memoria es la vigente. Reemplaza al `$article->load('iva')` de aplicar_iva() y de
+     * quitar_iva_y_sale_taxes() (misión importacion-excel-motor-rapido, 24/9/2026): load()
+     * consulta SIEMPRE, y en un cálculo con listas se repetía 1 + 2 veces por lista por artículo,
+     * o sea que la precarga del lote no servía de nada para el IVA.
+     *
+     * Se conserva la razón de ser de ese load(): un artículo puede traer `iva` cacheada de ANTES
+     * de que le cambiaran el iva_id en memoria en el mismo request (ver el comentario de
+     * back_out_iva()). Por eso la relación cargada solo se usa cuando el id del Iva cargado
+     * coincide con el iva_id actual del artículo; si no coincide, o no está cargada, se consulta
+     * como antes. El resultado es el mismo en todos los casos: la única diferencia es no repetir
+     * una consulta que devolvería la misma fila.
+     *
+     * @param  \App\Models\Article $article
+     * @return void
+     */
+    static function cargar_iva_vigente($article) {
+
+        if ($article->relationLoaded('iva')) {
+
+            $iva_cargado = $article->getRelation('iva');
+
+            $id_cargado = is_null($iva_cargado) ? null : (int) $iva_cargado->id;
+            $id_actual  = is_null($article->iva_id) ? null : (int) $article->iva_id;
+
+            if ($id_cargado === $id_actual) {
+                return;
+            }
+        }
+
+        $article->load('iva');
+    }
+
+    /**
+     * Escribe las columnas de una lista en el pivot article_price_type, o las registra si el modo
+     * lote de la importación está encendido (PreciosEnLote). Fuera del modo lote hace exactamente
+     * lo de siempre: syncWithoutDetaching() (si corresponde atar la lista) + updateExistingPivot().
+     *
+     * @param  \App\Models\Article $article
+     * @param  int                 $price_type_id
+     * @param  array               $columnas             [columna => valor]
+     * @param  bool                $atar_si_no_existe    true: syncWithoutDetaching antes del update.
+     * @return void
+     */
+    static function escribir_pivot_de_lista($article, $price_type_id, array $columnas, $atar_si_no_existe = true) {
+
+        if (PreciosEnLote::esta_activo()) {
+            PreciosEnLote::registrar_pivot($article, $price_type_id, $columnas, $atar_si_no_existe);
+            return;
+        }
+
+        if ($atar_si_no_existe) {
+            $article->price_types()->syncWithoutDetaching($price_type_id);
+        }
+
+        $article->price_types()->updateExistingPivot($price_type_id, $columnas);
     }
 
     static function hasIva($article) {
