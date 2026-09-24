@@ -723,6 +723,9 @@ class BusquedaPorCodigoDeBarrasService
 
         for ($salto = 0; $salto <= self::MAX_REDIRECCIONES; $salto++) {
 
+            /* La URL que se pide lleva el MISMO host que se valida y se fija (sin punto final). */
+            $actual = $this->sin_punto_final_en_el_host($actual);
+
             $ip = $this->url_permitida($actual);
 
             if (is_null($ip)) {
@@ -893,7 +896,7 @@ class BusquedaPorCodigoDeBarrasService
             return null;
         }
 
-        $host = strtolower(trim((string) $partes['host'], '[]'));
+        $host = $this->host_normalizado((string) $partes['host']);
 
         if ($host === '' || $host === 'localhost' || substr($host, -10) === '.localhost') {
             return null;
@@ -954,67 +957,109 @@ class BusquedaPorCodigoDeBarrasService
     /**
      * true si la IP es pública: ni privada, ni reservada, ni loopback, ni link-local, ni CGNAT.
      *
-     * Los flags de filter_var cubren casi todo, pero no 100.64.0.0/10 (CGNAT, donde viven redes
-     * internas de algunos proveedores) ni una IPv4 escrita como IPv6 (`::ffff:127.0.0.1`): esas se
-     * miran a mano. La lista va explícita aunque repita lo que ya cubren los flags, para que no
-     * dependa de la versión de PHP.
+     * 🔴 SE DECIDE SOBRE LOS 16 BYTES (inet_pton), NUNCA SOBRE EL TEXTO. Una misma IPv4 interna se
+     * puede escribir como IPv6 de muchas formas: `::ffff:127.0.0.1`, `::ffff:7f00:1`,
+     * `0:0:0:0:0:ffff:a9fe:a9fe` (169.254.169.254), `::7f00:1`, `64:ff9b::7f00:1` (NAT64) o
+     * `2002:7f00:1::` (6to4). El segundo chequeo adversarial del 24/9/2026 pasó todas esas por la
+     * versión anterior, que solo reconocía `::ffff:` seguido de la forma con puntos — y en PHP 7.4
+     * los flags de filter_var no marcan ::ffff:0:0/96. Acá cada prefijo que envuelve una IPv4 se
+     * desenvuelve y la IPv4 pasa por la MISMA regla (ipv4_publica()).
      *
      * @param  string  $ip
      * @return bool
      */
     public function ip_publica($ip)
     {
-        $ip = (string) $ip;
+        $binario = @inet_pton((string) $ip);
 
-        if (! filter_var($ip, FILTER_VALIDATE_IP)) {
+        if ($binario === false) {
             return false;
         }
 
-        if (stripos($ip, '::ffff:') === 0) {
-            $v4 = substr($ip, 7);
-
-            if (filter_var($v4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-                return $this->ip_publica($v4);
-            }
+        if (strlen($binario) === 4) {
+            return $this->ipv4_publica(inet_ntop($binario));
         }
 
-        if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        if (strlen($binario) !== 16) {
             return false;
         }
 
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            $redes = [
-                '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
-                '172.16.0.0/12', '192.0.0.0/24', '192.168.0.0/16', '198.18.0.0/15', '224.0.0.0/4',
-                '240.0.0.0/4',
-            ];
+        $doce = substr($binario, 0, 12);
 
-            foreach ($redes as $red) {
-                if ($this->ipv4_en_red($ip, $red)) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        $binario = @inet_pton($ip);
-
-        if ($binario === false || strlen($binario) !== 16) {
+        /* ::/128 (sin especificar) y ::1 (loopback). */
+        if ($binario === str_repeat("\0", 16) || $binario === str_repeat("\0", 15) . "\1") {
             return false;
         }
 
-        /* :: y ::1 */
-        if (trim($binario, "\0") === '' || $binario === str_repeat("\0", 15) . "\1") {
+        /*
+         * Los prefijos que llevan una IPv4 en los últimos 4 bytes: ::ffff:0:0/96 (mapeada),
+         * ::/96 (compatible, obsoleta pero curl la acepta) y 64:ff9b::/96 (NAT64 bien conocido).
+         */
+        if ($doce === str_repeat("\0", 10) . "\xff\xff"
+            || $doce === str_repeat("\0", 12)
+            || $doce === "\x00\x64\xff\x9b" . str_repeat("\0", 8)) {
+            return $this->ipv4_publica(inet_ntop(substr($binario, 12, 4)));
+        }
+
+        /* 2002::/16 (6to4): la IPv4 va en los bytes 2 a 5. */
+        if (substr($binario, 0, 2) === "\x20\x02") {
+            return $this->ipv4_publica(inet_ntop(substr($binario, 2, 4)));
+        }
+
+        /*
+         * Teredo (2001:0::/32) y el NAT64 de uso local (64:ff9b:1::/48) también envuelven una IPv4,
+         * ofuscada o con prefijo propio: no hay tienda que publique su foto ahí, se rechazan enteros.
+         */
+        if (substr($binario, 0, 4) === "\x20\x01\x00\x00" || substr($binario, 0, 6) === "\x00\x64\xff\x9b\x00\x01") {
             return false;
         }
 
         $b0 = ord($binario[0]);
         $b1 = ord($binario[1]);
 
-        /* fc00::/7 (únicas locales), fe80::/10 (link-local) y ff00::/8 (multicast). */
-        if (($b0 & 0xfe) === 0xfc || ($b0 === 0xfe && ($b1 & 0xc0) === 0x80) || $b0 === 0xff) {
+        /*
+         * fc00::/7 (únicas locales), fe80::/10 (link-local), fec0::/10 (site-local, obsoleta pero
+         * enrutable adentro de una red) y ff00::/8 (multicast).
+         */
+        if (($b0 & 0xfe) === 0xfc
+            || ($b0 === 0xfe && ($b1 & 0xc0) === 0x80)
+            || ($b0 === 0xfe && ($b1 & 0xc0) === 0xc0)
+            || $b0 === 0xff) {
             return false;
+        }
+
+        /* Y lo que los flags sepan de más, sobre la forma canónica. */
+        return filter_var(inet_ntop($binario), FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+
+    /**
+     * true si la IPv4 es pública. La lista va explícita aunque repita lo que cubren los flags de
+     * filter_var, para que no dependa de la versión de PHP, y suma 100.64.0.0/10 (CGNAT), que los
+     * flags no cubren.
+     *
+     * @param  string|false  $ip
+     * @return bool
+     */
+    protected function ipv4_publica($ip)
+    {
+        if (! is_string($ip) || ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return false;
+        }
+
+        if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            return false;
+        }
+
+        $redes = [
+            '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
+            '172.16.0.0/12', '192.0.0.0/24', '192.168.0.0/16', '198.18.0.0/15', '224.0.0.0/4',
+            '240.0.0.0/4',
+        ];
+
+        foreach ($redes as $red) {
+            if ($this->ipv4_en_red($ip, $red)) {
+                return false;
+            }
         }
 
         return true;
@@ -1035,6 +1080,45 @@ class BusquedaPorCodigoDeBarrasService
     }
 
     /**
+     * El host como se valida y se fija: minúsculas, sin corchetes y SIN PUNTO FINAL.
+     *
+     * `tienda.example.` (con el punto del nombre absoluto) resuelve igual que sin él, pero para
+     * curl es otro nombre: si la regla de CURLOPT_RESOLVE dijera uno y la URL el otro, el pin no
+     * aplicaría y curl resolvería por su cuenta — justo el hueco que el pin tapa.
+     *
+     * @param  string  $host
+     * @return string
+     */
+    protected function host_normalizado($host)
+    {
+        return rtrim(strtolower(trim((string) $host, '[]')), '.');
+    }
+
+    /**
+     * La URL con el host sin punto final (ver host_normalizado()), para que lo que curl busca sea
+     * exactamente lo que se fijó. Si no hay nada que sacar, la misma URL.
+     *
+     * @param  string  $url
+     * @return string
+     */
+    protected function sin_punto_final_en_el_host($url)
+    {
+        $host = (string) parse_url((string) $url, PHP_URL_HOST);
+
+        if ($host === '' || substr($host, -1) !== '.') {
+            return (string) $url;
+        }
+
+        $posicion = strpos((string) $url, '//' . $host);
+
+        if ($posicion === false) {
+            return (string) $url;
+        }
+
+        return substr((string) $url, 0, $posicion + 2) . rtrim($host, '.') . substr((string) $url, $posicion + 2 + strlen($host));
+    }
+
+    /**
      * La entrada de CURLOPT_RESOLVE ("host:puerto:ip") que ata la conexión a la IP validada.
      *
      * @param  string  $url
@@ -1044,7 +1128,7 @@ class BusquedaPorCodigoDeBarrasService
     protected function regla_de_resolucion($url, $ip)
     {
         $partes = parse_url($url);
-        $host   = trim((string) $partes['host'], '[]');
+        $host   = $this->host_normalizado((string) $partes['host']);
         $puerto = isset($partes['port'])
             ? (int) $partes['port']
             : (strtolower((string) $partes['scheme']) === 'https' ? 443 : 80);

@@ -463,6 +463,75 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
         $this->assertSame('8.8.8.8', $servicio->url_permitida('https://8.8.8.8/foto.png'));
     }
 
+    /**
+     * 🔴 La misma IPv4 interna escrita como IPv6 (segundo chequeo adversarial del 24/9/2026): la
+     * guarda anterior solo reconocía `::ffff:` con la forma de puntos y dejaba pasar todas estas.
+     *
+     * @test
+     */
+    public function una_ipv4_interna_disfrazada_de_ipv6_no_pasa()
+    {
+        $servicio = new ServicioDeBusquedaConDnsDePrueba(null);
+
+        $rechazadas = [
+            'http://[::ffff:7f00:1]/',                 // 127.0.0.1 mapeada, forma hexa
+            'http://[0:0:0:0:0:ffff:a9fe:a9fe]/',      // 169.254.169.254 mapeada, sin comprimir
+            'http://[::ffff:10.0.0.1]/',               // mapeada con puntos
+            'http://[::7f00:1]/',                      // IPv4-compatible
+            'http://[::a9fe:a9fe]/',                   // IPv4-compatible, metadata
+            'http://[64:ff9b::7f00:1]/',               // NAT64
+            'http://[64:ff9b::a9fe:a9fe]/',            // NAT64, metadata
+            'http://[64:ff9b:1::a00:1]/',              // NAT64 de uso local
+            'http://[2002:7f00:1::]/',                 // 6to4 de 127.0.0.1
+            'http://[2002:a9fe:a9fe::1]/',             // 6to4 de 169.254.169.254
+            'http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/', // Teredo
+            'http://[fec0::1]/',                       // site-local
+            'http://[::]/',                            // sin especificar
+            'http://[::1]/',                           // loopback
+        ];
+
+        foreach ($rechazadas as $url) {
+            $this->assertNull($servicio->url_permitida($url), $url . ' no se puede pedir.');
+        }
+
+        /* Las públicas siguen pasando, también envueltas. */
+        $this->assertSame('::ffff:808:808', $servicio->url_permitida('http://[::ffff:808:808]/'), '8.8.8.8 mapeada es pública.');
+        $this->assertSame('64:ff9b::808:808', $servicio->url_permitida('http://[64:ff9b::808:808]/'));
+        $this->assertSame('2002:808:808::1', $servicio->url_permitida('http://[2002:808:808::1]/'));
+        $this->assertSame('2606:4700:4700::1111', $servicio->url_permitida('https://[2606:4700:4700::1111]/foto.png'));
+        $this->assertTrue($servicio->ip_publica('93.184.216.34'));
+    }
+
+    /**
+     * Un host con punto final se valida y se pide SIN el punto: así la regla de CURLOPT_RESOLVE
+     * coincide siempre con el nombre que curl busca.
+     *
+     * @test
+     */
+    public function un_host_con_punto_final_se_valida_y_se_pide_sin_el_punto()
+    {
+        $servicio = new ServicioDeBusquedaConDnsDePrueba(null);
+
+        $this->assertSame('93.184.216.34', $servicio->url_permitida('https://tienda.example./cera-nic'));
+        $this->assertNull($servicio->url_permitida('https://interna.example./foto.png'));
+        $this->assertNull($servicio->url_permitida('http://localhost./foto.png'));
+
+        $this->fake_de_la_red([
+            'web'    => [$this->respuesta_web_final()],
+            'pagina' => '<html><head><meta property="og:image" content="https://cdn.example./cera.png"></head></html>',
+            'imagen' => $this->png(600, 600),
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $this->mensaje($conversacion, 'assistant', 'pendiente'));
+
+        $this->assertNotNull($r['imagen_id']);
+        $this->assertContains('https://cdn.example/cera.png', $this->pedidas, 'Se pidió sin el punto final.');
+        $this->assertNotContains('https://cdn.example./cera.png', $this->pedidas);
+    }
+
     /** @test */
     public function una_og_image_que_apunta_a_la_metadata_del_servidor_no_se_pide()
     {
