@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\sale;
 
+use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
@@ -94,7 +95,9 @@ class ListadoVentasHelper
      * Arma la respuesta del modo paginado a partir de la query base del controller
      * (usuario + modulo + fecha, SIN `orderBy` ni `withAll`).
      *
-     * Del builder base salen CINCO consultas, y cada una parte de un `clone` propio: el Builder de
+     * Del builder base salen CINCO consultas (mas hasta dos de totales sin IVA, ver
+     * `totales_sin_iva()`, que reciben el conjunto como subselect de ids), y cada una parte de un
+     * `clone` propio: el Builder de
      * Eloquent implementa `__clone` clonando el query builder de abajo, asi que los `where` que le
      * agrega una consulta no se le pegan a la siguiente. Sin el clone, la de conteos por solapa
      * arrastraria las show options de la de totales y las solapas cambiarian al tocar un filtro.
@@ -116,7 +119,18 @@ class ListadoVentasHelper
         /* Conjunto FILTRADO: lo que la SPA llama `sales_to_show` (base + solapas + show options). Es el que pagina. */
         $filtrada = self::aplicar_filtros_de_pantalla(clone $base, $request);
 
-        $totales = self::totales($filtrada, $request);
+        /*
+         * Los agregados se piden una sola vez y de ahi salen los totales de siempre Y el rango de
+         * `created_at` del conjunto, que necesitan los totales sin IVA de mas abajo.
+         */
+        $agregados = self::agregados($filtrada);
+
+        $totales = self::totales_de_los_agregados($agregados);
+
+        $totales['pesos'] = array_merge(
+            $totales['pesos'],
+            self::totales_sin_iva($filtrada, $user_id, $totales['pesos']['costos'], $agregados)
+        );
 
         /*
          * El COUNT de la consulta de totales es el `total` del paginador. No se llama a `paginate()`
@@ -294,20 +308,38 @@ class ListadoVentasHelper
      * costos = `total_cost`, ganancia = `ganancia`, cuenta corriente = `total` de las ventas con
      * cliente y sin `omitir_en_cuenta_corriente`. Todo sale de columnas persistidas de `sales`.
      *
-     * `toBase()` aplica los scopes globales (el soft delete de Sale) y devuelve el query builder
-     * pelado, que es el unico que deja pisar el SELECT con agregados.
-     *
      * @param  \Illuminate\Database\Eloquent\Builder $query_filtrada
      * @param  Request $request
      * @return array
      */
     static function totales($query_filtrada, Request $request)
     {
+        return self::totales_de_los_agregados(self::agregados($query_filtrada));
+    }
+
+    /**
+     * La consulta de agregados en si: una fila con la cantidad, los ocho totales y, ademas, la
+     * primera y la ultima `created_at` del conjunto.
+     *
+     * `toBase()` aplica los scopes globales (el soft delete de Sale) y devuelve el query builder
+     * pelado, que es el unico que deja pisar el SELECT con agregados.
+     *
+     * El rango de `created_at` no es un total: viaja aca para no pagar una consulta mas sobre el
+     * mismo conjunto. Lo usa `totales_sin_iva()` para acotar las subqueries de comprobantes (ver
+     * ahi por que no se puede derivar del pedido).
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query_filtrada
+     * @return object  Fila de agregados (cantidad, pesos_*, dolares_*, primera_venta, ultima_venta).
+     */
+    static function agregados($query_filtrada)
+    {
         $cuenta_corriente = 'sales.client_id IS NOT NULL AND sales.client_id <> 0'
             . ' AND (sales.omitir_en_cuenta_corriente IS NULL OR sales.omitir_en_cuenta_corriente = 0)';
 
-        $fila = (clone $query_filtrada)->toBase()->selectRaw(
+        return (clone $query_filtrada)->toBase()->selectRaw(
             'COUNT(*) AS cantidad'
+            . ', MIN(sales.created_at) AS primera_venta'
+            . ', MAX(sales.created_at) AS ultima_venta'
             . ', SUM(CASE WHEN sales.moneda_id = 1 THEN sales.total ELSE 0 END) AS pesos_total'
             . ', SUM(CASE WHEN sales.moneda_id = 1 THEN sales.total_cost ELSE 0 END) AS pesos_costos'
             . ', SUM(CASE WHEN sales.moneda_id = 1 THEN sales.ganancia ELSE 0 END) AS pesos_ganancia'
@@ -317,7 +349,16 @@ class ListadoVentasHelper
             . ', SUM(CASE WHEN sales.moneda_id = 2 THEN sales.ganancia ELSE 0 END) AS dolares_ganancia'
             . ', SUM(CASE WHEN sales.moneda_id = 2 AND ' . $cuenta_corriente . ' THEN sales.total ELSE 0 END) AS dolares_cuenta_corriente'
         )->first();
+    }
 
+    /**
+     * Arma el array de totales (la forma que lee la SPA) a partir de la fila de `agregados()`.
+     *
+     * @param  object $fila
+     * @return array
+     */
+    static function totales_de_los_agregados($fila)
+    {
         return [
             'cantidad' => (int) $fila->cantidad,
             'pesos'    => [
@@ -333,6 +374,127 @@ class ListadoVentasHelper
                 'cuenta_corriente' => (float) $fila->dolares_cuenta_corriente,
             ],
         ];
+    }
+
+    /**
+     * Los totales en pesos SIN IVA del conjunto filtrado: cuanto de `total` y de `costos` es IVA, para
+     * que el panel de Ventas pueda mostrar la misma cuenta que el Estado de Resultados.
+     *
+     * Devuelve tres claves, que se suman a `totales.pesos` y que la SPA trata como OPCIONALES:
+     *
+     *   - `total_sin_iva`: el `total` neto del IVA que cada venta declaro ante ARCA, con la MISMA
+     *     expresion que suma el renglon "Ventas netas" del reporte
+     *     (`IvaDeVentaHelper::expresion_total_neto_de_iva()`). Una venta sin comprobante no declara
+     *     nada y entra entera; un comprobante autorizado sin `importe_iva` medido tambien entra
+     *     entero (ver `ventas_con_iva_sin_medir`).
+     *   - `costos_sin_iva`: `costos` menos el credito fiscal que trae adentro el costo, con el
+     *     criterio de `CostoDeVentaHelper`. En una cuenta cuyo costo ya se guarda neto (la mayoria) el
+     *     credito es 0 y da igual que `costos`.
+     *   - `ventas_con_iva_sin_medir`: cuantas ventas del conjunto entraron enteras por lo de arriba.
+     *
+     * Con esto `total_sin_iva - costos_sin_iva` cierra con `ganancia` (que ya se persiste sin IVA)
+     * para las ventas cuya ganancia se calculo con el criterio nuevo.
+     *
+     * Solo pesos: el IVA de ARCA se declara en pesos y no hay una conversion honesta para dolares.
+     *
+     * 🔴 POR QUE VAN EN CONSULTAS APARTE de `agregados()`:
+     *
+     *   1. Los joins de comprobantes (`aplicar_joins_de_iva`) suman `sales as venta_consolidacion`, que
+     *      tiene sus propias `user_id`, `created_at`, `terminada`...; el builder del controller filtra
+     *      por esas columnas SIN calificar (`where('user_id', ...)`, `enRangoDeFechas`), y con el
+     *      join puesto serian ambiguas. Por eso el conjunto filtrado entra como `sales.id IN (...)`
+     *      (mismo criterio que `total_del_metodo_de_pago`) y los joins van sobre una query propia.
+     *   2. El costo neto necesita un join a `article_sale` (una fila por LINEA), que multiplica las
+     *      filas de cada venta: mezclado con la de totales inflaria `total` y `ganancia`.
+     *
+     * Y a proposito NO se recorre el conjunto en PHP: el criterio de IVA se escribe una sola vez, en
+     * los helpers, y aca solo se lo aplica en SQL igual que el reporte.
+     *
+     * 🔴 EL RANGO DE FECHAS DE LOS COMPROBANTES SALE DEL CONJUNTO, NO DEL PEDIDO. `aplicar_joins_de_iva`
+     * necesita `$desde/$hasta` para acotar sus subqueries (sin eso agrupa `afip_tickets` entera). Pero
+     * derivarlos de la ruta seria un bug silencioso: con la preferencia "fechar por dia de entrega"
+     * el listado incluye ventas cuyo `created_at` cae FUERA del dia pedido, y esas quedarian medidas
+     * en 0 de IVA (o sea, contadas como en negro). La primera y la ultima `created_at` del propio
+     * conjunto (que ya trae `agregados()`) son un superconjunto exacto en cualquier modo, y tambien
+     * cubren los modulos que no llevan fecha en la ruta.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query_filtrada
+     * @param  int   $user_id  Dueño de las ventas (los helpers de IVA acotan por cliente).
+     * @param  float $costos   `totales.pesos.costos`, del que se resta el credito fiscal.
+     * @param  object $agregados Fila de `agregados()` (trae la primera y la ultima `created_at`).
+     * @return array ['total_sin_iva' => float, 'costos_sin_iva' => float, 'ventas_con_iva_sin_medir' => int]
+     */
+    static function totales_sin_iva($query_filtrada, $user_id, $costos, $agregados)
+    {
+        if ((int) $agregados->cantidad === 0 || is_null($agregados->primera_venta)) {
+            return [
+                'total_sin_iva'            => 0.0,
+                'costos_sin_iva'           => 0.0,
+                'ventas_con_iva_sin_medir' => 0,
+            ];
+        }
+
+        /* Solo ids: el conjunto filtrado entra como subselect para no chocar con los joins (ver arriba). */
+        $ids_del_conjunto = (clone $query_filtrada)->toBase()->select('sales.id');
+
+        /* Total sin IVA y ventas sin medir: una sola consulta, sobre los joins de comprobantes. */
+        $query_iva = Sale::query()
+                        ->whereIn('sales.id', $ids_del_conjunto)
+                        ->where('sales.moneda_id', 1);
+
+        IvaDeVentaHelper::aplicar_joins_de_iva($query_iva, $user_id, $agregados->primera_venta, $agregados->ultima_venta);
+
+        $fila_iva = $query_iva->toBase()->selectRaw(
+            'SUM(' . IvaDeVentaHelper::expresion_total_neto_de_iva() . ') AS total_sin_iva'
+            . ', SUM(' . IvaDeVentaHelper::expresion_venta_con_iva_sin_medir() . ') AS ventas_con_iva_sin_medir'
+        )->first();
+
+        return [
+            'total_sin_iva'            => round((float) $fila_iva->total_sin_iva, 2),
+            'costos_sin_iva'           => round($costos - self::credito_fiscal_del_costo($ids_del_conjunto, $user_id), 2),
+            'ventas_con_iva_sin_medir' => (int) $fila_iva->ventas_con_iva_sin_medir,
+        ];
+    }
+
+    /**
+     * IVA de compra (credito fiscal) que trae adentro el costo de las ventas en pesos del conjunto: lo
+     * que hay que restarle a `sales.total_cost` para tener el costo neto.
+     *
+     * Se calcula como `SUM(costo bruto de la linea - costo neto de la linea)` con
+     * `CostoDeVentaHelper::expresion_costo_neto_de_linea()`, la misma expresion que usa el costo de
+     * mercaderia vendida del reporte. Se resta el CREDITO de `total_cost` y no se suma el neto de las
+     * lineas a proposito: `total_cost` incluye tambien el costo de las promociones de vinoteca, que no
+     * tienen alicuota propia; asi lo que no se puede atribuir queda como esta, igual que en
+     * `sales.ganancia`.
+     *
+     * Si la cuenta guarda el costo neto (o es monotributista, que no recupera ese IVA) no hay credito
+     * y no se hace ninguna consulta: `costos_sin_iva` es `costos`.
+     *
+     * @param  \Illuminate\Database\Query\Builder $ids_del_conjunto  Subselect de `sales.id`.
+     * @param  int $user_id
+     * @return float
+     */
+    static function credito_fiscal_del_costo($ids_del_conjunto, $user_id)
+    {
+        $user = CostoDeVentaHelper::user_por_id($user_id);
+
+        if (!CostoDeVentaHelper::hay_credito_fiscal_en_el_costo($user)) {
+            return 0.0;
+        }
+
+        $query = Sale::query()
+                    ->join('article_sale', 'article_sale.sale_id', '=', 'sales.id')
+                    ->whereIn('sales.id', $ids_del_conjunto)
+                    ->where('sales.moneda_id', 1);
+
+        /* Agrega los joins a `articles` e `ivas` (con alias propios) y devuelve la expresion del neto. */
+        $costo_neto = CostoDeVentaHelper::expresion_costo_neto_de_linea($query, 'article_sale', $user);
+
+        $fila = $query->toBase()->selectRaw(
+            'SUM((article_sale.cost * article_sale.amount) - ' . $costo_neto . ') AS credito'
+        )->first();
+
+        return round((float) $fila->credito, 2);
     }
 
     /**
