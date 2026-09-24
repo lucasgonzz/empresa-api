@@ -292,9 +292,12 @@ class PanelComisionesHelper
      * consulta agregada para la fila mas nueva y despues se baja restando el efecto de cada fila:
      * saldo(fila siguiente, mas vieja) = saldo(fila) − (debe − haber de fila).
      *
-     * Con un filtro de tipo la pagina tiene huecos (las filas del otro tipo que quedaron en el
-     * medio tambien mueven el saldo), entonces se calcula el agregado de cada fila por separado
-     * (maximo 15 consultas simples).
+     * Con un filtro de tipo la pagina tiene huecos: las filas del otro tipo que quedaron en el
+     * medio tambien mueven el saldo. Se resuelve igual con UNA consulta agregada (la de la fila mas
+     * nueva) mas UNA consulta liviana que trae el efecto de TODAS las filas del ledger entre la mas
+     * nueva y la mas vieja de la pagina; se baja restando por ese tramo completo y se anota el saldo
+     * solo en las filas que estan en la pagina. Antes era una consulta agregada por fila: medido con
+     * un vendedor de 24.000 comisiones, ~3 s por pagina (15 sumas de ~200 ms cada una).
      *
      * @param \Illuminate\Support\Collection $filas
      * @param int $user_id
@@ -309,19 +312,77 @@ class PanelComisionesHelper
             return;
         }
 
-        if ($tipo != 'todos') {
+        $saldo = self::saldo_hasta($filas[0], $user_id, $seller_id, $moneda_id);
+
+        if ($tipo == 'todos') {
             foreach ($filas as $fila) {
-                $fila->saldo_calculado = self::saldo_hasta($fila, $user_id, $seller_id, $moneda_id);
+                $fila->saldo_calculado = Numbers::redondear($saldo);
+                $saldo -= self::efecto($fila);
             }
             return;
         }
 
-        $saldo = self::saldo_hasta($filas[0], $user_id, $seller_id, $moneda_id);
-
+        // Filas de la pagina indexadas por id, para anotarles el saldo al pasar por el tramo.
+        $en_pagina = [];
         foreach ($filas as $fila) {
-            $fila->saldo_calculado = Numbers::redondear($saldo);
-            $saldo -= self::efecto($fila);
+            $en_pagina[(int) $fila->id] = $fila;
         }
+
+        $tramo = self::tramo_del_ledger($filas[0], $filas[count($filas) - 1], $user_id, $seller_id, $moneda_id);
+
+        foreach ($tramo as $movimiento) {
+            $id = (int) $movimiento->id;
+            if (isset($en_pagina[$id])) {
+                $en_pagina[$id]->saldo_calculado = Numbers::redondear($saldo);
+            }
+            $debe  = !is_null($movimiento->debe) ? (float) $movimiento->debe : 0;
+            $haber = !is_null($movimiento->haber) ? (float) $movimiento->haber : 0;
+            $saldo -= ($debe - $haber);
+        }
+    }
+
+    /**
+     * Trae id, debe y haber de TODAS las filas `active` del ledger (sin filtro de tipo ni rango)
+     * comprendidas entre `$mas_nueva` y `$mas_vieja` inclusive, en orden (fecha_mov DESC, id DESC).
+     * Select de tres columnas, sin modelos Eloquent: es el camino liviano para bajar el saldo por
+     * una pagina con huecos.
+     *
+     * @param \App\Models\SellerCommission $mas_nueva Primera fila de la pagina (con `fecha_mov`).
+     * @param \App\Models\SellerCommission $mas_vieja Ultima fila de la pagina (con `fecha_mov`).
+     * @param int $user_id
+     * @param int $seller_id
+     * @param int $moneda_id
+     * @return \Illuminate\Support\Collection
+     */
+    static function tramo_del_ledger($mas_nueva, $mas_vieja, $user_id, $seller_id, $moneda_id)
+    {
+        $fecha_nueva = $mas_nueva->fecha_mov;
+        $id_nueva    = $mas_nueva->id;
+        $fecha_vieja = $mas_vieja->fecha_mov;
+        $id_vieja    = $mas_vieja->id;
+
+        return self::base($user_id, $seller_id, $moneda_id)
+                    ->select('seller_commissions.id', 'seller_commissions.debe', 'seller_commissions.haber')
+                    ->where('seller_commissions.status', 'active')
+                    // Hasta la fila mas nueva inclusive: (fecha_mov, id) <= (F_nueva, ID_nueva).
+                    ->where(function ($q) use ($fecha_nueva, $id_nueva) {
+                        $q->whereRaw(self::FECHA_MOV.' < ?', [$fecha_nueva])
+                          ->orWhere(function ($q2) use ($fecha_nueva, $id_nueva) {
+                              $q2->whereRaw(self::FECHA_MOV.' = ?', [$fecha_nueva])
+                                 ->where('seller_commissions.id', '<=', $id_nueva);
+                          });
+                    })
+                    // Desde la fila mas vieja inclusive: (fecha_mov, id) >= (F_vieja, ID_vieja).
+                    ->where(function ($q) use ($fecha_vieja, $id_vieja) {
+                        $q->whereRaw(self::FECHA_MOV.' > ?', [$fecha_vieja])
+                          ->orWhere(function ($q2) use ($fecha_vieja, $id_vieja) {
+                              $q2->whereRaw(self::FECHA_MOV.' = ?', [$fecha_vieja])
+                                 ->where('seller_commissions.id', '>=', $id_vieja);
+                          });
+                    })
+                    ->orderByRaw(self::FECHA_MOV.' DESC')
+                    ->orderBy('seller_commissions.id', 'DESC')
+                    ->get();
     }
 
     /**

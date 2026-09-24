@@ -500,7 +500,7 @@ class Panel_Comisiones_Test extends EmpresaTestCase
      * Paginacion: 20 comisiones de $10 (una por dia desde el 1/6) + 20 pendientes. Liquidadas:
      * pagina 1 = 15 filas (la mas nueva con saldo 20*10 = 200, la numero 15 con 200-14*10 = 60),
      * pagina 2 = 5 filas (50, 40, 30, 20, 10). El saldo sigue siendo continuo entre paginas. Con
-     * tipo=comisiones (camino de un agregado por fila) la pagina 2 da lo mismo. Pendientes: 15 + 5.
+     * tipo=comisiones (camino del tramo del ledger con huecos) la pagina 2 da lo mismo. Pendientes: 15 + 5.
      *
      * @test
      */
