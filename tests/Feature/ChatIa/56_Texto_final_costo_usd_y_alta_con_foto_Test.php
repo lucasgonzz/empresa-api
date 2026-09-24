@@ -393,6 +393,11 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
 
         $this->assertTrue($respuesta['ok'], json_encode($respuesta));
 
+        // La tarjeta dice el costo EN DÓLARES: "$ 10" haría confirmar diez pesos.
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+        $valores = array_column($tarjeta->presentacion['renglones'], 'valor', 'etiqueta');
+        $this->assertSame('US$ 10,00', $valores['Costo'], json_encode($tarjeta->presentacion['renglones']));
+
         $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
 
         $articulo = Article::where('user_id', $this->dueno->id)->where('name', 'Botella zz-a4')->first();

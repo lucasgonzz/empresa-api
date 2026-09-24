@@ -136,6 +136,8 @@ class PropuestaGenericaIaHelper
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
 
+        $renglones = self::costo_en_dolares_en_los_renglones($declaracion, $validado['payload'], $renglones);
+
         $imagen_url = null;
 
         $datos_de_la_tarjeta = [
@@ -1005,6 +1007,42 @@ class PropuestaGenericaIaHelper
             $valor = isset($nombres[$columna]) ? $nombres[$columna] : Catalogo::valor_legible($campo, $pedidos[$columna]);
 
             $renglones[] = ['etiqueta' => Str::ucfirst($campo['etiqueta']), 'valor' => $valor];
+        }
+
+        return $renglones;
+    }
+
+    /**
+     * Con `cost_in_dollars` prendido, el renglón del costo se escribe en dólares ("US$ 10") y no en
+     * pesos ("$ 10").
+     *
+     * Misión asistente-fotos-barras-y-compras (24/9/2026): valor_legible() formatea `cost` como
+     * plata en pesos porque no ve los otros campos del pedido. Con la marca de dólares, la tarjeta
+     * decía "Costo: $ 10" para un costo de diez DÓLARES, y el dueño confirmaba leyendo un precio que
+     * no era el que se iba a guardar.
+     *
+     * @param  array  $declaracion
+     * @param  array  $payload  El payload validado de la propuesta.
+     * @param  array  $renglones
+     * @return array
+     */
+    protected static function costo_en_dolares_en_los_renglones(array $declaracion, array $payload, array $renglones): array
+    {
+        if ($declaracion['entidad'] !== 'article'
+            || !isset($payload['cost_in_dollars'], $payload['cost'], $declaracion['campos']['cost'])
+            || !filter_var($payload['cost_in_dollars'], FILTER_VALIDATE_BOOLEAN)) {
+
+            return $renglones;
+        }
+
+        $etiqueta_del_costo = Str::ucfirst($declaracion['campos']['cost']['etiqueta']);
+
+        foreach ($renglones as $indice => $renglon) {
+
+            if ($renglon['etiqueta'] === $etiqueta_del_costo) {
+
+                $renglones[$indice]['valor'] = 'US$ ' . number_format((float) $payload['cost'], 2, ',', '.');
+            }
         }
 
         return $renglones;
