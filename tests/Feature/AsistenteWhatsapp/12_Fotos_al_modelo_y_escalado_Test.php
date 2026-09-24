@@ -336,4 +336,37 @@ class Fotos_al_modelo_y_escalado_Test extends AsistenteWhatsappTestCase
 
         $this->assertSame('claude-agil-p12', $this->bodies_enviados()[0]['model']);
     }
+
+    /**
+     * ⚠️ Segundo chequeo adversarial: las fotos REENVIADAS de la última tanda viajan (el modelo las
+     * sigue viendo) pero no escalan. Un "gracias" después de una foto no arranca en el modelo caro.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function las_fotos_reenviadas_viajan_pero_no_escalan()
+    {
+        $this->dueno_en('anthropic', 'agil');
+
+        Http::fake([
+            'api.anthropic.com/*' => Http::response($this->end_turn('De nada.'), 200),
+            '*'                   => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $conversation = $this->conversacion_whatsapp();
+        $con_foto = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Mirá este producto']);
+        $this->guardar_foto($con_foto);
+
+        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'Es un termo.']);
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Gracias']);
+
+        $assistant = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $body = $this->bodies_enviados()[0];
+
+        $this->assertSame('claude-agil-p12', $body['model'], 'Un "gracias" no se paga con el modelo caro.');
+        $this->assertSame(1, $this->imagenes_del_ultimo_turno($body['messages']), 'La foto sin usar viaja igual.');
+    }
 }

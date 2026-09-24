@@ -26,6 +26,7 @@ use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Log;
@@ -405,8 +406,14 @@ class AsistenteIaService
          * prender el thinking A MITAD de turno, con un tool_use previo sin bloque `thinking`; un turno
          * que arranca pensando devuelve sus bloques `thinking` y thinking_apto_para_historial() los
          * deja pasar. Se paga el modelo caro sólo en los turnos con foto, que son los de cargar algo.
+         *
+         * ⚠️ SÓLO SI LA FOTO LA TRAE EL MENSAJE ACTUAL DEL DUEÑO, no si viaja reenviada desde la última
+         * tanda (con_las_fotos_de_la_ultima_tanda). Con `$lleva_imagenes` (que las cuenta a las dos) un
+         * "gracias" o un "¿cuánto vendí hoy?" hasta tres mensajes después de una foto arrancaba en
+         * Opus, o en DeepSeek pensando (segundo chequeo adversarial, 24/9/2026). Las reenviadas viajan
+         * igual —y por eso `$lleva_imagenes` sigue eligiendo el modelo con visión—, pero no escalan.
          */
-        if ($lleva_imagenes) {
+        if ($this->el_mensaje_actual_trae_foto($conversation, $assistant_message)) {
             $toco_una_carga = true;
         }
 
@@ -1589,9 +1596,34 @@ CONFIRMACION;
     }
 
     /**
+     * true si el mensaje del dueño que este turno contesta trae sus PROPIAS fotos (no las reenviadas
+     * de la última tanda). Es lo único que escala un turno por foto: ver el ⚠️ en
+     * responder_con_el_modelo() (segundo chequeo adversarial, 24/9/2026).
+     *
+     * @param AiConversation $conversation
+     * @param AiMessage $assistant_message
+     * @return bool
+     */
+    protected function el_mensaje_actual_trae_foto(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '<', (int) $assistant_message->id)
+            ->orderBy('id', 'DESC')
+            ->value('id');
+
+        if (is_null($pedido)) {
+            return false;
+        }
+
+        return AiMessageImagen::where('ai_message_id', (int) $pedido)->exists();
+    }
+
+    /**
      * true si algún mensaje del payload lleva al menos un bloque `image` (la forma que arma
      * bloques_de_imagen(): `{type: 'image', source: {type: 'base64', ...}}`). Un turno sin fotos
-     * viaja con `content` string y no cuenta; uno con fotos, con `content` array de bloques.
+     * viaja con `content` string y no cuenta; uno con fotos, con `content` array de bloques. Cuenta
+     * también las fotos reenviadas de la última tanda.
      *
      * Lo usa responder() para pedirle a ProveedorIaHelper el modelo con visión (misión
      * proveedores-ia-deepseek: el Profundo de DeepSeek no ve imágenes).
