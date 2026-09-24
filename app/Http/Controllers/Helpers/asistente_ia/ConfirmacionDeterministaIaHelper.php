@@ -110,6 +110,17 @@ class ConfirmacionDeterministaIaHelper
                 ? ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, (int) $accion->id)
                 : ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, (int) $accion->id);
 
+            /*
+             * ⚠️ LA CARRERA CON EL BOTÓN (segundo chequeo adversarial, 24/9/2026). En el panel la
+             * persona puede tocar Confirmar y tipear "dale" casi a la vez: el botón gana, y esta
+             * confirmación vuelve con el 409 de "ya resuelta". Eso NO es un "no se pudo": la carga
+             * quedó hecha. Si la tarjeta está confirmada, la nota es de éxito, con SU resultado.
+             */
+            if (empty($resultado['ok'])) {
+
+                $resultado = self::resultado_si_ya_quedo_confirmada((int) $accion->id, $resultado);
+            }
+
             return [
                 'tarjeta_id' => (int) $accion->id,
                 'resultado'  => $resultado,
@@ -125,6 +136,34 @@ class ConfirmacionDeterministaIaHelper
 
             return null;
         }
+    }
+
+    /**
+     * Si la tarjeta ya está CONFIRMADA (la confirmó otro camino —el botón— un instante antes), el
+     * resultado de éxito con lo que guardó esa ejecución; si no, el rechazo tal cual vino.
+     *
+     * @param  int  $accion_id
+     * @param  array  $rechazo  Lo que devolvió la confirmación que perdió la carrera.
+     * @return array
+     */
+    protected static function resultado_si_ya_quedo_confirmada($accion_id, array $rechazo)
+    {
+        $accion = AiMessageAction::find((int) $accion_id);
+
+        if (is_null($accion) || $accion->estado_guardado() !== AiMessageAction::ESTADO_CONFIRMADA) {
+
+            return $rechazo;
+        }
+
+        $texto = is_object($accion->resultado) && isset($accion->resultado->texto) ? (string) $accion->resultado->texto : '';
+
+        return [
+            'ok'         => true,
+            'tarjeta_id' => (int) $accion_id,
+            'estado'     => AiMessageAction::ESTADO_CONFIRMADA,
+            'resultado'  => $texto,
+            'nota'       => ConfirmacionPorTextoIaHelper::NOTA_EJECUTADA,
+        ];
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace Tests\Feature\AsistenteWhatsapp;
 
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoSucursalIaHelper;
@@ -589,5 +590,57 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
         $this->assertFalse($respuesta['ok']);
         $this->assertStringContainsString('proponer_alta', $respuesta['error']);
         $this->assertStringContainsString('con_foto_de_la_conversacion', $respuesta['error']);
+    }
+
+    /**
+     * ⚠️ Carrera en el panel (segundo chequeo adversarial, 24/9/2026): el botón Confirmar gana y el
+     * "dale" tipeado vuelve con el 409 de "ya resuelta". La tarjeta quedó confirmada, así que la
+     * nota tiene que ser de ÉXITO con su resultado, no "NO se pudo".
+     *
+     * La carrera se reproduce en dos pasos: la tarjeta se confirma por el camino del botón y después
+     * se le pasa al helper el rechazo que habría recibido el "dale" que llegó tarde.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function si_el_boton_gano_la_carrera_la_nota_es_de_exito()
+    {
+        list($conversation, $contestando, $tarjeta_id, $articulo) = $this->escena_con_tarjeta('Dale');
+
+        $boton = ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, $tarjeta_id);
+
+        $this->anotar_archivos($articulo);
+
+        $this->assertTrue($boton['ok'], json_encode($boton));
+
+        $rechazo_del_dale = ConfirmacionPorTextoIaHelper::confirmar($conversation, $contestando, $tarjeta_id);
+
+        $this->assertFalse($rechazo_del_dale['ok'], 'El "dale" que llega tarde recibe el rechazo de "ya resuelta".');
+
+        $resultado = CarreraConElBoton::resolver($tarjeta_id, $rechazo_del_dale);
+
+        $this->assertTrue($resultado['ok']);
+        $this->assertStringContainsString('Foto agregada al artículo', $resultado['resultado']);
+
+        $nota = ConfirmacionDeterministaIaHelper::nota(['tarjeta_id' => $tarjeta_id, 'resultado' => $resultado]);
+
+        $this->assertStringContainsString('[El sistema ya confirmó la tarjeta #' . $tarjeta_id, $nota);
+        $this->assertStringNotContainsString('NO se pudo', $nota);
+    }
+}
+
+/**
+ * Expone el paso de la carrera con el botón para poder probarlo sin depender del reloj.
+ */
+class CarreraConElBoton extends ConfirmacionDeterministaIaHelper
+{
+    /**
+     * @param  int  $accion_id
+     * @param  array  $rechazo
+     * @return array
+     */
+    public static function resolver($accion_id, array $rechazo)
+    {
+        return self::resultado_si_ya_quedo_confirmada($accion_id, $rechazo);
     }
 }
