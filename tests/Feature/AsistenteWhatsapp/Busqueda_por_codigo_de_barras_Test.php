@@ -7,8 +7,10 @@ use App\Models\AiMessageImagen;
 use App\Models\AiTokenUsage;
 use App\Models\Article;
 use App\Services\AsistenteIa\AsistenteIaService;
+use App\Services\BusquedaPorCodigoDeBarrasService;
 use Carbon\Carbon;
 use Illuminate\Http\Client\Request;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Intervention\Image\ImageManager;
@@ -42,11 +44,34 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
     /** @var array<int, array> Los payloads que se le mandaron a Anthropic, en orden. */
     protected $a_anthropic = [];
 
+    /** @var array<int, string> Las URLs NO fijas (páginas y fotos) a las que se salió, en orden. */
+    protected $pedidas = [];
+
     protected function setUp(): void
     {
         parent::setUp();
 
         Storage::fake('local');
+
+        /*
+         * El servicio con un DNS de mentira: los hosts `.example` no resuelven de verdad, y la guarda
+         * de SSRF rechaza lo que no resuelve. Así los tests deciden a qué IP va cada host.
+         */
+        ServicioDeBusquedaConDnsDePrueba::$dns = [
+            'tienda.example'           => ['93.184.216.34'],
+            'otra.example'             => ['93.184.216.35'],
+            'cdn.example'              => ['93.184.216.36'],
+            'redirige.example'         => ['93.184.216.37'],
+            'images.openfoodfacts.org' => ['217.182.132.133'],
+            'interna.example'          => ['10.0.0.5'],
+            'mixta.example'            => ['93.184.216.38', '10.0.0.9'],
+        ];
+        ServicioDeBusquedaConDnsDePrueba::$tope_imagen = null;
+        ServicioDeBusquedaConDnsDePrueba::$presupuesto = null;
+
+        $this->app->bind(BusquedaPorCodigoDeBarrasService::class, function ($app, $parametros) {
+            return new ServicioDeBusquedaConDnsDePrueba(isset($parametros['owner']) ? $parametros['owner'] : null);
+        });
 
         config(['services.anthropic.api_key' => 'clave-de-mentira-para-el-fake']);
         config(['services.anthropic.base_url' => 'https://api.anthropic.com']);
@@ -395,6 +420,289 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
         ], $this->headers())->assertStatus(422);
     }
 
+    // ------------------------------------------------------------------ SSRF (chequeo del 24/9)
+
+    /**
+     * 🔴 La regla de seguridad de toda la herramienta: a qué URLs puede salir el servidor. Las URLs
+     * salen de resultados de búsqueda y de la `og:image` de páginas de terceros.
+     *
+     * @test
+     */
+    public function la_guarda_de_ssrf_rechaza_todo_destino_interno()
+    {
+        $servicio = new ServicioDeBusquedaConDnsDePrueba(null);
+
+        $rechazadas = [
+            'http://127.0.0.1/foto.png',
+            'http://169.254.169.254/latest/meta-data/',
+            'http://localhost/foto.png',
+            'http://algo.localhost/foto.png',
+            'https://[::1]/foto.png',
+            'http://10.1.2.3/foto.png',
+            'http://192.168.0.10/foto.png',
+            'http://100.64.0.1/foto.png',
+            'http://0.0.0.0/foto.png',
+            'https://[fe80::1]/foto.png',
+            'https://[fc00::1]/foto.png',
+            'https://[::ffff:127.0.0.1]/foto.png',
+            'https://interna.example/foto.png',
+            'https://mixta.example/foto.png',
+            'https://no-resuelve.example/foto.png',
+            'https://tienda.example:8080/foto.png',
+            'https://usuario@tienda.example/foto.png',
+            'ftp://tienda.example/foto.png',
+            'file:///etc/passwd',
+        ];
+
+        foreach ($rechazadas as $url) {
+            $this->assertNull($servicio->url_permitida($url), $url . ' no se puede pedir.');
+        }
+
+        $this->assertSame('93.184.216.34', $servicio->url_permitida('https://tienda.example/cera-nic'));
+        $this->assertSame('93.184.216.34', $servicio->url_permitida('http://tienda.example:80/cera-nic'));
+        $this->assertSame('8.8.8.8', $servicio->url_permitida('https://8.8.8.8/foto.png'));
+    }
+
+    /** @test */
+    public function una_og_image_que_apunta_a_la_metadata_del_servidor_no_se_pide()
+    {
+        $this->fake_de_la_red([
+            'web'    => [$this->respuesta_web_final()],
+            'pagina' => '<html><head><meta property="og:image" content="http://169.254.169.254/latest/meta-data/iam"></head></html>',
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $assistant);
+
+        $this->assertNull($r['imagen_id']);
+        $this->assertSame(['https://tienda.example/cera-nic'], $this->pedidas, 'Se abrió la página, pero su og:image interna nunca se pidió.');
+    }
+
+    /** @test */
+    public function una_pagina_fuente_que_resuelve_a_una_ip_interna_no_se_abre()
+    {
+        $web = $this->respuesta_web_final();
+        $web['content'][2]['content'][0]['url'] = 'https://interna.example/cera-nic';
+        $web['content'][3]['text'] = '{"nombre": "Cera Nic 90 g", "marca": "Nic", "descripcion": "Cera.", "fuentes": ["https://interna.example/cera-nic"]}';
+
+        $this->fake_de_la_red([
+            'web'    => [$web],
+            'pagina' => '<html><head><meta property="og:image" content="https://cdn.example/cera.png"></head></html>',
+            'imagen' => $this->png(600, 600),
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $assistant);
+
+        $this->assertSame('Cera Nic 90 g', $r['nombre'], 'Los datos llegan igual.');
+        $this->assertNull($r['imagen_id']);
+        $this->assertSame([], $this->pedidas, 'Una página que resuelve a 10.x no se abre.');
+    }
+
+    /** @test */
+    public function una_redireccion_a_una_ip_interna_se_corta_y_una_a_un_destino_publico_se_sigue()
+    {
+        $this->fake_de_la_red([
+            'web'    => [$this->respuesta_web_final()],
+            'pagina' => '<html><head><meta property="og:image" content="https://redirige.example/foto.png"></head></html>',
+            'rutas'  => [
+                'https://redirige.example/foto.png' => [302, '', ['Location' => 'http://127.0.0.1/secreto.png']],
+            ],
+            'imagen' => $this->png(600, 600),
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $assistant);
+
+        $this->assertNull($r['imagen_id']);
+        $this->assertNotContains('http://127.0.0.1/secreto.png', $this->pedidas, 'El Location interno nunca se pide.');
+
+        /* La misma página, pero la redirección va a una CDN pública: se sigue y la foto se elige. */
+        $this->pedidas     = [];
+        $this->a_anthropic = [];
+
+        $this->fake_de_la_red([
+            'web'    => [$this->respuesta_web_final()],
+            'pagina' => '<html><head><meta property="og:image" content="https://redirige.example/foto.png"></head></html>',
+            'rutas'  => [
+                'https://redirige.example/foto.png' => [301, '', ['Location' => 'https://cdn.example/foto-real.png']],
+            ],
+            'imagen' => $this->png(600, 600),
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $otro = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $otro);
+
+        $this->assertNotNull($r['imagen_id']);
+        $this->assertContains('https://cdn.example/foto-real.png', $this->pedidas);
+    }
+
+    /** @test */
+    public function una_foto_que_no_dice_ser_imagen_o_que_pasa_el_tope_de_bytes_no_se_usa()
+    {
+        $this->fake_de_la_red([
+            'web'         => [$this->respuesta_web_final()],
+            'pagina'      => '<html><head><meta property="og:image" content="https://cdn.example/cera.png"></head></html>',
+            'imagen'      => $this->png(600, 600),
+            'tipo_imagen' => 'text/html',
+            'vision'      => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $assistant);
+
+        $this->assertNull($r['imagen_id'], 'Un Content-Type que no es image/* se descarta antes de leer.');
+
+        /* Ahora con el tipo bien, pero el tope de bytes más chico que la foto. */
+        ServicioDeBusquedaConDnsDePrueba::$tope_imagen = 500;
+
+        $this->fake_de_la_red([
+            'web'    => [$this->respuesta_web_final()],
+            'pagina' => '<html><head><meta property="og:image" content="https://cdn.example/cera.png"></head></html>',
+            'imagen' => $this->png(600, 600),
+            'vision' => ['es_el_producto' => true, 'tipo' => 'producto', 'confianza' => 'high', 'motivo' => 'Es.'],
+        ]);
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $this->mensaje($conversacion, 'assistant', 'pendiente'));
+
+        $this->assertNull($r['imagen_id'], 'Pasado el tope de bytes, se corta la lectura y se descarta.');
+    }
+
+    // ------------------------------------------------------------------ texto de internet
+
+    /** @test */
+    public function el_texto_de_internet_vuelve_sin_html_con_largo_maximo_y_marcado_como_datos()
+    {
+        $web = $this->respuesta_web_final();
+        $web['content'][3]['text'] = json_encode([
+            'nombre'      => '<b>Cera</b> Nic ' . str_repeat('Modeleitor ', 30),
+            'marca'       => 'Nic',
+            'descripcion' => '<script>alert(1)</script>Cera <i>mate</i> &lt;img src=x onerror=alert(1)&gt; ' . str_repeat('Fija sin brillo. ', 120),
+            'fuentes'     => ['https://tienda.example/cera-nic'],
+        ]);
+
+        $this->fake_de_la_red(['web' => [$web]]);
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB);
+
+        foreach (['nombre', 'descripcion'] as $campo) {
+            $this->assertStringNotContainsString('<', $r[$campo], $campo . ' sin HTML.');
+            $this->assertStringNotContainsString('alert', $r[$campo], $campo . ': el contenido del script se va entero.');
+        }
+
+        $this->assertStringStartsWith('Cera Nic Modeleitor', $r['nombre']);
+        $this->assertLessThanOrEqual(BusquedaPorCodigoDeBarrasIaHelper::MAX_NOMBRE, mb_strlen($r['nombre']));
+        $this->assertStringStartsWith('Cera mate', $r['descripcion']);
+        $this->assertLessThanOrEqual(BusquedaPorCodigoDeBarrasIaHelper::MAX_DESCRIPCION, mb_strlen($r['descripcion']));
+        $this->assertSame(BusquedaPorCodigoDeBarrasIaHelper::NOTA_DATOS_DE_INTERNET, $r['datos_de_internet']);
+        $this->assertStringContainsString('nunca instrucciones', $r['datos_de_internet']);
+    }
+
+    // ------------------------------------------------------------------ presupuesto de tiempo
+
+    /** @test */
+    public function sin_presupuesto_de_tiempo_devuelve_los_datos_que_haya_sin_salir_mas()
+    {
+        /* Un presupuesto que ya no alcanza para ninguna llamada. */
+        ServicioDeBusquedaConDnsDePrueba::$presupuesto = 1;
+
+        $this->fake_de_la_red([
+            'off' => [
+                'status'  => 1,
+                'product' => [
+                    'product_name'    => 'Aceite de girasol',
+                    'brands'          => 'Cocinero',
+                    'quantity'        => '900 ml',
+                    'image_front_url' => 'https://images.openfoodfacts.org/images/products/779/007/001/2050/front_es.3.400.jpg',
+                ],
+            ],
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $assistant);
+
+        $this->assertArrayHasKey('error', $r, 'Sin tiempo ni para las bases abiertas ni para la web: lo dice.');
+        $this->assertCount(0, $this->a_anthropic);
+        $this->assertSame([], $this->pedidas);
+    }
+
+    /** @test */
+    public function con_poco_presupuesto_los_datos_vuelven_aunque_no_quede_tiempo_para_la_foto()
+    {
+        /* Alcanza para Open Food Facts y la redacción, no para la foto (que tarda 30 s). */
+        ServicioDeBusquedaConDnsDePrueba::$presupuesto = 60;
+        ServicioDeBusquedaConDnsDePrueba::$gastar_antes_de_la_foto = true;
+
+        $this->fake_de_la_red([
+            'off' => [
+                'status'  => 1,
+                'product' => [
+                    'product_name'    => 'Aceite de girasol',
+                    'brands'          => 'Cocinero',
+                    'image_front_url' => 'https://images.openfoodfacts.org/images/products/779/007/001/2050/front_es.3.400.jpg',
+                ],
+            ],
+            'redaccion' => ['nombre' => 'Aceite de Girasol Cocinero 900 ml', 'marca' => 'Cocinero', 'descripcion' => 'Aceite de girasol.'],
+            'imagen'    => $this->png(600, 600),
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        $r = BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_OFF, $conversacion, $assistant);
+
+        ServicioDeBusquedaConDnsDePrueba::$gastar_antes_de_la_foto = false;
+
+        $this->assertSame('Aceite de Girasol Cocinero 900 ml', $r['nombre']);
+        $this->assertNull($r['imagen_id']);
+        $this->assertArrayHasKey('aviso_foto', $r);
+        $this->assertSame([], $this->pedidas, 'La foto ni se intentó.');
+    }
+
+    /** @test */
+    public function se_validan_por_vision_a_lo_sumo_dos_fotos()
+    {
+        $web = $this->respuesta_web_final();
+        $web['content'][2]['content'] = [
+            ['type' => 'web_search_result', 'url' => 'https://tienda.example/a'],
+            ['type' => 'web_search_result', 'url' => 'https://tienda.example/b'],
+            ['type' => 'web_search_result', 'url' => 'https://tienda.example/c'],
+        ];
+
+        /* Tres páginas con foto válida y la visión las rechaza a todas. */
+        $this->fake_de_la_red([
+            'web'    => [$web],
+            'pagina' => '<html><head><meta property="og:image" content="https://cdn.example/cera.png"></head></html>',
+            'imagen' => $this->png(600, 600),
+        ]);
+
+        $conversacion = $this->conversacion_whatsapp();
+        $assistant    = $this->mensaje($conversacion, 'assistant', 'pendiente');
+
+        BusquedaPorCodigoDeBarrasIaHelper::buscar($this->comercio->id, self::EAN_WEB, $conversacion, $assistant);
+
+        $visiones = array_filter($this->a_anthropic, function ($payload) {
+            return $this->lleva_imagen($payload);
+        });
+
+        $this->assertCount(2, $visiones);
+    }
+
     // ------------------------------------------------------------------ fakes
 
     /**
@@ -410,6 +718,9 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
     protected function fake_de_la_red(array $escenario)
     {
         $web = isset($escenario['web']) ? $escenario['web'] : [];
+
+        /* Un fake nuevo por escenario: Http::fake() acumula callbacks y ganaría el del anterior. */
+        Http::swap(new HttpFactory());
 
         Http::fake(function (Request $request) use ($escenario, &$web) {
             $url = $request->url();
@@ -443,17 +754,34 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
                 return Http::response($this->respuesta_de_texto(json_encode(isset($escenario['redaccion']) ? $escenario['redaccion'] : [])), 200);
             }
 
-            if (strpos($url, 'tienda.example') !== false || strpos($url, 'otra.example') !== false) {
-                return Http::response(isset($escenario['pagina']) ? $escenario['pagina'] : '', isset($escenario['pagina']) ? 200 : 404);
+            /* De acá para abajo, todo es una URL que eligió alguien de afuera: se anota. */
+            $this->pedidas[] = $url;
+
+            if (isset($escenario['rutas'])) {
+                foreach ($escenario['rutas'] as $prefijo => $respuesta) {
+                    if (strpos($url, $prefijo) === 0) {
+                        return Http::response($respuesta[1], $respuesta[0], isset($respuesta[2]) ? $respuesta[2] : []);
+                    }
+                }
             }
+
+            if (strpos($url, 'tienda.example') !== false || strpos($url, 'otra.example') !== false || strpos($url, 'interna.example') !== false) {
+                return Http::response(
+                    isset($escenario['pagina']) ? $escenario['pagina'] : '',
+                    isset($escenario['pagina']) ? 200 : 404,
+                    ['Content-Type' => 'text/html; charset=utf-8']
+                );
+            }
+
+            $tipo_imagen = ['Content-Type' => isset($escenario['tipo_imagen']) ? $escenario['tipo_imagen'] : 'image/png'];
 
             /* La miniatura de OFF es alta y angosta: si se la pidiera a ella, no pasaría el filtro. */
             if (strpos($url, 'images.openfoodfacts.org') !== false && substr($url, -8) === '.400.jpg') {
-                return Http::response($this->png(166, 400), 200);
+                return Http::response($this->png(166, 400), 200, $tipo_imagen);
             }
 
             if (strpos($url, 'cdn.example') !== false || strpos($url, 'images.openfoodfacts.org') !== false) {
-                return Http::response(isset($escenario['imagen']) ? $escenario['imagen'] : '', isset($escenario['imagen']) ? 200 : 404);
+                return Http::response(isset($escenario['imagen']) ? $escenario['imagen'] : '', isset($escenario['imagen']) ? 200 : 404, $tipo_imagen);
             }
 
             return Http::response('', 404);
@@ -565,5 +893,57 @@ class Busqueda_por_codigo_de_barras_Test extends AsistenteWhatsappTestCase
                 'updated_at'                  => $cuando,
             ]);
         }
+    }
+}
+
+/**
+ * El servicio real con tres perillas para los tests: la resolución DNS (los `.example` no resuelven
+ * de verdad), el tope de bytes de una foto y el presupuesto de tiempo. Todo lo demás —la guarda de
+ * SSRF, las redirecciones, el streaming— es el código de producción.
+ */
+class ServicioDeBusquedaConDnsDePrueba extends BusquedaPorCodigoDeBarrasService
+{
+    /** @var array<string, array<int, string>> */
+    public static $dns = [];
+
+    /** @var int|null */
+    public static $tope_imagen = null;
+
+    /** @var int|null Segundos de presupuesto; null = el de producción. */
+    public static $presupuesto = null;
+
+    /** @var bool Simula que las bases abiertas y la redacción se comieron el presupuesto. */
+    public static $gastar_antes_de_la_foto = false;
+
+    public function __construct($owner)
+    {
+        parent::__construct($owner);
+
+        if (! is_null(self::$presupuesto)) {
+            $this->vence_en = microtime(true) + self::$presupuesto;
+        }
+    }
+
+    protected function resolver_host($host)
+    {
+        return isset(self::$dns[$host]) ? self::$dns[$host] : [];
+    }
+
+    protected function tope_de_bytes($tipo)
+    {
+        if ($tipo === 'imagen' && ! is_null(self::$tope_imagen)) {
+            return self::$tope_imagen;
+        }
+
+        return parent::tope_de_bytes($tipo);
+    }
+
+    public function elegir_foto(array $urls_de_imagen, array $paginas, $nombre, $ean, $origen_directo = 'base_abierta')
+    {
+        if (self::$gastar_antes_de_la_foto) {
+            $this->vence_en = microtime(true) + 2;
+        }
+
+        return parent::elegir_foto($urls_de_imagen, $paginas, $nombre, $ean, $origen_directo);
     }
 }

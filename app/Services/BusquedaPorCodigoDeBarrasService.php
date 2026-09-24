@@ -70,11 +70,32 @@ class BusquedaPorCodigoDeBarrasService
     /**
      * Cuántas fotos se validan por visión como máximo en una búsqueda (Haiku, ~2 s cada una). Todo
      * esto corre adentro del turno del chat: el techo es tiempo de espera del dueño, no solo plata.
+     * Eran 4 y el chequeo del 24/9/2026 lo bajó a 2 junto con el presupuesto de abajo.
      */
-    const MAX_VALIDACIONES = 4;
+    const MAX_VALIDACIONES = 2;
 
     /** Reenvíos ante `pause_turn` (la API corta un turno largo de búsqueda y hay que pedirle que siga). */
     const MAX_REENVIOS_PAUSE_TURN = 2;
+
+    /**
+     * 🔴 PRESUPUESTO TOTAL DE LA HERRAMIENTA, en segundos. La herramienta corre ADENTRO del loop del
+     * chat, que tiene su propia cadena de techos: el job de respuesta muere a los 300 s, el loop
+     * corta por su PRESUPUESTO_SEGUNDOS y un request del MCP espera una respuesta sincrónica. Sin
+     * techo propio, el peor caso de esta herramienta sola (tres búsquedas web de 60 s + cuatro
+     * páginas + las validaciones por visión + Google) se comía el turno entero y el dueño se quedaba
+     * sin respuesta. Con 60 s entra holgado: las dos corridas reales del 24/9/2026 tardaron 13,6 s
+     * (búsqueda web + foto de una tienda) y 17,8 s (Open Food Facts + su foto, que es lenta).
+     *
+     * Cada llamada toma su timeout de lo que queda (timeout_para()); cuando no alcanza para una
+     * llamada más, se devuelve lo que haya: los datos sin foto antes que nada.
+     */
+    const PRESUPUESTO_SEGUNDOS = 60;
+
+    /** Menos de esto no alcanza para ninguna llamada útil: se deja de intentar. */
+    const SEGUNDOS_MINIMOS_POR_LLAMADA = 3;
+
+    /** Saltos de redirección que se siguen a mano, validando cada destino (ver descargar()). */
+    const MAX_REDIRECCIONES = 3;
 
     /** @var int Dueño del negocio: imputación del consumo y cuota de Google. */
     protected $user_id;
@@ -97,11 +118,17 @@ class BusquedaPorCodigoDeBarrasService
     /** @var array<int, string> Por qué se descartó cada candidata (para el log, no para el dueño). */
     protected $descartes = [];
 
+    /** @var float microtime en que se acaba el presupuesto de esta búsqueda. */
+    protected $vence_en;
+
     /**
      * @param  \App\Models\User|null  $owner
      */
     public function __construct($owner)
     {
+        /* El reloj arranca acá: el helper crea un servicio por búsqueda. */
+        $this->vence_en = microtime(true) + self::PRESUPUESTO_SEGUNDOS;
+
         $this->owner   = $owner;
         $this->user_id = is_null($owner) ? 0 : (int) $owner->id;
 
@@ -156,9 +183,15 @@ class BusquedaPorCodigoDeBarrasService
     {
         foreach (self::BASES_ABIERTAS as $base => $url_base) {
 
+            $timeout = $this->timeout_para(5);
+
+            if (is_null($timeout)) {
+                break;
+            }
+
             try {
                 $respuesta = $this->google_http()
-                    ->timeout(5)
+                    ->timeout($timeout)
                     ->withHeaders(['User-Agent' => self::USER_AGENT_PROPIO])
                     ->get($url_base . $ean . '.json', [
                         'fields' => 'code,product_name,product_name_es,generic_name,generic_name_es,brands,quantity,categories,image_front_url,image_url',
@@ -430,6 +463,10 @@ class BusquedaPorCodigoDeBarrasService
     public function elegir_foto(array $urls_de_imagen, array $paginas, $nombre, $ean, $origen_directo = 'base_abierta')
     {
         foreach ($urls_de_imagen as $url) {
+            if (! $this->queda_tiempo()) {
+                return null;
+            }
+
             $elegida = $this->probar_candidata($url, $nombre, $ean, $origen_directo);
 
             if (! is_null($elegida)) {
@@ -440,7 +477,7 @@ class BusquedaPorCodigoDeBarrasService
         $abiertas = 0;
 
         foreach ($paginas as $pagina) {
-            if ($abiertas >= self::MAX_PAGINAS || $this->validaciones >= self::MAX_VALIDACIONES) {
+            if ($abiertas >= self::MAX_PAGINAS || $this->validaciones >= self::MAX_VALIDACIONES || ! $this->queda_tiempo()) {
                 break;
             }
 
@@ -484,7 +521,11 @@ class BusquedaPorCodigoDeBarrasService
         }
 
         foreach ($consultas as $consulta) {
-            if ($this->validaciones >= self::MAX_VALIDACIONES) {
+            /*
+             * La búsqueda de Google tiene su timeout fijo de 15 s adentro del trait (compartido con
+             * el job de imágenes): solo se la lanza si queda para ella y para validar una foto.
+             */
+            if ($this->validaciones >= self::MAX_VALIDACIONES || $this->segundos_restantes() < 20) {
                 break;
             }
 
@@ -547,7 +588,7 @@ class BusquedaPorCodigoDeBarrasService
             return null;
         }
 
-        $binario = $this->descargar($url, self::MAX_BYTES_IMAGEN, $this->timeout_de_descarga($url));
+        $binario = $this->descargar($url, 'imagen', $this->timeout_de_descarga($url));
 
         if (is_null($binario)) {
             $this->descartes[] = $url . ': no se pudo descargar';
@@ -577,9 +618,30 @@ class BusquedaPorCodigoDeBarrasService
         $articulo->name     = trim((string) $nombre) !== '' ? (string) $nombre : 'Producto con código ' . $ean;
         $articulo->bar_code = $ean;
 
+        $timeout_vision = $this->timeout_para((int) config('services.article_image_validation.timeout', 25));
+
+        if (is_null($timeout_vision)) {
+            $this->descartes[] = $url . ': sin presupuesto para validarla';
+
+            return null;
+        }
+
         $this->validaciones++;
 
-        $veredicto = $this->validador->validate($binario, $articulo, $this->user_id);
+        /*
+         * ArticleImageValidationService lee su timeout de config y no lo recibe por parámetro (lo
+         * comparte con el job de imágenes). Se lo recorta a lo que queda del presupuesto solo
+         * durante esta llamada y se restaura siempre: el mismo proceso (un worker) sigue corriendo
+         * después otros jobs que tienen que ver el valor de siempre.
+         */
+        $timeout_original = config('services.article_image_validation.timeout');
+        config(['services.article_image_validation.timeout' => $timeout_vision]);
+
+        try {
+            $veredicto = $this->validador->validate($binario, $articulo, $this->user_id);
+        } finally {
+            config(['services.article_image_validation.timeout' => $timeout_original]);
+        }
 
         if (! $veredicto['accepted']) {
             $this->descartes[] = $url . ': la visión la rechazó (' . $veredicto['reason'] . ')';
@@ -600,7 +662,7 @@ class BusquedaPorCodigoDeBarrasService
      */
     protected function og_image_de($pagina)
     {
-        $html = $this->descargar($pagina, self::MAX_BYTES_PAGINA, 6);
+        $html = $this->descargar($pagina, 'pagina', 6);
 
         if (is_null($html)) {
             $this->descartes[] = $pagina . ': la página no respondió';
@@ -628,51 +690,408 @@ class BusquedaPorCodigoDeBarrasService
     }
 
     /**
-     * GET con timeout corto y tope de bytes. Null si falla o si se pasa del tope.
+     * GET de una URL que NO es fija (una página fuente o una foto), con todas las guardas. Null si
+     * no se pudo o no se debía traer; el motivo queda en descartes().
+     *
+     * 🔴 SSRF. Estas URLs las eligió alguien de afuera: salen de los resultados de una búsqueda web
+     * y de la `og:image` de una página, que la controla el dueño de esa página. Sin guardas, una
+     * página con `og:image` apuntando a `http://169.254.169.254/...` (la metadata del VPS) o a un
+     * servicio interno hacía que ESTE servidor le pegara a su propia red (chequeo adversarial del
+     * 24/9/2026). Por eso, en cada salto:
+     *   - solo http/https y puerto 80/443 (url_permitida());
+     *   - el host se resuelve ACÁ y si alguna de sus IPs es privada, reservada, loopback o
+     *     link-local, no se sale (ip_publica());
+     *   - la conexión se fija a la IP ya validada con CURLOPT_RESOLVE, para que un DNS que cambia
+     *     entre la validación y el GET (DNS rebinding) no la lleve a otro lado;
+     *   - las redirecciones NO las sigue Guzzle: se siguen a mano, hasta MAX_REDIRECCIONES, y cada
+     *     Location pasa por la misma validación.
+     *
+     * Y el cuerpo se lee en streaming hasta el tope de bytes, después de mirar el Content-Type: una
+     * "foto" de 2 GB o un HTML que nunca termina no se traen a memoria enteros.
      *
      * Sin `Referer` a propósito (google_http() y no google_api_http()): ver el docblock de
      * GoogleSearchHelpers::google_api_http(), muchos sitios bloquean el hotlink con un Referer ajeno.
      *
      * @param  string  $url
-     * @param  int  $max_bytes
-     * @param  int  $timeout
+     * @param  string  $tipo  'imagen' o 'pagina'.
+     * @param  int  $timeout_maximo  Segundos, antes de recortarlo al presupuesto.
      * @return string|null
      */
-    protected function descargar($url, $max_bytes, $timeout = 8)
+    protected function descargar($url, $tipo, $timeout_maximo)
     {
-        if (! preg_match('#^https?://#i', (string) $url)) {
+        $actual = (string) $url;
+
+        for ($salto = 0; $salto <= self::MAX_REDIRECCIONES; $salto++) {
+
+            $ip = $this->url_permitida($actual);
+
+            if (is_null($ip)) {
+                $this->descartes[] = $actual . ': destino no permitido';
+
+                return null;
+            }
+
+            $timeout = $this->timeout_para($timeout_maximo);
+
+            if (is_null($timeout)) {
+                $this->descartes[] = $actual . ': sin presupuesto de tiempo';
+
+                return null;
+            }
+
+            try {
+                $respuesta = $this->google_http()
+                    ->withOptions([
+                        'allow_redirects' => false,
+                        'stream'          => true,
+                        'curl'            => [CURLOPT_RESOLVE => [$this->regla_de_resolucion($actual, $ip)]],
+                    ])
+                    ->timeout($timeout)
+                    ->withHeaders([
+                        'User-Agent'      => self::USER_AGENT_NAVEGADOR,
+                        'Accept-Language' => 'es-AR,es;q=0.9,en;q=0.5',
+                    ])
+                    ->get($actual);
+            } catch (\Throwable $e) {
+                return null;
+            }
+
+            $estado = (int) $respuesta->status();
+
+            if (in_array($estado, [301, 302, 303, 307, 308], true)) {
+                $destino = trim((string) $respuesta->header('Location'));
+                $this->cerrar($respuesta);
+
+                $actual = $destino === '' ? null : $this->url_absoluta($destino, $actual);
+
+                if (is_null($actual)) {
+                    return null;
+                }
+
+                continue;
+            }
+
+            if (! $respuesta->successful()) {
+                $this->cerrar($respuesta);
+
+                return null;
+            }
+
+            $tipo_de_contenido = strtolower((string) $respuesta->header('Content-Type'));
+            $es_del_tipo = $tipo === 'imagen'
+                ? strpos($tipo_de_contenido, 'image/') === 0
+                : (strpos($tipo_de_contenido, 'text/html') === 0 || strpos($tipo_de_contenido, 'application/xhtml+xml') === 0);
+
+            if (! $es_del_tipo) {
+                $this->descartes[] = $actual . ': Content-Type "' . $tipo_de_contenido . '" no es ' . $tipo;
+                $this->cerrar($respuesta);
+
+                return null;
+            }
+
+            return $this->leer_con_tope($respuesta, $this->tope_de_bytes($tipo), $actual);
+        }
+
+        $this->descartes[] = (string) $url . ': demasiadas redirecciones';
+
+        return null;
+    }
+
+    /**
+     * El cuerpo leído de a pedazos, cortando apenas pasa el tope. Null si lo pasa o viene vacío.
+     *
+     * @param  \Illuminate\Http\Client\Response  $respuesta
+     * @param  int  $max_bytes
+     * @param  string  $url  Para el descarte.
+     * @return string|null
+     */
+    protected function leer_con_tope($respuesta, $max_bytes, $url)
+    {
+        if ((int) $respuesta->header('Content-Length') > $max_bytes) {
+            $this->descartes[] = $url . ': pesa más de ' . $max_bytes . ' bytes';
+            $this->cerrar($respuesta);
+
             return null;
         }
 
         try {
-            $respuesta = $this->google_http()
-                ->timeout($timeout)
-                ->withHeaders([
-                    'User-Agent'      => self::USER_AGENT_NAVEGADOR,
-                    'Accept-Language' => 'es-AR,es;q=0.9,en;q=0.5',
-                ])
-                ->get((string) $url);
+            $cuerpo = $respuesta->toPsrResponse()->getBody();
+            $leido  = '';
+
+            while (! $cuerpo->eof()) {
+                $leido .= $cuerpo->read(65536);
+
+                if (strlen($leido) > $max_bytes) {
+                    $cuerpo->close();
+                    $this->descartes[] = $url . ': pesa más de ' . $max_bytes . ' bytes';
+
+                    return null;
+                }
+            }
+
+            $cuerpo->close();
         } catch (\Throwable $e) {
             return null;
         }
 
-        if (! $respuesta->successful()) {
+        return $leido === '' ? null : $leido;
+    }
+
+    /**
+     * Cierra el stream de una respuesta que no se va a leer (libera la conexión).
+     *
+     * @param  \Illuminate\Http\Client\Response  $respuesta
+     * @return void
+     */
+    protected function cerrar($respuesta)
+    {
+        try {
+            $respuesta->toPsrResponse()->getBody()->close();
+        } catch (\Throwable $e) {
+            // Nada que hacer: la conexión se libera sola al terminar el proceso.
+        }
+    }
+
+    /**
+     * Tope de bytes por tipo. Método y no constante suelta para que un test pueda achicarlo sin
+     * fabricar una foto de 8 MB.
+     *
+     * @param  string  $tipo
+     * @return int
+     */
+    protected function tope_de_bytes($tipo)
+    {
+        return $tipo === 'imagen' ? self::MAX_BYTES_IMAGEN : self::MAX_BYTES_PAGINA;
+    }
+
+    /**
+     * Si se puede salir a esa URL, la IP (ya validada) a la que hay que conectarse; si no, null.
+     *
+     * Público porque es la regla de seguridad de toda la herramienta y se prueba directo.
+     *
+     * @param  string  $url
+     * @return string|null
+     */
+    public function url_permitida($url)
+    {
+        $partes = @parse_url((string) $url);
+
+        if (! is_array($partes) || ! isset($partes['scheme'], $partes['host'])) {
             return null;
         }
 
-        $largo = (int) $respuesta->header('Content-Length');
-
-        if ($largo > $max_bytes) {
+        if (! in_array(strtolower($partes['scheme']), ['http', 'https'], true)) {
             return null;
         }
 
-        $cuerpo = (string) $respuesta->body();
-
-        if ($cuerpo === '' || strlen($cuerpo) > $max_bytes) {
+        /* Un usuario:clave en la URL solo sirve para confundir a quien la lee ("https://tienda@10.0.0.1"). */
+        if (isset($partes['user']) || isset($partes['pass'])) {
             return null;
         }
 
-        return $cuerpo;
+        if (isset($partes['port']) && ! in_array((int) $partes['port'], [80, 443], true)) {
+            return null;
+        }
+
+        $host = strtolower(trim((string) $partes['host'], '[]'));
+
+        if ($host === '' || $host === 'localhost' || substr($host, -10) === '.localhost') {
+            return null;
+        }
+
+        /* Un host que ya es una IP (literal) no se resuelve: se valida tal cual. */
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return $this->ip_publica($host) ? $host : null;
+        }
+
+        $ips = $this->resolver_host($host);
+
+        if (empty($ips)) {
+            return null;
+        }
+
+        /* ALGUNA IP interna alcanza para rechazar: no se elige "la buena" entre varias. */
+        foreach ($ips as $ip) {
+            if (! $this->ip_publica($ip)) {
+                return null;
+            }
+        }
+
+        return (string) $ips[0];
+    }
+
+    /**
+     * Las IPs de un host (A y AAAA). Protegido para que los tests simulen la resolución sin DNS.
+     *
+     * @param  string  $host
+     * @return array<int, string>
+     */
+    protected function resolver_host($host)
+    {
+        $ips = [];
+
+        $v4 = @gethostbynamel($host);
+
+        if (is_array($v4)) {
+            $ips = $v4;
+        }
+
+        if (function_exists('dns_get_record')) {
+            $aaaa = @dns_get_record($host, DNS_AAAA);
+
+            if (is_array($aaaa)) {
+                foreach ($aaaa as $registro) {
+                    if (isset($registro['ipv6'])) {
+                        $ips[] = (string) $registro['ipv6'];
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($ips));
+    }
+
+    /**
+     * true si la IP es pública: ni privada, ni reservada, ni loopback, ni link-local, ni CGNAT.
+     *
+     * Los flags de filter_var cubren casi todo, pero no 100.64.0.0/10 (CGNAT, donde viven redes
+     * internas de algunos proveedores) ni una IPv4 escrita como IPv6 (`::ffff:127.0.0.1`): esas se
+     * miran a mano. La lista va explícita aunque repita lo que ya cubren los flags, para que no
+     * dependa de la versión de PHP.
+     *
+     * @param  string  $ip
+     * @return bool
+     */
+    public function ip_publica($ip)
+    {
+        $ip = (string) $ip;
+
+        if (! filter_var($ip, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+
+        if (stripos($ip, '::ffff:') === 0) {
+            $v4 = substr($ip, 7);
+
+            if (filter_var($v4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                return $this->ip_publica($v4);
+            }
+        }
+
+        if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            return false;
+        }
+
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $redes = [
+                '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
+                '172.16.0.0/12', '192.0.0.0/24', '192.168.0.0/16', '198.18.0.0/15', '224.0.0.0/4',
+                '240.0.0.0/4',
+            ];
+
+            foreach ($redes as $red) {
+                if ($this->ipv4_en_red($ip, $red)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        $binario = @inet_pton($ip);
+
+        if ($binario === false || strlen($binario) !== 16) {
+            return false;
+        }
+
+        /* :: y ::1 */
+        if (trim($binario, "\0") === '' || $binario === str_repeat("\0", 15) . "\1") {
+            return false;
+        }
+
+        $b0 = ord($binario[0]);
+        $b1 = ord($binario[1]);
+
+        /* fc00::/7 (únicas locales), fe80::/10 (link-local) y ff00::/8 (multicast). */
+        if (($b0 & 0xfe) === 0xfc || ($b0 === 0xfe && ($b1 & 0xc0) === 0x80) || $b0 === 0xff) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  string  $ip
+     * @param  string  $cidr
+     * @return bool
+     */
+    protected function ipv4_en_red($ip, $cidr)
+    {
+        list($red, $bits) = explode('/', $cidr);
+
+        $mascara = $bits === '0' ? 0 : (~0 << (32 - (int) $bits)) & 0xFFFFFFFF;
+
+        return (ip2long($ip) & $mascara) === (ip2long($red) & $mascara);
+    }
+
+    /**
+     * La entrada de CURLOPT_RESOLVE ("host:puerto:ip") que ata la conexión a la IP validada.
+     *
+     * @param  string  $url
+     * @param  string  $ip
+     * @return string
+     */
+    protected function regla_de_resolucion($url, $ip)
+    {
+        $partes = parse_url($url);
+        $host   = trim((string) $partes['host'], '[]');
+        $puerto = isset($partes['port'])
+            ? (int) $partes['port']
+            : (strtolower((string) $partes['scheme']) === 'https' ? 443 : 80);
+
+        $ip = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '[' . $ip . ']' : $ip;
+
+        return $host . ':' . $puerto . ':' . $ip;
+    }
+
+    // ------------------------------------------------------------------ presupuesto
+
+    /**
+     * Segundos que le quedan al presupuesto de esta búsqueda.
+     *
+     * @return float
+     */
+    protected function segundos_restantes()
+    {
+        return $this->vence_en - microtime(true);
+    }
+
+    /**
+     * true si todavía alcanza para una llamada más.
+     *
+     * @return bool
+     */
+    protected function queda_tiempo()
+    {
+        return ! is_null($this->timeout_para(self::SEGUNDOS_MINIMOS_POR_LLAMADA));
+    }
+
+    /**
+     * El timeout de una llamada: el pedido, recortado a lo que queda (menos un segundo de margen
+     * para lo que se hace después). Null si ya no alcanza para una llamada útil.
+     *
+     * @param  int  $maximo
+     * @return int|null
+     */
+    protected function timeout_para($maximo)
+    {
+        $disponible = (int) floor($this->segundos_restantes()) - 1;
+
+        if ($disponible < self::SEGUNDOS_MINIMOS_POR_LLAMADA) {
+            return null;
+        }
+
+        return max(self::SEGUNDOS_MINIMOS_POR_LLAMADA, min((int) $maximo, $disponible));
     }
 
     // ------------------------------------------------------------------ Anthropic
@@ -687,6 +1106,15 @@ class BusquedaPorCodigoDeBarrasService
      */
     protected function llamar_a_claude(array $payload, $timeout)
     {
+        /* El timeout pedido, recortado a lo que queda del presupuesto de la herramienta. */
+        $timeout = $this->timeout_para($timeout);
+
+        if (is_null($timeout)) {
+            Log::info('BusquedaPorCodigoDeBarras: sin presupuesto para otra llamada a Anthropic');
+
+            return null;
+        }
+
         $payload = array_merge(['model' => $this->modelo()], $payload);
 
         try {
