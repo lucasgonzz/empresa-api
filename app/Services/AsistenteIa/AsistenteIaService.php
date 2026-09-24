@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
@@ -20,6 +21,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -261,9 +263,32 @@ class AsistenteIaService
          */
         $es_whatsapp = $assistant_message->es_de_whatsapp();
 
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): si la persona contestó un "sí" corto a
+         * UNA tarjeta pendiente por un canal sin botones, la tarjeta se confirma ACÁ, en código, antes
+         * de llamar al modelo. 🔴 No se le deja al modelo por un caso real: en demo3 (conv 10) el
+         * "Dale" a la foto de un artículo fue una sola vuelta de 28 tokens sin ninguna herramienta, y
+         * el asistente dijo "quedó asignada" con la tarjeta todavía en `propuesta`. El detalle y las
+         * guardas están en ConfirmacionDeterministaIaHelper.
+         *
+         * Va ANTES de armar el historial a propósito: así la línea "[Tarjeta ...]" del mensaje que la
+         * propuso ya viaja como confirmada, igual que la nota.
+         */
+        $confirmacion_determinista = $con_acciones
+            ? ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $assistant_message)
+            : null;
+
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp);
         $messages = $this->build_messages_payload($conversation);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp);
+
+        /*
+         * La nota con el resultado REAL de la confirmación viaja pegada al "sí" de la persona: el
+         * modelo sólo tiene que contarlo y seguir con lo que haya quedado pendiente del pedido.
+         */
+        if (! is_null($confirmacion_determinista)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, ConfirmacionDeterministaIaHelper::nota($confirmacion_determinista));
+        }
 
         /*
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
@@ -300,6 +325,15 @@ class AsistenteIaService
          * Una consulta de solo lectura nunca lo prende, así que nunca se encarece.
          */
         $toco_una_carga = false;
+
+        /*
+         * Si el sistema ya confirmó una carga por el sí de la persona, el turno ya "tocó" una carga:
+         * el texto que la cuenta lo escribe el Profundo, igual que si el modelo hubiera llamado a
+         * confirmar_carga_pendiente (es justo el texto donde se inventan números).
+         */
+        if (! is_null($confirmacion_determinista)) {
+            $toco_una_carga = true;
+        }
 
         $iterations = 0;
         $final_text = '';
@@ -442,7 +476,13 @@ class AsistenteIaService
             break;
         }
 
-        $final_text = trim($final_text);
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): fuera los párrafos de razonamiento
+         * filtrado (el del msg 136 de demo3: "Confirmation needed; no report state until
+         * confirmar_carga_pendiente returns..."). Si limpiar dejara el texto vacío, vuelve el
+         * original: ver TextoFinalIaHelper.
+         */
+        $final_text = trim(TextoFinalIaHelper::sanear(trim($final_text), $this->nombres_de_herramientas($tools)));
 
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [
@@ -1174,6 +1214,10 @@ WHATSAPP;
 - Nunca digas que algo quedó cargado hasta que confirmar_carga_pendiente te conteste que
   sí. Cuando te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la
   compra) en una línea.
+- Si al final del mensaje de la persona hay una nota "[El sistema ya confirmó la tarjeta...]",
+  esa carga ya la registró el sistema por su sí: no llames a confirmar_carga_pendiente, contá
+  el resultado que dice la nota y seguí con lo que haya quedado pendiente. Si la nota dice que
+  no se pudo, contá ese motivo tal cual.
 CONFIRMACION;
     }
 
@@ -2682,6 +2726,57 @@ CONFIRMACION;
      * proveedores-ia-deepseek lo arma ProveedorIaHelper::cliente_http() para el proveedor que
      * corresponda, con los mismos headers y el mismo bloque TLS.
      */
+
+    /**
+     * Pega una nota del sistema al final del último turno de la persona (misión
+     * asistente-fotos-barras-y-compras): la de ConfirmacionDeterministaIaHelper::nota(). Un turno
+     * con `content` string suma la nota en un párrafo aparte; uno con bloques (traía fotos), un
+     * bloque `text` más. Si el payload no termina en un turno de la persona, se deja como está: la
+     * API exige alternancia y no se inventa un turno.
+     *
+     * @param  array<int, array{role: string, content: string|array}>  $messages
+     * @param  string  $nota
+     * @return array<int, array{role: string, content: string|array}>
+     */
+    protected function con_nota_en_el_ultimo_user(array $messages, $nota): array
+    {
+        $ultimo = count($messages) - 1;
+
+        if ($ultimo < 0 || ($messages[$ultimo]['role'] ?? '') !== 'user') {
+            return $messages;
+        }
+
+        if (is_array($messages[$ultimo]['content'])) {
+            $messages[$ultimo]['content'][] = ['type' => 'text', 'text' => (string) $nota];
+
+            return $messages;
+        }
+
+        $texto = trim((string) $messages[$ultimo]['content']);
+
+        $messages[$ultimo]['content'] = $texto === '' ? (string) $nota : $texto . "\n\n" . $nota;
+
+        return $messages;
+    }
+
+    /**
+     * Los nombres de TODAS las herramientas que el modelo puede conocer: las del turno y las de
+     * carga de todos los canales. Es la lista con la que TextoFinalIaHelper reconoce un párrafo que
+     * nombra una función interna (el caso del msg 136 de demo3).
+     *
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return array<int, string>
+     */
+    protected function nombres_de_herramientas(array $tools): array
+    {
+        $nombres = array_column($tools, 'name');
+
+        foreach (HerramientasDeCarga::nombres(true) as $nombre) {
+            $nombres[] = $nombre;
+        }
+
+        return array_values(array_unique($nombres));
+    }
 
     /**
      * Concatena el texto de los bloques text de una respuesta.
