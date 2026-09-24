@@ -376,6 +376,77 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
     }
 
     /**
+     * Un Excel de UNA fila con finish_row alto (99999, lo que manda el modal con IA) importa
+     * exactamente una fila y un lote: ultima_fila_con_contenido del sidecar es la que recorta
+     * el rango, y una fila vacía al final (celdas sin contenido, como deja Excel a veces) no
+     * cuenta como dato. Es el caso que otro constructor vio fallar con filas_procesadas = 7
+     * cuando el sidecar valía sólo por mtime y dos importaciones del mismo segundo compartían
+     * imported_files/import_<time()>.xlsx.
+     *
+     * @return void
+     */
+    public function test_un_excel_de_una_fila_con_finish_row_alto_importa_una_sola_fila()
+    {
+        $carpeta = storage_path('app/imported_files');
+
+        if (!is_dir($carpeta)) {
+            mkdir($carpeta, 0777, true);
+        }
+
+        $nombre  = uniqid('sidecar_una_fila_') . '.xlsx';
+        $destino = $carpeta . '/' . $nombre;
+
+        $writer = \OpenSpout\Writer\Common\Creator\WriterEntityFactory::createXLSXWriter();
+        $writer->openToFile($destino);
+        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+            'codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock', 'iva',
+        ]));
+        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+            null, null, 'PC-UNA-FILA', 'Articulo de una sola fila', 100.0, 200.0, 3.0, '21',
+        ]));
+        $writer->close();
+
+        $this->registrar_para_borrar($destino);
+
+        $meta = ExcelWorkbookReader::asegurar_csv($destino, 0);
+
+        $this->assertSame(2, (int) $meta['filas_fisicas'], 'Encabezado más una fila de datos.');
+        $this->assertSame(2, (int) $meta['ultima_fila_con_contenido']);
+
+        $data = array_merge(
+            [
+                'archivo_excel_path' => 'imported_files/' . $nombre,
+                'start_row'          => 2,
+                'finish_row'         => 99999,
+                'provider_id'        => null,
+            ],
+            self::config_por_defecto(),
+            self::columnas()
+        );
+
+        $this->postJson('/api/article/excel/import', $data)->assertStatus(200);
+
+        $import = \App\Models\ImportHistory::where('user_id', $this->tenant->id)->orderBy('id', 'DESC')->first();
+
+        $this->assertNotNull($import);
+        $this->assertInvariantesDeConteo($import);
+
+        $this->assertSame(1, (int) $import->filas_procesadas, 'Una fila de datos tiene que ser una fila procesada.');
+        $this->assertSame(1, (int) $import->total_chunks);
+        $this->assertSame(1, (int) $import->created_models);
+
+        $creado = $this->articulos_creados()->firstWhere('provider_code', 'PC-UNA-FILA');
+
+        $this->assertNotNull($creado);
+        $this->assertSame('Articulo de una sola fila', $creado->name);
+
+        foreach (glob($carpeta . '/' . pathinfo($nombre, PATHINFO_FILENAME) . '_*.csv') ?: [] as $csv) {
+            $this->temporales[] = $csv;
+            $this->temporales[] = $csv . '.claves';
+        }
+    }
+
+    /**
      * @param  LecturaDeHoja|LecturaDeHojaCsv $lectura
      * @return LecturaDeHoja|LecturaDeHojaCsv
      */

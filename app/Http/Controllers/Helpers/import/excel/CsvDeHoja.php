@@ -148,7 +148,54 @@ class CsvDeHoja
             return null;
         }
 
+        /*
+         * 🔴 El mtime solo NO alcanza, y se vio en la primera corrida de la suite con los cuatro
+         * constructores de la misión corriendo tests a la vez sobre el mismo storage/:
+         * ArticleController@import guarda el XLSX como imported_files/import_<time()>.xlsx, así
+         * que dos importaciones en el MISMO SEGUNDO comparten nombre y mtime, y la segunda
+         * (otro archivo, otras filas) hubiera leído el sidecar de la primera. La huella de
+         * contenido (tamaño + md5 de la cola del ZIP, que es donde está el directorio central
+         * con los CRC de cada entrada) hace que el sidecar valga sólo para EL contenido que lo
+         * generó, sin leer el archivo entero.
+         */
+        if (!isset($meta['xlsx_huella']) || (string) $meta['xlsx_huella'] !== self::huella_del_xlsx($excel_path)) {
+            return null;
+        }
+
         return $meta;
+    }
+
+    /** Bytes de la cola del XLSX que entran en la huella de contenido. */
+    const BYTES_DE_HUELLA = 131072;
+
+    /**
+     * Huella barata del contenido del XLSX: tamaño + md5 de los últimos BYTES_DE_HUELLA bytes.
+     * La cola de un ZIP es su directorio central (nombre, tamaño y CRC-32 de cada entrada):
+     * dos libros distintos con la misma huella son, en la práctica, el mismo libro.
+     *
+     * @param  string $excel_path
+     * @return string
+     */
+    public static function huella_del_xlsx($excel_path)
+    {
+        $tamanio = (int) @filesize($excel_path);
+        $handle  = @fopen($excel_path, 'rb');
+
+        if ($handle === false) {
+            return 'ilegible';
+        }
+
+        $desde = max(0, $tamanio - self::BYTES_DE_HUELLA);
+
+        if ($desde > 0) {
+            fseek($handle, $desde);
+        }
+
+        $cola = (string) stream_get_contents($handle);
+
+        fclose($handle);
+
+        return $tamanio . ':' . md5($cola);
     }
 
     /**
@@ -253,6 +300,7 @@ class CsvDeHoja
                 'filas_fisicas'             => $fila - 1,
                 'ultima_fila_con_contenido' => $ultima_fila_con_contenido,
                 'xlsx_mtime'                => (int) @filemtime($excel_path),
+                'xlsx_huella'               => self::huella_del_xlsx($excel_path),
                 'generado_en'               => date('c'),
                 'duracion_seg'              => round(microtime(true) - $inicio, 3),
             ];
