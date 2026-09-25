@@ -291,6 +291,37 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
     }
 
     /**
+     * Otro contenido con el MISMO mtime invalida el sidecar: la huella de contenido del XLSX es
+     * lo que lo protege, no el mtime. Es el caso de dos importaciones del mismo segundo que
+     * comparten nombre de archivo (imported_files/import_<time()>.xlsx antes de f77183a6): la
+     * segunda hubiera leído las filas de la primera. Hueco que dejó el chequeo 2 de la misión
+     * (el mutante que anulaba la huella sobrevivía).
+     *
+     * @return void
+     */
+    public function test_otro_contenido_con_el_mismo_mtime_invalida_el_sidecar()
+    {
+        $copia = $this->copia_temporal('01_codigos_de_proveedor.xlsx');
+
+        $meta_1 = ExcelWorkbookReader::asegurar_csv($copia, 0);
+
+        /* Otro libro en el mismo archivo, con el mtime que guardó el sidecar del primero. */
+        copy($this->fixture('03_numeros_y_costos.xlsx'), $copia);
+        touch($copia, (int) $meta_1['xlsx_mtime']);
+        clearstatcache(true, $copia);
+
+        $this->assertSame((int) $meta_1['xlsx_mtime'], (int) filemtime($copia), 'El test necesita el mismo mtime.');
+        $this->assertNull(CsvDeHoja::meta_vigente($copia, 0), 'Con otro contenido el sidecar del primer libro no puede seguir valiendo.');
+
+        ExcelWorkbookReader::asegurar_csv($copia, 0);
+
+        $filas_esperadas = $this->volcar_lectura(ExcelWorkbookReader::abrir($this->fixture('03_numeros_y_costos.xlsx'), 0, true));
+        $filas_sidecar   = $this->volcar_lectura(ExcelWorkbookReader::abrir($copia, 0, true));
+
+        $this->assertSame($filas_esperadas, $filas_sidecar, 'El sidecar tiene que ser el del libro nuevo.');
+    }
+
+    /**
      * Sin sidecar, abrir() sigue siendo OpenSpout, y con el sidecar de OTRA hoja también:
      * el swap es por hoja.
      *

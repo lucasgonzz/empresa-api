@@ -233,6 +233,49 @@ class IndiceAcotadoAlArchivoTest extends ImportTestCase
     }
 
     /**
+     * Todos los valores de los whereIn del índice acotado viajan como string, aunque la clave
+     * parezca un número. Las claves salen de array_keys() de un array PHP, que convierte '504346'
+     * en el int 504346; un int suelto en un IN sobre una columna de texto hace que MySQL compare
+     * numéricamente, no use el índice y barra el comercio entero: es exactamente el corte de
+     * Servian del 23/9/2026 (686.000 filas examinadas). El fixture 06 trae códigos de proveedor
+     * y de barras numéricos, así que sin el strval el test ve ints. Hueco que dejó el chequeo 2 de
+     * la misión (el mutante sin strval sobrevivía).
+     *
+     * @return void
+     */
+    public function test_los_whereIn_del_indice_acotado_mandan_todos_los_valores_como_string()
+    {
+        $consultas = [];
+
+        DB::listen(function ($query) use (&$consultas) {
+            if (preg_match('/from `articles` where `user_id` = \? and `(id|bar_code|sku|provider_code)` in \(/', $query->sql)) {
+                $consultas[] = $query->bindings;
+            }
+        });
+
+        $this->importar_en_modo('acotado', '06_incidente_servian.xlsx', [
+            'provider_id' => $this->providers['A']->id,
+        ]);
+
+        $this->assertNotEmpty($consultas, 'El índice acotado no hizo ningún whereIn: el test no prueba nada.');
+
+        $numericos = 0;
+
+        foreach ($consultas as $bindings) {
+            /* El primer binding es el user_id; el resto son los valores del IN. */
+            foreach (array_slice($bindings, 1) as $valor) {
+                $this->assertIsString($valor, 'Un valor del whereIn del índice acotado viajó como ' . gettype($valor) . ': ' . var_export($valor, true));
+
+                if (ctype_digit($valor)) {
+                    $numericos++;
+                }
+            }
+        }
+
+        $this->assertGreaterThan(0, $numericos, 'El fixture tenía que traer claves que parecen números: el test no prueba nada.');
+    }
+
+    /**
      * Importa el fixture con el índice en el modo pedido, dentro de un savepoint que se
      * revierte al salir, y devuelve la foto normalizada del resultado.
      *
