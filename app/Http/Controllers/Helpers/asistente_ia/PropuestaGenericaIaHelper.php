@@ -103,6 +103,8 @@ class PropuestaGenericaIaHelper
             return $validado;
         }
 
+        $validado = self::con_los_campos_de_la_tarjeta_reemplazada($contexto, $declaracion, $reemplaza_a, $validado);
+
         $faltan = [];
 
         foreach ($declaracion['campos'] as $columna => $campo) {
@@ -224,6 +226,62 @@ class PropuestaGenericaIaHelper
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA).(is_null($nombre) ? '' : ' '.$nombre).self::resumen_de_renglones($renglones, $nombre);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+    }
+
+    /**
+     * Una CORRECCIÓN de un alta hereda los campos de la tarjeta que reemplaza: lo que el modelo
+     * vuelve a mandar pisa, lo que no manda se conserva.
+     *
+     * Misión asistente-deepseek-pro-razona (24/9/2026): en la prueba real con DeepSeek, ante "sí,
+     * pero cambiale el nombre a Cera Nic Mate" el modelo mandó sólo `{"name": ...}` y la tarjeta
+     * nueva perdió el código de barras de la anterior — sin que la respuesta lo dijera. Los extras
+     * (foto y descripción) ya se heredaban (AltaDeArticuloConFotoIaHelper::heredar); esto es lo mismo
+     * para los campos.
+     *
+     * Se combina DESPUÉS de validar porque los dos lados vienen con nombres de columna (`pedidos`):
+     * combinar el crudo del modelo ("nombre") con el guardado ("name") dejaría dos claves para el
+     * mismo campo. El combinado se vuelve a validar entero; si esa validación falla, queda lo que
+     * mandó el modelo (nunca peor que antes).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $declaracion
+     * @param  mixed  $reemplaza_a
+     * @param  array  $validado  Lo que devolvió validar_campos() con lo que mandó el modelo.
+     * @return array
+     */
+    protected static function con_los_campos_de_la_tarjeta_reemplazada(ContextoDeCargaIa $contexto, array $declaracion, $reemplaza_a, array $validado)
+    {
+        $reemplaza_a = is_numeric($reemplaza_a) ? (int) $reemplaza_a : 0;
+
+        if ($reemplaza_a <= 0 || !isset($validado['pedidos']) || !is_array($validado['pedidos'])) {
+
+            return $validado;
+        }
+
+        $anterior = AiMessageAction::where('id', $reemplaza_a)
+                                    ->where('ai_conversation_id', $contexto->conversation->id)
+                                    ->where('tipo', AiMessageAction::TIPO_ALTA)
+                                    ->first();
+
+        if (is_null($anterior)
+            || !is_array($anterior->datos)
+            || (isset($anterior->datos['entidad']) && $anterior->datos['entidad'] !== $declaracion['entidad'])
+            || !isset($anterior->datos['pedidos'])
+            || !is_array($anterior->datos['pedidos'])) {
+
+            return $validado;
+        }
+
+        $combinados = array_merge($anterior->datos['pedidos'], $validado['pedidos']);
+
+        if ($combinados == $validado['pedidos']) {
+
+            return $validado;
+        }
+
+        $revalidado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $combinados);
+
+        return RespuestaDeCargaIa::es_negativa($revalidado) ? $validado : $revalidado;
     }
 
     // -------------------------------------------------------------------------------------------

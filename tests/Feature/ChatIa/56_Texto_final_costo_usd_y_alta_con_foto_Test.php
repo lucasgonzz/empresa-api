@@ -737,6 +737,39 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Misión asistente-deepseek-pro-razona (24/9/2026): la corrección también hereda los CAMPOS.
+     * En la prueba real con DeepSeek el modelo mandó sólo `{"name": "Cera Nic Mate"}` y la tarjeta
+     * nueva perdió el código de barras de la anterior. Lo nuevo pisa; lo que no vino se conserva.
+     *
+     * @test
+     */
+    public function la_correccion_de_un_alta_hereda_los_campos_que_no_vuelve_a_mandar()
+    {
+        list($conversation, $assistant) = $this->conversacion('Cargá este producto');
+
+        $primera = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'article',
+            'datos'   => ['name' => 'Cera zz-campos', 'bar_code' => '7798111212032', 'cost' => 10],
+        ]);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+
+        $corregida = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['name' => 'Cera zz-campos Mate'],
+            'reemplaza_a' => $primera['tarjeta_id'],
+        ]);
+
+        $this->assertTrue($corregida['ok'], json_encode($corregida));
+
+        $pedidos = AiMessageAction::find($corregida['tarjeta_id'])->datos['pedidos'];
+
+        $this->assertSame('Cera zz-campos Mate', $pedidos['name'], 'Lo que el modelo vuelve a mandar pisa.');
+        $this->assertSame('7798111212032', (string) $pedidos['bar_code'], 'El código de barras se hereda.');
+        $this->assertEquals(10, $pedidos['cost'], 'El costo se hereda.');
+    }
+
+    /**
      * Un imagen_id que no existe (inventado) corta con un error claro: no cae en otra foto.
      *
      * @test
