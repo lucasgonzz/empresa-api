@@ -100,7 +100,8 @@ class AfipInformationController extends Controller
             $model->isib_caba_alicuota = LeyendaIsibCabaHelper::alicuota_configurada($request->isib_caba_alicuota);
         }
         if ($request->has('isib_caba_convenio_multilateral')) {
-            $model->isib_caba_convenio_multilateral = (bool) $request->isib_caba_convenio_multilateral;
+            // boolean() y no (bool): "false" u "off" como string tienen que dar false.
+            $model->isib_caba_convenio_multilateral = $request->boolean('isib_caba_convenio_multilateral');
         }
     }
 
