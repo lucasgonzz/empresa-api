@@ -707,6 +707,14 @@ class BuyerHelper
             // el 9/9/2026. Para que la SPA actualice el vínculo alcanzan estas dos relaciones.
             $comprador->load('addresses', 'comercio_city_client');
 
+            // 🔴 Las credenciales del comprador NO viajan en esta respuesta. La SPA solo necesita el
+            // vínculo y las direcciones (parchea dos campos en sus listas y no reemplaza al
+            // comprador), así que se ocultan `password` (el hash), `visible_password` (la clave en
+            // claro que el dueño le dicta al comprador, ver `BuyerController::store()`),
+            // `remember_token` y `verification_code`: `Buyer` no declara `$hidden` y, sin esto,
+            // salían en cada respuesta de vincular.
+            $comprador->makeHidden(['password', 'visible_password', 'remember_token', 'verification_code']);
+
             return self::respuesta(200, ['model' => $comprador]);
         });
     }

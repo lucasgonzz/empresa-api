@@ -118,6 +118,40 @@ class VincularClienteTest extends EmpresaTestCase
     }
 
     /**
+     * La respuesta no lleva las credenciales del comprador: ni el hash de la clave, ni la clave en
+     * claro que el dueño le dicta (`visible_password`), ni los tokens. `Buyer` no declara `$hidden`,
+     * así que hay que ocultarlas a mano en la respuesta.
+     *
+     * @test
+     * @return void
+     */
+    public function la_respuesta_no_trae_las_credenciales_del_comprador()
+    {
+        $comprador = $this->crear_comprador_de($this->dueno, [
+            'name'              => 'Lucas',
+            'password'          => bcrypt('secreta'),
+            'visible_password'  => 'secreta',
+            'remember_token'    => 'token-de-recordar',
+            'verification_code' => '123456',
+        ]);
+        $cliente = $this->crear_cliente_de($this->dueno, ['name' => 'Lucas González']);
+
+        $respuesta = $this->vincular($comprador, ['client_id' => $cliente->id]);
+
+        $respuesta->assertStatus(200);
+
+        $modelo = $respuesta->json()['model'];
+
+        foreach (['password', 'visible_password', 'remember_token', 'verification_code'] as $campo) {
+            $this->assertArrayNotHasKey($campo, $modelo, "El campo '".$campo."' del comprador no puede viajar en la respuesta.");
+        }
+
+        // Y lo que la SPA sí necesita sigue estando.
+        $this->assertSame($cliente->id, $modelo['comercio_city_client_id']);
+        $this->assertSame('Lucas González', $modelo['comercio_city_client']['name']);
+    }
+
+    /**
      * Vincular dos veces al mismo cliente da 200 las dos, y la segunda no escribe nada.
      *
      * @test
