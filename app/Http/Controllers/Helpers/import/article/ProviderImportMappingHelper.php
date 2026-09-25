@@ -402,8 +402,16 @@ class ProviderImportMappingHelper
 
             $lineas = '';
 
+            /*
+             * Encabezado y nombre del proveedor entran al prompt en una línea y recortados: vienen
+             * del archivo y de la ficha, y adentro de una sección que le pide a Claude "devolvé
+             * exactamente esto" un texto con saltos de línea podría leerse como otra instrucción.
+             * Chequeo 3 de la misión, 24/9/2026.
+             */
+            $proveedor = self::texto_de_una_linea($proveedor, 80);
+
             foreach ($guardadas as $guardada) {
-                $lineas .= '- «' . $guardada['excel_column'] . '» → ' . $guardada['system_property']
+                $lineas .= '- «' . self::texto_de_una_linea($guardada['excel_column'], 80) . '» → ' . $guardada['system_property']
                     . (!empty($guardada['corregida']) ? ' (corregida por el usuario)' : '')
                     . "\n";
             }
@@ -423,6 +431,25 @@ SECCION;
 
             return '';
         }
+    }
+
+    /**
+     * Un texto del archivo o de la ficha, en una sola línea y con un largo máximo, para
+     * interpolarlo en el prompt sin que traiga saltos de línea ni párrafos enteros.
+     *
+     * @param  mixed $texto
+     * @param  int   $largo_maximo
+     * @return string
+     */
+    protected static function texto_de_una_linea($texto, $largo_maximo)
+    {
+        $texto = trim((string) preg_replace('/\s+/u', ' ', (string) $texto));
+
+        if (mb_strlen($texto) > $largo_maximo) {
+            $texto = rtrim(mb_substr($texto, 0, $largo_maximo)) . '…';
+        }
+
+        return $texto;
     }
 
     /**

@@ -188,6 +188,9 @@ class ProcessArticleChunk implements ShouldQueue
 
         ArticleIndexCache::reset_runtime((int) $this->user_id);
 
+        /* Las alícuotas de IVA se cachean por lote, no por vida del worker. */
+        \App\Http\Controllers\Helpers\import\article\ProcessRow::olvidar_alicuotas_cacheadas();
+
         $inicio = microtime(true);
 
         /* Best effort: si el memory_limit del worker es bajo, lo subimos (solo hacia arriba). En hosting

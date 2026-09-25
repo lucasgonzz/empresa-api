@@ -8,7 +8,6 @@ use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
-use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Http\Controllers\Helpers\import\article\motor\RelacionesEnLote;
@@ -1791,6 +1790,9 @@ class ActualizarBBDD {
 
         PreciosEnLote::activar($this->user, $this->auth_user_id);
 
+        /* El error del cálculo, si lo hubo: es el que tiene que llegar al job y al usuario. */
+        $error_del_calculo = null;
+
         try {
 
             foreach ($this->articulos_creados_models as $article) {
@@ -1831,10 +1833,36 @@ class ActualizarBBDD {
 
             $this->updateMasivo($updates);
 
-        } finally {
+        } catch (\Throwable $e) {
 
-            // Pivots de listas y price_changes en bloque (cuando PreciosEnLote está completo).
+            $error_del_calculo = $e;
+        }
+
+        /*
+         * Pivots de listas y price_changes en bloque, pase lo que pase con el cálculo: lo de los
+         * artículos anteriores al error se escribe igual que lo escribía el camino por artículo.
+         * Si el volcado también falla, el error que sube es el del CÁLCULO (la causa real) y el
+         * del volcado queda en el log; antes, con un finally, el del volcado lo tapaba. Chequeo 3
+         * de la misión, 24/9/2026.
+         */
+        try {
+
             PreciosEnLote::volcar();
+
+        } catch (\Throwable $error_del_volcado) {
+
+            if (is_null($error_del_calculo)) {
+                throw $error_del_volcado;
+            }
+
+            Log::error('ActualizarBBDD::set_precios_finales: falló también el volcado de precios en lote; se informa el error del cálculo', [
+                'error_del_volcado' => $error_del_volcado->getMessage(),
+                'error_del_calculo' => $error_del_calculo->getMessage(),
+            ]);
+        }
+
+        if (!is_null($error_del_calculo)) {
+            throw $error_del_calculo;
         }
 
         $this->terminar('Setear Precios');

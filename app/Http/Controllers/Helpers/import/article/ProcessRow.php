@@ -510,6 +510,19 @@ class ProcessRow {
     protected static $ivas_por_id = [];
 
     /**
+     * Olvida las alícuotas cacheadas. Lo llama ProcessArticleChunk al arrancar cada lote: el
+     * worker es un proceso largo, y si el dueño edita el porcentaje de una alícuota entre dos
+     * importaciones, el lote siguiente no puede descomponer el IVA con el valor viejo. Cuesta
+     * como mucho nueve consultas por lote. Chequeo 3 de la misión, 24/9/2026.
+     *
+     * @return void
+     */
+    public static function olvidar_alicuotas_cacheadas()
+    {
+        self::$ivas_por_id = [];
+    }
+
+    /**
      * @param  int|string $iva_id
      * @return \App\Models\Iva|null
      */

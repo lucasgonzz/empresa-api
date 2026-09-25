@@ -114,6 +114,11 @@ class ArticleIndexCache
     protected static $ultimo_modo_de_build = null;
 
     /**
+     * Uso EXCLUSIVO de los tests (ver $forzar_indice_completo_de_tests). Ningún código de
+     * producción lo llama.
+     *
+     * @internal
+     *
      * @param  bool $forzar
      * @return void
      */
