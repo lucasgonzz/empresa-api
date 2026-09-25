@@ -276,6 +276,47 @@ class IndiceAcotadoAlArchivoTest extends ImportTestCase
     }
 
     /**
+     * Cerrar (o fallar) una importación borra SU índice y no el de otra importación del mismo
+     * comercio que arrancó después: la anotación del sufijo es una por comercio y la pisa la
+     * última importación en construir su índice. Sin el id, limpiar_cache() hace lo de antes
+     * (borra la anotada, sea de quien sea). Chequeo 3 de la misión, 24/9/2026.
+     *
+     * @return void
+     */
+    public function test_cerrar_una_importacion_no_borra_el_indice_de_otra_del_mismo_comercio()
+    {
+        $base = 'article_index_v2_user_' . (int) $this->tenant->id;
+
+        Cache::put($base, ['base'], 60);
+        Cache::put($base . '_imp101', ['de la 101'], 60);
+        Cache::put($base . '_imp102', ['de la 102'], 60);
+
+        /* La 102 construyó su índice después que la 101: la anotación es suya. */
+        Cache::put($base . '_sufijo', '102', 60);
+
+        ArticleIndexCache::limpiar_cache($this->tenant->id, 101);
+
+        $this->assertNull(Cache::get($base . '_imp101'), 'El índice de la importación que terminó tenía que borrarse.');
+        $this->assertSame(['de la 102'], Cache::get($base . '_imp102'), 'El cierre de la 101 no puede borrarle el índice a la 102.');
+        $this->assertSame('102', Cache::get($base . '_sufijo'), 'La anotación de la 102 tiene que quedar.');
+
+        ArticleIndexCache::limpiar_cache($this->tenant->id, 102);
+
+        $this->assertNull(Cache::get($base . '_imp102'));
+        $this->assertNull(Cache::get($base . '_sufijo'), 'Al cerrar la 102, su anotación se va con ella.');
+
+        /* Sin id, lo de siempre: la anotada, sea de quien sea. */
+        Cache::put($base . '_imp103', ['de la 103'], 60);
+        Cache::put($base . '_sufijo', '103', 60);
+
+        ArticleIndexCache::limpiar_cache($this->tenant->id);
+
+        $this->assertNull(Cache::get($base . '_imp103'));
+        $this->assertNull(Cache::get($base . '_sufijo'));
+        $this->assertNull(Cache::get($base));
+    }
+
+    /**
      * Importa el fixture con el índice en el modo pedido, dentro de un savepoint que se
      * revierte al salir, y devuelve la foto normalizada del resultado.
      *

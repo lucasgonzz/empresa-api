@@ -139,7 +139,7 @@ class ImportFailureHandler
             /* 3) Limpieza de cache del índice: un índice a medio construir no debe contaminar el reintento. */
             if (!is_null($user_id)) {
                 try {
-                    ArticleIndexCache::limpiar_cache($user_id);
+                    ArticleIndexCache::limpiar_cache($user_id, $import_history_id);
                 } catch (\Throwable $cache_error) {
                     Log::error('ImportFailureHandler: no se pudo limpiar ArticleIndexCache.', array(
                         'user_id' => $user_id,

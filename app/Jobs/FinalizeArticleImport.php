@@ -144,7 +144,7 @@ class FinalizeArticleImport implements ShouldQueue
             ]);
         }
 
-        ArticleIndexCache::limpiar_cache($user->id);
+        ArticleIndexCache::limpiar_cache($user->id, $this->import_history_id);
         Log::info('Se limpio cache');
 
         /**

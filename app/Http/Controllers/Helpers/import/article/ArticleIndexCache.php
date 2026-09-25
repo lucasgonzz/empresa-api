@@ -2727,7 +2727,17 @@ class ArticleIndexCache
         self::$ultimo_desempate_sin_resolver     = [];
     }
 
-    static function limpiar_cache($user_id) {
+    /**
+     * @param  int      $user_id
+     * @param  int|null $import_history_id  la importación que terminó o falló. Con el id, sólo
+     *                                      se borra el índice con SU sufijo, y la anotación
+     *                                      sólo si es la suya: así el cierre de una importación
+     *                                      no le borra el índice a otra del mismo comercio que
+     *                                      arrancó después (chequeo 3 de la misión, 24/9/2026).
+     *                                      Sin id, como antes: la anotada y la del contexto.
+     * @return void
+     */
+    static function limpiar_cache($user_id, $import_history_id = null) {
 
         /*
          * Se borran las dos claves posibles: la de siempre y la que lleva el sufijo de la
@@ -2741,14 +2751,23 @@ class ArticleIndexCache
         $clave_base = 'article_index_v2_user_' . (int) $user_id;
         $claves[$clave_base] = true;
 
-        if (!is_null(self::$contexto_sufijo) && self::$contexto_sufijo !== '') {
-            $claves[$clave_base . '_imp' . self::$contexto_sufijo] = true;
-        }
-
         $sufijo_anotado = Cache::get(self::clave_del_sufijo($user_id));
 
-        if (is_string($sufijo_anotado) && $sufijo_anotado !== '') {
-            $claves[$clave_base . '_imp' . $sufijo_anotado] = true;
+        $sufijo_propio = ((int) $import_history_id > 0) ? (string) (int) $import_history_id : null;
+
+        if (!is_null($sufijo_propio)) {
+
+            $claves[$clave_base . '_imp' . $sufijo_propio] = true;
+
+        } else {
+
+            if (!is_null(self::$contexto_sufijo) && self::$contexto_sufijo !== '') {
+                $claves[$clave_base . '_imp' . self::$contexto_sufijo] = true;
+            }
+
+            if (is_string($sufijo_anotado) && $sufijo_anotado !== '') {
+                $claves[$clave_base . '_imp' . $sufijo_anotado] = true;
+            }
         }
 
         foreach (array_keys($claves) as $cache_key) {
@@ -2759,7 +2778,10 @@ class ArticleIndexCache
             unset(self::$runtime_dirty_by_key[$cache_key]);
         }
 
-        Cache::forget(self::clave_del_sufijo($user_id));
+        /* La anotación es de UNA importación: con id, sólo se borra si es la de esta. */
+        if (is_null($sufijo_propio) || $sufijo_anotado === $sufijo_propio) {
+            Cache::forget(self::clave_del_sufijo($user_id));
+        }
 
         Log::info('Cache de importación de artículos limpiado: ' . implode(', ', array_keys($claves)));
 
