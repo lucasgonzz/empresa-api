@@ -86,7 +86,20 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(75)
                 ->runInBackground();
 
-            $schedule->command('queue:work --queue=excel --stop-when-empty')
+            /*
+             * 🔴 --memory y --max-time (misión importacion-excel-motor-rapido, 24/9/2026). Sin
+             * --memory, el worker usa el tope por defecto de Laravel (128 MB) y un lote de la
+             * importación de Excel pasa de 250 MB: al terminar CADA lote el worker ve la memoria
+             * "excedida" y se va, y el lote siguiente espera al próximo minuto del scheduler.
+             * Medido el 24/9/2026 con 30.000 filas: un lote de 1.000 tarda ~20 s y después la cola
+             * quedaba parada hasta el minuto siguiente, o sea que el reloj de pared lo ponía el
+             * scheduler y no el motor (30 lotes = 30 minutos). 512 es el mismo tope que usa el
+             * supervisor del VPS (migrar-cliente). --max-time=1200 hace que el worker se vaya solo
+             * entre dos jobs a los 20 minutos, lejos del SIGKILL de Hostinger a los 30 (ver
+             * cc-cron.sh): nunca se lo mata a mitad de un lote, y el minuto siguiente arranca
+             * otro. Sólo en esta cola: la 'default' tiene jobs livianos.
+             */
+            $schedule->command('queue:work --queue=excel --stop-when-empty --memory=512 --max-time=1200')
                 ->everyMinute()
                 ->withoutOverlapping(75)
                 ->runInBackground();
