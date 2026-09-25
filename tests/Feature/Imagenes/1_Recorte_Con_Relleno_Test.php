@@ -58,6 +58,11 @@ class Recorte_Con_Relleno_Test extends TestCase
     /** @var array Rutas de los archivos que el endpoint dejó en storage/app/public y tearDown tiene que borrar. */
     protected $archivos_a_limpiar = [];
 
+    /**
+     * Arma el manager GD (el mismo que usa ImageController::setImage) antes de cada test.
+     *
+     * @return void
+     */
     protected function setUp(): void
     {
         parent::setUp();
@@ -576,6 +581,88 @@ class Recorte_Con_Relleno_Test extends TestCase
         } catch (\InvalidArgumentException $e) {
             $this->assertStringContainsString('El recorte', $e->getMessage());
             $this->assertStringContainsString('intentá de nuevo', $e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // (j) Valores fijados a mano
+    //
+    // Los demás tests leen TOLERANCIA_PX y COLOR_RELLENO de las constantes del helper, así que
+    // cambiar esas constantes deja todo en verde. Estos tres los fijan con números literales: quien
+    // cambie la tolerancia, el color del relleno o el tope de valores absurdos tiene que tocar estos
+    // tests a propósito. El SPA dibuja el vacío en blanco y cuenta con que una sobra de 1 o 2 píxeles
+    // por redondeo no deje ninguna línea, así que esos números son parte del contrato con el SPA.
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * (j) La tolerancia es de 2 píxeles y no de 3: con 2 de sobra el recorte va por el camino de
+     * siempre (mide lo que entra en la imagen, sin relleno) y con 3 ya es un marco afuera de la imagen
+     * (mide lo pedido y las columnas que se pasan son blancas).
+     *
+     * @test
+     */
+    public function j_la_tolerancia_es_de_dos_pixeles_y_no_de_tres()
+    {
+        // Imagen de 100 x 100 y 2 píxeles de sobra por la izquierda: un pedazo de la imagen, sin relleno.
+        $con_dos = ImageCropHelper::crop($this->manager, $this->imagen_con_coordenadas(100, 100), -2, 0, 102, 100);
+
+        $this->assertSame(100, $con_dos->width());
+        $this->assertSame(100, $con_dos->height());
+        $this->assertSame(0, $this->contar_no_de_origen($con_dos, 0, 0, 100, 100, 0, 0), 'Con 2 píxeles de sobra no puede haber relleno.');
+
+        // 3 píxeles de sobra por la izquierda: mide lo pedido (103) y las tres primeras columnas son blancas.
+        $con_tres = ImageCropHelper::crop($this->manager, $this->imagen_con_coordenadas(100, 100), -3, 0, 103, 100);
+
+        $this->assertSame(103, $con_tres->width());
+        $this->assertSame(100, $con_tres->height());
+        $this->assertSame([255, 255, 255, 0], $this->pixel($con_tres, 0, 50), 'La primera columna tiene que ser blanca.');
+        $this->assertSame([255, 255, 255, 0], $this->pixel($con_tres, 2, 50), 'La tercera columna tiene que ser blanca.');
+        $this->assertSame(0, $this->contar_no_de_origen($con_tres, 3, 0, 100, 100, 0, 0), 'La imagen tiene que estar entera a partir de la columna 3.');
+    }
+
+    /**
+     * (j) El espacio vacío se guarda en BLANCO exacto (#ffffff, opaco): es el color con el que el
+     * modal del SPA dibuja lo vacío dentro del marco, así que lo que el usuario ve es lo que se guarda.
+     *
+     * @test
+     */
+    public function j_el_relleno_es_blanco_exacto()
+    {
+        $this->assertSame('#ffffff', ImageCropHelper::COLOR_RELLENO);
+
+        // Imagen de 300 x 100 abajo de un marco cuadrado de 300 x 300: arriba quedan 200 filas de relleno.
+        $resultado = ImageCropHelper::crop($this->manager, $this->imagen_con_coordenadas(300, 100), 0, -200, 300, 300);
+
+        $this->assertSame(300, $resultado->width());
+        $this->assertSame(300, $resultado->height());
+        $this->assertSame([255, 255, 255, 0], $this->pixel($resultado, 0, 0), 'Esquina superior izquierda.');
+        $this->assertSame([255, 255, 255, 0], $this->pixel($resultado, 299, 199), 'Último píxel de relleno, justo arriba de la imagen.');
+        $this->assertSame([0, 0, 200, 0], $this->pixel($resultado, 0, 200), 'Primer píxel de la imagen (origen 0,0).');
+    }
+
+    /**
+     * (j) Un ancho, un alto o una posición absurdos (1e12) se rechazan por "demasiado grande" y no
+     * por otra vía: sin ese tope el entero podría desbordar al convertirlo o al sumarlo, y el marco de
+     * 1e12 de ancho terminaba en un lienzo de 2500 x 1 en vez de en un error claro.
+     *
+     * @test
+     */
+    public function j_un_ancho_un_alto_o_una_posicion_gigante_se_rechaza_por_demasiado_grande()
+    {
+        $casos = [
+            'ancho gigante'    => [0, 0, 1e12, 10],
+            'alto gigante'     => [0, 0, 10, 1e12],
+            'left gigante'     => [1e12, 0, 10, 10],
+            'top gigante'      => [0, -1e12, 10, 10],
+        ];
+
+        foreach ($casos as $nombre => $medidas) {
+            try {
+                ImageCropHelper::crop($this->manager, $this->imagen_con_coordenadas(50, 50), $medidas[0], $medidas[1], $medidas[2], $medidas[3]);
+                $this->fail('Tendría que haber lanzado InvalidArgumentException: ' . $nombre . '.');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('demasiado grande', $e->getMessage(), $nombre);
+            }
         }
     }
 
