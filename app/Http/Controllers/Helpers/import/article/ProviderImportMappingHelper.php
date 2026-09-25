@@ -470,8 +470,13 @@ SECCION;
      * Para cada columna cuyo encabezado normalizado coincide con uno guardado, `system_property`
      * pasa a ser lo guardado y se agrega la clave `mapeo_guardado`
      * {system_property, origen, guardado_en, proveedor}. En el resto, `mapeo_guardado` queda en
-     * null. Si lo guardado cambia la propiedad, la `interpretation_note` de la IA se anula: era
-     * sobre otra lectura de la columna y la línea de "la última vez corregiste…" la reemplaza.
+     * null. En toda columna guardada la `interpretation_note` de la IA se anula, cambie o no la
+     * propiedad: si cambia, la nota era sobre otra lectura de la columna; si no cambia, le pedía
+     * al usuario que valide algo que ya confirmó la vez anterior. En los dos casos la línea de
+     * "la última vez corregiste / confirmaste…" la reemplaza (el prompt ya le pide a Claude la
+     * nota en null para estas columnas; esto lo asegura aunque no obedezca). Verificado en la
+     * interfaz el 24/9/2026: "Descripcion" salía celeste con "Revisá el mapeo antes de importar"
+     * al lado de «Guardado».
      *
      * Los ids codificados (address_{id}_* / price_type_{id}_*) se validan contra lo que el usuario
      * tiene HOY: un depósito o una lista que ya no existe no se aplica (queda lo de la IA y sin
@@ -543,13 +548,8 @@ SECCION;
                     continue;
                 }
 
-                $cambia = self::propiedad_de($resultado[$posicion]) !== $propiedad;
-
-                $resultado[$posicion]['system_property'] = $propiedad;
-
-                if ($cambia) {
-                    $resultado[$posicion]['interpretation_note'] = null;
-                }
+                $resultado[$posicion]['system_property']     = $propiedad;
+                $resultado[$posicion]['interpretation_note'] = null;
 
                 $resultado[$posicion]['mapeo_guardado'] = [
                     'system_property' => $propiedad,

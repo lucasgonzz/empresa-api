@@ -602,6 +602,60 @@ class MapeoPorProveedorTest extends ImportTestCase
     }
 
     /**
+     * Una columna guardada no trae la nota de interpretación de la IA aunque la IA haya propuesto
+     * lo mismo que estaba guardado: la nota le pedía al usuario validar algo que ya confirmó, y en
+     * la interfaz salía la fila en celeste con "Revisá el mapeo" al lado de «Guardado». Las
+     * columnas que no están guardadas conservan su nota. Visto en la verificación con navegador
+     * del 24/9/2026.
+     *
+     * @return void
+     */
+    public function test_una_columna_guardada_no_trae_la_nota_de_interpretacion_de_la_ia()
+    {
+        $respuesta = $this->respuesta_de_analisis([
+            'Codigo'      => 'codigo_de_proveedor',
+            'Descripcion' => 'nombre',
+            'Precio'      => 'precio',
+            'Stock'       => null,
+        ]);
+
+        $json = json_decode($respuesta['content'][0]['text'], true);
+
+        foreach ($json['column_mapping'] as $i => $col) {
+            if ($col['excel_column'] === 'Descripcion') {
+                $json['column_mapping'][$i]['interpretation_note'] = 'Interpretamos la columna Descripcion como el nombre del artículo.';
+            }
+            if ($col['excel_column'] === 'Stock') {
+                $json['column_mapping'][$i]['interpretation_note'] = 'El sistema trabaja con stock por sucursal.';
+            }
+        }
+
+        $respuesta['content'][0]['text'] = json_encode($json);
+
+        $this->fakear_claude($respuesta);
+
+        $primero = $this->analizar($this->xlsx(self::ENCABEZADOS));
+
+        $this->assertNotNull($this->columna($primero->resultado['column_mapping'], 'Descripcion')['interpretation_note'], 'Sin configuración la nota de la IA llega.');
+
+        $this->confirmar($primero, $this->providers['A']->id, ['Precio' => 'costo']);
+
+        $segundo = $this->analizar($this->xlsx(self::ENCABEZADOS, [['A-010', 'Tuerca', 5, 10]]));
+
+        $descripcion = $this->columna($segundo->resultado['column_mapping'], 'Descripcion');
+        $this->assertSame('confirmado', $descripcion['mapeo_guardado']['origen']);
+        $this->assertNull($descripcion['interpretation_note'], 'Una columna guardada y confirmada no puede pedirle al usuario que la valide de nuevo.');
+
+        $precio = $this->columna($segundo->resultado['column_mapping'], 'Precio');
+        $this->assertSame('costo', $precio['system_property']);
+        $this->assertNull($precio['interpretation_note']);
+
+        $stock = $this->columna($segundo->resultado['column_mapping'], 'Stock');
+        $this->assertNull($stock['mapeo_guardado'], 'Stock se ignoró: no forma parte de la configuración.');
+        $this->assertNotNull($stock['interpretation_note'], 'Una columna que no está guardada conserva su nota.');
+    }
+
+    /**
      * Encabezados distintos (una columna más) no reconocen el formato: la IA infiere el
      * proveedor y, si ese proveedor tiene configuración, se aplica sólo en las columnas que
      * coinciden. La confianza del proveedor es la de la IA, y no hay nota de reconocimiento.
