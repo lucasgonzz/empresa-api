@@ -479,6 +479,15 @@ class AiExcelAnalyzer
         $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
 
         /*
+         * Tamaño de lote con el que va a correr la importación: ARTICLE_EXCEL_CHUNK_SIZE, 1000
+         * por defecto o lo que fije el .env del cliente. Sólo alimenta el texto "aprox. N lotes de
+         * M filas" del paso 4, que antes tenía el tamaño fijo en el SPA y mentía en los clientes
+         * que lo fijan (Servian: 100). Clave nueva y opcional: un SPA viejo la ignora y un
+         * resultado viejo no la trae (el SPA cae en 1000). Chequeo 3 de la misión, 24/9/2026.
+         */
+        $parsed['tamanio_de_lote'] = max(1, (int) config('app.ARTICLE_EXCEL_CHUNK_SIZE'));
+
+        /*
          * Advertencias de alto nivel generadas por Claude para mostrar al usuario
          * antes de la tabla de mapeo. Si no vino el campo, retornamos array vacío.
          */
