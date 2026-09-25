@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -61,15 +62,38 @@ class PropuestaGenericaIaHelper
      * @param  mixed  $entidad
      * @param  array  $datos  [campo => valor], con las claves de que_puedo_cargar.
      * @param  mixed  $reemplaza_a
+     * @param  array  $extras  La foto y la descripción de un artículo (AltaDeArticuloConFotoIaHelper::separar).
      * @return array
      */
-    public static function proponer_alta(ContextoDeCargaIa $contexto, AiMessage $mensaje, $entidad, array $datos, $reemplaza_a = null)
+    public static function proponer_alta(ContextoDeCargaIa $contexto, AiMessage $mensaje, $entidad, array $datos, $reemplaza_a = null, array $extras = [])
     {
         $declaracion = self::entidad_para($contexto, $entidad, Catalogo::OP_ALTA);
 
         if (RespuestaDeCargaIa::es_negativa($declaracion)) {
 
             return $declaracion;
+        }
+
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): la foto y la descripción viajan en la
+         * MISMA tarjeta del alta, pero sólo un artículo las tiene. En otra entidad se corta en vez de
+         * ignorarlas: una tarjeta que se calla una parte del pedido llega a la persona como completa.
+         */
+        if (count($extras) && $declaracion['entidad'] !== AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+
+            return RespuestaDeCargaIa::error('La foto y la descripción sólo se cargan en el alta de un artículo.');
+        }
+
+        /*
+         * 🔴 Correcciones del 24/9/2026: una CORRECCIÓN del alta de un artículo ("sí, pero cambiale
+         * el nombre") hereda la foto y la descripción de la tarjeta que reemplaza, si el modelo no
+         * las vuelve a mandar. En la prueba real el modelo inventó un imagen_id (310) y reescribió la
+         * descripción inventando una frase, porque la línea de historial no trae el id y recorta los
+         * renglones. Ver AltaDeArticuloConFotoIaHelper::heredar().
+         */
+        if ($declaracion['entidad'] === AltaDeArticuloConFotoIaHelper::ENTIDAD) {
+
+            $extras = AltaDeArticuloConFotoIaHelper::heredar($contexto, $reemplaza_a, $extras);
         }
 
         $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_ALTA, $datos);
@@ -112,22 +136,88 @@ class PropuestaGenericaIaHelper
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
 
+        $renglones = self::costo_en_dolares_en_los_renglones($declaracion, $validado['payload'], $renglones);
+
+        $imagen_url = null;
+
+        $datos_de_la_tarjeta = [
+            'entidad'   => $declaracion['entidad'],
+            'operacion' => Catalogo::OP_ALTA,
+            'payload'   => $payload,
+            'pedidos'   => $validado['pedidos'],
+        ];
+
+        /*
+         * Los extras van en `datos.extras` y NO en el payload: la pantalla de artículos no los recibe
+         * en su store(). Los ejecuta AltaDeArticuloConFotoIaHelper::completar() después del alta.
+         */
+        if (count($extras)) {
+
+            $resueltos = AltaDeArticuloConFotoIaHelper::resolver($contexto, $mensaje, $extras);
+
+            if (RespuestaDeCargaIa::es_negativa($resueltos)) {
+
+                return $resueltos;
+            }
+
+            $datos_de_la_tarjeta['extras'] = $resueltos['extras'];
+
+            foreach ($resueltos['renglones'] as $renglon) {
+
+                $renglones[] = $renglon;
+            }
+
+            /*
+             * La miniatura de la foto en la tarjeta del panel (`presentacion.imagen_url`, la clave
+             * opcional que AccionCard.vue ya pinta arriba de los renglones): el dueño ve QUÉ foto
+             * queda publicada antes de confirmar, sea la que mandó o la encontrada en internet.
+             */
+            if (!is_null($resueltos['imagen_url'])) {
+
+                $imagen_url = $resueltos['imagen_url'];
+            }
+
+            if (!empty($resueltos['extras']['imagen_id'])) {
+
+                $aviso_de_la_foto = 'La foto también se publica en la tienda online del negocio.';
+
+                $aviso = is_null($aviso) ? $aviso_de_la_foto : $aviso.' '.$aviso_de_la_foto;
+            }
+        }
+
+        $presentacion = [
+            'titulo'    => Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA),
+            'renglones' => $renglones,
+            'aviso'     => $aviso,
+        ];
+
+        if (!is_null($imagen_url)) {
+
+            $presentacion['imagen_url'] = $imagen_url;
+
+            /*
+             * La referencia de la foto, para que AiMessageAction::toArray() rearme la URL en el
+             * request de la SPA: esta propuesta corre adentro del job, donde url() sale de APP_URL
+             * (ver FotosDelMensajeIaHelper::url). `imagen_url` queda como respaldo.
+             */
+            if (!empty($resueltos['extras']['imagen_id'])) {
+
+                $imagen = AiMessageImagen::find((int) $resueltos['extras']['imagen_id']);
+
+                if (!is_null($imagen)) {
+
+                    $presentacion['imagen_mensaje'] = ['ai_message_id' => (int) $imagen->ai_message_id, 'orden' => (int) $imagen->orden];
+                }
+            }
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_ALTA,
             self::clave_de_alta($declaracion, $nombre, $validado['pedidos']),
-            [
-                'entidad'   => $declaracion['entidad'],
-                'operacion' => Catalogo::OP_ALTA,
-                'payload'   => $payload,
-                'pedidos'   => $validado['pedidos'],
-            ],
-            [
-                'titulo'    => Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA),
-                'renglones' => $renglones,
-                'aviso'     => $aviso,
-            ],
+            $datos_de_la_tarjeta,
+            $presentacion,
             $reemplaza_a
         );
 
@@ -917,6 +1007,42 @@ class PropuestaGenericaIaHelper
             $valor = isset($nombres[$columna]) ? $nombres[$columna] : Catalogo::valor_legible($campo, $pedidos[$columna]);
 
             $renglones[] = ['etiqueta' => Str::ucfirst($campo['etiqueta']), 'valor' => $valor];
+        }
+
+        return $renglones;
+    }
+
+    /**
+     * Con `cost_in_dollars` prendido, el renglón del costo se escribe en dólares ("US$ 10") y no en
+     * pesos ("$ 10").
+     *
+     * Misión asistente-fotos-barras-y-compras (24/9/2026): valor_legible() formatea `cost` como
+     * plata en pesos porque no ve los otros campos del pedido. Con la marca de dólares, la tarjeta
+     * decía "Costo: $ 10" para un costo de diez DÓLARES, y el dueño confirmaba leyendo un precio que
+     * no era el que se iba a guardar.
+     *
+     * @param  array  $declaracion
+     * @param  array  $payload  El payload validado de la propuesta.
+     * @param  array  $renglones
+     * @return array
+     */
+    protected static function costo_en_dolares_en_los_renglones(array $declaracion, array $payload, array $renglones): array
+    {
+        if ($declaracion['entidad'] !== 'article'
+            || !isset($payload['cost_in_dollars'], $payload['cost'], $declaracion['campos']['cost'])
+            || !filter_var($payload['cost_in_dollars'], FILTER_VALIDATE_BOOLEAN)) {
+
+            return $renglones;
+        }
+
+        $etiqueta_del_costo = Str::ucfirst($declaracion['campos']['cost']['etiqueta']);
+
+        foreach ($renglones as $indice => $renglon) {
+
+            if ($renglon['etiqueta'] === $etiqueta_del_costo) {
+
+                $renglones[$indice]['valor'] = 'US$ ' . number_format((float) $payload['cost'], 2, ',', '.');
+            }
         }
 
         return $renglones;

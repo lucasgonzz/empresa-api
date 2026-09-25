@@ -236,6 +236,30 @@ return [
     ],
 
     /*
+     * Asistente IA — búsqueda de un producto por su código de barras (misión
+     * asistente-fotos-barras-y-compras, 24/9/2026). La usa BusquedaPorCodigoDeBarrasIaHelper.
+     *
+     * Va SIEMPRE con la clave de Anthropic de la plataforma (bloque 'anthropic' de arriba), aunque
+     * el dueño haya elegido DeepSeek para el chat: la búsqueda web (`web_search_20250305`) es una
+     * herramienta del servidor de Anthropic y DeepSeek no la tiene. Mismo criterio que el escaneo.
+     *
+     * `tope_diario_defecto` es el tope de búsquedas WEB por negocio por día cuando el admin no le
+     * mandó uno (users.plan_ia_tope_busquedas_web_diarias null). Decisión de Lucas del 24/9: 30.
+     * Lo que sale de Open Food Facts / Open Beauty Facts no cuenta: es gratis.
+     */
+    'asistente_ia' => [
+        'busqueda_codigo_barras' => [
+            // Haiku alcanza: busca, lee dos o tres páginas y arma un JSON corto.
+            'model'               => env('BUSQUEDA_CODIGO_BARRAS_MODEL', 'claude-haiku-4-5-20251001'),
+            'tope_diario_defecto' => (int) env('BUSQUEDA_CODIGO_BARRAS_TOPE_DIARIO', 30),
+            // Búsquedas web por consulta (el `max_uses` de la herramienta de Anthropic).
+            'max_busquedas'       => (int) env('BUSQUEDA_CODIGO_BARRAS_MAX_BUSQUEDAS', 3),
+            // Timeout de la llamada a Anthropic con búsqueda web; medido ~7 s el 24/9/2026.
+            'timeout'             => (int) env('BUSQUEDA_CODIGO_BARRAS_TIMEOUT', 60),
+        ],
+    ],
+
+    /*
      * API OpenAI — embeddings vectoriales del catálogo de artículos (text-embedding-3-small).
      * El token se configura en .env como OPENAI_API_KEY.
      * Reutiliza la configuración TLS de anthropic (verify_ssl / ca_bundle) para

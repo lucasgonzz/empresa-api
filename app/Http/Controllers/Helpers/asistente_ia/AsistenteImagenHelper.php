@@ -188,6 +188,63 @@ class AsistenteImagenHelper
     }
 
     /**
+     * Guarda UN binario de imagen (no un archivo subido) colgado de un mensaje, con el mismo formato
+     * que las fotos del dueño: webp redimensionado, disco local, misma estructura de ruta. Devuelve
+     * la fila creada o null si la imagen no se pudo procesar o guardar.
+     *
+     * Lo usa la búsqueda por código de barras (misión asistente-fotos-barras-y-compras, 24/9/2026)
+     * para dejar la foto de producto que encontró en internet colgada del mensaje ASSISTANT en curso.
+     * Va por acá y no por una copia del resize para que las dos fotos tengan un solo formato: la
+     * herramienta que después la asigna al artículo lee cualquiera de las dos igual.
+     *
+     * 🔴 Del mensaje assistant, nunca de uno 'user': las herramientas que buscan "la foto que mandó
+     * la persona" filtran por rol 'user', y eso es lo que evita que una foto de internet se tome por
+     * una foto del dueño.
+     *
+     * El orden sigue al último que tenga el mensaje (un mismo turno puede buscar dos códigos).
+     *
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  string  $binario
+     * @param  int  $owner_id
+     * @return \App\Models\AiMessageImagen|null
+     */
+    public static function guardar_binario(AiMessage $mensaje, $binario, $owner_id)
+    {
+        $webp = self::redimensionar_a_webp((string) $binario);
+
+        if (is_null($webp)) {
+
+            return null;
+        }
+
+        $orden = (int) AiMessageImagen::where('ai_message_id', $mensaje->id)->max('orden') + 1;
+        $path  = 'asistente_imagenes/' . (int) $owner_id . '/' . (int) $mensaje->id . '/' . $orden . '.webp';
+
+        try {
+
+            Storage::disk('local')->put($path, $webp);
+
+            return AiMessageImagen::create([
+                'ai_message_id' => $mensaje->id,
+                'user_id'       => (int) $owner_id,
+                'orden'         => $orden,
+                'path'          => $path,
+                'mime'          => 'image/webp',
+                'bytes'         => strlen($webp),
+            ]);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AsistenteImagenHelper: no se pudo guardar una imagen en el mensaje', [
+                'ai_message_id' => $mensaje->id,
+                'error'         => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
      * El binario de una foto guardada, o null si el archivo ya no está.
      *
      * @param  \App\Models\AiMessageImagen  $imagen
