@@ -112,6 +112,10 @@ class Tools_de_lectura_Test extends TestCase
             // El número no existe a propósito: acá se prueba que la tool corre y contesta, no que
             // encuentre una venta (eso lo cubre 53_Presupuesto_y_link_de_pdf_Test).
             'consultar_link_de_pdf'                    => ['tipo' => 'venta', 'numero' => 999999],
+            // Misión asistente-fotos-barras-y-compras (24/9/2026): la búsqueda por código de barras.
+            // Un código con el verificador roto a propósito: corta en la validación GS1 y contesta
+            // sin salir a la red (el camino entero lo cubre Busqueda_por_codigo_de_barras_Test).
+            'buscar_producto_por_codigo_de_barras'     => ['codigo' => '7798111212033'],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

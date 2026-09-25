@@ -106,6 +106,62 @@ class ConfirmacionPorTextoIaHelper
     }
 
     /**
+     * true si una tarjeta pasa las guardas de la confirmación por texto (las de rechazo(): de esta
+     * conversación, de otro turno, propuesta por un canal sin botones, ya leída por la persona y
+     * anterior a su respuesta). Lo usa ConfirmacionDeterministaIaHelper para NO confirmar lo que
+     * confirmar() rechazaría: si rechaza, decide el modelo (correcciones del 24/9/2026 — antes la
+     * nota le hacía contarle al dueño "No podés confirmar una carga que la persona todavía no vio").
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $assistant_message
+     * @param  mixed  $accion_id
+     * @return bool
+     */
+    public static function se_puede_confirmar_por_texto(AiConversation $conversation, AiMessage $assistant_message, $accion_id)
+    {
+        return is_null(self::rechazo($conversation, $assistant_message, $accion_id));
+    }
+
+    /**
+     * Confirma una tarjeta por el MISMO camino que el botón Confirmar de la pantalla
+     * (AiConversationController::confirmar_accion → EjecutorAccionesIaHelper::confirmar, que exige el
+     * mensaje que la propuso 'listo'), pero desde el job y con la persona autenticada.
+     *
+     * Existe para el "Dale" TIPEADO en el panel del chat (correcciones del 24/9/2026): ahí el modelo
+     * no tiene confirmar_carga_pendiente (la confirmación es el botón), así que un "dale" escrito
+     * quedaba en manos de un modelo que podía contestar "quedó hecho" sin haber hecho nada — el bug
+     * original de demo3, en el otro canal. Las guardas de cuándo un "dale" confirma viven en
+     * ConfirmacionDeterministaIaHelper; acá sólo la ejecución.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  mixed  $accion_id
+     * @return array
+     */
+    public static function confirmar_como_el_boton(AiConversation $conversation, $accion_id)
+    {
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $persona = $contexto->persona;
+
+        if (is_null($persona)) {
+
+            return RespuestaDeCargaIa::error('No pude identificar tu usuario para registrar la carga.');
+        }
+
+        $resultado = self::autenticado_como($persona, function () use ($conversation, $accion_id, $persona, $contexto) {
+
+            return EjecutorAccionesIaHelper::confirmar($conversation, $accion_id, $persona, function () use ($contexto) {
+
+                $controller = new Controller();
+
+                return $controller->num('expenses', $contexto->owner_id);
+            });
+        });
+
+        return self::traducir($resultado, (int) $accion_id);
+    }
+
+    /**
      * Auto-ejecuta en el acto una tarjeta que el agente acaba de proponer, cuando el MODO DE
      * CONFIANZA del dueño lo permite (misión foto-sucursal-y-asistente-configurable, 17/9/2026;
      * corrida a tres modos por asistente-capacidades-y-hilos, 22/9/2026).

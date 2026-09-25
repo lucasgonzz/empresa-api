@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Pdf;
 
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
+use App\Http\Controllers\Helpers\CriterioDeOfertaPorCantidadHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
@@ -315,11 +316,31 @@ class ArticleOfferSheetPdf extends fpdf
 
     }
 
+    /**
+     * Las ofertas por cantidad del articulo, una linea por oferta.
+     *
+     * Desde la mision oferta-por-cantidad-porcentaje (24/9/2026) una oferta puede fijar un PRECIO
+     * o descontar un PORCENTAJE, y cual de los dos manda lo decide
+     * `CriterioDeOfertaPorCantidadHelper` — el mismo criterio que usan el ABM, el ERP al vender y
+     * la tienda. Aca NO se vuelve a decidir: se pregunta.
+     *
+     * 🔴 Una oferta que no tiene ningun valor usable (MODO_NINGUNO) NO SE IMPRIME. Antes se
+     * imprimia igual y salia "= $0 cu" en un cartel pensado para colgar en el local: un precio de
+     * cero anunciado a la calle. El tramo sin valor usable no descuenta nada en ningun lado del
+     * sistema, asi que tampoco tiene nada que anunciar.
+     */
     function print_article_price_ranges($article, $right_w, $right_x) {
 
         if (count($article->article_price_ranges) >= 1) {
 
             foreach ($article->article_price_ranges as $price_range) {
+
+                $modo = CriterioDeOfertaPorCantidadHelper::resolver($price_range->price, $price_range->porcentaje);
+
+                if ($modo === CriterioDeOfertaPorCantidadHelper::MODO_NINGUNO) {
+                    continue;
+                }
+
                 $text = 'Llevando ';
                 if ($price_range->modo == 'Igual') {
 
@@ -329,7 +350,15 @@ class ArticleOfferSheetPdf extends fpdf
                     $text .= Numbers::price($price_range->amount). ' o mas';
 
                 }
-                $text .= ' = $'.Numbers::price($price_range->price).' cu';
+
+                if ($modo === CriterioDeOfertaPorCantidadHelper::MODO_PORCENTAJE) {
+
+                    $text .= ' = '.CriterioDeOfertaPorCantidadHelper::porcentaje_legible($price_range->porcentaje).'% de descuento';
+                } else {
+
+                    $text .= ' = $'.Numbers::price($price_range->price).' cu';
+                }
+
                 $this->SetFont('Arial', 'B', 20);
                 $this->SetX($right_x);
                 $this->MultiCell($right_w, 7, $text, $this->b, 'R');

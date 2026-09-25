@@ -2,6 +2,7 @@
 
 namespace App\Services\AsistenteIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\AltaDeArticuloConFotoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
@@ -77,8 +78,17 @@ class HerramientasDeCarga
      * 🔴 SOLO CARGAS INOCUAS Y REVERSIBLES. La foto de una sucursal (se deshace desde el ABM), mandar
      * a buscar imágenes para categorías o artículos (una imagen se saca desde la ficha; la búsqueda
      * en sí no toca nada más) y cambiar las columnas de un diseño de PDF (se vuelve a cambiar desde
-     * ABM > Impresión). Todo lo que mueve plata (gastos, pagos, compras, combos, ofertas) NUNCA se
+     * ABM > Impresión). Todo lo que mueve plata (gastos, pagos, combos, ofertas) NUNCA se
      * auto-confirma, ni siquiera en "resuelto" — siempre lo confirma la persona.
+     *
+     * 🔴 LA EXCEPCIÓN ES LA COMPRA CON FACTURA, Y ES DECISIÓN DE LUCAS (24/9/2026, misión
+     * asistente-fotos-barras-y-compras): "se ejecuta directo, sin confirmar", incluida el alta del
+     * proveedor si no existe. No rompe la regla de arriba porque esa compra NO mueve plata ni stock
+     * todavía: nace "En proceso", vacía, con `update_stock = 0` y `update_prices = 0`, y lo único que
+     * hace es colgarle la foto de la factura al escaneo. La confirmación real —qué artículos, a qué
+     * precio, qué stock entra— es la revisión del escaneo desde Compras, que sigue siendo de la
+     * persona. En "cauteloso" queda UNA tarjeta que cubre todo (proveedor nuevo incluido). En demo3
+     * (conv 12) la compra pedida de una tardó tres mensajes en armarse.
      *
      * 🔴 LA ACTUALIZACIÓN MASIVA NO ESTÁ NI VA A ESTAR ACÁ. Reescribe precios, márgenes, stock o
      * proveedores de cientos de artículos de un saque; aunque se pueda revertir, la persona tiene
@@ -116,6 +126,8 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_IMAGENES_CATEGORIAS,
         AiMessageAction::TIPO_IMAGENES_ARTICULOS,
         AiMessageAction::TIPO_DISENO_PDF,
+        /* Al final, por la regla de siempre. Ver el 🔴 de la compra con factura en el docblock. */
+        AiMessageAction::TIPO_COMPRA_CON_FACTURA,
     ];
 
     /**
@@ -877,7 +889,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_alta',
-                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CREAR un registro de una entidad de que_puedo_cargar (un proveedor, un cliente, una categoría, un artículo, una sucursal...) para que la persona la confirme: NO crea nada. Al confirmar se crea por la misma pantalla que usa la persona. Las claves de `datos` son los campos de que_puedo_cargar; una relación (categoría, proveedor, marca, localidad...) va por su NOMBRE, y si hay varias que encajan la respuesta trae "faltan" con las opciones. Un campo que la persona no dijo no lo inventes: si es obligatorio, preguntalo; si no, no lo mandes. NUNCA se crea sola, ni con la confianza en "resuelto". Para gastos, pagos, tareas, combos, ofertas, compras con factura y ventas está su propia herramienta; esta es para todo lo demás que se carga desde ABM, Clientes, Proveedores y Artículos. Un ARTÍCULO se da de alta con su foto y su descripción en ESTA MISMA tarjeta (con_foto_de_la_conversacion, imagen_id, descripcion), nunca en dos. 🔴 Para un artículo: con el costo y el margen el precio de venta sale solo, así que NO pidas el precio de venta si ya tenés costo y margen; "con esta foto" o "con la foto que te mandé" es con_foto_de_la_conversacion; buscar_producto_por_codigo_de_barras va sólo si la persona pide buscarlo o no te dio el nombre del producto. Al corregir una tarjeta con reemplaza_a, no vuelvas a mandar imagen_id ni descripcion si no cambian: se heredan de la tarjeta anterior. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Con reemplaza_a (una corrección de la tarjeta), mandá en datos sólo lo que cambia: los demás campos, la foto y la descripción se heredan de la tarjeta anterior; para SACAR un campo, mandalo vacío. Si la persona pide cargar OTRO producto distinto, no uses reemplaza_a: proponé un alta nueva.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -891,6 +903,24 @@ class HerramientasDeCarga
                             'additionalProperties' => true,
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión asistente-fotos-barras-y-compras (24/9/2026): los tres extras del alta
+                         * de un artículo, AL FINAL de las propiedades por la regla del prefijo del
+                         * caché. No van al controller: los ejecuta AltaDeArticuloConFotoIaHelper
+                         * después del alta.
+                         */
+                        'con_foto_de_la_conversacion' => [
+                            'type'        => 'boolean',
+                            'description' => 'Solo para entidad article: true para que el artículo nazca con la foto que la persona te mandó en esta conversación (la saco sola, no me la pases). Con reemplaza_a NO lo mandes salvo que la persona pida cambiar la foto: la tarjeta nueva hereda la foto de la anterior.',
+                        ],
+                        'imagen_id'   => [
+                            'type'        => 'integer',
+                            'description' => 'Solo para entidad article: el imagen_id de una foto que te devolvió otra herramienta (la búsqueda por código de barras). Si lo mandás, no hace falta con_foto_de_la_conversacion. Con reemplaza_a NO lo mandes: se hereda.',
+                        ],
+                        'descripcion' => [
+                            'type'        => 'string',
+                            'description' => 'Solo para entidad article: la descripción del producto para la ficha y la tienda online, en español. Con reemplaza_a NO la mandes salvo que la persona pida cambiarla: se hereda entera de la tarjeta anterior (si la mandás, reemplaza a la heredada).',
+                        ],
                     ],
                     'required'   => ['entidad', 'datos'],
                 ],
@@ -1023,7 +1053,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'proponer_foto_articulo',
-                'description'  => 'Arma la tarjeta para ponerle a un ARTÍCULO la última foto que la persona te mandó y todavía no se usó (la saco sola de esta conversación, no me la pases). El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para ponerle a un ARTÍCULO QUE YA EXISTE la última foto que la persona te mandó y todavía no se usó (la saco sola de esta conversación, no me la pases). Para un artículo NUEVO no va esta: proponer_alta de article con con_foto_de_la_conversacion lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1339,19 +1369,28 @@ class HerramientasDeCarga
         return [
             [
                 'name'         => 'proponer_compra_con_factura',
-                'description'  => 'Arma la tarjeta para dar de alta la compra de un proveedor y cargarle la foto de la factura que la persona te mandó, para que el sistema la lea: NO registra nada. Las fotos las saco solas de las que te mandó en esta conversación y todavía no se usaron, así que no me las pases. Si ya hay una compra de ese proveedor vacía y reciente se usa esa, y si no se crea una nueva: la respuesta te dice cuál de las dos. Los artículos no se cargan acá, los revisa la persona desde Compras cuando la lectura termina. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Da de alta la compra de un proveedor y le carga la foto de la factura que la persona te mandó, para que el sistema la escanee. 🔴 El proveedor es EL QUE DIJO LA PERSONA, nunca el emisor que leés en la factura: si la factura dice otra razón social, no lo cuestiones ni lo preguntes. Recién si la persona no nombró ningún proveedor, usá el emisor de la factura. Llamala en la misma vuelta, sin preguntar nada antes: no transcribas montos, fechas ni renglones de la factura (los lee el escaneo) y no preguntes la sucursal (si no la dijo, uso la suya). Las fotos las saco solas de las que te mandó y todavía no se usaron: no me las pases. Si el proveedor no existe, lo doy de alta yo en la misma carga (no uses proponer_alta antes); si no lo nombró la persona, queda una tarjeta para que lo confirme. Con la confianza en "resuelto" se hace en el acto y la respuesta te trae el resultado; en "cauteloso" queda una sola confirmación que cubre todo. Los artículos no se cargan acá: el escaneo corre en segundo plano y cuando termina el aviso le aparece a la persona EN EL SISTEMA (no por WhatsApp); los revisa desde Compras. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
                         'proveedor'   => [
                             'type'        => 'string',
-                            'description' => 'Nombre del proveedor de la factura, tal como lo dijo la persona. Nunca lo inventes: si no lo dijo, preguntalo.',
+                            'description' => 'El proveedor que nombró la persona, tal como lo dijo. Sólo si no nombró ninguno, el emisor que leés en la factura (su nombre o razón social).',
                         ],
                         'sucursal'    => [
                             'type'        => 'string',
-                            'description' => 'Sucursal a la que entra la mercadería. Solo hace falta si el negocio tiene más de una.',
+                            'description' => 'Sucursal a la que entra la mercadería, sólo si la persona la nombró. Nunca la preguntes.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Correcciones del 24/9/2026, al FINAL de las propiedades por la regla del
+                         * prefijo del caché: el CUIT reconoce al proveedor antes que el nombre, salvo
+                         * que la persona haya nombrado a otro (ProveedorDeLaFacturaIaHelper::resolver).
+                         */
+                        'cuit'        => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el CUIT del proveedor, si la persona lo dijo o si no nombró ningún proveedor y lo leés en la factura. Sólo los dígitos.',
+                        ],
                     ],
                     'required'   => ['proveedor'],
                 ],
@@ -1620,6 +1659,16 @@ class HerramientasDeCarga
                 return self::resultado(CatalogoDeEscrituraIaHelper::que_puedo_cargar(EntradaDeCargaIa::valor($input, 'entidad')));
 
             case 'proponer_alta':
+                /*
+                 * Los extras del alta de un artículo (foto y descripción) se separan de `datos` acá:
+                 * no son campos de la pantalla de artículos y validar_campos() los rechazaría. Misión
+                 * asistente-fotos-barras-y-compras (24/9/2026), ver AltaDeArticuloConFotoIaHelper.
+                 */
+                list($datos_del_alta, $extras_del_alta) = AltaDeArticuloConFotoIaHelper::separar(
+                    $input,
+                    self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos'))
+                );
+
                 return self::resultado(self::quizas_auto_confirmar(
                     $contexto,
                     $conversation,
@@ -1628,8 +1677,9 @@ class HerramientasDeCarga
                         $contexto,
                         $assistant_message,
                         EntradaDeCargaIa::valor($input, 'entidad'),
-                        self::objeto_como_array(EntradaDeCargaIa::valor($input, 'datos')),
-                        EntradaDeCargaIa::valor($input, 'reemplaza_a')
+                        $datos_del_alta,
+                        EntradaDeCargaIa::valor($input, 'reemplaza_a'),
+                        $extras_del_alta
                     )
                 ));
 

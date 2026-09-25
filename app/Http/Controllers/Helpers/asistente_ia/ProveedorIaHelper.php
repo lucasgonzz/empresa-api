@@ -255,6 +255,11 @@ class ProveedorIaHelper
      * Anthropic no cambia: todos sus modelos ven. El `modelo` que se devuelve es el que efectivamente
      * se usa y el que se registra en ai_token_usages.
      *
+     * Misión asistente-deepseek-pro-razona (24/9/2026): si el turno va escalado y las fotos se
+     * transcribieron (TranscripcionDeFotosIaHelper), el payload ya no lleva bloques `image` y el
+     * service pide esta elección SIN `$necesita_vision` y CON `$forzar_profundo`: sale Pro pensando.
+     * La guarda de acá sigue intacta para todo payload que todavía lleve una imagen.
+     *
      * 🔴 CON `$forzar_profundo` EL PENSAMIENTO DEL DUEÑO SE IGNORA Y SE VA AL PROFUNDO (misión
      * asistente-capacidades-y-hilos, 22/9/2026). Lo pide el loop del chat cuando el turno ya tocó
      * una tool de carga: "las acciones contra deepseek pro a ver si cambia" (Lucas, 22/9). Es POR
@@ -285,11 +290,7 @@ class ProveedorIaHelper
             $es_profundo = $pensamiento === 'profundo';
 
             if ($necesita_vision) {
-                $modelo = (string) config('services.deepseek.model_vision');
-
-                if ($modelo === '') {
-                    $modelo = (string) config('services.deepseek.model_agil');
-                }
+                $modelo = self::modelo_de_vision_de_deepseek();
             } else {
                 $modelo = (string) config($es_profundo ? 'services.deepseek.model_profundo' : 'services.deepseek.model_agil');
             }
@@ -318,6 +319,25 @@ class ProveedorIaHelper
             'modelo'      => self::modelo_o_general($preferido, self::ANTHROPIC),
             'thinking'    => null,
         ];
+    }
+
+    /**
+     * El id del modelo de DeepSeek que VE imágenes: `services.deepseek.model_vision` (Flash) y, si
+     * viene vacío, `model_agil`; si también, el general. Lo usan dos caminos que tienen que coincidir:
+     * la guarda de visión de modelo_del_asistente() y la transcripción de fotos de un turno que corre
+     * en Pro (TranscripcionDeFotosIaHelper, misión asistente-deepseek-pro-razona, 24/9/2026).
+     *
+     * @return string
+     */
+    public static function modelo_de_vision_de_deepseek(): string
+    {
+        $modelo = (string) config('services.deepseek.model_vision');
+
+        if ($modelo === '') {
+            $modelo = (string) config('services.deepseek.model_agil');
+        }
+
+        return self::modelo_o_general($modelo, self::DEEPSEEK);
     }
 
     /**
