@@ -128,6 +128,15 @@ class ImageController extends Controller
 
             return $this->image_source_error_response('format', $source['http_status']);
         }
+
+        /**
+         * La foto de un celular trae su orientacion en el EXIF (pixeles "acostados" + una etiqueta que
+         * dice como girarlos) y el SPA la muestra y la recorta YA enderezada: se endereza ACA, antes de
+         * aplicar el recorte, para que las coordenadas caigan sobre la misma foto que vio el usuario.
+         * No lanza nada: si no hay EXIF o no se puede, la imagen queda como vino. Ver ImageCropHelper.
+         */
+        $croppedImage = ImageCropHelper::orient_by_exif($croppedImage, $source['data']);
+
         if (isset($request->top)) {
             /**
              * El marco de recorte del SPA puede salirse de la imagen (se la puede alejar dentro de

@@ -23,7 +23,11 @@ use Intervention\Image\ImageManager;
  * franjas negras es un defecto; el estandar es fondo blanco (y en jpg / webp sin alfa un fondo
  * transparente terminaria igual en negro). Por eso el recorte con relleno se arma aca.
  *
- * Reglas, en orden:
+ * Orientacion EXIF (orient_by_exif): la foto de un celular puede traer los pixeles "acostados" y una
+ * etiqueta que dice como girarlos. El SPA recorta sobre la foto ya enderezada, asi que el servidor
+ * tiene que enderezarla ANTES de aplicar el recorte (ver el docblock de ese metodo).
+ *
+ * Reglas del recorte, en orden:
  *   1. Los cuatro numeros se normalizan a enteros; si no son numeros o el ancho / alto no llega a
  *      1 pixel se lanza \InvalidArgumentException con un mensaje listo para mostrar al usuario.
  *   2. Si el rectangulo no toca la imagen (interseccion vacia) tambien se lanza la excepcion.
@@ -87,6 +91,15 @@ class ImageCropHelper
      * @var int
      */
     const MAX_VALOR_ENTRADA = 1000000;
+
+    /**
+     * Margen sobre el tamano de la imagen decodificada (4 bytes por pixel) que se exige tener libre en
+     * memoria antes de enderezarla: girar 90 grados necesita, mientras dura, la imagen original y su
+     * copia girada. El 30 % cubre el resto de lo que el proceso tiene en vuelo.
+     *
+     * @var float
+     */
+    const FACTOR_MEMORIA_AL_ENDEREZAR = 1.3;
 
     /**
      * Recorta la imagen con el rectangulo dado; si el rectangulo se sale de la imagen, la parte
@@ -271,5 +284,179 @@ class ImageCropHelper
         $canvas->insert($image, 'top-left', $part_left, $part_top);
 
         return $canvas;
+    }
+
+    /**
+     * Endereza la imagen segun la orientacion EXIF del archivo original (la foto de un celular sacada
+     * de costado o boca abajo trae los pixeles "acostados" y una etiqueta que dice como girarlos al
+     * mostrarla).
+     *
+     * Por que hace falta. El SPA le muestra la foto al usuario YA enderezada (el navegador la gira solo
+     * y la libreria de recorte tambien) y le manda `left / top / width / height` en pixeles de la foto
+     * enderezada. Este servidor recortaba sobre los pixeles CRUDOS: otra region (de costado) y, ahora
+     * que el marco puede salirse, con franjas de relleno donde no correspondian. Ademas, la foto sin
+     * recortar se guardaba acostada.
+     *
+     * Por que no se usa `Image::orientate()` de Intervention: sobre una imagen cargada desde binario
+     * (que es como llega aca: bytes descargados o data URI) no hace nada, porque para leer el EXIF
+     * vuelve a codificar la imagen con GD, que lo descarta (medido el 24/9/2026: 1600 x 1200 antes y
+     * despues de llamarlo). Por eso la orientacion se lee de los bytes originales y se aplica el mismo
+     * giro que aplica `orientate()`.
+     *
+     * Nunca lanza una excepcion: si no hay EXIF, si no se puede leer o si no hay memoria para girar,
+     * devuelve la imagen tal como vino, que es lo que pasaba antes de existir este metodo.
+     *
+     * @param  \Intervention\Image\Image $image  Imagen ya cargada (se modifica en el lugar).
+     * @param  mixed $source Lo mismo que se le paso a `ImageManager::make()`: los bytes de la imagen o un data URI.
+     * @return \Intervention\Image\Image La imagen derecha (la misma instancia que se recibio).
+     */
+    public static function orient_by_exif(Image $image, $source)
+    {
+        try {
+            $orientation = self::read_exif_orientation($source);
+
+            // 1 = ya esta derecha; lo que queda fuera de 2..8 no es una orientacion valida.
+            if ($orientation < 2 || $orientation > 8) {
+                return $image;
+            }
+
+            // Sin memoria para la copia girada se deja como esta, antes que arriesgar un error fatal.
+            if (!self::has_memory_to_copy($image)) {
+                return $image;
+            }
+
+            // Los mismos giros que `Image::orientate()` (la tabla de la especificacion EXIF).
+            switch ($orientation) {
+                case 2:
+                    $image->flip();
+                    break;
+                case 3:
+                    $image->rotate(180);
+                    break;
+                case 4:
+                    $image->rotate(180)->flip();
+                    break;
+                case 5:
+                    $image->rotate(270)->flip();
+                    break;
+                case 6:
+                    $image->rotate(270);
+                    break;
+                case 7:
+                    $image->rotate(90)->flip();
+                    break;
+                case 8:
+                    $image->rotate(90);
+                    break;
+            }
+        } catch (\Throwable $e) {
+            // No se pudo enderezar: se sigue con la imagen como venia (lo mismo que antes de este metodo).
+        }
+
+        return $image;
+    }
+
+    /**
+     * Lee la orientacion EXIF (1 a 8) de los bytes originales de una imagen.
+     *
+     * Solo mira JPEG, que es donde los celulares guardan la orientacion: bytes que empiezan con la
+     * marca de JPEG (FF D8) o un data URI `data:image/jpeg`. No lee rutas de archivo a proposito: el
+     * origen puede venir del cliente y no hay razon para abrir archivos del servidor por este camino.
+     *
+     * @param  mixed $source Bytes de la imagen o data URI.
+     * @return int Orientacion 1..8; 1 (derecha) si no hay EXIF, si no es un JPEG o si no se pudo leer.
+     */
+    private static function read_exif_orientation($source)
+    {
+        // Sin la extension exif, o con algo que no son bytes ni texto, no hay nada que leer.
+        if (!function_exists('exif_read_data') || !is_string($source) || $source === '') {
+            return 1;
+        }
+
+        // Recurso de memoria abierto (solo en el caso de bytes) para poder cerrarlo despues.
+        $stream = null;
+
+        // Lo que se le pasa a exif_read_data: un stream de memoria o la URL data:// del data URI.
+        $to_read = null;
+
+        if (strncmp($source, "\xFF\xD8", 2) === 0) {
+            // Bytes de un JPEG: se leen desde memoria, sin hacer una copia en base64.
+            $stream = fopen('php://memory', 'r+');
+
+            if ($stream === false) {
+                return 1;
+            }
+
+            fwrite($stream, $source);
+            rewind($stream);
+            $to_read = $stream;
+        } elseif (preg_match('#^data:image/(?:jpeg|jpg|pjpeg)[;,]#i', substr($source, 0, 40))) {
+            // data URI de un JPEG: el wrapper data:// decodifica el base64 al leerlo.
+            $to_read = 'data://' . substr($source, 5);
+        } else {
+            return 1;
+        }
+
+        $data = @exif_read_data($to_read);
+
+        if (is_resource($stream)) {
+            fclose($stream);
+        }
+
+        if (!is_array($data) || !isset($data['Orientation'])) {
+            return 1;
+        }
+
+        return (int) $data['Orientation'];
+    }
+
+    /**
+     * Indica si hay memoria para hacer UNA copia mas de la imagen (lo que necesita un giro).
+     *
+     * GD guarda 4 bytes por pixel. Se compara lo que el proceso ya usa mas una copia (con el margen de
+     * FACTOR_MEMORIA_AL_ENDEREZAR) contra el memory_limit; sin limite (-1) siempre hay.
+     *
+     * @param  \Intervention\Image\Image $image Imagen que se quiere girar.
+     * @return bool
+     */
+    private static function has_memory_to_copy(Image $image)
+    {
+        $limit = self::memory_limit_bytes();
+
+        if ($limit < 0) {
+            return true;
+        }
+
+        // Lo que ocupa una copia de la imagen decodificada, con el margen.
+        $copy_bytes = $image->width() * $image->height() * 4 * self::FACTOR_MEMORIA_AL_ENDEREZAR;
+
+        return memory_get_usage(true) + $copy_bytes <= $limit;
+    }
+
+    /**
+     * memory_limit de PHP en bytes.
+     *
+     * @return int Bytes; -1 si no hay limite ("-1", "0" o vacio).
+     */
+    private static function memory_limit_bytes()
+    {
+        $raw = trim((string) ini_get('memory_limit'));
+
+        if ($raw === '' || $raw === '-1') {
+            return -1;
+        }
+
+        $number = (float) $raw;
+        $unit   = strtolower(substr($raw, -1));
+
+        if ($unit === 'g') {
+            $number *= 1024 * 1024 * 1024;
+        } elseif ($unit === 'm') {
+            $number *= 1024 * 1024;
+        } elseif ($unit === 'k') {
+            $number *= 1024;
+        }
+
+        return $number > 0 ? (int) $number : -1;
     }
 }

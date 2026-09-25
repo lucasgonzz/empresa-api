@@ -1123,4 +1123,212 @@ class Recorte_Con_Relleno_Test extends TestCase
             $this->assertStringContainsString('El recorte que se envió no es válido', $respuesta->json('message'));
         }
     }
+
+    // ------------------------------------------------------------------------------------------
+    // (k) Orientación EXIF: la foto de un celular se endereza ANTES de recortar
+    //
+    // El SPA muestra y recorta la foto YA enderezada (el navegador y la librería de recorte aplican
+    // el EXIF) y manda las coordenadas sobre esa foto; el servidor recortaba sobre los píxeles
+    // crudos. `Image::orientate()` de Intervention no sirve acá: sobre una imagen cargada desde
+    // binario no hace nada (ver el docblock de ImageCropHelper::orient_by_exif).
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Bytes de un JPEG de `$ancho` x `$alto` con la mitad izquierda ROJA y la derecha AZUL (los
+     * píxeles CRUDOS) y la etiqueta EXIF de orientación `$orientacion` (o sin EXIF si es null). Es lo
+     * que guarda un celular: píxeles "acostados" más una etiqueta que dice cómo girarlos al mostrarlos.
+     *
+     * @param  int      $ancho
+     * @param  int      $alto
+     * @param  int|null $orientacion 1 a 8, o null para un JPEG sin EXIF.
+     * @return string Bytes del JPEG.
+     */
+    protected function jpeg_con_orientacion($ancho, $alto, $orientacion = null)
+    {
+        $recurso = imagecreatetruecolor($ancho, $alto);
+        $rojo    = imagecolorallocate($recurso, 255, 0, 0);
+        $azul    = imagecolorallocate($recurso, 0, 0, 255);
+        $mitad   = (int) ($ancho / 2);
+
+        imagefilledrectangle($recurso, 0, 0, $mitad - 1, $alto - 1, $rojo);
+        imagefilledrectangle($recurso, $mitad, 0, $ancho - 1, $alto - 1, $azul);
+
+        ob_start();
+        imagejpeg($recurso, null, 92);
+        $jpeg = ob_get_clean();
+        imagedestroy($recurso);
+
+        if ($orientacion === null) {
+            return $jpeg;
+        }
+
+        // APP1 EXIF mínimo: "Exif\0\0" + cabecera TIFF (big-endian) + un solo tag, Orientation (0x0112, SHORT).
+        $tiff = "MM\x00\x2A" . pack('N', 8)
+            . pack('n', 1)
+            . pack('n', 0x0112) . pack('n', 3) . pack('N', 1) . pack('n', $orientacion) . "\x00\x00"
+            . pack('N', 0);
+        $app1 = "Exif\x00\x00" . $tiff;
+
+        // El segmento APP1 va justo después de la marca de inicio (FF D8).
+        return substr($jpeg, 0, 2) . "\xFF\xE1" . pack('n', strlen($app1) + 2) . $app1 . substr($jpeg, 2);
+    }
+
+    /**
+     * Orientaciones EXIF sobre un JPEG crudo de 200 x 100 (izquierda roja, derecha azul):
+     * [orientación, ancho enderezado, alto enderezado, [x, y] que tiene que ser ROJO, [x, y] que tiene que ser AZUL].
+     *
+     * @return array
+     */
+    public static function orientaciones_exif()
+    {
+        return [
+            '2 espejo horizontal'     => [2, 200, 100, [175, 50], [25, 50]],
+            '3 boca abajo'            => [3, 200, 100, [175, 50], [25, 50]],
+            '6 vertical (de celular)' => [6, 100, 200, [50, 25], [50, 175]],
+            '8 vertical al revés'     => [8, 100, 200, [50, 175], [50, 25]],
+        ];
+    }
+
+    /**
+     * (k) Cada orientación se endereza: cambian las dimensiones cuando corresponde (6 y 8 pasan de
+     * 200 x 100 a 100 x 200) y la mitad roja / azul cae del lado que le toca al mostrar la foto.
+     *
+     * @test
+     * @dataProvider orientaciones_exif
+     */
+    public function k_la_orientacion_exif_se_endereza($orientacion, $ancho_esperado, $alto_esperado, array $rojo, array $azul)
+    {
+        $bytes = $this->jpeg_con_orientacion(200, 100, $orientacion);
+
+        $imagen = ImageCropHelper::orient_by_exif($this->manager->make($bytes), $bytes);
+
+        $this->assertSame($ancho_esperado, $imagen->width());
+        $this->assertSame($alto_esperado, $imagen->height());
+        $this->assert_color_cercano([255, 0, 0], $this->pixel($imagen, $rojo[0], $rojo[1]), 40, 'Donde tiene que quedar la mitad roja');
+        $this->assert_color_cercano([0, 0, 255], $this->pixel($imagen, $azul[0], $azul[1]), 40, 'Donde tiene que quedar la mitad azul');
+    }
+
+    /**
+     * (k) Un JPEG sin EXIF, o con orientación 1 (ya derecha), no se gira: sigue de 200 x 100 con la
+     * mitad roja a la izquierda.
+     *
+     * @test
+     */
+    public function k_sin_exif_o_con_orientacion_uno_no_se_gira_nada()
+    {
+        foreach ([null, 1] as $orientacion) {
+            $bytes = $this->jpeg_con_orientacion(200, 100, $orientacion);
+
+            $imagen = ImageCropHelper::orient_by_exif($this->manager->make($bytes), $bytes);
+
+            $this->assertSame(200, $imagen->width());
+            $this->assertSame(100, $imagen->height());
+            $this->assert_color_cercano([255, 0, 0], $this->pixel($imagen, 25, 50), 40, 'Izquierda roja');
+            $this->assert_color_cercano([0, 0, 255], $this->pixel($imagen, 175, 50), 40, 'Derecha azul');
+        }
+    }
+
+    /**
+     * (k) Lo que no es un JPEG con EXIF (un PNG, texto, null, un array, vacío) se devuelve intacto y
+     * sin lanzar nada: enderezar nunca puede romper un guardado que antes andaba.
+     *
+     * @test
+     */
+    public function k_lo_que_no_es_un_jpeg_con_exif_se_devuelve_intacto_y_sin_excepciones()
+    {
+        $png = (string) $this->imagen_con_coordenadas(60, 30)->encode('png');
+
+        $casos = [
+            'un PNG'   => $png,
+            'texto'    => 'esto no es una imagen',
+            'null'     => null,
+            'un array' => [],
+            'vacío'    => '',
+        ];
+
+        foreach ($casos as $nombre => $origen) {
+            $imagen = $this->imagen_con_coordenadas(60, 30);
+
+            $resultado = ImageCropHelper::orient_by_exif($imagen, $origen);
+
+            $this->assertSame($imagen, $resultado, $nombre . ': tiene que devolver la misma instancia.');
+            $this->assertSame(60, $resultado->width(), $nombre);
+            $this->assertSame(30, $resultado->height(), $nombre);
+        }
+    }
+
+    /**
+     * (k) El origen también puede ser un data URI (así llega una foto subida desde el navegador).
+     *
+     * @test
+     */
+    public function k_un_data_uri_jpeg_tambien_se_endereza()
+    {
+        $bytes = $this->jpeg_con_orientacion(200, 100, 6);
+        $uri   = 'data:image/jpeg;base64,' . base64_encode($bytes);
+
+        $imagen = ImageCropHelper::orient_by_exif($this->manager->make($bytes), $uri);
+
+        $this->assertSame(100, $imagen->width());
+        $this->assertSame(200, $imagen->height());
+    }
+
+    /**
+     * (k) Contra el endpoint real: una foto vertical de celular (crudo 200 x 100 con orientación 6,
+     * enderezada 100 x 200: arriba roja y abajo azul). El SPA marca la mitad de ABAJO de la foto
+     * enderezada (left 0, top 100, 100 x 100): el archivo guardado tiene que ser azul de punta a
+     * punta. Sin enderezar, ese rectángulo cae afuera de los píxeles crudos (solo tienen 100 de alto)
+     * y sale casi todo relleno blanco.
+     *
+     * @test
+     */
+    public function k_endpoint_el_recorte_cae_sobre_la_foto_enderezada()
+    {
+        $bytes = $this->jpeg_con_orientacion(200, 100, 6);
+
+        $respuesta = $this->subir_por_el_endpoint('image_url', [
+            'image_url'  => 'data:image/jpeg;base64,' . base64_encode($bytes),
+            'model_name' => 'user',
+            'model_id'   => $this->comercio()->id,
+            'left'       => 0,
+            'top'        => 100,
+            'width'      => 100,
+            'height'     => 100,
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $guardada = $this->manager->make($this->ruta_del_archivo_guardado($respuesta));
+
+        $this->assertSame(100, $guardada->width());
+        $this->assertSame(100, $guardada->height());
+        $this->assert_color_cercano([0, 0, 255], $this->pixel($guardada, 50, 50), 40, 'Centro del recorte: la mitad de abajo de la foto enderezada es azul');
+        $this->assert_color_cercano([0, 0, 255], $this->pixel($guardada, 5, 95), 40, 'Esquina inferior izquierda: no puede haber relleno, el recorte estaba adentro de la foto enderezada');
+    }
+
+    /**
+     * (k) Contra el endpoint real, "Guardar SIN Recortar" (sin coordenadas): la foto de celular se
+     * guarda enderezada (100 x 200, arriba roja y abajo azul) y no acostada (200 x 100).
+     *
+     * @test
+     */
+    public function k_endpoint_sin_recortar_guarda_la_foto_enderezada()
+    {
+        $bytes = $this->jpeg_con_orientacion(200, 100, 6);
+
+        $respuesta = $this->subir_por_el_endpoint('image_url', [
+            'image_url'  => 'data:image/jpeg;base64,' . base64_encode($bytes),
+            'model_name' => 'user',
+            'model_id'   => $this->comercio()->id,
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $guardada = $this->manager->make($this->ruta_del_archivo_guardado($respuesta));
+
+        $this->assertSame(100, $guardada->width());
+        $this->assertSame(200, $guardada->height());
+        $this->assert_color_cercano([255, 0, 0], $this->pixel($guardada, 50, 25), 40, 'Arriba roja');
+        $this->assert_color_cercano([0, 0, 255], $this->pixel($guardada, 50, 175), 40, 'Abajo azul');
+    }
 }
