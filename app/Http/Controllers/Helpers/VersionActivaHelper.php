@@ -36,9 +36,10 @@ use Illuminate\Database\QueryException;
  *
  * COBERTURA, medida sobre el relevamiento del 18/9/2026: de 43 clientes con ventas en los últimos
  * 30 días, 33 tienen una base de un solo dueño con `default_version` cargado y quedan cubiertos por
- * esta detección previa al login. Entre los que quedan afuera, y siguen con el mecanismo de después
- * del login: Fenix y Galván (base `fenix`, con dos dueños), Golonorte (dos dueños: el 800, activo, y
- * el 801 "Marcos", sin ventas) y BELLO y Punto Diet (base compartida legacy). Que Golonorte quede
+ * esta detección previa al login. Los otros 10 siguen con el mecanismo de después del login: 5 tienen
+ * un solo dueño pero sin `default_version` cargado (no hay a dónde redirigir) y 5 tienen varios
+ * dueños: Fenix y Galván (base `fenix`, con dos dueños), Golonorte (dos dueños: el 800, activo, y el
+ * 801 "Marcos", sin ventas) y BELLO y Punto Diet (base compartida legacy). Que Golonorte quede
  * afuera es a propósito: el 801 no vende, pero sin saber quién entra no hay forma de distinguirlo
  * del 800 (ver el 🔴 de arriba).
  *
