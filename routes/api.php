@@ -1413,6 +1413,21 @@ Route::middleware('admin.api.key')
 // de solo lectura, nunca una sesión ni otra pantalla.
 Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 
+// La dirección del sistema activo, consultable ANTES de iniciar sesión (misión
+// redireccion-version-antes-del-login). PÚBLICA a propósito: la dispara el SPA apenas carga la
+// aplicación, con o sin sesión iniciada (y también en /demo/ingreso y /informe/{token}), para poder
+// mandar al negocio del frente en desuso a la versión actual sin que tenga que escribir su documento
+// y su clave en el frente viejo. Solo lee `users.default_version`, y solo cuando la base tiene un
+// único dueño (ver VersionActivaHelper); no devuelve datos del negocio.
+// 🔴 `withoutMiddleware` de EnsureFrontendRequestsAreStateful: la llama CUALQUIER visitante en CADA
+// carga de la aplicación, con o sin sesión, y ese middleware de Sanctum arranca la sesión (y emite el
+// `Set-Cookie`) cada vez que el pedido viene de un dominio del frontend. Sin esta exclusión, cada
+// carga anónima crearía una sesión en el servidor y le plantaría una cookie de sesión al navegador,
+// y a quien ya tiene sesión iniciada se la reescribiría y le renovaría la cookie en un pedido que no
+// tiene nada que ver con su sesión. El resto del grupo `api` (throttle, bindings y
+// DemoSessionVigente, que tolera pedidos sin sesión) sigue aplicándose.
+Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
+
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);
 
