@@ -773,4 +773,39 @@ class MapeoPorProveedorTest extends ImportTestCase
             'provider_id' => null,
         ]))->assertStatus(200)->assertJson(['mapeo_guardado_del_proveedor' => null]);
     }
+
+    /**
+     * Sin columna de código de proveedor en el archivo, refresh-provider-stats igual responde
+     * y trae la configuración guardada del proveedor elegido, con los conteos en cero. Es lo que
+     * permite que el SPA mande el pedido siempre que el usuario cambia el proveedor: antes no lo
+     * mandaba sin esa columna, y a un archivo así nunca se le ofrecía la configuración guardada
+     * (chequeo 1 de la misión, 24/9/2026).
+     *
+     * @return void
+     */
+    public function test_refresh_provider_stats_sin_columna_de_codigo_igual_devuelve_el_mapeo_guardado()
+    {
+        $this->fakear_claude($this->respuesta_de_analisis());
+
+        $analisis = $this->analizar($this->xlsx(self::ENCABEZADOS));
+        $this->confirmar($analisis, $this->providers['A']->id, ['Precio' => 'costo']);
+
+        $respuesta = $this->postJson('/api/ai-excel-import/refresh-provider-stats', [
+            'excel_path'                 => $analisis->excel_path,
+            'provider_code_column_index' => null,
+            'provider_id'                => $this->providers['A']->id,
+            'hoja'                       => 0,
+            'header_row'                 => 1,
+        ]);
+
+        $respuesta->assertStatus(200);
+
+        $this->assertSame(0, $respuesta->json('provider_codes_existentes_mismo_proveedor'));
+        $this->assertSame(0, $respuesta->json('provider_codes_existentes_otros_proveedores'));
+
+        $mapeo = $respuesta->json('mapeo_guardado_del_proveedor');
+
+        $this->assertIsArray($mapeo);
+        $this->assertSame('costo', $this->columna($mapeo, 'Precio')['system_property']);
+    }
 }
