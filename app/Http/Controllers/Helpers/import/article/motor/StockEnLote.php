@@ -493,52 +493,75 @@ class StockEnLote
 
         // ── Escrituras en bloque, en el orden en que crear() dejaba cada efecto ──────────────
 
-        // 6.d: articles.stock += delta (y updated_at) para los que no reparten por depósitos.
-        $this->escribir_incrementos_globales($incremento_global, $bump_updated_at, $ahora);
+        /*
+         * Todas en UNA transacción, hasta los movimientos inclusive. Sin ella, si fallaba el
+         * INSERT de stock_movements (deadlock, lock wait timeout, conexión caída) el stock y
+         * stock_updated_at de todo el lote ya habían quedado escritos sin su asiento en el
+         * libro: hasta 1.000 artículos con "stock mal" para check_stocks. El camino viejo
+         * (crear()) empieza justamente por el INSERT del movimiento, así que con el mismo
+         * error no tocaba nada. Chequeo 3 de la misión, 24/9/2026. Los avisos y la
+         * sincronización con plataformas son efectos externos y van después del commit.
+         */
+        DB::beginTransaction();
 
-        // 6.b: pivots nuevos, incrementos y min/max.
-        $this->escribir_pivots_nuevos($pivots_nuevos);
-        $this->escribir_pivots_sumados($pivots_sumar, $ahora);
-        $this->escribir_pivots_min_max($pivots_min_max);
+        try {
 
-        // 6.e: articles.stock = SUM(depósitos) para los que reparten.
-        $this->escribir_stock_desde_depositos(array_keys($recalcular_desde_depositos));
+            // 6.d: articles.stock += delta (y updated_at) para los que no reparten por depósitos.
+            $this->escribir_incrementos_globales($incremento_global, $bump_updated_at, $ahora);
 
-        // 7: el stock resultante del último movimiento de cada artículo se relee de la base.
-        if (count($movimientos) > 0) {
+            // 6.b: pivots nuevos, incrementos y min/max.
+            $this->escribir_pivots_nuevos($pivots_nuevos);
+            $this->escribir_pivots_sumados($pivots_sumar, $ahora);
+            $this->escribir_pivots_min_max($pivots_min_max);
 
-            $stocks_finales = $this->leer_stock_final(array_keys($ultimo_movimiento_de));
+            // 6.e: articles.stock = SUM(depósitos) para los que reparten.
+            $this->escribir_stock_desde_depositos(array_keys($recalcular_desde_depositos));
 
-            foreach ($ultimo_movimiento_de as $article_id => $indice) {
+            // 7: el stock resultante del último movimiento de cada artículo se relee de la base.
+            if (count($movimientos) > 0) {
 
-                if (!array_key_exists($article_id, $stocks_finales)) {
-                    continue;
+                $stocks_finales = $this->leer_stock_final(array_keys($ultimo_movimiento_de));
+
+                foreach ($ultimo_movimiento_de as $article_id => $indice) {
+
+                    if (!array_key_exists($article_id, $stocks_finales)) {
+                        continue;
+                    }
+
+                    $stock_final = $stocks_finales[$article_id];
+
+                    if (!is_null($stock_final)) {
+                        $movimientos[$indice]['stock_resultante'] = (float) $stock_final;
+                        $movimientos[$indice]['observations']     = (float) $stock_final;
+                    }
                 }
 
-                $stock_final = $stocks_finales[$article_id];
-
-                if (!is_null($stock_final)) {
-                    $movimientos[$indice]['stock_resultante'] = (float) $stock_final;
-                    $movimientos[$indice]['observations']     = (float) $stock_final;
+                // El modelo en memoria queda al día y con el stock como ORIGINAL (como hace
+                // SetStockResultante), así ningún save() posterior lo reescribe desde memoria.
+                foreach ($pedidos as $pedido) {
+                    $article_id = (int) $pedido['article']->id;
+                    if (array_key_exists($article_id, $stocks_finales) && !is_null($stocks_finales[$article_id])) {
+                        $pedido['article']->stock = (float) $stocks_finales[$article_id];
+                        $pedido['article']->syncOriginalAttribute('stock');
+                    }
                 }
             }
 
-            // El modelo en memoria queda al día y con el stock como ORIGINAL (como hace
-            // SetStockResultante), así ningún save() posterior lo reescribe desde memoria.
-            foreach ($pedidos as $pedido) {
-                $article_id = (int) $pedido['article']->id;
-                if (array_key_exists($article_id, $stocks_finales) && !is_null($stocks_finales[$article_id])) {
-                    $pedido['article']->stock = (float) $stocks_finales[$article_id];
-                    $pedido['article']->syncOriginalAttribute('stock');
-                }
-            }
+            // 9: stock_updated_at = created_at del movimiento (sólo con concepto).
+            $this->escribir_stock_updated_at(array_keys($stock_updated_at_ids), $ahora);
+
+            // 4/5/7: los movimientos, con todo puesto.
+            $this->escribir_movimientos($movimientos);
+
+            DB::commit();
+
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            throw $e;
         }
 
-        // 9: stock_updated_at = created_at del movimiento (sólo con concepto).
-        $this->escribir_stock_updated_at(array_keys($stock_updated_at_ids), $ahora);
-
-        // 4/5/7: los movimientos, con todo puesto.
-        $this->escribir_movimientos($movimientos);
         $resumen['movimientos'] = count($movimientos);
         $resumen['articulos']   = count($ultimo_movimiento_de);
 

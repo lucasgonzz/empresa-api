@@ -600,6 +600,54 @@ class StockEnLoteTest extends ImportTestCase
     }
 
     /**
+     * Si falla el INSERT de los movimientos (la última escritura del lote), no queda stock movido
+     * sin asiento: el stock, los depósitos, updated_at y stock_updated_at vuelven a como estaban,
+     * igual que con el camino viejo, que empieza justamente por ese INSERT. Chequeo 3 de la misión
+     * (24/9/2026): sin la transacción quedaban stock = 15 y stock_updated_at puesto con cero
+     * movimientos para todo el lote.
+     *
+     * El fallo se provoca con un employee_id no numérico, que MySQL en modo estricto rechaza; en
+     * producción lo mismo lo produce un deadlock o un lock wait timeout.
+     *
+     * @return void
+     */
+    public function test_si_falla_la_escritura_de_los_movimientos_no_queda_stock_sin_asiento()
+    {
+        $global = $this->armar('TRANSACCION GLOBAL', ['stock' => 10, 'depositos' => []]);
+        $con_depositos = $this->armar('TRANSACCION DEPOSITOS', [
+            'stock' => 9, 'depositos' => ['A' => [4, null, null], 'B' => [5, null, null]],
+        ]);
+
+        $antes = [$this->foto($global), $this->foto($con_depositos)];
+
+        $lote = new StockEnLote($this->tenant, 'no-es-un-id');
+
+        foreach ($this->pedidos_de([['global', 5, null], ['depositos', [['A', 10, 2, 20], ['B', 1, null, null]]]]) as $i => $pedido) {
+            if ($pedido[0] === 'global') {
+                $lote->agregar_global($global, $pedido[1], $pedido[2]);
+            } else {
+                $lote->agregar_por_depositos($con_depositos, $pedido[1]);
+            }
+        }
+
+        $fallo = null;
+
+        try {
+            $lote->volcar();
+        } catch (\Throwable $e) {
+            $fallo = $e;
+        }
+
+        $this->assertNotNull($fallo, 'El INSERT de los movimientos tenía que fallar: el test no prueba nada.');
+
+        $this->assertSame(
+            $antes,
+            [$this->foto($global), $this->foto($con_depositos)],
+            'Un fallo al escribir los movimientos no puede dejar el stock escrito sin su asiento.'
+        );
+    }
+
+    /**
      * Sin pedidos, volcar() no consulta nada y devuelve el resumen vacío.
      *
      * @return void
