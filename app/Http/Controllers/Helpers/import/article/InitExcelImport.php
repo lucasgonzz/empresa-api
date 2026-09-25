@@ -579,7 +579,13 @@ class InitExcelImport
 
         $filas = 0;
 
-        while (($row = fgetcsv($handle, 0, ',')) !== false) {
+        /*
+         * Escape VACÍO, el del writer CSV de OpenSpout que escribió este archivo. Con el de
+         * PHP por defecto (la barra invertida) una celda que termina en barra no cierra, el
+         * .claves se corta en esa fila y las claves de las filas siguientes quedan fuera del
+         * índice acotado: sus artículos se crearían duplicados. Ver LecturaDeHojaCsv::filas().
+         */
+        while (($row = fgetcsv($handle, 0, ',', '"', '')) !== false) {
             $filas++;
 
             if ($filas < (int) $this->start_row) {

@@ -451,7 +451,10 @@ class ProcessArticleChunk implements ShouldQueue
                 $currentRow = 1;
             }
 
-            while (($data = fgetcsv($handle, 0, ",")) !== false) {
+            // Escape VACÍO, el del writer CSV de OpenSpout que escribió este archivo: con la barra
+            // invertida (el default de PHP) una celda que termina en barra se tragaba el resto del
+            // lote (chequeo 3 de la misión importacion-excel-motor-rapido, 24/9/2026).
+            while (($data = fgetcsv($handle, 0, ',', '"', '')) !== false) {
 
                 if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
                     $chunkRows[] = $data;

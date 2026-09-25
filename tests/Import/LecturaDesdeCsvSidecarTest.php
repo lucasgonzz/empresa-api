@@ -447,6 +447,152 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
     }
 
     /**
+     * Celdas que terminan en barra invertida, con `\"` en el medio y con salto de línea vuelven
+     * del sidecar EXACTAMENTE como las devuelve OpenSpout, y ninguna se traga las filas que siguen.
+     *
+     * El writer CSV de OpenSpout escribe con escape vacío (RFC 4180): `TORNILLO 1/2\` queda como
+     * `"TORNILLO 1/2\"`. Si el lector usa el escape por defecto de PHP (`\`), toma esa `\"` como
+     * comilla literal, el campo no cierra nunca y el resto del archivo entra en esa celda.
+     * Encontrado por el chequeo 3 de la misión (24/9/2026): el análisis contaba menos filas y el
+     * índice acotado (que sale del mismo CSV) quedaba sin las claves de las filas siguientes.
+     *
+     * @return void
+     */
+    public function test_celdas_con_barra_invertida_comillas_y_saltos_de_linea_vuelven_iguales()
+    {
+        $destino = sys_get_temp_dir() . '/' . uniqid('sidecar_barra_') . '.xlsx';
+
+        $this->escribir_xlsx_con_barras_invertidas($destino);
+        $this->registrar_para_borrar($destino);
+
+        $filas_xlsx = $this->volcar_lectura(ExcelWorkbookReader::abrir($destino, 0, true));
+
+        ExcelWorkbookReader::asegurar_csv($destino, 0);
+
+        $desde_csv = ExcelWorkbookReader::abrir($destino, 0, true);
+
+        $this->assertInstanceOf(LecturaDeHojaCsv::class, $desde_csv, 'Con el sidecar escrito, abrir() tiene que leer el CSV.');
+
+        $filas_csv = $this->volcar_lectura($desde_csv);
+
+        $this->assertCount(7, $filas_xlsx, 'El fixture tiene encabezado y seis filas de datos.');
+        $this->assertSame($filas_xlsx, $filas_csv, 'El sidecar tiene que devolver las mismas filas y celdas que OpenSpout.');
+    }
+
+    /**
+     * De punta a punta: una celda que termina en barra invertida no le hace perder filas a la
+     * importación ni le saca claves al índice acotado. La primera importación crea los seis
+     * artículos con su nombre exacto; la segunda, del mismo archivo, no crea ninguno (si el
+     * `.claves` se cortara en esa fila, las filas siguientes no estarían en el índice y se
+     * crearían duplicadas).
+     *
+     * @return void
+     */
+    public function test_una_celda_que_termina_en_barra_invertida_no_pierde_filas_ni_duplica_articulos()
+    {
+        $carpeta = storage_path('app/imported_files');
+
+        if (!is_dir($carpeta)) {
+            mkdir($carpeta, 0777, true);
+        }
+
+        $esperados = $this->filas_con_barras_invertidas();
+
+        foreach ([1, 2] as $vuelta) {
+
+            $nombre  = uniqid('sidecar_barra_' . $vuelta . '_') . '.xlsx';
+            $destino = $carpeta . '/' . $nombre;
+
+            $this->escribir_xlsx_con_barras_invertidas($destino);
+            $this->registrar_para_borrar($destino);
+
+            $data = array_merge(
+                [
+                    'archivo_excel_path' => 'imported_files/' . $nombre,
+                    'start_row'          => 2,
+                    'finish_row'         => 99999,
+                    'provider_id'        => null,
+                ],
+                self::config_por_defecto(),
+                self::columnas()
+            );
+
+            $this->postJson('/api/article/excel/import', $data)->assertStatus(200);
+
+            foreach (glob($carpeta . '/' . pathinfo($nombre, PATHINFO_FILENAME) . '_*.csv') ?: [] as $csv) {
+                $this->temporales[] = $csv;
+                $this->temporales[] = $csv . '.claves';
+            }
+
+            $import = \App\Models\ImportHistory::where('user_id', $this->tenant->id)->orderBy('id', 'DESC')->first();
+
+            $this->assertNotNull($import);
+            $this->assertInvariantesDeConteo($import);
+            $this->assertSame(count($esperados), (int) $import->filas_procesadas, 'Vuelta ' . $vuelta . ': se perdieron filas.');
+
+            if ($vuelta === 1) {
+                $this->assertSame(count($esperados), (int) $import->created_models, 'La primera importación tiene que crear todos los artículos.');
+            } else {
+                $this->assertSame(0, (int) $import->created_models, 'Reimportar el mismo archivo no puede crear artículos: el índice acotado perdió claves.');
+            }
+        }
+
+        $creados = $this->articulos_creados();
+
+        $this->assertCount(count($esperados), $creados, 'Tiene que haber exactamente un artículo por fila.');
+
+        foreach ($esperados as $codigo => $nombre_esperado) {
+            $articulo = $creados->firstWhere('provider_code', $codigo);
+
+            $this->assertNotNull($articulo, 'Falta el artículo ' . $codigo);
+            $this->assertSame($nombre_esperado, $articulo->name, 'El nombre de ' . $codigo . ' no volvió exacto.');
+        }
+    }
+
+    /**
+     * Código de proveedor => nombre. La fila 1 es la del hallazgo; las demás cubren `\"` en el
+     * medio, una barra final seguida de más celdas con texto, un salto de línea, y dos filas
+     * normales detrás para ver que no se pierden.
+     *
+     * @return array
+     */
+    protected function filas_con_barras_invertidas()
+    {
+        return [
+            'PC-BARRA-1' => 'TORNILLO 1/2' . chr(92),
+            'PC-BARRA-2' => 'CANO 3/4' . chr(92) . '" X 6M',
+            'PC-BARRA-3' => 'RUTA C:' . chr(92) . 'CARPETA' . chr(92),
+            'PC-BARRA-4' => 'LINEA UNO' . chr(10) . 'LINEA DOS',
+            'PC-BARRA-5' => 'TUERCA',
+            'PC-BARRA-6' => 'ARANDELA',
+        ];
+    }
+
+    /**
+     * @param  string $destino
+     * @return void
+     */
+    protected function escribir_xlsx_con_barras_invertidas($destino)
+    {
+        $writer = \OpenSpout\Writer\Common\Creator\WriterEntityFactory::createXLSXWriter();
+        $writer->openToFile($destino);
+        $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+            'codigo_de_barras', 'sku', 'codigo_de_proveedor', 'nombre', 'costo', 'precio', 'stock', 'iva',
+        ]));
+
+        $costo = 100;
+
+        foreach ($this->filas_con_barras_invertidas() as $codigo => $nombre) {
+            $writer->addRow(\OpenSpout\Writer\Common\Creator\WriterEntityFactory::createRowFromArray([
+                null, null, $codigo, $nombre, (float) $costo, (float) ($costo * 2), 1.0, '21',
+            ]));
+            $costo += 10;
+        }
+
+        $writer->close();
+    }
+
+    /**
      * @param  LecturaDeHoja|LecturaDeHojaCsv $lectura
      * @return LecturaDeHoja|LecturaDeHojaCsv
      */

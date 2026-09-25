@@ -161,8 +161,15 @@ class LecturaDeHojaCsv
             $fila_fisica = 0;
             $leidas      = 0;
 
-            /* Mismos separador, cierre y escape con los que fputcsv() escribió el archivo. */
-            while (($campos = fgetcsv($csv, 0, ',', '"', '\\')) !== false) {
+            /*
+             * Escape VACÍO, el mismo con el que escribe el writer CSV de OpenSpout (RFC 4180,
+             * ver GlobalFunctionsHelper::fputcsv() de OpenSpout). Con el escape por defecto de
+             * PHP, la barra invertida, una celda que termina en barra se escribe con la barra
+             * pegada a la comilla de cierre y el lector toma esa comilla como literal: el campo
+             * no cierra y el resto del archivo entra en esa celda (chequeo 3 de la misión,
+             * 24/9/2026; LecturaDesdeCsvSidecarTest lo cubre).
+             */
+            while (($campos = fgetcsv($csv, 0, ',', '"', '')) !== false) {
                 $fila_fisica++;
 
                 $linea_tipos = fgets($tipos);
