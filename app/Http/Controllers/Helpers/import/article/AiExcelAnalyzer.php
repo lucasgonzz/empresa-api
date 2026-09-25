@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
+use App\Http\Controllers\Helpers\import\article\ProviderImportMappingHelper;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
@@ -277,9 +278,32 @@ class AiExcelAnalyzer
         $price_types = $this->get_available_price_types();
 
         /*
+         * Paso 2.1 (misión importacion-excel-motor-rapido, 24/9/2026): configuración de columnas
+         * que el usuario confirmó en una importación anterior.
+         *
+         * Si la firma de los encabezados de este archivo coincide EXACTAMENTE con una guardada,
+         * ya sabemos de qué proveedor es antes de preguntarle a la IA: la configuración entra al
+         * prompt como referencia y, más abajo, se impone sobre lo que la IA devuelva. Si no
+         * coincide (una columna más, otro orden), la IA infiere el proveedor como siempre y
+         * recién después se busca la configuración de ESE proveedor (Paso 5.1).
+         *
+         * Nunca lanza: sin configuración, o si la consulta falla, esto es null y todo sigue
+         * exactamente como antes de la misión.
+         */
+        $mapeo_guardado       = ProviderImportMappingHelper::inferir_por_encabezados($this->user_id, $sample_data['headers']);
+        $reconocido_por_firma = !is_null($mapeo_guardado);
+
+        /*
          * Paso 3: Construir el prompt y llamar a Claude.
          */
-        $prompt = $this->build_prompt($sample_data, $providers, $original_filename, $addresses, $price_types);
+        $prompt = $this->build_prompt(
+            $sample_data,
+            $providers,
+            $original_filename,
+            $addresses,
+            $price_types,
+            ProviderImportMappingHelper::seccion_para_prompt($mapeo_guardado)
+        );
 
         $claude_response = $this->call_claude($prompt);
 
@@ -301,6 +325,37 @@ class AiExcelAnalyzer
         $parsed['column_mapping'] = $this->apply_nombre_descripcion_interpretation_rules(
             $parsed['column_mapping']
         );
+
+        /*
+         * Paso 5.1 (misión importacion-excel-motor-rapido, 24/9/2026): lo que el usuario ya
+         * confirmó para este proveedor manda sobre lo que propuso la IA.
+         *
+         * Va ACÁ y no más abajo a propósito: los pasos 7 y 8 (índices de codigo_de_barras /
+         * codigo_de_proveedor y el preanálisis de duplicados) leen el mapeo y el provider_id
+         * finales, y tienen que ver los definitivos.
+         *
+         * - Sin reconocimiento por firma, la configuración es la del proveedor que infirió la
+         *   IA (si ese proveedor tiene una guardada).
+         * - aplicar() pisa system_property en las columnas cuyo encabezado coincide con uno
+         *   guardado (validando que los depósitos y listas sigan existiendo) y agrega la clave
+         *   `mapeo_guardado` a cada columna (null en las que no vienen de la configuración).
+         *   🔴 Es contrato con la SPA: normalize_column_mapping() del modal la conserva.
+         * - Con firma reconocida, el proveedor es el de la configuración con confianza alta,
+         *   salvo que el mapeo tenga una columna 'proveedor' (ahí el proveedor va por fila y el
+         *   select del paso 2 tiene que quedar en "Sin proveedor").
+         */
+        if (!$reconocido_por_firma && !is_null($parsed['provider_id'])) {
+            $mapeo_guardado = ProviderImportMappingHelper::buscar($this->user_id, $parsed['provider_id']);
+        }
+
+        $parsed['column_mapping'] = ProviderImportMappingHelper::aplicar($parsed['column_mapping'], $mapeo_guardado);
+
+        if ($reconocido_por_firma && !ProviderImportMappingHelper::hay_columna_de_proveedor($parsed['column_mapping'])) {
+            $parsed['provider_id']         = (int) $mapeo_guardado->provider_id;
+            $parsed['provider_confidence'] = 'alto';
+
+            array_unshift($parsed['assistant_notes'], ProviderImportMappingHelper::nota_de_reconocimiento($mapeo_guardado));
+        }
 
         /*
          * Paso 6: Contar el total real de filas de datos del Excel (excluye cabecera)
@@ -422,6 +477,15 @@ class AiExcelAnalyzer
          * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
          */
         $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
+
+        /*
+         * Tamaño de lote con el que va a correr la importación: ARTICLE_EXCEL_CHUNK_SIZE, 1000
+         * por defecto o lo que fije el .env del cliente. Sólo alimenta el texto "aprox. N lotes de
+         * M filas" del paso 4, que antes tenía el tamaño fijo en el SPA y mentía en los clientes
+         * que lo fijan (Servian: 100). Clave nueva y opcional: un SPA viejo la ignora y un
+         * resultado viejo no la trae (el SPA cae en 1000). Chequeo 3 de la misión, 24/9/2026.
+         */
+        $parsed['tamanio_de_lote'] = max(1, (int) config('app.ARTICLE_EXCEL_CHUNK_SIZE'));
 
         /*
          * Advertencias de alto nivel generadas por Claude para mostrar al usuario
@@ -1536,9 +1600,13 @@ class AiExcelAnalyzer
      * @param  string $original_filename  Nombre original del archivo subido por el usuario
      * @param  array  $addresses          Sucursales del usuario (['id' => int, 'street' => string]); vacío si no tiene
      * @param  array  $price_types        Listas de precio del usuario (['id' => int, 'name' => string]); vacío si no tiene
+     * @param  string $seccion_mapeo_guardado  Sección con la configuración confirmada por el usuario para este
+     *                                         proveedor (ProviderImportMappingHelper::seccion_para_prompt()); '' si no hay.
+     *                                         Con default, como todo parámetro nuevo de este archivo: AdminSync y
+     *                                         AnalyzerHojaYEncabezadoTest lo exigen.
      * @return string                     Prompt completo listo para enviar a la API
      */
-    protected function build_prompt(array $sample_data, array $providers, string $original_filename = '', array $addresses = [], array $price_types = []): string
+    protected function build_prompt(array $sample_data, array $providers, string $original_filename = '', array $addresses = [], array $price_types = [], string $seccion_mapeo_guardado = ''): string
     {
         /* Texto del nombre de archivo para el prompt (sin ruta, solo nombre + extensión). */
         $filename_for_prompt = trim(basename($original_filename));
@@ -1724,6 +1792,7 @@ El usuario tiene sucursales configuradas: {HAS_ADDRESSES}
 
 {ADDRESSES_SECTION}
 {PRICE_TYPES_SECTION}
+{MAPEO_GUARDADO_SECTION}
 ## Campo assistant_notes
 Agregá al JSON de respuesta un array assistant_notes con strings en español (máximo 5 ítems). Cada ítem es una advertencia concisa de alto nivel para el usuario. Generá notas cuando:
 - Hay una columna ambigua entre descuentos porcentaje / monto.
@@ -1773,6 +1842,12 @@ PROMPT;
          */
         $prompt = str_replace('{ADDRESSES_SECTION}', $addresses_section, $prompt);
         $prompt = str_replace('{PRICE_TYPES_SECTION}', $price_types_section, $prompt);
+
+        /*
+         * Configuración confirmada por el usuario en la importación anterior de este proveedor
+         * (misión importacion-excel-motor-rapido). Vacío si no hay: el prompt queda igual que antes.
+         */
+        $prompt = str_replace('{MAPEO_GUARDADO_SECTION}', $seccion_mapeo_guardado, $prompt);
 
         return $prompt;
     }

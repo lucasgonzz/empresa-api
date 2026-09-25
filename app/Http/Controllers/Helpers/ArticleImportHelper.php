@@ -395,21 +395,16 @@ class ArticleImportHelper {
 
 		// 3) Adjuntar articulos_actualizados con updated_props en pivot
         if ($data['registrar_articulos_actualizados']) {
-			foreach ($data['articulos_actualizados'] as $article) {
-			    if (empty($article['id'])) {
-			        continue;
-			    }
-			    $article_id = (int)$article['id'];
-
-			    // Clonamos y removemos la clave 'id' para guardar sólo props y diffs
-			    $props = $article;
-			    unset($props['id']);
-
-			    // Guardamos JSON (tal cual viene, con __diff__ incluidos)
-			    $import_result->articulos_actualizados()->attach($article_id, [
-			        'updated_props' => json_encode($props, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
-			    ]);
-			}
+            /*
+             * Antes era un attach() por artículo (un INSERT cada uno, con el JSON entero).
+             * Ahora es UN INSERT multi-fila por tandas, con exactamente la misma fila: el array
+             * del artículo sin 'id', serializado tal cual viene (con los __diff__ incluidos), una
+             * fila por entrada. Misión importacion-excel-motor-rapido (24/9/2026).
+             */
+            \App\Http\Controllers\Helpers\import\article\motor\RelacionesEnLote::registrar_actualizados_en_el_chunk(
+                $import_result->id,
+                $data['articulos_actualizados']
+            );
         }
 
         Log::info('Se creo ArticleImportResult con '.count($data['articulos_creados']).' creados y '.count($data['articulos_actualizados']).' actualizados con import_uuid: ');

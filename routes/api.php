@@ -550,6 +550,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
         de escritura regalados contra una tabla de la que depende el modulo entero.
     */
     Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
+
+    // Vincular un comprador de la tienda con un cliente del sistema desde la tabla de Pedidos
+    // (misión vincular-comprador-desde-pedidos, 24/9/2026). Van ANTES del resource, como el resto
+    // de las rutas propias de este archivo (`client/options`, `provider/{id}/...`): las de tres
+    // segmentos no chocan con el show del resource, pero así quedan a la vista junto a él.
+    Route::get('buyer/{id}/clientes-para-vincular', 'BuyerController@clientes_para_vincular');
+    Route::post('buyer/{id}/vincular-cliente', 'BuyerController@vincular_cliente');
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 
@@ -767,6 +774,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('seller-commission/saldo-inicial', 'SellerCommissionController@saldoInicial');
     Route::post('seller-commission/pago', 'SellerCommissionController@pago');
     Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');
+    // Panel de comisiones del vendedor (mision comisiones-vendedor-tablas, 24/9/2026): prefijo
+    // DISTINTO (`seller-commission-panel`) para no chocar con `seller-commission/{model_id}/
+    // {moneda_id}/{from_date}/{until_date?}`, que tambien matchearia 3-4 segmentos. Las rutas de
+    // arriba quedan intactas para un SPA sin actualizar.
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/resumen', 'SellerCommissionController@panelResumen');
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/liquidadas', 'SellerCommissionController@panelLiquidadas');
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/pendientes', 'SellerCommissionController@panelPendientes');
 
     Route::resource('sale-type', 'SaleTypeController');
 
@@ -1398,6 +1412,21 @@ Route::middleware('admin.api.key')
 // token: 64 caracteres al azar, guardado SOLO como hash, vencimiento de 7 días, y abre UN informe
 // de solo lectura, nunca una sesión ni otra pantalla.
 Route::get('informe-compartido/{token}', 'MostradorController@compartido');
+
+// La dirección del sistema activo, consultable ANTES de iniciar sesión (misión
+// redireccion-version-antes-del-login). PÚBLICA a propósito: la dispara el SPA apenas carga la
+// aplicación, con o sin sesión iniciada (y también en /demo/ingreso y /informe/{token}), para poder
+// mandar al negocio del frente en desuso a la versión actual sin que tenga que escribir su documento
+// y su clave en el frente viejo. Solo lee `users.default_version`, y solo cuando la base tiene un
+// único dueño (ver VersionActivaHelper); no devuelve datos del negocio.
+// 🔴 `withoutMiddleware` de EnsureFrontendRequestsAreStateful: la llama CUALQUIER visitante en CADA
+// carga de la aplicación, con o sin sesión, y ese middleware de Sanctum arranca la sesión (y emite el
+// `Set-Cookie`) cada vez que el pedido viene de un dominio del frontend. Sin esta exclusión, cada
+// carga anónima crearía una sesión en el servidor y le plantaría una cookie de sesión al navegador,
+// y a quien ya tiene sesión iniciada se la reescribiría y le renovaría la cookie en un pedido que no
+// tiene nada que ver con su sesión. El resto del grupo `api` (throttle, bindings y
+// DemoSessionVigente, que tolera pedidos sin sesión) sigue aplicándose.
+Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);

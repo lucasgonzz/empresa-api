@@ -162,4 +162,34 @@ class Worker_de_cola_segun_hosting_Test extends TestCase
             'El VPS no puede programar ningun comando que el shared no programe.'
         );
     }
+
+    /**
+     * El worker de la cola 'excel' no se corta después de cada lote de la importación.
+     *
+     * Con el tope de memoria por defecto de Laravel (128 MB) el worker se iba al terminar cada
+     * lote (un lote de 1.000 filas pasa de 250 MB) y el siguiente esperaba al próximo minuto del
+     * scheduler: medido el 24/9/2026, 30 lotes eran 30 minutos de reloj aunque cada uno tardara
+     * 20 segundos (misión importacion-excel-motor-rapido). Y tiene que tener un tope de tiempo
+     * que lo haga irse entre dos jobs antes del SIGKILL de Hostinger a los 30 minutos.
+     *
+     * @return void
+     */
+    public function test_el_worker_de_excel_tiene_memoria_para_varios_lotes_y_tope_de_tiempo()
+    {
+        config(['app.VPS' => false]);
+
+        $excel = array_values(array_filter($this->comandos_programados(), function ($comando) {
+            return strpos($comando, self::COMANDO_DE_COLA) !== false && strpos($comando, '--queue=excel') !== false;
+        }));
+
+        $this->assertCount(1, $excel, 'Tiene que haber exactamente un worker de la cola excel en el shared.');
+
+        $this->assertMatchesRegularExpression('/--memory=(\d+)/', $excel[0], 'Sin --memory el worker usa 128 MB y se va después de cada lote.');
+        preg_match('/--memory=(\d+)/', $excel[0], $memoria);
+        $this->assertGreaterThanOrEqual(512, (int) $memoria[1], 'Un lote de la importación pasa de 250 MB: con menos de 512 el worker se va después de cada uno.');
+
+        $this->assertMatchesRegularExpression('/--max-time=(\d+)/', $excel[0], 'Sin --max-time el worker puede llegar al SIGKILL de Hostinger a los 30 minutos a mitad de un lote.');
+        preg_match('/--max-time=(\d+)/', $excel[0], $tope);
+        $this->assertLessThanOrEqual(1500, (int) $tope[1], 'El tope tiene que dejar margen para terminar el último lote antes de los 30 minutos.');
+    }
 }

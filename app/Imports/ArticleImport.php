@@ -186,31 +186,64 @@ class ArticleImport implements ToCollection
     }
 
 
+    /**
+     * Tamaño de cada consulta de slugs tomados: bases por consulta.
+     *
+     * Por debajo de `eq_range_index_dive_limit` (200 en MySQL 8), igual que
+     * ExcelDuplicateStats::DB_CHUNK_SIZE y por el mismo motivo: con menos rangos que ese
+     * límite MySQL estima bajando por el índice (index dives) y elige
+     * `articles_user_slug_idx`; cada base son dos rangos (`= base` y `LIKE 'base-%'`), así
+     * que 100 bases son 200 rangos... y por eso son 100 y no 150.
+     */
+    const SLUGS_POR_CONSULTA = 100;
+
+    /**
+     * Prefetch por lote de los slugs que ya existen en la cuenta para los nombres de estas
+     * filas, para que ProcessRow::unique_slug() resuelva base / base-1 / base-2 en RAM sin
+     * una consulta por fila (decisión de Lucas, 24/9/2026: la importación SÍ genera slug,
+     * al crear y al renombrar).
+     *
+     * Una base por nombre distinto, sólo de las filas que traen nombre, y consultas de a
+     * SLUGS_POR_CONSULTA bases sobre `articles (user_id, slug(191))`
+     * (`articles_user_slug_idx`, migración 2026_09_24_100003). Todos los valores como STRING:
+     * un nombre "123" da la base "123", que como clave de array PHP pasa a int, y un int
+     * comparado contra la columna `slug` hace que MySQL compare numéricamente y no pueda usar
+     * el índice (la misma clase de error del corte de Servian del 23/9/2026).
+     *
+     * @param  iterable $rows
+     * @return void
+     */
     function slugs($rows) {
-        // ✅ Prefetch de slugs para evitar queries por fila al crear artículos
         $slug_bases = [];
         foreach ($rows as $row) {
             $name = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
             if (!is_null($name) && trim((string)$name) !== '') {
                 $base = Str::slug((string)$name);
-                if ($base !== '') {
-                    $slug_bases[$base] = true;
+                /* Mismo fallback que ProcessRow::unique_slug(): un nombre sin letras ni números da 'articulo'. */
+                if ($base === '') {
+                    $base = 'articulo';
                 }
+                $slug_bases[$base] = true;
             }
         }
-        $slug_bases = array_keys($slug_bases);
+        $slug_bases = array_map('strval', array_keys($slug_bases));
 
         $taken_slugs = [];
-        if (!empty($slug_bases)) {
-            $taken_slugs = Article::where('user_id', $this->user->id)
-                ->where(function ($q) use ($slug_bases) {
-                    foreach ($slug_bases as $base) {
+
+        foreach (array_chunk($slug_bases, self::SLUGS_POR_CONSULTA) as $tanda) {
+            $tomados = Article::where('user_id', $this->user->id)
+                ->where(function ($q) use ($tanda) {
+                    foreach ($tanda as $base) {
                         $q->orWhere('slug', $base)
                           ->orWhere('slug', 'like', $base . '-%');
                     }
                 })
                 ->pluck('slug')
                 ->toArray();
+
+            foreach ($tomados as $slug) {
+                $taken_slugs[] = (string) $slug;
+            }
         }
 
         $this->process_row->set_taken_slugs($taken_slugs);
@@ -263,6 +296,23 @@ class ArticleImport implements ToCollection
         $this->set_finish_row($rows);
 
         $this->set_providers($rows);
+
+        /*
+         * Modelos precargados por lote (misión importacion-excel-motor-rapido, 24/9/2026):
+         * ANTES del loop se calculan, con los mismos normalizadores del índice, los ids que
+         * las filas de este lote pueden matchear, y se cargan en tandas de 500 con las
+         * relaciones que ProcessRow lee por fila (listas, depósitos, proveedores, descuentos,
+         * recargos). find_with_index() los sirve desde ese mapa: cuatro consultas por fila con
+         * match pasan a una por cada 500 candidatos. Si algún id no está en el mapa (borrado
+         * entre el índice y el lote), se consulta como siempre.
+         */
+        $this->iniciar();
+        ArticleIndexCache::precargar_modelos(
+            (int) $this->user->id,
+            ArticleIndexCache::ids_candidatos_de_filas($rows, $this->columns, $article_index),
+            ArticleIndexCache::relaciones_de_precarga()
+        );
+        $this->terminar('precargar modelos del lote');
 
         $error_message = null;
 

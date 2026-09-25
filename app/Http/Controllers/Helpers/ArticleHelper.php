@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\VinotecaPriceHelper;
+use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Http\Controllers\PriceChangeController;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessSendAdviseMail;
@@ -382,13 +383,29 @@ class ArticleHelper {
                 )
             ) {
 
-            $article->price = null;
-            $article->save();
-            // Log::info('Se puso null el price');
+            /*
+             * Misión importacion-excel-motor-rapido (24/9/2026): este save() era incondicional y,
+             * con $guardar_cambios = false (la importación), era una consulta por artículo. Se
+             * ejecuta solo cuando hay algo que escribir:
+             *
+             *  - `price` todavía no es null: hay que borrarlo, como siempre.
+             *  - Fuera del modo lote, además, si el modelo tiene otra cosa sucia (costo_real de
+             *    más arriba, o algo que dejó el llamador): hoy ese save() la escribía, y se sigue
+             *    escribiendo. Cuando no hay nada sucio, el save() de hoy no emite consulta ni
+             *    evento (Article no tiene listeners saving/saved), así que saltearlo es idéntico.
+             *  - En modo lote (PreciosEnLote, la importación) con `price` ya en null no se guarda:
+             *    lo único sucio es costo_real, y ActualizarBBDD::updateMasivo() lo escribe en
+             *    bloque un momento después, junto con final_price.
+             */
+            if (
+                !is_null($article->price)
+                || (!PreciosEnLote::esta_activo() && $article->isDirty())
+            ) {
+                $article->price = null;
+                $article->save();
+                // Log::info('Se puso null el price');
+            }
         }
-
-
-            Log::info('entro');
 
         if (
             (
@@ -400,9 +417,6 @@ class ArticleHelper {
                 // && UserHelper::hasExtencion('ventas_en_dolares', $user)
             )
         ) {
-
-            Log::info('entro 1');
-
 
             $usar_lista_mas_iva = false;
 
@@ -512,8 +526,6 @@ class ArticleHelper {
 
                 if (UserHelper::uses_listas_de_precio($user)) {
 
-                    Log::info('uses_listas_de_precio');
-                    
                     // ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types);
 
                     if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {

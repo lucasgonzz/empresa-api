@@ -37,7 +37,12 @@ class Order extends Model
      */
     function scopeWithAll($query) {
 
-        $relaciones = ['order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'cupon', 'buyer', 'payment_method.payment_method_type', 'delivery_zone', 'payment_card_info', 'promocion_vinotecas.images', 'envio'];
+        // `buyer.comercio_city_client` (misión vincular-comprador-desde-pedidos, 24/9/2026): la tabla
+        // de Pedidos marca "Sin vincular" al comprador que no tiene un cliente del sistema vivo, y
+        // para eso necesita el cliente cargado. Va la relación COMPLETA, sin restringir columnas:
+        // `ProcessArchivoDeIntercambioPedidos` lee `->num` y `->price_type_id` de ese cliente. Un
+        // cliente borrado (SoftDeletes) llega como null, igual que en `CreateSaleOrderHelper`.
+        $relaciones = ['order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'cupon', 'buyer', 'buyer.comercio_city_client', 'payment_method.payment_method_type', 'delivery_zone', 'payment_card_info', 'promocion_vinotecas.images', 'envio'];
 
         $query->with(array_merge(
             $relaciones,

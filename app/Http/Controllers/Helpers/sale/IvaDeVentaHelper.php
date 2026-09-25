@@ -436,4 +436,23 @@ class IvaDeVentaHelper
             .' - COALESCE(iva_venta.iva_declarado, 0)'
             .' - COALESCE(iva_consolidacion.iva_declarado * (sales.total / NULLIF(venta_consolidacion.total, 0)), 0))';
     }
+
+    /**
+     * Expresión SQL (0 / 1) de "esta venta tiene un comprobante autorizado cuyo `importe_iva` nunca
+     * se midió, propio o de su consolidación", o sea, una venta que `expresion_total_neto_de_iva()`
+     * deja ENTERA (con el IVA adentro) porque no tiene con qué netearla. Requiere que el query haya
+     * pasado antes por `aplicar_joins_de_iva()`.
+     *
+     * Lee la columna `comprobantes_sin_medir` que arma `subquery_por_venta()`, que es donde ya está
+     * escrita la regla (autorizado, sin soft delete, exportación afuera): el criterio no se repite
+     * acá. Pensada para ir dentro de un `SUM()` y decirle al usuario cuántas ventas de un total
+     * quedaron sin netear, con el mismo sentido que `ContabilidadRepository::ventas_con_iva_sin_medir()`.
+     *
+     * @return string
+     */
+    public static function expresion_venta_con_iva_sin_medir()
+    {
+        return '(CASE WHEN COALESCE(iva_venta.comprobantes_sin_medir, 0) > 0'
+            .' OR COALESCE(iva_consolidacion.comprobantes_sin_medir, 0) > 0 THEN 1 ELSE 0 END)';
+    }
 }

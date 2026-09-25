@@ -5,6 +5,7 @@ namespace App\Http\Controllers\CommonLaravel;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
+use App\Http\Controllers\Helpers\ImageCropHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Article;
@@ -127,8 +128,32 @@ class ImageController extends Controller
 
             return $this->image_source_error_response('format', $source['http_status']);
         }
+
+        /**
+         * La foto de un celular trae su orientacion en el EXIF (pixeles "acostados" + una etiqueta que
+         * dice como girarlos) y el SPA la muestra y la recorta YA enderezada: se endereza ACA, antes de
+         * aplicar el recorte, para que las coordenadas caigan sobre la misma foto que vio el usuario.
+         * No lanza nada: si no hay EXIF o no se puede, la imagen queda como vino. Ver ImageCropHelper.
+         */
+        $croppedImage = ImageCropHelper::orient_by_exif($croppedImage, $source['data']);
+
         if (isset($request->top)) {
-            $croppedImage->crop($request->width, $request->height, $request->left, $request->top);
+            /**
+             * El marco de recorte del SPA puede salirse de la imagen (se la puede alejar dentro de
+             * un marco fijo): la parte que queda sin imagen se rellena, ver ImageCropHelper. Si los
+             * numeros no sirven, o el marco no toca la imagen, se responde 422 con un 'message' listo
+             * para mostrar y SIN la clave 'errors' (mismo motivo que image_source_error_response).
+             */
+            try {
+                $croppedImage = ImageCropHelper::crop($manager, $croppedImage, $request->left, $request->top, $request->width, $request->height);
+            } catch (\InvalidArgumentException $e) {
+                Log::info('setImage: recorte invalido -- '.$e->getMessage().' -- '.json_encode($request->only(['left', 'top', 'width', 'height'])));
+
+                return response()->json([
+                    'message'     => $e->getMessage(),
+                    'image_error' => 'invalid_crop',
+                ], 422);
+            }
         }           
         /**
          * webp para todo, MENOS para las imagenes que terminan impresas en un PDF.

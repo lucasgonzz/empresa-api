@@ -426,13 +426,19 @@ class Compra_con_factura_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * 🔴 Nunca crea un proveedor: uno nuevo arrastra cuenta corriente, bonificaciones y condición
-     * fiscal.
+     * 🔴 CAMBIÓ EL COMPORTAMIENTO PEDIDO, NO LA ASERCIÓN PARA QUE PASE. Hasta el 24/9/2026 este test
+     * fijaba "Nunca crea un proveedor" y el error "No puedo crear proveedores". Ese día Lucas decidió
+     * lo contrario (misión asistente-fotos-barras-y-compras, decisión 1 de la Fase 2): "se ejecuta
+     * directo, sin confirmar, incluida el alta del proveedor si no existe". En demo3 (conv 12) la
+     * compra tardó tres mensajes en armarse.
+     *
+     * Lo que se sigue fijando: al PROPONER no se crea nada todavía —la tarjeta dice que el proveedor
+     * es nuevo y lleva su alta—; el alta de verdad pasa al ejecutar (11_Compra_con_proveedor_nuevo_Test).
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function un_proveedor_que_no_existe_no_se_crea_y_se_avisa()
+    public function un_proveedor_que_no_existe_se_propone_darlo_de_alta()
     {
         list($conversation, $generandose) = $this->escena();
 
@@ -440,10 +446,16 @@ class Compra_con_factura_Test extends AsistenteWhatsappTestCase
 
         $respuesta = $this->proponer($conversation, $generandose, ['proveedor' => 'Mayorista Inexistente']);
 
-        $this->assertFalse($respuesta['ok']);
-        $this->assertStringContainsString('No puedo crear proveedores', $respuesta['error']);
+        $this->assertTrue($respuesta['ok'], 'Motivo: ' . json_encode($respuesta));
+        $this->assertSame('Mayorista Inexistente', $respuesta['proveedor_nuevo']);
 
-        $this->assertEquals($antes, Provider::where('user_id', $this->comercio->id)->count());
+        $tarjeta = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        $this->assertNull($tarjeta->datos['provider_id']);
+        $this->assertSame('provider', $tarjeta->datos['proveedor_nuevo']['entidad']);
+        $this->assertStringContainsString('nuevo', json_encode($tarjeta->presentacion, JSON_UNESCAPED_UNICODE), 'La tarjeta dice que el proveedor se da de alta.');
+
+        $this->assertEquals($antes, Provider::where('user_id', $this->comercio->id)->count(), 'Proponer no crea nada todavía.');
     }
 
     /**
@@ -523,13 +535,19 @@ class Compra_con_factura_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * Con una sola sucursal se usa esa sin preguntar; con varias y sin decir cuál, se pregunta.
-     * `address_id` es obligatorio en el formulario de la SPA solo si la cuenta tiene sucursales.
+     * Con una sola sucursal se usa esa sin preguntar; con varias y sin decir cuál, TAMBIÉN sin
+     * preguntar.
+     *
+     * 🔴 CAMBIÓ EL COMPORTAMIENTO PEDIDO, NO LA ASERCIÓN PARA QUE PASE. Hasta el 24/9/2026 este test
+     * se llamaba con_una_sola_sucursal_no_pregunta_y_con_varias_si y fijaba la pregunta "a qué
+     * sucursal entra la mercadería". Lucas decidió ese día (misión asistente-fotos-barras-y-compras,
+     * decisión 2): la sucursal no dicha NO se pregunta — la nombrada, la de quien escribe, la única,
+     * o ninguna. La compra nace con update_stock = 0 y la pantalla la pide al revisar el escaneo.
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function con_una_sola_sucursal_no_pregunta_y_con_varias_si()
+    public function con_una_sola_sucursal_la_usa_y_con_varias_no_pregunta()
     {
         $unica = Address::create([
             'user_id' => $this->comercio->id,
@@ -556,9 +574,12 @@ class Compra_con_factura_Test extends AsistenteWhatsappTestCase
 
         $con_dos = $this->proponer($otra_conversacion, $otro_mensaje);
 
-        $this->assertFalse($con_dos['ok']);
-        $this->assertContains('a qué sucursal entra la mercadería', $con_dos['faltan']);
-        $this->assertNotEmpty($con_dos['opciones']['sucursales']);
+        $this->assertTrue($con_dos['ok'], 'Con varias sucursales tampoco se pregunta: ' . json_encode($con_dos));
+
+        $this->assertNull(
+            AiMessageAction::find($con_dos['tarjeta_id'])->datos['address_id'],
+            'Sin sucursal dicha ni sucursal de la persona, la compra nace sin sucursal.'
+        );
     }
 
     /**
@@ -584,6 +605,11 @@ class Compra_con_factura_Test extends AsistenteWhatsappTestCase
     /**
      * El proveedor de otro comercio no se puede usar: la tenencia va en todas las consultas.
      *
+     * 🔴 La aserción del error "No puedo crear proveedores" se cambió el 24/9/2026 porque cambió el
+     * comportamiento pedido (decisión 1 de Lucas, misión asistente-fotos-barras-y-compras): un
+     * proveedor que no está entre los del comercio ahora se propone como NUEVO. Lo que este test
+     * sigue fijando es la tenencia: el del otro comercio no se encuentra ni se usa.
+     *
      * @group asistente-whatsapp
      * @test
      */
@@ -591,13 +617,18 @@ class Compra_con_factura_Test extends AsistenteWhatsappTestCase
     {
         $otro = $this->otro_dueno();
 
-        Provider::create(['user_id' => $otro->id, 'name' => 'Mayorista del Otro']);
+        $ajeno = Provider::create(['user_id' => $otro->id, 'name' => 'Mayorista del Otro']);
 
         list($conversation, $generandose) = $this->escena();
 
         $respuesta = $this->proponer($conversation, $generandose, ['proveedor' => 'Mayorista del Otro']);
 
-        $this->assertFalse($respuesta['ok']);
-        $this->assertStringContainsString('No puedo crear proveedores', $respuesta['error']);
+        $this->assertTrue($respuesta['ok'], 'Motivo: ' . json_encode($respuesta));
+
+        $datos = AiMessageAction::find($respuesta['tarjeta_id'])->datos;
+
+        $this->assertNotEquals((int) $ajeno->id, (int) $datos['provider_id'], 'El proveedor de otro comercio no se usa.');
+        $this->assertNull($datos['provider_id']);
+        $this->assertNotNull($datos['proveedor_nuevo'], 'Para este comercio es un proveedor nuevo.');
     }
 }

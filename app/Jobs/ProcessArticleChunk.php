@@ -175,7 +175,21 @@ class ProcessArticleChunk implements ShouldQueue
          * desactualizado y terminaría creando duplicados (ver prompt 03, grupo 229 —
          * caso Servian: mismo bar_code creado dos veces por dos workers distintos).
          */
+
+        /*
+         * Contexto del índice acotado (misión importacion-excel-motor-rapido, 24/9/2026), ANTES
+         * de reset_runtime(): desde acá la clave de cache del índice lleva el sufijo de esta
+         * importación (dos importaciones del mismo comercio en 60 minutos no comparten un
+         * índice acotado a otro archivo) y build() lo arma sólo con las claves del archivo
+         * (<csv>.claves, escrito por InitExcelImport). Si el archivo de claves no existe —un
+         * job encolado antes de este cambio— build() es el completo de siempre.
+         */
+        ArticleIndexCache::set_contexto_de_importacion($this->csv_path . '.claves', (string) $this->import_history_id);
+
         ArticleIndexCache::reset_runtime((int) $this->user_id);
+
+        /* Las alícuotas de IVA se cachean por lote, no por vida del worker. */
+        \App\Http\Controllers\Helpers\import\article\ProcessRow::olvidar_alicuotas_cacheadas();
 
         $inicio = microtime(true);
 
@@ -440,7 +454,10 @@ class ProcessArticleChunk implements ShouldQueue
                 $currentRow = 1;
             }
 
-            while (($data = fgetcsv($handle, 0, ",")) !== false) {
+            // Escape VACÍO, el del writer CSV de OpenSpout que escribió este archivo: con la barra
+            // invertida (el default de PHP) una celda que termina en barra se tragaba el resto del
+            // lote (chequeo 3 de la misión importacion-excel-motor-rapido, 24/9/2026).
+            while (($data = fgetcsv($handle, 0, ',', '"', '')) !== false) {
 
                 if ($currentRow >= $this->start_row && $currentRow <= $this->finish_row) {
                     $chunkRows[] = $data;

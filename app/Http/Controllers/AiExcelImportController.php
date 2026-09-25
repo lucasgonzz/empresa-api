@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
+use App\Http\Controllers\Helpers\import\article\ProviderImportMappingHelper;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
 use App\Jobs\RunExcelAnalysisJob;
@@ -395,6 +396,15 @@ class AiExcelImportController extends Controller
             ->orderBy('id', 'DESC')
             ->first();
 
+        /*
+         * Misión importacion-excel-motor-rapido (24/9/2026): este request ya sale solo cuando el
+         * usuario cambia el proveedor en el paso 2, así que es el lugar para contarle a la SPA
+         * si ESE proveedor tiene una configuración de columnas guardada. Se resuelve contra los
+         * encabezados de la corrida de análisis de este archivo, sin releerlo; null si no hay.
+         * Clave nueva y opcional: una SPA vieja la ignora.
+         */
+        $mapeo_guardado_del_proveedor = $this->mapeo_guardado_del_proveedor($excel_path, $provider_id, $run);
+
         if (!is_null($run)) {
             /* Solo el cruce contra la base: sin releer el archivo. */
             $stats = ExcelDuplicateStats::crossCheckProviderCodes(
@@ -406,6 +416,7 @@ class AiExcelImportController extends Controller
             return response()->json([
                 'provider_codes_existentes_mismo_proveedor'   => $stats['provider_codes_existentes_mismo_proveedor'],
                 'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'],
+                'mapeo_guardado_del_proveedor'                => $mapeo_guardado_del_proveedor,
             ], 200);
         }
 
@@ -435,7 +446,108 @@ class AiExcelImportController extends Controller
         return response()->json([
             'provider_codes_existentes_mismo_proveedor'   => $stats['provider_codes_existentes_mismo_proveedor'],
             'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'],
+            'mapeo_guardado_del_proveedor'                => $mapeo_guardado_del_proveedor,
         ], 200);
+    }
+
+    /**
+     * Configuración de columnas guardada para el proveedor elegido en el paso 2, resuelta
+     * contra los encabezados del análisis de este archivo (misión importacion-excel-motor-rapido).
+     *
+     * Los encabezados salen de la corrida de análisis "listo" de este excel_path
+     * (resultado.encabezado_detectado.columnas, o los excel_column del mapeo si el detector no
+     * los dejó): nunca se relee el archivo. Sin proveedor, sin corrida, sin configuración o con
+     * cualquier error, devuelve null y el resto de la respuesta sale igual que antes.
+     *
+     * @param  string                            $excel_path       Ruta relativa del Excel analizado
+     * @param  int|null                          $provider_id      Proveedor elegido; null = "Sin proveedor"
+     * @param  \App\Models\ExcelAnalysisRun|null $run_de_analisis  Corrida ya buscada por el camino rápido, si la hay
+     * @return array|null  [{excel_column_index, excel_column, system_property, origen}] o null
+     */
+    protected function mapeo_guardado_del_proveedor($excel_path, $provider_id, $run_de_analisis = null)
+    {
+        try {
+            if (is_null($provider_id)) {
+                return null;
+            }
+
+            $run = $run_de_analisis;
+
+            if (is_null($run)) {
+                $run = ExcelAnalysisRun::where('user_id', $this->userId())
+                    ->where('excel_path', $excel_path)
+                    ->where('tipo', 'analisis')
+                    ->where('estado', 'listo')
+                    ->orderBy('id', 'DESC')
+                    ->first();
+            }
+
+            if (is_null($run)) {
+                return null;
+            }
+
+            /* Sólo artículos tienen proveedor; una corrida de clientes o proveedores no aplica. */
+            $payload = $run->payload ?? [];
+
+            if ((string) ($payload['model'] ?? 'article') !== 'article') {
+                return null;
+            }
+
+            $resultado = $run->resultado ?? [];
+
+            if (!is_array($resultado)) {
+                return null;
+            }
+
+            $headers = [];
+
+            if (isset($resultado['encabezado_detectado']['columnas'])
+                && is_array($resultado['encabezado_detectado']['columnas'])
+                && !empty($resultado['encabezado_detectado']['columnas'])) {
+                $headers = array_values($resultado['encabezado_detectado']['columnas']);
+            } elseif (isset($resultado['column_mapping']) && is_array($resultado['column_mapping'])) {
+                /* Respaldo: los encabezados que la IA devolvió, ubicados por su índice real. */
+                $por_indice = [];
+
+                foreach ($resultado['column_mapping'] as $posicion => $col) {
+                    if (!is_array($col)) {
+                        continue;
+                    }
+
+                    $indice = isset($col['excel_column_index']) && is_numeric($col['excel_column_index'])
+                        ? (int) $col['excel_column_index']
+                        : (int) $posicion;
+
+                    $por_indice[$indice] = (string) ($col['excel_column'] ?? '');
+                }
+
+                if (!empty($por_indice)) {
+                    $ultimo = max(array_keys($por_indice));
+
+                    for ($i = 0; $i <= $ultimo; $i++) {
+                        $headers[] = isset($por_indice[$i]) ? $por_indice[$i] : '';
+                    }
+                }
+            }
+
+            if (empty($headers)) {
+                return null;
+            }
+
+            $mapeo = ProviderImportMappingHelper::buscar($this->userId(), $provider_id);
+
+            return ProviderImportMappingHelper::resolver_para_encabezados($mapeo, $headers);
+
+        } catch (\Throwable $e) {
+            /* La configuración guardada es una comodidad: los conteos salen igual. */
+            Log::warning('AiExcelImportController::refreshProviderStats - no se pudo resolver la configuración guardada del proveedor', [
+                'excel_path'  => $excel_path,
+                'provider_id' => $provider_id,
+                'message'     => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     /**
@@ -934,6 +1046,16 @@ class AiExcelImportController extends Controller
                     'header_row'                  => self::normalizar_header_row($request->input('header_row')),
                 ],
             ]);
+
+            /*
+             * Misión importacion-excel-motor-rapido (24/9/2026): este click —"Confirmar y
+             * configurar importación"— es la confirmación humana del mapeo y del proveedor, y
+             * el único request donde llegan juntos. Acá se guarda la configuración de columnas
+             * de este proveedor para la próxima importación (plan §2.1). El helper decide si
+             * corresponde (model 'article', provider_id > 0, sin columna 'proveedor') y nunca
+             * lanza: guardar es una comodidad, la recomendación sale igual.
+             */
+            ProviderImportMappingHelper::guardar_desde_recomendacion($run);
 
             /* Encolamos el job pasando solo el id (mismo criterio que analyze()). */
             RunExcelAnalysisJob::dispatch($run->id);

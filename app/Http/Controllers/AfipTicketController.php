@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipFexHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWsfeHelper;
+use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
 use App\Models\AfipTicket;
 use App\Models\Sale;
 use Illuminate\Http\Request;
@@ -39,7 +40,15 @@ class AfipTicketController extends Controller
         ];
         $afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
 
-        return response()->json(['importes' => $importes, 'afip_qr_link' => $afip_link]);
+        return response()->json([
+            'importes'          => $importes,
+            'afip_qr_link'      => $afip_link,
+            /**
+             * Leyenda ISIB CABA (Res. 169/AGIP/2026) ya resuelta para el Ticket 2.0: un renglon por
+             * parte, [] si este comprobante no la lleva. Clave opcional: un SPA viejo la ignora.
+             */
+            'leyenda_isib_caba' => LeyendaIsibCabaHelper::partes($afip_ticket),
+        ]);
     }
 
     function problemas_al_facturar() {
