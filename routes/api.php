@@ -1407,15 +1407,17 @@ Route::middleware('admin.api.key')
 Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 
 // La dirección del sistema activo, consultable ANTES de iniciar sesión (misión
-// redireccion-version-antes-del-login). PÚBLICA a propósito: la llama el SPA del frente en desuso
-// en la pantalla de login para poder mandar al negocio a la versión actual sin que tenga que
-// escribir su documento y su clave en el frente viejo. Solo lee `users.default_version`, y solo
-// cuando la base tiene un único dueño (ver VersionActivaHelper); no devuelve datos del negocio.
-// 🔴 `withoutMiddleware` de EnsureFrontendRequestsAreStateful: la llama CUALQUIER visitante anónimo
-// en cada carga del login, y ese middleware de Sanctum arranca la sesión (y emite el `Set-Cookie`)
-// cada vez que el pedido viene de un dominio del frontend. Sin esta exclusión, cada visita
-// anónima crearía una sesión en el servidor y le plantaría una cookie de sesión en el navegador,
-// justo en el frente que está por abandonar. El resto del grupo `api` (throttle, bindings y
+// redireccion-version-antes-del-login). PÚBLICA a propósito: la dispara el SPA apenas carga la
+// aplicación, con o sin sesión iniciada (y también en /demo/ingreso y /informe/{token}), para poder
+// mandar al negocio del frente en desuso a la versión actual sin que tenga que escribir su documento
+// y su clave en el frente viejo. Solo lee `users.default_version`, y solo cuando la base tiene un
+// único dueño (ver VersionActivaHelper); no devuelve datos del negocio.
+// 🔴 `withoutMiddleware` de EnsureFrontendRequestsAreStateful: la llama CUALQUIER visitante en CADA
+// carga de la aplicación, con o sin sesión, y ese middleware de Sanctum arranca la sesión (y emite el
+// `Set-Cookie`) cada vez que el pedido viene de un dominio del frontend. Sin esta exclusión, cada
+// carga anónima crearía una sesión en el servidor y le plantaría una cookie de sesión al navegador,
+// y a quien ya tiene sesión iniciada se la reescribiría y le renovaría la cookie en un pedido que no
+// tiene nada que ver con su sesión. El resto del grupo `api` (throttle, bindings y
 // DemoSessionVigente, que tolera pedidos sin sesión) sigue aplicándose.
 Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
 

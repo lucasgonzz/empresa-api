@@ -7,10 +7,11 @@ use App\Http\Controllers\Helpers\VersionActivaHelper;
 /**
  * VersionActivaController
  *
- * Endpoint PÚBLICO (sin sesión, sin token, sin cookies) que le dice al SPA, en la pantalla de login,
- * cuál es la dirección del sistema activo de esta instancia (misión
- * redireccion-version-antes-del-login, 24/9/2026). Con eso el SPA del frente en desuso puede mandar
- * al negocio a la versión actual ANTES de que inicie sesión, en vez de esperar al login.
+ * Endpoint PÚBLICO (sin sesión, sin token, sin cookies) que le dice al SPA cuál es la dirección del
+ * sistema activo de esta instancia (misión redireccion-version-antes-del-login, 24/9/2026). El SPA
+ * lo dispara apenas carga la aplicación, con o sin sesión iniciada (y también en /demo/ingreso y
+ * /informe/{token}); con la respuesta, el SPA del frente en desuso puede mandar al negocio a la
+ * versión actual ANTES de que inicie sesión, en vez de esperar al login.
  *
  * El controlador es delgado a propósito: toda la lógica (cuándo se contesta y cuándo no) vive en
  * VersionActivaHelper. Ahí también está el porqué de que la respuesta dependa de que la base tenga
