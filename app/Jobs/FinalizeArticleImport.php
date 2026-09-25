@@ -51,6 +51,62 @@ class FinalizeArticleImport implements ShouldQueue
         $this->queue = config('app.VPS') ? null : 'excel';
     }
 
+    /**
+     * Borra lo que la importación derivó del Excel y nadie más va a leer: el volcado de cada
+     * hoja que dejó el análisis (<excel>.hoja<N>.csv, .tipos y .json, y los temporales de un
+     * volcado que un proceso muerto dejó a medias) y el archivo de claves del índice acotado
+     * (<csv>.claves). Quedan el XLSX y el CSV de la importación, igual que antes de la misión
+     * importacion-excel-motor-rapido: sin esto, cada importación con IA dejaba cinco archivos
+     * en vez de dos, dos de ellos del tamaño de la hoja (chequeos 1 y 3 de la misión, 24/9/2026).
+     *
+     * Sólo al terminar BIEN: si la importación falla se dejan, para diagnosticar. Y es caché
+     * pura: si alguien vuelve a analizar el mismo XLSX, asegurar_csv() rehace el volcado.
+     * Nunca frena el cierre: cualquier error queda en el log.
+     *
+     * @param  string $excel_relative_path  ImportHistory::excel_url (relativa a storage/app)
+     * @return int    cantidad de archivos borrados
+     */
+    public static function borrar_archivos_derivados($excel_relative_path)
+    {
+        try {
+            $excel_relative_path = ltrim((string) $excel_relative_path, '/');
+
+            if ($excel_relative_path === '') {
+                return 0;
+            }
+
+            $patrones = [
+                storage_path('app/' . $excel_relative_path) . '.hoja*',
+                storage_path('app/imported_files/' . pathinfo($excel_relative_path, PATHINFO_FILENAME) . '_*.csv.claves'),
+            ];
+
+            $borrados = 0;
+
+            foreach ($patrones as $patron) {
+                foreach (glob($patron) ?: [] as $archivo) {
+                    if (is_file($archivo) && @unlink($archivo)) {
+                        $borrados++;
+                    }
+                }
+            }
+
+            Log::info('FinalizeArticleImport: archivos derivados del Excel borrados', [
+                'excel'    => $excel_relative_path,
+                'borrados' => $borrados,
+            ]);
+
+            return $borrados;
+
+        } catch (\Throwable $e) {
+            Log::warning('FinalizeArticleImport: no se pudieron borrar los archivos derivados del Excel', [
+                'excel' => $excel_relative_path,
+                'error' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+    }
+
     public function handle()
     {
         $import_status = ImportStatus::select('id', 'processed_chunks', 'total_chunks', 'status')
@@ -146,6 +202,8 @@ class FinalizeArticleImport implements ShouldQueue
 
         ArticleIndexCache::limpiar_cache($user->id, $this->import_history_id);
         Log::info('Se limpio cache');
+
+        self::borrar_archivos_derivados((string) $import_history->excel_url);
 
         /**
          * Evento de la demo (misión 50). Se emite ACÁ y no en AiExcelImportController, que es

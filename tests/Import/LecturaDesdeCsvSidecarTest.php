@@ -374,6 +374,12 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
         /* La alteración: un código que sólo existe en el sidecar. */
         file_put_contents($ruta_csv, str_replace('PC-NUEVO', 'PC-SOLO-EN-SIDECAR', $contenido));
 
+        /*
+         * La huella del sidecar se toma ANTES de importar: al terminar bien, FinalizeArticleImport
+         * borra el sidecar (test_al_terminar_bien_la_importacion_se_borran_el_sidecar_y_las_claves).
+         */
+        $md5_del_sidecar = md5_file($ruta_csv);
+
         $data = array_merge(
             [
                 'archivo_excel_path' => 'imported_files/' . $nombre,
@@ -394,7 +400,7 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
         $this->temporales[] = $csvs[0];
 
         $this->assertSame(
-            md5_file($ruta_csv),
+            $md5_del_sidecar,
             md5_file($csvs[0]),
             'El CSV de la importación tiene que ser byte a byte el sidecar del análisis.'
         );
@@ -475,6 +481,67 @@ class LecturaDesdeCsvSidecarTest extends ImportTestCase
             $this->temporales[] = $csv;
             $this->temporales[] = $csv . '.claves';
         }
+    }
+
+    /**
+     * Al terminar BIEN una importación se borran los archivos derivados que nadie más lee: el
+     * volcado de la hoja que dejó el análisis (.csv, .tipos, .json) y el .claves del índice
+     * acotado. Quedan el XLSX y el CSV de la importación, como antes de la misión. Sin esto cada
+     * importación con IA dejaba cinco archivos en vez de dos (chequeos 1 y 3 de la misión).
+     *
+     * @return void
+     */
+    public function test_al_terminar_bien_la_importacion_se_borran_el_sidecar_y_las_claves()
+    {
+        $carpeta = storage_path('app/imported_files');
+
+        if (!is_dir($carpeta)) {
+            mkdir($carpeta, 0777, true);
+        }
+
+        $nombre  = uniqid('sidecar_limpieza_') . '.xlsx';
+        $destino = $carpeta . '/' . $nombre;
+
+        copy($this->fixture('01_codigos_de_proveedor.xlsx'), $destino);
+        $this->registrar_para_borrar($destino);
+
+        /* Lo que hace RunExcelAnalysisJob al arrancar el análisis. */
+        ExcelWorkbookReader::asegurar_csv($destino, 0);
+
+        $this->assertFileExists(CsvDeHoja::ruta_csv($destino, 0));
+
+        $data = array_merge(
+            [
+                'archivo_excel_path' => 'imported_files/' . $nombre,
+                'start_row'          => 2,
+                'finish_row'         => 99999,
+                'provider_id'        => null,
+            ],
+            self::config_por_defecto(),
+            self::columnas()
+        );
+
+        $this->postJson('/api/article/excel/import', $data)->assertStatus(200);
+
+        $import = \App\Models\ImportHistory::where('user_id', $this->tenant->id)->orderBy('id', 'DESC')->first();
+
+        $this->assertNotNull($import);
+        $this->assertSame('terminado', $import->status, 'El test necesita una importación que termine bien.');
+
+        $csvs = glob($carpeta . '/' . pathinfo($nombre, PATHINFO_FILENAME) . '_*.csv') ?: [];
+
+        foreach ($csvs as $csv) {
+            $this->temporales[] = $csv;
+            $this->temporales[] = $csv . '.claves';
+        }
+
+        $this->assertFileExists($destino, 'El XLSX subido se conserva, como siempre.');
+        $this->assertCount(1, $csvs, 'El CSV de la importación se conserva, como siempre.');
+
+        $this->assertFileDoesNotExist(CsvDeHoja::ruta_csv($destino, 0), 'El volcado de la hoja tenía que borrarse al terminar.');
+        $this->assertFileDoesNotExist(CsvDeHoja::ruta_tipos($destino, 0), 'El .tipos tenía que borrarse al terminar.');
+        $this->assertFileDoesNotExist(CsvDeHoja::ruta_meta($destino, 0), 'El .json tenía que borrarse al terminar.');
+        $this->assertFileDoesNotExist($csvs[0] . '.claves', 'El .claves tenía que borrarse al terminar.');
     }
 
     /**
