@@ -222,6 +222,40 @@ class CondicionIvaReceptorHelper {
         /** Lo que dice la ficha del cliente (5, consumidor final, si no hay ficha ni cliente). */
         $segun_la_ficha = self::condicion_segun_la_ficha($sale);
 
+        return self::conciliar_con_la_clase($segun_la_ficha, $cbte_tipo);
+    }
+
+    /**
+     * Condicion IVA del receptor que se le declaro a ARCA en un comprobante YA emitido, recalculada
+     * sobre la foto que guardo el ticket (`iva_cliente`, el nombre de la condicion de la ficha al
+     * momento de facturar, y `cbte_tipo`) con la misma tabla que get_iva_receptor().
+     *
+     * Existe para decidir, a la hora de IMPRIMIR, si el comprobante fue a un consumidor final
+     * (leyenda ISIB CABA, Res. 169/AGIP/2026). No se usa la ficha actual del cliente a proposito:
+     * si alguien la cambia despues, la reimpresion tiene que seguir diciendo lo mismo que el
+     * comprobante original.
+     *
+     * @param \App\Models\AfipTicket $afip_ticket
+     * @return int Id de condicion IVA del receptor (5 = consumidor final).
+     */
+    static function condicion_declarada_del_ticket($afip_ticket) {
+
+        $segun_la_ficha = self::condicion_segun_el_nombre($afip_ticket->iva_cliente);
+
+        return self::conciliar_con_la_clase($segun_la_ficha, $afip_ticket->cbte_tipo);
+    }
+
+    /**
+     * Aplica el criterio "manda la clase del comprobante" (ver get_iva_receptor) sobre lo que dice
+     * la ficha. Es el cuerpo que tenia get_iva_receptor hasta el 24/9/2026, extraido para que la
+     * impresion use exactamente la misma tabla que la emision.
+     *
+     * @param int $segun_la_ficha Condicion segun la ficha del cliente.
+     * @param int|string|null $cbte_tipo Codigo de comprobante de ARCA.
+     * @return int
+     */
+    static function conciliar_con_la_clase($segun_la_ficha, $cbte_tipo) {
+
         $clase = self::clase_de_comprobante($cbte_tipo);
 
         /*
@@ -305,30 +339,44 @@ class CondicionIvaReceptorHelper {
      */
     static function condicion_segun_la_ficha($sale) {
 
-        $iva_receptor = 5; //consumidor final
-
         if (!is_null($sale) && $sale->client) {
 
             $iva_condition = $sale->client->iva_condition;
 
             if (!is_null($iva_condition)) {
 
-                if ($iva_condition->name == 'Responsable inscripto') {
-
-                    $iva_receptor = 1;
-                } else if ($iva_condition->name == 'Monotributista') {
-
-                    $iva_receptor = 6;
-                } else if ($iva_condition->name == 'Consumidor final') {
-
-                } else if ($iva_condition->name == 'Exento') {
-
-                    $iva_receptor = 4;
-                }
+                return self::condicion_segun_el_nombre($iva_condition->name);
             }
         }
 
-        return $iva_receptor;
+        return 5; //consumidor final
+    }
+
+    /**
+     * Condicion IVA del receptor a partir del NOMBRE de la condicion de la ficha. Un nombre vacio,
+     * null o desconocido da 5 (consumidor final), igual que una venta sin cliente.
+     *
+     * @param string|null $nombre
+     * @return int
+     */
+    static function condicion_segun_el_nombre($nombre) {
+
+        if ($nombre == 'Responsable inscripto') {
+
+            return 1;
+        }
+
+        if ($nombre == 'Monotributista') {
+
+            return 6;
+        }
+
+        if ($nombre == 'Exento') {
+
+            return 4;
+        }
+
+        return 5; //consumidor final
     }
 
 

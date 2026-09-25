@@ -8,6 +8,9 @@ use Illuminate\Database\Eloquent\Model;
  * Modelo de configuración fiscal AFIP por usuario.
  *
  * @property string|null $owner_name Nombre opcional del dueño para cabecera de factura.
+ * @property string|null $isib_caba_alicuota Alícuota ISIB CABA (%) a informar a consumidor final
+ *                                           (Res. 169/AGIP/2026). Null = no se imprime leyenda.
+ * @property bool $isib_caba_convenio_multilateral Si la leyenda suma "APLICABLE SOBRE INGRESOS BRUTOS ATRIBUIDOS A CABA".
  */
 class AfipInformation extends Model
 {
