@@ -274,6 +274,16 @@ class Fotos_al_modelo_y_escalado_Test extends AsistenteWhatsappTestCase
      */
     public function con_deepseek_un_turno_con_foto_arranca_con_vision_y_pensando()
     {
+        /*
+         * Misión asistente-deepseek-pro-razona (24/9/2026): con el interruptor prendido (default),
+         * este turno ahora transcribe la foto con Flash y razona en Pro (lo cubre
+         * 13_Deepseek_pro_con_fotos_transcriptas_Test). Lo que fija ESTE test —visión y pensando desde
+         * la vuelta 0— sigue siendo el camino de respaldo (interruptor apagado o transcripción que
+         * falla), así que se fija con el interruptor apagado. No es una aserción ajustada: la
+         * condición del camino cambió, la conducta del camino no.
+         */
+        config(['services.deepseek.pro_con_transcripcion' => false]);
+
         $this->dueno_en('deepseek', 'agil');
 
         $con_pensamiento = [

@@ -172,6 +172,15 @@ return [
          * debajo de `max_tokens_profundo` (el helper lo recorta si no).
          */
         'thinking_budget_tokens' => (int) env('DEEPSEEK_THINKING_BUDGET_TOKENS', 4000),
+        /*
+         * Misión asistente-deepseek-pro-razona (24/9/2026): con true, un turno ESCALADO que lleva
+         * fotos corre en `model_profundo` (Pro, que no ve imágenes) con el thinking prendido desde
+         * la vuelta 0, y las fotos le llegan como TEXTO: las transcribe `model_vision` (Flash, sin
+         * pensar) en una llamada al arrancar el turno (TranscripcionDeFotosIaHelper). Con false, un
+         * turno con foto corre en `model_vision` con visión, como antes de esta misión. Existe para
+         * poder comparar las dos formas (A/B) sin tocar código.
+         */
+        'pro_con_transcripcion' => filter_var(env('DEEPSEEK_PRO_CON_TRANSCRIPCION', true), FILTER_VALIDATE_BOOLEAN),
         'ca_bundle'           => env('DEEPSEEK_CAINFO', env('ANTHROPIC_CAINFO')),
         'verify_ssl'          => filter_var(env('DEEPSEEK_VERIFY_SSL', env('ANTHROPIC_VERIFY_SSL', true)), FILTER_VALIDATE_BOOLEAN),
     ],

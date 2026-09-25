@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeFotosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -188,6 +189,17 @@ class AsistenteIaService
      * @var array<int, array<string, mixed>>
      */
     protected $adjuntos = [];
+
+    /**
+     * Las fotos que viajan en base64 en el último payload que armó build_messages_payload(), por el
+     * sha1 del `data` de su bloque `image` → su fila de ai_message_imagenes (misión
+     * asistente-deepseek-pro-razona, 24/9/2026). El bloque que va a la API no puede llevar el id de
+     * la foto (la API rechaza claves de más), y TranscripcionDeFotosIaHelper lo necesita para cachear
+     * la transcripción por foto y para decir cuándo la mandó la persona.
+     *
+     * @var array<string, \App\Models\AiMessageImagen>
+     */
+    protected $fotos_del_payload = [];
 
     /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
@@ -417,9 +429,45 @@ class AsistenteIaService
             $toco_una_carga = true;
         }
 
+        /*
+         * El reloj del presupuesto arranca ACÁ y no en el while: la transcripción de abajo es una
+         * llamada HTTP más del turno, y tiene que quedar adentro de PRESUPUESTO_SEGUNDOS para que la
+         * cadena de techos (ver su docblock) siga cerrando con el $timeout del job.
+         */
+        $inicio_del_loop = time();
+
+        /*
+         * 🔴 MISIÓN asistente-deepseek-pro-razona (24/9/2026): CON DEEPSEEK, UN TURNO ESCALADO CON
+         * FOTOS RAZONA EN PRO. Pedido de Lucas: cuando hay que razonar más, DeepSeek Pro y no Claude.
+         * Pro no ve imágenes (medido: con una foto contesta "No puedo ver la imagen"), así que las
+         * fotos se le pasan como TEXTO: el modelo con visión (Flash, sin pensar) las transcribe en
+         * UNA llamada acá, antes de la vuelta 0, y los bloques `image` del payload se reemplazan por
+         * esa transcripción (TranscripcionDeFotosIaHelper). Desde ahí el turno entero corre en Pro
+         * con el thinking prendido: `$lleva_imagenes` pasa a false (ya no hay imágenes que proteger)
+         * y `$turno_transcripto` fuerza el Profundo en TODAS las vueltas.
+         *
+         * Sólo si el turno va escalado DESDE EL ARRANQUE (Profundo elegido, foto propia en el
+         * mensaje, o carga ya confirmada por el sí): el modelo y el thinking quedan fijos desde la
+         * vuelta 0 y ninguna vuelta cambia de modelo con tool_use previos sin `thinking`, que es el
+         * 400 de 1e9711bd. El escalado a mitad de turno sigue como antes.
+         *
+         * Si la transcripción falla, `$messages` no se toca y el turno sigue exactamente como antes
+         * de esta misión (Flash con visión y el thinking del turno escalado). Anthropic nunca entra.
+         */
+        $turno_transcripto = false;
+
+        if ($lleva_imagenes && TranscripcionDeFotosIaHelper::corresponde($owner, $proveedor, $toco_una_carga)) {
+            $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation);
+
+            if (! is_null($transcriptos)) {
+                $messages          = $transcriptos;
+                $lleva_imagenes    = false;
+                $turno_transcripto = true;
+            }
+        }
+
         $iterations = 0;
         $final_text = '';
-        $inicio_del_loop = time();
 
         while ($iterations < $max_iterations) {
             /*
@@ -460,8 +508,9 @@ class AsistenteIaService
              *
              * 🔴 Y CON FOTOS MANDA LA VISIÓN, NO EL ESCALADO: `$lleva_imagenes` viaja igual, así que
              * el Pro de DeepSeek —que no ve imágenes y no lo avisa con un error— nunca recibe una.
+             * Con el turno transcripto ya no hay imágenes en el payload y va Pro desde la vuelta 0.
              */
-            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga);
+            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga || $turno_transcripto);
             $model    = $eleccion['modelo'];
 
             /*
@@ -1399,6 +1448,8 @@ CONFIRMACION;
      */
     public function build_messages_payload(AiConversation $conversation): array
     {
+        $this->fotos_del_payload = [];
+
         /*
          * Los últimos N en orden inverso: el recorte por caracteres protege lo más nuevo.
          *
@@ -1742,12 +1793,17 @@ CONFIRMACION;
             return null;
         }
 
+        $data = base64_encode($binario);
+
+        /* Para la transcripción de un turno que corre en el Pro de DeepSeek (ver $fotos_del_payload). */
+        $this->fotos_del_payload[sha1($data)] = $imagen;
+
         return [
             'type'   => 'image',
             'source' => [
                 'type'       => 'base64',
                 'media_type' => $media_type,
-                'data'       => base64_encode($binario),
+                'data'       => $data,
             ],
         ];
     }
