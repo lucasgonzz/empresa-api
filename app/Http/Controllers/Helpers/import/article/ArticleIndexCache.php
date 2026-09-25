@@ -2031,12 +2031,39 @@ class ArticleIndexCache
         return Article::whereIn('id', $ids)->get();
     }
 
+    /**
+     * Referencia al índice memoizado en RAM de este usuario, cargándolo si hace falta.
+     *
+     * 🔴 add() y update() modifican el índice POR REFERENCIA, no por copia. Antes hacían
+     * `$index = self::get_index(...)` (el array por valor), lo modificaban —y PHP, por
+     * copy-on-write, duplicaba el índice ENTERO en la primera escritura— y al final volvían
+     * a asignar `self::$runtime_index_by_key[$key] = $index` (otra copia). Con un archivo de
+     * 30.000 filas el índice acotado tiene ~150.000 entradas: eran dos copias completas POR
+     * ARTÍCULO. Medido el 24/9/2026 en un lote de 1.000 artículos actualizados: 12 s de los 24 s
+     * del lote se iban en "Actualizar Cache" por esto. Con el índice del catálogo entero (568k
+     * artículos en Servian) era peor todavía. Por referencia cada update()/add() es O(1) sobre
+     * el tamaño del índice.
+     *
+     * @param  int $user_id
+     * @return array
+     */
+    protected static function &indice_en_ram(int $user_id): array
+    {
+        $key = self::cache_key($user_id);
+
+        if (empty(self::$runtime_loaded_by_key[$key])) {
+            self::get_index($user_id);
+        }
+
+        return self::$runtime_index_by_key[$key];
+    }
+
     public static function add($article)
     {
         $key = self::cache_key($article->user_id);
 
         // Usar índice en RAM (memoizado) para NO tocar cache en cada fila
-        $index = self::get_index((int)$article->user_id);
+        $index = &self::indice_en_ram((int) $article->user_id);
 
         $article_id = $article->fake_id;
 
@@ -2101,7 +2128,7 @@ class ArticleIndexCache
 
         // Guardamos en RAM y marcamos como "dirty" SOLO si querés persistir.
         // OJO: para fake articles NO conviene persistir a cache compartido entre workers.
-        self::$runtime_index_by_key[$key] = $index;
+        // El índice se modificó por referencia (ver indice_en_ram): no hay copia que volver a asignar.
         self::$runtime_loaded_by_key[$key] = true;
 
         // NO Cache::put acá.
@@ -2127,7 +2154,7 @@ class ArticleIndexCache
          * add() usa, asi que las llamadas de este foreach se acumulan en vez de
          * pisarse.
          */
-        $index = self::get_index((int) $article->user_id);
+        $index = &self::indice_en_ram((int) $article->user_id);
 
         /** ------------------------------------------------------------------
          *  1) ELIMINAR SOLO EL fake QUE COINCIDE CON EL ARTÍCULO REAL
@@ -2405,7 +2432,7 @@ class ArticleIndexCache
         // self::$runtime_loaded_by_key[$key] = true;
 
         // NO persistimos por cada artículo (carísimo).
-        self::$runtime_index_by_key[$key] = $index;
+        // El índice se modificó por referencia (ver indice_en_ram): no hay copia que volver a asignar.
         self::$runtime_loaded_by_key[$key] = true;
         self::$runtime_dirty_by_key[$key] = true;
     }
