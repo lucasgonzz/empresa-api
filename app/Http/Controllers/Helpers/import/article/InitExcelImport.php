@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\Helpers\import\article;
 
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
@@ -13,9 +15,6 @@ use App\Models\Provider;
 use Illuminate\Bus\Batch;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
-use OpenSpout\Common\Entity\Row;
-use OpenSpout\Common\Entity\Cell;
 use Throwable;
 
 class InitExcelImport
@@ -399,56 +398,30 @@ class InitExcelImport
                 );
             }
 
-            $lectura = ExcelWorkbookReader::abrir($this->archivo_excel, $indice_de_hoja, true);
+            /*
+             * El volcado XLSX -> CSV vive en CsvDeHoja::volcar() (misión
+             * importacion-excel-motor-rapido, 24/9/2026), con el mismo código y las mismas
+             * reglas que tenía este método. asegurar_csv() lo hace UNA sola vez por hoja y
+             * lo deja al lado del XLSX: si el análisis con IA ya pasó por acá, el sidecar ya
+             * existe y esto no vuelve a leer el XLSX (medido: 25 s por cada 30.000 filas,
+             * adentro del request HTTP). Si no existe —importación clásica, AdminSync— lo
+             * genera ahora y de paso queda para la próxima.
+             *
+             * El CSV de la importación es una COPIA del sidecar con el nombre de siempre
+             * (imported_files/<nombre>_<time>.csv): los lotes lo navegan por número de línea
+             * y HojaElegidaEnImportacionTest lo lee, así que ni el nombre ni el contenido
+             * cambian respecto de antes.
+             */
+            $meta = ExcelWorkbookReader::asegurar_csv($this->archivo_excel, $indice_de_hoja);
 
-            $writer = WriterEntityFactory::createCSVWriter();
-            $writer->openToFile($this->csv_full_path);
+            $sidecar_csv = CsvDeHoja::ruta_csv($this->archivo_excel, (int) $meta['indice']);
 
-            /* Número de fila actual en el Excel (1-based) y última fila con al menos una celda con datos. */
-            $fila = 1;
-            $ultima_fila_con_contenido = 1;
-
-            foreach ($lectura->filas() as $row) {
-                $cells = [];
-                $fila_tiene_contenido = false;
-
-                foreach ($row->getCells() as $cell) {
-                    $value = $cell->getValue();
-
-                    if ($value instanceof \DateTime) {
-                        $value = $value->format('Y-m-d H:i:s');
-                    }
-
-                    if ($value === null) {
-                        $value = '';
-                    }
-
-                    $text_value = trim((string) $value);
-                    if ($text_value !== '') {
-                        $fila_tiene_contenido = true;
-                    }
-
-                    $cells[] = new Cell((string) $value);
-                }
-
-                if (count($cells) === 0) {
-                    $cells[] = new Cell('');
-                }
-
-                if ($fila_tiene_contenido) {
-                    $ultima_fila_con_contenido = $fila;
-                }
-
-                $new_row = new Row($cells, null);
-                $writer->addRow($new_row);
-
-                $fila++;
+            if (!@copy($sidecar_csv, $this->csv_full_path)) {
+                throw new \RuntimeException('No se pudo copiar el CSV de la hoja a imported_files.');
             }
 
-            $nombre_de_hoja = $lectura->nombre();
-
-            $writer->close();
-            $lectura->cerrar();
+            $ultima_fila_con_contenido = (int) $meta['ultima_fila_con_contenido'];
+            $nombre_de_hoja            = (string) $meta['nombre_hoja'];
 
             /*
              * Si el frontend envió finish_row muy alto (p. ej. 99999 en importación con IA),
@@ -536,7 +509,130 @@ class InitExcelImport
 
         Log::info('Offsets de chunks generados: ' . count($offsets));
 
+        $this->escribir_claves_del_archivo();
+
         return $offsets;
+    }
+
+    /**
+     * Junta los conjuntos de claves del archivo y los deja en <csv>.claves, para que
+     * ArticleIndexCache::build() arme el índice de identificación SÓLO con lo que el archivo
+     * puede matchear (misión importacion-excel-motor-rapido, 24/9/2026), en vez de indexar y
+     * serializar el catálogo entero del comercio en cada lote (568.000 artículos en Servian:
+     * ~100 MB serializados por operación, 300-400 MB en RAM, 5-10 s por lote).
+     *
+     * 🔴 Con los MISMOS normalizadores que usa el índice y que usa ProcessRow al buscar:
+     * IdentifierNormalizer::normalize() para numero/bar_code/sku/provider_code (casteo literal,
+     * trim, placeholders "S/N", "-" a null) y ArticleIndexCache::normalize_name_for_match() para
+     * el nombre. Si acá se normalizara distinto, una clave del archivo no entraría al índice y
+     * la fila crearía un duplicado en silencio.
+     *
+     * Se leen con fgetcsv() todas las filas desde start_row hasta el final del CSV (no hasta
+     * finish_row): es un superconjunto barato y evita cualquier desalineación entre el conteo
+     * por líneas físicas de los offsets (fgets) y el conteo por filas CSV de los lotes
+     * (fgetcsv) si una celda trae un salto de línea. Una clave de más en el índice no cambia
+     * ningún resultado; una de menos, sí. Las filas anteriores a start_row (el encabezado)
+     * quedan afuera: sus textos no son identificadores de nada.
+     *
+     * Serializado con serialize() (no JSON): las claves numéricas del archivo ("123") tienen que
+     * volver como llegaron, y json_encode/json_decode de un array con esas claves las mezcla con
+     * las de texto. Se escribe a un temporal y se renombra al final. Si no se puede escribir, se
+     * avisa y la importación sigue con el índice completo de siempre: el archivo de claves es
+     * una optimización, no un requisito.
+     *
+     * @return void
+     */
+    protected function escribir_claves_del_archivo()
+    {
+        $ruta_claves = $this->csv_full_path . '.claves';
+
+        $claves = [
+            'ids'            => [],
+            'bar_codes'      => [],
+            'skus'           => [],
+            'provider_codes' => [],
+            'names'          => [],
+        ];
+
+        /* Columna del archivo => sección del índice; mismo mapeo que $props_to_add de ProcessRow::procesar(). */
+        $identificadores = [
+            'numero'              => 'ids',
+            'codigo_de_barras'    => 'bar_codes',
+            'sku'                 => 'skus',
+            'codigo_de_proveedor' => 'provider_codes',
+        ];
+
+        $handle = @fopen($this->csv_full_path, 'r');
+
+        if ($handle === false) {
+            Log::warning('InitExcelImport: no se pudo abrir el CSV para juntar las claves del archivo; el índice será el completo', [
+                'csv' => $this->csv_full_path,
+            ]);
+
+            return;
+        }
+
+        /* El writer de OpenSpout arranca el CSV con un BOM UTF-8: se saltea antes de parsear. */
+        if (fread($handle, 3) !== "\xEF\xBB\xBF") {
+            rewind($handle);
+        }
+
+        $filas = 0;
+
+        /*
+         * Escape VACÍO, el del writer CSV de OpenSpout que escribió este archivo. Con el de
+         * PHP por defecto (la barra invertida) una celda que termina en barra no cierra, el
+         * .claves se corta en esa fila y las claves de las filas siguientes quedan fuera del
+         * índice acotado: sus artículos se crearían duplicados. Ver LecturaDeHojaCsv::filas().
+         */
+        while (($row = fgetcsv($handle, 0, ',', '"', '')) !== false) {
+            $filas++;
+
+            if ($filas < (int) $this->start_row) {
+                continue;
+            }
+
+            foreach ($identificadores as $columna => $seccion) {
+                $normalizado = IdentifierNormalizer::normalize(ImportHelper::getColumnValue($row, $columna, $this->columns));
+
+                if (!is_null($normalizado)) {
+                    $claves[$seccion][$normalizado] = true;
+                }
+            }
+
+            $nombre = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+
+            if (!is_null($nombre)) {
+                $clave_nombre = ArticleIndexCache::normalize_name_for_match($nombre);
+
+                if ($clave_nombre !== '') {
+                    $claves['names'][$clave_nombre] = true;
+                }
+            }
+        }
+
+        fclose($handle);
+
+        $temporal = $ruta_claves . '.tmp' . getmypid();
+
+        if (@file_put_contents($temporal, serialize($claves)) === false || !@rename($temporal, $ruta_claves)) {
+            @unlink($temporal);
+
+            Log::warning('InitExcelImport: no se pudo escribir el archivo de claves; el índice será el completo', [
+                'claves' => $ruta_claves,
+            ]);
+
+            return;
+        }
+
+        Log::info('InitExcelImport: claves del archivo para el índice acotado', [
+            'filas'          => $filas,
+            'ids'            => count($claves['ids']),
+            'bar_codes'      => count($claves['bar_codes']),
+            'skus'           => count($claves['skus']),
+            'provider_codes' => count($claves['provider_codes']),
+            'names'          => count($claves['names']),
+        ]);
     }
 
     function armar_jobs_de_chunks()

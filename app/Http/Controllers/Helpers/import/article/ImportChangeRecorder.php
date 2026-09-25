@@ -57,75 +57,14 @@ class ImportChangeRecorder
         }
     }
 
-    /**
-     * Registra el diff de una relación modificada durante la importación.
-     *
-     * Solo actualiza el pivot si el artículo ya está registrado en articulos_actualizados
-     * del ImportHistory. Es best-effort: si falla, loguea y continúa.
-     *
-     * @param int    $import_history_id  ID del historial de importación
-     * @param int    $article_id         ID del artículo actualizado
-     * @param string $diff_key           Clave sin prefijo (ej: "discounts_percent", "price_type_3")
-     * @param mixed  $old_value          Estado previo de la relación
-     * @param mixed  $new_value          Estado nuevo aplicado por la importación
-     * @return void
+    /*
+     * Acá vivía logRelationUpdated(): buscaba el artículo en el pivot
+     * `article_actualizados_import_history` (nivel ImportHistory) para sumarle el diff, pero ese
+     * pivot no lo escribe nadie (logCreated/logUpdated no tienen callers), así que eran dos
+     * consultas por diff, por artículo, para no escribir nunca nada. Se eliminó en la misión
+     * importacion-excel-motor-rapido (24/9/2026); el diff se registra únicamente con
+     * mergeRelationDiffIntoArticleProps(), sobre el cache del chunk.
      */
-    public static function logRelationUpdated(
-        int $import_history_id,
-        int $article_id,
-        string $diff_key,
-        $old_value,
-        $new_value
-    ): void {
-        try {
-            $import = ImportHistory::find($import_history_id);
-
-            if (!$import) {
-                return;
-            }
-
-            /*
-             * Buscamos si ya existe un registro para este artículo en esta importación.
-             * Solo trackeamos artículos ya registrados como actualizados.
-             */
-            $existing = $import->articulos_actualizados()
-                ->where('article_id', $article_id)
-                ->first();
-
-            if (!$existing) {
-                return;
-            }
-
-            $pivot_props = $existing->pivot->updated_props ?? null;
-
-            $current_props = is_array($pivot_props)
-                ? $pivot_props
-                : json_decode($pivot_props ?? '{}', true);
-
-            if (!is_array($current_props)) {
-                $current_props = [];
-            }
-
-            $diff_full_key = '__diff__' . $diff_key;
-
-            /*
-             * Solo guardamos el primer old detectado para restaurar el estado
-             * previo real a toda la importación.
-             */
-            if (!array_key_exists($diff_full_key, $current_props)) {
-                $current_props[$diff_full_key] = [
-                    'old' => $old_value,
-                    'new' => $new_value,
-                ];
-
-                $import->articulos_actualizados()->updateExistingPivot($article_id, [
-                    'updated_props' => json_encode($current_props, JSON_UNESCAPED_UNICODE),
-                ]);
-            }
-        } catch (\Throwable $th) {
-            Log::error("ImportChangeRecorder::logRelationUpdated - {$th->getMessage()}");
-        }
-    }
 
     /**
      * Fusiona un diff de relación en el array de props de un artículo del cache.

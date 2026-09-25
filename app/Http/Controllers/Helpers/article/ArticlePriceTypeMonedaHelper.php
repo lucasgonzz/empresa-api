@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Models\PriceType;
 use Illuminate\Support\Facades\Log;
 
@@ -170,17 +171,32 @@ class ArticlePriceTypeMonedaHelper {
                 continue;
             }
 
-            $relacion = $article->price_types()->find($entrada->price_type_id);
+            /* En modo lote (importación, PreciosEnLote) la fila se lee de la relación cargada y el
+             * espejo se registra para escribirlo en bloque; fuera de él, como siempre. Registrarlo
+             * es además lo que hace que PriceChangeController::store() vea, en ese modo, el precio
+             * en pesos recién espejado y no el que la relación cargada traía de antes. */
+            $en_lote = PreciosEnLote::esta_activo();
+
+            $relacion = $en_lote
+                            ? PreciosEnLote::pivot_actual($article, $entrada->price_type_id)
+                            : $article->price_types()->find($entrada->price_type_id);
 
             /* Sin fila en la pivot no hay nada que espejar. No se crea: ver el docblock. */
             if (is_null($relacion)) {
                 continue;
             }
 
-            $article->price_types()->updateExistingPivot($entrada->price_type_id, [
+            $columnas_del_pivot = [
                 'final_price' => $entrada->final_price,
                 'percentage'  => $entrada->percentage,
-            ]);
+            ];
+
+            if ($en_lote) {
+                PreciosEnLote::registrar_pivot($article, $entrada->price_type_id, $columnas_del_pivot, false);
+                continue;
+            }
+
+            $article->price_types()->updateExistingPivot($entrada->price_type_id, $columnas_del_pivot);
         }
     }
 

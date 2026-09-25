@@ -123,10 +123,16 @@ class ExcelWorkbookReader
     /**
      * Abre el libro y devuelve la hoja $indice ya posicionada.
      *
+     * Si la hoja ya fue volcada a su sidecar CSV (ver asegurar_csv() y CsvDeHoja) y ese
+     * sidecar corresponde al XLSX actual, devuelve una LecturaDeHojaCsv, que tiene la
+     * misma interfaz (filas() con getCells(), celdas con getValue() tipado, nombre(),
+     * cerrar()) y lee 30 veces más rápido. Si no, abre el XLSX con OpenSpout como siempre.
+     * Ningún llamador distingue una de otra: es la razón de ser del swap.
+     *
      * @param  string $excel_path
      * @param  int    $indice                  0-based
      * @param  bool   $preservar_filas_vacias  el mismo setShouldPreserveEmptyRows de siempre
-     * @return LecturaDeHoja
+     * @return LecturaDeHoja|LecturaDeHojaCsv
      *
      * @throws \RuntimeException  mensaje limpio, SIN la ruta del servidor
      */
@@ -138,6 +144,87 @@ class ExcelWorkbookReader
             $indice = 0;
         }
 
+        $meta = CsvDeHoja::meta_vigente($excel_path, $indice);
+
+        if (!is_null($meta)) {
+            return new LecturaDeHojaCsv(
+                CsvDeHoja::ruta_csv($excel_path, $indice),
+                CsvDeHoja::ruta_tipos($excel_path, $indice),
+                $meta,
+                (bool) $preservar_filas_vacias
+            );
+        }
+
+        return self::abrir_xlsx($excel_path, $indice, $preservar_filas_vacias);
+    }
+
+    /**
+     * Vuelca la hoja $indice a su sidecar CSV (<excel>.hoja<indice>.csv + .tipos + .json,
+     * ver CsvDeHoja) leyendo el XLSX UNA vez, y devuelve el meta del .json. Idempotente: si
+     * el sidecar ya existe y su xlsx_mtime coincide con el archivo, no rehace nada.
+     *
+     * A partir de acá, todo abrir() de esa hoja lee el sidecar. Lo llama
+     * RunExcelAnalysisJob apenas resuelve la hoja (antes de los recorridos del análisis) e
+     * InitExcelImport::armar_archivo_csv(), que después copia el .csv al nombre de siempre
+     * de la importación.
+     *
+     * Si $indice está fuera de rango, OpenSpout degrada a la hoja 0 (ver abrir_xlsx()) y el
+     * sidecar se escribe bajo el índice REAL de la hoja abierta, no bajo el pedido: el meta
+     * devuelto trae ese índice en 'indice'.
+     *
+     * @param  string $excel_path
+     * @param  int    $indice  0-based
+     * @return array  meta: version, indice, nombre_hoja, filas_fisicas, ultima_fila_con_contenido, xlsx_mtime...
+     *
+     * @throws \RuntimeException  mensaje limpio si el archivo no abre o el sidecar no se puede escribir
+     */
+    public static function asegurar_csv($excel_path, $indice = 0)
+    {
+        $indice = (int) $indice;
+
+        if ($indice < 0) {
+            $indice = 0;
+        }
+
+        $meta = CsvDeHoja::meta_vigente($excel_path, $indice);
+
+        if (!is_null($meta)) {
+            return $meta;
+        }
+
+        $lectura = self::abrir_xlsx($excel_path, $indice, true);
+
+        try {
+            $indice_real = (int) $lectura->sheet()->getIndex();
+
+            if ($indice_real !== $indice) {
+                $meta = CsvDeHoja::meta_vigente($excel_path, $indice_real);
+
+                if (!is_null($meta)) {
+                    return $meta;
+                }
+            }
+
+            return CsvDeHoja::volcar($excel_path, $indice_real, $lectura);
+        } finally {
+            $lectura->cerrar();
+        }
+    }
+
+    /**
+     * Abre el XLSX con OpenSpout y devuelve la hoja $indice ya posicionada, sin mirar el
+     * sidecar. Es el abrir() de siempre; abrir() lo usa cuando no hay sidecar y
+     * asegurar_csv() para producirlo.
+     *
+     * @param  string $excel_path
+     * @param  int    $indice                  0-based, ya saneado
+     * @param  bool   $preservar_filas_vacias
+     * @return LecturaDeHoja
+     *
+     * @throws \RuntimeException  mensaje limpio, SIN la ruta del servidor
+     */
+    protected static function abrir_xlsx($excel_path, $indice, $preservar_filas_vacias)
+    {
         $reader = self::abrir_reader($excel_path, $preservar_filas_vacias);
 
         foreach ($reader->getSheetIterator() as $sheet) {
@@ -164,8 +251,12 @@ class ExcelWorkbookReader
              *
              * Se reabre el libro en vez de reusar la primera hoja del foreach de arriba
              * porque al avanzar el iterador su row iterator ya quedo cerrado.
+             *
+             * Va por abrir_xlsx() y no por abrir(): este metodo promete una LecturaDeHoja de
+             * OpenSpout (asegurar_csv() le pide sheet()->getIndex()), y abrir() podria
+             * devolver la lectura del sidecar de la hoja 0.
              */
-            return self::abrir($excel_path, 0, $preservar_filas_vacias);
+            return self::abrir_xlsx($excel_path, 0, $preservar_filas_vacias);
         }
 
         /* Libro sin hojas: OpenSpout ya deberia haber lanzado, pero no lo damos por hecho. */

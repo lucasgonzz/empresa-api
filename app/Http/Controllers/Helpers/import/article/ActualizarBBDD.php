@@ -8,8 +8,10 @@ use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
-use App\Http\Controllers\Helpers\article\ArticleUbicationsHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
+use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
+use App\Http\Controllers\Helpers\import\article\motor\RelacionesEnLote;
+use App\Http\Controllers\Helpers\import\article\motor\StockEnLote;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
 use App\Models\Article;
@@ -108,13 +110,14 @@ class ActualizarBBDD {
         /*
          * Mapa article_id => referencia al array del cache de actualización.
          * Permite fusionar diffs de relaciones en updated_props antes de persistir el chunk.
+         *
+         * 🔴 Se vuelve a armar en guardar_articulos() DESPUÉS de
+         * merge_articulos_para_actualizar_ultima_fila_gana(): ese merge reemplaza el array entero
+         * y estas referencias quedaban apuntando a los elementos del array viejo (huérfanos), así
+         * que los diffs de relaciones se fusionaban en un lugar que nadie leía. Ver
+         * indexar_actualizados_por_id() y get_articulos_para_actualizar().
          */
-        $this->articulos_para_actualizar_by_id      = [];
-        foreach ($this->articulos_para_actualizar_CACHE as $index => $article_row) {
-            if (!empty($article_row['id'])) {
-                $this->articulos_para_actualizar_by_id[(int) $article_row['id']] = &$this->articulos_para_actualizar_CACHE[$index];
-            }
-        }
+        $this->indexar_actualizados_por_id();
 
         $this->articulos_creados_models = [];
         $this->articulos_actualizados_models = [];
@@ -140,6 +143,13 @@ class ActualizarBBDD {
         $this->articulos_creados_con_codigo_repetido_ids = [];
 
         $this->stock_movement_ct = new StockMovementController(false);
+
+        /*
+         * Misión importacion-excel-motor-rapido (24/9/2026): el stock global y por depósito del
+         * lote se acumula acá y se escribe en bloque al final de actualizar_stock() (ver
+         * StockEnLote). Los casos que esa clase no cubre siguen yendo por $stock_movement_ct.
+         */
+        $this->stock_en_lote = new StockEnLote($this->user, $this->auth_user_id, $this->stock_movement_ct);
 
         $this->now = Carbon::now()->toDateTimeString();
 
@@ -347,6 +357,13 @@ class ActualizarBBDD {
                 $this->articulos_para_actualizar_CACHE
             );
 
+            /*
+             * El merge de arriba devuelve un array NUEVO: las referencias que armó el constructor
+             * apuntaban al array viejo. Se reindexa para que los diffs de relaciones que registra
+             * record_relation_diff() caigan en las entradas vivas (ver el comentario del constructor).
+             */
+            $this->indexar_actualizados_por_id();
+
             $this->set_articulos_actualizados_models();
 
             
@@ -432,6 +449,16 @@ class ActualizarBBDD {
         // 🔁 Actualizar Stock
         $this->actualizar_stock(true);
         $this->actualizar_stock(false);
+
+        /*
+         * Los dos recorridos de arriba sólo ACUMULAN los movimientos (StockEnLote::agregar_*);
+         * acá se escriben todos en bloque, en el mismo orden en que se pidieron. Antes cada
+         * movimiento pagaba 17–22 consultas adentro de StockMovementController::crear().
+         */
+        $this->iniciar();
+        $this->stock_en_lote->volcar();
+        $this->terminar('Stock en lote (escritura)');
+
         $this->log('Se actualizo stock');
 
 
@@ -467,6 +494,17 @@ class ActualizarBBDD {
         $this->set_articulos_actualizados_models();
         // $this->set_articulos_creados_models();
 
+        /*
+         * Los creados se leyeron ANTES de escribir sus listas, descuentos y recargos, así que sus
+         * relaciones (si alguna quedó cargada) están viejas y las demás se cargarían perezosamente,
+         * una consulta por artículo, adentro de setFinalPrice(). Se cargan acá, todas juntas y
+         * frescas, con la misma lista de relaciones que usa la relectura de actualizados. El dato
+         * es el mismo que traería el lazy load en ese momento: todo lo relacional ya está escrito.
+         */
+        if (count($this->articulos_creados_models) > 0) {
+            $this->articulos_creados_models->load(PreciosEnLote::RELACIONES_A_PRECARGAR);
+        }
+
         if (app()->environment('local')) { $this->log('Calculando precios finales'); }
         $this->set_precios_finales();
 
@@ -496,36 +534,38 @@ class ActualizarBBDD {
 
     }
 
+    /**
+     * Relaciona cada artículo creado con su proveedor en `article_provider` (provider_code y
+     * costo), en UNA sentencia para todo el lote.
+     *
+     * Antes hacía attach() a ciegas por artículo: con el índice único uniq_article_provider
+     * (article_id, provider_id) que agrega la migración de dedupe del pivot, un segundo attach()
+     * sobre el mismo par tira "Integrity constraint violation". Después pasó a
+     * syncWithoutDetaching() por artículo (dos consultas cada uno). Ahora es un upsert multi-fila
+     * sobre ese mismo índice, con el mismo resultado: inserta si no existe, actualiza
+     * provider_code/cost/updated_at si ya existe, nunca toca las demás relaciones del artículo, y
+     * llamarlo dos veces no duplica ni lanza. Sólo depende de articulos_creados_models y de
+     * observations (hay tests que lo llaman sobre una instancia sin constructor).
+     *
+     * @return void
+     */
     function set_articles_providers() {
 
         $this->iniciar();
 
-        foreach ($this->articulos_creados_models as $article) {
+        RelacionesEnLote::vincular_proveedores_de_creados($this->articulos_creados_models);
 
-            if (!$article->provider_id) {
-                continue;
-            }
-
-            $pivot_data = [
-                'provider_code' => $article->provider_code,
-                'cost'          => $article->cost,
-            ];
-
-            /*
-             * Antes hacía attach() a ciegas: con el índice único uniq_article_provider
-             * (article_id, provider_id) que agrega la migración de dedupe del pivot, un
-             * segundo attach() sobre el mismo par tira "Integrity constraint violation"
-             * en vez de insertar en silencio como hacía hasta ahora. syncWithoutDetaching
-             * es idempotente: inserta si no existe, actualiza el pivot si ya existe, y
-             * nunca toca las demás relaciones del artículo (a diferencia de sync()).
-             */
-            $article->providers()->syncWithoutDetaching([$article->provider_id => $pivot_data]);
-        }
-
-        $this->terminar('set articles_providers'); 
+        $this->terminar('set articles_providers');
 
     }
 
+    /**
+     * Adjunta todas las ubicaciones del comercio a cada artículo creado
+     * (`article_article_ubication`), en UN INSERT multi-fila en vez de un attach() por
+     * ubicación por artículo (ArticleUbicationsHelper::init_ubications()).
+     *
+     * @return void
+     */
     function set_article_ubications() {
 
         $ubications = ArticleUbication::where('user_id', $this->user->id)
@@ -535,9 +575,11 @@ class ActualizarBBDD {
             return;
         }
 
-        foreach ($this->articulos_creados_models as $article) {
-            ArticleUbicationsHelper::init_ubications($article, $ubications);
-        }
+        $this->iniciar();
+
+        RelacionesEnLote::vincular_ubicaciones($this->articulos_creados_models, $ubications);
+
+        $this->terminar('set article_ubications');
 
     }
 
@@ -615,19 +657,6 @@ class ActualizarBBDD {
 
             // Solo eliminar % cuando hay diff de ese tipo; si cambió solo el monto, los % se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'discounts', '%')) {
-
-                /*
-                 * Capturamos el estado previo en DB antes del DELETE para el rollback.
-                 */
-                $this->track_discounts_or_surchages_relation_diff(
-                    $article_id,
-                    $article_cache,
-                    'discounts',
-                    'discounts_percent',
-                    'article_discounts',
-                    'percentage'
-                );
-
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -635,6 +664,17 @@ class ActualizarBBDD {
 
         }
 
+        /*
+         * Estado previo en DB antes del DELETE, para el rollback: un solo SELECT para todos los
+         * artículos del lote (antes era uno por artículo).
+         */
+        $this->track_discounts_or_surchages_en_lote(
+            $articles_id_para_eliminarles_descuentos,
+            'discounts',
+            'discounts_percent',
+            'article_discounts',
+            'percentage'
+        );
 
         DB::table('article_discounts')
             ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
@@ -695,16 +735,6 @@ class ActualizarBBDD {
 
             // Solo eliminar amount cuando hay diff de ese tipo; si cambió solo el %, los montos se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'discounts', 'amount')) {
-
-                $this->track_discounts_or_surchages_relation_diff(
-                    $article_id,
-                    $article_cache,
-                    'discounts',
-                    'discounts_amount',
-                    'article_discounts',
-                    'amount'
-                );
-
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -712,6 +742,14 @@ class ActualizarBBDD {
 
         }
 
+        // Estado previo (un SELECT por lote) antes del DELETE, para el rollback.
+        $this->track_discounts_or_surchages_en_lote(
+            $articles_id_para_eliminarles_descuentos,
+            'discounts',
+            'discounts_amount',
+            'article_discounts',
+            'amount'
+        );
 
         DB::table('article_discounts')
             ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
@@ -1069,16 +1107,6 @@ class ActualizarBBDD {
 
             // Solo eliminar % cuando hay diff de ese tipo; si cambió solo el monto, los % se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'surchages', '%')) {
-
-                $this->track_discounts_or_surchages_relation_diff(
-                    $article_id,
-                    $article_cache,
-                    'surchages',
-                    'surchages_percent',
-                    'article_surchages',
-                    'percentage'
-                );
-
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -1086,6 +1114,14 @@ class ActualizarBBDD {
 
         }
 
+        // Estado previo (un SELECT por lote) antes del DELETE, para el rollback.
+        $this->track_discounts_or_surchages_en_lote(
+            $articles_id_para_eliminarles_descuentos,
+            'surchages',
+            'surchages_percent',
+            'article_surchages',
+            'percentage'
+        );
 
         DB::table('article_surchages')
             ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
@@ -1142,16 +1178,6 @@ class ActualizarBBDD {
 
             // Solo eliminar amount cuando hay diff de ese tipo; si cambió solo el %, los montos se preservan.
             if ($this->cache_has_diff_of_type($article_cache, 'surchages', 'amount')) {
-
-                $this->track_discounts_or_surchages_relation_diff(
-                    $article_id,
-                    $article_cache,
-                    'surchages',
-                    'surchages_amount',
-                    'article_surchages',
-                    'amount'
-                );
-
                 $articles_id_para_eliminarles_descuentos[] = $article_id;
             }
 
@@ -1159,6 +1185,14 @@ class ActualizarBBDD {
 
         }
 
+        // Estado previo (un SELECT por lote) antes del DELETE, para el rollback.
+        $this->track_discounts_or_surchages_en_lote(
+            $articles_id_para_eliminarles_descuentos,
+            'surchages',
+            'surchages_amount',
+            'article_surchages',
+            'amount'
+        );
 
         DB::table('article_surchages')
             ->whereIn('article_id', $articles_id_para_eliminarles_descuentos)
@@ -1399,88 +1433,34 @@ class ActualizarBBDD {
         /*
          * El delta se calculó cuando se procesó la fila; el movimiento se aplica
          * al cerrar el lote. Si en el medio algo más tocó el stock, el delta viejo
-         * lo deja mal. Recalculamos contra el valor real del momento, pero SOLO
-         * cuando hay un objetivo explícito (flujo de artículos actualizados):
-         * no se llama fresh() en el flujo de creación para no pegarle a la BD
-         * por cada artículo nuevo del lote sin necesidad.
+         * lo deja mal. Se recalcula contra el valor real del momento, pero SOLO
+         * cuando hay un objetivo explícito (flujo de artículos actualizados).
+         *
+         * Grupo 301, prompt 02: un delta cero NUNCA puede producir un StockMovement, en
+         * ninguna de las dos rutas. Un movimiento que no mueve stock es un asiento falso en
+         * el historial del cliente.
+         *
+         * Misión importacion-excel-motor-rapido (24/9/2026): las dos reglas viven ahora en
+         * StockEnLote (agregar_global() corta el cero sin objetivo; volcar() recalcula el delta
+         * contra el stock real leído UNA vez para todo el lote —lo que antes era un fresh() por
+         * artículo— y corta si da cero). Acá sólo se encola el pedido; la escritura es en bloque.
          */
-        if (!is_null($target_stock)) {
-
-            $stock_actual = (float) $article->fresh()->stock;
-            $amount = $target_stock - $stock_actual;
-
-            if ($amount == 0.0) {
-                // Ya está en el valor pedido: no hay nada que registrar.
-                return;
-            }
-        }
-
-        /*
-         * Grupo 301, prompt 02: guarda dura, incondicional, para las dos rutas (creación y
-         * actualización) -- un delta cero NUNCA puede producir un StockMovement. La rama de
-         * arriba ya cubre la ruta de actualización (recalcula contra fresh() y corta si da
-         * cero); esto es defensa en profundidad para la ruta de creación, que no pasa por
-         * ahí (no llama fresh() por costo, ver comentario del docblock), y para cualquier
-         * llamador futuro que le pase un $amount ya cero sin pasar $target_stock. Un
-         * movimiento que no mueve stock es un asiento falso en el historial del cliente.
-         */
-        if ((float) $amount == 0.0) {
-            return;
-        }
-
-        $this->log('guardar_stock_movement_global amount: '.$amount);
-
-        $data = [];
-
-        $data['concepto_stock_movement_name'] = 'Importacion de excel';
-
-        $data['model_id'] = $article->id;
-        $data['amount'] = $amount;
-
-        $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
+        $this->stock_en_lote->agregar_global($article, $amount, $target_stock);
     }
 
+    /**
+     * Encola los movimientos por depósito de un artículo (uno por dirección con `amount`) y sus
+     * `stock_min`/`stock_max`. La escritura la hace StockEnLote::volcar(), en bloque, con la
+     * misma semántica que tenía el `crear()` por dirección + `exists()`/`updateExistingPivot()`/
+     * `attach()` por artículo.
+     *
+     * @param  \App\Models\Article $article
+     * @param  array               $addresses [{address_id, amount, stock_min, stock_max}, …]
+     * @return void
+     */
     function guardar_stock_movement_addresses($article, $addresses) {
 
-        $data = [];
-
-        $data['concepto_stock_movement_name'] = 'Importacion de excel';
-
-        $data['model_id'] = $article->id;
-
-        foreach ($addresses as $address) {
-
-            if (!is_null($address['amount'])) {
-                $this->log('Se van a agregar '.$address['amount'].' a address_id '.$address['address_id']);
-                $data['to_address_id'] = $address['address_id'];
-                $data['amount'] = $address['amount'];
-                $this->stock_movement_ct->crear($data, true, $this->user, $this->auth_user_id);
-            }
-
-
-            if (
-                !is_null($address['stock_min'])
-                || !is_null($address['stock_max'])
-            ) {
-
-
-                if ($article->addresses()->where('address_id', $address['address_id'])->exists()) {
-                    // $this->log('actualizando pivot stock_min '.$address['stock_min']);
-                    // $this->log('actualizando pivot stock_max '.$address['stock_max']);
-                    $article->addresses()->updateExistingPivot($address['address_id'], [
-                        'stock_min' => $address['stock_min'],
-                        'stock_max' => $address['stock_max'],
-                    ]);
-                } else {
-                    // $this->log('creando pivot stock_min '.$address['stock_min']);
-                    // $this->log('creando pivot stock_max '.$address['stock_max']);
-                    $article->addresses()->attach($address['address_id'], [
-                        'stock_min' => $address['stock_min'],
-                        'stock_max' => $address['stock_max'],
-                    ]);
-                }
-            }
-        }
+        $this->stock_en_lote->agregar_por_depositos($article, $addresses);
 
     }
 
@@ -1585,6 +1565,10 @@ class ActualizarBBDD {
 
 
         $this->iniciar();
+
+        /* Pares (article_id, price_type_id, percentage, final_price) cuyo diff hay que registrar. */
+        $pares_a_trackear = [];
+
         foreach ($this->articulos_para_actualizar_CACHE as $article_cache) {
 
             if (empty($article_cache['price_types_data'])) continue;
@@ -1608,14 +1592,10 @@ class ActualizarBBDD {
                 $setear_precio_final = $this->get_setear_precio_final($price_type);
 
                 /*
-                 * Registramos el diff de la pivot price_type antes de aplicar el UPDATE masivo.
+                 * El diff del pivot price_type se registra antes del UPDATE masivo, pero con un
+                 * solo SELECT para todos los pares del lote (ver más abajo): acá sólo se anota.
                  */
-                $this->track_price_type_relation_diff(
-                    $article_id,
-                    (int) $price_type['id'],
-                    $percentage,
-                    $final_price
-                );
+                $pares_a_trackear[] = [$article_id, (int) $price_type['id'], $percentage, $final_price];
 
                 $percentage = ($percentage === '' || is_null($percentage)) ? 'NULL' : $percentage;
                 $final_price = ($final_price === '' || is_null($final_price)) ? 'NULL' : $final_price;
@@ -1633,6 +1613,9 @@ class ActualizarBBDD {
                 ];
             }
         }
+
+        // Estado previo de los pivots (un SELECT por lote) ANTES del UPDATE, para el rollback.
+        $this->track_price_types_en_lote($pares_a_trackear);
 
         if (!empty($updates)) {
 
@@ -1785,51 +1768,104 @@ class ActualizarBBDD {
 
 
 
+    /**
+     * Calcula el precio final de cada artículo creado y actualizado (misma cadena que la ficha:
+     * ArticleHelper::setFinalPrice) y escribe costo_real / final_price / previus_final_price /
+     * final_price_updated_at en UN UPDATE masivo.
+     *
+     * Misión importacion-excel-motor-rapido (24/9/2026): el cálculo corre adentro del modo lote de
+     * PreciosEnLote. Con el modo prendido, los pivots de listas y los cambios de precio que
+     * setFinalPrice() escribía uno por uno se recolectan y volcar() los escribe en bloque (eso lo
+     * completa el constructor de precios; mientras PreciosEnLote sea el esqueleto, activar() y
+     * volcar() no hacen nada y todo sigue exactamente como hoy). El finally garantiza que el modo
+     * se apaga —y lo recolectado se escribe— aunque un artículo tire una excepción en el medio.
+     *
+     * @return void
+     */
     function set_precios_finales() {
 
         $this->iniciar();
 
         $updates = [];
 
-        foreach ($this->articulos_creados_models as $article) {
+        PreciosEnLote::activar($this->user, $this->auth_user_id);
 
-            $res = ArticleHelper::setFinalPrice($article, $this->user->id, $this->user, $this->auth_user_id, false, $this->price_types);
+        /* El error del cálculo, si lo hubo: es el que tiene que llegar al job y al usuario. */
+        $error_del_calculo = null;
 
-            $update = [
-                'id'                        => $article->id,
-                'costo_real'                => $res['costo_real'],
-                'final_price'               => $res['final_price'],
-                'current_final_price'       => $res['current_final_price'],
-                'final_price_updated_at'    => $this->now,
-            ];
+        try {
 
-            // $this->log('Se calculo precio de article id: '.$article->id);
+            foreach ($this->articulos_creados_models as $article) {
 
-            $updates[] = $update;
+                $res = ArticleHelper::setFinalPrice($article, $this->user->id, $this->user, $this->auth_user_id, false, $this->price_types);
+
+                $update = [
+                    'id'                        => $article->id,
+                    'costo_real'                => $res['costo_real'],
+                    'final_price'               => $res['final_price'],
+                    'current_final_price'       => $res['current_final_price'],
+                    'final_price_updated_at'    => $this->now,
+                ];
+
+                // $this->log('Se calculo precio de article id: '.$article->id);
+
+                $updates[] = $update;
+            }
+
+            foreach ($this->articulos_actualizados_models as $article) {
+
+                $res = ArticleHelper::setFinalPrice($article, $this->user->id, $this->user, $this->auth_user_id, false, $this->price_types);
+
+                $update = [
+                    'id'                        => $article->id,
+                    'costo_real'                => $res['costo_real'],
+                    'final_price'               => $res['final_price'],
+                    'current_final_price'       => $res['current_final_price'],
+                    'final_price_updated_at'    => $this->now,
+                ];
+
+                $updates[] = $update;
+                // $this->log('Se calculo precio de article id: '.$article->id);
+            }
+
+            $this->log('Se van a setear precios finales de '.count($updates).' articulos');
+            if (app()->environment('local')) { $this->log(''); }
+
+            $this->updateMasivo($updates);
+
+        } catch (\Throwable $e) {
+
+            $error_del_calculo = $e;
         }
 
-        foreach ($this->articulos_actualizados_models as $article) {
+        /*
+         * Pivots de listas y price_changes en bloque, pase lo que pase con el cálculo: lo de los
+         * artículos anteriores al error se escribe igual que lo escribía el camino por artículo.
+         * Si el volcado también falla, el error que sube es el del CÁLCULO (la causa real) y el
+         * del volcado queda en el log; antes, con un finally, el del volcado lo tapaba. Chequeo 3
+         * de la misión, 24/9/2026.
+         */
+        try {
 
-            $res = ArticleHelper::setFinalPrice($article, $this->user->id, $this->user, $this->auth_user_id, false, $this->price_types);
+            PreciosEnLote::volcar();
 
-            $update = [
-                'id'                        => $article->id,
-                'costo_real'                => $res['costo_real'],
-                'final_price'               => $res['final_price'],
-                'current_final_price'       => $res['current_final_price'],
-                'final_price_updated_at'    => $this->now,
-            ];
+        } catch (\Throwable $error_del_volcado) {
 
-            $updates[] = $update;
-            // $this->log('Se calculo precio de article id: '.$article->id);
+            if (is_null($error_del_calculo)) {
+                throw $error_del_volcado;
+            }
+
+            Log::error('ActualizarBBDD::set_precios_finales: falló también el volcado de precios en lote; se informa el error del cálculo', [
+                'error_del_volcado' => $error_del_volcado->getMessage(),
+                'error_del_calculo' => $error_del_calculo->getMessage(),
+            ]);
         }
 
-        $this->log('Se van a setear precios finales de '.count($updates).' articulos');
-        if (app()->environment('local')) { $this->log(''); }
+        if (!is_null($error_del_calculo)) {
+            throw $error_del_calculo;
+        }
 
-        $this->updateMasivo($updates);
-
-        $this->terminar('Setear Precios'); 
+        $this->terminar('Setear Precios');
 
     }
 
@@ -2311,12 +2347,24 @@ class ActualizarBBDD {
         return $merged;
     }
 
+    /**
+     * Relee los artículos a actualizar con las relaciones que setFinalPrice() y sus helpers
+     * cargan perezosamente por artículo (PreciosEnLote::RELACIONES_A_PRECARGAR), para que el
+     * cálculo de precios no dispare una consulta por artículo. Se llama dos veces por lote: antes
+     * del UPDATE masivo y, otra vez, antes de los precios (con iva_id, listas, descuentos y
+     * recargos ya escritos); las dos veces trae el dato fresco de ese momento.
+     *
+     * @return void
+     */
     function set_articulos_actualizados_models() {
 
         $this->iniciar();
         $ids = array_column($this->articulos_para_actualizar_CACHE, 'id');
 
-        $this->articulos_actualizados_models = Article::whereIn('id', $ids)->get()->keyBy('id');
+        $this->articulos_actualizados_models = Article::with(PreciosEnLote::RELACIONES_A_PRECARGAR)
+                                                        ->whereIn('id', $ids)
+                                                        ->get()
+                                                        ->keyBy('id');
 
         $this->log('Se seteo articulos_actualizados_models con '.count($this->articulos_actualizados_models).' articulos');
 
@@ -2979,18 +3027,18 @@ class ActualizarBBDD {
         $rows = [];
         $now = now();
 
+        /* Pares (article_id, provider_id, pivot_data) de ACTUALIZADOS cuyo diff hay que registrar. */
+        $pares_a_trackear = [];
+
         foreach ($buffer as $article_id => $providers) {
             foreach ($providers as $provider_id => $pivot_data) {
 
                 /*
-                 * Solo trackeamos pivots de artículos actualizados (no creados).
+                 * Solo trackeamos pivots de artículos actualizados (no creados). El SELECT del
+                 * estado previo es uno solo para todo el lote (ver abajo).
                  */
                 if (isset($this->articulos_para_actualizar_by_id[(int) $article_id])) {
-                    $this->track_provider_pivot_relation_diff(
-                        (int) $article_id,
-                        (int) $provider_id,
-                        $pivot_data
-                    );
+                    $pares_a_trackear[] = [(int) $article_id, (int) $provider_id, $pivot_data];
                 }
 
                 $rows[] = [
@@ -3004,6 +3052,9 @@ class ActualizarBBDD {
             }
         }
 
+        // Estado previo de los pivots (un SELECT por lote) ANTES del upsert, para el rollback.
+        $this->track_provider_pivots_en_lote($pares_a_trackear);
+
         // Upsert por tandas para no armar un query gigante
         foreach (array_chunk($rows, $chunk_size) as $chunk) {
             \DB::table($pivot_table)->upsert(
@@ -3016,56 +3067,63 @@ class ActualizarBBDD {
     
 
     /**
-     * Registra el diff de descuentos o recargos (% o amount) leyendo el estado previo en DB.
+     * Registra el diff de descuentos o recargos (% o amount) de varios artículos leyendo el
+     * estado previo en DB con UN solo SELECT para todo el lote (antes: uno por artículo).
      *
-     * @param int    $article_id
-     * @param array  $article_cache
-     * @param string $relation       'discounts' o 'surchages'
-     * @param string $diff_key       ej: discounts_percent, surchages_amount
-     * @param string $table          article_discounts o article_surchages
-     * @param string $column         percentage o amount
+     * El `old` de cada artículo es exactamente el de antes (los valores de la columna que no son
+     * null, como floats, en orden de id) y el `new` sale del diff que ya calculó ProcessRow (o se
+     * reconstruye desde el cache de inserción si no vino). El cache de cada artículo se toma del
+     * mapa por id (las entradas vivas del lote, ya fusionadas por "última fila gana").
+     *
+     * @param array  $article_ids  artículos con diff de este tipo, en el orden del lote
+     * @param string $relation     'discounts' o 'surchages'
+     * @param string $diff_key     ej: discounts_percent, surchages_amount
+     * @param string $table        article_discounts o article_surchages
+     * @param string $column       percentage o amount
      * @return void
      */
-    protected function track_discounts_or_surchages_relation_diff(
-        int $article_id,
-        array $article_cache,
+    protected function track_discounts_or_surchages_en_lote(
+        array $article_ids,
         string $relation,
         string $diff_key,
         string $table,
         string $column
     ): void {
-        if (empty($this->import_history_id)) {
+        if (empty($this->import_history_id) || count($article_ids) === 0) {
             return;
         }
 
-        /*
-         * Valores actuales en DB antes del DELETE (estado previo al import).
-         */
-        $old_values = DB::table($table)
-            ->where('article_id', $article_id)
-            ->whereNotNull($column)
-            ->pluck($column)
-            ->map(function ($value) {
-                return (float) $value;
-            })
-            ->values()
-            ->all();
+        /* Valores actuales en DB antes del DELETE (estado previo al import), un SELECT por lote. */
+        $previos = RelacionesEnLote::valores_previos($table, $column, $article_ids);
 
-        /*
-         * Valores nuevos: preferimos el diff ya calculado en ProcessRow; si no existe,
-         * reconstruimos desde el cache de inserción.
-         */
-        $new_values = $this->extract_relation_diff_new_values($article_cache, $relation, $diff_key);
+        foreach ($article_ids as $article_id) {
 
-        if (empty($new_values)) {
-            $new_values = $this->build_discounts_or_surchages_new_values_from_cache(
-                $article_cache,
-                $relation,
-                $column === 'percentage' ? '%' : 'amount'
-            );
+            $article_id = (int) $article_id;
+
+            if (!isset($this->articulos_para_actualizar_by_id[$article_id])) {
+                continue;
+            }
+
+            $article_cache = $this->articulos_para_actualizar_by_id[$article_id];
+
+            $old_values = isset($previos[$article_id]) ? $previos[$article_id] : [];
+
+            /*
+             * Valores nuevos: preferimos el diff ya calculado en ProcessRow; si no existe,
+             * reconstruimos desde el cache de inserción.
+             */
+            $new_values = $this->extract_relation_diff_new_values($article_cache, $relation, $diff_key);
+
+            if (empty($new_values)) {
+                $new_values = $this->build_discounts_or_surchages_new_values_from_cache(
+                    $article_cache,
+                    $relation,
+                    $column === 'percentage' ? '%' : 'amount'
+                );
+            }
+
+            $this->record_relation_diff($article_id, $diff_key, $old_values, $new_values);
         }
-
-        $this->record_relation_diff($article_id, $diff_key, $old_values, $new_values);
     }
 
     /**
@@ -3136,111 +3194,134 @@ class ActualizarBBDD {
     }
 
     /**
-     * Registra el diff de una lista de precio (pivot article_price_type) antes del UPDATE.
+     * Registra el diff de las listas de precio (pivot article_price_type) de todos los pares del
+     * lote antes del UPDATE masivo, con UN solo SELECT (antes: uno por par artículo × lista).
      *
-     * @param int         $article_id
-     * @param int         $price_type_id
-     * @param string|null $new_percentage  Valor crudo antes de normalizar a 'NULL'
-     * @param string|null $new_final_price
+     * Mismo criterio que antes por par: si el pivot no existe no se registra nada (el par nuevo
+     * lo termina insertando setFinalPrice); si existe y no cambió ni percentage ni final_price,
+     * tampoco; si cambió, `old` = {percentage, final_price} del pivot y `new` = los valores
+     * crudos normalizados a float/null.
+     *
+     * @param array $pares [[article_id, price_type_id, new_percentage, new_final_price], …]
+     *                     (percentage/final_price crudos, antes de normalizar a 'NULL')
      * @return void
      */
-    protected function track_price_type_relation_diff(
-        int $article_id,
-        int $price_type_id,
-        $new_percentage,
-        $new_final_price
-    ): void {
-        if (empty($this->import_history_id)) {
-            return;
-        }
-
-        $existing_pivot = DB::table('article_price_type')
-            ->where('article_id', $article_id)
-            ->where('price_type_id', $price_type_id)
-            ->first();
-
-        if (!$existing_pivot) {
-            return;
-        }
-
-        $old_values = [
-            'percentage'  => $existing_pivot->percentage,
-            'final_price' => $existing_pivot->final_price,
-        ];
-
-        $new_values = [
-            'percentage'  => ($new_percentage === '' || is_null($new_percentage) || $new_percentage === 'NULL')
-                ? null
-                : (float) $new_percentage,
-            'final_price' => ($new_final_price === '' || is_null($new_final_price) || $new_final_price === 'NULL')
-                ? null
-                : (float) $new_final_price,
-        ];
-
-        /*
-         * Solo registramos si hubo cambio real en percentage o final_price.
-         */
-        if (
-            (string) ($old_values['percentage'] ?? '') === (string) ($new_values['percentage'] ?? '')
-            && (string) ($old_values['final_price'] ?? '') === (string) ($new_values['final_price'] ?? '')
-        ) {
-            return;
-        }
-
-        $this->record_relation_diff(
-            $article_id,
-            'price_type_' . $price_type_id,
-            $old_values,
-            $new_values
-        );
-    }
-
-    /**
-     * Registra el diff del pivot article_provider antes del upsert.
-     *
-     * @param int   $article_id
-     * @param int   $provider_id
-     * @param array $pivot_data  provider_code y cost que se van a aplicar
-     * @return void
-     */
-    protected function track_provider_pivot_relation_diff(int $article_id, int $provider_id, array $pivot_data): void
+    protected function track_price_types_en_lote(array $pares): void
     {
-        if (empty($this->import_history_id)) {
+        if (empty($this->import_history_id) || count($pares) === 0) {
             return;
         }
 
-        $existing_pivot = DB::table('article_provider')
-            ->where('article_id', $article_id)
-            ->where('provider_id', $provider_id)
-            ->first();
+        $previos = RelacionesEnLote::pivots_de_listas_previos($pares);
 
-        if (!$existing_pivot) {
-            return;
+        foreach ($pares as $par) {
+
+            $article_id      = (int) $par[0];
+            $price_type_id   = (int) $par[1];
+            $new_percentage  = $par[2];
+            $new_final_price = $par[3];
+
+            $clave = $article_id.'-'.$price_type_id;
+
+            if (!isset($previos[$clave])) {
+                continue;
+            }
+
+            $existing_pivot = $previos[$clave];
+
+            $old_values = [
+                'percentage'  => $existing_pivot->percentage,
+                'final_price' => $existing_pivot->final_price,
+            ];
+
+            $new_values = [
+                'percentage'  => ($new_percentage === '' || is_null($new_percentage) || $new_percentage === 'NULL')
+                    ? null
+                    : (float) $new_percentage,
+                'final_price' => ($new_final_price === '' || is_null($new_final_price) || $new_final_price === 'NULL')
+                    ? null
+                    : (float) $new_final_price,
+            ];
+
+            /*
+             * Solo registramos si hubo cambio real en percentage o final_price.
+             */
+            if (
+                (string) ($old_values['percentage'] ?? '') === (string) ($new_values['percentage'] ?? '')
+                && (string) ($old_values['final_price'] ?? '') === (string) ($new_values['final_price'] ?? '')
+            ) {
+                continue;
+            }
+
+            $this->record_relation_diff(
+                $article_id,
+                'price_type_' . $price_type_id,
+                $old_values,
+                $new_values
+            );
         }
-
-        $old_values = [
-            'provider_id'   => $provider_id,
-            'provider_code' => $existing_pivot->provider_code,
-            'cost'          => $existing_pivot->cost,
-        ];
-
-        $new_values = [
-            'provider_code' => $pivot_data['provider_code'] ?? null,
-            'cost'          => $pivot_data['cost'] ?? null,
-        ];
-
-        if (
-            (string) ($old_values['provider_code'] ?? '') === (string) ($new_values['provider_code'] ?? '')
-            && (string) ($old_values['cost'] ?? '') === (string) ($new_values['cost'] ?? '')
-        ) {
-            return;
-        }
-
-        $this->record_relation_diff($article_id, 'provider_pivot', $old_values, $new_values);
     }
 
     /**
-     * Persiste un diff de relación en el cache del artículo y en ImportHistory (best-effort).
+     * Registra el diff del pivot article_provider de todos los pares del lote antes del upsert,
+     * con UN solo SELECT (antes: uno por par artículo × proveedor). Mismo criterio por par que
+     * antes: sin pivot previo no se registra; sin cambio en provider_code/cost tampoco.
+     *
+     * @param array $pares [[article_id, provider_id, pivot_data], …]  (pivot_data: provider_code y cost)
+     * @return void
+     */
+    protected function track_provider_pivots_en_lote(array $pares): void
+    {
+        if (empty($this->import_history_id) || count($pares) === 0) {
+            return;
+        }
+
+        $previos = RelacionesEnLote::pivots_de_proveedor_previos($pares);
+
+        foreach ($pares as $par) {
+
+            $article_id  = (int) $par[0];
+            $provider_id = (int) $par[1];
+            $pivot_data  = $par[2];
+
+            $clave = $article_id.'-'.$provider_id;
+
+            if (!isset($previos[$clave])) {
+                continue;
+            }
+
+            $existing_pivot = $previos[$clave];
+
+            $old_values = [
+                'provider_id'   => $provider_id,
+                'provider_code' => $existing_pivot->provider_code,
+                'cost'          => $existing_pivot->cost,
+            ];
+
+            $new_values = [
+                'provider_code' => $pivot_data['provider_code'] ?? null,
+                'cost'          => $pivot_data['cost'] ?? null,
+            ];
+
+            if (
+                (string) ($old_values['provider_code'] ?? '') === (string) ($new_values['provider_code'] ?? '')
+                && (string) ($old_values['cost'] ?? '') === (string) ($new_values['cost'] ?? '')
+            ) {
+                continue;
+            }
+
+            $this->record_relation_diff($article_id, 'provider_pivot', $old_values, $new_values);
+        }
+    }
+
+    /**
+     * Fusiona un diff de relación en el cache del artículo (`__diff__<clave> => {old, new}`,
+     * primer old gana).
+     *
+     * Antes además llamaba a ImportChangeRecorder::logRelationUpdated(), que buscaba el artículo
+     * en el pivot `article_actualizados_import_history` (nivel ImportHistory) para actualizarlo:
+     * ese pivot no lo escribe nadie, así que eran dos consultas por diff para no encontrar nada.
+     * Se sacó (misión importacion-excel-motor-rapido, 24/9/2026).
      *
      * @param int    $article_id
      * @param string $diff_key
@@ -3255,8 +3336,8 @@ class ActualizarBBDD {
         }
 
         /*
-         * Fusionamos en el cache del chunk; update_article_import_result persiste
-         * estos props y RollbackArticleImportHistory los lee desde ahí.
+         * Fusionamos en el cache del chunk (las entradas vivas, ver indexar_actualizados_por_id()).
+         * get_articulos_para_actualizar() expone ese cache con los diffs puestos.
          */
         if (isset($this->articulos_para_actualizar_by_id[$article_id])) {
             ImportChangeRecorder::mergeRelationDiffIntoArticleProps(
@@ -3266,14 +3347,44 @@ class ActualizarBBDD {
                 $new_value
             );
         }
+    }
 
-        ImportChangeRecorder::logRelationUpdated(
-            $this->import_history_id,
-            $article_id,
-            $diff_key,
-            $old_value,
-            $new_value
-        );
+    /**
+     * Arma (o rearma) el mapa article_id => referencia a la entrada del cache de actualización.
+     *
+     * Se llama en el constructor y otra vez después de
+     * merge_articulos_para_actualizar_ultima_fila_gana(), que reemplaza el array entero: sin el
+     * rearmado las referencias quedaban apuntando a los elementos del array viejo y los diffs de
+     * relaciones que registra record_relation_diff() se fusionaban en arrays huérfanos.
+     *
+     * @return void
+     */
+    protected function indexar_actualizados_por_id(): void
+    {
+        $this->articulos_para_actualizar_by_id = [];
+
+        foreach ($this->articulos_para_actualizar_CACHE as $index => $article_row) {
+            if (is_array($article_row) && !empty($article_row['id'])) {
+                $this->articulos_para_actualizar_by_id[(int) $article_row['id']] = &$this->articulos_para_actualizar_CACHE[$index];
+            }
+        }
+    }
+
+    /**
+     * El cache de actualización tal como quedó al cerrar el lote: fusionado por id ("última fila
+     * gana") y con los diffs de relaciones (`__diff__discounts_*`, `__diff__surchages_*`,
+     * `__diff__price_type_<id>`, `__diff__provider_pivot`) fusionados por record_relation_diff().
+     *
+     * 🔴 Hoy ArticleImport::collection() serializa al pivot del chunk la copia de ProcessRow
+     * (getArticulosParaActualizar()), que nunca recibe estos diffs; por eso el rollback no
+     * restaura relaciones de artículos actualizados. Este getter es el punto donde se puede
+     * cablear eso cuando se decida (una línea en ArticleImport), sin tocar nada más.
+     *
+     * @return array
+     */
+    public function get_articulos_para_actualizar(): array
+    {
+        return $this->articulos_para_actualizar_CACHE;
     }
 
     /**

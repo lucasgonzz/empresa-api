@@ -134,6 +134,15 @@ class RunExcelAnalysisJob implements ShouldQueue
      */
     public function handle()
     {
+        /*
+         * Best effort, igual que ProcessArticleChunk::asegurar_memoria_minima(): el php-cli de
+         * producción tiene 128M, y con 100.000 filas los acumuladores del análisis (la cadena
+         * de identificación, los duplicados) pasaban de ahí y el worker moría por OOM sin
+         * mensaje. Sólo se sube, nunca se baja, y si el hosting lo tiene capado el ini_set no
+         * hace nada.
+         */
+        $this->asegurar_memoria_minima();
+
         /* Buscamos la corrida por id; si no existe (borrada, id inválido), no hay nada que hacer. */
         $run = ExcelAnalysisRun::find($this->excel_analysis_run_id);
 
@@ -229,6 +238,18 @@ class RunExcelAnalysisJob implements ShouldQueue
                                         ? (int) $payload['header_row']
                                         : null,
             ];
+
+            /*
+             * La hoja se lee del XLSX UNA sola vez (misión importacion-excel-motor-rapido,
+             * 24/9/2026): acá se vuelca al sidecar CSV (ver CsvDeHoja) y todos los
+             * recorridos que vienen —contar filas, duplicados, cadena de identificación,
+             * formatos numéricos, la recomendación del paso 2 y la conversión de la
+             * importación— pasan por ExcelWorkbookReader::abrir(), que desde ahora devuelve
+             * el sidecar. Medido con 100.000 filas: cada recorrido del XLSX costaba entre 35
+             * y 90 segundos; desde el CSV son segundos. Va antes del hito del 40 %: todavía
+             * estamos "Leyendo el archivo…".
+             */
+            ExcelWorkbookReader::asegurar_csv($excel_full_path, $opciones['hoja']);
 
             /*
              * Elegimos el analizador según el modelo indicado: misma cadena de
@@ -458,6 +479,13 @@ class RunExcelAnalysisJob implements ShouldQueue
         ];
 
         try {
+            /*
+             * Mismo volcado único que en handle_analisis(): si el análisis del paso 1 ya lo
+             * dejó, esto no relee el XLSX (idempotente por mtime); si la corrida es vieja o el
+             * sidecar se perdió, lo genera acá y los tres recorridos de abajo lo leen.
+             */
+            ExcelWorkbookReader::asegurar_csv($excel_full_path, $opciones['hoja']);
+
             /* Hito de progreso: por entrar a la parte más pesada del recorrido del archivo. */
             $run->update([
                 'progreso' => 30,
@@ -588,6 +616,46 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             /* Mismo criterio que handle_analisis(): la ruta del servidor va al log, no a la pantalla. */
             $this->finalizar_con_error($run, 'Ocurrió un error inesperado al generar la recomendación. Volvé a intentar; si sigue pasando, avisanos.');
+        }
+    }
+
+    /**
+     * Sube el memory_limit a 512 MB si está por debajo (nunca lo baja). Copia deliberada de
+     * ProcessArticleChunk::asegurar_memoria_minima(): son dos jobs sin clase en común y no
+     * vale la pena inventarla por ocho líneas. Best effort: en hosting compartido puede estar
+     * capado y el ini_set no tener efecto.
+     *
+     * @return void
+     */
+    private function asegurar_memoria_minima()
+    {
+        $piso_bytes = 512 * 1024 * 1024;
+
+        $raw = trim((string) ini_get('memory_limit'));
+
+        /* -1 o vacío => sin límite: no tocar. */
+        if ($raw === '' || $raw === '-1') {
+            return;
+        }
+
+        $numero = (int) $raw;
+        $unidad = strtoupper(substr($raw, -1));
+
+        if ($unidad === 'G') {
+            $actual = $numero * 1024 * 1024 * 1024;
+        } elseif ($unidad === 'M') {
+            $actual = $numero * 1024 * 1024;
+        } elseif ($unidad === 'K') {
+            $actual = $numero * 1024;
+        } elseif (is_numeric($raw)) {
+            $actual = (int) $raw;
+        } else {
+            /* No se pudo parsear: no tocar. */
+            return;
+        }
+
+        if ($actual > 0 && $actual < $piso_bytes) {
+            @ini_set('memory_limit', '512M');
         }
     }
 

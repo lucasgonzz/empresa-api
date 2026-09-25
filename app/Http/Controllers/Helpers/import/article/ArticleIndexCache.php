@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers\Helpers\import\article;
 
+use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Models\Article;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
@@ -55,6 +57,84 @@ class ArticleIndexCache
      */
     protected static $runtime_fake_articles = [];
 
+    /**
+     * Contexto de la importación en curso (misión importacion-excel-motor-rapido, 24/9/2026):
+     * ruta del archivo de claves del CSV (<csv>.claves, lo escribe
+     * InitExcelImport::escribir_claves_del_archivo()) y sufijo de la clave de cache
+     * ("_imp<import_history_id>"). Lo pone ProcessArticleChunk::handle() antes de
+     * reset_runtime() y lo saca limpiar_cache() al terminar o fallar la importación. Con
+     * contexto puesto, build() construye el índice SÓLO con las claves del archivo (ver
+     * poblar_indice_acotado()); sin contexto —o si el archivo de claves no existe— es el
+     * índice completo de siempre.
+     *
+     * @var string|null
+     */
+    protected static $contexto_claves_path = null;
+
+    /** @var string|null Ver $contexto_claves_path. */
+    protected static $contexto_sufijo = null;
+
+    /**
+     * Modelos precargados por lote (misión importacion-excel-motor-rapido, 24/9/2026):
+     * [user_id][article_id] => Article con las relaciones de relaciones_de_precarga(), o null
+     * si el id se pidió y no existe (borrado entre el índice y el lote). Lo llena
+     * precargar_modelos() antes del loop de filas y lo sirve collection_from_index_article_ids()
+     * cuando TODOS los ids pedidos están acá; si falta alguno, consulta como siempre. Se
+     * descarta en reset_runtime() (cada lote precarga los suyos).
+     *
+     * @var array
+     */
+    protected static $modelos_precargados = [];
+
+    /**
+     * Tamaño de cada whereIn del índice acotado. Mismo tope y mismo porqué que
+     * ExcelDuplicateStats::DB_CHUNK_SIZE: por debajo de `eq_range_index_dive_limit` (200 en
+     * MySQL 8) el optimizador estima con index dives y elige el índice por columna.
+     */
+    const CLAVES_POR_CONSULTA = 100;
+
+    /** Tamaño de cada whereIn de precargar_modelos(). */
+    const MODELOS_POR_CONSULTA = 500;
+
+    /**
+     * Uso EXCLUSIVO de los tests: con true, build() ignora el archivo de claves y construye el
+     * índice completo aunque haya contexto de importación. Es lo que permite importar el mismo
+     * fixture de las dos maneras y comparar el resultado (IndiceAcotadoAlArchivoTest).
+     *
+     * @var bool
+     */
+    protected static $forzar_indice_completo_de_tests = false;
+
+    /**
+     * Modo del último build() de este proceso ('completo' | 'acotado' | null): observabilidad
+     * para los tests y para diagnosticar; el log lo dice también.
+     *
+     * @var string|null
+     */
+    protected static $ultimo_modo_de_build = null;
+
+    /**
+     * Uso EXCLUSIVO de los tests (ver $forzar_indice_completo_de_tests). Ningún código de
+     * producción lo llama.
+     *
+     * @internal
+     *
+     * @param  bool $forzar
+     * @return void
+     */
+    public static function forzar_indice_completo_de_tests($forzar)
+    {
+        self::$forzar_indice_completo_de_tests = (bool) $forzar;
+    }
+
+    /**
+     * @return string|null
+     */
+    public static function ultimo_modo_de_build()
+    {
+        return self::$ultimo_modo_de_build;
+    }
+
 
     /**
      * Devuelve un Article fake registrado vía add() para este usuario, o null.
@@ -88,6 +168,188 @@ class ArticleIndexCache
     }
 
     /**
+     * Precarga por lote los modelos de los artículos que las filas del lote pueden matchear
+     * (misión importacion-excel-motor-rapido, 24/9/2026), con las relaciones que ProcessRow
+     * lee por fila. Una consulta por cada MODELOS_POR_CONSULTA ids en vez de cuatro consultas
+     * por fila con match (find_with_index() cargaba cada artículo con sus tres relaciones al
+     * momento de matchear) más un load() por fila de descuentos y otro de recargos.
+     *
+     * Los ids que se piden y no existen (borrados entre el índice y el lote, o soft-deleted)
+     * quedan anotados como null: "consultado y ausente", para no volver a consultarlos por
+     * fila. Los ids fake_* se ignoran (viven en RAM, no en la base).
+     *
+     * @param  int   $user_id
+     * @param  array $article_ids
+     * @param  array $relations  normalmente relaciones_de_precarga()
+     * @return int   cantidad de modelos precargados
+     */
+    public static function precargar_modelos(int $user_id, array $article_ids, array $relations)
+    {
+        if (!isset(self::$modelos_precargados[$user_id])) {
+            self::$modelos_precargados[$user_id] = [];
+        }
+
+        $pendientes = [];
+
+        foreach ($article_ids as $raw_id) {
+            if (self::is_fake_id($raw_id) || !is_numeric($raw_id)) {
+                continue;
+            }
+
+            $id = (int) $raw_id;
+
+            if ($id <= 0 || array_key_exists($id, self::$modelos_precargados[$user_id])) {
+                continue;
+            }
+
+            $pendientes[$id] = true;
+        }
+
+        $cargados = 0;
+
+        foreach (array_chunk(array_keys($pendientes), self::MODELOS_POR_CONSULTA) as $lote) {
+            $modelos = Article::with($relations)->whereIn('id', $lote)->get();
+
+            foreach ($lote as $id) {
+                self::$modelos_precargados[$user_id][$id] = null;
+            }
+
+            foreach ($modelos as $modelo) {
+                self::$modelos_precargados[$user_id][(int) $modelo->id] = $modelo;
+                $cargados++;
+            }
+        }
+
+        return $cargados;
+    }
+
+    /**
+     * Ids REALES del índice que las filas de un lote pueden matchear, con los mismos
+     * normalizadores que usa find_with_index() (IdentifierNormalizer para numero / bar_code /
+     * sku / provider_code, normalize_name_for_match() para el nombre). Es lo que
+     * ArticleImport::collection() precarga antes del loop.
+     *
+     * Superconjunto a propósito: incluye todos los candidatos de todas las secciones aunque
+     * la cascada corte antes (un ambiguo, un provider_code bloqueado). Un modelo precargado de
+     * más no cambia ningún resultado; consultarlo por fila, sí cuesta.
+     *
+     * @param  iterable $rows     filas del lote (arrays del CSV)
+     * @param  array    $columns  mapa columna => índice 0-based (el de ProcessRow)
+     * @param  array    $index    el índice de get_index()
+     * @return int[]
+     */
+    public static function ids_candidatos_de_filas($rows, array $columns, array $index)
+    {
+        $ids = [];
+
+        $agregar = function ($entry) use (&$ids) {
+            foreach (self::index_entry_to_ids($entry) as $id) {
+                if (!self::is_fake_id($id)) {
+                    $ids[(int) $id] = true;
+                }
+            }
+        };
+
+        $identificadores = [
+            'numero'              => 'ids',
+            'codigo_de_barras'    => 'bar_codes',
+            'sku'                 => 'skus',
+            'codigo_de_proveedor' => 'provider_codes',
+        ];
+
+        foreach ($rows as $row) {
+            foreach ($identificadores as $columna => $seccion) {
+                $valor = IdentifierNormalizer::normalize(ImportHelper::getColumnValue($row, $columna, $columns));
+
+                if (is_null($valor)) {
+                    continue;
+                }
+
+                if ($seccion === 'ids') {
+                    if (isset($index['ids'][(string) $valor])) {
+                        $agregar($index['ids'][(string) $valor]);
+                    }
+
+                    continue;
+                }
+
+                if ($seccion === 'provider_codes') {
+                    /* Todos los proveedores: find_with_index() mira los ajenos para la regla de bloqueo. */
+                    foreach ($index['provider_codes'] ?? [] as $codigos) {
+                        if (is_array($codigos) && isset($codigos[$valor])) {
+                            $agregar($codigos[$valor]);
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (isset($index[$seccion][$valor])) {
+                    $agregar($index[$seccion][$valor]);
+                }
+            }
+
+            $nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+
+            if (!is_null($nombre)) {
+                $clave = self::normalize_name_for_match($nombre);
+
+                if ($clave !== '' && isset($index['names'][$clave])) {
+                    $agregar($index['names'][$clave]);
+                }
+            }
+        }
+
+        return array_keys($ids);
+    }
+
+    /**
+     * Los modelos pedidos, desde el mapa precargado, o null si alguno no está en el mapa (y
+     * entonces el llamador consulta como siempre). Los anotados como ausentes (null en el
+     * mapa) se saltean: la consulta tampoco los devolvería.
+     *
+     * Ordenados por id ascendente, que es el orden en que MySQL devuelve un whereIn sobre la
+     * clave primaria: el orden importa para las Collection que find_with_index() devuelve
+     * con provider_code repetido y para los article_ids de los conflictos.
+     *
+     * @param  int   $user_id
+     * @param  array $db_ids
+     * @return \Illuminate\Support\Collection|null
+     */
+    protected static function modelos_precargados_para(int $user_id, array $db_ids)
+    {
+        if (empty(self::$modelos_precargados[$user_id])) {
+            return null;
+        }
+
+        $mapa = self::$modelos_precargados[$user_id];
+        $ids  = [];
+
+        foreach ($db_ids as $raw_id) {
+            $id = (int) $raw_id;
+
+            if (!array_key_exists($id, $mapa)) {
+                return null;
+            }
+
+            $ids[$id] = true;
+        }
+
+        $ids = array_keys($ids);
+        sort($ids);
+
+        $out = collect();
+
+        foreach ($ids as $id) {
+            if ($mapa[$id] instanceof Article) {
+                $out->push($mapa[$id]);
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Arma una colección mezclando artículos de BD (ids numéricos) y modelos fake registrados en RAM.
      *
      * @param array $article_ids ids del índice (enteros o strings fake_*)
@@ -117,7 +379,13 @@ class ArticleIndexCache
         $out = collect();
 
         if (count($db_ids) > 0) {
-            $out = $out->merge(Article::with($relations)->whereIn('id', $db_ids)->get());
+            $desde_el_mapa = self::modelos_precargados_para($user_id, $db_ids);
+
+            if (!is_null($desde_el_mapa)) {
+                $out = $out->merge($desde_el_mapa);
+            } else {
+                $out = $out->merge(Article::with($relations)->whereIn('id', $db_ids)->get());
+            }
         }
 
         foreach (array_keys($fake_ids_ordered) as $fid) {
@@ -196,7 +464,79 @@ class ArticleIndexCache
      */
     protected static function cache_key($user_id)
     {
-        return 'article_index_v2_user_' . (int) $user_id;
+        $clave = 'article_index_v2_user_' . (int) $user_id;
+
+        /*
+         * Con contexto de importación (ver $contexto_claves_path), la clave lleva el sufijo de
+         * ESA importación: un índice acotado a las claves de un archivo no le sirve a otra
+         * importación del mismo comercio, y la de siempre (60 minutos) las haría compartirlo.
+         */
+        if (!is_null(self::$contexto_sufijo) && self::$contexto_sufijo !== '') {
+            $clave .= '_imp' . self::$contexto_sufijo;
+        }
+
+        return $clave;
+    }
+
+    /**
+     * Clave donde queda anotado el sufijo vigente del usuario, para que limpiar_cache() pueda
+     * borrar también la clave con sufijo desde un proceso que no tiene el contexto en memoria
+     * (el failed() de un job corre en un proceso fresco).
+     *
+     * @param  int $user_id
+     * @return string
+     */
+    protected static function clave_del_sufijo($user_id)
+    {
+        return 'article_index_v2_user_' . (int) $user_id . '_sufijo';
+    }
+
+    /**
+     * Pone (o saca, con null) el contexto de la importación en curso: la ruta del archivo de
+     * claves del CSV y el sufijo de la clave de cache. Lo llama ProcessArticleChunk::handle()
+     * en cada lote, ANTES de reset_runtime().
+     *
+     * @param  string|null $claves_path  <csv>.claves (puede no existir: entonces build() es el completo)
+     * @param  string|null $sufijo       import_history_id como string
+     * @return void
+     */
+    public static function set_contexto_de_importacion($claves_path, $sufijo)
+    {
+        self::$contexto_claves_path = (is_string($claves_path) && $claves_path !== '') ? $claves_path : null;
+        self::$contexto_sufijo      = (is_string($sufijo) && $sufijo !== '') ? $sufijo : null;
+    }
+
+    /**
+     * @return array ['claves_path' => string|null, 'sufijo' => string|null]
+     */
+    public static function contexto_de_importacion()
+    {
+        return [
+            'claves_path' => self::$contexto_claves_path,
+            'sufijo'      => self::$contexto_sufijo,
+        ];
+    }
+
+    /**
+     * Relaciones con las que llegan los modelos que devuelve find_with_index(): las tres de
+     * siempre (price_types, addresses con su pivot, providers sólo id) más descuentos y
+     * recargos, que ProcessRow leía con un load() por fila. Es la lista que usa
+     * precargar_modelos(); find_with_index() sigue pidiendo las tres de siempre y, cuando el
+     * modelo viene del mapa precargado, trae también las otras dos.
+     *
+     * @return array
+     */
+    public static function relaciones_de_precarga()
+    {
+        return [
+            'price_types',
+            'addresses',
+            'providers' => function ($q) {
+                $q->select('providers.id');
+            },
+            'article_discounts',
+            'article_surchages',
+        ];
     }
 
     /**
@@ -354,11 +694,24 @@ class ArticleIndexCache
     }
 
 
+    /**
+     * Construye el índice de identificación del comercio y lo deja en cache.
+     *
+     * Con contexto de importación (ver $contexto_claves_path) y el archivo de claves presente,
+     * el índice se arma SÓLO con las claves del archivo (poblar_indice_acotado()): el costo pasa
+     * a depender del tamaño del archivo y no del catálogo. Sin contexto, o si el archivo de
+     * claves no existe, es el índice completo de siempre (poblar_indice_completo()). La forma
+     * del índice es la misma en los dos casos.
+     *
+     * @param  int      $user_id
+     * @param  int|null $provider_id
+     * @param  mixed    $actualizar_articulos_de_otro_proveedor  (sin uso desde que el filtro por proveedor se descartó)
+     * @return float    duración en segundos
+     */
     public static function build($user_id, $provider_id, $actualizar_articulos_de_otro_proveedor)
     {
         $inicio = microtime(true);
 
-        $user = User::find($user_id);
         $key = self::cache_key($user_id);
 
         // $provider_codes_desde_pivot_table = false;
@@ -389,15 +742,6 @@ class ArticleIndexCache
             'created_by_import' => [],
         ];
 
-        // 1) Index liviano desde articles (SIN with(providers), SIN get() gigante)
-        $article_query = Article::where('user_id', $user_id)
-            ->select(['id', 'bar_code', 'sku', 'name', 'provider_code', 'provider_id'])
-            ->orderBy('id');
-
-        // if ($filtrar_por_proveedor) {
-        //     $article_query->where('provider_id', $provider_id);
-        // }
-
         /*
          * Bucket de codigos de proveedor SIN proveedor asignado (decision de Lucas,
          * 24/8/2026). Hasta hoy un articulo con provider_code pero provider_id NULL
@@ -424,98 +768,313 @@ class ArticleIndexCache
             $index['provider_codes'][''] = [];
         }
 
+        $claves = self::claves_del_archivo_del_contexto();
+
+        if (!is_null($claves)) {
+            self::poblar_indice_acotado($index, $user_id, $claves, $indexar_sin_proveedor);
+        } else {
+            self::poblar_indice_completo($index, $user_id, $indexar_sin_proveedor);
+        }
+
+        return self::guardar_indice_construido($key, $index, $user_id, $inicio, is_null($claves) ? 'completo' : 'acotado');
+    }
+
+    /**
+     * Claves del archivo de la importación en curso, o null si no hay contexto, el archivo no
+     * existe o no se puede leer (en los tres casos build() es el completo de siempre).
+     *
+     * @return array|null ['ids' => [...], 'bar_codes' => [...], 'skus' => [...], 'provider_codes' => [...], 'names' => [...]]
+     */
+    protected static function claves_del_archivo_del_contexto()
+    {
+        if (self::$forzar_indice_completo_de_tests) {
+            return null;
+        }
+
+        if (is_null(self::$contexto_claves_path) || !is_file(self::$contexto_claves_path)) {
+            return null;
+        }
+
+        $contenido = @file_get_contents(self::$contexto_claves_path);
+
+        if ($contenido === false || $contenido === '') {
+            return null;
+        }
+
+        $claves = @unserialize($contenido, ['allowed_classes' => false]);
+
+        if (!is_array($claves)) {
+            Log::warning('ArticleIndexCache: el archivo de claves no se pudo leer; se construye el índice completo', [
+                'claves_path' => self::$contexto_claves_path,
+            ]);
+
+            return null;
+        }
+
+        foreach (['ids', 'bar_codes', 'skus', 'provider_codes', 'names'] as $seccion) {
+            if (!isset($claves[$seccion]) || !is_array($claves[$seccion])) {
+                $claves[$seccion] = [];
+            }
+        }
+
+        return $claves;
+    }
+
+    /**
+     * El índice de siempre: todo el catálogo del comercio, en tandas de 2.000 por id.
+     *
+     * @param  array $index                  por referencia
+     * @param  int   $user_id
+     * @param  bool  $indexar_sin_proveedor
+     * @return void
+     */
+    protected static function poblar_indice_completo(array &$index, $user_id, $indexar_sin_proveedor)
+    {
+        // 1) Index liviano desde articles (SIN with(providers), SIN get() gigante)
+        $article_query = Article::where('user_id', $user_id)
+            ->select(['id', 'bar_code', 'sku', 'name', 'provider_code', 'provider_id'])
+            ->orderBy('id');
+
+        // if ($filtrar_por_proveedor) {
+        //     $article_query->where('provider_id', $provider_id);
+        // }
+
         $article_query->chunkById(2000, function ($articles) use (&$index, $indexar_sin_proveedor) {
-
             foreach ($articles as $article) {
-                $article_id = (int) $article->id;
-
-                $index['ids'][$article_id] = $article_id;
-
-                /*
-                 * bar_codes/skus como lista de ids (no escalar): si dos artículos
-                 * comparten bar_code o sku, ambos quedan registrados en vez de que
-                 * el último pise al anterior. find_with_index() decide con esa
-                 * lista si hay match único o ambigüedad.
-                 */
-                if (!empty($article->bar_code)) {
-                    $bc = (string) $article->bar_code;
-                    if (!isset($index['bar_codes'][$bc])) {
-                        $index['bar_codes'][$bc] = [];
-                    }
-                    $index['bar_codes'][$bc][] = $article_id;
-                }
-
-                if (!empty($article->sku)) {
-                    $sku = (string) $article->sku;
-                    if (!isset($index['skus'][$sku])) {
-                        $index['skus'][$sku] = [];
-                    }
-                    $index['skus'][$sku][] = $article_id;
-                }
-
-                // Log::info('provider_code: '.$article->provider_code);
-                // Log::info('provider_id: '.$article->provider_id);
-
-
-                /*
-                    Solo se tienen en cuenta los articulos que tienen codigo de proveedor y que pertenecen a un proveedor
-                */
-                // if (!$provider_codes_desde_pivot_table) {
-                    if (
-                        !is_null($article->provider_code)
-                        && !is_null($article->provider_id)
-                    ) {
-                        // Log::info('Entro en provider_codes para hacer index');
-                        $prov_code  = $article->provider_code;
-                        $prov_id    = $article->provider_id;
-
-                        if (!isset($index['provider_codes'][$prov_id])) {
-                            $index['provider_codes'][$prov_id] = [];
-                        }
-                        if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
-                            $index['provider_codes'][$prov_id][$prov_code] = [];
-                        }
-                        $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
-
-                    } elseif (
-                        $indexar_sin_proveedor
-                        && !is_null($article->provider_code)
-                        && trim((string) $article->provider_code) !== ''
-                        && is_null($article->provider_id)
-                    ) {
-                        /* Codigo de proveedor sin proveedor asignado: bucket propio. */
-                        $prov_code = $article->provider_code;
-
-                        /* '' es la clave del bucket sin proveedor (ver comentario de arriba). */
-                        $sin_prov = '';
-
-                        if (!isset($index['provider_codes'][$sin_prov])) {
-                            $index['provider_codes'][$sin_prov] = [];
-                        }
-                        if (!isset($index['provider_codes'][$sin_prov][$prov_code])) {
-                            $index['provider_codes'][$sin_prov][$prov_code] = [];
-                        }
-                        $index['provider_codes'][$sin_prov][$prov_code][] = $article_id;
-                    }
-                // }
-
-
-                /*
-                 * names como lista de ids (no escalar): igual que bar_codes/skus, si dos
-                 * articulos comparten nombre normalizado ambos quedan registrados en vez
-                 * de que el ultimo pise al anterior. find_with_index() decide con esa
-                 * lista si hay match unico o ambiguedad (evita el incidente de Servian).
-                 */
-                if (!empty($article->name)) {
-                    $name_key = self::normalize_name_for_match($article->name);
-                    if (!isset($index['names'][$name_key])) {
-                        $index['names'][$name_key] = [];
-                    }
-                    $index['names'][$name_key][] = $article_id;
-                }
+                self::indexar_articulo($index, $article, $indexar_sin_proveedor);
             }
         });
+    }
 
+    /**
+     * El índice acotado al archivo (misión importacion-excel-motor-rapido, 24/9/2026): sólo
+     * los artículos del comercio que alguna fila del archivo puede matchear.
+     *
+     * Por cada sección de claves del archivo, un whereIn por lotes de CLAVES_POR_CONSULTA con
+     * TODOS los valores como string (array_map('strval')): el 23/9/2026 un int suelto en un IN
+     * sobre provider_code hizo que MySQL comparara numéricamente, no pudiera usar el índice y
+     * examinara 686.000 filas (corte de Servian). provider_code se busca en TODOS los
+     * proveedores: find_with_index() necesita los de otros proveedores para la regla de
+     * bloqueo, y el bucket '' sigue la misma regla que en el índice completo. Los nombres van
+     * aparte: una pasada por (id, name) del comercio en tandas de 5.000, filtrando en PHP por
+     * el conjunto de nombres normalizados del archivo (slug/nombre no tienen índice utilizable
+     * para esto, y la comparación es por normalize_name_for_match(), que no se puede expresar
+     * en SQL); sólo si el archivo trae nombres.
+     *
+     * Cada artículo encontrado se indexa entero (todos sus identificadores), una sola vez, con
+     * las MISMAS reglas que el índice completo: por eso la forma del índice y lo que
+     * find_with_index() devuelve para las claves del archivo son idénticos en los dos modos.
+     *
+     * @param  array $index                  por referencia
+     * @param  int   $user_id
+     * @param  array $claves                 ver claves_del_archivo_del_contexto()
+     * @param  bool  $indexar_sin_proveedor
+     * @return void
+     */
+    protected static function poblar_indice_acotado(array &$index, $user_id, array $claves, $indexar_sin_proveedor)
+    {
+        $columnas = ['id', 'bar_code', 'sku', 'name', 'provider_code', 'provider_id'];
+
+        /* Un artículo puede entrar por más de una clave: se indexa una sola vez. */
+        $vistos = [];
+
+        $indexar_lote = function ($articles) use (&$index, &$vistos, $indexar_sin_proveedor) {
+            foreach ($articles as $article) {
+                if (isset($vistos[(int) $article->id])) {
+                    continue;
+                }
+
+                $vistos[(int) $article->id] = true;
+
+                self::indexar_articulo($index, $article, $indexar_sin_proveedor);
+            }
+        };
+
+        $consultas = 0;
+
+        foreach ([['ids', 'id'], ['bar_codes', 'bar_code'], ['skus', 'sku'], ['provider_codes', 'provider_code']] as $par) {
+            list($seccion, $columna) = $par;
+
+            $valores = array_map('strval', array_keys($claves[$seccion]));
+
+            if ($columna === 'id') {
+                /* Un "numero" que no es un entero no puede ser un id: ni se consulta. */
+                $valores = array_values(array_filter($valores, 'ctype_digit'));
+            }
+
+            foreach (array_chunk($valores, self::CLAVES_POR_CONSULTA) as $lote) {
+                $consultas++;
+
+                $indexar_lote(
+                    Article::where('user_id', $user_id)
+                        ->whereIn($columna, $lote)
+                        ->select($columnas)
+                        ->get()
+                );
+            }
+        }
+
+        $nombres = $claves['names'];
+
+        if (count($nombres) > 0) {
+            $ids_por_nombre = [];
+
+            /*
+             * Query builder y no Eloquent, a propósito: son TODAS las filas del comercio (500.000
+             * en el catálogo de prueba) y acá sólo se compara un nombre. Hidratar 500.000 modelos
+             * Article costaba lo mismo que el índice completo entero (medido: 123 s contra 114 s
+             * del build completo); con stdClass la pasada son unos segundos. El whereNull de
+             * deleted_at reemplaza el scope de SoftDeletes que Eloquent aplicaba solo.
+             */
+            DB::table('articles')
+                ->select(['id', 'name'])
+                ->where('user_id', $user_id)
+                ->whereNull('deleted_at')
+                ->orderBy('id')
+                ->chunkById(5000, function ($filas) use (&$ids_por_nombre, &$vistos, $nombres) {
+                    foreach ($filas as $fila) {
+                        /* Ya indexado por otra clave: su nombre entró con él. */
+                        if (isset($vistos[(int) $fila->id])) {
+                            continue;
+                        }
+
+                        if (!empty($fila->name) && isset($nombres[self::normalize_name_for_match($fila->name)])) {
+                            $ids_por_nombre[] = (int) $fila->id;
+                        }
+                    }
+                });
+
+            foreach (array_chunk($ids_por_nombre, self::CLAVES_POR_CONSULTA) as $lote) {
+                $consultas++;
+
+                $indexar_lote(
+                    Article::where('user_id', $user_id)
+                        ->whereIn('id', array_map('strval', $lote))
+                        ->select($columnas)
+                        ->get()
+                );
+            }
+        }
+
+        Log::info('ArticleIndexCache::build acotado al archivo', [
+            'user_id'   => (int) $user_id,
+            'claves'    => [
+                'ids'            => count($claves['ids']),
+                'bar_codes'      => count($claves['bar_codes']),
+                'skus'           => count($claves['skus']),
+                'provider_codes' => count($claves['provider_codes']),
+                'names'          => count($nombres),
+            ],
+            'articulos' => count($vistos),
+            'consultas' => $consultas,
+        ]);
+    }
+
+    /**
+     * Indexa un artículo (fila liviana: id, bar_code, sku, name, provider_code, provider_id)
+     * en todas las secciones del índice. Es el cuerpo de siempre del build(), compartido por
+     * los dos modos.
+     *
+     * @param  array  $index                  por referencia
+     * @param  object $article
+     * @param  bool   $indexar_sin_proveedor
+     * @return void
+     */
+    protected static function indexar_articulo(array &$index, $article, $indexar_sin_proveedor)
+    {
+        $article_id = (int) $article->id;
+
+        $index['ids'][$article_id] = $article_id;
+
+        /*
+         * bar_codes/skus como lista de ids (no escalar): si dos artículos
+         * comparten bar_code o sku, ambos quedan registrados en vez de que
+         * el último pise al anterior. find_with_index() decide con esa
+         * lista si hay match único o ambigüedad.
+         */
+        if (!empty($article->bar_code)) {
+            $bc = (string) $article->bar_code;
+            if (!isset($index['bar_codes'][$bc])) {
+                $index['bar_codes'][$bc] = [];
+            }
+            $index['bar_codes'][$bc][] = $article_id;
+        }
+
+        if (!empty($article->sku)) {
+            $sku = (string) $article->sku;
+            if (!isset($index['skus'][$sku])) {
+                $index['skus'][$sku] = [];
+            }
+            $index['skus'][$sku][] = $article_id;
+        }
+
+        /*
+            Solo se tienen en cuenta los articulos que tienen codigo de proveedor y que pertenecen a un proveedor
+        */
+        if (
+            !is_null($article->provider_code)
+            && !is_null($article->provider_id)
+        ) {
+            $prov_code  = $article->provider_code;
+            $prov_id    = $article->provider_id;
+
+            if (!isset($index['provider_codes'][$prov_id])) {
+                $index['provider_codes'][$prov_id] = [];
+            }
+            if (!isset($index['provider_codes'][$prov_id][$prov_code])) {
+                $index['provider_codes'][$prov_id][$prov_code] = [];
+            }
+            $index['provider_codes'][$prov_id][$prov_code][] = $article_id;
+
+        } elseif (
+            $indexar_sin_proveedor
+            && !is_null($article->provider_code)
+            && trim((string) $article->provider_code) !== ''
+            && is_null($article->provider_id)
+        ) {
+            /* Codigo de proveedor sin proveedor asignado: bucket propio. */
+            $prov_code = $article->provider_code;
+
+            /* '' es la clave del bucket sin proveedor (ver comentario en build()). */
+            $sin_prov = '';
+
+            if (!isset($index['provider_codes'][$sin_prov])) {
+                $index['provider_codes'][$sin_prov] = [];
+            }
+            if (!isset($index['provider_codes'][$sin_prov][$prov_code])) {
+                $index['provider_codes'][$sin_prov][$prov_code] = [];
+            }
+            $index['provider_codes'][$sin_prov][$prov_code][] = $article_id;
+        }
+
+        /*
+         * names como lista de ids (no escalar): igual que bar_codes/skus, si dos
+         * articulos comparten nombre normalizado ambos quedan registrados en vez
+         * de que el ultimo pise al anterior. find_with_index() decide con esa
+         * lista si hay match unico o ambiguedad (evita el incidente de Servian).
+         */
+        if (!empty($article->name)) {
+            $name_key = self::normalize_name_for_match($article->name);
+            if (!isset($index['names'][$name_key])) {
+                $index['names'][$name_key] = [];
+            }
+            $index['names'][$name_key][] = $article_id;
+        }
+    }
+
+    /**
+     * Deja el índice recién construido en cache, verifica que haya quedado guardado y loguea.
+     * Es la cola de siempre del build(), compartida por los dos modos.
+     *
+     * @param  string $key
+     * @param  array  $index
+     * @param  int    $user_id
+     * @param  float  $inicio  microtime(true) del arranque
+     * @param  string $modo    'completo' | 'acotado'
+     * @return float  duración en segundos
+     */
+    protected static function guardar_indice_construido($key, array $index, $user_id, $inicio, $modo)
+    {
         Cache::put($key, $index, now()->addMinutes(60));
 
         /*
@@ -551,9 +1110,14 @@ class ArticleIndexCache
             );
         }
 
+        /* Con contexto, queda anotado el sufijo para que limpiar_cache() encuentre esta clave. */
+        self::anotar_sufijo($user_id, 60);
+
+        self::$ultimo_modo_de_build = $modo;
+
         $duracion = microtime(true) - $inicio;
 
-        Log::info("ArticleIndexCache::build -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
+        Log::info("ArticleIndexCache::build ($modo) -> ids: " . count($index['ids']) . " provider_codes: ". count($index['provider_codes']) . " bar_codes: " . count($index['bar_codes']) . " skus: " . count($index['skus']) . " names: " . count($index['names']));
         // Log::info('$index->provider_codes: ');
         // Log::info($index['provider_codes']);
         // Log::info('Duración total cachear los articulos ' . $duracion . ' seg');
@@ -1443,7 +2007,9 @@ class ArticleIndexCache
         // $article_id apuntaba a un id de BD, pero el articulo pudo haber sido borrado
         // entre el build del indice y esta fila: en ese caso Eloquent devuelve null y
         // el escalon tiene que quedar en null, no en el escalon que asigno $article_id.
-        $article_encontrado = Article::with($relations)->find($article_id);
+        // Va por collection_from_index_article_ids() para servirse del mapa precargado del
+        // lote cuando lo hay (misma fila, mismas relaciones; sin mapa, consulta como siempre).
+        $article_encontrado = self::collection_from_index_article_ids([$article_id], $relations, $user_id)->first();
 
         return self::con_escalon(is_null($article_encontrado) ? null : $escalon, $article_encontrado);
     }
@@ -1470,12 +2036,39 @@ class ArticleIndexCache
         return Article::whereIn('id', $ids)->get();
     }
 
+    /**
+     * Referencia al índice memoizado en RAM de este usuario, cargándolo si hace falta.
+     *
+     * 🔴 add() y update() modifican el índice POR REFERENCIA, no por copia. Antes hacían
+     * `$index = self::get_index(...)` (el array por valor), lo modificaban —y PHP, por
+     * copy-on-write, duplicaba el índice ENTERO en la primera escritura— y al final volvían
+     * a asignar `self::$runtime_index_by_key[$key] = $index` (otra copia). Con un archivo de
+     * 30.000 filas el índice acotado tiene ~150.000 entradas: eran dos copias completas POR
+     * ARTÍCULO. Medido el 24/9/2026 en un lote de 1.000 artículos actualizados: 12 s de los 24 s
+     * del lote se iban en "Actualizar Cache" por esto. Con el índice del catálogo entero (568k
+     * artículos en Servian) era peor todavía. Por referencia cada update()/add() es O(1) sobre
+     * el tamaño del índice.
+     *
+     * @param  int $user_id
+     * @return array
+     */
+    protected static function &indice_en_ram(int $user_id): array
+    {
+        $key = self::cache_key($user_id);
+
+        if (empty(self::$runtime_loaded_by_key[$key])) {
+            self::get_index($user_id);
+        }
+
+        return self::$runtime_index_by_key[$key];
+    }
+
     public static function add($article)
     {
         $key = self::cache_key($article->user_id);
 
         // Usar índice en RAM (memoizado) para NO tocar cache en cada fila
-        $index = self::get_index((int)$article->user_id);
+        $index = &self::indice_en_ram((int) $article->user_id);
 
         $article_id = $article->fake_id;
 
@@ -1540,7 +2133,7 @@ class ArticleIndexCache
 
         // Guardamos en RAM y marcamos como "dirty" SOLO si querés persistir.
         // OJO: para fake articles NO conviene persistir a cache compartido entre workers.
-        self::$runtime_index_by_key[$key] = $index;
+        // El índice se modificó por referencia (ver indice_en_ram): no hay copia que volver a asignar.
         self::$runtime_loaded_by_key[$key] = true;
 
         // NO Cache::put acá.
@@ -1566,7 +2159,7 @@ class ArticleIndexCache
          * add() usa, asi que las llamadas de este foreach se acumulan en vez de
          * pisarse.
          */
-        $index = self::get_index((int) $article->user_id);
+        $index = &self::indice_en_ram((int) $article->user_id);
 
         /** ------------------------------------------------------------------
          *  1) ELIMINAR SOLO EL fake QUE COINCIDE CON EL ARTÍCULO REAL
@@ -1844,7 +2437,7 @@ class ArticleIndexCache
         // self::$runtime_loaded_by_key[$key] = true;
 
         // NO persistimos por cada artículo (carísimo).
-        self::$runtime_index_by_key[$key] = $index;
+        // El índice se modificó por referencia (ver indice_en_ram): no hay copia que volver a asignar.
         self::$runtime_loaded_by_key[$key] = true;
         self::$runtime_dirty_by_key[$key] = true;
     }
@@ -1914,6 +2507,26 @@ class ArticleIndexCache
 
         // ya persistido
         self::$runtime_dirty_by_key[$key] = false;
+
+        /* La anotación del sufijo vive lo que vive el índice: se refresca con él. */
+        self::anotar_sufijo($user_id, $ttl_minutes);
+    }
+
+    /**
+     * Deja anotado en cache el sufijo de la importación en curso (si hay contexto), para que
+     * limpiar_cache() encuentre la clave con sufijo desde cualquier proceso.
+     *
+     * @param  int $user_id
+     * @param  int $ttl_minutes
+     * @return void
+     */
+    protected static function anotar_sufijo($user_id, $ttl_minutes)
+    {
+        if (is_null(self::$contexto_sufijo) || self::$contexto_sufijo === '') {
+            return;
+        }
+
+        Cache::put(self::clave_del_sufijo($user_id), self::$contexto_sufijo, now()->addMinutes((int) $ttl_minutes));
     }
 
     /**
@@ -2073,6 +2686,9 @@ class ArticleIndexCache
         unset(self::$runtime_loaded_by_key[$key]);
         unset(self::$runtime_dirty_by_key[$key]);
         unset(self::$runtime_fake_articles[$user_id]);
+
+        /* Los modelos precargados son del lote anterior: el que arranca precarga los suyos. */
+        unset(self::$modelos_precargados[$user_id]);
     }
 
     /**
@@ -2103,22 +2719,82 @@ class ArticleIndexCache
         self::$runtime_fake_articles = [];
         self::$ultimo_escalon        = null;
 
+        /* Idem: contexto de importación y modelos precargados son estáticos del proceso. */
+        self::$contexto_claves_path = null;
+        self::$contexto_sufijo      = null;
+        self::$modelos_precargados  = [];
+
+        self::$forzar_indice_completo_de_tests = false;
+        self::$ultimo_modo_de_build            = null;
+
         /* Idem: es estado estatico del proceso y sobrevive de un test al siguiente. */
         self::$ultimo_identificadores_pendientes = [];
         self::$ultimo_desempate_sin_resolver     = [];
     }
 
-    static function limpiar_cache($user_id) {
+    /**
+     * @param  int      $user_id
+     * @param  int|null $import_history_id  la importación que terminó o falló. Con el id, sólo
+     *                                      se borra el índice con SU sufijo, y la anotación
+     *                                      sólo si es la suya: así el cierre de una importación
+     *                                      no le borra el índice a otra del mismo comercio que
+     *                                      arrancó después (chequeo 3 de la misión, 24/9/2026).
+     *                                      Sin id, como antes: la anotada y la del contexto.
+     * @return void
+     */
+    static function limpiar_cache($user_id, $import_history_id = null) {
 
-        $cache_key = self::cache_key($user_id);
-        
-        Cache::forget($cache_key);
+        /*
+         * Se borran las dos claves posibles: la de siempre y la que lleva el sufijo de la
+         * importación (misión importacion-excel-motor-rapido, 24/9/2026). El sufijo sale del
+         * contexto en memoria si este proceso lo tiene, y si no de la anotación en cache
+         * (clave_del_sufijo(), la deja build() y la refresca persist()): el failed() de un job
+         * corre en un proceso fresco que nunca pasó por set_contexto_de_importacion().
+         */
+        $claves = [];
 
-        Log::info("Cache de importación de artículos limpiado: {$cache_key}");
+        $clave_base = 'article_index_v2_user_' . (int) $user_id;
+        $claves[$clave_base] = true;
 
-        unset(self::$runtime_index_by_key[$cache_key]);
-        unset(self::$runtime_loaded_by_key[$cache_key]);
+        $sufijo_anotado = Cache::get(self::clave_del_sufijo($user_id));
+
+        $sufijo_propio = ((int) $import_history_id > 0) ? (string) (int) $import_history_id : null;
+
+        if (!is_null($sufijo_propio)) {
+
+            $claves[$clave_base . '_imp' . $sufijo_propio] = true;
+
+        } else {
+
+            if (!is_null(self::$contexto_sufijo) && self::$contexto_sufijo !== '') {
+                $claves[$clave_base . '_imp' . self::$contexto_sufijo] = true;
+            }
+
+            if (is_string($sufijo_anotado) && $sufijo_anotado !== '') {
+                $claves[$clave_base . '_imp' . $sufijo_anotado] = true;
+            }
+        }
+
+        foreach (array_keys($claves) as $cache_key) {
+            Cache::forget($cache_key);
+
+            unset(self::$runtime_index_by_key[$cache_key]);
+            unset(self::$runtime_loaded_by_key[$cache_key]);
+            unset(self::$runtime_dirty_by_key[$cache_key]);
+        }
+
+        /* La anotación es de UNA importación: con id, sólo se borra si es la de esta. */
+        if (is_null($sufijo_propio) || $sufijo_anotado === $sufijo_propio) {
+            Cache::forget(self::clave_del_sufijo($user_id));
+        }
+
+        Log::info('Cache de importación de artículos limpiado: ' . implode(', ', array_keys($claves)));
+
         unset(self::$runtime_fake_articles[(int) $user_id]);
+        unset(self::$modelos_precargados[(int) $user_id]);
+
+        /* La importación terminó (bien o mal): el contexto no puede sobrevivirla en el worker. */
+        self::set_contexto_de_importacion(null, null);
     }
 
 }

@@ -224,6 +224,16 @@ class ProcessRow {
     protected $taken_slugs = [];
     protected $slug_next_index = [];
 
+    /**
+     * Slug generado en este lote para cada artículo EXISTENTE que se renombró
+     * (article_id => slug). Si el mismo artículo vuelve a aparecer más abajo en el lote
+     * (fila repetida, "última fila gana"), el slug anterior se libera antes de generar el
+     * nuevo: si no, dos filas con el mismo nombre nuevo le dejarían "x-1" en vez de "x".
+     *
+     * @var array
+     */
+    protected $slugs_asignados_en_chunk = [];
+
     protected $provider_relations_buffer = []; // [article_id][provider_id] => pivot_data
 
     /**
@@ -471,6 +481,91 @@ class ProcessRow {
         return $slug;
     }
 
+    /**
+     * Deja de considerar tomado un slug: el que tenía un artículo que se renombra en este
+     * lote, o el que se le había generado a una entrada pendiente de crear cuyo nombre
+     * cambió al fusionar otra fila. Ningún artículo va a quedar con ese slug, así que otra
+     * fila del lote puede usarlo (y, sobre todo, el mismo artículo puede conservarlo si su
+     * nombre nuevo da el mismo slug).
+     *
+     * @param  string $slug
+     * @return void
+     */
+    protected function liberar_slug(string $slug): void
+    {
+        unset($this->taken_slugs[$slug]);
+    }
+
+    /**
+     * Alícuotas de IVA por id, cacheadas para todo el proceso (misión
+     * importacion-excel-motor-rapido, 24/9/2026): `ivas` es una tabla global de nueve filas y
+     * el back-out de IVA la consultaba con un Iva::find() por cada fila con costo.
+     *
+     * Estático a propósito: el worker es un proceso largo y las alícuotas no cambian entre
+     * lotes. Sólo se cachean las encontradas; un id inexistente se vuelve a consultar (nunca
+     * pasa: el id sale de set_iva_cache() o de un Iva::create() de este mismo chunk).
+     *
+     * @var array [iva_id => Iva]
+     */
+    protected static $ivas_por_id = [];
+
+    /**
+     * Olvida las alícuotas cacheadas. Lo llama ProcessArticleChunk al arrancar cada lote: el
+     * worker es un proceso largo, y si el dueño edita el porcentaje de una alícuota entre dos
+     * importaciones, el lote siguiente no puede descomponer el IVA con el valor viejo. Cuesta
+     * como mucho nueve consultas por lote. Chequeo 3 de la misión, 24/9/2026.
+     *
+     * @return void
+     */
+    public static function olvidar_alicuotas_cacheadas()
+    {
+        self::$ivas_por_id = [];
+    }
+
+    /**
+     * @param  int|string $iva_id
+     * @return \App\Models\Iva|null
+     */
+    protected static function iva_por_id($iva_id)
+    {
+        $clave = (int) $iva_id;
+
+        if (!isset(self::$ivas_por_id[$clave])) {
+            $iva = Iva::find($iva_id);
+
+            if (is_null($iva)) {
+                return null;
+            }
+
+            self::$ivas_por_id[$clave] = $iva;
+        }
+
+        return self::$ivas_por_id[$clave];
+    }
+
+    /**
+     * El depósito $address_id del artículo con su pivot (amount, stock_min, stock_max), o null
+     * si el artículo no tiene stock en ese depósito.
+     *
+     * Si la relación `addresses` ya está cargada (find_with_index() la trae siempre, y
+     * procesar_articulo_ya_creado() hace loadMissing antes de llegar acá), se lee de ahí: es
+     * la misma fila del pivot que devolvía la consulta por depósito, sin la consulta. Si no
+     * está cargada (un Article armado en memoria como baseline de un merge), se consulta como
+     * siempre: el resultado es el mismo en los dos caminos.
+     *
+     * @param  \App\Models\Article $article
+     * @param  int                 $address_id
+     * @return \App\Models\Address|null
+     */
+    protected function pivot_de_deposito($article, $address_id)
+    {
+        if ($article->relationLoaded('addresses')) {
+            return $article->addresses->firstWhere('id', (int) $address_id);
+        }
+
+        return $article->addresses()->where('address_id', $address_id)->first();
+    }
+
     public function set_article_index(array $article_index): void
     {
         $this->article_index = $article_index;
@@ -558,7 +653,7 @@ class ProcessRow {
             return $cost;
         }
 
-        $iva = Iva::find($iva_id);
+        $iva = self::iva_por_id($iva_id);
 
         // Mismo criterio que ArticlePricesHelper::hasIva(): sin alícuota real (0/Exento/No
         // Gravado) no hay IVA que sacar.
@@ -1456,10 +1551,19 @@ class ProcessRow {
             $this->terminar('crear: stock_global');
 
             $this->iniciar();
-            // $data['slug'] = ArticleHelper::slug($data['name'], $this->user->id);
-
-            if (isset($data['slug'])) {
-                $data['slug'] = $this->unique_slug((string)$data['name']);
+            /*
+             * Slug del artículo nuevo (decisión de Lucas, 24/9/2026, misión
+             * importacion-excel-motor-rapido): "una importación no puede crear artículos sin
+             * slug". Hasta hoy esto estaba guardado por un `isset($data['slug'])` que nunca era
+             * verdadero (nada escribía esa clave), así que todo artículo importado nacía con
+             * slug NULL y la tienda no lo podía abrir por URL hasta que alguien lo editara a
+             * mano. Misma regla que ArticleHelper::slug() del ABM: Str::slug(nombre), y si ya
+             * está tomado en la cuenta, base-1, base-2... — contra la base (ArticleImport::slugs()
+             * trae por lote los que ya existen) y contra lo generado en este mismo lote
+             * ($taken_slugs en RAM). Sin nombre no hay slug, igual que en el ABM.
+             */
+            if (isset($data['name']) && trim((string) $data['name']) !== '') {
+                $data['slug'] = $this->unique_slug((string) $data['name']);
             }
             $this->terminar('crear: article slug');
 
@@ -1683,8 +1787,25 @@ class ProcessRow {
 
         $this->iniciar();
 
-        if (isset($merged['slug'])) {
-            $merged['slug'] = $this->unique_slug((string) $merged['name']);
+        /*
+         * Slug del artículo pendiente de crear, después de fusionar la fila (misión
+         * importacion-excel-motor-rapido, 24/9/2026). Sólo se regenera si el nombre
+         * fusionado CAMBIÓ respecto del que tenía la entrada (o si la entrada no tenía slug
+         * porque su primera fila vino sin nombre): regenerarlo siempre le daría "base-1" a
+         * un artículo cuyo nombre no cambió, porque su propio slug ya figura como tomado. El
+         * slug viejo se libera antes: ningún artículo lo va a llevar.
+         */
+        $nombre_anterior  = isset($this->articulosParaCrear[$idx_en_cola]['name'])
+                                ? trim((string) $this->articulosParaCrear[$idx_en_cola]['name'])
+                                : '';
+        $nombre_fusionado = isset($merged['name']) ? trim((string) $merged['name']) : '';
+
+        if ($nombre_fusionado !== '' && (!isset($merged['slug']) || $nombre_fusionado !== $nombre_anterior)) {
+            if (isset($merged['slug'])) {
+                $this->liberar_slug((string) $merged['slug']);
+            }
+
+            $merged['slug'] = $this->unique_slug($nombre_fusionado);
         }
 
         $this->terminar('merge pendiente: slug');
@@ -1842,6 +1963,46 @@ class ProcessRow {
         $this->iniciar();
         $cambios = $this->aplicar_criterio_de_precio($articulo_ya_creado, $data, $cambios);
         $this->terminar('criterio de precio manual vs margen');
+
+        /*
+         * Slug al renombrar (decisión de Lucas, 24/9/2026, misión importacion-excel-motor-rapido):
+         * "una importación no puede actualizar el nombre de artículos y no actualizarles el
+         * slug". Si get_modified_fields() dejó `name` en $cambios, el slug se regenera con la
+         * misma regla que al crear y viaja con su `__diff__slug`, que es lo que el rollback
+         * restaura. Si el nombre no cambia, el slug no se toca, aunque hoy sea NULL.
+         *
+         * Antes de calcularlo se libera el slug que el artículo ya tiene (y el que esta misma
+         * fila o una anterior del lote ya le hubiera asignado): un artículo que se renombra a un
+         * nombre cuyo slug coincide con el suyo conserva su slug en vez de pasar a "x-1".
+         */
+        $this->iniciar();
+        if (array_key_exists('name', $cambios) && trim((string) $cambios['name']) !== '' && !empty($articulo_ya_creado->id)) {
+
+            if (!empty($articulo_ya_creado->slug)) {
+                $this->liberar_slug((string) $articulo_ya_creado->slug);
+            }
+
+            if (isset($this->slugs_asignados_en_chunk[(int) $articulo_ya_creado->id])) {
+                $this->liberar_slug($this->slugs_asignados_en_chunk[(int) $articulo_ya_creado->id]);
+            }
+
+            $slug_nuevo = $this->unique_slug((string) $cambios['name']);
+
+            $this->slugs_asignados_en_chunk[(int) $articulo_ya_creado->id] = $slug_nuevo;
+
+            /*
+             * Sólo viaja si de verdad cambia: un diff old == new no describe ningún cambio
+             * real y el historial diría que el slug cambió cuando no cambió.
+             */
+            if ($slug_nuevo !== (string) $articulo_ya_creado->slug) {
+                $cambios['slug'] = $slug_nuevo;
+                $cambios['__diff__slug'] = [
+                    'old' => $articulo_ya_creado->slug,
+                    'new' => $slug_nuevo,
+                ];
+            }
+        }
+        $this->terminar('slug al renombrar');
 
         /*
          * Identificadores (bar_code y/o sku) que la fila traia, no matchearon su propio
@@ -3219,7 +3380,7 @@ class ProcessRow {
 
                 if (!is_null($articulo_ya_creado) && $articulo_ya_creado instanceof \App\Models\Article) {
 
-                    $article_address = $articulo_ya_creado->addresses()->where('address_id', $address->id)->first();
+                    $article_address = $this->pivot_de_deposito($articulo_ya_creado, $address->id);
                     if ($article_address) {
                         $stock_actual_en_address = $article_address->pivot->amount;
                     } else {
@@ -4556,8 +4717,8 @@ class ProcessRow {
                 continue;
             }
 
-            // Buscar dirección existente en la relación 'addresses'
-            $existing = $article->addresses()->where('address_id', $address_id)->first();
+            // Buscar dirección existente en la relación 'addresses' (ya cargada: sin consulta por depósito)
+            $existing = $this->pivot_de_deposito($article, $address_id);
            
 
             // Valores actuales (en base de datos)
@@ -4742,7 +4903,8 @@ class ProcessRow {
 
 
         if ($article) {
-            $article->load('article_discounts');
+            /* loadMissing: si vino precargado por lote (ArticleIndexCache::precargar_modelos), no consulta. */
+            $article->loadMissing('article_discounts');
         }
 
         if ($article && $article->article_discounts) {
@@ -5470,7 +5632,8 @@ class ProcessRow {
         $old_amounts = [];
 
         if ($article) {
-            $article->load('article_surchages');
+            /* loadMissing: si vino precargado por lote (ArticleIndexCache::precargar_modelos), no consulta. */
+            $article->loadMissing('article_surchages');
             // $this->log('article_surchages:');
             // $this->log($article->article_surchages);
         }

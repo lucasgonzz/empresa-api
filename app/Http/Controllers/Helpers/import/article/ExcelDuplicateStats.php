@@ -137,14 +137,24 @@ class ExcelDuplicateStats
         }
 
         /*
-         * Acumuladores enriquecidos: clave = valor normalizado de la celda,
-         * valor = ['count' => N, 'filas' => [fila1, fila2, ...]].
-         * 'filas' guarda el número real de fila del Excel (1-based, incluye cabecera).
-         * Se usan para detectar duplicados intra-archivo y para cruce posterior contra BD.
+         * Acumuladores PLANOS, dos por campo (misión importacion-excel-motor-rapido, 24/9/2026):
+         *   $<campo>_veces[valor] = cuántas veces aparece (int)
+         *   $<campo>_filas[valor] = filas donde aparece, como texto compacto "12,47,93"
+         *                          (número real de fila del Excel, 1-based con cabecera;
+         *                          se guardan las primeras 10, como siempre)
+         *
+         * Antes era un solo array de arrays por campo (['count' => N, 'filas' => [...]]) y con
+         * 100.000 códigos distintos el proceso pasaba de 128 MB (medido: pico de 164 MB),
+         * que es el memory_limit del php-cli de producción. Un int y un string cortos por
+         * clave cuestan una fracción de dos arrays anidados por clave, y el resultado que sale
+         * de acá es exactamente el mismo: el detalle se arma abajo desde estos dos.
+         *
+         * Las claves de $provider_code_veces sirven además para el cruce posterior contra la BD.
          */
-        $bar_code_data      = [];
-        /* provider_code_data también sirve para el cruce posterior contra la BD. */
-        $provider_code_data = [];
+        $bar_code_veces      = [];
+        $bar_code_filas      = [];
+        $provider_code_veces = [];
+        $provider_code_filas = [];
 
         /* Contador de filas de datos procesadas (sin contar la cabecera). */
         $total_filas = 0;
@@ -208,14 +218,7 @@ class ExcelDuplicateStats
                 if (!is_null($bar_code_column_index_0based) && isset($cells[$bar_code_column_index_0based])) {
                     $bar_code_val = $cells[$bar_code_column_index_0based];
                     if ($bar_code_val !== '') {
-                        if (!isset($bar_code_data[$bar_code_val])) {
-                            $bar_code_data[$bar_code_val] = ['count' => 0, 'filas' => []];
-                        }
-                        $bar_code_data[$bar_code_val]['count']++;
-                        /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
-                        if (count($bar_code_data[$bar_code_val]['filas']) < 10) {
-                            $bar_code_data[$bar_code_val]['filas'][] = $excel_row_number;
-                        }
+                        self::acumular($bar_code_veces, $bar_code_filas, $bar_code_val, $excel_row_number);
                     }
                 }
 
@@ -223,14 +226,7 @@ class ExcelDuplicateStats
                 if (!is_null($provider_code_column_index_0based) && isset($cells[$provider_code_column_index_0based])) {
                     $provider_code_val = $cells[$provider_code_column_index_0based];
                     if ($provider_code_val !== '') {
-                        if (!isset($provider_code_data[$provider_code_val])) {
-                            $provider_code_data[$provider_code_val] = ['count' => 0, 'filas' => []];
-                        }
-                        $provider_code_data[$provider_code_val]['count']++;
-                        /* Guardamos máximo 10 filas por código para no sobrecargar el payload. */
-                        if (count($provider_code_data[$provider_code_val]['filas']) < 10) {
-                            $provider_code_data[$provider_code_val]['filas'][] = $excel_row_number;
-                        }
+                        self::acumular($provider_code_veces, $provider_code_filas, $provider_code_val, $excel_row_number);
                     }
                 }
             }
@@ -256,8 +252,8 @@ class ExcelDuplicateStats
 
         Log::info('ExcelDuplicateStats: Excel leído', [
             'total_filas'              => $total_filas,
-            'bar_codes_distintos'      => count($bar_code_data),
-            'provider_codes_distintos' => count($provider_code_data),
+            'bar_codes_distintos'      => count($bar_code_veces),
+            'provider_codes_distintos' => count($provider_code_veces),
         ]);
 
         /*
@@ -268,8 +264,8 @@ class ExcelDuplicateStats
         $bar_codes_duplicados = 0;
         $ejemplos_bar_codes   = [];
         $detalle_bar_codes    = [];
-        foreach ($bar_code_data as $val => $data) {
-            if ($data['count'] > 1) {
+        foreach ($bar_code_veces as $val => $veces) {
+            if ($veces > 1) {
                 $bar_codes_duplicados++;
                 if (count($ejemplos_bar_codes) < self::MAX_EXAMPLES) {
                     $ejemplos_bar_codes[] = (string) $val;
@@ -278,8 +274,8 @@ class ExcelDuplicateStats
                 if (count($detalle_bar_codes) < self::MAX_EXAMPLES) {
                     $detalle_bar_codes[] = [
                         'codigo' => (string) $val,
-                        'veces'  => $data['count'],
-                        'filas'  => $data['filas'],
+                        'veces'  => $veces,
+                        'filas'  => self::filas_desde_texto($bar_code_filas[$val]),
                     ];
                 }
             }
@@ -292,8 +288,8 @@ class ExcelDuplicateStats
         $provider_codes_duplicados_intra = 0;
         $ejemplos_provider_codes         = [];
         $detalle_provider_codes          = [];
-        foreach ($provider_code_data as $val => $data) {
-            if ($data['count'] > 1) {
+        foreach ($provider_code_veces as $val => $veces) {
+            if ($veces > 1) {
                 $provider_codes_duplicados_intra++;
                 if (count($ejemplos_provider_codes) < self::MAX_EXAMPLES) {
                     $ejemplos_provider_codes[] = (string) $val;
@@ -302,12 +298,15 @@ class ExcelDuplicateStats
                 if (count($detalle_provider_codes) < self::MAX_EXAMPLES) {
                     $detalle_provider_codes[] = [
                         'codigo' => (string) $val,
-                        'veces'  => $data['count'],
-                        'filas'  => $data['filas'],
+                        'veces'  => $veces,
+                        'filas'  => self::filas_desde_texto($provider_code_filas[$val]),
                     ];
                 }
             }
         }
+
+        /* Las filas ya no hacen falta: se liberan antes del cruce contra la base. */
+        unset($bar_code_filas, $provider_code_filas);
 
         /*
          * Cruzamos los provider_codes únicos extraídos del Excel contra la tabla articles en BD.
@@ -317,9 +316,9 @@ class ExcelDuplicateStats
          * refreshProviderStats() pueda reusarlo sin releer el archivo, pasando directamente la
          * lista de códigos ya persistida en excel_analysis_runs.codigos_proveedor.
          */
-        if (!is_null($provider_code_column_index_0based) && !empty($provider_code_data)) {
+        if (!is_null($provider_code_column_index_0based) && !empty($provider_code_veces)) {
             $cross_check = self::crossCheckProviderCodes(
-                array_keys($provider_code_data),
+                array_keys($provider_code_veces),
                 $provider_id,
                 $user_id
             );
@@ -351,12 +350,52 @@ class ExcelDuplicateStats
             'detalle_provider_codes_duplicados'           => !is_null($provider_code_column_index_0based) ? $detalle_provider_codes : [],
             /*
              * Grupo 291, prompt 03: todos los provider_codes distintos del archivo (no solo los
-             * duplicados). El acumulador $provider_code_data ya los tenía en memoria; antes se
+             * duplicados). El acumulador $provider_code_veces ya los tenía en memoria; antes se
              * descartaban al retornar. El caller (AiExcelAnalyzer::analyze()) es responsable de
              * sacar esta clave antes de exponer duplicate_stats por HTTP.
              */
-            'provider_codes_distintos'                    => !is_null($provider_code_column_index_0based) ? array_keys($provider_code_data) : [],
+            'provider_codes_distintos'                    => !is_null($provider_code_column_index_0based) ? array_keys($provider_code_veces) : [],
         ];
+    }
+
+    /**
+     * Suma una aparición de $valor en la fila $fila a los dos acumuladores planos de un campo.
+     *
+     * Las filas se guardan como texto "12,47,93" y sólo las primeras 10 apariciones (el mismo
+     * tope de siempre del payload): con 100.000 códigos distintos, un array de filas por código
+     * es lo que hacía que el análisis pasara de 128 MB.
+     *
+     * @param  array  $veces  por referencia: valor => cantidad de apariciones
+     * @param  array  $filas  por referencia: valor => "fila,fila,..."
+     * @param  string $valor
+     * @param  int    $fila   número real de fila del Excel (1-based, incluye cabecera)
+     * @return void
+     */
+    protected static function acumular(array &$veces, array &$filas, $valor, $fila)
+    {
+        if (!isset($veces[$valor])) {
+            $veces[$valor] = 1;
+            $filas[$valor] = (string) $fila;
+
+            return;
+        }
+
+        $veces[$valor]++;
+
+        if ($veces[$valor] <= 10) {
+            $filas[$valor] .= ',' . $fila;
+        }
+    }
+
+    /**
+     * Inversa de acumular(): "12,47,93" => [12, 47, 93] (enteros, como en el detalle de siempre).
+     *
+     * @param  string $texto
+     * @return int[]
+     */
+    protected static function filas_desde_texto($texto)
+    {
+        return array_map('intval', explode(',', (string) $texto));
     }
 
     /**
