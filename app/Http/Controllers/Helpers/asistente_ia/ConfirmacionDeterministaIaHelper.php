@@ -291,6 +291,52 @@ class ConfirmacionDeterministaIaHelper
     }
 
     /**
+     * true si el último mensaje del asistente dejó una tarjeta que sigue pendiente (de menos de
+     * MINUTOS_MAXIMOS) y el mensaje de la persona NO la confirmó: es el turno en el que la persona
+     * CORRIGE la carga ("sí, pero cambiale el nombre", "ponele otro precio").
+     *
+     * Misión asistente-deepseek-pro-razona (24/9/2026): ese turno lo contestaba el modelo rápido sin
+     * pensar —no trae foto nueva, así que no arrancaba escalado— y en las pruebas reales con DeepSeek
+     * falló 4 de 4: dijo "cambié el nombre" sin llamar a ninguna herramienta, o armó la tarjeta nueva
+     * cambiando la foto de internet por la del dueño y cortando la descripción. Rearmar una carga es
+     * decidir una carga: arranca escalado como un turno con foto.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $assistant_message  El assistant que se está generando.
+     * @return bool
+     */
+    public static function la_persona_corrige_una_tarjeta_pendiente(AiConversation $conversation, AiMessage $assistant_message)
+    {
+        try {
+            if (!$assistant_message->acciones_habilitadas) {
+
+                return false;
+            }
+
+            $ultimo_del_asistente = AiMessage::where('ai_conversation_id', $conversation->id)
+                                                ->where('rol', 'assistant')
+                                                ->where('id', '<', $assistant_message->id)
+                                                ->orderBy('id', 'DESC')
+                                                ->value('id');
+
+            if (is_null($ultimo_del_asistente)) {
+
+                return false;
+            }
+
+            return AiMessageAction::where('ai_conversation_id', $conversation->id)
+                                    ->where('ai_message_id', (int) $ultimo_del_asistente)
+                                    ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                    ->where('created_at', '>=', Carbon::now()->subMinutes(self::MINUTOS_MAXIMOS))
+                                    ->exists();
+
+        } catch (\Throwable $e) {
+
+            return false;
+        }
+    }
+
+    /**
      * La única tarjeta que este "sí" confirma, o null si no hay una sola cosa que confirmar.
      *
      * @param  \App\Models\AiConversation  $conversation

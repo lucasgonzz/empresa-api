@@ -911,15 +911,15 @@ class HerramientasDeCarga
                          */
                         'con_foto_de_la_conversacion' => [
                             'type'        => 'boolean',
-                            'description' => 'Solo para entidad article: true para que el artículo nazca con la foto que la persona te mandó en esta conversación (la saco sola, no me la pases).',
+                            'description' => 'Solo para entidad article: true para que el artículo nazca con la foto que la persona te mandó en esta conversación (la saco sola, no me la pases). Con reemplaza_a NO lo mandes salvo que la persona pida cambiar la foto: la tarjeta nueva hereda la foto de la anterior.',
                         ],
                         'imagen_id'   => [
                             'type'        => 'integer',
-                            'description' => 'Solo para entidad article: el imagen_id de una foto que te devolvió otra herramienta (la búsqueda por código de barras). Si lo mandás, no hace falta con_foto_de_la_conversacion.',
+                            'description' => 'Solo para entidad article: el imagen_id de una foto que te devolvió otra herramienta (la búsqueda por código de barras). Si lo mandás, no hace falta con_foto_de_la_conversacion. Con reemplaza_a NO lo mandes: se hereda.',
                         ],
                         'descripcion' => [
                             'type'        => 'string',
-                            'description' => 'Solo para entidad article: la descripción del producto para la ficha y la tienda online, en español.',
+                            'description' => 'Solo para entidad article: la descripción del producto para la ficha y la tienda online, en español. Con reemplaza_a NO la mandes salvo que la persona pida cambiarla: se hereda entera de la tarjeta anterior (si la mandás, reemplaza a la heredada).',
                         ],
                     ],
                     'required'   => ['entidad', 'datos'],

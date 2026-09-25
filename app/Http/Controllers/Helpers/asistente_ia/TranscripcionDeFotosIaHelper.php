@@ -77,6 +77,7 @@ class TranscripcionDeFotosIaHelper
         . "- Si hay un código de barras: los dígitos impresos debajo de las barras TAL CUAL aparecen, con sus espacios, sin corregirlos ni completarlos. Si no se leen, decí \"código de barras ilegible\".\n"
         . "- Si es una factura, remito, ticket o cualquier comprobante: SÓLO el tipo (con su letra si la tiene), el emisor (nombre o razón social y CUIT) y la fecha. NO transcribas montos, totales, precios, cantidades ni renglones: esos datos los lee otro proceso.\n"
         . "- Si algo no se lee, decilo. No inventes ni deduzcas nada que no esté en la foto.\n"
+        . "- Letra chica (páginas web, mails, direcciones, teléfonos, ingredientes, códigos de lote): copiala SOLO si se lee con total claridad. Si está borrosa, cortada o a medias, escribí \"[texto chico ilegible]\" y NO la completes: un dato inventado es peor que uno faltante.\n"
         . "\n"
         . "Formato: una sección por foto, cada una arrancando con una línea \"FOTO k:\" (k es el número que acompaña a esa foto), sin nada antes de la primera.";
 

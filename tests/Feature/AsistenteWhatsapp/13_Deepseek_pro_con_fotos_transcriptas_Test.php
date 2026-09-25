@@ -571,6 +571,68 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
      * @group asistente-whatsapp
      * @test
      */
+    public function la_persona_corrige_una_tarjeta_pendiente_y_el_turno_razona_en_pro()
+    {
+        /*
+         * Prueba real del 24/9/2026 con DeepSeek: "sí, pero cambiale el nombre" lo contestaba Flash
+         * sin pensar y falló 4 de 4 (mintió sin herramienta, o rearmó la tarjeta con otra foto). Con
+         * una tarjeta pendiente del último mensaje del asistente, el turno arranca en Pro pensando.
+         */
+        $this->dueno_en('deepseek', 'agil');
+
+        Http::fake([
+            'api.deepseek.com/*' => Http::response($this->end_turn('Te la cambio.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $conversation = $this->conversacion_whatsapp();
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Cargame la cera Nic']);
+        $propuso = $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'Dejé la carga del alta. ¿La registro?', 'acciones_habilitadas' => true]);
+
+        \App\Models\AiMessageAction::forceCreate([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $propuso->id,
+            'user_id'            => $this->comercio->id,
+            'auth_user_id'       => $this->comercio->id,
+            'tipo'               => 'alta',
+            'clave'              => 'alta-p13-' . uniqid(),
+            'estado'             => \App\Models\AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['entidad' => 'article', 'operacion' => 'alta', 'payload' => ['name' => 'Cera Nic']],
+            'presentacion'       => ['titulo' => 'Nuevo artículo', 'renglones' => []],
+        ]);
+
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'sí, pero cambiale el nombre a Cera Nic Mate']);
+        $assistant = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertSame('deepseek-pro-p13', $bodies[0]['model'], 'Corregir una tarjeta pendiente razona en Pro desde la vuelta 0.');
+        $this->assertSame('enabled', $bodies[0]['thinking']['type']);
+
+        /* Sin tarjeta pendiente, el mismo texto sigue en el Ágil. */
+        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::fake([
+            'api.deepseek.com/*' => Http::response($this->end_turn('Ok.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $otra = $this->conversacion_whatsapp();
+        $this->mensaje($otra, 'user', 'listo', ['contenido' => 'sí, pero cambiale el nombre a Cera Nic Mate']);
+        $assistant = $this->mensaje($otra, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        (new AsistenteIaService())->responder($otra, $assistant);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertSame('deepseek-flash-p13', $bodies[0]['model']);
+    }
+
+    /**
+     * @group asistente-whatsapp
+     * @test
+     */
     public function un_turno_agil_con_la_foto_reenviada_no_transcribe()
     {
         $this->dueno_en('deepseek', 'agil');

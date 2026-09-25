@@ -404,6 +404,18 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-deepseek-pro-razona (24/9/2026): si la persona CORRIGE una tarjeta que el
+         * asistente acaba de dejar pendiente ("sí, pero cambiale el nombre"), el turno también
+         * arranca escalado. Lo contestaba el modelo rápido sin pensar y en las pruebas reales con
+         * DeepSeek falló 4 de 4 (mintió "cambié el nombre" sin herramienta, o rearmó la tarjeta con
+         * otra foto y la descripción cortada). Ver la_persona_corrige_una_tarjeta_pendiente().
+         */
+        if (is_null($confirmacion_determinista)
+            && ConfirmacionDeterministaIaHelper::la_persona_corrige_una_tarjeta_pendiente($conversation, $assistant_message)) {
+            $toco_una_carga = true;
+        }
+
+        /*
          * 🔴 UN TURNO CON FOTO ARRANCA ESCALADO DESDE LA PRIMERA VUELTA (correcciones del 24/9/2026,
          * decisión tomada por la misión asistente-fotos-barras-y-compras en nombre de Lucas). Las 17
          * conversaciones reales mostraron que con el dueño en "ágil" las malas decisiones de un
