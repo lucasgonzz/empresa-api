@@ -44,6 +44,29 @@ class Handler extends ExceptionHandler
     }
 
     /**
+     * Un request no autenticado a `api/*` contesta 401 en JSON, pida lo que pida.
+     *
+     * 🔴 SIN ESTO, EL null DE Authenticate::redirectTo() NO ALCANZA. El handler de Laravel 8 decide
+     * por `expectsJson()` y, si da false, redirige a `$exception->redirectTo() ?? route('login')`:
+     * con el null vuelve a caer en `route('login')`, que en este proyecto no existe, y el request
+     * muere en 500 con `Route [login] not defined` (y encima se reporta como error). Es lo que
+     * pasaba en demo3 el 24/9/2026 con el `<img>` de las fotos del asistente, que no manda
+     * `Accept: application/json`. Para todo lo que no es `api/*` queda el comportamiento de siempre.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  \Illuminate\Auth\AuthenticationException  $exception
+     * @return \Symfony\Component\HttpFoundation\Response
+     */
+    protected function unauthenticated($request, \Illuminate\Auth\AuthenticationException $exception)
+    {
+        if ($request->is('api/*')) {
+            return response()->json(['message' => $exception->getMessage()], 401);
+        }
+
+        return parent::unauthenticated($request, $exception);
+    }
+
+    /**
      * Convierte una ValidationException en JSON con mensaje traducido (locale de la app, p. ej. español).
      *
      * @param \Illuminate\Http\Request $request Solicitud actual.

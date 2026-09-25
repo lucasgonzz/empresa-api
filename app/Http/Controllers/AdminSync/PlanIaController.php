@@ -26,6 +26,12 @@ use Illuminate\Http\Request;
  * `tope_interacciones_diarias`. Es el punto donde este proyecto ya se quemó (`manual_tasks` vs
  * `tareas`): un renombre de un lado deja al otro leyendo null sin un solo error.
  *
+ * 🔴 `tope_busquedas_web_diarias` ES LA CUARTA CLAVE Y ES OPCIONAL (misión
+ * asistente-fotos-barras-y-compras, 24/9/2026): el tope diario de búsquedas por código de barras en
+ * internet. Un admin viejo no la manda, y en ese caso la columna NO SE TOCA —ni se pone en null—:
+ * el negocio sigue con lo que tenía (o con el defecto de 30 si nunca le llegó nada). Por eso se
+ * pregunta `has()` y no `input()`, que no distingue "no vino" de "vino null".
+ *
  * Idempotente: pushear el mismo plan dos veces deja el dueño igual. Un tope 0 o null se guarda como
  * null = sin tope, que es la guarda de compatibilidad (el agente no corta hasta que llega un tope > 0).
  */
@@ -55,6 +61,7 @@ class PlanIaController extends Controller
             'nombre'                     => 'nullable|string|max:255',
             'tope_tokens_mensual'        => 'nullable|integer|min:0',
             'tope_interacciones_diarias' => 'nullable|integer|min:0',
+            'tope_busquedas_web_diarias' => 'nullable|integer|min:0',
         ]);
 
         $dueno = AsistenteCanalHelper::dueno();
@@ -70,6 +77,13 @@ class PlanIaController extends Controller
         $dueno->plan_ia_nombre = $this->nombre_limpio($request->input('nombre'));
         $dueno->plan_ia_tope_tokens_mensual = $this->tope($request->input('tope_tokens_mensual'));
         $dueno->plan_ia_tope_interacciones_diarias = $this->tope($request->input('tope_interacciones_diarias'));
+
+        /* Solo si la clave vino (ver el 🔴 del docblock): null o 0 → null = el defecto de config. */
+        if ($request->has('tope_busquedas_web_diarias')) {
+
+            $dueno->plan_ia_tope_busquedas_web_diarias = $this->tope($request->input('tope_busquedas_web_diarias'));
+        }
+
         $dueno->save();
 
         return response()->json(['ok' => true], 200);

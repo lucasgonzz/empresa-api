@@ -9,9 +9,12 @@ use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
@@ -19,9 +22,11 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Log;
@@ -83,6 +88,15 @@ class AsistenteIaService
      * creciente sin límite.
      */
     const MAX_CARACTERES_HISTORIAL = 24000;
+
+    /**
+     * Cuántas fotos de la última tanda del dueño vuelven a viajar cuando su último mensaje no trae
+     * ninguna, y hasta a cuántos mensajes suyos de distancia (correcciones del 24/9/2026, ver
+     * con_las_fotos_de_la_ultima_tanda()).
+     */
+    const MAX_FOTOS_DE_LA_TANDA = 3;
+
+    const MAX_MENSAJES_HASTA_LA_TANDA = 3;
 
     /** Techo de tokens de la respuesta. */
     const MAX_TOKENS = 1500;
@@ -260,9 +274,77 @@ class AsistenteIaService
          */
         $es_whatsapp = $assistant_message->es_de_whatsapp();
 
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): si la persona contestó un "sí" corto a
+         * UNA tarjeta pendiente por un canal sin botones, la tarjeta se confirma ACÁ, en código, antes
+         * de llamar al modelo. 🔴 No se le deja al modelo por un caso real: en demo3 (conv 10) el
+         * "Dale" a la foto de un artículo fue una sola vuelta de 28 tokens sin ninguna herramienta, y
+         * el asistente dijo "quedó asignada" con la tarjeta todavía en `propuesta`. El detalle y las
+         * guardas están en ConfirmacionDeterministaIaHelper.
+         *
+         * Va ANTES de armar el historial a propósito: así la línea "[Tarjeta ...]" del mensaje que la
+         * propuso ya viaja como confirmada, igual que la nota.
+         */
+        $confirmacion_determinista = $con_acciones
+            ? ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $assistant_message)
+            : null;
+
+        /*
+         * 🔴 SI LA CARGA YA SE HIZO, UNA FALLA DEL MODELO NO PUEDE LLEGARLE AL DUEÑO COMO ERROR
+         * (correcciones del 24/9/2026). Con la confirmación determinista la carga queda registrada
+         * ANTES de llamar al modelo; si después el proveedor de IA tira un 529 o el loop se queda sin
+         * texto, el job pintaba "se me cortó la conexión" y el dueño, con razón, volvía a pedir la
+         * carga — y se duplicaba. En ese caso la respuesta es el resultado de la carga, tal cual.
+         */
+        try {
+            return $this->responder_con_el_modelo($conversation, $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista);
+        } catch (\Throwable $e) {
+            $respaldo = is_null($confirmacion_determinista)
+                ? null
+                : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
+
+            if (is_null($respaldo)) {
+                throw $e;
+            }
+
+            Log::warning('AsistenteIaService: el modelo falló después de una confirmación determinista; se contesta con el resultado.', [
+                'ai_conversation_id' => $conversation->id,
+                'tarjeta_id'         => $confirmacion_determinista['tarjeta_id'],
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $respaldo;
+        }
+    }
+
+    /**
+     * El loop de tool use de responder(), con todo lo que responder() ya resolvió (el dueño, el flag
+     * de acciones, el canal y la confirmación determinista). Está separado sólo para que responder()
+     * pueda devolver el resultado de una carga ya confirmada si el modelo falla (ver el 🔴 de ahí).
+     *
+     * @param AiConversation $conversation
+     * @param AiMessage $assistant_message
+     * @param User|null $owner
+     * @param bool $con_acciones
+     * @param bool $es_whatsapp
+     * @param array|null $confirmacion_determinista  Lo que devolvió ConfirmacionDeterministaIaHelper::quizas_confirmar().
+     * @return string
+     *
+     * @throws AsistenteIaException
+     */
+    protected function responder_con_el_modelo(AiConversation $conversation, AiMessage $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista): string
+    {
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp);
         $messages = $this->build_messages_payload($conversation);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp);
+
+        /*
+         * La nota con el resultado REAL de la confirmación viaja pegada al "sí" de la persona: el
+         * modelo sólo tiene que contarlo y seguir con lo que haya quedado pendiente del pedido.
+         */
+        if (! is_null($confirmacion_determinista)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, ConfirmacionDeterministaIaHelper::nota($confirmacion_determinista));
+        }
 
         /*
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
@@ -299,6 +381,41 @@ class AsistenteIaService
          * Una consulta de solo lectura nunca lo prende, así que nunca se encarece.
          */
         $toco_una_carga = false;
+
+        /*
+         * Si el sistema ya confirmó una carga por el sí de la persona, el turno ya "tocó" una carga:
+         * el texto que la cuenta lo escribe el Profundo, igual que si el modelo hubiera llamado a
+         * confirmar_carga_pendiente (es justo el texto donde se inventan números).
+         */
+        if (! is_null($confirmacion_determinista)) {
+            $toco_una_carga = true;
+        }
+
+        /*
+         * 🔴 UN TURNO CON FOTO ARRANCA ESCALADO DESDE LA PRIMERA VUELTA (correcciones del 24/9/2026,
+         * decisión tomada por la misión asistente-fotos-barras-y-compras en nombre de Lucas). Las 17
+         * conversaciones reales mostraron que con el dueño en "ágil" las malas decisiones de un
+         * pedido con foto —cuestionar el emisor de la factura, pedir el precio de venta teniendo
+         * costo y margen, decir que no puede leer el código de barras— las toma el modelo rápido
+         * ANTES de llamar a cualquier tool de carga, así que el escalado por toca_una_carga() nunca
+         * llegaba a entrar. Con "profundo" salieron los cinco escenarios.
+         *
+         * Anthropic: el modelo de "profundo" desde la vuelta 0. DeepSeek: el Pro no ve imágenes, así
+         * que modelo_del_asistente() sigue eligiendo el modelo con visión, pero con el thinking
+         * ENABLED desde el inicio (el de profundo). Eso NO reabre el 400 de 1e9711bd: ese error era
+         * prender el thinking A MITAD de turno, con un tool_use previo sin bloque `thinking`; un turno
+         * que arranca pensando devuelve sus bloques `thinking` y thinking_apto_para_historial() los
+         * deja pasar. Se paga el modelo caro sólo en los turnos con foto, que son los de cargar algo.
+         *
+         * ⚠️ SÓLO SI LA FOTO LA TRAE EL MENSAJE ACTUAL DEL DUEÑO, no si viaja reenviada desde la última
+         * tanda (con_las_fotos_de_la_ultima_tanda). Con `$lleva_imagenes` (que las cuenta a las dos) un
+         * "gracias" o un "¿cuánto vendí hoy?" hasta tres mensajes después de una foto arrancaba en
+         * Opus, o en DeepSeek pensando (segundo chequeo adversarial, 24/9/2026). Las reenviadas viajan
+         * igual —y por eso `$lleva_imagenes` sigue eligiendo el modelo con visión—, pero no escalan.
+         */
+        if ($this->el_mensaje_actual_trae_foto($conversation, $assistant_message)) {
+            $toco_una_carga = true;
+        }
 
         $iterations = 0;
         $final_text = '';
@@ -437,11 +554,29 @@ class AsistenteIaService
             }
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
-            $final_text = $this->extract_response_text($response_body);
+            $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
             break;
         }
 
-        $final_text = trim($final_text);
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): fuera las oraciones de razonamiento
+         * filtrado (el del msg 136 de demo3: "Confirmation needed; no report state until
+         * confirmar_carga_pendiente returns..."). Ver TextoFinalIaHelper.
+         *
+         * Si limpiar deja el texto VACÍO: con una confirmación determinista hecha, la respuesta es su
+         * resultado (el modelo no escribió nada que sirva, y la carga sí se hizo); si no, vuelve el
+         * original — un mensaje vacío no se puede mandar (segundo chequeo adversarial, 24/9/2026).
+         */
+        $crudo = trim($final_text);
+        $final_text = trim(TextoFinalIaHelper::limpiar($crudo, $this->nombres_de_herramientas($tools)));
+
+        if ($final_text === '' && $crudo !== '') {
+            $respaldo = is_null($confirmacion_determinista)
+                ? null
+                : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
+
+            $final_text = is_null($respaldo) ? $crudo : $respaldo;
+        }
 
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [
@@ -771,9 +906,10 @@ VERDAD;
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
-  foto de una sucursal, mandar a buscar imágenes (categorías y artículos) y cambiar un
-  diseño de PDF; en ese caso avisá que ya quedó hecho o mandado. Con "cauteloso" dejás la
-  tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
+  foto de una sucursal, mandar a buscar imágenes (categorías y artículos), cambiar un
+  diseño de PDF y la compra con factura (con el alta del proveedor si no existía); en ese
+  caso avisá que ya quedó hecho o mandado, con lo que te devolvió el resultado. Con
+  "cauteloso" dejás la tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
   bancos de cheques, los permisos de un empleado y el borrado por pantalla
   (proponer_borrado_por_pantalla) SIEMPRE dejan tarjeta.
 - 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
@@ -854,14 +990,23 @@ AUTO_RESUELTO;
 - Nunca muestres ni pidas números internos (ids).
 - La foto de una sucursal solo la pueden asignar el dueño o un administrador. La foto la saco sola de las
   que la persona mandó en la conversación; no se la pidas.
-- 🔴 La FACTURA de un proveedor no la leés vos: la lee el escaneo del sistema, con su propia IA, cuando
-  la persona confirma la compra. Aunque la foto viaje en el mensaje, NO transcribas ni adelantes montos,
-  renglones, artículos ni datos de la factura como si los hubieras leído (un número tuyo se lee como un
-  dato confirmado y puede estar mal). Tu trabajo es armar la compra con proponer_compra_con_factura y
-  decir que la lectura se hace después de confirmar y que los artículos se revisan desde Compras. Si
-  el proveedor no existe, esa herramienta no lo crea: el alta va ANTES, con proponer_alta de
-  proveedores (pedí solo el nombre o razón social; el CUIT y el resto son opcionales), y la compra con
-  factura se arma en un mensaje posterior, cuando la persona ya confirmó el alta.
+- 🔴 Las fotos que la persona ya mandó en esta conversación las encuentran solas las herramientas
+  (la foto de un artículo, la de una sucursal, la compra con factura y el alta de un artículo con su
+  foto), aunque se haya charlado en el medio. Nunca le pidas que la reenvíe, salvo que la herramienta
+  te diga que no hay ninguna.
+- Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
+  proponer_alta de article con con_foto_de_la_conversacion (y descripcion si la hay), nunca un alta y
+  después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+- 🔴 La FACTURA de un proveedor no la leés vos: la lee el escaneo del sistema, con su propia IA. Aunque
+  la foto viaje en el mensaje, NO transcribas ni adelantes montos, renglones, artículos ni datos de la
+  factura como si los hubieras leído (un número tuyo se lee como un dato confirmado y puede estar mal).
+  Lo único que podés sacar de la foto es el nombre del emisor, y sólo si la persona no te dijo de qué
+  proveedor es. Tu trabajo es armar la compra con proponer_compra_con_factura, en la misma vuelta: si
+  el proveedor no existe, la herramienta lo da de alta sola (no uses proponer_alta antes); la sucursal
+  NO la preguntes (si no la dijo, la herramienta usa la de la persona); y si la factura dice otra razón
+  social que la que dijo la persona, no lo cuestiones ni lo preguntes: manda lo que dijo la persona.
+  Después contá que el escaneo corre en segundo plano, que cuando termina el aviso le aparece EN EL
+  SISTEMA (en la pantalla, no por WhatsApp) y que los artículos se revisan desde Compras.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma
@@ -889,6 +1034,10 @@ AUTO_RESUELTO;
 {$regla_de_auto_ejecucion}
 - Las líneas del historial que empiezan con "[Tarjeta" las escribe el sistema: te dicen qué
   pasó con cada tarjeta. No las repitas.
+- Si el mensaje de la persona termina con una nota "[El sistema ya confirmó la tarjeta...]", esa
+  carga ya la registró el sistema por su sí: contá el resultado que dice la nota, no digas que
+  dejaste una tarjeta y seguí con lo que haya quedado pendiente. Si la nota dice que no se pudo,
+  contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
     }
@@ -1141,6 +1290,8 @@ Estás hablando por WhatsApp, no por la pantalla del sistema:
   Si algo se hace desde el sistema, decí en qué parte del sistema, no qué botón apretar.
 - La mayoría de las veces te va a hablar por audio y te llega ya pasado a texto. Si te
   llega un audio sin transcribir, decilo en una línea y pedile que te lo escriba.
+- Si te manda la foto de un producto con su código de barras, SÍ podés leer los dígitos
+  impresos debajo de las barras y buscarlo en internet: usá buscar_producto_por_codigo_de_barras.
 {$confirmacion}
 WHATSAPP;
     }
@@ -1171,6 +1322,10 @@ WHATSAPP;
 - Nunca digas que algo quedó cargado hasta que confirmar_carga_pendiente te conteste que
   sí. Cuando te conteste, repetí lo que te devolvió (el número del gasto, del pago o de la
   compra) en una línea.
+- Si al final del mensaje de la persona hay una nota "[El sistema ya confirmó la tarjeta...]",
+  esa carga ya la registró el sistema por su sí: no llames a confirmar_carga_pendiente, contá
+  el resultado que dice la nota y seguí con lo que haya quedado pendiente. Si la nota dice que
+  no se pudo, contá ese motivo tal cual.
 CONFIRMACION;
     }
 
@@ -1338,7 +1493,80 @@ CONFIRMACION;
             array_shift($turns);
         }
 
+        $turns = $this->con_las_fotos_de_la_ultima_tanda($conversation, $turns, $id_ultimo_user);
+
         return $this->turnos_para_la_api($turns);
+    }
+
+    /**
+     * Si el último mensaje del dueño NO trae foto, le vuelve a sumar en base64 las fotos sin usar de
+     * su última tanda (correcciones del 24/9/2026).
+     *
+     * 🔴 POR QUÉ. La regla de arriba (sólo el último mensaje manda sus fotos) dejaba ciego al modelo
+     * en cuanto el dueño contestaba algo: en la prueba real, dos turnos después de mandar la foto del
+     * producto el modelo le pidió "decime qué ves en la imagen". La foto que todavía no se usó es la
+     * que está en juego, así que vuelve a viajar — con tres topes para que el costo no crezca sin
+     * techo, que es lo que la regla de arriba cuida:
+     *   - sólo fotos SIN USAR de la última tanda del dueño, de las últimas 24 horas
+     *     (FotosDeLaConversacionIaHelper::tanda_de: nunca las de internet, que cuelgan del asistente);
+     *   - como mucho MAX_FOTOS_DE_LA_TANDA, las más nuevas;
+     *   - y sólo si esa tanda está a MAX_MENSAJES_HASTA_LA_TANDA mensajes del dueño o menos: más
+     *     atrás ya es otra charla, y la herramienta que la necesite la encuentra sola igual.
+     *
+     * @param  AiConversation  $conversation
+     * @param  array<int, array{role: string, texto: string, imagenes: array}>  $turns
+     * @param  int  $id_ultimo_user
+     * @return array<int, array{role: string, texto: string, imagenes: array}>
+     */
+    protected function con_las_fotos_de_la_ultima_tanda(AiConversation $conversation, array $turns, $id_ultimo_user): array
+    {
+        $ultimo = count($turns) - 1;
+
+        if ($id_ultimo_user <= 0 || $ultimo < 0 || $turns[$ultimo]['role'] !== 'user' || count($turns[$ultimo]['imagenes']) > 0) {
+            return $turns;
+        }
+
+        $tanda = FotosDeLaConversacionIaHelper::tanda_de((int) $conversation->id, (int) $conversation->user_id, (int) $id_ultimo_user);
+
+        if (! count($tanda)) {
+            return $turns;
+        }
+
+        $mensaje_de_la_tanda = 0;
+
+        foreach ($tanda as $imagen) {
+            $mensaje_de_la_tanda = max($mensaje_de_la_tanda, (int) $imagen->ai_message_id);
+        }
+
+        $del_dueno_despues = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '>', $mensaje_de_la_tanda)
+            ->where('id', '<=', (int) $id_ultimo_user)
+            ->count();
+
+        if ($del_dueno_despues > self::MAX_MENSAJES_HASTA_LA_TANDA) {
+            return $turns;
+        }
+
+        $bloques = [];
+
+        foreach (array_slice($tanda, -self::MAX_FOTOS_DE_LA_TANDA) as $imagen) {
+            $bloque = $this->bloque_de_una_imagen($imagen);
+
+            if (! is_null($bloque)) {
+                $bloques[] = $bloque;
+            }
+        }
+
+        if (! count($bloques)) {
+            return $turns;
+        }
+
+        $turns[$ultimo]['imagenes'] = $bloques;
+        $turns[$ultimo]['texto'] = trim($turns[$ultimo]['texto'] . "\n"
+            . '[Van de nuevo las fotos que mandó hace un momento y todavía no se usaron.]');
+
+        return $turns;
     }
 
     /**
@@ -1380,9 +1608,34 @@ CONFIRMACION;
     }
 
     /**
+     * true si el mensaje del dueño que este turno contesta trae sus PROPIAS fotos (no las reenviadas
+     * de la última tanda). Es lo único que escala un turno por foto: ver el ⚠️ en
+     * responder_con_el_modelo() (segundo chequeo adversarial, 24/9/2026).
+     *
+     * @param AiConversation $conversation
+     * @param AiMessage $assistant_message
+     * @return bool
+     */
+    protected function el_mensaje_actual_trae_foto(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '<', (int) $assistant_message->id)
+            ->orderBy('id', 'DESC')
+            ->value('id');
+
+        if (is_null($pedido)) {
+            return false;
+        }
+
+        return AiMessageImagen::where('ai_message_id', (int) $pedido)->exists();
+    }
+
+    /**
      * true si algún mensaje del payload lleva al menos un bloque `image` (la forma que arma
      * bloques_de_imagen(): `{type: 'image', source: {type: 'base64', ...}}`). Un turno sin fotos
-     * viaja con `content` string y no cuenta; uno con fotos, con `content` array de bloques.
+     * viaja con `content` string y no cuenta; uno con fotos, con `content` array de bloques. Cuenta
+     * también las fotos reenviadas de la última tanda.
      *
      * Lo usa responder() para pedirle a ProveedorIaHelper el modelo con visión (misión
      * proveedores-ia-deepseek: el Profundo de DeepSeek no ve imágenes).
@@ -1457,29 +1710,46 @@ CONFIRMACION;
         $bloques = [];
 
         foreach ($message->imagenes as $imagen) {
-            $binario = AsistenteImagenHelper::binario($imagen);
+            $bloque = $this->bloque_de_una_imagen($imagen);
 
-            if (is_null($binario)) {
-                continue;
+            if (! is_null($bloque)) {
+                $bloques[] = $bloque;
             }
-
-            $media_type = AsistenteImagenHelper::media_type($binario);
-
-            if (is_null($media_type)) {
-                continue;
-            }
-
-            $bloques[] = [
-                'type'   => 'image',
-                'source' => [
-                    'type'       => 'base64',
-                    'media_type' => $media_type,
-                    'data'       => base64_encode($binario),
-                ],
-            ];
         }
 
         return $bloques;
+    }
+
+    /**
+     * El bloque `image` en base64 de UNA foto, o null si el archivo no está o no es de un tipo que
+     * el proveedor acepte (ver el 🔴 del media_type en bloques_de_imagen()). Separado para que las
+     * fotos de la última tanda (con_las_fotos_de_la_ultima_tanda) viajen exactamente igual.
+     *
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return array<string, mixed>|null
+     */
+    protected function bloque_de_una_imagen($imagen)
+    {
+        $binario = AsistenteImagenHelper::binario($imagen);
+
+        if (is_null($binario)) {
+            return null;
+        }
+
+        $media_type = AsistenteImagenHelper::media_type($binario);
+
+        if (is_null($media_type)) {
+            return null;
+        }
+
+        return [
+            'type'   => 'image',
+            'source' => [
+                'type'       => 'base64',
+                'media_type' => $media_type,
+                'data'       => base64_encode($binario),
+            ],
+        ];
     }
 
     /**
@@ -2308,6 +2578,39 @@ CONFIRMACION;
                     );
                 },
             ],
+            /*
+             * 🔴 MISIÓN asistente-fotos-barras-y-compras (24/9/2026), al final por la regla del
+             * prefijo del caché. Es de LECTURA (no carga nada en el negocio) y va en todos los
+             * canales: en WhatsApp es la que sirve con la foto del producto. Sale a internet con la
+             * clave de la plataforma y tiene tope diario: todo eso vive en el helper.
+             */
+            [
+                'name' => 'buscar_producto_por_codigo_de_barras',
+                'description' => 'Busca en internet qué producto es un código de barras (EAN/GTIN) y devuelve su nombre comercial, marca, una descripción en español y, si la encuentra, una foto profesional del producto ya guardada (imagen_id). Usala cuando la persona mande la FOTO de un producto o de su código de barras, o te dicte el código, y quiera cargarlo o saber qué es. En la foto, leé los dígitos impresos DEBAJO de las barras (todos, sin espacios) y pasalos en `codigo`: sí podés leerlos. Si el código ya está cargado en el negocio te lo dice (ya_existe) y no busca. Con el resultado, proponé UNA sola alta (proponer_alta de article) con name, bar_code, descripcion e imagen_id; si la persona no te dio costo ni precio, proponela igual sin ellos y decile que te los puede pasar. Si vuelve "error" o "nombre": null, contá eso y pedile el dato a la persona: no inventes el producto. Cada búsqueda en internet descuenta del tope diario del negocio (busquedas_restantes_hoy).',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'codigo' => [
+                            'type'        => 'string',
+                            'description' => 'Los dígitos del código de barras: los que leés impresos debajo de las barras en la foto o los que dictó la persona. Ejemplo: "7798111212032".',
+                        ],
+                    ],
+                    'required' => ['codigo'],
+                ],
+                /*
+                 * El cuarto argumento es el assistant en curso: la foto encontrada se cuelga de él
+                 * (nunca de un mensaje 'user', ver AsistenteImagenHelper::guardar_binario()). Sin
+                 * mensaje (el MCP llama las lecturas sin uno) la búsqueda anda igual, sin foto.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    return BusquedaPorCodigoDeBarrasIaHelper::buscar(
+                        (int) $owner_id,
+                        isset($input['codigo']) ? (string) $input['codigo'] : '',
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        ($assistant_message instanceof AiMessage) ? $assistant_message : null
+                    );
+                },
+            ],
         ];
     }
 
@@ -2484,7 +2787,9 @@ CONFIRMACION;
                     // misma entrada de registro_de_lectura(): acá solo se la invoca. La conversación
                     // va tercera para las tools que recortan por QUIÉN pregunta (ver el docblock
                     // del registro); las demás la ignoran sin declararla.
-                    $datos = call_user_func($handler, $tool_input, $owner_id, $conversation);
+                    // El assistant en curso va cuarto (misión asistente-fotos-barras-y-compras): la
+                    // búsqueda por código de barras cuelga de él la foto que encuentra.
+                    $datos = call_user_func($handler, $tool_input, $owner_id, $conversation, $assistant_message);
 
                     /*
                      * Misión agente-ia-mano-derecha (§1): de los datos CRUDOS —antes del
@@ -2646,23 +2951,91 @@ CONFIRMACION;
      */
 
     /**
+     * Pega una nota del sistema al final del último turno de la persona (misión
+     * asistente-fotos-barras-y-compras): la de ConfirmacionDeterministaIaHelper::nota(). Un turno
+     * con `content` string suma la nota en un párrafo aparte; uno con bloques (traía fotos), un
+     * bloque `text` más. Si el payload no termina en un turno de la persona, se deja como está: la
+     * API exige alternancia y no se inventa un turno.
+     *
+     * @param  array<int, array{role: string, content: string|array}>  $messages
+     * @param  string  $nota
+     * @return array<int, array{role: string, content: string|array}>
+     */
+    protected function con_nota_en_el_ultimo_user(array $messages, $nota): array
+    {
+        $ultimo = count($messages) - 1;
+
+        if ($ultimo < 0 || ($messages[$ultimo]['role'] ?? '') !== 'user') {
+            return $messages;
+        }
+
+        if (is_array($messages[$ultimo]['content'])) {
+            $messages[$ultimo]['content'][] = ['type' => 'text', 'text' => (string) $nota];
+
+            return $messages;
+        }
+
+        $texto = trim((string) $messages[$ultimo]['content']);
+
+        $messages[$ultimo]['content'] = $texto === '' ? (string) $nota : $texto . "\n\n" . $nota;
+
+        return $messages;
+    }
+
+    /**
+     * Los nombres de TODAS las herramientas que el modelo puede conocer: las del turno y las de
+     * carga de todos los canales. Es la lista con la que TextoFinalIaHelper reconoce un párrafo que
+     * nombra una función interna (el caso del msg 136 de demo3).
+     *
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return array<int, string>
+     */
+    protected function nombres_de_herramientas(array $tools): array
+    {
+        $nombres = array_column($tools, 'name');
+
+        foreach (HerramientasDeCarga::nombres(true) as $nombre) {
+            $nombres[] = $nombre;
+        }
+
+        return array_values(array_unique($nombres));
+    }
+
+    /**
      * Concatena el texto de los bloques text de una respuesta.
      *
      * @param array<string, mixed> $body Respuesta JSON del proveedor (forma de Anthropic).
      * @return string
      */
-    protected function extract_response_text(array $body): string
+    protected function extract_response_text(array $body, array $nombres_de_herramientas = null): string
     {
-        $text = '';
+        $bloques = [];
 
         if (isset($body['content']) && is_array($body['content'])) {
             foreach ($body['content'] as $block) {
                 if (is_array($block) && ($block['type'] ?? '') === 'text' && isset($block['text'])) {
-                    $text .= (string) $block['text'];
+                    $bloques[] = (string) $block['text'];
                 }
             }
         }
 
-        return $text;
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): con varios bloques de texto, un bloque
+         * que ENTERO es razonamiento filtrado se descarta acá, antes de unir. Los bloques se pegan sin
+         * separador (así salen bien las respuestas de hoy), y un razonamiento que viene en su propio
+         * bloque sin salto de línea quedaría soldado al párrafo en español: el saneo por párrafo de
+         * TextoFinalIaHelper::sanear ya no lo podría separar. Siempre queda al menos un bloque.
+         */
+        if (!is_null($nombres_de_herramientas) && count($bloques) > 1) {
+            $limpios = array_values(array_filter($bloques, function ($bloque) use ($nombres_de_herramientas) {
+                return !TextoFinalIaHelper::es_razonamiento_filtrado($bloque, $nombres_de_herramientas);
+            }));
+
+            if (count($limpios)) {
+                $bloques = $limpios;
+            }
+        }
+
+        return implode('', $bloques);
     }
 }
