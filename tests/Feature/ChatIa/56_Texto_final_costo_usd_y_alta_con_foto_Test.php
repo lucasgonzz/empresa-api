@@ -767,6 +767,20 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
         $this->assertSame('Cera zz-campos Mate', $pedidos['name'], 'Lo que el modelo vuelve a mandar pisa.');
         $this->assertSame('7798111212032', (string) $pedidos['bar_code'], 'El código de barras se hereda.');
         $this->assertEquals(10, $pedidos['cost'], 'El costo se hereda.');
+
+        /* Para SACAR un campo en la corrección, el modelo lo manda vacío: no vuelve el heredado. */
+        $sin_codigo = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad'     => 'article',
+            'datos'       => ['bar_code' => ''],
+            'reemplaza_a' => $corregida['tarjeta_id'],
+        ]);
+
+        $this->assertTrue($sin_codigo['ok'], json_encode($sin_codigo));
+
+        $pedidos = AiMessageAction::find($sin_codigo['tarjeta_id'])->datos['pedidos'];
+
+        $this->assertTrue(!isset($pedidos['bar_code']) || trim((string) $pedidos['bar_code']) === '', 'Mandado vacío, el código de barras se saca: ' . json_encode($pedidos));
+        $this->assertSame('Cera zz-campos Mate', $pedidos['name'], 'El resto se sigue heredando.');
     }
 
     /**

@@ -403,6 +403,38 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
     }
 
     /**
+     * Una transcripción cortada por el techo de tokens (stop_reason max_tokens) no se usa ni se
+     * cachea: el turno sigue con el modelo que ve la foto (chequeo adversarial, 24/9/2026).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_transcripcion_cortada_por_tokens_no_se_usa()
+    {
+        $this->dueno_en('deepseek', 'agil');
+
+        $cortada = $this->transcripcion('FOTO 1: Botella de aceite de girasol Natura 1,5 L. Código de ba');
+        $cortada['stop_reason'] = 'max_tokens';
+
+        Http::fake([
+            'api.deepseek.com/*' => Http::sequence()
+                ->push($cortada, 200)
+                ->push($this->end_turn('Veo un aceite.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->turno_con_foto();
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies);
+        $this->assertSame('deepseek-vision-p13', $bodies[1]['model'], 'Cortada, no se usa: el turno va al modelo que ve.');
+        $this->assertSame(1, $this->imagenes_en($bodies[1]['messages']));
+    }
+
+    /**
      * Lo mismo con un timeout (la excepción de conexión de Laravel): el turno no se rompe.
      *
      * @group asistente-whatsapp
@@ -565,8 +597,8 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * Un turno que NO va escalado desde el arranque (dueño en "ágil", sin foto propia: sólo la
-     * reenviada de la tanda) no transcribe: un "gracias" no paga una lectura ni el modelo caro.
+     * Corregir una tarjeta pendiente arranca escalado (Pro pensando); sin tarjeta pendiente, o con una
+     * PREGUNTA, sigue en el Ágil.
      *
      * @group asistente-whatsapp
      * @test
@@ -627,9 +659,43 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $bodies = $this->bodies_enviados();
 
         $this->assertSame('deepseek-flash-p13', $bodies[0]['model']);
+
+        /* Una PREGUNTA con la tarjeta todavía abierta no corrige nada: sigue en el Ágil. */
+        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::fake([
+            'api.deepseek.com/*' => Http::response($this->end_turn('Hoy vendiste 10.000.'), 200),
+            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'Te la dejé corregida. ¿La registro?', 'acciones_habilitadas' => true]);
+        $ultima = \App\Models\AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'assistant')->orderBy('id', 'DESC')->first();
+
+        \App\Models\AiMessageAction::forceCreate([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $ultima->id,
+            'user_id'            => $this->comercio->id,
+            'auth_user_id'       => $this->comercio->id,
+            'tipo'               => 'alta',
+            'clave'              => 'alta-p13-' . uniqid(),
+            'estado'             => \App\Models\AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['entidad' => 'article', 'operacion' => 'alta', 'payload' => ['name' => 'Cera Nic Mate']],
+            'presentacion'       => ['titulo' => 'Nuevo artículo', 'renglones' => []],
+        ]);
+
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => '¿Cuánto vendí hoy?']);
+        $assistant = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertSame('deepseek-flash-p13', $bodies[0]['model'], 'Una pregunta no escala aunque haya una tarjeta abierta.');
     }
 
     /**
+     * Un turno que NO va escalado desde el arranque (dueño en "ágil", sin foto propia: sólo la
+     * reenviada de la tanda) no transcribe: un "gracias" no paga una lectura ni el modelo caro.
+     *
      * @group asistente-whatsapp
      * @test
      */

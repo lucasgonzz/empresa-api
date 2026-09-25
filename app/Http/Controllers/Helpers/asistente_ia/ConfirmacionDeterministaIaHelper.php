@@ -324,6 +324,22 @@ class ConfirmacionDeterministaIaHelper
                 return false;
             }
 
+            /*
+             * Una PREGUNTA no corrige la carga ("¿cuánto vendí hoy?" con la tarjeta todavía abierta):
+             * escalarla era pagar Pro —u Opus con Anthropic— por una consulta (chequeo adversarial,
+             * 24/9/2026).
+             */
+            $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
+                                ->where('rol', 'user')
+                                ->where('id', '<', $assistant_message->id)
+                                ->orderBy('id', 'DESC')
+                                ->value('contenido');
+
+            if (is_null($pedido) || mb_strpos((string) $pedido, '?') !== false || mb_strpos((string) $pedido, '¿') !== false) {
+
+                return false;
+            }
+
             return AiMessageAction::where('ai_conversation_id', $conversation->id)
                                     ->where('ai_message_id', (int) $ultimo_del_asistente)
                                     ->where('estado', AiMessageAction::ESTADO_PROPUESTA)

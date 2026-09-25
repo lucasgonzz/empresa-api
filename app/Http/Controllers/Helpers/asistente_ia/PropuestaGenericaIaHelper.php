@@ -258,9 +258,15 @@ class PropuestaGenericaIaHelper
             return $validado;
         }
 
+        /*
+         * Sólo de una tarjeta que se está corrigiendo (todavía propuesta, o recién reemplazada en una
+         * cadena de correcciones): nunca de una ya confirmada, cancelada o vencida (chequeo
+         * adversarial, 24/9/2026).
+         */
         $anterior = AiMessageAction::where('id', $reemplaza_a)
                                     ->where('ai_conversation_id', $contexto->conversation->id)
                                     ->where('tipo', AiMessageAction::TIPO_ALTA)
+                                    ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA])
                                     ->first();
 
         if (is_null($anterior)
