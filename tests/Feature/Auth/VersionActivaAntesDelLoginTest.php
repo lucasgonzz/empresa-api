@@ -2,19 +2,23 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Models\User;
+use Illuminate\Database\MySqlConnection;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 use Tests\TestCase;
 
 /**
  * Misión redireccion-version-antes-del-login (24/9/2026): `GET /api/version-activa`, el endpoint
- * PÚBLICO que el SPA consulta en la pantalla de login, ANTES de que nadie inicie sesión, para saber
- * cuál es la dirección del sistema activo y mandar al negocio a la versión actual sin esperar a que
- * escriba su documento y su clave en el frente viejo. Ver VersionActivaHelper y
- * VersionActivaController.
+ * PÚBLICO que el SPA consulta apenas carga la aplicación (con o sin sesión iniciada, y también en
+ * /demo/ingreso y /informe/{token}) para saber cuál es la dirección del sistema activo y poder
+ * mandar al negocio a la versión actual ANTES de que inicie sesión, sin esperar a que escriba su
+ * documento y su clave en el frente viejo. Ver VersionActivaHelper y VersionActivaController.
  *
  * LO QUE ESTE ARCHIVO PROTEGE, caso por caso:
  *
@@ -33,7 +37,19 @@ use Tests\TestCase;
  *     USER_ID de la carpeta no dice a quién le habla el visitante anónimo.
  *  f. Un valor con espacios alrededor se devuelve recortado.
  *  g. Sin ningún dueño (una base con solo empleados): null, sin explotar.
- *  h. Un control del propio test (el último): una ruta cualquiera del grupo `api`, SIN la
+ *  h. 🔴 LA REGLA ES LA CANTIDAD DE DUEÑOS, NO EL CONTENIDO: dos dueños donde solo uno tiene la
+ *     dirección cargada (null, cadena vacía o solo espacios en el otro, y en los dos órdenes)
+ *     también contestan null. Un helper que contara solo a los dueños CON dirección vería "un
+ *     único dueño" y mandaría al que entra al frente equivocado, y pasaba los casos a a g. Son los
+ *     casos reales de la base `fenix` (Fenix y Galván, dos dueños) y de Golonorte (dos dueños: el
+ *     800, activo, y el 801, sin ventas).
+ *  i. 🔴 UNA BASE A LA QUE LE FALTA LA COLUMNA `default_version`: 200 con null y NO 500. La columna
+ *     entró editando la migración base de `users` (commit 2cd7a3c9, 27/11/2024) sin una migración
+ *     propia, así que una base creada antes puede no tenerla. Sin el catch de QueryException del
+ *     helper, cada carga de la aplicación de ese cliente daría 500, con un Log::error por carga. Se
+ *     simula sin tocar la MySQL de testing (ver con_una_base_a_la_que_le_falta_la_columna(), y por
+ *     qué NO se usa una sqlite en memoria).
+ *  j. Un control del propio test (el último): una ruta cualquiera del grupo `api`, SIN la
  *     exclusión de la ruta nueva, sí emite la cookie de sesión cuando el pedido viene del frente.
  *     Sin ese control, el "no trae Set-Cookie" del caso a podría dar verde por una razón
  *     equivocada (un entorno donde el pedido nunca se considera "del frente", o donde la sesión
@@ -41,10 +57,11 @@ use Tests\TestCase;
  *
  * SOBRE `Set-Cookie`: la ruta se excluye de EnsureFrontendRequestsAreStateful (de Sanctum), que
  * arranca la sesión y emite la cookie cada vez que el pedido trae un Origin o un Referer de un
- * dominio "stateful". Un visitante anónimo la llama en CADA carga del login, así que sin la
- * exclusión cada visita crearía una sesión en el servidor y le plantaría una cookie al navegador.
- * Por eso el pedido de estos tests viene con el Origin y el Referer del frente (el caso difícil):
- * un pedido sin esos headers ni siquiera activaría el middleware y el caso no probaría nada.
+ * dominio "stateful". La llama cualquier visitante en CADA carga de la aplicación, con o sin
+ * sesión, así que sin la exclusión cada carga anónima crearía una sesión en el servidor y le
+ * plantaría una cookie al navegador. Por eso el pedido de estos tests viene con el Origin y el
+ * Referer del frente (el caso difícil): un pedido sin esos headers ni siquiera activaría el
+ * middleware y el caso no probaría nada.
  *
  * SOBRE LOS USUARIOS: los tests NO dependen de qué usuarios trae sembrada cada base de slot (la de
  * s22 trae el 500 y el 900; otra podría traer otros). Cada test arranca creando sus DOS dueños
@@ -61,8 +78,11 @@ class VersionActivaAntesDelLoginTest extends TestCase
 {
     use DatabaseTransactions;
 
-    /** Ruta pública que consulta el SPA en la pantalla de login (el grupo `api` le pone el prefijo). */
+    /** Ruta pública que consulta el SPA apenas carga la aplicación (el grupo `api` le pone el prefijo). */
     const RUTA = '/api/version-activa';
+
+    /** Nombre de la conexión que simula "una base a la que le falta la columna default_version". */
+    const CONEXION_SIN_COLUMNA = 'zz_base_sin_default_version';
 
     /**
      * Host (con puerto) que estos tests declaran como dominio del frontend "stateful" de Sanctum.
@@ -212,7 +232,7 @@ class VersionActivaAntesDelLoginTest extends TestCase
     }
 
     /**
-     * Hace el pedido como lo hace el SPA del frente viejo en la pantalla de login: anónimo (sin
+     * Hace el pedido como lo hace el SPA del frente viejo al cargar la aplicación: anónimo (sin
      * `actingAs`, sin token) y con el Origin y el Referer del frente. Ese es el caso difícil para
      * la cookie: son justo los headers que hacen que Sanctum arranque la sesión.
      *
@@ -251,6 +271,99 @@ class VersionActivaAntesDelLoginTest extends TestCase
             'La ruta es pública y anónima: no puede arrancar sesión ni plantar ninguna cookie (planta: '
             . implode(', ', $nombres_de_cookies) . ').'
         );
+    }
+
+    /**
+     * Corre `$prueba` con una conexión por defecto que se comporta como una base a la que le FALTA
+     * la columna `users.default_version`, y restaura la conexión original al terminar (try/finally).
+     *
+     * CÓMO: se registra en el DatabaseManager una conexión de simulación que es un MySqlConnection
+     * montado sobre el MISMO PDO que la conexión real (mismas tablas, misma transacción de
+     * DatabaseTransactions: todo se lee igual) y que cambia una sola cosa. La consulta que NOMBRA
+     * `default_version` falla como fallaría en MySQL sin esa columna: mismo SQLSTATE (42S22), mismo
+     * mensaje y por el mismo camino de Laravel, porque Connection::run() envuelve el PDOException en
+     * una QueryException igual que en producción. Todo lo demás pasa derecho a MySQL. Falla si y solo
+     * si el SQL nombra la columna, que es lo que le pasaría a una base sin ella.
+     *
+     * 🔴 POR QUÉ NO UNA SQLITE EN MEMORIA, que sería lo natural: el SQLite de este PHP (3.31.1) tiene
+     * activado el "DQS", así que un identificador entre comillas dobles que no existe como columna
+     * se toma como un literal de texto en vez de fallar, y Laravel envuelve las columnas de SQLite
+     * con comillas dobles. Medido: `select "id", "default_version" from "users"` sobre una tabla sin
+     * esa columna NO tira "no such column", devuelve el texto "default_version". Un test armado así
+     * daba verde con o sin el catch del helper.
+     *
+     * Y no hay DDL: ni la MySQL de testing ni ningún archivo se tocan. La conexión de simulación se
+     * descarta al terminar, y `database.default` vuelve a su valor ANTES de que termine el test:
+     * DatabaseTransactions hace el rollback contra la conexión por defecto del momento, así que si
+     * quedara puesta la de simulación la transacción real no se revertiría.
+     *
+     * @param  callable  $prueba  Lo que se corre con la simulación puesta.
+     * @return mixed  Lo que devuelva $prueba.
+     */
+    protected function con_una_base_a_la_que_le_falta_la_columna(callable $prueba)
+    {
+        // La conexión real (la MySQL de testing, con la transacción abierta) y su nombre.
+        $nombre_de_la_conexion_real = config('database.default');
+        $conexion_real = DB::connection();
+
+        // La simulación se resuelve la primera vez que alguien pide esa conexión (DB::extend).
+        DB::extend(self::CONEXION_SIN_COLUMNA, function ($config, $nombre) use ($conexion_real) {
+
+            return new class(
+                $conexion_real->getPdo(),
+                $conexion_real->getDatabaseName(),
+                $conexion_real->getTablePrefix(),
+                $conexion_real->getConfig()
+            ) extends MySqlConnection {
+
+                /**
+                 * Falla como MySQL sin la columna si el SQL nombra `default_version`; si no, va
+                 * derecho a la MySQL real.
+                 *
+                 * @param  string  $query
+                 * @param  array  $bindings
+                 * @param  bool  $useReadPdo
+                 * @return array
+                 */
+                public function select($query, $bindings = [], $useReadPdo = true)
+                {
+                    if (strpos($query, 'default_version') === false) {
+
+                        return parent::select($query, $bindings, $useReadPdo);
+                    }
+
+                    return $this->run($query, $bindings, function () {
+
+                        // El error que da MySQL por una columna que no existe.
+                        $error = new \PDOException("SQLSTATE[42S22]: Column not found: 1054 Unknown column 'default_version' in 'field list'");
+                        $error->errorInfo = ['42S22', 1054, "Unknown column 'default_version' in 'field list'"];
+
+                        throw $error;
+                    });
+                }
+            };
+        });
+
+        // La simulación pasa a ser la conexión por defecto: la que usan el modelo User y el endpoint.
+        config([
+            'database.connections.' . self::CONEXION_SIN_COLUMNA => ['driver' => 'mysql'],
+            'database.default'                                   => self::CONEXION_SIN_COLUMNA,
+        ]);
+
+        try {
+
+            return $prueba();
+
+        } finally {
+
+            // Vuelve la conexión real, y se descarta la simulación junto con su configuración.
+            config(['database.default' => $nombre_de_la_conexion_real]);
+            DB::purge(self::CONEXION_SIN_COLUMNA);
+
+            $conexiones = config('database.connections');
+            unset($conexiones[self::CONEXION_SIN_COLUMNA]);
+            config(['database.connections' => $conexiones]);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -538,7 +651,128 @@ class VersionActivaAntesDelLoginTest extends TestCase
     }
 
     // ---------------------------------------------------------------------------------------------
-    // h. Control del propio test
+    // h. La regla es la cantidad de dueños, no el contenido
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Dos dueños donde SOLO UNO tiene una dirección utilizable, en los dos órdenes (el que la tiene
+     * puede ser el de id más bajo o el de id más alto) y con las tres formas de "sin cargar" del
+     * otro: null, cadena vacía y solo espacios.
+     *
+     * @return array<string, array<int, string|null>>
+     */
+    public function duenos_donde_solo_uno_tiene_direccion()
+    {
+        return [
+            'el primero con dirección, el segundo sin cargar (null)'  => [self::DIRECCION_ACTIVA, null],
+            'el primero sin cargar (null), el segundo con dirección'  => [null, self::DIRECCION_ACTIVA],
+            'el primero con dirección, el segundo con cadena vacía'   => [self::DIRECCION_ACTIVA, ''],
+            'el primero con cadena vacía, el segundo con dirección'   => ['', self::DIRECCION_ACTIVA],
+            'el primero con dirección, el segundo solo con espacios'  => [self::DIRECCION_ACTIVA, '   '],
+            'el primero solo con espacios, el segundo con dirección'  => ['   ', self::DIRECCION_ACTIVA],
+        ];
+    }
+
+    /**
+     * 🔴 LA REGLA ES LA CANTIDAD DE DUEÑOS, NO EL CONTENIDO. Con dos dueños se contesta null aunque
+     * solo uno de los dos tenga una dirección cargada. Un helper que contara únicamente a los
+     * dueños CON dirección vería "un único dueño" y devolvería esa dirección: mandaría al que entra
+     * al frente de ese negocio sin saber si es el suyo. Con dos dueños en la base no hay forma de
+     * saberlo antes de que escriba su documento, y esa es toda la regla.
+     *
+     * No es un caso de laboratorio, son los casos reales del parque: la base `fenix` (Fenix y
+     * Galván, dos dueños) y la de Golonorte (dos dueños: el 800, activo, y el 801, sin ventas, que
+     * nadie cargó pero que existe y podría estar entrando).
+     *
+     * @dataProvider duenos_donde_solo_uno_tiene_direccion
+     * @param  string|null  $default_version_de_a  El dueño de id más bajo.
+     * @param  string|null  $default_version_de_b  El dueño de id más alto.
+     * @return void
+     */
+    public function test_con_dos_duenos_donde_solo_uno_tiene_direccion_responde_null($default_version_de_a, $default_version_de_b)
+    {
+        $this->armar_dos_duenos($default_version_de_a, $default_version_de_b);
+
+        $respuesta = $this->pedir_desde_el_frente();
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertExactJson(['default_version' => null]);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // i. Una base a la que le falta la columna default_version
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 🔴 UNA BASE CREADA ANTES DE QUE `users.default_version` EXISTIERA (la columna entró editando la
+     * migración base, sin una migración propia): el endpoint responde 200 con null y NO 500.
+     *
+     * Sin el catch de QueryException del helper, cada carga de la aplicación de ese cliente
+     * terminaría en un 500 con su Log::error (y, en producción, una escritura de
+     * error_throttle.json) por cada persona que abre el sistema.
+     *
+     * El escenario de datos es el del caso a (UN dueño con una dirección cargada), a propósito: en
+     * una base sana este mismo escenario devuelve la dirección, así que el null no lo puede explicar
+     * ninguna regla de dueños. Lo explica solamente que la consulta falla y el helper la absorbe.
+     *
+     * Antes de llamar al endpoint se comprueban tres precondiciones, para que el verde no sea
+     * accidental: (1) sin la simulación el escenario SÍ devuelve la dirección; (2) con la
+     * simulación, la consulta del helper falla de verdad con "Unknown column 'default_version'";
+     * (3) con la simulación, lo que no nombra la columna sigue andando.
+     *
+     * `withoutExceptionHandling()`: si el helper dejara escapar la excepción, el test se corta con
+     * ella y con su mensaje real, en vez de pasar por el handler (que la escribiría en el
+     * laravel.log y, en producción, la mandaría al reporte de errores). Además se comprueba con un
+     * espía del Log que el helper tampoco loguea el problema por su cuenta.
+     *
+     * @return void
+     */
+    public function test_una_base_sin_la_columna_default_version_responde_null_y_no_500()
+    {
+        $this->armar_un_solo_dueno(self::DIRECCION_ACTIVA);
+
+        /** Precondición 1: sin la simulación, este escenario devuelve la dirección. */
+        $this->pedir_desde_el_frente()->assertExactJson(['default_version' => self::DIRECCION_ACTIVA]);
+
+        $this->con_una_base_a_la_que_le_falta_la_columna(function () {
+
+            /** Precondición 2: con la simulación, la consulta del helper falla como en MySQL sin la columna. */
+            $this->assertSame(self::CONEXION_SIN_COLUMNA, DB::getDefaultConnection());
+
+            try {
+                User::whereNull('owner_id')->orderBy('id')->limit(2)->get(['id', 'default_version']);
+
+                $this->fail('La simulación tiene que hacer fallar la consulta que nombra la columna default_version.');
+            } catch (QueryException $e) {
+                $this->assertStringContainsString("Unknown column 'default_version'", $e->getMessage());
+                $this->assertSame('42S22', $e->errorInfo[0]);
+            }
+
+            /** Precondición 3: lo que no nombra la columna sigue funcionando, o sea que la falla es solo esa. */
+            $this->assertSame(1, (int) DB::selectOne('select 1 as uno')->uno);
+
+            /** El endpoint, sin handler que lo tape y con un espía del Log. */
+            $this->withoutExceptionHandling();
+            Log::spy();
+
+            $respuesta = $this->pedir_desde_el_frente();
+
+            $respuesta->assertStatus(200);
+            $respuesta->assertExactJson(['default_version' => null]);
+
+            /** Sin loguear: ni el helper ni nadie escribe un problema por esta falta de columna. */
+            foreach (['emergency', 'alert', 'critical', 'error', 'warning'] as $nivel_de_problema) {
+                Log::shouldNotHaveReceived($nivel_de_problema);
+            }
+        });
+
+        /** La conexión original volvió: lo que sigue del test (y el rollback) corre contra la MySQL real. */
+        $this->assertNotSame(self::CONEXION_SIN_COLUMNA, DB::getDefaultConnection());
+        $this->assertSame(1, $this->cantidad_de_duenos());
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // j. Control del propio test
     // ---------------------------------------------------------------------------------------------
 
     /**
