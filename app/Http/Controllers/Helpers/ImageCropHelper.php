@@ -102,6 +102,16 @@ class ImageCropHelper
     const FACTOR_MEMORIA_AL_ENDEREZAR = 1.3;
 
     /**
+     * Cuantos bytes del principio de un JPEG se le dan a exif_read_data para leer la orientacion.
+     *
+     * El EXIF vive en el segmento APP1, que va pegado al inicio del archivo y mide como mucho 64 KB;
+     * con 256 KB queda margen de sobra para un JPEG que traiga otros segmentos antes.
+     *
+     * @var int
+     */
+    const BYTES_PARA_LEER_EXIF = 262144;
+
+    /**
      * Recorta la imagen con el rectangulo dado; si el rectangulo se sale de la imagen, la parte
      * sin imagen se rellena con COLOR_RELLENO.
      *
@@ -360,8 +370,14 @@ class ImageCropHelper
      * Lee la orientacion EXIF (1 a 8) de los bytes originales de una imagen.
      *
      * Solo mira JPEG, que es donde los celulares guardan la orientacion: bytes que empiezan con la
-     * marca de JPEG (FF D8) o un data URI `data:image/jpeg`. No lee rutas de archivo a proposito: el
-     * origen puede venir del cliente y no hay razon para abrir archivos del servidor por este camino.
+     * marca de JPEG (FF D8) o un data URI base64 `data:image/jpeg`. No lee rutas de archivo a
+     * proposito: el origen puede venir del cliente y no hay razon para abrir archivos del servidor
+     * por este camino.
+     *
+     * Solo se le dan a exif_read_data los primeros BYTES_PARA_LEER_EXIF bytes, desde memoria: el EXIF
+     * esta en los primeros segmentos del archivo, no hace falta copiar una foto de 6 MB para leer una
+     * etiqueta. Y el data URI se decodifica a mano (no con el wrapper data://) para no depender de
+     * que el servidor tenga allow_url_fopen prendido.
      *
      * @param  mixed $source Bytes de la imagen o data URI.
      * @return int Orientacion 1..8; 1 (derecha) si no hay EXIF, si no es un JPEG o si no se pudo leer.
@@ -373,35 +389,39 @@ class ImageCropHelper
             return 1;
         }
 
-        // Recurso de memoria abierto (solo en el caso de bytes) para poder cerrarlo despues.
-        $stream = null;
-
-        // Lo que se le pasa a exif_read_data: un stream de memoria o la URL data:// del data URI.
-        $to_read = null;
+        // Los primeros bytes del JPEG, que es donde vive el EXIF (null si no es un JPEG que se pueda leer).
+        $head = null;
 
         if (strncmp($source, "\xFF\xD8", 2) === 0) {
-            // Bytes de un JPEG: se leen desde memoria, sin hacer una copia en base64.
-            $stream = fopen('php://memory', 'r+');
+            // Bytes de un JPEG.
+            $head = substr($source, 0, self::BYTES_PARA_LEER_EXIF);
+        } elseif (preg_match('#^data:image/(?:jpeg|jpg|pjpeg);base64,#i', substr($source, 0, 40), $matches)) {
+            // data URI base64 de un JPEG: se decodifica solo el principio (cada 4 caracteres son 3 bytes).
+            $base64_head = substr($source, strlen($matches[0]), (int) (self::BYTES_PARA_LEER_EXIF / 3) * 4);
+            $decoded     = base64_decode($base64_head, true);
 
-            if ($stream === false) {
-                return 1;
+            if ($decoded !== false) {
+                $head = $decoded;
             }
+        }
 
-            fwrite($stream, $source);
-            rewind($stream);
-            $to_read = $stream;
-        } elseif (preg_match('#^data:image/(?:jpeg|jpg|pjpeg)[;,]#i', substr($source, 0, 40))) {
-            // data URI de un JPEG: el wrapper data:// decodifica el base64 al leerlo.
-            $to_read = 'data://' . substr($source, 5);
-        } else {
+        if ($head === null || strncmp($head, "\xFF\xD8", 2) !== 0) {
             return 1;
         }
 
-        $data = @exif_read_data($to_read);
+        // exif_read_data lee de un stream: uno de memoria con esos primeros bytes.
+        $stream = fopen('php://memory', 'r+');
 
-        if (is_resource($stream)) {
-            fclose($stream);
+        if ($stream === false) {
+            return 1;
         }
+
+        fwrite($stream, $head);
+        rewind($stream);
+
+        $data = @exif_read_data($stream);
+
+        fclose($stream);
 
         if (!is_array($data) || !isset($data['Orientation'])) {
             return 1;

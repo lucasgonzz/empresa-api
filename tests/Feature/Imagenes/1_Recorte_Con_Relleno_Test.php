@@ -1158,10 +1158,18 @@ class Recorte_Con_Relleno_Test extends TestCase
         $jpeg = ob_get_clean();
         imagedestroy($recurso);
 
-        if ($orientacion === null) {
-            return $jpeg;
-        }
+        return $orientacion === null ? $jpeg : $this->con_etiqueta_de_orientacion($jpeg, $orientacion);
+    }
 
+    /**
+     * Le agrega a los bytes de un JPEG un segmento EXIF (APP1) con la etiqueta de orientación dada.
+     *
+     * @param  string $jpeg        Bytes de un JPEG sin EXIF.
+     * @param  int    $orientacion 1 a 8.
+     * @return string Bytes del JPEG con la etiqueta.
+     */
+    protected function con_etiqueta_de_orientacion($jpeg, $orientacion)
+    {
         // APP1 EXIF mínimo: "Exif\0\0" + cabecera TIFF (big-endian) + un solo tag, Orientation (0x0112, SHORT).
         $tiff = "MM\x00\x2A" . pack('N', 8)
             . pack('n', 1)
@@ -1171,6 +1179,34 @@ class Recorte_Con_Relleno_Test extends TestCase
 
         // El segmento APP1 va justo después de la marca de inicio (FF D8).
         return substr($jpeg, 0, 2) . "\xFF\xE1" . pack('n', strlen($app1) + 2) . $app1 . substr($jpeg, 2);
+    }
+
+    /**
+     * JPEG GRANDE (de ruido, no se comprime) con la etiqueta EXIF de orientación: pesa más que la
+     * ventana de lectura del helper (BYTES_PARA_LEER_EXIF), para probar que la orientación se lee
+     * bien aunque solo se le den a exif_read_data los primeros bytes del archivo.
+     *
+     * @param  int $ancho
+     * @param  int $alto
+     * @param  int $orientacion 1 a 8.
+     * @return string Bytes del JPEG.
+     */
+    protected function jpeg_grande_con_orientacion($ancho, $alto, $orientacion)
+    {
+        $recurso = imagecreatetruecolor($ancho, $alto);
+
+        for ($y = 0; $y < $alto; $y++) {
+            for ($x = 0; $x < $ancho; $x++) {
+                imagesetpixel($recurso, $x, $y, (mt_rand(0, 255) << 16) | (mt_rand(0, 255) << 8) | mt_rand(0, 255));
+            }
+        }
+
+        ob_start();
+        imagejpeg($recurso, null, 95);
+        $jpeg = ob_get_clean();
+        imagedestroy($recurso);
+
+        return $this->con_etiqueta_de_orientacion($jpeg, $orientacion);
     }
 
     /**
@@ -1271,6 +1307,34 @@ class Recorte_Con_Relleno_Test extends TestCase
 
         $this->assertSame(100, $imagen->width());
         $this->assertSame(200, $imagen->height());
+    }
+
+    /**
+     * (k) Un JPEG que pesa MÁS que la ventana de lectura (BYTES_PARA_LEER_EXIF) también se endereza,
+     * tanto como bytes como como data URI: el helper solo le da a exif_read_data el principio del
+     * archivo (no copia una foto de varios MB para leer una etiqueta) y no depende de allow_url_fopen.
+     *
+     * @test
+     */
+    public function k_un_jpeg_mas_grande_que_la_ventana_de_lectura_tambien_se_endereza()
+    {
+        // Ruido de 700 x 500: no se comprime, así que el JPEG pesa bastante más de 256 KB.
+        $bytes = $this->jpeg_grande_con_orientacion(700, 500, 6);
+
+        $this->assertGreaterThan(
+            ImageCropHelper::BYTES_PARA_LEER_EXIF,
+            strlen($bytes),
+            'La prueba necesita un JPEG más grande que la ventana de lectura.'
+        );
+
+        $como_bytes = ImageCropHelper::orient_by_exif($this->manager->make($bytes), $bytes);
+        $this->assertSame(500, $como_bytes->width());
+        $this->assertSame(700, $como_bytes->height());
+
+        $uri        = 'data:image/jpeg;base64,' . base64_encode($bytes);
+        $como_datos = ImageCropHelper::orient_by_exif($this->manager->make($bytes), $uri);
+        $this->assertSame(500, $como_datos->width());
+        $this->assertSame(700, $como_datos->height());
     }
 
     /**
