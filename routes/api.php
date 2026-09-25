@@ -550,6 +550,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
         de escritura regalados contra una tabla de la que depende el modulo entero.
     */
     Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
+
+    // Vincular un comprador de la tienda con un cliente del sistema desde la tabla de Pedidos
+    // (misión vincular-comprador-desde-pedidos, 24/9/2026). Van ANTES del resource, como el resto
+    // de las rutas propias de este archivo (`client/options`, `provider/{id}/...`): las de tres
+    // segmentos no chocan con el show del resource, pero así quedan a la vista junto a él.
+    Route::get('buyer/{id}/clientes-para-vincular', 'BuyerController@clientes_para_vincular');
+    Route::post('buyer/{id}/vincular-cliente', 'BuyerController@vincular_cliente');
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 

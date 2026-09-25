@@ -1153,6 +1153,14 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
      */
     public function con_una_foto_el_turno_que_escala_igual_usa_el_modelo_con_vision()
     {
+        /*
+         * Misión asistente-deepseek-pro-razona (24/9/2026): con el interruptor prendido (default) el
+         * turno con foto transcribe con Flash y razona en Pro (13_Deepseek_pro_con_fotos_transcriptas_Test).
+         * Este test fija el camino de respaldo —foto al modelo con visión, nunca al Pro—, que sigue
+         * vivo con el interruptor apagado o si la transcripción falla: por eso lo apaga.
+         */
+        config(['services.deepseek.pro_con_transcripcion' => false]);
+
         $this->dueno_en_deepseek_agil();
 
         Http::fake([

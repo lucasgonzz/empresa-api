@@ -77,6 +77,8 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_ventas_sin_cobrar',
         // Misión asistente-capacidades-y-hilos (22/9/2026): el link del PDF, después de aquélla.
         'consultar_link_de_pdf',
+        // Misión asistente-fotos-barras-y-compras (24/9/2026): la búsqueda por código de barras, al final.
+        'buscar_producto_por_codigo_de_barras',
     ];
 
     /** @var User */

@@ -26,6 +26,15 @@ use Carbon\Carbon;
  * que el plan pide y lo que el admin estima al armar el paquete—, así que "interacción" acá es una
  * llamada a la API del chat, no un mensaje único del dueño.
  *
+ * 🔴 LA TRANSCRIPCIÓN DE FOTOS SUMA TOKENS PERO NO INTERACCIONES (misión asistente-deepseek-pro-razona,
+ * 24/9/2026). Un turno de DeepSeek que razona en Pro con fotos hace antes una llamada al modelo con
+ * visión que las transcribe, y la graba con el proceso `chat_transcripcion_foto`
+ * (TranscripcionDeFotosIaHelper::PROCESO). No es `chat_mensaje` a propósito: no es una pregunta del
+ * dueño y no le puede comer el tope DIARIO de interacciones. Pero tokens_del_mes() suma TODAS las
+ * filas del dueño sin filtrar por proceso, así que esos tokens sí cuentan contra el tope MENSUAL:
+ * se pagaron por su turno. No hay que tocar nada acá para que eso pase; si alguien filtra
+ * tokens_del_mes() por proceso, tiene que dejar adentro este.
+ *
  * Los tokens se cuentan sobre el MES CALENDARIO y las interacciones sobre el DÍA, las dos ventanas
  * en la zona de la app (America/Argentina/Buenos_Aires, config/app.php). El defecto de plataforma
  * conocido de un cliente migrado del shared (UTC) al VPS (-03) —el mismo que documenta

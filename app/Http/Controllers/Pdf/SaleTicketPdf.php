@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Pdf;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
+use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -131,7 +132,82 @@ class SaleTicketPdf extends fpdf {
 		$this->x = $this->x_incial;
 		$this->Cell($this->cell_ancho, 5, 'Vto cae: '.$this->getCaeExpiredAt(), $this->b, 1, 'L');
 
+		$this->leyenda_isib_caba();
+
 		$this->tipo_de_comprobante();
+	}
+
+	/*
+	 * Leyenda ISIB CABA (Res. 169/AGIP/2026) debajo del CAE, solo en comprobantes a consumidor
+	 * final de un punto de venta con la alicuota cargada (lo decide LeyendaIsibCabaHelper, igual
+	 * que en el A4 y el Ticket 2.0). Cada parte va en su propio renglon, cortada al ancho del rollo.
+	 *
+	 * ⚠️ El alto se reserva aparte, en getPdfHeight() via leyenda_isib_caba_alto(): el ticket es un
+	 * rollo continuo y lo que no se reserva se corta.
+	 */
+	function leyenda_isib_caba() {
+
+		$partes = LeyendaIsibCabaHelper::partes($this->afip_ticket);
+
+		if (count($partes) == 0) return;
+
+		$this->SetFont('Arial', 'B', 8);
+
+		foreach ($partes as $parte) {
+			foreach ($this->cortar_al_ancho($parte, $this->cell_ancho) as $renglon) {
+				$this->x = $this->x_incial;
+				$this->Cell($this->cell_ancho, 4, $renglon, $this->b, 1, 'L');
+			}
+		}
+	}
+
+	/*
+	 * Corta un texto en renglones que entren en $ancho con la fuente actual, sin partir palabras.
+	 *
+	 * No se usa MultiCell a proposito: el Cell() de este fpdf decodifica UTF-8 solo
+	 * (fpdf.php:578) pero GetStringWidth() y MultiCell() miden BYTES, asi que con un acento el
+	 * corte sale corrido (ver APRENDER_NO_PARCHEAR, 18/9/2026). Se mide el texto decodificado y
+	 * se devuelve cada renglon en UTF-8, que es lo que Cell() espera.
+	 */
+	function cortar_al_ancho($texto, $ancho) {
+
+		$renglones = [];
+		$actual = '';
+
+		foreach (explode(' ', $texto) as $palabra) {
+			$candidato = $actual === '' ? $palabra : $actual.' '.$palabra;
+
+			if ($actual !== '' && $this->GetStringWidth(utf8_decode($candidato)) > $ancho) {
+				$renglones[] = $actual;
+				$actual = $palabra;
+			} else {
+				$actual = $candidato;
+			}
+		}
+
+		if ($actual !== '') {
+			$renglones[] = $actual;
+		}
+
+		return $renglones;
+	}
+
+	/*
+	 * Alto (mm) que hay que reservar para la leyenda ISIB CABA. Se calcula ANTES de construir el
+	 * fpdf (no hay fuente para medir), asi que estima por cantidad de caracteres con 2,2mm por
+	 * letra: en Arial negrita de 8 una mayuscula promedia ~1,8mm, o sea que reserva de mas. Mas un
+	 * renglon de margen. En un rollo, sobrar deja papel en blanco; faltar corta el comprobante.
+	 */
+	function leyenda_isib_caba_alto() {
+
+		$alto = 0;
+
+		foreach (LeyendaIsibCabaHelper::partes($this->afip_ticket) as $parte) {
+			$renglones = (int) ceil(mb_strlen($parte, 'UTF-8') * 2.2 / max(1, $this->cell_ancho));
+			$alto += max(1, $renglones) * 4;
+		}
+
+		return $alto > 0 ? $alto + 4 : 0;
 	}
 
 	function tipo_de_comprobante() {
@@ -824,6 +900,9 @@ class SaleTicketPdf extends fpdf {
 		$height = 120;
 		if (!is_null($this->afip_ticket)) {
 			$height += 120;
+
+			// Leyenda ISIB CABA debajo del CAE (0 si este comprobante no la lleva).
+			$height += $this->leyenda_isib_caba_alto();
 		}
 
 		// El logo ocupa toda la primera fila (60% del ancho, centrado) y la info del negocio

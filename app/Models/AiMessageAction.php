@@ -274,4 +274,33 @@ class AiMessageAction extends Model
     public function scopeWithAll($query)
     {
     }
+
+    /**
+     * La tarjeta tal como viaja a la SPA, con la miniatura de la foto rearmada en ESTE request.
+     *
+     * Misión asistente-fotos-barras-y-compras (24/9/2026): la tarjeta del alta con foto se propone
+     * adentro del job del asistente, donde url() sale de APP_URL y no del origen con el que la SPA
+     * pide el chat (una instalación con `/public`, el puerto de un slot, el proxy de producción). Es
+     * la clase "la URL que un sistema le entrega a otro, armada con APP_URL" de
+     * APRENDER_NO_PARCHEAR.md. Por eso la presentación guarda `imagen_mensaje` (id del mensaje y
+     * orden) y la URL se vuelve a armar acá con FotosDelMensajeIaHelper::url(), que la deriva del
+     * request. Fuera de un request (consola, cola) queda la `imagen_url` guardada.
+     *
+     * @return array
+     */
+    public function toArray()
+    {
+        $array = parent::toArray();
+
+        if ((!app()->runningInConsole() || app()->runningUnitTests())
+            && isset($array['presentacion']['imagen_mensaje']['ai_message_id'], $array['presentacion']['imagen_mensaje']['orden'])) {
+
+            $array['presentacion']['imagen_url'] = \App\Http\Controllers\Helpers\asistente_ia\FotosDelMensajeIaHelper::url(
+                (int) $array['presentacion']['imagen_mensaje']['ai_message_id'],
+                (int) $array['presentacion']['imagen_mensaje']['orden']
+            );
+        }
+
+        return $array;
+    }
 }
