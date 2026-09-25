@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\SellerCommissionHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\comisiones\PagoVendedorHelper;
+use App\Http\Controllers\Helpers\comisiones\PanelComisionesHelper;
 use App\Models\SellerCommission;
 use Illuminate\Http\Request;
 
@@ -120,6 +121,86 @@ class SellerCommissionController extends Controller
         $nueva = $this->index($model_id, 1, $from_date, $until_date);
         $data = json_decode($nueva->getContent(), true);
         return response()->json(['models' => $data['liquidadas']], 200);
+    }
+
+    /**
+     * Panel de comisiones del vendedor (mision comisiones-vendedor-tablas, 24/9/2026): las tres
+     * tarjetas del modal. Query params opcionales: `desde`, `hasta` (Y-m-d; si vienen mal se
+     * ignoran). Toda la logica en PanelComisionesHelper::resumen().
+     *
+     * GET seller-commission-panel/{seller_id}/{moneda_id}/resumen
+     * Respuesta: {totales: {saldo, total_pendiente, total_pagado}, rango: {desde, hasta}}
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param int $seller_id
+     * @param int $moneda_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function panelResumen(Request $request, $seller_id, $moneda_id) {
+
+        $resumen = PanelComisionesHelper::resumen(
+            $this->userId(),
+            $seller_id,
+            $moneda_id,
+            $request->query('desde'),
+            $request->query('hasta')
+        );
+
+        return response()->json($resumen, 200);
+    }
+
+    /**
+     * Panel de comisiones del vendedor: tabla de liquidadas (ledger con comisiones, pagos y saldo
+     * inicial), paginada de a 15, cada fila con `saldo_calculado`. Query params opcionales:
+     * `desde`, `hasta`, `tipo` (todos|comisiones|pagos), `page`.
+     *
+     * GET seller-commission-panel/{seller_id}/{moneda_id}/liquidadas
+     * Respuesta: paginador de Laravel (data, current_page, last_page, per_page, total, ...).
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param int $seller_id
+     * @param int $moneda_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function panelLiquidadas(Request $request, $seller_id, $moneda_id) {
+
+        $paginador = PanelComisionesHelper::liquidadas(
+            $this->userId(),
+            $seller_id,
+            $moneda_id,
+            $request->query('desde'),
+            $request->query('hasta'),
+            $request->query('tipo'),
+            $request->query('page')
+        );
+
+        return response()->json($paginador, 200);
+    }
+
+    /**
+     * Panel de comisiones del vendedor: tabla de pendientes (comisiones `inactive`), paginada de a
+     * 15. Query params opcionales: `desde`, `hasta` (sobre la fecha de la venta), `page`.
+     *
+     * GET seller-commission-panel/{seller_id}/{moneda_id}/pendientes
+     * Respuesta: paginador de Laravel, sin `saldo_calculado`.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param int $seller_id
+     * @param int $moneda_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function panelPendientes(Request $request, $seller_id, $moneda_id) {
+
+        $paginador = PanelComisionesHelper::pendientes(
+            $this->userId(),
+            $seller_id,
+            $moneda_id,
+            $request->query('desde'),
+            $request->query('hasta'),
+            $request->query('page')
+        );
+
+        return response()->json($paginador, 200);
     }
 
     /**

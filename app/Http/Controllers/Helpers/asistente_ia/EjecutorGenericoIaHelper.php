@@ -133,7 +133,20 @@ class EjecutorGenericoIaHelper
             $id = self::id_creado($contexto, $declaracion, $respuesta);
         }
 
-        return self::resultado($contexto, $declaracion, $operacion, $id, $pedidos, $fila);
+        $resultado = self::resultado($contexto, $declaracion, $operacion, $id, $pedidos, $fila);
+
+        /*
+         * Misión asistente-fotos-barras-y-compras (24/9/2026): el alta de un artículo puede traer su
+         * foto y su descripción en la misma tarjeta. Se hacen DESPUÉS del alta, con el artículo ya
+         * creado, y si fallan el artículo no se deshace: el texto del resultado lo dice. Ver
+         * AltaDeArticuloConFotoIaHelper.
+         */
+        if ($operacion === Catalogo::OP_ALTA && !empty($datos['extras']) && is_array($datos['extras'])) {
+
+            $resultado = AltaDeArticuloConFotoIaHelper::completar($contexto, $resultado, $datos['extras']);
+        }
+
+        return $resultado;
     }
 
     // -------------------------------------------------------------------------------------------

@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
+use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use Carbon\Carbon;
 
@@ -1481,6 +1482,35 @@ class AfipPdfHelper
         }
 
         self::print_footer_official_block($pdf, $afip_ticket);
+
+        self::print_footer_leyenda_isib_caba($pdf, $afip_ticket);
+    }
+
+    /**
+     * Alto (mm) del renglon de la leyenda ISIB CABA. Lo comparten el dibujo y la estimacion.
+     */
+    const LEYENDA_ISIB_CABA_ALTO = 5;
+
+    /**
+     * Leyenda ISIB CABA (Res. 169/AGIP/2026) debajo del bloque oficial, a lo ancho de la hoja.
+     * Solo en comprobantes a consumidor final de un punto de venta con la alicuota cargada: la
+     * decision la toma LeyendaIsibCabaHelper, igual para el A4 y los tickets.
+     *
+     * @param mixed $pdf Instancia FPDF.
+     * @param mixed $afip_ticket Ticket AFIP.
+     * @return void
+     */
+    protected static function print_footer_leyenda_isib_caba($pdf, $afip_ticket): void
+    {
+        $texto = LeyendaIsibCabaHelper::texto($afip_ticket);
+
+        if (is_null($texto)) {
+            return;
+        }
+
+        $pdf->x = 5;
+        $pdf->SetFont('Arial', 'B', 8);
+        $pdf->Cell(200, self::LEYENDA_ISIB_CABA_ALTO, $texto, 0, 1, 'C');
     }
 
     /**
@@ -1565,6 +1595,14 @@ class AfipPdfHelper
          * el QR de 45mm domina por sobre el bloque central y el de CAE.
          */
         $height += 51;
+
+        /**
+         * Renglon de la leyenda ISIB CABA, solo si este comprobante la lleva
+         * (ver print_footer_leyenda_isib_caba()).
+         */
+        if (!is_null(LeyendaIsibCabaHelper::texto($afip_ticket))) {
+            $height += self::LEYENDA_ISIB_CABA_ALTO;
+        }
 
         return $height;
     }

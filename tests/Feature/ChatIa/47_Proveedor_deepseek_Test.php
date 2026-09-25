@@ -295,6 +295,15 @@ class Proveedor_deepseek_Test extends TestCase
      */
     public function con_una_foto_el_dueno_en_deepseek_profundo_va_al_modelo_de_vision_pensando()
     {
+        /*
+         * Misión asistente-deepseek-pro-razona (24/9/2026): con el interruptor prendido (default) el
+         * turno con foto de un dueño en Profundo transcribe con Flash y razona en Pro
+         * (13_Deepseek_pro_con_fotos_transcriptas_Test). Lo que fija este test —la foto al modelo con
+         * visión, pensando, nunca a Pro— sigue siendo el camino de respaldo (interruptor apagado o
+         * transcripción que falla), así que lo apaga, igual que 12_ y 51_.
+         */
+        config(['services.deepseek.pro_con_transcripcion' => false]);
+
         $this->fakes_de_red();
         $this->dueno_en('deepseek', 'profundo');
 

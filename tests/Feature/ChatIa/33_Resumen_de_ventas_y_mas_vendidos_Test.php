@@ -320,10 +320,12 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
          * Las cuatro de esta misión van juntas y en este orden, y nada de lo anterior se movió: el
          * orden del registro es el prefijo que cachea con_cache_control().
          *
-         * 🔴 El `-6` de abajo NO es un ajuste para que el test pase: la misión asistente-ventas-y-fotos
-         * (21/9/2026) sumó `consultar_ventas_sin_cobrar` DESPUÉS de estas cuatro, y la misión
+         * 🔴 El `-7` de abajo NO es un ajuste para que el test pase: la misión asistente-ventas-y-fotos
+         * (21/9/2026) sumó `consultar_ventas_sin_cobrar` DESPUÉS de estas cuatro, la misión
          * asistente-capacidades-y-hilos (22/9/2026) sumó `consultar_link_de_pdf` después de aquélla
-         * — que es la única forma correcta de agregar una tool. Lo que este test cuida —que estas
+         * y la misión asistente-fotos-barras-y-compras (24/9/2026) sumó
+         * `buscar_producto_por_codigo_de_barras` al final — que es la única forma correcta de agregar
+         * una tool. Lo que este test cuida —que estas
          * cuatro no se reordenen ni se separen— se sigue cuidando igual; lo que cambia es cuántas
          * hay atrás. Cada tool nueva mueve este offset en uno, y eso es lo que tiene que pasar.
          */
@@ -331,12 +333,12 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
 
         $this->assertEquals(
             ['resumir_datos', 'consultar_resumen_de_ventas', 'consultar_reporte_contable', 'mostrar_imagenes_de_articulos'],
-            array_slice($nombres, -6, 4)
+            array_slice($nombres, -7, 4)
         );
 
         $this->assertEquals(
-            ['consultar_ventas_sin_cobrar', 'consultar_link_de_pdf'],
-            array_slice($nombres, -2)
+            ['consultar_ventas_sin_cobrar', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'],
+            array_slice($nombres, -3)
         );
 
         // Y el handler deja la imagen en adjuntos(), sin cruzarla contra ningún texto.

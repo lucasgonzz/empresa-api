@@ -550,6 +550,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
         de escritura regalados contra una tabla de la que depende el modulo entero.
     */
     Route::resource('order-status', 'OrderStatusController')->only(['index', 'show']);
+
+    // Vincular un comprador de la tienda con un cliente del sistema desde la tabla de Pedidos
+    // (misión vincular-comprador-desde-pedidos, 24/9/2026). Van ANTES del resource, como el resto
+    // de las rutas propias de este archivo (`client/options`, `provider/{id}/...`): las de tres
+    // segmentos no chocan con el show del resource, pero así quedan a la vista junto a él.
+    Route::get('buyer/{id}/clientes-para-vincular', 'BuyerController@clientes_para_vincular');
+    Route::post('buyer/{id}/vincular-cliente', 'BuyerController@vincular_cliente');
     Route::resource('buyer', 'BuyerController');
     Route::resource('delivery-zone', 'DeliveryZoneController');
 
@@ -767,6 +774,13 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::post('seller-commission/saldo-inicial', 'SellerCommissionController@saldoInicial');
     Route::post('seller-commission/pago', 'SellerCommissionController@pago');
     Route::delete('seller-commission/{id}', 'SellerCommissionController@destroy');
+    // Panel de comisiones del vendedor (mision comisiones-vendedor-tablas, 24/9/2026): prefijo
+    // DISTINTO (`seller-commission-panel`) para no chocar con `seller-commission/{model_id}/
+    // {moneda_id}/{from_date}/{until_date?}`, que tambien matchearia 3-4 segmentos. Las rutas de
+    // arriba quedan intactas para un SPA sin actualizar.
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/resumen', 'SellerCommissionController@panelResumen');
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/liquidadas', 'SellerCommissionController@panelLiquidadas');
+    Route::get('seller-commission-panel/{seller_id}/{moneda_id}/pendientes', 'SellerCommissionController@panelPendientes');
 
     Route::resource('sale-type', 'SaleTypeController');
 
