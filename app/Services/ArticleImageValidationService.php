@@ -96,6 +96,10 @@ class ArticleImageValidationService
         'collage',
         'borrosa',
         'otro_producto',
+        // Prueba real del 27/9/2026 (Serper + Anthropic de verdad): la tapa de un frasco vista
+        // desde arriba y una ficha técnica con cotas se asignaron solas porque no había cómo decirlo.
+        'vista_parcial',
+        'ficha_tecnica',
     ];
 
     /**
@@ -1019,13 +1023,24 @@ class ArticleImageValidationService
             '- "fondo_blanco": true si el fondo es blanco liso, de foto de catálogo; false si no.',
             '- "problemas": lista, que puede estar vacía, con cualquiera de estos valores:',
             '  "marca_de_agua", "texto_superpuesto", "varias_unidades", "foto_de_ambiente", "collage",',
-            '  "borrosa", "otro_producto".',
+            '  "borrosa", "otro_producto", "vista_parcial", "ficha_tecnica".',
             '- "motivo": una sola frase corta y clara en español rioplatense, porque se le muestra tal',
             '  cual a un usuario real. Ejemplo bueno: "Es la botella de 1,5 L de esa marca, sobre fondo',
             '  blanco." Ejemplo malo (no hacer esto): "The image appears to show the product."',
             '',
             '"otro_producto" es un producto parecido pero distinto (otra marca, otra variante, otro',
             'tamaño). Si lo marcás, "es_el_producto" no puede ser "si".',
+            '',
+            'Estos tres se marcan aunque la foto sí muestre el producto correcto, porque la foto no sirve',
+            'para la tienda:',
+            '- "varias_unidades": la foto muestra MÁS unidades de las que describe el artículo. Por',
+            '  ejemplo, el pack de 12 botellas (o el pack de 12 más una botella suelta) para un artículo',
+            '  que es UNA botella. Si el artículo es un pack, una caja o un blíster de varias unidades, NO',
+            '  se marca: ahí lo que corresponde es ver el pack.',
+            '- "vista_parcial": se ve solo una parte del producto (la tapa vista desde arriba, un detalle,',
+            '  un corte, la etiqueta de cerca) y no el producto entero y reconocible.',
+            '- "ficha_tecnica": es una ficha técnica o de catálogo: dibujos, cotas, tablas de medidas o',
+            '  texto informativo alrededor del producto, en vez de una foto limpia del producto.',
             '',
             'ACEPCIONES ARGENTINAS: leé el nombre con el vocabulario de un comercio argentino. "Pava" es',
             'la pava para calentar agua (no un ave), "canilla" es un grifo, "birome" es un bolígrafo,',

@@ -90,8 +90,22 @@ class ArticleImageAssignmentEngine
     /** Largo máximo de la consulta por nombre (nombre + marca). */
     const LARGO_MAXIMO_CONSULTA_POR_NOMBRE = 120;
 
-    /** Problemas que la IA puede marcar y que impiden asignar sola una imagen. */
-    const PROBLEMAS_QUE_IMPIDEN_ASIGNAR = ['marca_de_agua', 'texto_superpuesto', 'collage', 'otro_producto', 'borrosa'];
+    /**
+     * Problemas que la IA puede marcar y que impiden asignar sola una imagen. varias_unidades,
+     * vista_parcial y ficha_tecnica salen de la prueba real del 27/9/2026: el pack de 12 de un aceite
+     * de una unidad, la tapa de un frasco vista desde arriba y la ficha técnica de un martillo se
+     * asignaban solas. Son fotos del producto correcto que no sirven para la tienda.
+     */
+    const PROBLEMAS_QUE_IMPIDEN_ASIGNAR = [
+        'marca_de_agua',
+        'texto_superpuesto',
+        'collage',
+        'otro_producto',
+        'borrosa',
+        'varias_unidades',
+        'vista_parcial',
+        'ficha_tecnica',
+    ];
 
     /**
      * Prioridad del motivo principal de una no asignada cuando hubo dos criterios (contrato §5.2):
@@ -118,6 +132,9 @@ class ArticleImageAssignmentEngine
         'texto_superpuesto',
         'collage',
         'borrosa',
+        'varias_unidades',
+        'vista_parcial',
+        'ficha_tecnica',
         'imagen_algo_chica',
     ];
 
@@ -629,7 +646,7 @@ class ArticleImageAssignmentEngine
             $motivos[] = 'confianza_media';
         }
 
-        foreach (['marca_de_agua', 'texto_superpuesto', 'collage', 'borrosa'] as $problema) {
+        foreach (['marca_de_agua', 'texto_superpuesto', 'collage', 'borrosa', 'varias_unidades', 'vista_parcial', 'ficha_tecnica'] as $problema) {
             if (in_array($problema, $problemas, true)) {
                 $motivos[] = $problema;
             }
@@ -693,8 +710,11 @@ class ArticleImageAssignmentEngine
      *
      * 🔴 "asignable" va PRIMERO: sin esta clave, una foto con marca de agua le ganaba a una limpia que
      * se podía asignar sola, y el artículo terminaba a revisar — justo lo que la búsqueda por nombre
-     * existe para evitar. Después el grupo del veredicto (sí > dudosa > sin evaluar): entre las que
-     * van a revisar, se muestra primero la que la IA reconoce como el producto.
+     * existe para evitar. Después, entre las que van a revisar, una LIMPIA (sin ninguno de los
+     * problemas que impiden asignarla: marca de agua, ficha técnica, varias unidades, vista parcial,
+     * ...) le gana a una que los tiene: la otra no sirve para la tienda aunque sea el producto, y
+     * proponerla es proponer algo que se va a rechazar. Después el grupo del veredicto (sí > dudosa >
+     * sin evaluar): se muestra primero la que la IA reconoce como el producto.
      *
      * Y después: decente / aceptable, FONDO BLANCO, tamaño mayor, confianza de la IA, menos
      * problemas, la del código de barras antes que la del nombre (es una búsqueda más precisa) y la
@@ -707,6 +727,7 @@ class ArticleImageAssignmentEngine
     {
         return [
             $candidata['asignable'] ? 1 : 0,
+            $this->tiene_problemas_que_impiden_asignar($candidata) ? 0 : 1,
             (int) $candidata['grupo'],
             $this->nivel_de_tamano($candidata['lado']),
             $candidata['fondo_blanco'] ? 1 : 0,
@@ -716,6 +737,19 @@ class ArticleImageAssignmentEngine
             $candidata['criterio'] === self::CRITERIO_CODIGO ? 1 : 0,
             -(int) $candidata['posicion'],
         ];
+    }
+
+    /**
+     * ¿La IA le marcó a la candidata alguno de los problemas que impiden asignarla sola?
+     *
+     * @param  array $candidata
+     * @return bool
+     */
+    protected function tiene_problemas_que_impiden_asignar(array $candidata)
+    {
+        $problemas = isset($candidata['ia']['problemas']) && is_array($candidata['ia']['problemas']) ? $candidata['ia']['problemas'] : [];
+
+        return count(array_intersect($problemas, self::PROBLEMAS_QUE_IMPIDEN_ASIGNAR)) > 0;
     }
 
     /**
@@ -1254,6 +1288,9 @@ class ArticleImageAssignmentEngine
                 'texto_superpuesto' => 'Tiene texto encima de la foto',
                 'collage'           => 'Es un collage de varias fotos',
                 'borrosa'           => 'Se ve borrosa',
+                'varias_unidades'   => 'Muestra varias unidades',
+                'vista_parcial'     => 'Se ve solo una parte del producto',
+                'ficha_tecnica'     => 'Es una ficha técnica o de catálogo',
                 'imagen_algo_chica' => 'Imagen de '.$ganadora['lado'].' px',
             ];
 
