@@ -65,6 +65,13 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
         $this->assertSame(1, $codigo['resultados']);
         $this->assertSame('elegida', $codigo['candidatas'][0]['resultado']);
 
+        // Las claves exactas del contrato §5.2 (la SPA se construye contra ellas en paralelo). Como
+        // conjunto y no en orden: la columna JSON de MySQL reordena las claves al guardarlas.
+        $this->assertEqualsCanonicalizing(['criterio', 'consulta', 'usado', 'motivo_no_usado', 'busquedas', 'resultados', 'error', 'resumen', 'candidatas'], array_keys($codigo));
+        $this->assertEqualsCanonicalizing(['posicion', 'url', 'miniatura', 'pagina', 'dominio', 'ancho', 'alto', 'resultado', 'fondo_blanco_ratio', 'motivo'], array_keys($codigo['candidatas'][0]));
+        $this->assertSame($this->url_imagen('yerba'), $codigo['candidatas'][0]['url']);
+        $this->assertSame('tienda.test', $codigo['candidatas'][0]['dominio']);
+
         $nombre = $this->diagnostico_de($item, 'nombre');
         $this->assertFalse($nombre['usado']);
         $this->assertSame(0, $nombre['busquedas']);

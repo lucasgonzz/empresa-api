@@ -813,7 +813,17 @@ class ArticleImageAssignmentEngine
             }
 
             $entrada = $contexto['diagnostico'][$criterio];
-            $entrada['candidatas'] = array_values($entrada['candidatas']);
+
+            // Las candidatas como lista y sin la `clave` interna (el índice con que el motor las
+            // cruza entre el procesador y la IA): lo que se guarda es exactamente el contrato §5.2.
+            $candidatas = [];
+
+            foreach ($entrada['candidatas'] as $candidata) {
+                unset($candidata['clave']);
+                $candidatas[] = $candidata;
+            }
+
+            $entrada['candidatas'] = $candidatas;
             $entrada['resumen']    = $this->resumen_de_criterio($entrada);
 
             $final[] = $entrada;
