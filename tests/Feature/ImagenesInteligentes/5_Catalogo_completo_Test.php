@@ -162,7 +162,9 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
                 'busquedas'     => 6,
                 'minutos'       => 1,
                 'usd_busquedas' => 0.01,
-                'usd_ia'        => 0.02,
+                // 4 artículos × USD 0,008 (medido en la prueba real del 27/9/2026, antes 0,005) = 0,032 → 0,03.
+                // Los minutos siguen en 1: 4 × 12 s = 48 s → 1 minuto redondeado.
+                'usd_ia'        => 0.03,
             ],
             'corrida_activa'                   => null,
         ]);

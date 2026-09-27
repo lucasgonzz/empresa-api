@@ -101,11 +101,19 @@ class ImageAssignmentRunHelper
      */
     const MINUTOS_PARA_DAR_POR_MUERTO_UN_ARTICULO = 10;
 
-    /** Estimación que se muestra antes de lanzar el catálogo (plan §3). */
+    /**
+     * Estimación que se muestra antes de lanzar el catálogo (plan §3).
+     *
+     * 🔴 Medida, no supuesta: en la prueba real del 27/9/2026 (Serper + Claude Haiku 4.5, 8 artículos,
+     * tres corridas) cada artículo tardó entre 9 y 15 s y la IA costó entre USD 0,006 y 0,008 por
+     * artículo; las búsquedas fueron 1,1 a 1,25 por artículo con un fixture de 3 artículos sin código.
+     * La estimación va del lado alto a propósito: la ve Lucas antes de gastar, y quedarse corto en
+     * horas o en plata es peor que sobrar.
+     */
     const BUSQUEDAS_ESTIMADAS_POR_ARTICULO = 1.5;
-    const SEGUNDOS_ESTIMADOS_POR_ARTICULO  = 8;
+    const SEGUNDOS_ESTIMADOS_POR_ARTICULO  = 12;
     const USD_POR_MIL_BUSQUEDAS            = 1.0;
-    const USD_DE_IA_POR_ARTICULO           = 0.005;
+    const USD_DE_IA_POR_ARTICULO           = 0.008;
 
     /** Solapas del detalle y los estados que muestra cada una (contrato §5.1). */
     const SOLAPAS = [
