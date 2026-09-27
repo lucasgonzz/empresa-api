@@ -7,7 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaImagenesArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\RespuestaDeCargaIa;
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
-use App\Jobs\ProcessArticleBatchImagesJob;
+use App\Jobs\ProcessImageAssignmentRunJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
@@ -15,9 +15,12 @@ use App\Models\Article;
 use App\Models\BackgroundProcess;
 use App\Models\GeocoderCounter;
 use App\Models\Image;
+use App\Models\ImageAssignmentItem;
+use App\Models\ImageAssignmentRun;
 use App\Models\Provider;
 use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeCarga;
+use App\Services\ImageSearch\ImageSearchProviderFactory;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Auth;
@@ -32,14 +35,22 @@ use Tests\TestCase;
  * manda el asistente (PropuestaImagenesArticulosIaHelper + ImagenesAutomaticasHelper, plan §4.3,
  * contrato §1.4).
  *
- * Lo que protege: que con el dueño en "resuelto" la propuesta se auto-confirme y encole
- * ProcessArticleBatchImagesJob con los ids en orden de alta ascendente, limitados a N y sin los que
- * ya tienen imagen; que en "cauteloso" quede la tarjeta propuesta con los renglones del contrato; que
- * el registro visible `imagenes_automaticas` nazca `pendiente` al encolar; y que el endpoint del
- * botón del listado (GoogleController@batch_assign_images) siga devolviendo `{status, batch_uuid}` y
- * ahora también deje ese registro pendiente.
+ * Lo que protege: que con el dueño en "resuelto" la propuesta se auto-confirme y encole la búsqueda
+ * con los ids en orden de alta ascendente, limitados a N y sin los que ya tienen imagen; que en
+ * "cauteloso" quede la tarjeta propuesta con los renglones del contrato; que el registro visible
+ * `imagenes_automaticas` nazca `pendiente` al encolar; y que el endpoint del botón del listado
+ * (GoogleController@batch_assign_images) siga devolviendo `{status, batch_uuid}` y ahora también deje
+ * ese registro pendiente.
  *
- * 🔴 Sin red: la cola se falsea en todos los casos (el job real busca en Google y valida con IA).
+ * 🔁 CAMBIO DE CONTRATO A PROPÓSITO (misión imagenes-catalogo-completo, 27/9/2026, plan §8): hasta
+ * esa misión encolar() despachaba ProcessArticleBatchImagesJob con los ids adentro. Ahora crea una
+ * ASIGNACIÓN (image_assignment_runs + un item por artículo, EN EL ORDEN pedido) con el uuid que
+ * devuelve, y despacha ProcessImageAssignmentRunJob con el id de esa asignación. Las aserciones que
+ * leían las properties del job viejo ahora leen la asignación (ids en orden, dueño, uuid, tope diario
+ * del dueño) y el job nuevo encolado; las del registro visible, el límite, el orden, la tarjeta y la
+ * cuota no cambiaron.
+ *
+ * 🔴 Sin red: la cola se falsea en todos los casos (el job real busca imágenes y valida con IA).
  */
 class Imagenes_articulos_por_asistente_Test extends TestCase
 {
@@ -124,16 +135,46 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
      * Lee una property protegida del job encolado (mismo criterio que ImagenesGoogle/4: hacerla
      * pública solo para el test le ampliaría la superficie a una clase de producción).
      *
-     * @param  ProcessArticleBatchImagesJob  $job
+     * Sin tipo en el parámetro desde la misión imagenes-catalogo-completo: el job encolado ahora es
+     * ProcessImageAssignmentRunJob (antes ProcessArticleBatchImagesJob).
+     *
+     * @param  object  $job
      * @param  string  $nombre
      * @return mixed
      */
-    protected function propiedad_del_job(ProcessArticleBatchImagesJob $job, $nombre)
+    protected function propiedad_del_job($job, $nombre)
     {
         $property = new ReflectionProperty($job, $nombre);
         $property->setAccessible(true);
 
         return $property->getValue($job);
+    }
+
+    /**
+     * La última asignación de imágenes del comercio del test (la que acaba de crear encolar()).
+     *
+     * @return \App\Models\ImageAssignmentRun|null
+     */
+    protected function ultima_asignacion()
+    {
+        return ImageAssignmentRun::where('user_id', $this->comercio->id)->orderBy('id', 'DESC')->first();
+    }
+
+    /**
+     * Los ids de artículo de una asignación, en el orden en que se van a procesar.
+     *
+     * @param  \App\Models\ImageAssignmentRun  $run
+     * @return array<int, int>
+     */
+    protected function ids_de_la_asignacion(ImageAssignmentRun $run)
+    {
+        return ImageAssignmentItem::where('run_id', $run->id)
+            ->orderBy('orden')
+            ->pluck('article_id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
     }
 
     /**
@@ -181,17 +222,24 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
         // Los dos más viejos SIN imagen: el de hace 4 días y el de hace 2 (el de hace 3 tiene imagen).
         $esperados = [(int) $this->por_alta[4]->id, (int) $this->por_alta[2]->id];
 
+        // La asignación que creó encolar(): esos ids en ese orden, del comercio, con su uuid, y con
+        // el tope diario del dueño (la cuota por defecto de siempre, porque no tiene una cargada).
+        $asignacion = $this->ultima_asignacion();
+        $this->assertNotNull($asignacion);
+        $this->assertSame($esperados, $this->ids_de_la_asignacion($asignacion));
+        $this->assertSame((int) $this->comercio->id, (int) $asignacion->user_id);
+        $this->assertNotSame('', (string) $asignacion->uuid);
+        $this->assertTrue((bool) $asignacion->aplica_tope_diario);
+        $this->assertSame(ImageSearchProviderFactory::nombre_para($this->comercio), $asignacion->proveedor);
+        $this->assertSame(ImagenesAutomaticasHelper::CUOTA_POR_DEFECTO, ImagenesAutomaticasHelper::cuota_de($this->comercio)['cuota']);
+
         $self = $this;
 
-        Queue::assertPushed(ProcessArticleBatchImagesJob::class, function ($job) use ($self, $esperados) {
-            return $self->propiedad_del_job($job, 'article_ids') === $esperados
-                && (int) $self->propiedad_del_job($job, 'user_id') === (int) $self->comercio->id
-                && $self->propiedad_del_job($job, 'cx') === ImagenesAutomaticasHelper::CX
-                && (int) $self->propiedad_del_job($job, 'google_cuota') === ImagenesAutomaticasHelper::CUOTA_POR_DEFECTO
-                && $self->propiedad_del_job($job, 'batch_uuid') !== '';
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class, function ($job) use ($self, $asignacion) {
+            return (int) $self->propiedad_del_job($job, 'run_id') === (int) $asignacion->id;
         });
 
-        Queue::assertPushed(ProcessArticleBatchImagesJob::class, 1);
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
 
         // El registro visible nació pendiente al encolar, con el total y quién lo pidió.
         $proceso = BackgroundProcess::where('user_id', $this->comercio->id)->where('tipo', 'imagenes_automaticas')->orderBy('id', 'DESC')->first();
@@ -377,10 +425,14 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
 
         $esperados = [(int) $this->por_alta[2]->id, (int) $this->por_alta[1]->id];
 
+        $asignacion = $this->ultima_asignacion();
+        $this->assertNotNull($asignacion);
+        $this->assertSame($esperados, $this->ids_de_la_asignacion($asignacion));
+
         $self = $this;
 
-        Queue::assertPushed(ProcessArticleBatchImagesJob::class, function ($job) use ($self, $esperados) {
-            return $self->propiedad_del_job($job, 'article_ids') === $esperados;
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class, function ($job) use ($self, $asignacion) {
+            return (int) $self->propiedad_del_job($job, 'run_id') === (int) $asignacion->id;
         });
     }
 
@@ -409,11 +461,15 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
 
         $uuid_prometido = (string) $response->json('batch_uuid');
 
+        // El uuid prometido es el de la asignación, y la asignación lleva esos ids en ese orden.
+        $asignacion = ImageAssignmentRun::where('user_id', $this->comercio->id)->where('uuid', $uuid_prometido)->first();
+        $this->assertNotNull($asignacion, 'El uuid de la respuesta tiene que ser el de la asignación creada.');
+        $this->assertSame($ids, $this->ids_de_la_asignacion($asignacion));
+
         $self = $this;
 
-        Queue::assertPushed(ProcessArticleBatchImagesJob::class, function ($job) use ($self, $ids, $uuid_prometido) {
-            return $self->propiedad_del_job($job, 'article_ids') === $ids
-                && $self->propiedad_del_job($job, 'batch_uuid') === $uuid_prometido;
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class, function ($job) use ($self, $asignacion) {
+            return (int) $self->propiedad_del_job($job, 'run_id') === (int) $asignacion->id;
         });
 
         $proceso = BackgroundProcess::where('user_id', $this->comercio->id)->where('tipo', 'imagenes_automaticas')->orderBy('id', 'DESC')->first();
