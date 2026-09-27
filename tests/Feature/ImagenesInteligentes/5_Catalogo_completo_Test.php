@@ -4,6 +4,7 @@ namespace Tests\Feature\ImagenesInteligentes;
 
 use App\Events\ArticleBatchImagesProcessed;
 use App\Events\BackgroundProcessUpdated;
+use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Jobs\ProcessImageAssignmentRunJob;
 use App\Models\BackgroundProcess;
 use App\Models\Image;
@@ -210,11 +211,17 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
         $this->assertSame('pendiente', $proceso->status);
         $this->assertSame('Imágenes de todo el catálogo', $proceso->titulo);
         $this->assertSame(4, (int) $proceso->total);
+        // Pulido del 27/9/2026: la píldora de una de catálogo no nombra a nadie (ver el test
+        // el_registro_visible_de_una_de_catalogo_no_nombra_a_nadie).
+        $this->assertNull($proceso->auth_user_id);
 
         // Con otra de catálogo en curso no se lanza una segunda, y la previa la muestra.
+        // Texto cambiado a propósito en el pulido del 27/9/2026 (terminología): la corrida entera es
+        // "la asignación" y "búsqueda" es cada consulta al buscador. Antes decía "Ya hay una búsqueda
+        // de todo el catálogo en curso".
         $this->postJson('api/image-assignment-runs/catalogo')
             ->assertStatus(422)
-            ->assertJsonFragment(['message' => 'Ya hay una búsqueda de todo el catálogo en curso: esperá a que termine o detenela.']);
+            ->assertJsonFragment(['message' => 'Ya hay una asignación de todo el catálogo en curso: esperá a que termine o detenela.']);
 
         $this->assertSame((int) $run->id, (int) $this->getJson('api/image-assignment-runs/catalogo/previa')->json('corrida_activa.id'));
     }
@@ -301,6 +308,7 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
         $this->assertNull($run->finished_at);
         $this->assertNotSame($proceso_original, (int) $run->background_process_id, 'El registro visible cerrado no se reabre: se abre otro.');
         $this->assertSame('pendiente', BackgroundProcess::find($run->background_process_id)->status);
+        $this->assertNull(BackgroundProcess::find($run->background_process_id)->auth_user_id, 'El registro que abre la reanudación tampoco nombra a nadie (pulido del 27/9/2026).');
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
 
         // Una en curso y sana no se "reanuda".
@@ -390,5 +398,48 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
 
         $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, $item_de_la_seleccion->status);
         $this->assertCount(1, $this->consultas_serper);
+    }
+
+    /**
+     * Pulido del 27/9/2026 (verificación en pantalla): el registro visible (la píldora de procesos)
+     * de una asignación de todo el catálogo se abre SIN persona. La lanza solo el acceso maestro, que
+     * entra con el usuario del dueño: con su auth_user_id la píldora decía "· <nombre del dueño>"
+     * mientras Alertas la atribuye a ComercioCity. Vale también para el registro que abre una
+     * reanudación. La asignación guarda igual quién tenía la sesión, y las de selección siguen
+     * nombrando a quien las lanzó.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function el_registro_visible_de_una_de_catalogo_no_nombra_a_nadie()
+    {
+        $this->escenario();
+
+        $this->actuar_como($this->owner, true);
+
+        Queue::fake();
+
+        $catalogo = ImageAssignmentRun::find($this->postJson('api/image-assignment-runs/catalogo')->assertStatus(201)->json('model.id'));
+
+        $this->assertSame((int) $this->owner->id, (int) $catalogo->auth_user_id, 'La asignación guarda quién tenía la sesión.');
+        $this->assertNull(BackgroundProcess::find($catalogo->background_process_id)->auth_user_id, 'La píldora no nombra a nadie.');
+
+        // Detenida y reanudada: el registro nuevo sigue la misma regla.
+        $this->postJson('api/image-assignment-runs/'.$catalogo->id.'/detener')->assertStatus(200);
+        $this->postJson('api/image-assignment-runs/'.$catalogo->id.'/reanudar')->assertStatus(200);
+
+        $catalogo->refresh();
+        $this->assertNull(BackgroundProcess::find($catalogo->background_process_id)->auth_user_id, 'Tampoco el registro que abre la reanudación.');
+
+        // Una de selección sigue nombrando a quien la lanzó, también al reanudarla.
+        $seleccion = ImageAssignmentRunHelper::crear($this->owner, [$this->art['B']->id], ImageAssignmentRun::ORIGEN_SELECCION, $this->owner->id);
+
+        $this->assertSame((int) $this->owner->id, (int) BackgroundProcess::find($seleccion->background_process_id)->auth_user_id);
+
+        $this->assertSame(200, ImageAssignmentRunHelper::detener($seleccion)['status']);
+        $this->assertSame(200, ImageAssignmentRunHelper::reanudar($seleccion->fresh())['status']);
+
+        $seleccion->refresh();
+        $this->assertSame((int) $this->owner->id, (int) BackgroundProcess::find($seleccion->background_process_id)->auth_user_id);
     }
 }

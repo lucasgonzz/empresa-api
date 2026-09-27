@@ -289,7 +289,9 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);
-        $this->assertStringContainsString('Se interrumpió 3 veces', (string) $run->motivo_estado);
+        // Texto cambiado a propósito en el pulido del 27/9/2026 (terminología): el motivo nombra a
+        // la asignación ("La asignación se interrumpió..."); antes arrancaba con "Se interrumpió".
+        $this->assertStringContainsString('La asignación se interrumpió 3 veces', (string) $run->motivo_estado);
         $this->assertSame(ImageAssignmentItem::STATUS_PENDIENTE, $sano->fresh()->status);
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 2);
 

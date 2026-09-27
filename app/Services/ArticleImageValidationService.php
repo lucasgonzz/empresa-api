@@ -176,7 +176,7 @@ class ArticleImageValidationService
             if (strpos($normalized, $hint) !== false) {
                 return [
                     'rejected' => true,
-                    'reason'   => 'Descartada sin analizar: el resultado es una lista de precios o un catalogo, no una foto del producto.',
+                    'reason'   => 'Descartada sin analizar: el resultado es una lista de precios o un catálogo, no una foto del producto.',
                 ];
             }
         }
@@ -746,7 +746,9 @@ class ArticleImageValidationService
         $max_calls_batch = (int) config('services.article_image_validation.max_calls_batch');
 
         if ($max_calls_batch > 0 && $this->calls_made >= $max_calls_batch) {
-            return $this->candidatas_sin_evaluar($indices, 'Se alcanzó el límite de validaciones con IA de esta corrida.', false);
+            // Lo lee el dueño en el diagnóstico: la corrida entera es "la asignación" (el mismo
+            // texto de validate(), más arriba, queda como está: ese lo usan otros flujos).
+            return $this->candidatas_sin_evaluar($indices, 'Se alcanzó el límite de validaciones con IA de esta asignación.', false);
         }
 
         $api_key = (string) config('services.anthropic.api_key');

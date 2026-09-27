@@ -248,7 +248,9 @@ class Ajustes_del_motor_y_el_tramo_Test extends ImagenesInteligentesTestCase
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);
         // Cambio de contrato pedido en la sexta pasada (B2): el motivo dice la causa REAL (acá, el
         // 500 de la IA falsa) en vez de suponer "Revisá la clave". Antes esperaba el texto viejo.
-        $this->assertSame('La validación con IA no responde en 5 artículos seguidos (último error: la IA respondió con error HTTP 500: Servicio no disponible (fake)). Se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.', $run->motivo_estado);
+        // Y en el pulido del 27/9/2026 (terminología), "La asignación se frenó" con sujeto: un "Se
+        // frenó" suelto se leía como que se había frenado la validación, no la asignación.
+        $this->assertSame('La validación con IA no responde en 5 artículos seguidos (último error: la IA respondió con error HTTP 500: Servicio no disponible (fake)). La asignación se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.', $run->motivo_estado);
         $this->assertSame(6, (int) $run->procesados, '5 con la IA caída y el sin datos del medio.');
         $this->assertSame(2, ImageAssignmentItem::where('run_id', $run->id)->where('status', ImageAssignmentItem::STATUS_PENDIENTE)->count(), 'Los que faltaban siguen pendientes.');
         $this->assertSame(5, (int) $run->errores_ia_seguidos);

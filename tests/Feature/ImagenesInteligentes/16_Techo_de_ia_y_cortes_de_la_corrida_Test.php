@@ -167,7 +167,9 @@ class Techo_de_ia_y_cortes_de_la_corrida_Test extends ImagenesInteligentesTestCa
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);
-        $this->assertSame('Se alcanzó el techo de validaciones con IA de esta búsqueda (12 consultas). Los artículos que faltaban quedaron pendientes: se puede reanudar.', $run->motivo_estado);
+        // Texto cambiado a propósito en el pulido del 27/9/2026 (terminología): el techo es de la
+        // asignación entera; antes decía "de esta búsqueda", y búsqueda es cada consulta al buscador.
+        $this->assertSame('Se alcanzó el techo de validaciones con IA de esta asignación (12 consultas). Los artículos que faltaban quedaron pendientes: se puede reanudar.', $run->motivo_estado);
         $this->assertCount(1, $this->consultas_serper, 'El segundo artículo no pagó ninguna búsqueda.');
         $this->assertSame(1, $this->llamadas_ia);
         $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, ImageAssignmentItem::where('run_id', $run->id)->where('article_id', $articulos[0]->id)->value('status'));
@@ -315,7 +317,9 @@ class Techo_de_ia_y_cortes_de_la_corrida_Test extends ImagenesInteligentesTestCa
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);
-        $this->assertSame('La validación con IA no responde en 5 artículos seguidos (último error: la IA no respondió a tiempo). Se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.', $run->motivo_estado);
+        // Texto cambiado a propósito en el pulido del 27/9/2026 (terminología): "La asignación se
+        // frenó", con sujeto; un "Se frenó" suelto se leía como que se había frenado la validación.
+        $this->assertSame('La validación con IA no responde en 5 artículos seguidos (último error: la IA no respondió a tiempo). La asignación se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.', $run->motivo_estado);
         $this->assertStringNotContainsString('cURL', (string) $run->motivo_estado);
     }
 

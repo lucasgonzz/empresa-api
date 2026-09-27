@@ -172,7 +172,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 ImageAssignmentRunHelper::terminar(
                     $run,
                     ImageAssignmentRun::STATUS_FALLIDA,
-                    $ia['motivo'].' Sin la IA, la búsqueda de todo el catálogo no sigue (todo quedaría a revisar gastando búsquedas); cuando esté configurada, se puede reanudar.'
+                    $ia['motivo'].' Sin la IA, la asignación de todo el catálogo no sigue (todo quedaría a revisar gastando búsquedas); cuando esté configurada, se puede reanudar.'
                 );
 
                 return;
@@ -289,19 +289,22 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             if ($intentadas > 0 && $this->contar_error_de_proveedor($run, (bool) $resultado['error_de_proveedor']) >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
                 $ultimo_error = $this->ultimo_error_del_diagnostico($item->fresh());
 
+                // "La asignación se frenó", con sujeto: con un "Se frenó" suelto, después de "El
+                // proveedor de búsqueda falló...", parecía que el que se había frenado era el buscador.
                 ImageAssignmentRunHelper::terminar(
                     $run,
                     ImageAssignmentRun::STATUS_FALLIDA,
                     'El proveedor de búsqueda falló en '.self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR.' artículos seguidos'
                         .($ultimo_error !== '' ? ' ('.$ultimo_error.')' : '')
-                        .'. Se frenó para no seguir recorriendo artículos sin poder buscar; se puede reanudar cuando esté resuelto.'
+                        .'. La asignación se frenó para no seguir recorriendo artículos sin poder buscar; se puede reanudar cuando esté resuelto.'
                 );
 
                 return;
             }
 
             if ($this->contar_articulo_sin_ia($run, $resultado) >= self::MAX_ARTICULOS_SEGUIDOS_SIN_IA) {
-                // Con la causa real (sexta pasada, B2): "Revisá la clave" era una suposición.
+                // Con la causa real (sexta pasada, B2): "Revisá la clave" era una suposición. Y con
+                // sujeto: un "Se frenó" suelto se leía como que se frenó la validación, no la asignación.
                 $causa = isset($resultado['ia_error']) ? trim((string) $resultado['ia_error']) : '';
 
                 ImageAssignmentRunHelper::terminar(
@@ -309,7 +312,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                     ImageAssignmentRun::STATUS_FALLIDA,
                     'La validación con IA no responde en '.self::MAX_ARTICULOS_SEGUIDOS_SIN_IA.' artículos seguidos'
                         .($causa !== '' ? ' (último error: '.$causa.')' : '')
-                        .'. Se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.'
+                        .'. La asignación se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.'
                 );
 
                 return;
@@ -468,7 +471,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 ImageAssignmentRunHelper::terminar(
                     $run,
                     ImageAssignmentRun::STATUS_FALLIDA,
-                    'Se interrumpió '.self::MAX_FALLOS_CONSECUTIVOS.' veces seguidas. El detalle quedó en el registro del sistema; se puede reanudar.'
+                    'La asignación se interrumpió '.self::MAX_FALLOS_CONSECUTIVOS.' veces seguidas. El detalle quedó en el registro del sistema; se puede reanudar.'
                 );
 
                 return;
@@ -653,7 +656,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         ImageAssignmentRunHelper::terminar(
             $run,
             ImageAssignmentRun::STATUS_FALLIDA,
-            'Se alcanzó el techo de validaciones con IA de esta búsqueda ('.$motor->techo_de_ia().' consultas). Los artículos que faltaban quedaron pendientes: se puede reanudar.'
+            'Se alcanzó el techo de validaciones con IA de esta asignación ('.$motor->techo_de_ia().' consultas). Los artículos que faltaban quedaron pendientes: se puede reanudar.'
         );
     }
 

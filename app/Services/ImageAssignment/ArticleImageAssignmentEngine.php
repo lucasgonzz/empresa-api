@@ -315,7 +315,8 @@ class ArticleImageAssignmentEngine
             return $this->cerrar($item, $contexto, [
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'en_otra_asignacion',
-                'motivo_detalle' => 'Esperando revisión en otra búsqueda: ya tiene una imagen propuesta en otra asignación.',
+                // "Otra asignación", no "otra búsqueda": búsqueda es cada consulta al buscador.
+                'motivo_detalle' => 'Esperando revisión en otra asignación: ahí ya tiene una imagen propuesta para aprobar o rechazar.',
             ]);
         }
 

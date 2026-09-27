@@ -240,7 +240,8 @@ class ImageAssignmentRunHelper
             $es_catalogo = $origen === ImageAssignmentRun::ORIGEN_CATALOGO;
 
             $proceso = BackgroundProcessHelper::iniciar((int) $owner->id, self::TIPO_DE_PROCESO, $es_catalogo ? self::TITULO_DE_PROCESO_CATALOGO : self::TITULO_DE_PROCESO, [
-                'auth_user_id' => $auth_user_id,
+                // Las de todo el catálogo, sin persona (ver auth_user_id_del_registro_visible()).
+                'auth_user_id' => self::auth_user_id_del_registro_visible((string) $origen, $auth_user_id),
                 'total'        => $total,
                 'unidad'       => 'artículos',
                 'detalle'      => $es_catalogo ? $total.' artículos (todo el catálogo)' : $total.' artículos',
@@ -481,7 +482,7 @@ class ImageAssignmentRunHelper
             if (!is_null(self::corrida_de_catalogo_activa((int) $owner->id))) {
                 return [
                     'status'  => 422,
-                    'message' => 'Ya hay una búsqueda de todo el catálogo en curso: esperá a que termine o detenela.',
+                    'message' => 'Ya hay una asignación de todo el catálogo en curso: esperá a que termine o detenela.',
                     'run'     => null,
                 ];
             }
@@ -1410,9 +1411,11 @@ class ImageAssignmentRunHelper
             return ['status' => 422, 'message' => 'La asignación no está en proceso.'];
         }
 
+        // Con sujeto explícito: la corrida entera se llama "asignación" en todo lo que ve el usuario
+        // ("búsqueda" es cada consulta al buscador).
         $motivo = $run->origen === ImageAssignmentRun::ORIGEN_CATALOGO
-            ? 'Se detuvo desde el acceso maestro. Los artículos que faltaban quedaron pendientes: se puede reanudar.'
-            : 'Se detuvo a mano. Los artículos que faltaban quedaron pendientes: se puede reanudar.';
+            ? 'La asignación se detuvo desde el acceso maestro. Los artículos que faltaban quedaron pendientes: se puede reanudar.'
+            : 'La asignación se detuvo a mano. Los artículos que faltaban quedaron pendientes: se puede reanudar.';
 
         if (!self::terminar($run, ImageAssignmentRun::STATUS_DETENIDA, $motivo)) {
             return ['status' => 422, 'message' => 'La asignación ya había terminado.'];
@@ -1456,7 +1459,7 @@ class ImageAssignmentRunHelper
                     ->exists();
 
                 if ($otra) {
-                    return ['status' => 422, 'message' => 'Ya hay otra búsqueda de todo el catálogo en curso: esperá a que termine o detenela antes de reanudar esta.'];
+                    return ['status' => 422, 'message' => 'Ya hay otra asignación de todo el catálogo en curso: esperá a que termine o detenela antes de reanudar esta.'];
                 }
             }
 
@@ -1495,7 +1498,8 @@ class ImageAssignmentRunHelper
 
             if (is_null($proceso) || $proceso->esta_terminado()) {
                 $nuevo = BackgroundProcessHelper::iniciar((int) $run->user_id, self::TIPO_DE_PROCESO, $run->origen === ImageAssignmentRun::ORIGEN_CATALOGO ? self::TITULO_DE_PROCESO_CATALOGO : self::TITULO_DE_PROCESO, [
-                    'auth_user_id' => $run->auth_user_id,
+                    // El registro que abre la reanudación sigue la misma regla que el primero.
+                    'auth_user_id' => self::auth_user_id_del_registro_visible((string) $run->origen, $run->auth_user_id),
                     'total'        => $pendientes,
                     'unidad'       => 'artículos',
                     'detalle'      => $pendientes.' artículos (reanudada)',
@@ -1723,6 +1727,30 @@ class ImageAssignmentRunHelper
         $id = is_null($run->auth_user_id) ? null : (int) $run->auth_user_id;
 
         return !is_null($id) && isset($nombres[$id]) ? $nombres[$id] : null;
+    }
+
+    /**
+     * Quién figura como "lanzado por" en el registro visible de una asignación (la píldora de
+     * procesos, BackgroundProcess.auth_user_id).
+     *
+     * Las de todo el catálogo van SIN persona (null): las lanza solo el acceso maestro, que entra con
+     * el usuario del dueño, así que la píldora decía "· <nombre del dueño>" mientras Alertas la
+     * atribuye a ComercioCity (lanzada_por()). Con null la píldora no nombra a nadie, que es lo
+     * correcto: no la lanzó nadie del comercio. La asignación guarda igual su propio auth_user_id
+     * (quién tenía la sesión); lo que cambia es solo lo que muestra la píldora. Las de selección y
+     * del asistente siguen nombrando a quien las pidió.
+     *
+     * @param  string   $origen        catalogo | seleccion | asistente
+     * @param  int|null $auth_user_id  Quién tenía la sesión al lanzarla.
+     * @return int|null
+     */
+    protected static function auth_user_id_del_registro_visible($origen, $auth_user_id)
+    {
+        if ($origen === ImageAssignmentRun::ORIGEN_CATALOGO) {
+            return null;
+        }
+
+        return $auth_user_id;
     }
 
     /**

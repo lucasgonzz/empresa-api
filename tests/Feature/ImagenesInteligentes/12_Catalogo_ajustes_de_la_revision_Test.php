@@ -169,7 +169,9 @@ class Catalogo_ajustes_de_la_revision_Test extends ImagenesInteligentesTestCase
 
         $this->assertSame(ImageAssignmentItem::STATUS_NO_ASIGNADA, $item->status);
         $this->assertSame('en_otra_asignacion', $item->motivo);
-        $this->assertStringStartsWith('Esperando revisión en otra búsqueda', (string) $item->motivo_detalle);
+        // Texto cambiado a propósito en el pulido del 27/9/2026 (terminología): la corrida entera es
+        // "la asignación" y "búsqueda" es cada consulta al buscador. Antes: "...en otra búsqueda".
+        $this->assertStringStartsWith('Esperando revisión en otra asignación', (string) $item->motivo_detalle);
         $this->assertSame(0, (int) $item->busquedas);
         $this->assertSame([], $this->consultas_serper);
 
@@ -196,7 +198,9 @@ class Catalogo_ajustes_de_la_revision_Test extends ImagenesInteligentesTestCase
         $resultado = ImageAssignmentRunHelper::reanudar($detenida);
 
         $this->assertSame(422, $resultado['status']);
-        $this->assertStringContainsString('otra búsqueda de todo el catálogo', (string) $resultado['message']);
+        // Texto cambiado a propósito en el pulido del 27/9/2026 (terminología): antes decía "otra
+        // búsqueda de todo el catálogo"; la corrida entera es "la asignación".
+        $this->assertStringContainsString('otra asignación de todo el catálogo', (string) $resultado['message']);
         $this->assertSame(ImageAssignmentRun::STATUS_DETENIDA, $detenida->fresh()->status);
         Queue::assertNothingPushed();
 
