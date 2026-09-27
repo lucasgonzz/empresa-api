@@ -223,14 +223,16 @@ class ImagenesController extends Controller
             ->whereBetween('created_at', [$desde, $hasta])
             ->first();
 
-        $por_proveedor = [];
+        $por_proveedor          = [];
+        $cobradas_por_proveedor = [];
 
         foreach (self::PROVEEDORES_DE_BUSQUEDA as $proveedor) {
-            $por_proveedor[$proveedor] = 0;
+            $por_proveedor[$proveedor]          = 0;
+            $cobradas_por_proveedor[$proveedor] = 0;
         }
 
         $filas_por_proveedor = DB::table('image_service_calls')
-            ->selectRaw('proveedor, COUNT(*) as busquedas')
+            ->selectRaw('proveedor, COUNT(*) as busquedas, COALESCE(SUM(CASE WHEN cobrada = 1 THEN 1 ELSE 0 END), 0) as cobradas')
             ->where('user_id', $user_id)
             ->where('tipo', ImageServiceCall::TIPO_BUSQUEDA)
             ->whereBetween('created_at', [$desde, $hasta])
@@ -239,13 +241,17 @@ class ImagenesController extends Controller
 
         // Un proveedor que no es ninguno de los dos de hoy entra igual (aditivo): no se esconde gasto.
         foreach ($filas_por_proveedor as $por) {
-            $por_proveedor[(string) $por->proveedor] = (int) $por->busquedas;
+            $por_proveedor[(string) $por->proveedor]          = (int) $por->busquedas;
+            $cobradas_por_proveedor[(string) $por->proveedor] = (int) $por->cobradas;
         }
 
         return [
             'busquedas'                => (int) $fila->busquedas,
             'busquedas_cobradas'       => (int) $fila->busquedas_cobradas,
             'busquedas_por_proveedor'  => $por_proveedor,
+            // Aditivo (plan §13, C2): lo que se cobra es lo que respondió bien, por proveedor. El
+            // admin lo usa para el costo exacto si viene, y si no cae a su cálculo de antes.
+            'busquedas_cobradas_por_proveedor' => $cobradas_por_proveedor,
             'validaciones_ia'          => (int) $fila->validaciones_ia,
             'validaciones_ia_cobradas' => (int) $fila->validaciones_ia_cobradas,
             'errores'                  => (int) $fila->errores,
@@ -284,6 +290,9 @@ class ImagenesController extends Controller
                 'busquedas_cobradas'       => (int) $fila->busquedas_cobradas,
                 'busquedas_serper'         => (int) $fila->busquedas_serper,
                 'busquedas_google'         => (int) $fila->busquedas_google,
+                // Aditivos (plan §13, C2).
+                'busquedas_serper_cobradas' => (int) $fila->busquedas_serper_cobradas,
+                'busquedas_google_cobradas' => (int) $fila->busquedas_google_cobradas,
                 'validaciones_ia'          => (int) $fila->validaciones_ia,
                 'validaciones_ia_cobradas' => (int) $fila->validaciones_ia_cobradas,
                 'errores'                  => (int) $fila->errores,
@@ -433,6 +442,8 @@ class ImagenesController extends Controller
             .'COALESCE(SUM(CASE WHEN tipo = '.$busqueda.' AND cobrada = 1 THEN 1 ELSE 0 END), 0) as busquedas_cobradas, '
             ."COALESCE(SUM(CASE WHEN tipo = ".$busqueda." AND proveedor = 'serper' THEN 1 ELSE 0 END), 0) as busquedas_serper, "
             ."COALESCE(SUM(CASE WHEN tipo = ".$busqueda." AND proveedor = 'google' THEN 1 ELSE 0 END), 0) as busquedas_google, "
+            ."COALESCE(SUM(CASE WHEN tipo = ".$busqueda." AND proveedor = 'serper' AND cobrada = 1 THEN 1 ELSE 0 END), 0) as busquedas_serper_cobradas, "
+            ."COALESCE(SUM(CASE WHEN tipo = ".$busqueda." AND proveedor = 'google' AND cobrada = 1 THEN 1 ELSE 0 END), 0) as busquedas_google_cobradas, "
             .'COALESCE(SUM(CASE WHEN tipo = '.$validacion.' THEN 1 ELSE 0 END), 0) as validaciones_ia, '
             .'COALESCE(SUM(CASE WHEN tipo = '.$validacion.' AND cobrada = 1 THEN 1 ELSE 0 END), 0) as validaciones_ia_cobradas, '
             .'COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) as errores';

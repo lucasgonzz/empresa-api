@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\ArticleImageSearchAttempt;
+use App\Models\ImageAssignmentItem;
+use App\Models\ImageAssignmentRun;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -150,6 +152,14 @@ class ArticleImageSearchAttemptController extends Controller
         // Sin filas: o el uuid no existe, o es de otro comercio, o la retención de 30 días ya
         // la purgó. En los tres casos devolvemos el mismo 404 genérico.
         if ($attempts->isEmpty()) {
+            // Salvo que sea de una asignación NUEVA (misión imagenes-catalogo-completo, plan §13, C1):
+            // una SPA vieja cacheada pide este resumen con el uuid que ahora es el de la asignación.
+            $desde_la_asignacion = $this->resumen_desde_la_asignacion($batch_uuid);
+
+            if (!is_null($desde_la_asignacion)) {
+                return response()->json($desde_la_asignacion);
+            }
+
             return response()->json(['message' => 'No se encontró el historial de esa búsqueda de imágenes.'], 404);
         }
 
@@ -262,5 +272,95 @@ class ArticleImageSearchAttemptController extends Controller
             'needs_review_items'     => $needs_review_items,
             'skipped_by_quota_names' => $skipped_by_quota_names,
         ]);
+    }
+
+    /**
+     * Compatibilidad con una SPA vieja cacheada (misión imagenes-catalogo-completo, plan §13, C1).
+     * Desde esa misión las búsquedas de imágenes son "asignaciones" y no escriben filas de intentos;
+     * el uuid que la SPA vieja recibe al lanzar el lote es el de la asignación. Sin este respaldo, al
+     * terminar mostraba dos avisos de error y decía "se asignaron" imágenes que en realidad quedaron
+     * a revisar.
+     *
+     * Arma EL MISMO shape de summary() desde la asignación: `processed` = las asignadas,
+     * `needs_review` = 0 y las "a revisar" van dentro de `skipped_items` con el texto que manda a
+     * Alertas → Imágenes (donde se aprueban). Las pendientes todavía no cuentan en ningún lado.
+     *
+     * @param  string $batch_uuid
+     * @return array|null  null si no es una asignación de este comercio.
+     */
+    protected function resumen_desde_la_asignacion($batch_uuid)
+    {
+        $run = ImageAssignmentRun::where('user_id', $this->userId())
+            ->where('uuid', (string) $batch_uuid)
+            ->first();
+
+        if (is_null($run)) {
+            return null;
+        }
+
+        $items = ImageAssignmentItem::where('run_id', $run->id)
+            ->orderBy('orden')
+            ->get(['article_id', 'article_name', 'status', 'motivo_detalle']);
+
+        $processed              = 0;
+        $skipped_items          = [];
+        $skipped_by_quota_names = [];
+
+        foreach ($items as $item) {
+            $nombre = $item->article_name ?: 'Artículo #' . $item->article_id;
+
+            if (in_array($item->status, ImageAssignmentItem::ESTADOS_ASIGNADAS, true)) {
+                $processed++;
+                continue;
+            }
+
+            if ($item->status === ImageAssignmentItem::STATUS_A_REVISAR) {
+                $skipped_items[] = [
+                    'article_id' => (int) $item->article_id,
+                    'name'       => $nombre,
+                    'summary'    => 'Quedó esperando tu revisión en Alertas → Imágenes.',
+                ];
+                continue;
+            }
+
+            if ($item->status === ImageAssignmentItem::STATUS_SIN_PROCESAR) {
+                $skipped_by_quota_names[] = $nombre;
+                continue;
+            }
+
+            if (in_array($item->status, [ImageAssignmentItem::STATUS_NO_ASIGNADA, ImageAssignmentItem::STATUS_RECHAZADA, ImageAssignmentItem::STATUS_QUITADA], true)) {
+                $skipped_items[] = [
+                    'article_id' => (int) $item->article_id,
+                    'name'       => $nombre,
+                    'summary'    => (string) $item->motivo_detalle,
+                ];
+            }
+        }
+
+        // Mismo orden que summary(): por nombre, sin importar mayúsculas.
+        usort($skipped_items, function ($a, $b) {
+            return strcasecmp($a['name'], $b['name']);
+        });
+
+        $skipped_names = [];
+
+        foreach ($skipped_items as $item) {
+            $skipped_names[] = $item['name'];
+        }
+
+        return [
+            'batch_uuid'             => $batch_uuid,
+            'created_at'             => $run->created_at,
+            'articles_count'         => $items->count(),
+            'processed'              => $processed,
+            'skipped'                => count($skipped_items),
+            'skipped_by_quota'       => count($skipped_by_quota_names),
+            'quota_reached'          => count($skipped_by_quota_names) > 0,
+            'needs_review'           => 0,
+            'skipped_items'          => $skipped_items,
+            'skipped_names'          => $skipped_names,
+            'needs_review_items'     => [],
+            'skipped_by_quota_names' => $skipped_by_quota_names,
+        ];
     }
 }

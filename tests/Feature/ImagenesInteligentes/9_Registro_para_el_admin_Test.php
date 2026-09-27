@@ -178,10 +178,12 @@ class Registro_para_el_admin_Test extends ImagenesInteligentesTestCase
         $this->assertSame('2026-09-10', $respuesta['desde']);
         $this->assertSame('2026-09-11', $respuesta['hasta']);
 
+        // busquedas_cobradas_por_proveedor es aditivo (plan §13, C2): la de Serper que falló no se cobra.
         $this->assertSame([
             'busquedas'                => 4,
             'busquedas_cobradas'       => 3,
             'busquedas_por_proveedor'  => ['serper' => 3, 'google' => 1],
+            'busquedas_cobradas_por_proveedor' => ['serper' => 2, 'google' => 1],
             'validaciones_ia'          => 4,
             'validaciones_ia_cobradas' => 3,
             'errores'                  => 2,
@@ -191,14 +193,17 @@ class Registro_para_el_admin_Test extends ImagenesInteligentesTestCase
             'tokens_cache_lectura'     => 50,
         ], $respuesta['totales']);
 
+        // busquedas_serper_cobradas / busquedas_google_cobradas son aditivos (plan §13, C2).
         $this->assertSame([
             [
                 'fecha' => '2026-09-10', 'busquedas' => 3, 'busquedas_cobradas' => 2, 'busquedas_serper' => 2,
-                'busquedas_google' => 1, 'validaciones_ia' => 2, 'validaciones_ia_cobradas' => 2, 'errores' => 1,
+                'busquedas_google' => 1, 'busquedas_serper_cobradas' => 1, 'busquedas_google_cobradas' => 1,
+                'validaciones_ia' => 2, 'validaciones_ia_cobradas' => 2, 'errores' => 1,
             ],
             [
                 'fecha' => '2026-09-11', 'busquedas' => 1, 'busquedas_cobradas' => 1, 'busquedas_serper' => 1,
-                'busquedas_google' => 0, 'validaciones_ia' => 2, 'validaciones_ia_cobradas' => 1, 'errores' => 1,
+                'busquedas_google' => 0, 'busquedas_serper_cobradas' => 1, 'busquedas_google_cobradas' => 0,
+                'validaciones_ia' => 2, 'validaciones_ia_cobradas' => 1, 'errores' => 1,
             ],
         ], $respuesta['dias']);
 
@@ -250,6 +255,7 @@ class Registro_para_el_admin_Test extends ImagenesInteligentesTestCase
             ->json();
 
         $this->assertSame(['serper' => 0, 'google' => 0], $respuesta['totales']['busquedas_por_proveedor']);
+        $this->assertSame(['serper' => 0, 'google' => 0], $respuesta['totales']['busquedas_cobradas_por_proveedor']);
         $this->assertSame(0, $respuesta['totales']['busquedas']);
         $this->assertSame(0, $respuesta['totales']['tokens_entrada']);
         $this->assertSame([], $respuesta['dias']);
