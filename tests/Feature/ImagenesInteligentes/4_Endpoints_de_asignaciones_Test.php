@@ -240,7 +240,8 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
 
         $item->refresh();
         $this->assertSame(ImageAssignmentItem::STATUS_APROBADA, $item->status);
-        $this->assertMatchesRegularExpression('/^\d+\.webp$/', $item->imagen_archivo, 'Deja el prefijo imgcand_: ya es una imagen real.');
+        // <uuid>.webp (plan §13, S3), sin el prefijo imgcand_: ya es una imagen real.
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.webp$/', $item->imagen_archivo, 'Deja el prefijo imgcand_: ya es una imagen real.');
         $this->assertFalse(Storage::disk('public')->exists($candidata));
         $this->assertTrue(Storage::disk('public')->exists($item->imagen_archivo));
 

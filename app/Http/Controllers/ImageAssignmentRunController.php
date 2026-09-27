@@ -14,8 +14,10 @@ use Illuminate\Http\Request;
  * Solo traduce a HTTP: la lógica vive en ImageAssignmentRunHelper.
  *
  * Todo filtrado por el DUEÑO (`$this->userId()`): un empleado ve las asignaciones de su comercio, y
- * un id de otro comercio responde 404 (no existe para él). "Todo el catálogo", detener y reanudar son
- * solo para la sesión del acceso maestro (decisión de Lucas): sin ella, 403 con `{message}`.
+ * un id de otro comercio responde 404 (no existe para él). "Todo el catálogo" es solo para la sesión
+ * del acceso maestro (decisión de Lucas): sin ella, 403 con `{message}`. Detener y reanudar también,
+ * pero SOLO las de catálogo (plan §13, B7): las de selección o del asistente las puede detener o
+ * reanudar cualquiera del comercio que las ve.
  */
 class ImageAssignmentRunController extends Controller
 {
@@ -233,21 +235,21 @@ class ImageAssignmentRunController extends Controller
     }
 
     /**
-     * POST image-assignment-runs/{id}/detener — acceso maestro.
+     * POST image-assignment-runs/{id}/detener — las de catálogo, solo el acceso maestro.
      *
      * @param  int $id
-     * @return \Illuminate\Http\JsonResponse  {model: RunPayload} | 422 {message}
+     * @return \Illuminate\Http\JsonResponse  {model: RunPayload} | 403 | 404 | 422 {message}
      */
     public function detener($id)
     {
-        if (!ImageAssignmentRunHelper::es_acceso_maestro()) {
-            return $this->solo_acceso_maestro();
-        }
-
         $run = $this->asignacion_del_dueno($id);
 
         if (is_null($run)) {
             return $this->no_encontrada();
+        }
+
+        if (!$this->puede_detener_o_reanudar($run)) {
+            return $this->solo_acceso_maestro();
         }
 
         $resultado = ImageAssignmentRunHelper::detener($run);
@@ -260,21 +262,22 @@ class ImageAssignmentRunController extends Controller
     }
 
     /**
-     * POST image-assignment-runs/{id}/reanudar — acceso maestro; vale para detenida, fallida o trabada.
+     * POST image-assignment-runs/{id}/reanudar — vale para detenida, fallida o trabada; las de
+     * catálogo, solo el acceso maestro.
      *
      * @param  int $id
-     * @return \Illuminate\Http\JsonResponse  {model: RunPayload} | 422 {message}
+     * @return \Illuminate\Http\JsonResponse  {model: RunPayload} | 403 | 404 | 422 {message}
      */
     public function reanudar($id)
     {
-        if (!ImageAssignmentRunHelper::es_acceso_maestro()) {
-            return $this->solo_acceso_maestro();
-        }
-
         $run = $this->asignacion_del_dueno($id);
 
         if (is_null($run)) {
             return $this->no_encontrada();
+        }
+
+        if (!$this->puede_detener_o_reanudar($run)) {
+            return $this->solo_acceso_maestro();
         }
 
         $resultado = ImageAssignmentRunHelper::reanudar($run);
@@ -284,6 +287,19 @@ class ImageAssignmentRunController extends Controller
         }
 
         return response()->json(['model' => ImageAssignmentRunHelper::payload_de_asignacion($run->fresh())], 200);
+    }
+
+    /**
+     * ¿Puede la sesión actual detener o reanudar esta asignación? Las de todo el catálogo las lanzó
+     * el acceso maestro y son solo suyas; las de selección o del asistente, de cualquiera del
+     * comercio (plan §13, B7).
+     *
+     * @param  \App\Models\ImageAssignmentRun $run
+     * @return bool
+     */
+    protected function puede_detener_o_reanudar(ImageAssignmentRun $run)
+    {
+        return $run->origen !== ImageAssignmentRun::ORIGEN_CATALOGO || ImageAssignmentRunHelper::es_acceso_maestro();
     }
 
     /**

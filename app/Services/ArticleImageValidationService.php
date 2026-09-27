@@ -674,6 +674,9 @@ class ArticleImageValidationService
      * @return array {
      *     evaluada:      bool,         true si la IA devolvió veredictos que se pudieron leer.
      *     llamada_hecha: bool,         true si Anthropic respondió bien (la llamada se paga).
+     *     sin_servicio:  bool,         true si hacía falta la IA y no hubo servicio: apagada, sin
+     *                                  clave, error de conexión o Anthropic respondió con error
+     *                                  (plan §13, B2: con 5 artículos seguidos así, la asignación frena).
      *     motivo:        string|null,  por qué no se evaluó.
      *     resultados:    array,        indice => {es_el_producto: si|no|dudoso|sin_evaluar,
      *                                  confianza: high|medium|low|null, fondo_blanco: bool|null,
@@ -704,7 +707,7 @@ class ArticleImageValidationService
         }
 
         if (!config('services.article_image_validation.enabled')) {
-            return $this->candidatas_sin_evaluar($indices, 'La validación con IA está apagada.', false);
+            return $this->candidatas_sin_evaluar($indices, 'La validación con IA está apagada.', false, true);
         }
 
         // Mismo techo de llamadas por instancia que validate() (ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH).
@@ -721,7 +724,7 @@ class ArticleImageValidationService
                 'article_id' => $article->id,
             ]);
 
-            return $this->candidatas_sin_evaluar($indices, 'No está configurada la IA en el servidor.', false);
+            return $this->candidatas_sin_evaluar($indices, 'No está configurada la IA en el servidor.', false, true);
         }
 
         // Contenido del mensaje: cada imagen precedida por su rótulo, y al final los datos del artículo.
@@ -775,7 +778,7 @@ class ArticleImageValidationService
                 'error'      => 'Error de conexión con Anthropic: '.$e->getMessage(),
             ]);
 
-            return $this->candidatas_sin_evaluar($indices, 'No se pudo consultar a la IA (error de conexión).', false);
+            return $this->candidatas_sin_evaluar($indices, 'No se pudo consultar a la IA (error de conexión).', false, true);
         }
 
         // Cada intento cuenta para el techo de la instancia, como en validate().
@@ -798,7 +801,7 @@ class ArticleImageValidationService
                 'error'       => (string) $api_error,
             ]);
 
-            return $this->candidatas_sin_evaluar($indices, 'La IA respondió con error y no se pudo validar.', false);
+            return $this->candidatas_sin_evaluar($indices, 'La IA respondió con error y no se pudo validar.', false, true);
         }
 
         $body = $response->json();
@@ -836,6 +839,7 @@ class ArticleImageValidationService
         return [
             'evaluada'      => true,
             'llamada_hecha' => true,
+            'sin_servicio'  => false,
             'motivo'        => null,
             'resultados'    => $resultados,
         ];
@@ -847,9 +851,10 @@ class ArticleImageValidationService
      * @param  array  $indices
      * @param  string $motivo
      * @param  bool   $llamada_hecha  true si Anthropic respondió (la llamada se pagó) pero no se entendió.
+     * @param  bool   $sin_servicio   true si la IA hacía falta y no hubo servicio (ver evaluar_candidatas()).
      * @return array
      */
-    protected function candidatas_sin_evaluar(array $indices, $motivo, $llamada_hecha)
+    protected function candidatas_sin_evaluar(array $indices, $motivo, $llamada_hecha, $sin_servicio = false)
     {
         $resultados = [];
 
@@ -866,6 +871,7 @@ class ArticleImageValidationService
         return [
             'evaluada'      => false,
             'llamada_hecha' => (bool) $llamada_hecha,
+            'sin_servicio'  => (bool) $sin_servicio,
             'motivo'        => $motivo,
             'resultados'    => $resultados,
         ];

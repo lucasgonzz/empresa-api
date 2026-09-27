@@ -56,8 +56,9 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
         $this->assertSame($item->imagen_url, $imagenes[0]->hosting_url);
         $this->assertSame((int) $imagenes[0]->id, (int) $item->image_id);
 
-        // Nombre de siempre (<time><rand>.webp), cuadrada, lado máximo 1000.
-        $this->assertMatchesRegularExpression('/^\d+\.webp$/', (string) $item->imagen_archivo);
+        // Nombre <uuid>.webp (plan §13, S3: con time().rand dos tramos a la vez podían elegir el
+        // mismo nombre y pisarse la foto), cuadrada, lado máximo 1000.
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.webp$/', (string) $item->imagen_archivo);
         $this->assertTrue(Storage::disk('public')->exists($item->imagen_archivo));
         $medidas = getimagesize(Storage::disk('public')->path($item->imagen_archivo));
         $this->assertSame([1000, 1000], [$medidas[0], $medidas[1]]);
@@ -283,13 +284,16 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
     }
 
     /**
-     * Primero tamaño, segundo fondo blanco (el orden que pidió Lucas): la de 1000 px con fondo de
-     * color le gana a la de 650 px con fondo blanco, y se asigna igual, marcada.
+     * 🔴 CAMBIO DE CONTRATO A PROPÓSITO (plan §13, A1). Lucas, a su letra: "Primero que tenga un
+     * tamaño decente, que no se pixele. Y segundo, que tenga un fondo blanco." El tamaño es un
+     * UMBRAL (decente = lado menor ≥ 600), no una escalera: la de 650 px y la de 1000 px son las dos
+     * decentes, así que gana la de FONDO BLANCO aunque sea más chica. Hasta el 27/9 este test
+     * afirmaba lo contrario (la de 1000 px con fondo de color ganaba por ser más grande).
      *
      * @group imagenes-inteligentes
      * @test
      */
-    public function la_mejor_sin_fondo_blanco_se_asigna_igual_con_el_aviso()
+    public function entre_dos_decentes_gana_la_de_fondo_blanco_aunque_sea_mas_chica()
     {
         $articulo = $this->nuevo_articulo('Termo acero 1 L', self::CODIGO_REAL);
         $run      = $this->asignacion([$articulo]);
@@ -301,6 +305,48 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
             ]],
             [
                 $this->url_imagen('chica-blanca')   => $this->png(650, 650, 'azul', self::FONDO_BLANCO),
+                $this->url_imagen('grande-celeste') => $this->png(1000, 1000, 'rojo', self::FONDO_CELESTE),
+            ],
+            [
+                'azul' => $this->veredicto('si', 'high'),
+                'rojo' => $this->veredicto('si', 'high'),
+            ]
+        );
+
+        $item = $this->procesar($run, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame([], $item->imagen_meta['avisos']);
+        $this->assertTrue($item->imagen_meta['fondo_blanco']);
+        $this->assertSame(650, (int) $item->imagen_meta['ancho']);
+        $this->assertStringNotContainsString('El fondo no es blanco.', $item->motivo_detalle);
+        $this->assertSame('azul', $this->color_del_centro($item->imagen_archivo));
+
+        $candidatas = $this->diagnostico_de($item, 'codigo_de_barras')['candidatas'];
+        $this->assertSame('elegida', $candidatas[0]['resultado']);
+        $this->assertSame('alternativa', $candidatas[1]['resultado'], 'La de 1000 px también era el producto, pero sin fondo blanco.');
+    }
+
+    /**
+     * La única DECENTE no tiene fondo blanco (la blanca es de 450 px: aceptable, no decente): gana la
+     * decente, se asigna igual y queda marcada. Es lo que este archivo probaba antes con 650 px, en el
+     * caso donde el criterio de Lucas lo sigue sosteniendo.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function si_la_unica_decente_no_tiene_fondo_blanco_se_asigna_igual_con_el_aviso()
+    {
+        $articulo = $this->nuevo_articulo('Termo acero 1 L', self::CODIGO_REAL);
+        $run      = $this->asignacion([$articulo]);
+
+        $this->falsear(
+            [self::CODIGO_REAL => [
+                $this->resultado($this->url_imagen('chica-blanca'), 450, 450, 1),
+                $this->resultado($this->url_imagen('grande-celeste'), 1000, 1000, 2),
+            ]],
+            [
+                $this->url_imagen('chica-blanca')   => $this->png(450, 450, 'azul', self::FONDO_BLANCO),
                 $this->url_imagen('grande-celeste') => $this->png(1000, 1000, 'rojo', self::FONDO_CELESTE),
             ],
             [

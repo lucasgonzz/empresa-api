@@ -13,6 +13,7 @@ use App\Models\ImageAssignmentRun;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Tests\Feature\ImagenesInteligentes\Dobles\TramoDePrueba;
 
 /**
  * El job por tramos (ProcessImageAssignmentRunJob, plan §6.7).
@@ -73,11 +74,13 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
         $articulos = $this->articulos_asignables(3);
         $run       = $this->asignacion($articulos);
 
-        config(['services.imagenes_inteligentes.segundos_por_tramo' => 0]);
+        // Presupuesto 0 con el doble de prueba: producción acota config a [20, 120] (plan §13, B13).
+        $tramo              = new TramoDePrueba($run->id);
+        $tramo->presupuesto = 0;
 
         Queue::fake();
 
-        (new ProcessImageAssignmentRunJob($run->id))->handle();
+        $tramo->handle();
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_EN_PROCESO, $run->status);
@@ -237,7 +240,9 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
 
         Queue::fake();
 
-        $job   = new ProcessImageAssignmentRunJob($run->id);
+        // El doble: failed() ahora deshace las transacciones abiertas (plan §13, B8), y la de
+        // DatabaseTransactions es del test, no del tramo.
+        $job   = new TramoDePrueba($run->id);
         $ficha = $this->ficha_del_tramo($job);
 
         $this->assertNotSame('', $ficha, 'Cada tramo nace con su ficha.');
@@ -391,20 +396,22 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
 
         $this->falsear(['error' => 'Not enough credits'], [], []);
 
-        // Un artículo por tramo, como con el proveedor colgado.
-        config(['services.imagenes_inteligentes.segundos_por_tramo' => 0]);
-
         Queue::fake();
 
+        // Un artículo por tramo, como con el proveedor colgado (presupuesto 0 con el doble de prueba).
         for ($tramo = 1; $tramo <= 4; $tramo++) {
-            (new ProcessImageAssignmentRunJob($run->id))->handle();
+            $job              = new TramoDePrueba($run->id);
+            $job->presupuesto = 0;
+            $job->handle();
 
             $this->assertSame(ImageAssignmentRun::STATUS_EN_PROCESO, $run->fresh()->status, 'Tramo '.$tramo.': todavía no llegó al corte.');
             $this->assertSame($tramo, (int) $run->fresh()->errores_proveedor_seguidos);
         }
 
         // El quinto tramo es el quinto artículo seguido sin poder buscar: frena.
-        (new ProcessImageAssignmentRunJob($run->id))->handle();
+        $job              = new TramoDePrueba($run->id);
+        $job->presupuesto = 0;
+        $job->handle();
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);

@@ -25,7 +25,7 @@ use Psr\Http\Message\ResponseInterface;
  *      de siempre (listas de precios, catálogos, PDF: `descartada_por_texto`) y las que el propio
  *      proveedor informa chicas (lado menor < 400 px: `chica`). Un thumbnail nunca pasa este piso,
  *      por eso tampoco hay "fallback al thumbnail" como en el job viejo.
- *   2. Descarga EN PARALELO de hasta 5 candidatas (las de mayor tamaño informado), con la guarda
+ *   2. Descarga EN PARALELO de hasta 8 candidatas (las de mayor tamaño informado), con la guarda
  *      SSRF de BusquedaPorCodigoDeBarrasService en cada salto de redirección.
  *   3. Medición real (getimagesizefromstring) antes de decodificar: lado menor >= 400 y como mucho
  *      25 megapíxeles.
@@ -55,8 +55,30 @@ class CandidateImageProcessor
      */
     const LADO_MINIMO = 400;
 
-    /** Cuántas candidatas se bajan por búsqueda (las de mayor tamaño informado). */
-    const MAX_DESCARGAS = 5;
+    /**
+     * Lado menor de un tamaño DECENTE (plan §13, a la letra de Lucas: "primero que tenga un tamaño
+     * decente, que no se pixele; segundo, que tenga fondo blanco"). Es un UMBRAL: entre las que lo
+     * pasan gana la de fondo blanco, y recién después el tamaño mayor desempata.
+     */
+    const LADO_DECENTE = 600;
+
+    /**
+     * Cuántas candidatas se bajan por búsqueda (las de mayor tamaño informado). Ocho: las que la IA
+     * puede ver en dos tandas de cuatro (plan §13, el grupo que se compara se amplía).
+     */
+    const MAX_DESCARGAS = 8;
+
+    /**
+     * Content-Type que se aceptan además de image/*: muchos CDN sirven las fotos como binario
+     * genérico. Qué es de verdad lo decide el análisis del contenido (getimagesizefromstring).
+     */
+    const TIPOS_BINARIOS_ACEPTADOS = ['application/octet-stream', 'binary/octet-stream'];
+
+    /** Dominio de los sistemas de los clientes (el otro frente de un cliente vive ahí). */
+    const DOMINIO_DE_LOS_CLIENTES = '.comerciocity.com';
+
+    /** Nombre exacto de un archivo de candidata ("a revisar"). */
+    const PATRON_DE_CANDIDATA = '/^imgcand_[a-f0-9-]{36}\.webp$/';
 
     /** Segundos de espera de cada descarga (son en paralelo: el tramo espera el más lento). */
     const TIMEOUT_DESCARGA = 8;
@@ -134,9 +156,11 @@ class CandidateImageProcessor
      *                          diagnóstico (posicion, url, miniatura, pagina, dominio, ancho, alto,
      *                          resultado, fondo_blanco_ratio, motivo) más `clave` (interna).
      *                          `resultado` queda null en las que están listas para la IA.
-     *     listas:      array,  las listas para la IA, de la más grande a la más chica, con
-     *                          clave, posicion, ancho, alto, fondo_blanco, fondo_blanco_ratio,
-     *                          base64, media_type y binario (el original descargado).
+     *     listas:      array,  las listas para la IA, en el orden en que la IA las tiene que ver
+     *                          (primero las de tamaño decente, entre ellas primero las de fondo
+     *                          blanco, después la más grande), con clave, posicion, ancho, alto,
+     *                          fondo_blanco, fondo_blanco_ratio, base64, media_type y binario (el
+     *                          original descargado).
      *     urls_vistas: array,  las URLs vistas, sumadas las de esta búsqueda.
      * }
      */
@@ -268,16 +292,14 @@ class CandidateImageProcessor
             ];
         }
 
-        // Para la IA, de la más grande a la más chica (medido), y a igual tamaño por posición.
+        /*
+         * El orden en que las ve la IA (y en que se cortan las tandas de 4), con el criterio de Lucas
+         * a la letra (plan §13): primero las de tamaño DECENTE, entre ellas primero las de FONDO
+         * BLANCO, después la más grande, y a igualdad por posición. Así la primera tanda ya lleva las
+         * que más probablemente se asignen solas, y si da una, no se paga la segunda.
+         */
         usort($listas, function ($a, $b) {
-            $lado_a = min($a['ancho'], $a['alto']);
-            $lado_b = min($b['ancho'], $b['alto']);
-
-            if ($lado_a !== $lado_b) {
-                return $lado_a > $lado_b ? -1 : 1;
-            }
-
-            return $a['posicion'] - $b['posicion'];
+            return CandidateImageProcessor::comparar_para_la_ia($a, $b);
         });
 
         foreach ($candidatas as $indice => $candidata) {
@@ -289,6 +311,151 @@ class CandidateImageProcessor
             'listas'      => $listas,
             'urls_vistas' => $urls_vistas,
         ];
+    }
+
+    /**
+     * El orden de las listas para la IA (ver preparar()): decente → fondo blanco → tamaño → posición.
+     *
+     * @param  array $a
+     * @param  array $b
+     * @return int
+     */
+    public static function comparar_para_la_ia(array $a, array $b)
+    {
+        $lado_a = min((int) $a['ancho'], (int) $a['alto']);
+        $lado_b = min((int) $b['ancho'], (int) $b['alto']);
+
+        $decente_a = $lado_a >= self::LADO_DECENTE ? 1 : 0;
+        $decente_b = $lado_b >= self::LADO_DECENTE ? 1 : 0;
+
+        if ($decente_a !== $decente_b) {
+            return $decente_a > $decente_b ? -1 : 1;
+        }
+
+        $blanco_a = !empty($a['fondo_blanco']) ? 1 : 0;
+        $blanco_b = !empty($b['fondo_blanco']) ? 1 : 0;
+
+        if ($blanco_a !== $blanco_b) {
+            return $blanco_a > $blanco_b ? -1 : 1;
+        }
+
+        if ($lado_a !== $lado_b) {
+            return $lado_a > $lado_b ? -1 : 1;
+        }
+
+        return (int) $a['posicion'] - (int) $b['posicion'];
+    }
+
+    /**
+     * Baja una imagen propuesta ("a revisar") que quedó en el storage del OTRO frente del cliente
+     * (plan §13, B1): cada frente tiene su propio storage, y si un upgrade rotó el frente activo entre
+     * que el motor guardó la candidata y que alguien la aprueba, el archivo no está en este disco.
+     *
+     * Solo si la URL es de este mismo sistema (el host de la app, o un *.comerciocity.com) y el
+     * archivo es EXACTAMENTE la candidata esperada (imgcand_<uuid>.webp): no es un proxy para bajar
+     * cualquier cosa. Pasa por la misma guarda SSRF y el mismo pin de IP que las candidatas, SIN
+     * seguir redirecciones, con el mismo tope de bytes, y tiene que ser un webp de verdad.
+     *
+     * @param  string $url              La imagen_url del item.
+     * @param  string $nombre_esperado  El imagen_archivo del item.
+     * @return string|null  El binario, o null si no se pudo (o no correspondía) bajarlo.
+     */
+    public function descargar_candidata_de_otro_frente($url, $nombre_esperado)
+    {
+        $partes = parse_url(trim((string) $url));
+
+        if (!is_array($partes) || !isset($partes['host'], $partes['path'])) {
+            return null;
+        }
+
+        if (!$this->es_host_propio((string) $partes['host'])) {
+            return null;
+        }
+
+        $archivo = basename((string) $partes['path']);
+
+        if (!preg_match(self::PATRON_DE_CANDIDATA, $archivo) || $archivo !== basename((string) $nombre_esperado)) {
+            return null;
+        }
+
+        $descargas = $this->descargar_en_paralelo([0 => trim((string) $url)], 0);
+
+        if (empty($descargas[0]['ok'])) {
+            return null;
+        }
+
+        $binario = (string) $descargas[0]['binario'];
+        $info    = @getimagesizefromstring($binario);
+
+        if (!is_array($info) || empty($info[0]) || empty($info[1]) || !isset($info['mime']) || $info['mime'] !== 'image/webp') {
+            return null;
+        }
+
+        return $binario;
+    }
+
+    /**
+     * ¿Es un host de este mismo sistema? El de la app (APP_URL) o cualquiera de los sistemas de los
+     * clientes (el otro frente de este cliente es otro subdominio de comerciocity.com).
+     *
+     * @param  string $host
+     * @return bool
+     */
+    protected function es_host_propio($host)
+    {
+        $host   = strtolower(rtrim(trim((string) $host), '.'));
+        $propio = strtolower(rtrim((string) parse_url(ApiUrlHelper::base(), PHP_URL_HOST), '.'));
+
+        if ($host === '') {
+            return false;
+        }
+
+        if ($propio !== '' && $host === $propio) {
+            return true;
+        }
+
+        return strlen($host) > strlen(self::DOMINIO_DE_LOS_CLIENTES)
+            && substr($host, -strlen(self::DOMINIO_DE_LOS_CLIENTES)) === self::DOMINIO_DE_LOS_CLIENTES;
+    }
+
+    /**
+     * ¿Se acepta este Content-Type para una imagen? Vacío, image/* o un binario genérico: el análisis
+     * del contenido decide después (una página HTML no pasa getimagesizefromstring).
+     *
+     * @param  string $tipo  Ya en minúsculas.
+     * @return bool
+     */
+    protected function tipo_aceptable($tipo)
+    {
+        $tipo = trim((string) $tipo);
+
+        if ($tipo === '' || strpos($tipo, 'image/') === 0) {
+            return true;
+        }
+
+        foreach (self::TIPOS_BINARIOS_ACEPTADOS as $binario) {
+            if (strpos($tipo, $binario) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Un texto que vino de una cabecera de otro sitio, listo para guardar en el diagnóstico: UTF-8
+     * válido, sin caracteres de control y corto (plan §13, B9: bytes sueltos rompían el json).
+     *
+     * @param  string $texto
+     * @param  int    $largo
+     * @return string
+     */
+    protected function texto_de_cabecera($texto, $largo = 80)
+    {
+        $texto = ImageServiceCallLogger::utf8_valido((string) $texto);
+        $texto = (string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $texto);
+
+        return mb_substr(trim($texto), 0, $largo);
     }
 
     /**
@@ -505,7 +672,7 @@ class CandidateImageProcessor
      *   fondo blanco que va a tener en la tienda), webp calidad 85.
      *
      * @param  string $binario  La imagen original descargada.
-     * @param  string $archivo  Nombre del archivo a crear (`<time><rand>.webp` o `imgcand_<uuid>.webp`).
+     * @param  string $archivo  Nombre del archivo a crear (`<uuid>.webp` o `imgcand_<uuid>.webp`).
      * @return array  ['archivo' => string, 'url' => string, 'lado' => int]
      * @throws \Throwable  Si no se pudo decodificar o guardar (el motor lo registra).
      */
@@ -582,10 +749,11 @@ class CandidateImageProcessor
      * Sin `Referer` (google_http() y no google_api_http()): muchos sitios bloquean el hotlink cuando
      * el Referer es de otro dominio. Ver GoogleSearchHelpers::google_api_http().
      *
-     * @param  array $urls  clave => url.
+     * @param  array $urls               clave => url.
+     * @param  int   $max_redirecciones  Saltos que se siguen (0 = ninguno: una redirección es un fallo).
      * @return array  clave => ['ok' => bool, 'binario' => string|null, 'resultado' => string|null, 'motivo' => string|null]
      */
-    protected function descargar_en_paralelo(array $urls)
+    protected function descargar_en_paralelo(array $urls, $max_redirecciones = self::MAX_REDIRECCIONES)
     {
         $resultados = [];
         $pendientes = [];
@@ -606,7 +774,7 @@ class CandidateImageProcessor
                     continue;
                 }
 
-                $a_pedir[$clave] = ['url' => $url, 'ip' => $ip, 'saltos' => $pendiente['saltos']];
+                $a_pedir[$clave] = ['url' => $url, 'ip' => $ip, 'saltos' => $pendiente['saltos'], 'max_saltos' => (int) $max_redirecciones];
             }
 
             if (empty($a_pedir)) {
@@ -663,6 +831,14 @@ class CandidateImageProcessor
                     $pool->as('c'.$clave)
                         ->withOptions(array_merge($opciones_tls, [
                             'allow_redirects' => false,
+                            /*
+                             * 🔴 Sin descomprimir (plan §13, S1): los topes de abajo miden los bytes
+                             * que llegan por el cable, y una "bomba gzip" de 8 MB comprimidos se
+                             * infla a gigas en memoria si cURL la descomprime. Con esto, más el
+                             * Accept-Encoding: identity, lo que llega es lo que se mide; si un sitio
+                             * igual la manda comprimida, no pasa por imagen y se descarta.
+                             */
+                            'decode_content'  => false,
                             // Corta la descarga apenas llegan las cabeceras si anuncia más peso del
                             // permitido o si no es una imagen: no se trae a memoria lo que se va a tirar.
                             'on_headers'      => function (ResponseInterface $cabeceras) use ($max_bytes) {
@@ -674,7 +850,7 @@ class CandidateImageProcessor
 
                                 $tipo = strtolower($cabeceras->getHeaderLine('Content-Type'));
 
-                                if ($cabeceras->getStatusCode() === 200 && $tipo !== '' && strpos($tipo, 'image/') !== 0) {
+                                if ($cabeceras->getStatusCode() === 200 && !$this->tipo_aceptable($tipo)) {
                                     throw new \RuntimeException('El sitio no devolvió una imagen.');
                                 }
                             },
@@ -704,6 +880,7 @@ class CandidateImageProcessor
                             // como "no es una imagen"). webp, jpeg y png los lee todos.
                             'Accept'          => 'image/webp,image/jpeg,image/png,image/gif;q=0.9,*/*;q=0.5',
                             'Accept-Language' => 'es-AR,es;q=0.9,en;q=0.5',
+                            'Accept-Encoding' => 'identity',
                         ])
                         ->get($pedido['url']);
                 }
@@ -738,8 +915,10 @@ class CandidateImageProcessor
         $estado = (int) $respuesta->status();
 
         if (in_array($estado, [301, 302, 303, 307, 308], true)) {
-            if ($pedido['saltos'] >= self::MAX_REDIRECCIONES) {
-                return ['estado' => 'fallo', 'resultado' => 'no_descargable', 'motivo' => 'El sitio redirigió demasiadas veces.'];
+            $max_saltos = isset($pedido['max_saltos']) ? (int) $pedido['max_saltos'] : self::MAX_REDIRECCIONES;
+
+            if ($pedido['saltos'] >= $max_saltos) {
+                return ['estado' => 'fallo', 'resultado' => 'no_descargable', 'motivo' => $max_saltos === 0 ? 'El sitio redirigió a otra dirección.' : 'El sitio redirigió demasiadas veces.'];
             }
 
             $destino = $this->url_absoluta(trim((string) $respuesta->header('Location')), $pedido['url']);
@@ -761,8 +940,8 @@ class CandidateImageProcessor
 
         $tipo = strtolower((string) $respuesta->header('Content-Type'));
 
-        if ($tipo !== '' && strpos($tipo, 'image/') !== 0) {
-            return ['estado' => 'fallo', 'resultado' => 'no_es_imagen', 'motivo' => 'El sitio devolvió una página ('.$tipo.'), no una imagen.'];
+        if (!$this->tipo_aceptable($tipo)) {
+            return ['estado' => 'fallo', 'resultado' => 'no_es_imagen', 'motivo' => 'El sitio devolvió una página ('.$this->texto_de_cabecera($tipo).'), no una imagen.'];
         }
 
         $cuerpo = (string) $respuesta->body();

@@ -19,10 +19,14 @@ class ImageServiceCall extends Model
     /** ArticleImageValidationService::validate(): la búsqueda por código del asistente y el lote viejo. */
     const ORIGEN_VALIDACION_INDIVIDUAL = 'validacion_individual';
 
+    /** Las búsquedas de Google de la búsqueda por código de barras del asistente (BusquedaPorCodigoDeBarrasService). */
+    const ORIGEN_ASISTENTE_CODIGO_DE_BARRAS = 'asistente_codigo_de_barras';
+
     const TIPO_BUSQUEDA      = 'busqueda';
     const TIPO_VALIDACION_IA = 'validacion_ia';
 
     const PROVEEDOR_ANTHROPIC = 'anthropic';
+    const PROVEEDOR_GOOGLE    = 'google';
 
     /** Días que se guarda el registro (se purga al crear una asignación). */
     const DIAS_DE_RETENCION = 180;

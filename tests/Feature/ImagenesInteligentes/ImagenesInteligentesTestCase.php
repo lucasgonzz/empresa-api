@@ -184,6 +184,28 @@ abstract class ImagenesInteligentesTestCase extends EmpresaTestCase
     }
 
     /**
+     * Un WEBP de prueba (el formato de las imágenes que guarda el motor), con el producto del color
+     * pedido sobre fondo blanco.
+     *
+     * @param  int    $ancho
+     * @param  int    $alto
+     * @param  string $color
+     * @return string
+     */
+    protected function webp($ancho, $alto, $color = 'rojo')
+    {
+        $imagen = imagecreatefromstring($this->png($ancho, $alto, $color));
+
+        ob_start();
+        imagewebp($imagen, null, 85);
+        $datos = ob_get_clean();
+
+        imagedestroy($imagen);
+
+        return $datos;
+    }
+
+    /**
      * URL de una imagen de prueba.
      *
      * @param  string $nombre

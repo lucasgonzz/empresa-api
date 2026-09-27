@@ -28,17 +28,19 @@ use Illuminate\Support\Str;
  *
  * Por artículo, en orden (plan §6.6):
  *   1. Si el artículo ya no existe → no_asignada / articulo_borrado. En "todo el catálogo", si
- *      mientras esperaba su turno ya consiguió imagen → no_asignada / ya_tenia_imagen, sin buscar
- *      (plan §12.1).
+ *      mientras esperaba su turno ya consiguió imagen → no_asignada / ya_tenia_imagen (plan §12.1),
+ *      y si tiene una imagen esperando revisión en OTRA asignación → no_asignada /
+ *      en_otra_asignacion (plan §13). Las dos sin buscar.
  *   2. Si su código de barras es REAL (CodigoDeBarrasRealHelper) → búsqueda por código →
  *      candidatas (CandidateImageProcessor: descartes gratis, descarga, tamaño y fondo medidos) →
  *      IA comparando hasta 4 por llamada (ArticleImageValidationService::evaluar_candidatas).
- *   3. Ranking entre las candidatas (ver clave_de_orden()): primero las que se pueden asignar
- *      solas, después TAMAÑO (≥800 ideal, ≥600 bueno, ≥400 aceptable), después FONDO BLANCO
- *      (el orden que pidió Lucas: "primero tamaño, segundo fondo blanco"), después la confianza
- *      de la IA, menos problemas y la posición.
+ *   3. Ranking entre las candidatas (ver clave_de_orden()), con el criterio de Lucas a la letra:
+ *      "primero que tenga un tamaño decente, que no se pixele; y segundo, que tenga un fondo
+ *      blanco". El tamaño es un UMBRAL (decente = lado menor ≥ 600), no una escalera: entre las
+ *      decentes gana la de fondo blanco, y el tamaño mayor recién desempata después.
  *   4. La ganadora se ASIGNA sola solo si la IA dijo "si" con confianza alta, sin marca de agua,
- *      texto encima, collage ni "otro producto", y con lado menor ≥ 600 px. Si no, va A REVISAR.
+ *      texto encima, collage, "otro producto" ni borrosa, y con lado menor ≥ 600 px. Si no, va A
+ *      REVISAR.
  *   5. Si por código salió una asignable, listo. Si solo salió una para revisar, o nada, se busca
  *      por NOMBRE (+ marca) y gana la mejor de las dos. Decisión del plan: una búsqueda más a
  *      cambio de menos revisión manual.
@@ -68,24 +70,28 @@ class ArticleImageAssignmentEngine
     const CRITERIO_NOMBRE = 'nombre';
 
     /**
-     * Techo de llamadas a la IA por artículo (plan §6.5). Cada llamada compara hasta 4 candidatas;
-     * con dos criterios alcanza para una tanda por criterio y una más si la primera no sirvió.
+     * Techos de llamadas a la IA (plan §13): cada llamada compara hasta 4 candidatas, y de cada
+     * búsqueda se bajan hasta 8. Dos tandas por criterio (si la primera da una asignable, la segunda
+     * no se paga) y cuatro por artículo con los dos criterios.
      */
-    const MAX_LLAMADAS_IA_POR_ARTICULO = 3;
+    const MAX_LLAMADAS_IA_POR_CRITERIO = 2;
+    const MAX_LLAMADAS_IA_POR_ARTICULO = 4;
 
-    /** Niveles de tamaño del ranking, por lado menor en píxeles. */
-    const LADO_IDEAL     = 800;
-    const LADO_BUENO     = 600;
-    const LADO_ACEPTABLE = 400;
+    /**
+     * Niveles de tamaño del ranking, por lado menor en píxeles: DECENTE (≥ 600, "que no se pixele")
+     * y ACEPTABLE (400 a 599: se muestra para revisar, nunca se asigna sola).
+     */
+    const LADO_DECENTE   = CandidateImageProcessor::LADO_DECENTE;
+    const LADO_ACEPTABLE = CandidateImageProcessor::LADO_MINIMO;
 
     /** Lado menor mínimo para asignar sola una imagen (debajo va a revisar como "algo chica"). */
-    const LADO_MINIMO_PARA_ASIGNAR = 600;
+    const LADO_MINIMO_PARA_ASIGNAR = CandidateImageProcessor::LADO_DECENTE;
 
     /** Largo máximo de la consulta por nombre (nombre + marca). */
     const LARGO_MAXIMO_CONSULTA_POR_NOMBRE = 120;
 
     /** Problemas que la IA puede marcar y que impiden asignar sola una imagen. */
-    const PROBLEMAS_QUE_IMPIDEN_ASIGNAR = ['marca_de_agua', 'texto_superpuesto', 'collage', 'otro_producto'];
+    const PROBLEMAS_QUE_IMPIDEN_ASIGNAR = ['marca_de_agua', 'texto_superpuesto', 'collage', 'otro_producto', 'borrosa'];
 
     /**
      * Prioridad del motivo principal de una no asignada cuando hubo dos criterios (contrato §5.2):
@@ -111,6 +117,7 @@ class ArticleImageAssignmentEngine
         'marca_de_agua',
         'texto_superpuesto',
         'collage',
+        'borrosa',
         'imagen_algo_chica',
     ];
 
@@ -142,6 +149,17 @@ class ArticleImageAssignmentEngine
     protected $cx = '';
 
     /**
+     * @var int Techo de llamadas a la IA de TODA la asignación (plan §13, B6): el mayor entre
+     *          ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH y 4 por artículo. Se compara contra las
+     *          validaciones que ya hizo la asignación (en todos sus tramos), no contra las de este
+     *          tramo: el techo por instancia del validador volvía a cero en cada tramo.
+     */
+    protected $techo_de_ia;
+
+    /** @var int Validaciones con IA que lleva la asignación (se lee al armar el motor y se suma acá). */
+    protected $validaciones_de_la_corrida;
+
+    /**
      * @param \App\Models\ImageAssignmentRun                         $run
      * @param \App\Models\User|null                                  $owner       Null = el dueño de la asignación.
      * @param \App\Services\ImageSearch\ImageSearchProvider|null     $proveedor   Null = el de la asignación.
@@ -167,6 +185,13 @@ class ArticleImageAssignmentEngine
         $this->validador  = is_null($validador) ? new ArticleImageValidationService() : $validador;
         $this->procesador = is_null($procesador) ? new CandidateImageProcessor($this->validador) : $procesador;
         $this->proveedor  = is_null($proveedor) ? ImageSearchProviderFactory::para($this->owner, $run->proveedor) : $proveedor;
+
+        $this->techo_de_ia = max(
+            (int) config('services.article_image_validation.max_calls_batch'),
+            self::MAX_LLAMADAS_IA_POR_ARTICULO * (int) $run->total_articulos
+        );
+
+        $this->validaciones_de_la_corrida = (int) DB::table('image_assignment_runs')->where('id', $run->id)->value('validaciones_ia');
     }
 
     /**
@@ -177,6 +202,11 @@ class ArticleImageAssignmentEngine
      *     status:             string, el estado final del item.
      *     cupo_agotado:       bool,   se quedó sin cupo diario (el job corta la asignación).
      *     error_de_proveedor: bool,   todas las búsquedas de este artículo fallaron por el proveedor.
+     *     busquedas_intentadas: int,  búsquedas que se intentaron (0 = el artículo no buscó nada:
+     *                                 no le dice nada al contador del proveedor).
+     *     ia_respondio:       bool,   alguna llamada a la IA respondió.
+     *     ia_sin_respuesta:   bool,   se le pidió algo a la IA y NINGUNA llamada respondió (sin
+     *                                 servicio: apagada, sin clave, caída o con error).
      * }
      */
     public function procesar(ImageAssignmentItem $item)
@@ -206,6 +236,19 @@ class ArticleImageAssignmentEngine
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'ya_tenia_imagen',
                 'motivo_detalle' => 'Ya tenía imagen cuando le tocó el turno.',
+            ]);
+        }
+
+        /*
+         * Todo el catálogo (plan §13, B3): si el artículo ya tiene una imagen esperando revisión en
+         * OTRA asignación, buscarle otra sería pagar para proponer una segunda que alguien va a
+         * tener que comparar con la primera. Se espera a esa revisión (0 búsquedas).
+         */
+        if ($this->run->origen === ImageAssignmentRun::ORIGEN_CATALOGO && $this->tiene_propuesta_en_otra_asignacion($article)) {
+            return $this->cerrar($item, $contexto, [
+                'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
+                'motivo'         => 'en_otra_asignacion',
+                'motivo_detalle' => 'Esperando revisión en otra búsqueda: ya tiene una imagen propuesta en otra asignación.',
             ]);
         }
 
@@ -339,7 +382,7 @@ class ArticleImageAssignmentEngine
         $this->sumar_a_la_asignacion([
             'busquedas' => 1,
             ($criterio === self::CRITERIO_CODIGO ? 'busquedas_codigo' : 'busquedas_nombre') => 1,
-        ]);
+        ], $contexto['item_id']);
 
         $this->descontar_del_cupo_diario();
 
@@ -358,10 +401,22 @@ class ArticleImageAssignmentEngine
         $candidatas = $preparadas['candidatas'];
         $restantes  = $preparadas['listas'];
 
-        // IA en tandas de hasta 4, de la más grande a la más chica, hasta encontrar una asignable.
+        /*
+         * IA en tandas de hasta 4, en el orden en que las dejó el procesador (decente → fondo blanco
+         * → tamaño), hasta encontrar una asignable: si la primera tanda da una, la segunda no se paga.
+         * Como mucho MAX_LLAMADAS_IA_POR_CRITERIO por búsqueda y MAX_LLAMADAS_IA_POR_ARTICULO en
+         * total, y nunca por encima del techo de la asignación.
+         */
+        $llamadas_del_criterio = 0;
+
         while (!empty($restantes)) {
-            if ($contexto['llamadas_ia'] >= self::MAX_LLAMADAS_IA_POR_ARTICULO) {
-                $this->marcar_sin_revisar($candidatas, $restantes, 'No se llegó a revisar con IA: ya se habían hecho '.self::MAX_LLAMADAS_IA_POR_ARTICULO.' consultas para este artículo.');
+            if ($llamadas_del_criterio >= self::MAX_LLAMADAS_IA_POR_CRITERIO || $contexto['llamadas_ia'] >= self::MAX_LLAMADAS_IA_POR_ARTICULO) {
+                $this->marcar_sin_revisar($candidatas, $restantes, 'No se llegó a revisar con IA: ya se habían hecho las consultas previstas para esta búsqueda.');
+                break;
+            }
+
+            if ($this->validaciones_de_la_corrida >= $this->techo_de_ia) {
+                $this->marcar_sin_revisar($candidatas, $restantes, 'No se llegó a revisar con IA: la asignación llegó a su techo de consultas a la IA.');
                 break;
             }
 
@@ -386,11 +441,18 @@ class ArticleImageAssignmentEngine
             ]);
 
             $contexto['llamadas_ia']++;
+            $llamadas_del_criterio++;
+
+            // Hacía falta la IA y no hubo servicio (para el corte de B2 en el job).
+            if (!empty($veredicto['sin_servicio'])) {
+                $contexto['ia_sin_servicio']++;
+            }
 
             // Validaciones = llamadas que Anthropic respondió (las que se pagan).
             if ($veredicto['llamada_hecha']) {
                 $contexto['validaciones']++;
-                $this->sumar_a_la_asignacion(['validaciones_ia' => 1]);
+                $this->validaciones_de_la_corrida++;
+                $this->sumar_a_la_asignacion(['validaciones_ia' => 1], $contexto['item_id']);
             }
 
             $hay_asignable = false;
@@ -483,6 +545,21 @@ class ArticleImageAssignmentEngine
     }
 
     /**
+     * ¿El artículo tiene una imagen esperando revisión en OTRA asignación del mismo dueño?
+     *
+     * @param  \App\Models\Article $article
+     * @return bool
+     */
+    protected function tiene_propuesta_en_otra_asignacion(Article $article)
+    {
+        return ImageAssignmentItem::where('user_id', (int) $this->run->user_id)
+            ->where('article_id', (int) $article->id)
+            ->where('run_id', '!=', (int) $this->run->id)
+            ->where('status', ImageAssignmentItem::STATUS_A_REVISAR)
+            ->exists();
+    }
+
+    /**
      * Marca como "no_evaluada" las candidatas listas que no llegaron a la IA.
      *
      * @param  array  $candidatas  (por referencia) las del diagnóstico del criterio.
@@ -552,7 +629,7 @@ class ArticleImageAssignmentEngine
             $motivos[] = 'confianza_media';
         }
 
-        foreach (['marca_de_agua', 'texto_superpuesto', 'collage'] as $problema) {
+        foreach (['marca_de_agua', 'texto_superpuesto', 'collage', 'borrosa'] as $problema) {
             if (in_array($problema, $problemas, true)) {
                 $motivos[] = $problema;
             }
@@ -609,16 +686,19 @@ class ArticleImageAssignmentEngine
     /**
      * Clave del ranking (se compara elemento por elemento; más alto gana).
      *
-     * 🔴 "asignable" va PRIMERO, antes que el tamaño, aunque el plan diga "tamaño → fondo → ..." y
-     * parezca que se lo saltea: ese orden es para elegir ENTRE las que la IA dio por buenas. Sin
-     * esta clave, una foto de 1200 px con marca de agua le ganaba a una limpia de 700 px que se podía
-     * asignar sola, y el artículo terminaba a revisar — justo lo que la búsqueda por nombre existe
-     * para evitar ("una búsqueda más a cambio de menos revisión manual").
+     * El criterio de Lucas, a su letra (plan §13): "Primero que tenga un tamaño decente, que no se
+     * pixele. Y segundo, que tenga un fondo blanco." El tamaño es un UMBRAL, no una escalera: entre
+     * dos decentes (lado menor ≥ 600) gana la de fondo blanco aunque la otra sea más grande; el
+     * tamaño mayor recién desempata después.
      *
-     * Después: grupo del veredicto (si > dudoso > sin evaluar) y, adentro de cada grupo, el orden
-     * del plan §6.6: nivel de TAMAÑO, FONDO BLANCO medido, confianza de la IA, menos problemas; a
-     * igualdad, el criterio (la del código de barras, que es una búsqueda más precisa) y la posición
-     * en los resultados.
+     * 🔴 "asignable" va PRIMERO: sin esta clave, una foto con marca de agua le ganaba a una limpia que
+     * se podía asignar sola, y el artículo terminaba a revisar — justo lo que la búsqueda por nombre
+     * existe para evitar. Después el grupo del veredicto (sí > dudosa > sin evaluar): entre las que
+     * van a revisar, se muestra primero la que la IA reconoce como el producto.
+     *
+     * Y después: decente / aceptable, FONDO BLANCO, tamaño mayor, confianza de la IA, menos
+     * problemas, la del código de barras antes que la del nombre (es una búsqueda más precisa) y la
+     * posición en los resultados.
      *
      * @param  array $candidata
      * @return array
@@ -630,6 +710,7 @@ class ArticleImageAssignmentEngine
             (int) $candidata['grupo'],
             $this->nivel_de_tamano($candidata['lado']),
             $candidata['fondo_blanco'] ? 1 : 0,
+            (int) $candidata['lado'],
             $this->nivel_de_confianza($candidata['ia']['confianza']),
             -count($candidata['ia']['problemas']),
             $candidata['criterio'] === self::CRITERIO_CODIGO ? 1 : 0,
@@ -639,15 +720,11 @@ class ArticleImageAssignmentEngine
 
     /**
      * @param  int $lado  Lado menor en px.
-     * @return int  3 ideal (≥800), 2 bueno (≥600), 1 aceptable (≥400), 0 menos.
+     * @return int  2 decente (≥600), 1 aceptable (≥400), 0 menos.
      */
     protected function nivel_de_tamano($lado)
     {
-        if ($lado >= self::LADO_IDEAL) {
-            return 3;
-        }
-
-        if ($lado >= self::LADO_BUENO) {
+        if ($lado >= self::LADO_DECENTE) {
             return 2;
         }
 
@@ -691,10 +768,11 @@ class ArticleImageAssignmentEngine
 
         $asignable = (bool) $ganadora['asignable'];
 
-        // Asignada: el nombre de siempre (<time><rand>.webp). A revisar: imgcand_<uuid>.webp, que
-        // se renombra al aprobarla (el prefijo la distingue de las imágenes reales del storage).
+        // Asignada: <uuid>.webp (plan §13, S3: con time().rand dos tramos a la vez podían elegir el
+        // mismo nombre y pisarse la foto). A revisar: imgcand_<uuid>.webp, que se copia a un nombre
+        // definitivo al aprobarla (el prefijo la distingue de las imágenes reales del storage).
         $archivo = $asignable
-            ? time().rand(1, 100000).'.webp'
+            ? (string) Str::uuid().'.webp'
             : ImageAssignmentItem::PREFIJO_CANDIDATA.(string) Str::uuid().'.webp';
 
         try {
@@ -706,10 +784,11 @@ class ArticleImageAssignmentEngine
                 'error'      => $e->getMessage(),
             ]);
 
+            // El mensaje crudo (de Intervention / del disco) queda solo en el log (plan §13, S2).
             return $this->cerrar($item, $contexto, [
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'error_interno',
-                'motivo_detalle' => 'Se eligió una imagen pero no se pudo guardar en el servidor: '.Str::limit($e->getMessage(), 200, '…'),
+                'motivo_detalle' => 'Se eligió una imagen pero no se pudo guardar en el servidor. El detalle quedó en el registro del sistema.',
             ]);
         }
 
@@ -892,8 +971,9 @@ class ArticleImageAssignmentEngine
                 'imagen_meta'     => null,
                 'image_id'        => null,
             ], $datos, [
-                'busquedas'       => min(255, (int) $contexto['busquedas']),
-                'validaciones_ia' => min(255, (int) $contexto['validaciones']),
+                // busquedas y validaciones_ia NO se escriben acá: se suman en el momento en que se
+                // pagan (sumar_a_la_asignacion()), así un reintento acumula en vez de pisar y la
+                // suma de los artículos cuadra con la de la asignación (plan §13, B12).
                 'diagnostico'     => $diagnostico,
                 'procesado_at'    => $ahora,
             ]));
@@ -924,6 +1004,9 @@ class ArticleImageAssignmentEngine
             'cupo_agotado'       => (bool) $contexto['cupo_agotado'],
             'error_de_proveedor' => $contexto['busquedas_intentadas'] > 0
                 && $contexto['errores_de_proveedor'] === $contexto['busquedas_intentadas'],
+            'busquedas_intentadas' => (int) $contexto['busquedas_intentadas'],
+            'ia_respondio'         => $contexto['validaciones'] > 0,
+            'ia_sin_respuesta'     => $contexto['ia_sin_servicio'] > 0 && $contexto['validaciones'] === 0,
         ];
     }
 
@@ -1170,6 +1253,7 @@ class ArticleImageAssignmentEngine
                 'marca_de_agua'     => 'Tiene marca de agua',
                 'texto_superpuesto' => 'Tiene texto encima de la foto',
                 'collage'           => 'Es un collage de varias fotos',
+                'borrosa'           => 'Se ve borrosa',
                 'imagen_algo_chica' => 'Imagen de '.$ganadora['lado'].' px',
             ];
 
@@ -1335,9 +1419,10 @@ class ArticleImageAssignmentEngine
      * @param  array $sumas  columna => cantidad (busquedas, busquedas_codigo, busquedas_nombre, validaciones_ia).
      * @return void
      */
-    protected function sumar_a_la_asignacion(array $sumas)
+    protected function sumar_a_la_asignacion(array $sumas, $item_id = null)
     {
-        $cambios = ['updated_at' => Carbon::now()];
+        $ahora   = Carbon::now();
+        $cambios = ['updated_at' => $ahora];
 
         foreach ($sumas as $columna => $cantidad) {
             if (in_array($columna, ['busquedas', 'busquedas_codigo', 'busquedas_nombre', 'validaciones_ia'], true)) {
@@ -1346,6 +1431,22 @@ class ArticleImageAssignmentEngine
         }
 
         DB::table('image_assignment_runs')->where('id', $this->run->id)->update($cambios);
+
+        // Y al artículo, en el mismo momento (plan §13, B12): si el motor revienta después y el
+        // artículo se reintenta, lo pagado en el primer intento sigue contado en el item.
+        if (!is_null($item_id)) {
+            $del_item = ['updated_at' => $ahora];
+
+            foreach (['busquedas', 'validaciones_ia'] as $columna) {
+                if (isset($sumas[$columna])) {
+                    $del_item[$columna] = DB::raw('LEAST(255, '.$columna.' + '.(int) $sumas[$columna].')');
+                }
+            }
+
+            if (count($del_item) > 1) {
+                DB::table('image_assignment_items')->where('id', (int) $item_id)->update($del_item);
+            }
+        }
     }
 
     /**
@@ -1398,6 +1499,8 @@ class ArticleImageAssignmentEngine
             'diagnostico'          => [],
             'pozo'                 => [],
             'urls_vistas'          => [],
+            // Llamadas a la IA que no tuvieron servicio (apagada, sin clave, caída, con error).
+            'ia_sin_servicio'      => 0,
         ];
     }
 }

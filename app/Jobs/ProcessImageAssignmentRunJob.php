@@ -10,6 +10,7 @@ use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
 use App\Services\ImageAssignment\ArticleImageAssignmentEngine;
+use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
@@ -72,6 +73,18 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
      * "no asignados" por error de búsqueda. Se puede reanudar cuando el proveedor vuelve.
      */
     const MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR = 5;
+
+    /**
+     * Artículos seguidos en los que se le pidió algo a la IA y NINGUNA llamada respondió (clave
+     * vencida, sin saldo, Anthropic caído) antes de frenar la asignación como fallida (plan §13, B2).
+     * Sin IA nada se asigna solo: seguir sería pagar búsquedas para dejar todo "a revisar". Un
+     * artículo que no necesitó la IA no toca el contador. Se puede reanudar cuando la IA vuelve.
+     */
+    const MAX_ARTICULOS_SEGUIDOS_SIN_IA = 5;
+
+    /** Presupuesto de un tramo, en segundos: lo de config acotado a este rango (plan §13, B13). */
+    const SEGUNDOS_POR_TRAMO_MINIMO = 20;
+    const SEGUNDOS_POR_TRAMO_MAXIMO = 120;
 
     /** @var int La asignación a procesar. */
     protected $run_id;
@@ -137,7 +150,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         $motor = new ArticleImageAssignmentEngine($run, $owner);
 
         $inicio      = microtime(true);
-        $presupuesto = max(0, (int) config('services.imagenes_inteligentes.segundos_por_tramo', 50));
+        $presupuesto = $this->segundos_por_tramo();
 
         // Artículos que este tramo intentó (hayan salido bien o con error): es lo que mide el fin del
         // tramo. Contar solo los que salieron bien dejaba que una racha de artículos con error se
@@ -148,7 +161,8 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             // Fin del tramo: siempre después de al menos un artículo (si no, un presupuesto chico
             // re-encolaría para siempre sin avanzar).
             if ($trabajados > 0 && (microtime(true) - $inicio) >= $presupuesto) {
-                self::dispatch($run->id);
+                // Siempre el job de producción (una subclase de prueba no se re-encola a sí misma).
+                ProcessImageAssignmentRunJob::dispatch($run->id);
 
                 return;
             }
@@ -198,7 +212,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
             // Ya falló las veces permitidas (volvió a pendiente por una reanudación): no se insiste.
             if ((int) $item->intentos > self::MAX_INTENTOS_POR_ARTICULO) {
-                $this->descartar_por_error($item, 'Falló '.self::MAX_INTENTOS_POR_ARTICULO.' veces al procesarlo y se lo dejó de lado para no trabar la asignación.');
+                $this->descartar_por_error($item, 'Falló '.self::MAX_INTENTOS_POR_ARTICULO.' veces al procesarlo y se lo dejó de lado para no trabar la asignación. El detalle quedó en el registro del sistema.');
                 continue;
             }
 
@@ -226,7 +240,11 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 return;
             }
 
-            if ($this->contar_error_de_proveedor($run, (bool) $resultado['error_de_proveedor']) >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
+            // Un artículo que no intentó ninguna búsqueda (sin datos, borrado, ya tenía imagen, en
+            // otra asignación) no dice nada del proveedor: no toca el contador (plan §13, B5).
+            $intentadas = isset($resultado['busquedas_intentadas']) ? (int) $resultado['busquedas_intentadas'] : 1;
+
+            if ($intentadas > 0 && $this->contar_error_de_proveedor($run, (bool) $resultado['error_de_proveedor']) >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
                 $ultimo_error = $this->ultimo_error_del_diagnostico($item->fresh());
 
                 ImageAssignmentRunHelper::terminar(
@@ -239,7 +257,69 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
                 return;
             }
+
+            if ($this->contar_articulo_sin_ia($run, $resultado) >= self::MAX_ARTICULOS_SEGUIDOS_SIN_IA) {
+                ImageAssignmentRunHelper::terminar(
+                    $run,
+                    ImageAssignmentRun::STATUS_FALLIDA,
+                    'La validación con IA no responde en '.self::MAX_ARTICULOS_SEGUIDOS_SIN_IA.' artículos seguidos; se frenó para no gastar búsquedas. Revisá la clave y reanudá.'
+                );
+
+                return;
+            }
         }
+    }
+
+    /**
+     * Niveles de transacción que NO son del tramo y que failed() no tiene que deshacer. En un worker
+     * no hay ninguno; existe para que los tests (que corren adentro de su propia transacción) puedan
+     * decir que la suya no es del tramo.
+     *
+     * @return int
+     */
+    protected function niveles_ajenos_de_transaccion()
+    {
+        return 0;
+    }
+
+    /**
+     * El presupuesto de un tramo: config imagenes_inteligentes.segundos_por_tramo acotado a
+     * [SEGUNDOS_POR_TRAMO_MINIMO, SEGUNDOS_POR_TRAMO_MAXIMO] (plan §13, B13): con 0 se re-encolaría
+     * por cada artículo, y con horas volvería el job largo que el tramo existe para evitar.
+     *
+     * @return int
+     */
+    protected function segundos_por_tramo()
+    {
+        $segundos = (int) config('services.imagenes_inteligentes.segundos_por_tramo', 50);
+
+        return max(self::SEGUNDOS_POR_TRAMO_MINIMO, min(self::SEGUNDOS_POR_TRAMO_MAXIMO, $segundos));
+    }
+
+    /**
+     * Lleva, EN LA ASIGNACIÓN, la cuenta de artículos seguidos en los que se le pidió algo a la IA y
+     * ninguna llamada respondió (plan §13, B2), y devuelve el valor actual. Un artículo en el que la
+     * IA respondió la pone en cero; uno que no la necesitó no la toca.
+     *
+     * @param  \App\Models\ImageAssignmentRun $run
+     * @param  array $resultado  El de ArticleImageAssignmentEngine::procesar().
+     * @return int
+     */
+    protected function contar_articulo_sin_ia(ImageAssignmentRun $run, array $resultado)
+    {
+        if (!empty($resultado['ia_sin_respuesta'])) {
+            DB::table('image_assignment_runs')
+                ->where('id', $run->id)
+                ->update(['errores_ia_seguidos' => DB::raw('errores_ia_seguidos + 1')]);
+
+            return (int) DB::table('image_assignment_runs')->where('id', $run->id)->value('errores_ia_seguidos');
+        }
+
+        if (!empty($resultado['ia_respondio']) && (int) $run->errores_ia_seguidos > 0) {
+            DB::table('image_assignment_runs')->where('id', $run->id)->update(['errores_ia_seguidos' => 0]);
+        }
+
+        return 0;
     }
 
     /**
@@ -257,6 +337,22 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
     public function failed($e)
     {
         try {
+            /*
+             * Si el tramo murió adentro de una transacción (plan §13, B8), la conexión puede seguir
+             * con ella abierta: lo que se escriba acá quedaría adentro y se perdería con ella. Se
+             * deshacen TODOS los niveles antes de escribir nada.
+             */
+            while (DB::transactionLevel() > $this->niveles_ajenos_de_transaccion()) {
+                DB::rollBack();
+            }
+        } catch (\Throwable $error_de_rollback) {
+            Log::warning('[ImagenesInteligentes] failed() no pudo deshacer una transacción abierta.', [
+                'run_id' => $this->run_id,
+                'error'  => $error_de_rollback->getMessage(),
+            ]);
+        }
+
+        try {
             $run = ImageAssignmentRun::find($this->run_id);
 
             if (is_null($run) || !$run->esta_activa()) {
@@ -266,6 +362,13 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             $mensaje = !is_null($e) && $e->getMessage() !== ''
                 ? $e->getMessage()
                 : 'El proceso se interrumpió sin dejar traza (probable falta de memoria, timeout o worker reiniciado).';
+
+            // El detalle crudo, solo al log (plan §13, S2): al usuario le llega un texto genérico.
+            Log::error('[ImagenesInteligentes] Se interrumpió un tramo.', [
+                'run_id' => $this->run_id,
+                'tramo'  => $this->tramo,
+                'error'  => ImageServiceCallLogger::sin_claves($mensaje),
+            ]);
 
             // Solo el artículo que reclamó ESTE tramo (ver $tramo): uno "procesando" con otra ficha
             // es de un tramo vivo y no se toca.
@@ -291,13 +394,14 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 ImageAssignmentRunHelper::terminar(
                     $run,
                     ImageAssignmentRun::STATUS_FALLIDA,
-                    'Se interrumpió '.self::MAX_FALLOS_CONSECUTIVOS.' veces seguidas. Último error: '.Str::limit($mensaje, 300, '…')
+                    'Se interrumpió '.self::MAX_FALLOS_CONSECUTIVOS.' veces seguidas. El detalle quedó en el registro del sistema; se puede reanudar.'
                 );
 
                 return;
             }
 
-            self::dispatch($run->id);
+            // Siempre el job de producción (una subclase de prueba no se re-encola a sí misma).
+            ProcessImageAssignmentRunJob::dispatch($run->id);
         } catch (\Throwable $error) {
             Log::error('[ImagenesInteligentes] failed() no pudo reencolar la asignación.', [
                 'run_id' => $this->run_id,
@@ -374,7 +478,8 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         }
 
         if ((int) $item->intentos >= self::MAX_INTENTOS_POR_ARTICULO) {
-            $this->descartar_por_error($item, 'Falló '.self::MAX_INTENTOS_POR_ARTICULO.' veces al procesarlo y se lo dejó de lado para no trabar la asignación. Último error: '.Str::limit((string) $mensaje, 200, '…'));
+            // El mensaje crudo ya quedó en el log de quien llamó: al usuario, un texto genérico (S2).
+            $this->descartar_por_error($item, 'Falló '.self::MAX_INTENTOS_POR_ARTICULO.' veces al procesarlo y se lo dejó de lado para no trabar la asignación. El detalle quedó en el registro del sistema.');
 
             return;
         }
@@ -535,6 +640,6 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             }
         }
 
-        return Str::limit($ultimo, 200, '…');
+        return Str::limit(ImageServiceCallLogger::sin_claves($ultimo), 200, '…');
     }
 }

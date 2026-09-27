@@ -12,6 +12,7 @@ use App\Models\Image;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
+use App\Services\ImageAssignment\CandidateImageProcessor;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
@@ -20,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use League\Flysystem\FileExistsException;
 
 /**
  * La lógica de negocio de las asignaciones inteligentes de imágenes (misión
@@ -124,7 +126,9 @@ class ImageAssignmentRunHelper
      * @param  string           $origen        catalogo | seleccion | asistente
      * @param  int|null         $auth_user_id  Quién la lanzó.
      * @param  array            $opciones      proveedor (serper|google; default: el que le toca al dueño),
-     *                                         aplica_tope_diario (bool; default true).
+     *                                         aplica_tope_diario (bool; default true), purgar (bool;
+     *                                         default true: false cuando quien llama ya purgó fuera
+     *                                         de su transacción, como el catálogo).
      * @return \App\Models\ImageAssignmentRun
      */
     public static function crear(User $owner, array $article_ids, $origen, $auth_user_id = null, array $opciones = [])
@@ -163,18 +167,9 @@ class ImageAssignmentRunHelper
             }
         }
 
-        // La tabla de diagnóstico vieja se sigue purgando sola, aunque las asignaciones nuevas no
-        // escriben ahí (la SPA vieja cacheada todavía la consulta).
-        try {
-            ArticleImageSearchAttempt::purge_old((int) $owner->id, 30);
-        } catch (\Throwable $e) {
-            Log::warning('[ImagenesInteligentes] No se pudo purgar article_image_search_attempts: '.$e->getMessage());
+        if (!array_key_exists('purgar', $opciones) || $opciones['purgar']) {
+            self::purgas_al_crear((int) $owner->id);
         }
-
-        self::purgar_viejas((int) $owner->id);
-
-        // El registro de consultas se guarda 180 días (plan §12.1). Nunca lanza.
-        ImageServiceCallLogger::purgar_viejas();
 
         $proveedor = isset($opciones['proveedor']) ? (string) $opciones['proveedor'] : ImageSearchProviderFactory::nombre_para($owner);
         $aplica    = array_key_exists('aplica_tope_diario', $opciones) ? (bool) $opciones['aplica_tope_diario'] : true;
@@ -245,9 +240,57 @@ class ImageAssignmentRunHelper
         });
     }
 
+    /**
+     * Lo que se purga al crear una asignación, del dueño que la crea. Nunca lanza.
+     *
+     * @param  int $owner_id
+     * @return void
+     */
+    protected static function purgas_al_crear($owner_id)
+    {
+        // La tabla de diagnóstico vieja se sigue purgando sola, aunque las asignaciones nuevas no
+        // escriben ahí (la SPA vieja cacheada todavía la consulta).
+        try {
+            ArticleImageSearchAttempt::purge_old((int) $owner_id, 30);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo purgar article_image_search_attempts: '.$e->getMessage());
+        }
+
+        self::purgar_viejas((int) $owner_id);
+
+        // El registro de consultas se guarda 180 días (plan §12.1): solo el de este dueño y como
+        // mucho una vez por día (plan §13, S5). Nunca lanza.
+        ImageServiceCallLogger::purgar_viejas((int) $owner_id);
+    }
+
     /* ----------------------------------------------------------------------------------------
      * Todo el catálogo
      * -------------------------------------------------------------------------------------- */
+
+    /**
+     * ¿Está la IA para validar las imágenes? Sin ella nada se asigna solo (plan §13, B2): todo
+     * terminaría "a revisar" gastando búsquedas.
+     *
+     * @return array  ['configurada' => bool, 'motivo' => string|null]
+     */
+    public static function ia_disponible()
+    {
+        if (!config('services.article_image_validation.enabled')) {
+            return [
+                'configurada' => false,
+                'motivo'      => 'La validación de imágenes con IA está apagada en el servidor de este cliente (ARTICLE_IMAGE_VALIDATION_ENABLED).',
+            ];
+        }
+
+        if (trim((string) config('services.anthropic.api_key')) === '') {
+            return [
+                'configurada' => false,
+                'motivo'      => 'Falta la clave de la IA (ANTHROPIC_API_KEY) en el servidor de este cliente.',
+            ];
+        }
+
+        return ['configurada' => true, 'motivo' => null];
+    }
 
     /**
      * ¿La sesión actual entró por el login maestro? Lo pone AuthController::login() (y la
@@ -265,7 +308,8 @@ class ImageAssignmentRunHelper
      * Los números de la selección del catálogo (sin traer ids).
      *
      * @param  int $owner_id
-     * @return array  sin_imagen, excluidos_pendientes_de_revision, excluidos_ya_buscados, candidatos.
+     * @return array  sin_imagen, excluidos_pendientes_de_revision, excluidos_ya_buscados,
+     *                excluidos_en_otra_asignacion, candidatos.
      */
     public static function conteos_del_catalogo($owner_id)
     {
@@ -280,11 +324,19 @@ class ImageAssignmentRunHelper
             ->whereExists(self::subconsulta_ya_buscado_sin_exito($owner_id))
             ->count();
 
+        // Los que ya están esperando su turno en otra asignación en curso (plan §13, B3).
+        $en_otra_asignacion = (clone $base)
+            ->whereNotExists(self::subconsulta_a_revisar($owner_id))
+            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id))
+            ->whereExists(self::subconsulta_en_asignacion_activa($owner_id))
+            ->count();
+
         return [
             'sin_imagen'                       => (int) $sin_imagen,
             'excluidos_pendientes_de_revision' => (int) $pendientes_de_revision,
             'excluidos_ya_buscados'            => (int) $ya_buscados,
-            'candidatos'                       => max(0, (int) $sin_imagen - (int) $pendientes_de_revision - (int) $ya_buscados),
+            'excluidos_en_otra_asignacion'     => (int) $en_otra_asignacion,
+            'candidatos'                       => max(0, (int) $sin_imagen - (int) $pendientes_de_revision - (int) $ya_buscados - (int) $en_otra_asignacion),
         ];
     }
 
@@ -302,6 +354,7 @@ class ImageAssignmentRunHelper
         return self::base_del_catalogo($owner_id)
             ->whereNotExists(self::subconsulta_a_revisar($owner_id))
             ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id))
+            ->whereNotExists(self::subconsulta_en_asignacion_activa($owner_id))
             ->orderByRaw('COALESCE(articles.online, 0) DESC')
             ->orderByRaw('CASE WHEN articles.stock > 0 THEN 1 ELSE 0 END DESC')
             ->orderBy('articles.id')
@@ -338,6 +391,7 @@ class ImageAssignmentRunHelper
         $busquedas = (int) round($a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO);
 
         $configurado = ImageSearchProviderFactory::serper_configurado();
+        $ia          = self::ia_disponible();
 
         $activa = self::corrida_de_catalogo_activa((int) $owner->id);
 
@@ -345,11 +399,16 @@ class ImageAssignmentRunHelper
             'sin_imagen'                       => $conteos['sin_imagen'],
             'excluidos_pendientes_de_revision' => $conteos['excluidos_pendientes_de_revision'],
             'excluidos_ya_buscados'            => $conteos['excluidos_ya_buscados'],
+            // Aditivo (plan §13, B3): los que ya esperan su turno en otra asignación en curso.
+            'excluidos_en_otra_asignacion'     => $conteos['excluidos_en_otra_asignacion'],
             'a_buscar'                         => $a_buscar,
             'tope'                             => $tope,
             'quedan_para_otra_corrida'         => max(0, $conteos['candidatos'] - $a_buscar),
             'proveedor_configurado'            => $configurado,
             'proveedor'                        => $configurado ? ImageAssignmentRun::PROVEEDOR_SERPER : null,
+            // Plan §13, B2: sin IA el POST del catálogo da 422.
+            'ia_configurada'                   => $ia['configurada'],
+            'ia_motivo'                        => $ia['motivo'],
             'estimacion'                       => [
                 'busquedas'     => $busquedas,
                 'minutos'       => (int) round($a_buscar * self::SEGUNDOS_ESTIMADOS_POR_ARTICULO / 60),
@@ -381,6 +440,21 @@ class ImageAssignmentRunHelper
             ];
         }
 
+        // Sin IA nada se asigna solo: el catálogo entero terminaría "a revisar" pagando búsquedas.
+        $ia = self::ia_disponible();
+
+        if (!$ia['configurada']) {
+            return [
+                'status'  => 422,
+                'message' => 'No se puede buscar imágenes de todo el catálogo sin la validación con IA: sin ella ninguna imagen se asigna sola. '.$ia['motivo'],
+                'run'     => null,
+            ];
+        }
+
+        // Las purgas, FUERA de la transacción (plan §13, S5): la transacción toma el lock del dueño
+        // y no tiene que esperar un DELETE.
+        self::purgas_al_crear((int) $owner->id);
+
         return DB::transaction(function () use ($owner, $auth_user_id) {
             User::where('id', $owner->id)->lockForUpdate()->first();
 
@@ -406,6 +480,8 @@ class ImageAssignmentRunHelper
                 'proveedor'          => ImageAssignmentRun::PROVEEDOR_SERPER,
                 // El acceso maestro no le come el cupo del día al dueño (decisión del plan §6.2).
                 'aplica_tope_diario' => false,
+                // Ya se purgó arriba, fuera de la transacción.
+                'purgar'             => false,
             ]);
 
             return ['status' => 201, 'message' => null, 'run' => $run];
@@ -461,6 +537,9 @@ class ImageAssignmentRunHelper
      * EXISTS: el artículo se buscó sin éxito en los últimos DIAS_SIN_VOLVER_A_BUSCAR días (no hubo
      * imagen que sirviera, alguien rechazó la propuesta o quitó la que se había asignado).
      *
+     * Para las rechazadas y quitadas la fecha que manda es la del rechazo (plan §13, B10): una
+     * propuesta de hace 100 días que alguien rechazó ayer es un "no" de ayer.
+     *
      * @param  int $owner_id
      * @return \Closure
      */
@@ -473,16 +552,38 @@ class ImageAssignmentRunHelper
                 ->from('image_assignment_items')
                 ->where('image_assignment_items.user_id', (int) $owner_id)
                 ->whereColumn('image_assignment_items.article_id', 'articles.id')
-                ->where('image_assignment_items.procesado_at', '>=', $desde)
-                ->where(function ($condicion) {
-                    $condicion->where(function ($no_asignada) {
+                ->where(function ($condicion) use ($desde) {
+                    $condicion->where(function ($no_asignada) use ($desde) {
                         $no_asignada->where('image_assignment_items.status', ImageAssignmentItem::STATUS_NO_ASIGNADA)
-                            ->whereIn('image_assignment_items.motivo', self::MOTIVOS_YA_BUSCADO_SIN_EXITO);
-                    })->orWhereIn('image_assignment_items.status', [
-                        ImageAssignmentItem::STATUS_RECHAZADA,
-                        ImageAssignmentItem::STATUS_QUITADA,
-                    ]);
+                            ->whereIn('image_assignment_items.motivo', self::MOTIVOS_YA_BUSCADO_SIN_EXITO)
+                            ->where('image_assignment_items.procesado_at', '>=', $desde);
+                    })->orWhere(function ($revisada) use ($desde) {
+                        $revisada->whereIn('image_assignment_items.status', [
+                            ImageAssignmentItem::STATUS_RECHAZADA,
+                            ImageAssignmentItem::STATUS_QUITADA,
+                        ])->whereRaw('COALESCE(image_assignment_items.revisado_at, image_assignment_items.procesado_at) >= ?', [$desde]);
+                    });
                 });
+        };
+    }
+
+    /**
+     * EXISTS: el artículo está pendiente o procesándose en una asignación EN CURSO del dueño (plan
+     * §13, B3): ya le va a tocar el turno ahí, meterlo en otra lo buscaría dos veces.
+     *
+     * @param  int $owner_id
+     * @return \Closure
+     */
+    protected static function subconsulta_en_asignacion_activa($owner_id)
+    {
+        return function ($query) use ($owner_id) {
+            $query->select(DB::raw(1))
+                ->from('image_assignment_items')
+                ->join('image_assignment_runs', 'image_assignment_runs.id', '=', 'image_assignment_items.run_id')
+                ->where('image_assignment_items.user_id', (int) $owner_id)
+                ->whereColumn('image_assignment_items.article_id', 'articles.id')
+                ->whereIn('image_assignment_items.status', ImageAssignmentItem::ESTADOS_PENDIENTES)
+                ->whereIn('image_assignment_runs.status', [ImageAssignmentRun::STATUS_PENDIENTE, ImageAssignmentRun::STATUS_EN_PROCESO]);
         };
     }
 
@@ -750,8 +851,19 @@ class ImageAssignmentRunHelper
      * -------------------------------------------------------------------------------------- */
 
     /**
-     * Aprueba una imagen "a revisar": el archivo imgcand_* pasa a un nombre definitivo, se crea la
-     * fila de `images` y Tienda Nube se entera. Recién ahí la tienda la ve.
+     * Aprueba una imagen "a revisar": la candidata se COPIA a un nombre definitivo, se crea la fila
+     * de `images` y Tienda Nube se entera. Recién ahí la tienda la ve.
+     *
+     * El orden importa (plan §13, B4): primero la copia (fuera de la base), después todo lo de la
+     * base en UNA transacción, y recién después del commit se borra la candidata. Si algo falla en
+     * el medio se borra la copia y la candidata sigue donde estaba: nunca queda un item "a revisar"
+     * apuntando a un archivo que ya no existe.
+     *
+     * Si la candidata no está en este disco (plan §13, B1: cada frente del cliente tiene su storage,
+     * y un upgrade puede haber rotado el frente activo entre que el motor la guardó y que alguien la
+     * aprueba), se la baja de su imagen_url, solo si es de este mismo sistema. Si igual no se
+     * consigue, 422 SIN tocar el item: sigue a revisar (antes se lo pasaba a error_interno y se
+     * perdía la propuesta, y como error_interno no cuenta como "ya buscado", se volvía a pagar).
      *
      * @param  int      $owner_id
      * @param  int      $item_id
@@ -760,104 +872,202 @@ class ImageAssignmentRunHelper
      */
     public static function aprobar($owner_id, $item_id, $auth_user_id = null)
     {
-        return DB::transaction(function () use ($owner_id, $item_id, $auth_user_id) {
-            $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
-                ->where('id', (int) $item_id)
-                ->lockForUpdate()
-                ->first();
+        $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
+            ->where('id', (int) $item_id)
+            ->first();
 
-            if (is_null($item)) {
-                return self::respuesta(404, 'No se encontró esa imagen.');
+        if (is_null($item)) {
+            return self::respuesta(404, 'No se encontró esa imagen.');
+        }
+
+        if ($item->status !== ImageAssignmentItem::STATUS_A_REVISAR) {
+            return self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $item);
+        }
+
+        $candidata = self::nombre_de_candidata_valido($item->imagen_archivo);
+
+        // Un nombre que no es el de una candidata no se toca: nunca se copia ni se borra otra cosa.
+        if (is_null($candidata)) {
+            return self::respuesta(422, 'La imagen propuesta no se puede aprobar: rechazala y volvé a buscarle imagen a este artículo.', $item);
+        }
+
+        if (!Storage::disk('public')->exists($candidata) && !self::traer_candidata_de_otro_frente($item, $candidata)) {
+            return self::respuesta(422, 'La imagen propuesta no está en este servidor y no se pudo traer del otro frente del sistema. Probá de nuevo en un rato, o rechazala.', $item);
+        }
+
+        // Nombre definitivo con uuid (plan §13, S3), copiado ANTES de tocar la base.
+        $definitivo = (string) Str::uuid().'.webp';
+
+        try {
+            if (!Storage::disk('public')->copy($candidata, $definitivo)) {
+                return self::respuesta(422, 'No se pudo preparar la imagen en el servidor. Probá de nuevo en un momento.', $item);
             }
+        } catch (FileExistsException $e) {
+            return self::respuesta(422, 'Ya había una imagen con ese nombre en el servidor. Probá de nuevo en un momento.', $item);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo copiar la candidata al aprobarla.', [
+                'item_id' => $item->id,
+                'error'   => $e->getMessage(),
+            ]);
 
-            if ($item->status !== ImageAssignmentItem::STATUS_A_REVISAR) {
-                return self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $item);
-            }
+            return self::respuesta(422, 'No se pudo preparar la imagen en el servidor. Probá de nuevo en un momento.', $item);
+        }
 
-            $article = Article::where('id', $item->article_id)
-                ->where('user_id', (int) $owner_id)
-                ->first();
+        try {
+            $resultado = DB::transaction(function () use ($owner_id, $item_id, $auth_user_id, $definitivo) {
+                $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
+                    ->where('id', (int) $item_id)
+                    ->lockForUpdate()
+                    ->first();
 
-            if (is_null($article)) {
-                self::borrar_candidata($item->imagen_archivo);
+                // Entre la lectura de arriba y el lock pudo resolverla otro: la copia sobra.
+                if (is_null($item)) {
+                    return ['respuesta' => self::respuesta(404, 'No se encontró esa imagen.'), 'borrar_copia' => true, 'borrar_candidata' => null];
+                }
+
+                if ($item->status !== ImageAssignmentItem::STATUS_A_REVISAR) {
+                    return ['respuesta' => self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $item), 'borrar_copia' => true, 'borrar_candidata' => null];
+                }
+
+                $candidata_del_item = $item->imagen_archivo;
+
+                $article = Article::where('id', $item->article_id)
+                    ->where('user_id', (int) $owner_id)
+                    ->first();
+
+                if (is_null($article)) {
+                    $item->fill([
+                        'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
+                        'motivo'         => 'articulo_borrado',
+                        'motivo_detalle' => 'Se iba a aprobar la imagen, pero el artículo ya no existe.',
+                        'imagen_url'     => null,
+                        'imagen_archivo' => null,
+                        'revisado_por'   => self::entero_o_null($auth_user_id),
+                        'revisado_at'    => Carbon::now(),
+                    ]);
+                    $item->save();
+
+                    return ['respuesta' => self::respuesta(422, 'El artículo ya no existe: no se puede aprobar su imagen.', $item), 'borrar_copia' => true, 'borrar_candidata' => $candidata_del_item];
+                }
+
+                $url = ApiUrlHelper::storage($definitivo);
+
+                $imagen = Image::create([
+                    'hosting_url'    => $url,
+                    'imageable_id'   => $article->id,
+                    'imageable_type' => 'article',
+                ]);
+
+                // Igual que una asignada por el motor (ver ArticleImageAssignmentEngine): sin apagar
+                // timestamps, para que el sync incremental del front baje el artículo con su imagen.
+                $article->needs_sync_with_tn = true;
+                $article->save();
+
+                TiendaNubeSyncArticleService::add_article_to_sync($article);
+
+                // Ya es una imagen asignada: sus avisos pasan a ser los de una asignada (contrato §5.2:
+                // solo "Fondo no blanco"). Por qué había ido a revisar queda en `motivo` y en el
+                // diagnóstico; "aprobada por X" lo dice revisado_por.
+                $meta = is_array($item->imagen_meta) ? $item->imagen_meta : [];
+                $meta['avisos'] = isset($meta['fondo_blanco']) && $meta['fondo_blanco'] === false ? ['Fondo no blanco'] : [];
 
                 $item->fill([
-                    'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
-                    'motivo'         => 'articulo_borrado',
-                    'motivo_detalle' => 'Se iba a aprobar la imagen, pero el artículo ya no existe.',
-                    'imagen_url'     => null,
-                    'imagen_archivo' => null,
+                    'status'         => ImageAssignmentItem::STATUS_APROBADA,
+                    'image_id'       => (int) $imagen->id,
+                    'imagen_url'     => $url,
+                    'imagen_archivo' => $definitivo,
+                    'imagen_meta'    => $meta,
                     'revisado_por'   => self::entero_o_null($auth_user_id),
                     'revisado_at'    => Carbon::now(),
                 ]);
                 $item->save();
 
-                return self::respuesta(422, 'El artículo ya no existe: no se puede aprobar su imagen.', $item);
-            }
+                return ['respuesta' => self::respuesta(200, null, $item), 'borrar_copia' => false, 'borrar_candidata' => $candidata_del_item];
+            });
+        } catch (\Throwable $e) {
+            // No quedó nada escrito: la copia sobra y la candidata sigue donde estaba.
+            self::borrar_copia_definitiva($definitivo);
 
-            $candidata = self::nombre_de_candidata_valido($item->imagen_archivo);
+            Log::warning('[ImagenesInteligentes] No se pudo aprobar la imagen.', [
+                'item_id' => $item->id,
+                'error'   => $e->getMessage(),
+            ]);
 
-            if (is_null($candidata) || !Storage::disk('public')->exists($candidata)) {
-                $item->fill([
-                    'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
-                    'motivo'         => 'error_interno',
-                    'motivo_detalle' => 'La imagen propuesta ya no estaba en el servidor cuando se quiso aprobar.',
-                    'imagen_url'     => null,
-                    'imagen_archivo' => null,
-                    'revisado_por'   => self::entero_o_null($auth_user_id),
-                    'revisado_at'    => Carbon::now(),
+            return self::respuesta(422, 'No se pudo aprobar la imagen. Probá de nuevo en un momento.', $item);
+        }
+
+        // Recién después del commit se borra lo que ya no sirve.
+        if ($resultado['borrar_copia']) {
+            self::borrar_copia_definitiva($definitivo);
+        }
+
+        if (!is_null($resultado['borrar_candidata'])) {
+            self::borrar_candidata($resultado['borrar_candidata']);
+        }
+
+        return $resultado['respuesta'];
+    }
+
+    /**
+     * Trae al disco de este frente una candidata que quedó en el storage del otro (plan §13, B1).
+     * La baja CandidateImageProcessor::descargar_candidata_de_otro_frente(), con todas sus guardas
+     * (solo de este mismo sistema, solo el nombre exacto de la candidata, SSRF, tope de bytes, un
+     * webp de verdad).
+     *
+     * @param  \App\Models\ImageAssignmentItem $item
+     * @param  string $candidata  Nombre ya validado (imgcand_<uuid>.webp).
+     * @return bool
+     */
+    protected static function traer_candidata_de_otro_frente(ImageAssignmentItem $item, $candidata)
+    {
+        try {
+            $binario = (new CandidateImageProcessor())->descargar_candidata_de_otro_frente((string) $item->imagen_url, $candidata);
+
+            if (is_null($binario)) {
+                Log::info('[ImagenesInteligentes] La candidata no está en este frente y no se pudo traer.', [
+                    'item_id'   => $item->id,
+                    'candidata' => $candidata,
                 ]);
-                $item->save();
 
-                return self::respuesta(422, 'La imagen propuesta ya no está en el servidor: volvé a buscarle imagen a este artículo.', $item);
+                return false;
             }
 
-            // A nombre definitivo ANTES de asignar, como las de categorías: el prefijo imgcand_ es
-            // el de las candidatas, no el de una imagen real del artículo.
-            $definitivo = time().rand(1, 100000).'.webp';
-
-            if (!Storage::disk('public')->move($candidata, $definitivo)) {
-                return self::respuesta(422, 'No se pudo mover la imagen en el servidor. Probá de nuevo en un momento.', $item);
-            }
-
-            $url = ApiUrlHelper::storage($definitivo);
-
-            $imagen = Image::create([
-                'hosting_url'    => $url,
-                'imageable_id'   => $article->id,
-                'imageable_type' => 'article',
+            return (bool) Storage::disk('public')->put($candidata, $binario);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo traer la candidata del otro frente.', [
+                'item_id' => $item->id,
+                'error'   => $e->getMessage(),
             ]);
 
-            // Igual que una asignada por el motor (ver ArticleImageAssignmentEngine): sin apagar
-            // timestamps, para que el sync incremental del front baje el artículo con su imagen.
-            $article->needs_sync_with_tn = true;
-            $article->save();
+            return false;
+        }
+    }
 
-            TiendaNubeSyncArticleService::add_article_to_sync($article);
+    /**
+     * Borra la copia definitiva de una aprobación que no se completó (solo un <uuid>.webp).
+     *
+     * @param  string $archivo
+     * @return void
+     */
+    protected static function borrar_copia_definitiva($archivo)
+    {
+        $nombre = basename(trim((string) $archivo));
 
-            // Ya es una imagen asignada: sus avisos pasan a ser los de una asignada (contrato §5.2:
-            // solo "Fondo no blanco"). Por qué había ido a revisar queda en `motivo` y en el
-            // diagnóstico; "aprobada por X" lo dice revisado_por.
-            $meta = is_array($item->imagen_meta) ? $item->imagen_meta : [];
-            $meta['avisos'] = isset($meta['fondo_blanco']) && $meta['fondo_blanco'] === false ? ['Fondo no blanco'] : [];
+        if (!preg_match('/^[a-f0-9-]{36}\.webp$/', $nombre)) {
+            return;
+        }
 
-            $item->fill([
-                'status'         => ImageAssignmentItem::STATUS_APROBADA,
-                'image_id'       => (int) $imagen->id,
-                'imagen_url'     => $url,
-                'imagen_archivo' => $definitivo,
-                'imagen_meta'    => $meta,
-                'revisado_por'   => self::entero_o_null($auth_user_id),
-                'revisado_at'    => Carbon::now(),
-            ]);
-            $item->save();
-
-            return self::respuesta(200, null, $item);
-        });
+        try {
+            Storage::disk('public')->delete($nombre);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo borrar la copia '.$nombre.': '.$e->getMessage());
+        }
     }
 
     /**
      * Rechaza una imagen "a revisar": se borra el archivo y el artículo queda en "No asignadas".
+     * Si el archivo no está en este disco (quedó en el otro frente), el rechazo sale igual y el
+     * huérfano queda en el log (plan §13, B1).
      *
      * @param  int      $owner_id
      * @param  int      $item_id
@@ -866,21 +1076,21 @@ class ImageAssignmentRunHelper
      */
     public static function rechazar($owner_id, $item_id, $auth_user_id = null)
     {
-        return DB::transaction(function () use ($owner_id, $item_id, $auth_user_id) {
+        $resultado = DB::transaction(function () use ($owner_id, $item_id, $auth_user_id) {
             $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
                 ->where('id', (int) $item_id)
                 ->lockForUpdate()
                 ->first();
 
             if (is_null($item)) {
-                return self::respuesta(404, 'No se encontró esa imagen.');
+                return ['respuesta' => self::respuesta(404, 'No se encontró esa imagen.'), 'candidata' => null];
             }
 
             if ($item->status !== ImageAssignmentItem::STATUS_A_REVISAR) {
-                return self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $item);
+                return ['respuesta' => self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $item), 'candidata' => null];
             }
 
-            self::borrar_candidata($item->imagen_archivo);
+            $candidata = $item->imagen_archivo;
 
             $quien = self::nombres_de_usuarios([$auth_user_id]);
             $quien = !is_null($auth_user_id) && isset($quien[(int) $auth_user_id]) ? $quien[(int) $auth_user_id] : null;
@@ -898,14 +1108,26 @@ class ImageAssignmentRunHelper
             ]);
             $item->save();
 
-            return self::respuesta(200, null, $item);
+            return ['respuesta' => self::respuesta(200, null, $item), 'candidata' => $candidata];
         });
+
+        // El archivo, después del commit (un rechazo nunca falla por el disco).
+        if (!is_null($resultado['candidata'])) {
+            self::borrar_candidata($resultado['candidata'], true);
+        }
+
+        return $resultado['respuesta'];
     }
 
     /**
      * Quita una imagen ya asignada (o aprobada). Reusa ImageController::deleteImageModel() tal
      * cual —el mismo borrado que el botón de la ficha del artículo—, así Tienda Nube, Mercado Libre
      * y las vinculaciones de inventario se enteran igual que siempre.
+     *
+     * deleteImageModel() le pega por HTTP a Tienda Nube: va FUERA de la transacción (plan §13, B13),
+     * que no puede quedar abierta con un lock tomado mientras espera una API de afuera. Primero se
+     * borra la imagen; después, con el lock, se marca el item. Si el archivo no estaba en este disco,
+     * el borrado sale igual y el huérfano queda en el log.
      *
      * @param  int      $owner_id
      * @param  int      $item_id
@@ -914,6 +1136,44 @@ class ImageAssignmentRunHelper
      */
     public static function quitar($owner_id, $item_id, $auth_user_id = null)
     {
+        $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
+            ->where('id', (int) $item_id)
+            ->first();
+
+        if (is_null($item)) {
+            return self::respuesta(404, 'No se encontró esa imagen.');
+        }
+
+        if (!in_array($item->status, ImageAssignmentItem::ESTADOS_ASIGNADAS, true)) {
+            return self::respuesta(422, 'Solo se puede quitar una imagen asignada.', $item);
+        }
+
+        $imagen = is_null($item->image_id) ? null : Image::find($item->image_id);
+
+        // Si alguien ya la borró desde la ficha, no hay nada que borrar: solo se marca.
+        if (!is_null($imagen)) {
+            $archivo = basename((string) parse_url((string) $imagen->hosting_url, PHP_URL_PATH));
+
+            if ($archivo !== '' && !Storage::disk('public')->exists($archivo)) {
+                Log::info('[ImagenesInteligentes] Se quita una imagen cuyo archivo no está en este frente (huérfano en el otro).', [
+                    'item_id' => $item->id,
+                    'archivo' => $archivo,
+                ]);
+            }
+
+            try {
+                (new ImageController())->deleteImageModel('article', (int) $item->article_id, (int) $imagen->id);
+            } catch (\Throwable $e) {
+                // El detalle (el cuerpo de la respuesta de Tienda Nube, por ejemplo) solo al log (S2).
+                Log::warning('[ImagenesInteligentes] No se pudo quitar la imagen.', [
+                    'item_id' => $item->id,
+                    'error'   => $e->getMessage(),
+                ]);
+
+                return self::respuesta(422, 'No se pudo quitar la imagen. Probá de nuevo en un momento.', $item);
+            }
+        }
+
         return DB::transaction(function () use ($owner_id, $item_id, $auth_user_id) {
             $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
                 ->where('id', (int) $item_id)
@@ -924,24 +1184,9 @@ class ImageAssignmentRunHelper
                 return self::respuesta(404, 'No se encontró esa imagen.');
             }
 
+            // Otro la quitó mientras tanto: ya está como tiene que quedar.
             if (!in_array($item->status, ImageAssignmentItem::ESTADOS_ASIGNADAS, true)) {
-                return self::respuesta(422, 'Solo se puede quitar una imagen asignada.', $item);
-            }
-
-            $imagen = is_null($item->image_id) ? null : Image::find($item->image_id);
-
-            // Si alguien ya la borró desde la ficha, no hay nada que borrar: solo se marca.
-            if (!is_null($imagen)) {
-                try {
-                    (new ImageController())->deleteImageModel('article', (int) $item->article_id, (int) $imagen->id);
-                } catch (\Throwable $e) {
-                    Log::warning('[ImagenesInteligentes] No se pudo quitar la imagen.', [
-                        'item_id' => $item->id,
-                        'error'   => $e->getMessage(),
-                    ]);
-
-                    return self::respuesta(422, 'No se pudo quitar la imagen: '.Str::limit($e->getMessage(), 200, '…'), $item);
-                }
+                return self::respuesta(200, null, $item);
             }
 
             $quien = self::nombres_de_usuarios([$auth_user_id]);
@@ -1014,8 +1259,8 @@ class ImageAssignmentRunHelper
      * -------------------------------------------------------------------------------------- */
 
     /**
-     * Detiene una asignación en curso (acceso maestro). El tramo que esté trabajando termina el
-     * artículo que tiene entre manos, ve el estado y corta.
+     * Detiene una asignación en curso. El tramo que esté trabajando termina el artículo que tiene
+     * entre manos, ve el estado y corta. (Quién puede: el controlador — plan §13, B7.)
      *
      * @param  \App\Models\ImageAssignmentRun $run
      * @return array  ['status' => 200|422, 'message' => string|null]
@@ -1026,7 +1271,11 @@ class ImageAssignmentRunHelper
             return ['status' => 422, 'message' => 'La asignación no está en proceso.'];
         }
 
-        if (!self::terminar($run, ImageAssignmentRun::STATUS_DETENIDA, 'Se detuvo desde el acceso maestro. Los artículos que faltaban quedaron pendientes: se puede reanudar.')) {
+        $motivo = $run->origen === ImageAssignmentRun::ORIGEN_CATALOGO
+            ? 'Se detuvo desde el acceso maestro. Los artículos que faltaban quedaron pendientes: se puede reanudar.'
+            : 'Se detuvo a mano. Los artículos que faltaban quedaron pendientes: se puede reanudar.';
+
+        if (!self::terminar($run, ImageAssignmentRun::STATUS_DETENIDA, $motivo)) {
             return ['status' => 422, 'message' => 'La asignación ya había terminado.'];
         }
 
@@ -1034,9 +1283,10 @@ class ImageAssignmentRunHelper
     }
 
     /**
-     * Reanuda una asignación detenida, fallida o trabada (acceso maestro): los artículos que habían
-     * quedado a medias vuelven a pendiente, se abre un registro visible nuevo si el anterior ya se
-     * cerró, y se despacha un tramo.
+     * Reanuda una asignación detenida, fallida o trabada: los artículos que habían quedado a medias
+     * vuelven a pendiente, se abre un registro visible nuevo si el anterior ya se cerró, y se
+     * despacha un tramo. Una de catálogo no se reanuda si hay OTRA de catálogo en curso (plan §13,
+     * B3): serían dos recorriendo el catálogo a la vez.
      *
      * @param  \App\Models\ImageAssignmentRun $run
      * @return array  ['status' => 200|422, 'message' => string|null]
@@ -1056,6 +1306,18 @@ class ImageAssignmentRunHelper
 
             if (is_null($run) || (!$trabada && !in_array($run->status, [ImageAssignmentRun::STATUS_DETENIDA, ImageAssignmentRun::STATUS_FALLIDA], true))) {
                 return ['status' => 422, 'message' => 'Solo se puede reanudar una asignación detenida, fallida o que parece trabada.'];
+            }
+
+            if ($run->origen === ImageAssignmentRun::ORIGEN_CATALOGO) {
+                $otra = ImageAssignmentRun::where('user_id', (int) $run->user_id)
+                    ->where('origen', ImageAssignmentRun::ORIGEN_CATALOGO)
+                    ->where('id', '!=', (int) $run->id)
+                    ->activas()
+                    ->exists();
+
+                if ($otra) {
+                    return ['status' => 422, 'message' => 'Ya hay otra búsqueda de todo el catálogo en curso: esperá a que termine o detenela antes de reanudar esta.'];
+                }
             }
 
             $ahora = Carbon::now();
@@ -1080,6 +1342,7 @@ class ImageAssignmentRunHelper
                 'finished_at'                => null,
                 'fallos_consecutivos'        => 0,
                 'errores_proveedor_seguidos' => 0,
+                'errores_ia_seguidos'        => 0,
                 'last_progress_at'           => $ahora,
                 'visto_at'                   => null,
             ]);
@@ -1366,21 +1629,31 @@ class ImageAssignmentRunHelper
     }
 
     /**
-     * Borra el archivo de una candidata (si es una candidata).
+     * Borra el archivo de una candidata (si es una candidata). Nunca falla: si el archivo no está en
+     * este disco (quedó en el otro frente del cliente), lo deja anotado en el log como huérfano.
      *
      * @param  mixed $archivo
+     * @param  bool  $avisar_si_falta
      * @return void
      */
-    protected static function borrar_candidata($archivo)
+    protected static function borrar_candidata($archivo, $avisar_si_falta = false)
     {
         $nombre = self::nombre_de_candidata_valido($archivo);
 
-        if (!is_null($nombre)) {
-            try {
-                Storage::disk('public')->delete($nombre);
-            } catch (\Throwable $e) {
-                Log::warning('[ImagenesInteligentes] No se pudo borrar la candidata '.$nombre.': '.$e->getMessage());
+        if (is_null($nombre)) {
+            return;
+        }
+
+        try {
+            if ($avisar_si_falta && !Storage::disk('public')->exists($nombre)) {
+                Log::info('[ImagenesInteligentes] La candidata no está en este frente: queda huérfana en el otro.', ['archivo' => $nombre]);
+
+                return;
             }
+
+            Storage::disk('public')->delete($nombre);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo borrar la candidata '.$nombre.': '.$e->getMessage());
         }
     }
 

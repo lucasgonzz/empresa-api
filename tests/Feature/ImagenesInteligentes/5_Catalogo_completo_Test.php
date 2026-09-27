@@ -144,15 +144,20 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
         $previa = $this->getJson('api/image-assignment-runs/catalogo/previa');
 
         $previa->assertStatus(200);
+        // Plan §13 suma tres campos (aditivos): excluidos_en_otra_asignacion (B3) e
+        // ia_configurada / ia_motivo (B2).
         $previa->assertExactJson([
             'sin_imagen'                       => 8,
             'excluidos_pendientes_de_revision' => 1,
             'excluidos_ya_buscados'            => 1,
+            'excluidos_en_otra_asignacion'     => 0,
             'a_buscar'                         => 4,
             'tope'                             => 4,
             'quedan_para_otra_corrida'         => 2,
             'proveedor_configurado'            => true,
             'proveedor'                        => 'serper',
+            'ia_configurada'                   => true,
+            'ia_motivo'                        => null,
             'estimacion'                       => [
                 'busquedas'     => 6,
                 'minutos'       => 1,

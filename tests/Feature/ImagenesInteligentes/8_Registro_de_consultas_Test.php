@@ -13,6 +13,7 @@ use App\Services\ArticleImageValidationService;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use Carbon\Carbon;
 use GuzzleHttp\Exception\ConnectException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 
@@ -434,14 +435,17 @@ class Registro_de_consultas_Test extends ImagenesInteligentesTestCase
     }
 
     /**
-     * Retención de 180 días: se purga al crear una asignación, de TODOS los dueños de la base (los que
-     * solo usan la búsqueda por código del asistente nunca crean una).
+     * Retención de 180 días: se purga al crear una asignación, SOLO lo del dueño que la crea y como
+     * mucho una vez por día (plan §13, S5: en una base compartida, crear una asignación no paga el
+     * borrado de los demás comercios; antes este test afirmaba que se purgaban todos).
      *
      * @group imagenes-inteligentes
      * @test
      */
-    public function crear_una_asignacion_purga_el_registro_de_mas_de_180_dias()
+    public function crear_una_asignacion_purga_el_registro_de_mas_de_180_dias_del_dueno()
     {
+        Cache::flush();
+
         $otro = User::create([
             'name'     => 'Otro comercio de la base',
             'email'    => 'otro-registro-'.uniqid().'@test.local',
@@ -455,8 +459,15 @@ class Registro_de_consultas_Test extends ImagenesInteligentesTestCase
         $this->asignacion([$this->nuevo_articulo('Serrucho', self::CODIGO_REAL)]);
 
         $this->assertNull(ImageServiceCall::find($viejo_propio->id));
-        $this->assertNull(ImageServiceCall::find($viejo_ajeno->id), 'También el de otro dueño de la base.');
+        $this->assertNotNull(ImageServiceCall::find($viejo_ajeno->id), 'El de otro dueño de la base no se toca.');
         $this->assertNotNull(ImageServiceCall::find($reciente->id));
+
+        // Una segunda asignación el mismo día no vuelve a purgar.
+        $otro_viejo = $this->consulta_registrada($this->owner->id, Carbon::now()->subDays(190));
+
+        $this->asignacion([$this->nuevo_articulo('Serrucho de costilla', self::CODIGO_REAL)]);
+
+        $this->assertNotNull(ImageServiceCall::find($otro_viejo->id), 'Ya se purgó hoy: sale mañana.');
     }
 
     /**
