@@ -34,7 +34,12 @@ interface ImageSearchProvider
      * @param  string $consulta  El código de barras o el nombre del artículo.
      * @return array {
      *     ok:         bool,         true si el proveedor respondió bien (cuenta como búsqueda).
-     *     error:      string|null,  por qué falló, si falló.
+     *     error:      string|null,  por qué falló, si falló. Legible: un error de conexión dice "El
+     *                               buscador no respondió a tiempo." / "No se pudo conectar con el
+     *                               buscador.", nunca el mensaje crudo de cURL (plan §13, S2).
+     *     detalle:    string|null,  opcional: el detalle técnico (sin claves) cuando `error` es un
+     *                               texto genérico. Va al registro de consultas del admin y al log,
+     *                               nunca a lo que ve el comercio.
      *     resultados: array,        candidatas normalizadas, en el orden del proveedor:
      *                               [url, miniatura, ancho, alto, pagina, dominio, titulo, posicion].
      *                               `ancho`/`alto` son los que informa el proveedor (null si no los informa).

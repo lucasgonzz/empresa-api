@@ -723,8 +723,12 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
 
         $a_la_vista = json_encode($item->diagnostico, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).' '.$item->motivo_detalle;
 
-        $this->assertStringContainsString('Operation timed out', $a_la_vista, 'El error se sigue viendo.');
-        $this->assertStringContainsString('key=***', $a_la_vista);
+        // Cambio de contrato pedido en la sexta pasada (S2): lo que ve el comercio ya no es el
+        // mensaje de cURL tapado sino un texto legible, y el detalle va solo al log y al registro de
+        // consultas del admin. Antes este test esperaba "Operation timed out" y "key=***" a la vista.
+        $this->assertStringContainsString('El buscador no respondió a tiempo', $a_la_vista, 'El error se sigue viendo, legible.');
+        $this->assertStringNotContainsString('cURL error', $a_la_vista);
+        $this->assertStringNotContainsString('googleapis.com', $a_la_vista, 'Ni la URL del pedido.');
         $this->assertStringNotContainsString('AIzaCLAVE-DE-GOOGLE-DE-PRUEBA', $a_la_vista);
         $this->assertStringNotContainsString(ImagenesAutomaticasHelper::CX, $a_la_vista);
 

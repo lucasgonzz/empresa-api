@@ -8,6 +8,7 @@ use App\Models\ImageServiceCall;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Intervention\Image\ImageManager;
 
 /**
@@ -696,9 +697,17 @@ class ArticleImageValidationService
      * @return array {
      *     evaluada:      bool,         true si la IA devolvió veredictos que se pudieron leer.
      *     llamada_hecha: bool,         true si Anthropic respondió bien (la llamada se paga).
-     *     sin_servicio:  bool,         true si hacía falta la IA y no hubo servicio: apagada, sin
-     *                                  clave, error de conexión o Anthropic respondió con error
-     *                                  (plan §13, B2: con 5 artículos seguidos así, la asignación frena).
+     *     sin_servicio:  bool,         true si la IA está configurada y NO respondió: error de
+     *                                  conexión o Anthropic respondió con error (plan §13, B2: con 5
+     *                                  artículos seguidos así, la asignación frena). La IA apagada a
+     *                                  propósito o sin clave NO es esto: es `no_configurada`.
+     *     no_configurada: bool,        true si la IA está apagada (ARTICLE_IMAGE_VALIDATION_ENABLED)
+     *                                  o no tiene clave: es configuración, no una caída, y no frena
+     *                                  nada (sexta pasada: las de selección y del asistente siguen,
+     *                                  todo a revisar).
+     *     error:         string|null,  la causa real de un sin_servicio, legible y sin claves ("la IA
+     *                                  no respondió a tiempo", "la IA respondió con error HTTP 401:
+     *                                  invalid x-api-key"): la usa el mensaje del corte.
      *     motivo:        string|null,  por qué no se evaluó.
      *     resultados:    array,        indice => {es_el_producto: si|no|dudoso|sin_evaluar,
      *                                  confianza: high|medium|low|null, fondo_blanco: bool|null,
@@ -728,8 +737,9 @@ class ArticleImageValidationService
             return $this->candidatas_sin_evaluar($indices, 'No había imágenes para mostrarle a la IA.', false);
         }
 
+        // Apagada a propósito: configuración, no una caída (no cuenta para el corte de B2).
         if (!config('services.article_image_validation.enabled')) {
-            return $this->candidatas_sin_evaluar($indices, 'La validación con IA está apagada.', false, true);
+            return $this->candidatas_sin_evaluar($indices, 'La validación con IA está apagada.', false, false, true);
         }
 
         // Mismo techo de llamadas por instancia que validate() (ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH).
@@ -746,7 +756,8 @@ class ArticleImageValidationService
                 'article_id' => $article->id,
             ]);
 
-            return $this->candidatas_sin_evaluar($indices, 'No está configurada la IA en el servidor.', false, true);
+            // Sin clave: también es configuración, no una caída.
+            return $this->candidatas_sin_evaluar($indices, 'No está configurada la IA en el servidor.', false, false, true);
         }
 
         // Contenido del mensaje: cada imagen precedida por su rótulo, y al final los datos del artículo.
@@ -802,7 +813,12 @@ class ArticleImageValidationService
                 'error'      => 'Error de conexión con Anthropic: '.$e->getMessage(),
             ]);
 
-            return $this->candidatas_sin_evaluar($indices, 'No se pudo consultar a la IA (error de conexión).', false, true);
+            // La causa, legible y sin el mensaje crudo de cURL (ese quedó en el log de arriba).
+            $causa = ImageServiceCallLogger::es_timeout($e->getMessage())
+                ? 'la IA no respondió a tiempo'
+                : 'no se pudo conectar con la IA';
+
+            return $this->candidatas_sin_evaluar($indices, 'No se pudo consultar a la IA (error de conexión).', false, true, false, $causa);
         }
 
         // Cada intento cuenta para el techo de la instancia, como en validate().
@@ -825,7 +841,15 @@ class ArticleImageValidationService
                 'error'       => (string) $api_error,
             ]);
 
-            return $this->candidatas_sin_evaluar($indices, 'La IA respondió con error y no se pudo validar.', false, true);
+            // La causa real para el mensaje del corte: el estado y el mensaje de Anthropic (que está
+            // escrito para personas: "invalid x-api-key", "Your credit balance is too low..."), sin
+            // claves y acotado.
+            $causa = 'la IA respondió con error HTTP '.$response->status()
+                .(isset($body['error']['message']) && is_scalar($body['error']['message']) && trim((string) $body['error']['message']) !== ''
+                    ? ': '.Str::limit(ImageServiceCallLogger::sin_claves(trim((string) $body['error']['message'])), 160, '…')
+                    : '');
+
+            return $this->candidatas_sin_evaluar($indices, 'La IA respondió con error y no se pudo validar.', false, true, false, $causa);
         }
 
         $body = $response->json();
@@ -861,24 +885,28 @@ class ArticleImageValidationService
         }
 
         return [
-            'evaluada'      => true,
-            'llamada_hecha' => true,
-            'sin_servicio'  => false,
-            'motivo'        => null,
-            'resultados'    => $resultados,
+            'evaluada'       => true,
+            'llamada_hecha'  => true,
+            'sin_servicio'   => false,
+            'no_configurada' => false,
+            'error'          => null,
+            'motivo'         => null,
+            'resultados'     => $resultados,
         ];
     }
 
     /**
      * Resultado de "no se pudo evaluar": todas las candidatas `sin_evaluar` (nunca aceptadas).
      *
-     * @param  array  $indices
-     * @param  string $motivo
-     * @param  bool   $llamada_hecha  true si Anthropic respondió (la llamada se pagó) pero no se entendió.
-     * @param  bool   $sin_servicio   true si la IA hacía falta y no hubo servicio (ver evaluar_candidatas()).
+     * @param  array       $indices
+     * @param  string      $motivo
+     * @param  bool        $llamada_hecha   true si Anthropic respondió (la llamada se pagó) pero no se entendió.
+     * @param  bool        $sin_servicio    true si la IA está configurada y no respondió (ver evaluar_candidatas()).
+     * @param  bool        $no_configurada  true si la IA está apagada o sin clave (configuración, no caída).
+     * @param  string|null $error           La causa real de un sin_servicio, legible y sin claves.
      * @return array
      */
-    protected function candidatas_sin_evaluar(array $indices, $motivo, $llamada_hecha, $sin_servicio = false)
+    protected function candidatas_sin_evaluar(array $indices, $motivo, $llamada_hecha, $sin_servicio = false, $no_configurada = false, $error = null)
     {
         $resultados = [];
 
@@ -893,11 +921,13 @@ class ArticleImageValidationService
         }
 
         return [
-            'evaluada'      => false,
-            'llamada_hecha' => (bool) $llamada_hecha,
-            'sin_servicio'  => (bool) $sin_servicio,
-            'motivo'        => $motivo,
-            'resultados'    => $resultados,
+            'evaluada'       => false,
+            'llamada_hecha'  => (bool) $llamada_hecha,
+            'sin_servicio'   => (bool) $sin_servicio,
+            'no_configurada' => (bool) $no_configurada,
+            'error'          => is_null($error) || trim((string) $error) === '' ? null : (string) $error,
+            'motivo'         => $motivo,
+            'resultados'     => $resultados,
         ];
     }
 

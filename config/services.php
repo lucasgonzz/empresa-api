@@ -347,7 +347,7 @@ return [
      * `segundos_por_tramo`: cuánto trabaja cada tramo del job antes de re-encolarse. 50 s porque en
      * el VPS hay UN worker por cliente y el asistente / Tienda Nube no pueden esperar más que eso,
      * y porque Hostinger mata procesos largos. Un tramo procesa siempre al menos un artículo, y el
-     * job lo acota a 20..120 s (ProcessImageAssignmentRunJob::segundos_por_tramo()).
+     * job lo acota a 20..90 s (ProcessImageAssignmentRunJob::segundos_por_tramo()).
      */
     'imagenes_inteligentes' => [
         'tope_catalogo'      => (int) env('IMAGENES_TOPE_CATALOGO', 5000),

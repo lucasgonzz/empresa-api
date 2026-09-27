@@ -2,7 +2,9 @@
 
 namespace App\Services\ImageSearch;
 
+use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\Traits\GoogleSearchHelpers;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -84,8 +86,22 @@ class SerperImageSearchProvider implements ImageSearchProvider
                     'num' => self::RESULTADOS_POR_BUSQUEDA,
                 ]);
         } catch (\Exception $e) {
-            // El mensaje de Guzzle trae la URL (sin la clave: va en el header), no credenciales.
-            return $this->fallo('No se pudo conectar con Serper: '.Str::limit($e->getMessage(), 200, '…'), null, $this->milisegundos_desde($inicio));
+            /*
+             * Plan §13, S2 (sexta pasada): el mensaje crudo de Guzzle ("cURL error 28: Operation
+             * timed out after 15001 milliseconds…") llegaba al diagnóstico del artículo, a su
+             * motivo_detalle y al motivo de la asignación, que ve cualquier usuario del comercio. Al
+             * usuario, un texto legible; el detalle (sin claves) al log y, como `detalle`, al registro
+             * de consultas que mira el admin.
+             */
+            $detalle = 'No se pudo conectar con Serper: '.Str::limit(ImageServiceCallLogger::sin_claves($e->getMessage()), 200, '…');
+
+            Log::warning('[ImagenesInteligentes] Serper no respondió.', ['error' => $detalle]);
+
+            $legible = ImageServiceCallLogger::es_timeout($e->getMessage())
+                ? 'El buscador no respondió a tiempo.'
+                : 'No se pudo conectar con el buscador.';
+
+            return $this->fallo($legible, null, $this->milisegundos_desde($inicio), $detalle);
         }
 
         $duracion_ms = $this->milisegundos_desde($inicio);
@@ -148,22 +164,29 @@ class SerperImageSearchProvider implements ImageSearchProvider
     /**
      * Resultado uniforme de una búsqueda que falló (no cuenta como búsqueda).
      *
-     * @param  string   $error
-     * @param  int|null $http_status  El estado HTTP que devolvió Serper (null si no llegó a responder).
-     * @param  int|null $duracion_ms  Cuánto tardó (null si ni siquiera se llamó).
+     * @param  string      $error        Lo que ve el usuario (diagnóstico, motivos): legible.
+     * @param  int|null    $http_status  El estado HTTP que devolvió Serper (null si no llegó a responder).
+     * @param  int|null    $duracion_ms  Cuánto tardó (null si ni siquiera se llamó).
+     * @param  string|null $detalle      El detalle técnico (sin claves) para el registro de consultas
+     *                                   del admin, cuando el `error` es un texto genérico.
      * @return array
      */
-    protected function fallo($error, $http_status = null, $duracion_ms = null)
+    protected function fallo($error, $http_status = null, $duracion_ms = null, $detalle = null)
     {
         // Defensivo: la clave viaja en un header y Guzzle no pone headers en sus mensajes, pero este
         // texto termina a la vista de cualquier usuario del comercio (diagnóstico, registro visible).
         if ($this->api_key !== '') {
             $error = str_replace($this->api_key, '***', (string) $error);
+
+            if (!is_null($detalle)) {
+                $detalle = str_replace($this->api_key, '***', (string) $detalle);
+            }
         }
 
         return [
             'ok'          => false,
             'error'       => $error,
+            'detalle'     => $detalle,
             'resultados'  => [],
             'total'       => null,
             'http_status' => is_null($http_status) ? null : (int) $http_status,

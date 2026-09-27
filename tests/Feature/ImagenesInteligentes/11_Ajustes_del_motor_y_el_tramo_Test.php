@@ -27,7 +27,7 @@ use Tests\Feature\ImagenesInteligentes\Dobles\TramoDePrueba;
  *   - B5: un artículo que no buscó nada no resetea el contador del proveedor.
  *   - B6: el techo de llamadas a la IA es de la asignación entera.
  *   - B12: un reintento acumula los contadores del artículo.
- *   - B13: el tramo dura entre 20 y 120 segundos.
+ *   - B13: el tramo dura entre 20 y 90 segundos (120 hasta la sexta pasada) y el job tiene 420 s.
  *   - S1 / B9: las descargas no se descomprimen y aceptan binarios genéricos; lo que viene de una
  *     cabecera se guarda en UTF-8 válido.
  */
@@ -246,7 +246,9 @@ class Ajustes_del_motor_y_el_tramo_Test extends ImagenesInteligentesTestCase
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);
-        $this->assertSame('La validación con IA no responde en 5 artículos seguidos; se frenó para no gastar búsquedas. Revisá la clave y reanudá.', $run->motivo_estado);
+        // Cambio de contrato pedido en la sexta pasada (B2): el motivo dice la causa REAL (acá, el
+        // 500 de la IA falsa) en vez de suponer "Revisá la clave". Antes esperaba el texto viejo.
+        $this->assertSame('La validación con IA no responde en 5 artículos seguidos (último error: la IA respondió con error HTTP 500: Servicio no disponible (fake)). Se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.', $run->motivo_estado);
         $this->assertSame(6, (int) $run->procesados, '5 con la IA caída y el sin datos del medio.');
         $this->assertSame(2, ImageAssignmentItem::where('run_id', $run->id)->where('status', ImageAssignmentItem::STATUS_PENDIENTE)->count(), 'Los que faltaban siguen pendientes.');
         $this->assertSame(5, (int) $run->errores_ia_seguidos);
@@ -358,12 +360,17 @@ class Ajustes_del_motor_y_el_tramo_Test extends ImagenesInteligentesTestCase
     }
 
     /**
-     * B13: el presupuesto de un tramo se acota a [20, 120] segundos.
+     * B13: el presupuesto de un tramo se acota a [20, 90] segundos, el job tiene 420 s de timeout y
+     * el retry_after de las dos colas sigue por encima (si no, el mismo tramo se volvería a levantar
+     * mientras corre).
+     *
+     * Cambio de contrato pedido en la sexta pasada: el máximo era 120 y el timeout 300 (el peor
+     * artículo ronda los 190 s). Antes este test esperaba 120 para un valor de config de 5000.
      *
      * @group imagenes-inteligentes
      * @test
      */
-    public function el_tramo_dura_entre_20_y_120_segundos()
+    public function el_tramo_dura_entre_20_y_90_segundos_y_entra_en_el_timeout()
     {
         $job      = new ProcessImageAssignmentRunJob(1);
         $segundos = new \ReflectionMethod($job, 'segundos_por_tramo');
@@ -373,10 +380,17 @@ class Ajustes_del_motor_y_el_tramo_Test extends ImagenesInteligentesTestCase
         $this->assertSame(20, $segundos->invoke($job));
 
         config(['services.imagenes_inteligentes.segundos_por_tramo' => 5000]);
-        $this->assertSame(120, $segundos->invoke($job));
+        $this->assertSame(90, $segundos->invoke($job));
+
+        config(['services.imagenes_inteligentes.segundos_por_tramo' => 120]);
+        $this->assertSame(90, $segundos->invoke($job));
 
         config(['services.imagenes_inteligentes.segundos_por_tramo' => 50]);
         $this->assertSame(50, $segundos->invoke($job));
+
+        $this->assertSame(420, $job->timeout);
+        $this->assertGreaterThan($job->timeout, (int) config('queue.connections.database.retry_after'));
+        $this->assertGreaterThan($job->timeout, (int) config('queue.connections.redis.retry_after'));
     }
 
     /**

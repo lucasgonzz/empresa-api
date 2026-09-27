@@ -82,10 +82,22 @@ class ImageAssignmentRunHelper
     const MAXIMO_EN_LOTE = 200;
 
     /**
+     * Cuántas candidatas se traen del OTRO frente como mucho en un mismo aprobar-varios (sexta
+     * pasada, B1). Después de una rotación de frente, cada aprobación baja su imagen del otro frente
+     * en serie adentro del mismo pedido: con 200 serían 200 descargas seguidas contra la propia
+     * cuenta (Hostinger bloquea la IP con ~100 pedidos seguidos) y un pedido larguísimo. Las que
+     * pasan el tope vuelven en `fallidos` para reintentar, y siguen a revisar.
+     */
+    const MAXIMO_DESCARGAS_DEL_OTRO_FRENTE_POR_PEDIDO = 20;
+
+    /** Lo que se le dice a cada una que pasó el tope de arriba. */
+    const MENSAJE_REINTENTAR_OTRO_FRENTE = 'Reintentá: la imagen está en el otro servidor.';
+
+    /**
      * Al reanudar, un artículo "procesando" vuelve a la fila solo si no se tocó hace más de estos
-     * minutos. El timeout de un tramo es de 5 minutos: uno más nuevo lo está terminando un tramo
-     * VIVO (el caso de detener y reanudar enseguida), y devolverlo haría que otro tramo lo procese
-     * de nuevo en paralelo.
+     * minutos. El timeout de un tramo es de 7 minutos (ProcessImageAssignmentRunJob::$timeout): uno
+     * más nuevo lo está terminando un tramo VIVO (el caso de detener y reanudar enseguida), y
+     * devolverlo haría que otro tramo lo procese de nuevo en paralelo.
      */
     const MINUTOS_PARA_DAR_POR_MUERTO_UN_ARTICULO = 10;
 
@@ -872,6 +884,24 @@ class ImageAssignmentRunHelper
      */
     public static function aprobar($owner_id, $item_id, $auth_user_id = null)
     {
+        // Una sola aprobación: sin tope de descargas del otro frente (es una, a lo sumo).
+        $sin_tope = null;
+
+        return self::aprobar_una($owner_id, $item_id, $auth_user_id, $sin_tope);
+    }
+
+    /**
+     * El cuerpo de aprobar(), con el tope de descargas del otro frente que usa en_lote().
+     *
+     * @param  int      $owner_id
+     * @param  int      $item_id
+     * @param  int|null $auth_user_id
+     * @param  int|null $descargas_disponibles  (por referencia) cuántas candidatas se pueden traer
+     *                                          todavía del otro frente en este pedido; null = sin tope.
+     * @return array
+     */
+    protected static function aprobar_una($owner_id, $item_id, $auth_user_id, &$descargas_disponibles)
+    {
         $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
             ->where('id', (int) $item_id)
             ->first();
@@ -891,8 +921,35 @@ class ImageAssignmentRunHelper
             return self::respuesta(422, 'La imagen propuesta no se puede aprobar: rechazala y volvé a buscarle imagen a este artículo.', $item);
         }
 
-        if (!Storage::disk('public')->exists($candidata) && !self::traer_candidata_de_otro_frente($item, $candidata)) {
-            return self::respuesta(422, 'La imagen propuesta no está en este servidor y no se pudo traer del otro frente del sistema. Probá de nuevo en un rato, o rechazala.', $item);
+        /*
+         * El artículo se mira ANTES de ir a buscar la candidata al otro frente (sexta pasada): si ya
+         * no existe, termina no_asignada / articulo_borrado como dice el contrato (§5.3). Antes, con
+         * la candidata en el otro frente, se intentaba traerla primero y, si no se podía, el artículo
+         * borrado quedaba a revisar con un 422 de "no está en este servidor". (La transacción de más
+         * abajo lo vuelve a mirar con el lock tomado: alguien lo pudo borrar en el medio.)
+         */
+        $existe_el_articulo = Article::where('id', $item->article_id)
+            ->where('user_id', (int) $owner_id)
+            ->exists();
+
+        if (!$existe_el_articulo) {
+            return self::cerrar_por_articulo_borrado($owner_id, $item_id, $auth_user_id);
+        }
+
+        if (!Storage::disk('public')->exists($candidata)) {
+            // El tope del lote (B1): pasado, no se descarga más en este pedido y la imagen sigue a revisar.
+            if (!is_null($descargas_disponibles) && $descargas_disponibles <= 0) {
+                return self::respuesta(422, self::MENSAJE_REINTENTAR_OTRO_FRENTE, $item);
+            }
+
+            // Un intento es un pedido contra la propia cuenta, salga bien o mal: cuenta igual.
+            if (!is_null($descargas_disponibles)) {
+                $descargas_disponibles--;
+            }
+
+            if (!self::traer_candidata_de_otro_frente($item, $candidata)) {
+                return self::respuesta(422, 'La imagen propuesta no está en este servidor y no se pudo traer del otro frente del sistema. Probá de nuevo en un rato, o rechazala.', $item);
+            }
         }
 
         // Nombre definitivo con uuid (plan §13, S3), copiado ANTES de tocar la base.
@@ -936,16 +993,7 @@ class ImageAssignmentRunHelper
                     ->first();
 
                 if (is_null($article)) {
-                    $item->fill([
-                        'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
-                        'motivo'         => 'articulo_borrado',
-                        'motivo_detalle' => 'Se iba a aprobar la imagen, pero el artículo ya no existe.',
-                        'imagen_url'     => null,
-                        'imagen_archivo' => null,
-                        'revisado_por'   => self::entero_o_null($auth_user_id),
-                        'revisado_at'    => Carbon::now(),
-                    ]);
-                    $item->save();
+                    self::marcar_articulo_borrado($item, $auth_user_id);
 
                     return ['respuesta' => self::respuesta(422, 'El artículo ya no existe: no se puede aprobar su imagen.', $item), 'borrar_copia' => true, 'borrar_candidata' => $candidata_del_item];
                 }
@@ -1009,6 +1057,70 @@ class ImageAssignmentRunHelper
     }
 
     /**
+     * El artículo de una imagen a revisar ya no existe (se vio antes de ir a buscar la candidata al
+     * otro frente): el item termina no_asignada / articulo_borrado (contrato §5.3), con el lock
+     * tomado, y la candidata de este disco se borra después del commit (si quedó en el otro frente,
+     * lo dice el log: allá queda huérfana).
+     *
+     * @param  int      $owner_id
+     * @param  int      $item_id
+     * @param  int|null $auth_user_id
+     * @return array
+     */
+    protected static function cerrar_por_articulo_borrado($owner_id, $item_id, $auth_user_id)
+    {
+        $resultado = DB::transaction(function () use ($owner_id, $item_id, $auth_user_id) {
+            $item = ImageAssignmentItem::where('user_id', (int) $owner_id)
+                ->where('id', (int) $item_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (is_null($item)) {
+                return ['respuesta' => self::respuesta(404, 'No se encontró esa imagen.'), 'candidata' => null];
+            }
+
+            // Entre la lectura y el lock la pudo resolver otro.
+            if ($item->status !== ImageAssignmentItem::STATUS_A_REVISAR) {
+                return ['respuesta' => self::respuesta(422, 'Esta imagen ya no está esperando revisión.', $item), 'candidata' => null];
+            }
+
+            $candidata = $item->imagen_archivo;
+
+            self::marcar_articulo_borrado($item, $auth_user_id);
+
+            return ['respuesta' => self::respuesta(422, 'El artículo ya no existe: no se puede aprobar su imagen.', $item), 'candidata' => $candidata];
+        });
+
+        if (!is_null($resultado['candidata'])) {
+            self::borrar_candidata($resultado['candidata'], true);
+        }
+
+        return $resultado['respuesta'];
+    }
+
+    /**
+     * Deja el item como no_asignada / articulo_borrado y lo guarda (la transacción y el lock los abre
+     * quien llama). Lo usan los dos lugares donde aprobar se entera de que el artículo ya no existe.
+     *
+     * @param  \App\Models\ImageAssignmentItem $item
+     * @param  int|null $auth_user_id
+     * @return void
+     */
+    protected static function marcar_articulo_borrado(ImageAssignmentItem $item, $auth_user_id)
+    {
+        $item->fill([
+            'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
+            'motivo'         => 'articulo_borrado',
+            'motivo_detalle' => 'Se iba a aprobar la imagen, pero el artículo ya no existe.',
+            'imagen_url'     => null,
+            'imagen_archivo' => null,
+            'revisado_por'   => self::entero_o_null($auth_user_id),
+            'revisado_at'    => Carbon::now(),
+        ]);
+        $item->save();
+    }
+
+    /**
      * Trae al disco de este frente una candidata que quedó en el storage del otro (plan §13, B1).
      * La baja CandidateImageProcessor::descargar_candidata_de_otro_frente(), con todas sus guardas
      * (solo de este mismo sistema, solo el nombre exacto de la candidata, SSRF, tope de bytes, un
@@ -1032,7 +1144,19 @@ class ImageAssignmentRunHelper
                 return false;
             }
 
-            return (bool) Storage::disk('public')->put($candidata, $binario);
+            $guardada = (bool) Storage::disk('public')->put($candidata, $binario);
+
+            if ($guardada) {
+                // Desde acá no se puede borrar lo del otro frente: queda anotado para limpiarlo a
+                // mano (sexta pasada, B1). El nombre y la URL no llevan nada sensible.
+                Log::info('[ImagenesInteligentes] Se trajo la candidata del otro frente: allá queda una copia huérfana.', [
+                    'item_id'   => $item->id,
+                    'candidata' => $candidata,
+                    'url'       => (string) $item->imagen_url,
+                ]);
+            }
+
+            return $guardada;
         } catch (\Throwable $e) {
             Log::warning('[ImagenesInteligentes] No se pudo traer la candidata del otro frente.', [
                 'item_id' => $item->id,
@@ -1213,6 +1337,10 @@ class ImageAssignmentRunHelper
      * Aprueba o rechaza varias de una vez. Cada una va por su lado (una que falla no frena a las
      * demás) y se devuelve cuántas salieron y por qué falló cada una de las otras.
      *
+     * Al aprobar, como mucho MAXIMO_DESCARGAS_DEL_OTRO_FRENTE_POR_PEDIDO candidatas se traen del
+     * otro frente en el mismo pedido (sexta pasada, B1): las que pasan el tope vuelven en `fallidos`
+     * con "Reintentá: la imagen está en el otro servidor." y siguen a revisar.
+     *
      * @param  string   $accion        'aprobar' | 'rechazar'
      * @param  int      $owner_id
      * @param  mixed    $ids
@@ -1225,6 +1353,9 @@ class ImageAssignmentRunHelper
         $fallidos = [];
         $vistos   = [];
 
+        // Tope de candidatas traídas del otro frente en este pedido (sexta pasada, B1).
+        $descargas_disponibles = self::MAXIMO_DESCARGAS_DEL_OTRO_FRENTE_POR_PEDIDO;
+
         foreach (is_array($ids) ? $ids : [] as $id) {
             $id = (int) $id;
 
@@ -1236,7 +1367,7 @@ class ImageAssignmentRunHelper
 
             try {
                 $resultado = $accion === 'aprobar'
-                    ? self::aprobar($owner_id, $id, $auth_user_id)
+                    ? self::aprobar_una($owner_id, $id, $auth_user_id, $descargas_disponibles)
                     : self::rechazar($owner_id, $id, $auth_user_id);
             } catch (\Throwable $e) {
                 Log::warning('[ImagenesInteligentes] Falló '.$accion.' en lote.', ['item_id' => $id, 'error' => $e->getMessage()]);
@@ -1286,7 +1417,8 @@ class ImageAssignmentRunHelper
      * Reanuda una asignación detenida, fallida o trabada: los artículos que habían quedado a medias
      * vuelven a pendiente, se abre un registro visible nuevo si el anterior ya se cerró, y se
      * despacha un tramo. Una de catálogo no se reanuda si hay OTRA de catálogo en curso (plan §13,
-     * B3): serían dos recorriendo el catálogo a la vez.
+     * B3): serían dos recorriendo el catálogo a la vez. El techo de validaciones con IA arranca de
+     * nuevo desde lo ya validado (`validaciones_ia_base`).
      *
      * @param  \App\Models\ImageAssignmentRun $run
      * @return array  ['status' => 200|422, 'message' => string|null]
@@ -1343,6 +1475,10 @@ class ImageAssignmentRunHelper
                 'fallos_consecutivos'        => 0,
                 'errores_proveedor_seguidos' => 0,
                 'errores_ia_seguidos'        => 0,
+                // El techo de validaciones con IA vuelve a arrancar desde lo ya validado (sexta
+                // pasada, B6): si no, una cortada por el techo volvería a cortar en el primer
+                // artículo. `validaciones_ia` no se toca: es lo que se pagó y lo que se muestra.
+                'validaciones_ia_base'       => (int) $run->validaciones_ia,
                 'last_progress_at'           => $ahora,
                 'visto_at'                   => null,
             ]);

@@ -8,6 +8,8 @@ use App\Models\User;
 use App\Services\Traits\BusquedaDeImagenesEnGoogle;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\Traits\GoogleSearchHelpers;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Búsqueda de imágenes con Google Custom Search, el proveedor de siempre, envuelto para las
@@ -81,6 +83,32 @@ class GoogleCustomSearchImageProvider implements ImageSearchProvider
         // bloque `error` (el trait tampoco lo cuenta como búsqueda). Las dos cosas son un fallo.
         if (is_null($resultado['items']) || !is_null($resultado['api_error'])) {
             $error = $this->sin_credenciales((string) $resultado['api_error']);
+
+            /*
+             * Plan §13, S2 (sexta pasada): un error de CONEXIÓN (el trait lo devuelve como "Error de
+             * conexión: cURL error 28: …") llegaba crudo al diagnóstico, al motivo_detalle y al
+             * motivo de la asignación. Al usuario, un texto legible; el detalle (ya sin clave ni cx)
+             * al log y, como `detalle`, al registro de consultas del admin. Un error de la API
+             * ("Quota exceeded…", "API key not valid…") es un mensaje escrito para personas y sigue
+             * igual.
+             */
+            if (strpos((string) $resultado['api_error'], 'Error de conexión') === 0) {
+                $detalle = 'Google no respondió: '.Str::limit(ImageServiceCallLogger::sin_claves($error), 200, '…');
+
+                Log::warning('[ImagenesInteligentes] Google Custom Search no respondió.', ['error' => $detalle]);
+
+                return [
+                    'ok'          => false,
+                    'error'       => ImageServiceCallLogger::es_timeout($error)
+                        ? 'El buscador no respondió a tiempo.'
+                        : 'No se pudo conectar con el buscador.',
+                    'detalle'     => $detalle,
+                    'resultados'  => [],
+                    'total'       => null,
+                    'http_status' => $http_status,
+                    'duracion_ms' => $duracion_ms,
+                ];
+            }
 
             return [
                 'ok'          => false,

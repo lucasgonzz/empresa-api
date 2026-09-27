@@ -18,6 +18,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -57,8 +58,14 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
      */
     public $tries = 1;
 
-    /** @var int 5 minutos: un tramo son ~50 s más el último artículo (a lo sumo un par de minutos). */
-    public $timeout = 300;
+    /**
+     * @var int 7 minutos (sexta pasada, B13). Un tramo son hasta SEGUNDOS_POR_TRAMO_MAXIMO (90 s) más
+     * el último artículo, y el peor artículo ronda los 190 s (dos búsquedas de 15 s, 16 descargas y
+     * hasta 4 llamadas a la IA de 25 s): con 300 s un tramo largo podía morir por timeout en el medio
+     * de un artículo sano. Tiene que quedar por debajo del retry_after de las colas (config/queue.php:
+     * 4200 en database, 9000 en redis), o el mismo tramo se volvería a levantar mientras corre.
+     */
+    public $timeout = 420;
 
     /** Intentos por artículo antes de darlo por "venenoso" (error_interno). */
     const MAX_INTENTOS_POR_ARTICULO = 2;
@@ -82,9 +89,16 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
      */
     const MAX_ARTICULOS_SEGUIDOS_SIN_IA = 5;
 
-    /** Presupuesto de un tramo, en segundos: lo de config acotado a este rango (plan §13, B13). */
+    /**
+     * Presupuesto de un tramo, en segundos: lo de config acotado a este rango (plan §13, B13). El
+     * máximo bajó de 120 a 90 en la sexta pasada: 90 s más el peor artículo (~190 s) entran holgados
+     * en el $timeout de 420.
+     */
     const SEGUNDOS_POR_TRAMO_MINIMO = 20;
-    const SEGUNDOS_POR_TRAMO_MAXIMO = 120;
+    const SEGUNDOS_POR_TRAMO_MAXIMO = 90;
+
+    /** Minutos que se recuerda que el failed() de una ficha de tramo ya corrió (ver failed()). */
+    const MINUTOS_DE_MEMORIA_DEL_FAILED = 1440;
 
     /** @var int La asignación a procesar. */
     protected $run_id;
@@ -145,6 +159,26 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             return;
         }
 
+        /*
+         * Todo el catálogo necesita la IA (sin ella el POST da 422 de entrada: todo terminaría "a
+         * revisar" gastando búsquedas). Si la apagaron o le sacaron la clave con la corrida en
+         * marcha, se corta con la causa real (sexta pasada, B2). Las de selección y del asistente
+         * NO se cortan por esto: siguen, todo a revisar, como dice el contrato.
+         */
+        if ($run->origen === ImageAssignmentRun::ORIGEN_CATALOGO) {
+            $ia = ImageAssignmentRunHelper::ia_disponible();
+
+            if (!$ia['configurada']) {
+                ImageAssignmentRunHelper::terminar(
+                    $run,
+                    ImageAssignmentRun::STATUS_FALLIDA,
+                    $ia['motivo'].' Sin la IA, la búsqueda de todo el catálogo no sigue (todo quedaría a revisar gastando búsquedas); cuando esté configurada, se puede reanudar.'
+                );
+
+                return;
+            }
+        }
+
         $this->pasar_a_en_proceso($run);
 
         $motor = new ArticleImageAssignmentEngine($run, $owner);
@@ -198,6 +232,14 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             // la última búsqueda del día, la asignación terminó bien y no por falta de cupo.
             if ($run->aplica_tope_diario && (int) ImagenesAutomaticasHelper::cuota_de($owner)['disponibles'] <= 0) {
                 $this->cortar_por_cupo($run);
+
+                return;
+            }
+
+            // El techo de validaciones con IA, también DESPUÉS de saber que queda algo por hacer
+            // (sexta pasada, B6): alcanzado, no se paga ni una búsqueda más que nadie va a evaluar.
+            if ($motor->techo_de_ia_alcanzado()) {
+                $this->cortar_por_techo_de_ia($run, $motor);
 
                 return;
             }
@@ -259,10 +301,15 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             }
 
             if ($this->contar_articulo_sin_ia($run, $resultado) >= self::MAX_ARTICULOS_SEGUIDOS_SIN_IA) {
+                // Con la causa real (sexta pasada, B2): "Revisá la clave" era una suposición.
+                $causa = isset($resultado['ia_error']) ? trim((string) $resultado['ia_error']) : '';
+
                 ImageAssignmentRunHelper::terminar(
                     $run,
                     ImageAssignmentRun::STATUS_FALLIDA,
-                    'La validación con IA no responde en '.self::MAX_ARTICULOS_SEGUIDOS_SIN_IA.' artículos seguidos; se frenó para no gastar búsquedas. Revisá la clave y reanudá.'
+                    'La validación con IA no responde en '.self::MAX_ARTICULOS_SEGUIDOS_SIN_IA.' artículos seguidos'
+                        .($causa !== '' ? ' (último error: '.$causa.')' : '')
+                        .'. Se frenó para no gastar búsquedas; cuando esté resuelto, se puede reanudar.'
                 );
 
                 return;
@@ -350,6 +397,33 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 'run_id' => $this->run_id,
                 'error'  => $error_de_rollback->getMessage(),
             ]);
+        }
+
+        /*
+         * 🔴 Una sola vez por ficha de tramo (sexta pasada, B8). Con la cola `database`, Job::fail()
+         * borra la fila de `jobs` y recién después llama a este método; si el tramo murió adentro de
+         * una transacción, ese borrado quedó ADENTRO de ella y el rollback de arriba lo deshace. La
+         * fila vuelve a estar reservada y, al vencer retry_after (4200 s), otro worker la levanta y
+         * la da por fallida de nuevo: este método corría dos veces para el mismo tramo (un fallo
+         * seguido de más y un tramo extra despachado). La marca va DESPUÉS del rollback, así no se la
+         * lleva la misma transacción aunque la caché sea la base.
+         */
+        if ($this->tramo !== '') {
+            try {
+                $primera_vez = Cache::add('imagenes-inteligentes:failed:'.$this->tramo, true, Carbon::now()->addMinutes(self::MINUTOS_DE_MEMORIA_DEL_FAILED));
+            } catch (\Throwable $error_de_cache) {
+                // Sin caché no hay memoria: mejor correrlo (lo de siempre) que no correrlo nunca.
+                $primera_vez = true;
+            }
+
+            if (!$primera_vez) {
+                Log::info('[ImagenesInteligentes] failed() ya había corrido para este tramo: no se repite.', [
+                    'run_id' => $this->run_id,
+                    'tramo'  => $this->tramo,
+                ]);
+
+                return;
+            }
         }
 
         try {
@@ -565,6 +639,25 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
     }
 
     /**
+     * La asignación llegó a su techo de validaciones con IA (sexta pasada, B6): se corta como
+     * `fallida`, reanudable, igual que los otros cortes automáticos (plan §13). Los artículos que
+     * faltaban quedan pendientes; al reanudar, el techo vuelve a arrancar desde lo ya validado
+     * (ImageAssignmentRunHelper::reanudar() mueve `validaciones_ia_base`).
+     *
+     * @param  \App\Models\ImageAssignmentRun $run
+     * @param  \App\Services\ImageAssignment\ArticleImageAssignmentEngine $motor
+     * @return void
+     */
+    protected function cortar_por_techo_de_ia(ImageAssignmentRun $run, ArticleImageAssignmentEngine $motor)
+    {
+        ImageAssignmentRunHelper::terminar(
+            $run,
+            ImageAssignmentRun::STATUS_FALLIDA,
+            'Se alcanzó el techo de validaciones con IA de esta búsqueda ('.$motor->techo_de_ia().' consultas). Los artículos que faltaban quedaron pendientes: se puede reanudar.'
+        );
+    }
+
+    /**
      * Avance del registro visible (con throttle de BackgroundProcessHelper) y reinicio del contador
      * de fallos seguidos: si un artículo terminó, el tramo está sano.
      *
@@ -640,6 +733,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             }
         }
 
-        return Str::limit(ImageServiceCallLogger::sin_claves($ultimo), 200, '…');
+        // Sin el punto final: el motivo lo pone entre paréntesis y sigue la frase.
+        return rtrim(Str::limit(ImageServiceCallLogger::sin_claves($ultimo), 200, '…'), '. ');
     }
 }

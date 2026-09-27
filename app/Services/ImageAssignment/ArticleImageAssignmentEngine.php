@@ -170,10 +170,18 @@ class ArticleImageAssignmentEngine
      *          ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH y 4 por artículo. Se compara contra las
      *          validaciones que ya hizo la asignación (en todos sus tramos), no contra las de este
      *          tramo: el techo por instancia del validador volvía a cero en cada tramo.
+     *
+     *          Alcanzarlo (sexta pasada): las candidatas del artículo en curso van al pozo SIN
+     *          EVALUAR (terminan a revisar, nunca "sin resultados", que las dejaría 90 días sin volver
+     *          a buscar) y el job corta la corrida antes del próximo artículo (fallida, reanudable).
      */
     protected $techo_de_ia;
 
-    /** @var int Validaciones con IA que lleva la asignación (se lee al armar el motor y se suma acá). */
+    /**
+     * @var int Validaciones con IA que cuentan para el techo: las de la asignación menos las de
+     *          antes de la última reanudación (`validaciones_ia_base`). Se lee al armar el motor y
+     *          se suma acá.
+     */
     protected $validaciones_de_la_corrida;
 
     /**
@@ -208,7 +216,46 @@ class ArticleImageAssignmentEngine
             self::MAX_LLAMADAS_IA_POR_ARTICULO * (int) $run->total_articulos
         );
 
-        $this->validaciones_de_la_corrida = (int) DB::table('image_assignment_runs')->where('id', $run->id)->value('validaciones_ia');
+        $this->leer_validaciones_de_la_corrida();
+    }
+
+    /**
+     * ¿La asignación ya llegó a su techo de validaciones con IA? Lo mira el job ANTES de reclamar
+     * cada artículo (sexta pasada, B6): con el techo alcanzado no se paga ni una búsqueda más y la
+     * corrida se corta. Relee la base, así ve también lo que validó otro tramo vivo.
+     *
+     * @return bool
+     */
+    public function techo_de_ia_alcanzado()
+    {
+        $this->leer_validaciones_de_la_corrida();
+
+        return $this->validaciones_de_la_corrida >= $this->techo_de_ia;
+    }
+
+    /**
+     * El techo de validaciones con IA de esta asignación (para el mensaje del corte).
+     *
+     * @return int
+     */
+    public function techo_de_ia()
+    {
+        return (int) $this->techo_de_ia;
+    }
+
+    /**
+     * Lee de la base las validaciones que cuentan para el techo: las de la asignación menos las de
+     * antes de la última reanudación (`validaciones_ia_base`, ver ImageAssignmentRunHelper::reanudar()).
+     *
+     * @return void
+     */
+    protected function leer_validaciones_de_la_corrida()
+    {
+        $fila = DB::table('image_assignment_runs')->where('id', $this->run->id)->first(['validaciones_ia', 'validaciones_ia_base']);
+
+        $this->validaciones_de_la_corrida = is_null($fila)
+            ? 0
+            : max(0, (int) $fila->validaciones_ia - (int) $fila->validaciones_ia_base);
     }
 
     /**
@@ -222,8 +269,11 @@ class ArticleImageAssignmentEngine
      *     busquedas_intentadas: int,  búsquedas que se intentaron (0 = el artículo no buscó nada:
      *                                 no le dice nada al contador del proveedor).
      *     ia_respondio:       bool,   alguna llamada a la IA respondió.
-     *     ia_sin_respuesta:   bool,   se le pidió algo a la IA y NINGUNA llamada respondió (sin
-     *                                 servicio: apagada, sin clave, caída o con error).
+     *     ia_sin_respuesta:   bool,   se le pidió algo a la IA configurada y NINGUNA llamada
+     *                                 respondió (caída o con error). La IA apagada a propósito o sin
+     *                                 clave no cuenta: es configuración (sexta pasada, B2).
+     *     ia_error:           string|null, la causa real de la última llamada sin respuesta, legible.
+     *     techo_de_ia:        bool,   la asignación llegó a su techo de validaciones con IA.
      * }
      */
     public function procesar(ImageAssignmentItem $item)
@@ -301,6 +351,15 @@ class ArticleImageAssignmentEngine
             $contexto['diagnostico'][self::CRITERIO_NOMBRE] = $this->criterio_no_usado(self::CRITERIO_NOMBRE, '', 'El artículo no tiene nombre.');
         } elseif ($contexto['cupo_agotado']) {
             $contexto['diagnostico'][self::CRITERIO_NOMBRE] = $this->criterio_no_usado(self::CRITERIO_NOMBRE, $consulta_nombre, 'No se buscó: se agotó el cupo diario de búsquedas.');
+        } elseif (!is_null($ganadora) && $this->validaciones_de_la_corrida >= $this->techo_de_ia) {
+            /*
+             * Techo de IA alcanzado (sexta pasada, B6) y por código ya hay una para revisar: lo que
+             * saliera por nombre no se podría evaluar, y una sin evaluar nunca le gana a la que ya
+             * está. Sin ganadora, en cambio, se busca igual: sus candidatas van al pozo sin evaluar y
+             * el artículo termina con una imagen para revisar en vez de "sin resultados".
+             */
+            $contexto['techo_de_ia'] = true;
+            $contexto['diagnostico'][self::CRITERIO_NOMBRE] = $this->criterio_no_usado(self::CRITERIO_NOMBRE, $consulta_nombre, 'No se buscó: la asignación llegó a su techo de consultas a la IA y ya había una imagen para revisar.');
         } else {
             $this->buscar_por_criterio(self::CRITERIO_NOMBRE, $consulta_nombre, $contexto);
             $ganadora = $this->elegir_ganadora($contexto['pozo']);
@@ -433,7 +492,15 @@ class ArticleImageAssignmentEngine
             }
 
             if ($this->validaciones_de_la_corrida >= $this->techo_de_ia) {
-                $this->marcar_sin_revisar($candidatas, $restantes, 'No se llegó a revisar con IA: la asignación llegó a su techo de consultas a la IA.');
+                /*
+                 * Sexta pasada (B6): antes quedaban "no_evaluada" FUERA del pozo, el criterio cerraba
+                 * como sin_resultados (que entra en "ya buscado sin éxito" por 90 días) y la corrida
+                 * seguía pagando búsquedas que nadie iba a evaluar. Ahora van al pozo sin evaluar: el
+                 * artículo termina A REVISAR (sin_validacion_ia) y el job corta la corrida antes del
+                 * próximo artículo.
+                 */
+                $contexto['techo_de_ia'] = true;
+                $this->al_pozo_sin_evaluar($criterio, $candidatas, $restantes, $contexto, 'No se llegó a revisar con IA: la asignación llegó a su techo de consultas a la IA.');
                 break;
             }
 
@@ -460,9 +527,14 @@ class ArticleImageAssignmentEngine
             $contexto['llamadas_ia']++;
             $llamadas_del_criterio++;
 
-            // Hacía falta la IA y no hubo servicio (para el corte de B2 en el job).
+            // La IA está configurada y no respondió (para el corte de B2 en el job). La apagada a
+            // propósito o sin clave no llega acá: viene como `no_configurada` y no frena nada.
             if (!empty($veredicto['sin_servicio'])) {
                 $contexto['ia_sin_servicio']++;
+
+                if (!empty($veredicto['error'])) {
+                    $contexto['ia_error'] = (string) $veredicto['error'];
+                }
             }
 
             // Validaciones = llamadas que Anthropic respondió (las que se pagan).
@@ -554,11 +626,29 @@ class ArticleImageAssignmentEngine
             'ok'           => $ok,
             'cobrada'      => $ok,
             'http_status'  => isset($respuesta['http_status']) ? $respuesta['http_status'] : null,
-            'error'        => $ok || !isset($respuesta['error']) ? null : (string) $respuesta['error'],
+            // El registro es del admin: si el proveedor dejó el detalle técnico (sin claves) de un
+            // error que al comercio se le muestra genérico, va el detalle (plan §13, S2).
+            'error'        => $ok ? null : $this->error_para_el_registro($respuesta),
             'resultados'   => $ok ? $resultados : null,
             'resumen'      => $resumen,
             'duracion_ms'  => isset($respuesta['duracion_ms']) ? $respuesta['duracion_ms'] : null,
         ]);
+    }
+
+    /**
+     * El error de una búsqueda fallida tal como va al registro de consultas: el `detalle` técnico
+     * si el proveedor lo dejó, si no el `error` de siempre.
+     *
+     * @param  array $respuesta  La de ImageSearchProvider::buscar().
+     * @return string|null
+     */
+    protected function error_para_el_registro(array $respuesta)
+    {
+        if (isset($respuesta['detalle']) && trim((string) $respuesta['detalle']) !== '') {
+            return (string) $respuesta['detalle'];
+        }
+
+        return isset($respuesta['error']) ? (string) $respuesta['error'] : null;
     }
 
     /**
@@ -589,6 +679,39 @@ class ArticleImageAssignmentEngine
         foreach ($listas as $lista) {
             $candidatas[$lista['clave']]['resultado'] = 'no_evaluada';
             $candidatas[$lista['clave']]['motivo']    = $motivo;
+        }
+    }
+
+    /**
+     * Manda al pozo, SIN EVALUAR, las candidatas listas que no se pudieron mostrar a la IA porque la
+     * asignación llegó a su techo (sexta pasada, B6): compiten en el ranking como "sin evaluar" (el
+     * grupo más bajo) y, si una gana, el artículo va a revisar con motivo sin_validacion_ia. Nunca se
+     * asignan solas: la IA no las vio.
+     *
+     * @param  string $criterio
+     * @param  array  $candidatas  (por referencia) las del diagnóstico del criterio.
+     * @param  array  $listas      las que quedaron sin revisar.
+     * @param  array  $contexto    (por referencia)
+     * @param  string $motivo
+     * @return void
+     */
+    protected function al_pozo_sin_evaluar($criterio, array &$candidatas, array $listas, array &$contexto, $motivo)
+    {
+        foreach ($listas as $lista) {
+            $clave = $lista['clave'];
+
+            $ia = [
+                'es_el_producto' => 'sin_evaluar',
+                'confianza'      => null,
+                'fondo_blanco'   => null,
+                'problemas'      => [],
+                'motivo'         => $motivo,
+            ];
+
+            $contexto['pozo'][] = $this->candidata_del_pozo($criterio, $candidatas[$clave], $lista, $ia);
+
+            $candidatas[$clave]['resultado'] = 'no_evaluada';
+            $candidatas[$clave]['motivo']    = $motivo;
         }
     }
 
@@ -1041,6 +1164,8 @@ class ArticleImageAssignmentEngine
             'busquedas_intentadas' => (int) $contexto['busquedas_intentadas'],
             'ia_respondio'         => $contexto['validaciones'] > 0,
             'ia_sin_respuesta'     => $contexto['ia_sin_servicio'] > 0 && $contexto['validaciones'] === 0,
+            'ia_error'             => $contexto['ia_error'],
+            'techo_de_ia'          => (bool) $contexto['techo_de_ia'] || $this->validaciones_de_la_corrida >= $this->techo_de_ia,
         ];
     }
 
@@ -1536,8 +1661,15 @@ class ArticleImageAssignmentEngine
             'diagnostico'          => [],
             'pozo'                 => [],
             'urls_vistas'          => [],
-            // Llamadas a la IA que no tuvieron servicio (apagada, sin clave, caída, con error).
+            // Llamadas a la IA configurada que no respondieron (caída o con error). La IA apagada a
+            // propósito o sin clave NO cuenta acá: es configuración, no una caída (sexta pasada).
             'ia_sin_servicio'      => 0,
+            // La causa real de la última llamada sin servicio, legible y sin claves (para el
+            // mensaje del corte del job).
+            'ia_error'             => null,
+            // La asignación llegó a su techo de validaciones con IA mientras se procesaba este
+            // artículo (el job corta la corrida antes del próximo).
+            'techo_de_ia'          => false,
         ];
     }
 }

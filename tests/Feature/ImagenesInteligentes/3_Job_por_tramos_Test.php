@@ -260,12 +260,17 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
         $this->assertSame(1, (int) $run->fresh()->fallos_consecutivos);
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
 
-        // 2do fallo con el mismo artículo, ya en su segundo intento: queda error_interno.
+        // 2do fallo con el mismo artículo, ya en su segundo intento y reclamado por el tramo
+        // SIGUIENTE (otra ficha): queda error_interno. Desde la sexta pasada (B8) el failed() corre
+        // una sola vez por ficha, así que cada fallo es de un tramo propio, como en producción (antes
+        // este test repetía el failed() del MISMO tramo tres veces; las aserciones no cambian).
         // (refresh: el job lo devolvió a pendiente por SQL y el modelo en memoria seguía diciendo
         // "procesando"; sin releerlo, update() no vería el cambio de estado y no lo escribiría).
+        $segundo = new TramoDePrueba($run->id);
+
         $venenoso->refresh();
-        $venenoso->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 2, 'tramo' => $ficha]);
-        $job->failed(new \RuntimeException('Otra vez (prueba)'));
+        $venenoso->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 2, 'tramo' => $this->ficha_del_tramo($segundo)]);
+        $segundo->failed(new \RuntimeException('Otra vez (prueba)'));
 
         $venenoso->refresh();
         $this->assertSame(ImageAssignmentItem::STATUS_NO_ASIGNADA, $venenoso->status);
@@ -274,11 +279,13 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
         $this->assertSame(1, (int) $run->fresh()->procesados);
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 2);
 
-        // 3er fallo seguido: la asignación queda fallida (y el artículo sano, que ahora sí reclamó
-        // este tramo, vuelve a pendiente).
+        // 3er fallo seguido, de un tercer tramo: la asignación queda fallida (y el artículo sano,
+        // que ahora sí reclamó ese tramo, vuelve a pendiente).
+        $tercero = new TramoDePrueba($run->id);
+
         $sano->refresh();
-        $sano->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1, 'tramo' => $ficha]);
-        $job->failed(new \RuntimeException('Tercera (prueba)'));
+        $sano->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1, 'tramo' => $this->ficha_del_tramo($tercero)]);
+        $tercero->failed(new \RuntimeException('Tercera (prueba)'));
 
         $run->refresh();
         $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);

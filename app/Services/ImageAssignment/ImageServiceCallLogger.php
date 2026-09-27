@@ -82,6 +82,14 @@ class ImageServiceCallLogger
 
             $ok = !empty($datos['ok']);
 
+            /*
+             * Retención de 180 días también desde acá (sexta pasada, S5 + A4): un dueño que solo usa
+             * el asistente (búsqueda por código) o la validación individual nunca crea una
+             * asignación, y sin esto su registro no se purgaba nunca. purgar_viejas() tiene su marca
+             * diaria por dueño (una sola consulta a la caché el resto del día) y nunca lanza.
+             */
+            self::purgar_viejas($user_id);
+
             return ImageServiceCall::create([
                 'user_id'      => $user_id,
                 'run_id'       => self::entero_o_null($datos, 'run_id'),
@@ -131,7 +139,9 @@ class ImageServiceCallLogger
 
     /**
      * Borra las consultas de más de DIAS_DE_RETENCION días DE ESTE DUEÑO. Se llama al crear una
-     * asignación (fuera de la transacción del catálogo).
+     * asignación (fuera de la transacción del catálogo) y en cada registrar() (sexta pasada: así
+     * purga también el dueño que solo usa el asistente); la marca diaria hace que el DELETE salga
+     * una sola vez por día.
      *
      * Solo del dueño que crea la asignación y como mucho UNA vez por día por dueño (revisión
      * independiente del 27/9/2026): en una base compartida, crear una asignación no tiene por qué
@@ -289,6 +299,23 @@ class ImageServiceCallLogger
         }
 
         return $limpio;
+    }
+
+    /**
+     * ¿El mensaje de una excepción de conexión es un tiempo de espera agotado? (cURL error 28 /
+     * "timed out"). Lo usan los proveedores de búsqueda y la IA para decirle al usuario "no respondió
+     * a tiempo" en vez del mensaje crudo de cURL (plan §13, S2: el crudo va solo al log).
+     *
+     * @param  string|null $mensaje
+     * @return bool
+     */
+    public static function es_timeout($mensaje)
+    {
+        $mensaje = strtolower((string) $mensaje);
+
+        return strpos($mensaje, 'curl error 28') !== false
+            || strpos($mensaje, 'timed out') !== false
+            || strpos($mensaje, 'timeout') !== false;
     }
 
     /**
