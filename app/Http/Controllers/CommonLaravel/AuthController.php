@@ -80,6 +80,12 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = $skip_offline_articles_sync;
             $user->master_login_mode = $this->master_login_mode;
+            /**
+             * Misión imagenes-catalogo-completo (27/9/2026): la SPA muestra "Buscar imágenes para
+             * todo el catálogo" solo en la sesión del acceso maestro. Clave nueva y opcional: un
+             * frontend viejo la ignora.
+             */
+            $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
         }
 
         return response()->json([
@@ -415,6 +421,9 @@ class AuthController extends Controller
                  */
                 if ($user) {
                     $user->skip_offline_articles_sync = $transfer['skip_offline_articles_sync'];
+                    // Mismo flag que login() y get_user() (misión imagenes-catalogo-completo): el
+                    // SPA destino usa este `user` directo, sin pasar por auth/me.
+                    $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
                 }
             }
         }
@@ -476,6 +485,11 @@ class AuthController extends Controller
              * es la del bypass de login maestro, que es justo la que menos se prueba.
              */
             $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
+            /**
+             * Si la sesión entró por el login maestro (misión imagenes-catalogo-completo): con
+             * esto la SPA muestra "Buscar imágenes para todo el catálogo". Va en las DOS ramas.
+             */
+            $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -498,6 +512,10 @@ class AuthController extends Controller
              * sesion y no una variable de JavaScript.
              */
             $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
+            // Mismo flag que la rama de arriba (misión imagenes-catalogo-completo). Hoy acá da
+            // siempre false (el maestro entra por la rama de arriba), pero se calcula igual en vez
+            // de fijarlo: si mañana cambia la condición de esa rama, el flag sigue diciendo la verdad.
+            $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }

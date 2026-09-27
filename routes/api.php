@@ -855,6 +855,28 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('google/get-current', 'GoogleController@get_current');
     Route::post('google/batch-assign-images', 'GoogleController@batch_assign_images');
 
+    /*
+        Asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026):
+        Alertas → Imágenes. Las rutas fijas (resumen, catalogo, por-uuid, aprobar-varios) van ANTES
+        de las que llevan {id}, y los {id} van restringidos a números: si no, "resumen" o "catalogo"
+        se leerían como un id y responderían 404. catalogo/*, detener y reanudar son solo para la
+        sesión del acceso maestro (lo valida ImageAssignmentRunController, 403 sin ella).
+    */
+    Route::get('image-assignment-runs', 'ImageAssignmentRunController@index');
+    Route::get('image-assignment-runs/resumen', 'ImageAssignmentRunController@resumen');
+    Route::get('image-assignment-runs/catalogo/previa', 'ImageAssignmentRunController@previa_catalogo');
+    Route::post('image-assignment-runs/catalogo', 'ImageAssignmentRunController@crear_catalogo');
+    Route::get('image-assignment-runs/por-uuid/{uuid}', 'ImageAssignmentRunController@por_uuid');
+    Route::get('image-assignment-runs/{id}', 'ImageAssignmentRunController@show')->where('id', '[0-9]+');
+    Route::get('image-assignment-runs/{id}/items', 'ImageAssignmentRunController@items')->where('id', '[0-9]+');
+    Route::post('image-assignment-runs/{id}/detener', 'ImageAssignmentRunController@detener')->where('id', '[0-9]+');
+    Route::post('image-assignment-runs/{id}/reanudar', 'ImageAssignmentRunController@reanudar')->where('id', '[0-9]+');
+    Route::post('image-assignment-items/aprobar-varios', 'ImageAssignmentRunController@aprobar_varios');
+    Route::post('image-assignment-items/rechazar-varios', 'ImageAssignmentRunController@rechazar_varios');
+    Route::post('image-assignment-items/{id}/aprobar', 'ImageAssignmentRunController@aprobar')->where('id', '[0-9]+');
+    Route::post('image-assignment-items/{id}/rechazar', 'ImageAssignmentRunController@rechazar')->where('id', '[0-9]+');
+    Route::post('image-assignment-items/{id}/quitar', 'ImageAssignmentRunController@quitar')->where('id', '[0-9]+');
+
     // Diagnóstico de intentos de búsqueda de imagen automática (grupo 201): últimas corridas y detalle por corrida.
     Route::get('article-image-search-attempts/recent', 'ArticleImageSearchAttemptController@recent_batches');
     // Resumen reconstruido de una corrida (grupo 217, prompt 03): mismo objeto que el payload de Pusher.
