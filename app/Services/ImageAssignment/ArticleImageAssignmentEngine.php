@@ -27,7 +27,9 @@ use Illuminate\Support\Str;
  * imagenes-catalogo-completo, 27/9/2026). Busca la MEJOR imagen, no la primera aceptable.
  *
  * Por artículo, en orden (plan §6.6):
- *   1. Si el artículo ya no existe → no_asignada / articulo_borrado.
+ *   1. Si el artículo ya no existe → no_asignada / articulo_borrado. En "todo el catálogo", si
+ *      mientras esperaba su turno ya consiguió imagen → no_asignada / ya_tenia_imagen, sin buscar
+ *      (plan §12.1).
  *   2. Si su código de barras es REAL (CodigoDeBarrasRealHelper) → búsqueda por código →
  *      candidatas (CandidateImageProcessor: descartes gratis, descarga, tamaño y fondo medidos) →
  *      IA comparando hasta 4 por llamada (ArticleImageValidationService::evaluar_candidatas).
@@ -190,6 +192,20 @@ class ArticleImageAssignmentEngine
                 'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                 'motivo'         => 'articulo_borrado',
                 'motivo_detalle' => 'El artículo se borró antes de que le llegara el turno.',
+            ]);
+        }
+
+        /*
+         * Todo el catálogo (plan §12.1, extra 1): la corrida puede durar horas, y mientras el
+         * artículo esperaba su turno le pudieron cargar una imagen a mano o asignársela otra
+         * asignación. Buscarle otra lo dejaría con dos: no se busca nada (0 búsquedas). En las de
+         * selección no se mira: ahí la persona eligió el artículo sabiendo lo que tenía.
+         */
+        if ($this->run->origen === ImageAssignmentRun::ORIGEN_CATALOGO && $article->images()->exists()) {
+            return $this->cerrar($item, $contexto, [
+                'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
+                'motivo'         => 'ya_tenia_imagen',
+                'motivo_detalle' => 'Ya tenía imagen cuando le tocó el turno.',
             ]);
         }
 

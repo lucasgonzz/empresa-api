@@ -9,6 +9,7 @@ use App\Models\BackgroundProcess;
 use App\Models\Image;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
+use App\Models\ImageServiceCall;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -333,5 +334,54 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
         $this->assertSame(ImageAssignmentItem::STATUS_PENDIENTE, $a_medias->fresh()->status);
         $this->assertSame(ImageAssignmentItem::STATUS_PROCESANDO, $reciente->fresh()->status, 'El que procesa un tramo vivo no se repone.');
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
+    }
+
+    /**
+     * Plan §12.1, extra 1: en "todo el catálogo", un artículo que mientras esperaba su turno ya
+     * consiguió imagen (se la cargaron a mano, o se la asignó otra asignación) no se busca: 0
+     * búsquedas, no asignada con `ya_tenia_imagen`, y queda con su única imagen. En una de selección
+     * el mismo artículo se busca igual: ahí lo eligió una persona.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function en_el_catalogo_un_articulo_que_ya_tiene_imagen_no_se_busca()
+    {
+        $codigo   = '7791234567898';
+        $articulo = $this->nuevo_articulo('Taladro percutor 650 W', $codigo);
+
+        $catalogo  = $this->asignacion([$articulo], ['origen' => ImageAssignmentRun::ORIGEN_CATALOGO]);
+        $seleccion = $this->asignacion([$articulo], ['origen' => ImageAssignmentRun::ORIGEN_SELECCION]);
+
+        // Mientras esperaba su turno, alguien le cargó una imagen a mano.
+        Image::create([
+            'hosting_url'    => 'http://empresa.local/storage/cargada-a-mano.webp',
+            'imageable_id'   => $articulo->id,
+            'imageable_type' => 'article',
+        ]);
+
+        $this->falsear(
+            [$codigo => [$this->resultado($this->url_imagen('taladro'), 1000, 1000, 1)]],
+            [$this->url_imagen('taladro') => $this->png(1000, 1000, 'rojo')],
+            ['rojo' => $this->veredicto('si', 'high')]
+        );
+
+        $item = $this->procesar($catalogo, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_NO_ASIGNADA, $item->status);
+        $this->assertSame('ya_tenia_imagen', $item->motivo);
+        $this->assertSame('Ya tenía imagen cuando le tocó el turno.', $item->motivo_detalle);
+        $this->assertSame(0, (int) $item->busquedas);
+        $this->assertCount(0, $this->consultas_serper, 'No se gastó ninguna búsqueda.');
+        $this->assertSame(0, ImageServiceCall::where('run_id', $catalogo->id)->count(), 'No se consultó ningún servicio: no hay nada que registrar.');
+        $this->assertSame(1, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count(), 'Sigue con su única imagen.');
+        $this->assertSame(1, (int) $catalogo->fresh()->procesados);
+        $this->assertSame(0, (int) $catalogo->fresh()->busquedas);
+
+        // La de selección sí lo busca: la persona lo eligió sabiendo lo que tenía.
+        $item_de_la_seleccion = $this->procesar($seleccion, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, $item_de_la_seleccion->status);
+        $this->assertCount(1, $this->consultas_serper);
     }
 }

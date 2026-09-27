@@ -5,6 +5,7 @@ namespace Tests\Feature\ImagenesInteligentes;
 use App\Http\Controllers\Helpers\ColumnFiltersHelper;
 use App\Models\Article;
 use App\Models\Image;
+use Illuminate\Support\Facades\DB;
 
 /**
  * El filtro de la columna de imágenes del listado: "Sin imágenes" (en_blanco) / "Con imágenes"
@@ -97,5 +98,20 @@ class Filtro_con_y_sin_imagenes_Test extends ImagenesInteligentesTestCase
         }
 
         $this->assertSame($antes, Article::withTrashed()->count(), 'No se insertó ni se borró nada.');
+    }
+
+    /**
+     * Plan §12.1, extra 3: `images.imageable_id` tiene índice. El "Sin imágenes" (este filtro y la
+     * selección de todo el catálogo) es un NOT EXISTS por artículo contra `images`: sin índice,
+     * cada artículo recorre la tabla entera.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function la_columna_imageable_id_tiene_indice()
+    {
+        $indices = DB::select('SHOW INDEX FROM `images` WHERE Seq_in_index = 1 AND Column_name = ?', ['imageable_id']);
+
+        $this->assertNotEmpty($indices, 'Falta el índice de images.imageable_id (migración 2026_09_27_100300).');
     }
 }

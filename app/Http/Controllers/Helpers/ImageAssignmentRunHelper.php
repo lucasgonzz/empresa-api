@@ -63,7 +63,8 @@ class ImageAssignmentRunHelper
      * Motivos de no asignada que cuentan como "ya se buscó y no había imagen". Los de error
      * (error_de_busqueda, error_interno, sin_cupo, articulo_borrado) NO: esos no dicen nada del
      * producto y hay que volver a intentarlos. sin_datos tampoco: no gasta búsquedas, y si le
-     * cargaron un nombre desde entonces, esta vez sí se puede buscar.
+     * cargaron un nombre desde entonces, esta vez sí se puede buscar. Ni ya_tenia_imagen (plan
+     * §12.1): no se buscó nada; si después le sacan la imagen, tiene que poder entrar otra vez.
      */
     const MOTIVOS_YA_BUSCADO_SIN_EXITO = ['sin_resultados', 'imagenes_chicas', 'no_descargables', 'no_corresponden'];
 

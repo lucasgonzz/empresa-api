@@ -214,7 +214,7 @@ class PropuestaImagenesArticulosIaHelper
 
         $auth_user_id = !is_null($persona) ? (int) $persona->id : (int) $contexto->conversation->auth_user_id;
 
-        ImagenesAutomaticasHelper::encolar($contexto->owner, $ids, $auth_user_id);
+        ImagenesAutomaticasHelper::encolar($contexto->owner, $ids, $auth_user_id, \App\Models\ImageAssignmentRun::ORIGEN_ASISTENTE);
 
         return [
             'texto' => 'Mandé a buscar imágenes para ' . count($ids) . ' artículos. Te va a aparecer en el sistema cuando termine.',

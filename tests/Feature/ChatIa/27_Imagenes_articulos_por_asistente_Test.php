@@ -230,6 +230,8 @@ class Imagenes_articulos_por_asistente_Test extends TestCase
         $this->assertSame((int) $this->comercio->id, (int) $asignacion->user_id);
         $this->assertNotSame('', (string) $asignacion->uuid);
         $this->assertTrue((bool) $asignacion->aplica_tope_diario);
+        // Plan §12.1 (extra 2): la del asistente queda con su origen, no como una selección del listado.
+        $this->assertSame(ImageAssignmentRun::ORIGEN_ASISTENTE, $asignacion->origen);
         $this->assertSame(ImageSearchProviderFactory::nombre_para($this->comercio), $asignacion->proveedor);
         $this->assertSame(ImagenesAutomaticasHelper::CUOTA_POR_DEFECTO, ImagenesAutomaticasHelper::cuota_de($this->comercio)['cuota']);
 
