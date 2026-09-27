@@ -7,6 +7,7 @@ use App\Models\GeocoderCounter;
 use App\Models\User;
 use App\Services\Traits\BusquedaDeImagenesEnGoogle;
 use App\Services\Traits\GoogleSearchHelpers;
+use Illuminate\Http\Client\Events\ResponseReceived;
 
 /**
  * Búsqueda de imágenes con Google Custom Search, el proveedor de siempre, envuelto para las
@@ -23,6 +24,18 @@ use App\Services\Traits\GoogleSearchHelpers;
 class GoogleCustomSearchImageProvider implements ImageSearchProvider
 {
     use GoogleSearchHelpers, BusquedaDeImagenesEnGoogle;
+
+    /**
+     * @var object|null El dispatcher de eventos donde ya está la escucha de respuestas (se anota UNA
+     *                  vez por dispatcher: en un worker es uno solo; en los tests cambia con cada test).
+     */
+    protected static $dispatcher_con_escucha = null;
+
+    /**
+     * @var int|null Estado HTTP de la última respuesta de Custom Search, para el registro de
+     *               consultas. El trait no lo devuelve: lo anota la escucha de ResponseReceived.
+     */
+    protected static $ultimo_estado_de_custom_search = null;
 
     /** @var int Dueño del comercio (lo pide el trait). */
     protected $user_id;
@@ -65,7 +78,16 @@ class GoogleCustomSearchImageProvider implements ImageSearchProvider
      */
     public function buscar($consulta)
     {
+        // Para el registro de consultas (image_service_calls): el estado HTTP y cuánto tardó Google.
+        self::escuchar_respuestas_de_custom_search();
+        self::$ultimo_estado_de_custom_search = null;
+
+        $inicio = microtime(true);
+
         $resultado = $this->fetch_google_image_results(trim((string) $consulta), new GeocoderCounter());
+
+        $duracion_ms = (int) max(0, round((microtime(true) - $inicio) * 1000));
+        $http_status = self::$ultimo_estado_de_custom_search;
 
         // items null = error HTTP o de red; api_error con items = Google respondió 200 con un
         // bloque `error` (el trait tampoco lo cuenta como búsqueda). Las dos cosas son un fallo.
@@ -73,10 +95,12 @@ class GoogleCustomSearchImageProvider implements ImageSearchProvider
             $error = $this->sin_credenciales((string) $resultado['api_error']);
 
             return [
-                'ok'         => false,
-                'error'      => 'Google respondió con error: '.($error !== '' ? $error : 'desconocido').'.',
-                'resultados' => [],
-                'total'      => null,
+                'ok'          => false,
+                'error'       => 'Google respondió con error: '.($error !== '' ? $error : 'desconocido').'.',
+                'resultados'  => [],
+                'total'       => null,
+                'http_status' => $http_status,
+                'duracion_ms' => $duracion_ms,
             ];
         }
 
@@ -105,11 +129,48 @@ class GoogleCustomSearchImageProvider implements ImageSearchProvider
         }
 
         return [
-            'ok'         => true,
-            'error'      => null,
-            'resultados' => $resultados,
-            'total'      => $resultado['total_results'],
+            'ok'          => true,
+            'error'       => null,
+            'resultados'  => $resultados,
+            'total'       => $resultado['total_results'],
+            'http_status' => $http_status,
+            'duracion_ms' => $duracion_ms,
         ];
+    }
+
+    /**
+     * Anota, una sola vez por dispatcher, una escucha del evento ResponseReceived del cliente HTTP
+     * de Laravel que guarda el estado de cada respuesta de Custom Search.
+     *
+     * Por qué un evento y no un middleware de Guzzle sobre el cliente del trait: Laravel pone los
+     * middlewares propios ADENTRO del que responde los Http::fake, así que en los tests nunca
+     * correrían y lo que anotan quedaría sin probar. El evento sale igual con respuestas reales y
+     * falsas. No toca el trait (lo usan el job viejo, el de categorías y la búsqueda por código).
+     *
+     * Nunca lanza: sin escucha, el registro queda sin estado HTTP y la búsqueda sigue igual.
+     *
+     * @return void
+     */
+    protected static function escuchar_respuestas_de_custom_search()
+    {
+        try {
+            $dispatcher = app('events');
+
+            if (self::$dispatcher_con_escucha === $dispatcher) {
+                return;
+            }
+
+            self::$dispatcher_con_escucha = $dispatcher;
+
+            $dispatcher->listen(ResponseReceived::class, function ($evento) {
+                if (isset($evento->request, $evento->response)
+                    && strpos((string) $evento->request->url(), 'googleapis.com/customsearch') !== false) {
+                    self::$ultimo_estado_de_custom_search = (int) $evento->response->status();
+                }
+            });
+        } catch (\Throwable $e) {
+            self::$dispatcher_con_escucha = null;
+        }
     }
 
     /**

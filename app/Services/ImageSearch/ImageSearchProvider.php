@@ -39,6 +39,9 @@ interface ImageSearchProvider
      *                               [url, miniatura, ancho, alto, pagina, dominio, titulo, posicion].
      *                               `ancho`/`alto` son los que informa el proveedor (null si no los informa).
      *     total:      int|null,     cantidad de resultados (o el total que informa el proveedor).
+     *     http_status: int|null,    el estado HTTP que respondió el proveedor (null si no llegó a
+     *                               responder: error de red, sin clave). Para el registro de consultas.
+     *     duracion_ms: int|null,    cuánto tardó el proveedor (null si ni siquiera se lo llamó).
      * }
      */
     public function buscar($consulta);

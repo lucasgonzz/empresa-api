@@ -67,6 +67,9 @@ class SerperImageSearchProvider implements ImageSearchProvider
             return $this->fallo('No está configurada la clave de Serper (SERPER_API_KEY) en el servidor.');
         }
 
+        // Para el registro de consultas (image_service_calls): cuánto tardó Serper en responder.
+        $inicio = microtime(true);
+
         try {
             $respuesta = $this->google_http()
                 ->timeout(self::TIMEOUT_SEGUNDOS)
@@ -82,8 +85,11 @@ class SerperImageSearchProvider implements ImageSearchProvider
                 ]);
         } catch (\Exception $e) {
             // El mensaje de Guzzle trae la URL (sin la clave: va en el header), no credenciales.
-            return $this->fallo('No se pudo conectar con Serper: '.Str::limit($e->getMessage(), 200, '…'));
+            return $this->fallo('No se pudo conectar con Serper: '.Str::limit($e->getMessage(), 200, '…'), null, $this->milisegundos_desde($inicio));
         }
+
+        $duracion_ms = $this->milisegundos_desde($inicio);
+        $estado      = (int) $respuesta->status();
 
         $body = $respuesta->json();
 
@@ -93,11 +99,11 @@ class SerperImageSearchProvider implements ImageSearchProvider
                 ? trim((string) $body['message'])
                 : '';
 
-            return $this->fallo('Serper respondió con error (HTTP '.$respuesta->status().')'.($mensaje !== '' ? ': '.Str::limit($mensaje, 200, '…') : '.'));
+            return $this->fallo('Serper respondió con error (HTTP '.$estado.')'.($mensaje !== '' ? ': '.Str::limit($mensaje, 200, '…') : '.'), $estado, $duracion_ms);
         }
 
         if (!is_array($body)) {
-            return $this->fallo('Serper devolvió una respuesta que no se pudo leer.');
+            return $this->fallo('Serper devolvió una respuesta que no se pudo leer.', $estado, $duracion_ms);
         }
 
         $imagenes = isset($body['images']) && is_array($body['images']) ? $body['images'] : [];
@@ -130,20 +136,24 @@ class SerperImageSearchProvider implements ImageSearchProvider
         }
 
         return [
-            'ok'         => true,
-            'error'      => null,
-            'resultados' => $resultados,
-            'total'      => count($resultados),
+            'ok'          => true,
+            'error'       => null,
+            'resultados'  => $resultados,
+            'total'       => count($resultados),
+            'http_status' => $estado,
+            'duracion_ms' => $duracion_ms,
         ];
     }
 
     /**
      * Resultado uniforme de una búsqueda que falló (no cuenta como búsqueda).
      *
-     * @param  string $error
+     * @param  string   $error
+     * @param  int|null $http_status  El estado HTTP que devolvió Serper (null si no llegó a responder).
+     * @param  int|null $duracion_ms  Cuánto tardó (null si ni siquiera se llamó).
      * @return array
      */
-    protected function fallo($error)
+    protected function fallo($error, $http_status = null, $duracion_ms = null)
     {
         // Defensivo: la clave viaja en un header y Guzzle no pone headers en sus mensajes, pero este
         // texto termina a la vista de cualquier usuario del comercio (diagnóstico, registro visible).
@@ -152,11 +162,24 @@ class SerperImageSearchProvider implements ImageSearchProvider
         }
 
         return [
-            'ok'         => false,
-            'error'      => $error,
-            'resultados' => [],
-            'total'      => null,
+            'ok'          => false,
+            'error'       => $error,
+            'resultados'  => [],
+            'total'       => null,
+            'http_status' => is_null($http_status) ? null : (int) $http_status,
+            'duracion_ms' => is_null($duracion_ms) ? null : (int) $duracion_ms,
         ];
+    }
+
+    /**
+     * Milisegundos desde un microtime(true).
+     *
+     * @param  float $inicio
+     * @return int
+     */
+    protected function milisegundos_desde($inicio)
+    {
+        return (int) max(0, round((microtime(true) - (float) $inicio) * 1000));
     }
 
     /**

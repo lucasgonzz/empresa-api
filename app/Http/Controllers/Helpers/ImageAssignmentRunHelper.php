@@ -12,6 +12,7 @@ use App\Models\Image;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
+use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Carbon\Carbon;
@@ -170,6 +171,9 @@ class ImageAssignmentRunHelper
         }
 
         self::purgar_viejas((int) $owner->id);
+
+        // El registro de consultas se guarda 180 días (plan §12.1). Nunca lanza.
+        ImageServiceCallLogger::purgar_viejas();
 
         $proveedor = isset($opciones['proveedor']) ? (string) $opciones['proveedor'] : ImageSearchProviderFactory::nombre_para($owner);
         $aplica    = array_key_exists('aplica_tope_diario', $opciones) ? (bool) $opciones['aplica_tope_diario'] : true;

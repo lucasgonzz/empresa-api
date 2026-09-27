@@ -8,6 +8,7 @@ use App\Models\Article;
 use App\Models\Image;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
+use App\Models\ImageServiceCall;
 use App\Models\User;
 use App\Services\ArticleImageValidationService;
 use App\Services\ImageSearch\ImageSearchProvider;
@@ -44,6 +45,8 @@ use Illuminate\Support\Str;
  *      revisar → solo el archivo `imgcand_*` y la fila del item: la tienda no la ve hasta aprobarla.
  *   8. Siempre: búsquedas, validaciones con IA, diagnóstico y procesado_at en el item, y los
  *      contadores de la asignación con incrementos atómicos.
+ *   9. Cada búsqueda y cada llamada a la IA deja una fila en el registro de consultas
+ *      (image_service_calls, plan §12.1), haya salido bien o mal: es lo que el admin ve por cliente.
  *
  * El cupo diario: si la asignación aplica el tope diario (selección / asistente), cada búsqueda
  * que el proveedor respondió bien se descuenta del contador del día del dueño (consumir_cuota() del
@@ -180,7 +183,7 @@ class ArticleImageAssignmentEngine
             ->where('user_id', $this->run->user_id)
             ->first();
 
-        $contexto = $this->contexto_nuevo($article);
+        $contexto = $this->contexto_nuevo($article, $item);
 
         if (is_null($article)) {
             return $this->cerrar($item, $contexto, [
@@ -293,6 +296,9 @@ class ArticleImageAssignmentEngine
 
         $respuesta = $this->proveedor->buscar($consulta);
 
+        // Registro de consultas (plan §12.1): cada búsqueda, haya salido bien o mal.
+        $this->registrar_busqueda($criterio, $consulta, $respuesta, $contexto);
+
         $contexto['busquedas_intentadas']++;
 
         if (!$respuesta['ok']) {
@@ -355,7 +361,13 @@ class ArticleImageAssignmentEngine
                 ];
             }
 
-            $veredicto = $this->validador->evaluar_candidatas($para_la_ia, $contexto['article'], $this->run->user_id);
+            $veredicto = $this->validador->evaluar_candidatas($para_la_ia, $contexto['article'], $this->run->user_id, [
+                // Para el registro de consultas: de qué asignación, artículo y búsqueda salieron.
+                'run_id'   => (int) $this->run->id,
+                'item_id'  => $contexto['item_id'],
+                'criterio' => $criterio,
+                'consulta' => (string) $consulta,
+            ]);
 
             $contexto['llamadas_ia']++;
 
@@ -407,6 +419,51 @@ class ArticleImageAssignmentEngine
 
         $entrada['candidatas'] = $candidatas;
         $contexto['diagnostico'][$criterio] = $entrada;
+    }
+
+    /**
+     * Deja una búsqueda en el registro de consultas (image_service_calls, plan §12.1): lo que el
+     * admin muestra por cliente. `cobrada` sigue la regla de siempre: se cobra si el proveedor
+     * respondió bien, aunque viniera vacía. El logger nunca lanza y tapa las claves del `error`.
+     *
+     * @param  string $criterio
+     * @param  string $consulta
+     * @param  array  $respuesta  La de ImageSearchProvider::buscar().
+     * @param  array  $contexto
+     * @return void
+     */
+    protected function registrar_busqueda($criterio, $consulta, array $respuesta, array $contexto)
+    {
+        $ok         = !empty($respuesta['ok']);
+        $resultados = isset($respuesta['resultados']) && is_array($respuesta['resultados']) ? count($respuesta['resultados']) : 0;
+
+        if (!$ok) {
+            $resumen = 'El proveedor respondió con error';
+        } elseif ($resultados === 0) {
+            $resumen = 'Sin resultados';
+        } else {
+            $resumen = $resultados === 1 ? '1 resultado' : $resultados.' resultados';
+        }
+
+        ImageServiceCallLogger::registrar([
+            'user_id'      => (int) $this->run->user_id,
+            'run_id'       => (int) $this->run->id,
+            'item_id'      => $contexto['item_id'],
+            'article_id'   => is_null($contexto['article']) ? null : (int) $contexto['article']->id,
+            'article_name' => is_null($contexto['article']) ? null : (string) $contexto['article']->name,
+            'origen'       => ImageServiceCall::ORIGEN_ASIGNACION,
+            'tipo'         => ImageServiceCall::TIPO_BUSQUEDA,
+            'proveedor'    => (string) $this->proveedor->nombre(),
+            'criterio'     => (string) $criterio,
+            'consulta'     => (string) $consulta,
+            'ok'           => $ok,
+            'cobrada'      => $ok,
+            'http_status'  => isset($respuesta['http_status']) ? $respuesta['http_status'] : null,
+            'error'        => $ok || !isset($respuesta['error']) ? null : (string) $respuesta['error'],
+            'resultados'   => $ok ? $resultados : null,
+            'resumen'      => $resumen,
+            'duracion_ms'  => isset($respuesta['duracion_ms']) ? $respuesta['duracion_ms'] : null,
+        ]);
     }
 
     /**
@@ -1308,10 +1365,12 @@ class ArticleImageAssignmentEngine
      * @param  \App\Models\Article|null $article
      * @return array
      */
-    protected function contexto_nuevo($article)
+    protected function contexto_nuevo($article, $item = null)
     {
         return [
             'article'              => $article,
+            // El item de la asignación (para el registro de consultas).
+            'item_id'              => $item instanceof ImageAssignmentItem ? (int) $item->id : null,
             'busquedas'            => 0,
             'busquedas_codigo'     => 0,
             'busquedas_nombre'     => 0,

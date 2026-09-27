@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Article;
+use App\Models\ImageServiceCall;
+use App\Services\ImageAssignment\ImageServiceCallLogger;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Intervention\Image\ImageManager;
@@ -228,6 +230,9 @@ class ArticleImageValidationService
         $timeout = (int) config('services.article_image_validation.timeout');
         $model   = (string) config('services.article_image_validation.model');
 
+        // Registro de consultas (misión imagenes-catalogo-completo, §12.1): cuánto tarda la llamada.
+        $inicio_del_registro = microtime(true);
+
         try {
             // Mismo patron de cliente HTTP que ArticleDescriptionAiService/AiExcelAnalyzer.
             $response = $this->build_anthropic_http_client($api_key)
@@ -261,6 +266,11 @@ class ArticleImageValidationService
                 'article_id' => $article->id,
                 'error'      => $e->getMessage(),
             ]);
+            $this->registrar_validacion_individual($article, $user_id, $model, $inicio_del_registro, [
+                'ok'      => false,
+                'cobrada' => false,
+                'error'   => 'Error de conexión con Anthropic: '.$e->getMessage(),
+            ]);
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
         }
 
@@ -275,6 +285,13 @@ class ArticleImageValidationService
             Log::info('[ValidacionImagenIA] Anthropic respondió con error.', [
                 'article_id' => $article->id,
                 'error'      => $api_error,
+            ]);
+
+            $this->registrar_validacion_individual($article, $user_id, $model, $inicio_del_registro, [
+                'ok'          => false,
+                'cobrada'     => false,
+                'http_status' => $response->status(),
+                'error'       => (string) $api_error,
             ]);
 
             return $this->not_evaluated('No se pudo validar la imagen con IA; se asignó igual para revisar a mano.');
@@ -309,6 +326,15 @@ class ArticleImageValidationService
                 : $model,
 
             'referencia_id' => (int) $article->id,
+        ]);
+
+        $this->registrar_validacion_individual($article, $user_id, $model, $inicio_del_registro, [
+            'ok'          => true,
+            'cobrada'     => true,
+            'http_status' => $response->status(),
+            'modelo'      => is_array($body) && isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : $model,
+            'usage'       => is_array($body) && isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [],
+            'resumen'     => $this->resumen_de_validacion_individual($body),
         ]);
 
         $parsed = $this->parse_vision_response($body);
@@ -641,6 +667,10 @@ class ArticleImageValidationService
      *                               El índice es el número que el modelo ve ("Candidata N").
      * @param  Article  $article     Artículo contra el que se comparan.
      * @param  int|null $user_id     Dueño al que se le imputa el consumo de tokens.
+     * @param  array    $registro    Contexto para el registro de consultas (image_service_calls,
+     *                               plan §12.1): run_id, item_id, criterio y consulta (la búsqueda de
+     *                               la que salieron las candidatas). Cada llamada que sale hacia
+     *                               Anthropic deja una fila, haya salido bien o mal.
      * @return array {
      *     evaluada:      bool,         true si la IA devolvió veredictos que se pudieron leer.
      *     llamada_hecha: bool,         true si Anthropic respondió bien (la llamada se paga).
@@ -650,7 +680,7 @@ class ArticleImageValidationService
      *                                  problemas: string[], motivo: string}.
      * }
      */
-    public function evaluar_candidatas(array $candidatas, Article $article, $user_id = null)
+    public function evaluar_candidatas(array $candidatas, Article $article, $user_id = null, array $registro = [])
     {
         // Solo las que traen imagen, y como mucho las que entran en una llamada.
         $validas = [];
@@ -714,6 +744,9 @@ class ArticleImageValidationService
         $timeout = (int) config('services.article_image_validation.timeout');
         $model   = (string) config('services.article_image_validation.model');
 
+        // Para el registro de consultas: cuánto tarda la llamada.
+        $inicio = microtime(true);
+
         try {
             $response = $this->build_anthropic_http_client($api_key)
                 ->timeout($timeout > 0 ? $timeout : 25)
@@ -735,6 +768,13 @@ class ArticleImageValidationService
                 'error'      => $e->getMessage(),
             ]);
 
+            $this->registrar_consulta_de_candidatas($registro, $article, $user_id, $model, $inicio, [
+                'ok'         => false,
+                'cobrada'    => false,
+                'candidatas' => count($validas),
+                'error'      => 'Error de conexión con Anthropic: '.$e->getMessage(),
+            ]);
+
             return $this->candidatas_sin_evaluar($indices, 'No se pudo consultar a la IA (error de conexión).', false);
         }
 
@@ -748,6 +788,14 @@ class ArticleImageValidationService
             Log::info('[ValidacionImagenIA] Anthropic respondió con error al evaluar candidatas.', [
                 'article_id' => $article->id,
                 'error'      => $api_error,
+            ]);
+
+            $this->registrar_consulta_de_candidatas($registro, $article, $user_id, $model, $inicio, [
+                'ok'          => false,
+                'cobrada'     => false,
+                'http_status' => $response->status(),
+                'candidatas'  => count($validas),
+                'error'       => (string) $api_error,
             ]);
 
             return $this->candidatas_sin_evaluar($indices, 'La IA respondió con error y no se pudo validar.', false);
@@ -765,6 +813,17 @@ class ArticleImageValidationService
         ]);
 
         $resultados = is_array($body) ? $this->parse_candidatas_response($body, $indices) : null;
+
+        // Anthropic respondió: la llamada se cobra, se haya podido leer o no.
+        $this->registrar_consulta_de_candidatas($registro, $article, $user_id, $model, $inicio, [
+            'ok'          => true,
+            'cobrada'     => true,
+            'http_status' => $response->status(),
+            'modelo'      => is_array($body) && isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : $model,
+            'usage'       => is_array($body) && isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [],
+            'candidatas'  => count($validas),
+            'resumen'     => is_null($resultados) ? 'La respuesta de la IA no se pudo leer' : $this->resumen_de_veredictos($resultados),
+        ]);
 
         if (is_null($resultados)) {
             Log::info('[ValidacionImagenIA] No se pudo parsear la evaluación de candidatas.', [
@@ -1012,5 +1071,151 @@ class ArticleImageValidationService
         $lines[] = 'Candidatas a evaluar: '.implode(', ', $indices).'. ¿Cuáles muestran este producto? Respondé solo con el JSON indicado, una entrada por candidata.';
 
         return implode("\n", $lines);
+    }
+
+    /* ----------------------------------------------------------------------------------------
+     * Registro de consultas (misión imagenes-catalogo-completo, agregado del 27/9/2026, plan
+     * §12.1): una fila de image_service_calls por cada llamada que sale hacia Anthropic. Lo mira el
+     * admin por cliente. ImageServiceCallLogger nunca lanza y tapa las claves.
+     * -------------------------------------------------------------------------------------- */
+
+    /**
+     * Registra una llamada de evaluar_candidatas() (origen `asignacion`: la hace el motor).
+     *
+     * @param  array    $registro  run_id, item_id, criterio, consulta (ver evaluar_candidatas()).
+     * @param  Article  $article
+     * @param  int|null $user_id
+     * @param  string   $modelo    El de config (la respuesta buena lo pisa con el que devolvió Anthropic).
+     * @param  float    $inicio    microtime(true) de antes de la llamada.
+     * @param  array    $datos     ok, cobrada, http_status, error, usage, candidatas, resumen, modelo.
+     * @return void
+     */
+    protected function registrar_consulta_de_candidatas(array $registro, Article $article, $user_id, $modelo, $inicio, array $datos)
+    {
+        ImageServiceCallLogger::registrar(array_merge([
+            'user_id'      => $this->dueno_para_el_registro($user_id, $article),
+            'run_id'       => isset($registro['run_id']) ? $registro['run_id'] : null,
+            'item_id'      => isset($registro['item_id']) ? $registro['item_id'] : null,
+            'article_id'   => $article->exists ? (int) $article->id : null,
+            'article_name' => (string) $article->name,
+            'origen'       => isset($registro['origen']) ? (string) $registro['origen'] : ImageServiceCall::ORIGEN_ASIGNACION,
+            'tipo'         => ImageServiceCall::TIPO_VALIDACION_IA,
+            'proveedor'    => ImageServiceCall::PROVEEDOR_ANTHROPIC,
+            'modelo'       => (string) $modelo,
+            'criterio'     => isset($registro['criterio']) ? $registro['criterio'] : null,
+            'consulta'     => isset($registro['consulta']) ? $registro['consulta'] : null,
+            'duracion_ms'  => ImageServiceCallLogger::milisegundos_desde($inicio),
+        ], $datos));
+    }
+
+    /**
+     * Registra una llamada de validate() (origen `validacion_individual`: la búsqueda por código de
+     * barras del asistente y el lote viejo). Sin asignación ni item, y `article_id` solo si el
+     * artículo existe en la base (el de la búsqueda por código es un Article sin guardar).
+     *
+     * @param  Article  $article
+     * @param  int|null $user_id
+     * @param  string   $modelo
+     * @param  float    $inicio
+     * @param  array    $datos  ok, cobrada, http_status, error, usage, resumen, modelo.
+     * @return void
+     */
+    protected function registrar_validacion_individual(Article $article, $user_id, $modelo, $inicio, array $datos)
+    {
+        ImageServiceCallLogger::registrar(array_merge([
+            'user_id'      => $this->dueno_para_el_registro($user_id, $article),
+            'article_id'   => $article->exists ? (int) $article->id : null,
+            'article_name' => (string) $article->name,
+            'origen'       => ImageServiceCall::ORIGEN_VALIDACION_INDIVIDUAL,
+            'tipo'         => ImageServiceCall::TIPO_VALIDACION_IA,
+            'proveedor'    => ImageServiceCall::PROVEEDOR_ANTHROPIC,
+            'modelo'       => (string) $modelo,
+            'candidatas'   => 1,
+            'duracion_ms'  => ImageServiceCallLogger::milisegundos_desde($inicio),
+        ], $datos));
+    }
+
+    /**
+     * El dueño al que se le imputa la consulta: el que pasó el llamador (el de la corrida o el del
+     * asistente) y, si no vino, el del artículo.
+     *
+     * @param  int|null $user_id
+     * @param  Article  $article
+     * @return int
+     */
+    protected function dueno_para_el_registro($user_id, Article $article)
+    {
+        if (!is_null($user_id) && (int) $user_id > 0) {
+            return (int) $user_id;
+        }
+
+        return (int) $article->user_id;
+    }
+
+    /**
+     * El resumen legible de una evaluación de candidatas: "2 sí, 1 no, 1 dudosa".
+     *
+     * @param  array $resultados  indice => veredicto (ver evaluar_candidatas()).
+     * @return string
+     */
+    protected function resumen_de_veredictos(array $resultados)
+    {
+        $cuentas = ['si' => 0, 'no' => 0, 'dudoso' => 0, 'sin_evaluar' => 0];
+
+        foreach ($resultados as $resultado) {
+            $veredicto = isset($resultado['es_el_producto']) ? (string) $resultado['es_el_producto'] : 'sin_evaluar';
+
+            if (!array_key_exists($veredicto, $cuentas)) {
+                $veredicto = 'sin_evaluar';
+            }
+
+            $cuentas[$veredicto]++;
+        }
+
+        $partes = [];
+
+        if ($cuentas['si'] > 0) {
+            $partes[] = $cuentas['si'].' sí';
+        }
+
+        if ($cuentas['no'] > 0) {
+            $partes[] = $cuentas['no'].' no';
+        }
+
+        if ($cuentas['dudoso'] > 0) {
+            $partes[] = $cuentas['dudoso'].($cuentas['dudoso'] === 1 ? ' dudosa' : ' dudosas');
+        }
+
+        if ($cuentas['sin_evaluar'] > 0) {
+            $partes[] = $cuentas['sin_evaluar'].' sin veredicto';
+        }
+
+        return empty($partes) ? 'Sin veredictos' : implode(', ', $partes);
+    }
+
+    /**
+     * El resumen legible de una llamada de validate(): "Aceptada · es el producto · confianza alta".
+     * Relee la respuesta con los mismos métodos que validate() (los dos son puros), así el registro
+     * no toca la lógica de la validación.
+     *
+     * @param  mixed $body  La respuesta de Anthropic.
+     * @return string
+     */
+    protected function resumen_de_validacion_individual($body)
+    {
+        $parsed = is_array($body) ? $this->parse_vision_response($body) : null;
+
+        if (is_null($parsed)) {
+            return 'La respuesta de la IA no se pudo leer';
+        }
+
+        $veredicto = $this->decide($parsed);
+
+        $confianzas = ['high' => 'alta', 'medium' => 'media', 'low' => 'baja'];
+        $confianza  = isset($confianzas[$parsed['confianza']]) ? $confianzas[$parsed['confianza']] : (string) $parsed['confianza'];
+
+        return ($veredicto['accepted'] ? 'Aceptada' : 'Rechazada')
+            .' · '.($parsed['es_el_producto'] ? 'es el producto' : 'no es el producto')
+            .' · confianza '.$confianza;
     }
 }
