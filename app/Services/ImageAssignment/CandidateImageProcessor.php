@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ImageCropHelper;
 use App\Services\ArticleImageValidationService;
 use App\Services\BusquedaPorCodigoDeBarrasService;
 use App\Services\Traits\GoogleSearchHelpers;
+use GuzzleHttp\TransferStats;
 use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -678,9 +679,20 @@ class CandidateImageProcessor
                                 }
                             },
                             'curl'            => [
-                                CURLOPT_RESOLVE     => [$this->regla_de_resolucion($pedido['url'], $pedido['ip'])],
-                                CURLOPT_MAXFILESIZE => $max_bytes,
-                                CURLOPT_PROTOCOLS   => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                                CURLOPT_RESOLVE          => [$this->regla_de_resolucion($pedido['url'], $pedido['ip'])],
+                                CURLOPT_MAXFILESIZE      => $max_bytes,
+                                CURLOPT_PROTOCOLS        => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                                /*
+                                 * 🔴 El tope de bytes también para las respuestas SIN Content-Length:
+                                 * libcurl anterior a 8.4 (el de PHP 7.4 en esta máquina es 7.70) ignora
+                                 * CURLOPT_MAXFILESIZE cuando no sabe el tamaño de antemano, y un sitio
+                                 * que manda un cuerpo sin fin lo metía entero en memoria durante los
+                                 * 8 s del timeout. Devolver algo distinto de 0 corta la transferencia.
+                                 */
+                                CURLOPT_NOPROGRESS       => false,
+                                CURLOPT_PROGRESSFUNCTION => function ($recurso, $a_bajar, $bajado, $a_subir, $subido) use ($max_bytes) {
+                                    return $bajado > $max_bytes ? 1 : 0;
+                                },
                             ],
                         ]))
                         ->timeout(self::TIMEOUT_DESCARGA)
@@ -714,6 +726,13 @@ class CandidateImageProcessor
     {
         if (!($respuesta instanceof Response)) {
             return ['estado' => 'fallo', 'resultado' => 'no_descargable', 'motivo' => 'El sitio no respondió a tiempo o cortó la conexión.'];
+        }
+
+        // Una transferencia que cURL cortó ANTES de armar la respuesta llega como un Response de
+        // Laravel sin respuesta adentro (el pool la envuelve igual) y leerle el estado revienta.
+        // Pasa, por ejemplo, cuando el Content-Length supera CURLOPT_MAXFILESIZE.
+        if (is_null($respuesta->toPsrResponse())) {
+            return $this->fallo_de_transferencia($respuesta);
         }
 
         $estado = (int) $respuesta->status();
@@ -757,6 +776,27 @@ class CandidateImageProcessor
         }
 
         return ['estado' => 'ok', 'binario' => $cuerpo];
+    }
+
+    /**
+     * El motivo de una transferencia que cURL cortó sin respuesta, según su código de error (viaja
+     * en las estadísticas de la transferencia, que Laravel le cuelga a la respuesta).
+     *
+     * @param  \Illuminate\Http\Client\Response $respuesta
+     * @return array
+     */
+    protected function fallo_de_transferencia(Response $respuesta)
+    {
+        $estadisticas = isset($respuesta->transferStats) ? $respuesta->transferStats : null;
+        $error_curl   = $estadisticas instanceof TransferStats ? $estadisticas->getHandlerErrorData() : null;
+
+        // 63: el Content-Length pasa CURLOPT_MAXFILESIZE. 42: lo cortó el tope por progreso (el de
+        // las respuestas sin Content-Length). Las dos son "pesa demasiado".
+        if ($error_curl === CURLE_FILESIZE_EXCEEDED || $error_curl === CURLE_ABORTED_BY_CALLBACK) {
+            return ['estado' => 'fallo', 'resultado' => 'no_descargable', 'motivo' => 'La imagen pesa más de '.round(self::MAX_BYTES / 1048576).' MB.'];
+        }
+
+        return ['estado' => 'fallo', 'resultado' => 'no_descargable', 'motivo' => 'El sitio no respondió a tiempo o cortó la conexión.'];
     }
 
     /**
@@ -891,22 +931,31 @@ class CandidateImageProcessor
             return $destino;
         }
 
-        $esquema = (string) parse_url($origen, PHP_URL_SCHEME);
-        $host    = (string) parse_url($origen, PHP_URL_HOST);
+        $partes = parse_url((string) $origen);
 
-        if ($esquema === '' || $host === '') {
+        if (!is_array($partes) || !isset($partes['scheme'], $partes['host']) || $partes['scheme'] === '' || $partes['host'] === '') {
             return null;
         }
+
+        $esquema = (string) $partes['scheme'];
 
         if (substr($destino, 0, 2) === '//') {
             return $esquema.':'.$destino;
         }
 
+        // El puerto se conserva: "/b.png" contra "http://sitio:8080/a.png" es "http://sitio:8080/b.png"
+        // (sin esto el salto iba al puerto por defecto; lo encontró el humo de descargas reales).
+        $autoridad = $esquema.'://'.$partes['host'].(isset($partes['port']) ? ':'.(int) $partes['port'] : '');
+
         if (substr($destino, 0, 1) === '/') {
-            return $esquema.'://'.$host.$destino;
+            return $autoridad.$destino;
         }
 
-        return null;
+        // Relativa a la carpeta del pedido: "b.png" contra "/fotos/a.png" es "/fotos/b.png".
+        $ruta    = isset($partes['path']) && $partes['path'] !== '' ? (string) $partes['path'] : '/';
+        $carpeta = substr($ruta, 0, (int) strrpos($ruta, '/') + 1);
+
+        return $autoridad.($carpeta === '' ? '/' : $carpeta).$destino;
     }
 
     /**

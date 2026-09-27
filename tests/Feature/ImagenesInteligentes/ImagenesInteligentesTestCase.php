@@ -244,7 +244,7 @@ abstract class ImagenesInteligentesTestCase extends EmpresaTestCase
      *
      * @param  array                 $serper     consulta => [resultados de resultado()]; 'error' => el
      *                                           mensaje de un 500 de Serper para TODAS las consultas.
-     * @param  array                 $imagenes   url => binario
+     * @param  array                 $imagenes   url => binario, o url => ['redirige_a' => Location]
      * @param  array|string|callable $ia         color => veredicto(); 'caida' = Anthropic responde 500.
      * @param  callable|null         $al_buscar  Se llama con cada consulta a Serper (para simular algo
      *                                           que pasa en el medio de una corrida).
@@ -290,6 +290,11 @@ abstract class ImagenesInteligentesTestCase extends EmpresaTestCase
             }
 
             if (isset($imagenes[$url])) {
+                // ['redirige_a' => 'destino'] = un 302 con ese Location (tal cual, relativo o absoluto).
+                if (is_array($imagenes[$url]) && isset($imagenes[$url]['redirige_a'])) {
+                    return Http::response('', 302, ['Location' => $imagenes[$url]['redirige_a']]);
+                }
+
                 return Http::response($imagenes[$url], 200, ['Content-Type' => 'image/png']);
             }
 

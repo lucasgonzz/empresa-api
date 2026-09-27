@@ -615,6 +615,34 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
     }
 
     /**
+     * Las redirecciones se siguen a mano (cada salto pasa otra vez por la guarda SSRF), también
+     * cuando el Location es relativo a la carpeta del pedido ("otra.png"), no solo "/otra.png".
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function una_redireccion_relativa_se_sigue()
+    {
+        $articulo = $this->nuevo_articulo('Serrucho de costilla 12 pulgadas', self::CODIGO_REAL);
+        $run      = $this->asignacion([$articulo]);
+
+        $this->falsear(
+            [self::CODIGO_REAL => [$this->resultado('https://imagenes.test/fotos/serrucho.png', 1000, 1000, 1)]],
+            [
+                'https://imagenes.test/fotos/serrucho.png'        => ['redirige_a' => 'serrucho-grande.png'],
+                'https://imagenes.test/fotos/serrucho-grande.png' => $this->png(1000, 1000, 'verde'),
+            ],
+            ['verde' => $this->veredicto('si', 'high')]
+        );
+
+        $item = $this->procesar($run, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame('verde', $this->color_del_centro($item->imagen_archivo));
+        $this->assertSame(1, $this->requests_a('https://imagenes.test/fotos/serrucho-grande.png'));
+    }
+
+    /**
      * 🔴 Un timeout de Google trae la URL COMPLETA del pedido, con la clave y el cx, y ese texto
      * termina en el diagnóstico del artículo, que ve cualquier usuario del comercio: tiene que llegar
      * tapado (el error en sí se sigue viendo). Lo mismo si Serper nombrara su clave en un error.
