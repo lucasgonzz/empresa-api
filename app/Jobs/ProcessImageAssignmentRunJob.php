@@ -125,7 +125,11 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
         $inicio      = microtime(true);
         $presupuesto = max(0, (int) config('services.imagenes_inteligentes.segundos_por_tramo', 50));
-        $hechos      = 0;
+
+        // Artículos que este tramo intentó (hayan salido bien o con error): es lo que mide el fin del
+        // tramo. Contar solo los que salieron bien dejaba que una racha de artículos con error se
+        // comiera el tiempo del tramo sin cortarlo nunca.
+        $trabajados = 0;
 
         $articulos_con_error_de_proveedor = 0;
         $ultimo_error_de_proveedor        = '';
@@ -133,7 +137,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         while (true) {
             // Fin del tramo: siempre después de al menos un artículo (si no, un presupuesto chico
             // re-encolaría para siempre sin avanzar).
-            if ($hechos > 0 && (microtime(true) - $inicio) >= $presupuesto) {
+            if ($trabajados > 0 && (microtime(true) - $inicio) >= $presupuesto) {
                 self::dispatch($run->id);
 
                 return;
@@ -178,6 +182,8 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
             $item->refresh();
 
+            $trabajados++;
+
             // Ya falló las veces permitidas (volvió a pendiente por una reanudación): no se insiste.
             if ((int) $item->intentos > self::MAX_INTENTOS_POR_ARTICULO) {
                 $this->descartar_por_error($item, 'Falló '.self::MAX_INTENTOS_POR_ARTICULO.' veces al procesarlo y se lo dejó de lado para no trabar la asignación.');
@@ -199,8 +205,6 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 $this->devolver_o_descartar($item->fresh(), $e->getMessage());
                 continue;
             }
-
-            $hechos++;
 
             $this->registrar_avance($run);
 
