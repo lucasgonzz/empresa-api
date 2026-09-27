@@ -1420,6 +1420,13 @@ Route::middleware('admin.api.key')
         // tiene cargada: la mayoría todavía no tiene ADMIN_API_INBOUND_KEY en su .env y un 401
         // duro dejaría la recolección rota en casi todos. Ver el docblock de rechazo_por_clave().
         Route::get('consumo-ia', 'AdminSync\\ConsumoIaController@index');
+        // El registro de las consultas de imágenes de artículos (misión imagenes-catalogo-completo,
+        // agregado del 27/9/2026): cada búsqueda a Serper / Google y cada validación con IA, para la
+        // solapa "Imágenes" del cliente en el admin. Solo LEE image_service_calls (el costo lo pone
+        // el admin) y valida la clave igual que consumo-ia: adentro del controlador y solo si este
+        // cliente la tiene cargada.
+        Route::get('imagenes/resumen', 'AdminSync\\ImagenesController@resumen');
+        Route::get('imagenes/consultas', 'AdminSync\\ImagenesController@consultas');
         // El plan de IA que el admin le asigna a este cliente (misión
         // foto-sucursal-y-asistente-configurable): el admin maneja los paquetes y su precio, y
         // pushea acá el nombre y los dos topes. Guarda en el dueño. Como el canal de WhatsApp y
