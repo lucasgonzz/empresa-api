@@ -103,6 +103,24 @@ class ArticleImageValidationService
     ];
 
     /**
+     * Las tres preguntas de sí o no que evaluar_candidatas() le hace al modelo por cada candidata:
+     * campo del JSON => [la respuesta que delata el problema, el problema que se deriva].
+     *
+     * Por qué preguntas y no solo la lista de problemas: en la segunda prueba real del 27/9/2026
+     * (Haiku, con las definiciones ya precisas en el prompt) la cera Nic volvió a salir con la foto
+     * de la TAPA vista desde arriba, `problemas: []` y confianza alta. Los modelos contestan mucho
+     * más confiable una pregunta explícita de sí/no que un código opcional en una lista: la lista
+     * vacía es lo más fácil de devolver, y un booleano obligatorio hay que contestarlo sí o sí.
+     *
+     * @var array
+     */
+    const PREGUNTAS_QUE_DERIVAN_PROBLEMAS = [
+        'se_ve_el_producto_entero'             => [false, 'vista_parcial'],
+        'muestra_mas_unidades_que_el_articulo' => [true, 'varias_unidades'],
+        'es_ficha_tecnica_o_catalogo'          => [true, 'ficha_tecnica'],
+    ];
+
+    /**
      * Candidatas por llamada en evaluar_candidatas(): con cuatro imágenes de 512 px la llamada sigue
      * siendo barata (Haiku) y el modelo puede COMPARARLAS entre sí, que es lo que mejora el criterio
      * respecto de validar de a una.
@@ -759,8 +777,10 @@ class ArticleImageValidationService
                 ->timeout($timeout > 0 ? $timeout : 25)
                 ->post('https://api.anthropic.com/v1/messages', [
                     'model'      => $model,
-                    // Un veredicto corto por candidata: 4 motivos de una frase entran holgados.
-                    'max_tokens' => 1000,
+                    // Un veredicto corto por candidata. Eran 1000; con las tres preguntas de sí o
+                    // no (campos de nombre largo) cada entrada crece ~40 tokens: 1500 deja margen
+                    // para 4 candidatas aunque el modelo indente el JSON. Solo se cobra lo que usa.
+                    'max_tokens' => 1500,
                     'system'     => $this->build_system_prompt_candidatas(),
                     'messages'   => [
                         [
@@ -883,10 +903,15 @@ class ArticleImageValidationService
 
     /**
      * Parsea la respuesta JSON de evaluar_candidatas(): `{"candidatas": [{indice, es_el_producto,
-     * confianza, fondo_blanco, problemas, motivo}]}`, tolerando backticks o texto alrededor (mismo
-     * criterio que parse_vision_response()). Valores desconocidos se llevan al lado prudente:
+     * confianza, fondo_blanco, se_ve_el_producto_entero, muestra_mas_unidades_que_el_articulo,
+     * es_ficha_tecnica_o_catalogo, problemas, motivo}]}`, tolerando backticks o texto alrededor
+     * (mismo criterio que parse_vision_response()). Valores desconocidos se llevan al lado prudente:
      * veredicto desconocido → "dudoso", confianza desconocida → "low". Una candidata que el modelo
      * no mencionó queda `sin_evaluar`.
+     *
+     * Las tres preguntas de sí o no no viajan en el resultado: se convierten en problemas
+     * (PREGUNTAS_QUE_DERIVAN_PROBLEMAS) y se unen a los de la lista, así el motor las trata igual
+     * que si el modelo los hubiera marcado.
      *
      * Y una coherencia que el modelo a veces rompe: si marcó "otro_producto" (un producto parecido
      * pero distinto) no puede decir "si" al mismo tiempo; se lo baja a "dudoso".
@@ -977,6 +1002,22 @@ class ArticleImageValidationService
                 }
             }
 
+            // Las tres preguntas de sí o no (ver PREGUNTAS_QUE_DERIVAN_PROBLEMAS): cada respuesta
+            // que delata un problema lo suma a los de la lista, sin duplicar. Solo SUMAN: una
+            // respuesta "buena" no borra un problema que el modelo sí puso en la lista. Y solo
+            // cuentan si son booleanos de verdad: si el campo falta o viene cualquier otra cosa
+            // ("false" como texto, null, 0) no se inventa nada y queda solo la lista, para no
+            // romper con una respuesta rara ni con un modelo que no manda los campos.
+            foreach (self::PREGUNTAS_QUE_DERIVAN_PROBLEMAS as $campo => $derivacion) {
+                if (!array_key_exists($campo, $entrada) || !is_bool($entrada[$campo])) {
+                    continue;
+                }
+
+                if ($entrada[$campo] === $derivacion[0] && !in_array($derivacion[1], $problemas, true)) {
+                    $problemas[] = $derivacion[1];
+                }
+            }
+
             if ($veredicto === 'si' && in_array('otro_producto', $problemas, true)) {
                 $veredicto = 'dudoso';
             }
@@ -1015,12 +1056,22 @@ class ArticleImageValidationService
             'Respondés ÚNICAMENTE con un objeto JSON válido, sin texto antes ni después, sin',
             'backticks, sin markdown. Estructura exacta, con una entrada por candidata:',
             '',
-            '{"candidatas": [{"indice": 1, "es_el_producto": "si", "confianza": "high", "fondo_blanco": true, "problemas": [], "motivo": "..."}]}',
+            '{"candidatas": [{"indice": 1, "es_el_producto": "si", "confianza": "high", "fondo_blanco": true, "se_ve_el_producto_entero": true, "muestra_mas_unidades_que_el_articulo": false, "es_ficha_tecnica_o_catalogo": false, "problemas": [], "motivo": "..."}]}',
             '',
             '- "indice": el número de la candidata.',
             '- "es_el_producto": "si", "no" o "dudoso".',
             '- "confianza": "high", "medium" o "low".',
             '- "fondo_blanco": true si el fondo es blanco liso, de foto de catálogo; false si no.',
+            '- "se_ve_el_producto_entero", "muestra_mas_unidades_que_el_articulo" y',
+            '  "es_ficha_tecnica_o_catalogo": OBLIGATORIOS en TODAS las candidatas, siempre true o false',
+            '  (nunca los omitas ni pongas null). Cada uno contesta una pregunta de sí o no sobre la foto,',
+            '  y se contesta mirando la foto aunque muestre el producto correcto. Las preguntas, tal cual:',
+            '  - "se_ve_el_producto_entero": ¿Se ve el producto ENTERO, como se lo vería en una góndola o en una tienda online? (false si es solo la tapa vista desde arriba, un detalle, un corte o la etiqueta de cerca)',
+            '    Ejemplo: el frasco de cera entero, de frente = true. Solo la tapa del frasco vista desde arriba = false.',
+            '  - "muestra_mas_unidades_que_el_articulo": ¿La foto muestra MÁS unidades de las que describe el artículo? (true para el pack de 12 cuando el artículo es una botella; false si el artículo es un pack y se ve el pack)',
+            '    Ejemplo: artículo "Aceite de girasol 1,5 L" y la foto es el pack de 12 botellas = true. Artículo "Aceite de girasol 1,5 L pack x 12" y la foto es ese pack = false.',
+            '  - "es_ficha_tecnica_o_catalogo": ¿Es una ficha técnica o de catálogo, con dibujos, cotas, tablas de medidas o texto alrededor, en vez de una foto limpia?',
+            '    Ejemplo: el martillo al lado de un dibujo con cotas y una tabla de medidas = true. El martillo solo, sobre fondo blanco = false.',
             '- "problemas": lista, que puede estar vacía, con cualquiera de estos valores:',
             '  "marca_de_agua", "texto_superpuesto", "varias_unidades", "foto_de_ambiente", "collage",',
             '  "borrosa", "otro_producto", "vista_parcial", "ficha_tecnica".',
@@ -1041,6 +1092,8 @@ class ArticleImageValidationService
             '  un corte, la etiqueta de cerca) y no el producto entero y reconocible.',
             '- "ficha_tecnica": es una ficha técnica o de catálogo: dibujos, cotas, tablas de medidas o',
             '  texto informativo alrededor del producto, en vez de una foto limpia del producto.',
+            'Son los mismos tres casos de las preguntas de sí o no de arriba: contestá siempre las tres',
+            'preguntas y, si alguna delata el problema, marcalo también en "problemas".',
             '',
             'ACEPCIONES ARGENTINAS: leé el nombre con el vocabulario de un comercio argentino. "Pava" es',
             'la pava para calentar agua (no un ave), "canilla" es un grifo, "birome" es un bolígrafo,',
@@ -1089,7 +1142,7 @@ class ArticleImageValidationService
         }
 
         $lines[] = '';
-        $lines[] = 'Candidatas a evaluar: '.implode(', ', $indices).'. ¿Cuáles muestran este producto? Respondé solo con el JSON indicado, una entrada por candidata.';
+        $lines[] = 'Candidatas a evaluar: '.implode(', ', $indices).'. ¿Cuáles muestran este producto? Respondé solo con el JSON indicado, una entrada por candidata, con las tres preguntas de sí o no contestadas con true o false en cada una.';
 
         return implode("\n", $lines);
     }
