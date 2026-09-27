@@ -73,6 +73,39 @@ class ArticleImageValidationService
     const ALLOWED_CONFIDENCES = ['high', 'medium', 'low'];
 
     /**
+     * Veredictos por candidata de evaluar_candidatas() (misión imagenes-catalogo-completo,
+     * 27/9/2026). "dudoso" es una respuesta válida y esperada, no un fracaso: es la salida que la
+     * regla anti-complacencia le pide al modelo cuando no puede confirmar.
+     *
+     * @var array
+     */
+    const VEREDICTOS_DE_CANDIDATA = ['si', 'no', 'dudoso'];
+
+    /**
+     * Problemas que el modelo puede marcar en una candidata. Cualquier otro valor se descarta.
+     *
+     * @var array
+     */
+    const PROBLEMAS_DE_CANDIDATA = [
+        'marca_de_agua',
+        'texto_superpuesto',
+        'varias_unidades',
+        'foto_de_ambiente',
+        'collage',
+        'borrosa',
+        'otro_producto',
+    ];
+
+    /**
+     * Candidatas por llamada en evaluar_candidatas(): con cuatro imágenes de 512 px la llamada sigue
+     * siendo barata (Haiku) y el modelo puede COMPARARLAS entre sí, que es lo que mejora el criterio
+     * respecto de validar de a una.
+     *
+     * @var int
+     */
+    const MAX_CANDIDATAS_POR_LLAMADA = 4;
+
+    /**
      * Contador de llamadas reales hechas a Anthropic por ESTA instancia del servicio. El job
      * (prompt 03) crea una unica instancia por corrida de batch, asi que este contador funciona
      * como limite de gasto por corrida (ver max_calls_batch en config).
@@ -584,5 +617,400 @@ class ArticleImageValidationService
         }
 
         return $http;
+    }
+
+    /* ----------------------------------------------------------------------------------------
+     * Evaluación de VARIAS candidatas en una sola llamada (misión imagenes-catalogo-completo,
+     * 27/9/2026). Lo usa ArticleImageAssignmentEngine; validate() de arriba queda como estaba
+     * para el job viejo y la búsqueda por código de barras del asistente.
+     * -------------------------------------------------------------------------------------- */
+
+    /**
+     * Le muestra a la IA hasta MAX_CANDIDATAS_POR_LLAMADA imágenes candidatas del mismo artículo en
+     * UNA llamada ("Candidata 1:", imagen, "Candidata 2:", imagen, ...) y devuelve un veredicto por
+     * candidata: si es el producto, con qué confianza, si el fondo es blanco y qué problemas tiene.
+     *
+     * Mismo modelo, timeout, cliente HTTP y registro de tokens que validate() (proceso
+     * `validacion_imagen_articulo`), y la misma REGLA ANTI-COMPLACENCIA.
+     *
+     * 🔴 FAIL-OPEN DISTINTO al de validate(): si la IA no se pudo consultar (apagada, sin clave, error
+     * de red, respuesta ilegible), las candidatas vuelven `sin_evaluar` — NO aceptadas. El motor
+     * manda la ganadora "a revisar": una imagen nunca se asigna sola sin que la IA la haya visto.
+     *
+     * @param  array    $candidatas  Hasta 4, cada una ['indice' => int, 'base64' => string, 'media_type' => string].
+     *                               El índice es el número que el modelo ve ("Candidata N").
+     * @param  Article  $article     Artículo contra el que se comparan.
+     * @param  int|null $user_id     Dueño al que se le imputa el consumo de tokens.
+     * @return array {
+     *     evaluada:      bool,         true si la IA devolvió veredictos que se pudieron leer.
+     *     llamada_hecha: bool,         true si Anthropic respondió bien (la llamada se paga).
+     *     motivo:        string|null,  por qué no se evaluó.
+     *     resultados:    array,        indice => {es_el_producto: si|no|dudoso|sin_evaluar,
+     *                                  confianza: high|medium|low|null, fondo_blanco: bool|null,
+     *                                  problemas: string[], motivo: string}.
+     * }
+     */
+    public function evaluar_candidatas(array $candidatas, Article $article, $user_id = null)
+    {
+        // Solo las que traen imagen, y como mucho las que entran en una llamada.
+        $validas = [];
+
+        foreach ($candidatas as $candidata) {
+            if (!is_array($candidata) || !isset($candidata['indice'], $candidata['base64']) || (string) $candidata['base64'] === '') {
+                continue;
+            }
+
+            if (count($validas) >= self::MAX_CANDIDATAS_POR_LLAMADA) {
+                break;
+            }
+
+            $validas[(int) $candidata['indice']] = $candidata;
+        }
+
+        $indices = array_keys($validas);
+
+        if (empty($validas)) {
+            return $this->candidatas_sin_evaluar($indices, 'No había imágenes para mostrarle a la IA.', false);
+        }
+
+        if (!config('services.article_image_validation.enabled')) {
+            return $this->candidatas_sin_evaluar($indices, 'La validación con IA está apagada.', false);
+        }
+
+        // Mismo techo de llamadas por instancia que validate() (ARTICLE_IMAGE_VALIDATION_MAX_CALLS_BATCH).
+        $max_calls_batch = (int) config('services.article_image_validation.max_calls_batch');
+
+        if ($max_calls_batch > 0 && $this->calls_made >= $max_calls_batch) {
+            return $this->candidatas_sin_evaluar($indices, 'Se alcanzó el límite de validaciones con IA de esta corrida.', false);
+        }
+
+        $api_key = (string) config('services.anthropic.api_key');
+
+        if ($api_key === '') {
+            Log::info('[ValidacionImagenIA] ANTHROPIC_API_KEY no configurada; las candidatas quedan sin evaluar.', [
+                'article_id' => $article->id,
+            ]);
+
+            return $this->candidatas_sin_evaluar($indices, 'No está configurada la IA en el servidor.', false);
+        }
+
+        // Contenido del mensaje: cada imagen precedida por su rótulo, y al final los datos del artículo.
+        $contenido = [];
+
+        foreach ($validas as $indice => $candidata) {
+            $contenido[] = ['type' => 'text', 'text' => 'Candidata '.$indice.':'];
+            $contenido[] = [
+                'type'   => 'image',
+                'source' => [
+                    'type'       => 'base64',
+                    'media_type' => isset($candidata['media_type']) && (string) $candidata['media_type'] !== '' ? (string) $candidata['media_type'] : 'image/webp',
+                    'data'       => (string) $candidata['base64'],
+                ],
+            ];
+        }
+
+        $contenido[] = ['type' => 'text', 'text' => $this->build_user_prompt_candidatas($article, $indices)];
+
+        $timeout = (int) config('services.article_image_validation.timeout');
+        $model   = (string) config('services.article_image_validation.model');
+
+        try {
+            $response = $this->build_anthropic_http_client($api_key)
+                ->timeout($timeout > 0 ? $timeout : 25)
+                ->post('https://api.anthropic.com/v1/messages', [
+                    'model'      => $model,
+                    // Un veredicto corto por candidata: 4 motivos de una frase entran holgados.
+                    'max_tokens' => 1000,
+                    'system'     => $this->build_system_prompt_candidatas(),
+                    'messages'   => [
+                        [
+                            'role'    => 'user',
+                            'content' => $contenido,
+                        ],
+                    ],
+                ]);
+        } catch (\Exception $e) {
+            Log::info('[ValidacionImagenIA] Error de conexión con Anthropic al evaluar candidatas.', [
+                'article_id' => $article->id,
+                'error'      => $e->getMessage(),
+            ]);
+
+            return $this->candidatas_sin_evaluar($indices, 'No se pudo consultar a la IA (error de conexión).', false);
+        }
+
+        // Cada intento cuenta para el techo de la instancia, como en validate().
+        $this->calls_made++;
+
+        if (!$response->successful()) {
+            $body      = $response->json();
+            $api_error = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP '.$response->status();
+
+            Log::info('[ValidacionImagenIA] Anthropic respondió con error al evaluar candidatas.', [
+                'article_id' => $article->id,
+                'error'      => $api_error,
+            ]);
+
+            return $this->candidatas_sin_evaluar($indices, 'La IA respondió con error y no se pudo validar.', false);
+        }
+
+        $body = $response->json();
+
+        // Consumo de tokens: mismo registro y mismo proceso que validate() (misión tokens-por-cliente).
+        AiTokenUsageHelper::registrar([
+            'user_id'       => is_null($user_id) ? null : (int) $user_id,
+            'proceso'       => 'validacion_imagen_articulo',
+            'body'          => is_array($body) ? $body : [],
+            'modelo'        => isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : $model,
+            'referencia_id' => (int) $article->id,
+        ]);
+
+        $resultados = is_array($body) ? $this->parse_candidatas_response($body, $indices) : null;
+
+        if (is_null($resultados)) {
+            Log::info('[ValidacionImagenIA] No se pudo parsear la evaluación de candidatas.', [
+                'article_id' => $article->id,
+            ]);
+
+            return $this->candidatas_sin_evaluar($indices, 'La respuesta de la IA no se pudo leer.', true);
+        }
+
+        return [
+            'evaluada'      => true,
+            'llamada_hecha' => true,
+            'motivo'        => null,
+            'resultados'    => $resultados,
+        ];
+    }
+
+    /**
+     * Resultado de "no se pudo evaluar": todas las candidatas `sin_evaluar` (nunca aceptadas).
+     *
+     * @param  array  $indices
+     * @param  string $motivo
+     * @param  bool   $llamada_hecha  true si Anthropic respondió (la llamada se pagó) pero no se entendió.
+     * @return array
+     */
+    protected function candidatas_sin_evaluar(array $indices, $motivo, $llamada_hecha)
+    {
+        $resultados = [];
+
+        foreach ($indices as $indice) {
+            $resultados[$indice] = [
+                'es_el_producto' => 'sin_evaluar',
+                'confianza'      => null,
+                'fondo_blanco'   => null,
+                'problemas'      => [],
+                'motivo'         => $motivo,
+            ];
+        }
+
+        return [
+            'evaluada'      => false,
+            'llamada_hecha' => (bool) $llamada_hecha,
+            'motivo'        => $motivo,
+            'resultados'    => $resultados,
+        ];
+    }
+
+    /**
+     * Parsea la respuesta JSON de evaluar_candidatas(): `{"candidatas": [{indice, es_el_producto,
+     * confianza, fondo_blanco, problemas, motivo}]}`, tolerando backticks o texto alrededor (mismo
+     * criterio que parse_vision_response()). Valores desconocidos se llevan al lado prudente:
+     * veredicto desconocido → "dudoso", confianza desconocida → "low". Una candidata que el modelo
+     * no mencionó queda `sin_evaluar`.
+     *
+     * Y una coherencia que el modelo a veces rompe: si marcó "otro_producto" (un producto parecido
+     * pero distinto) no puede decir "si" al mismo tiempo; se lo baja a "dudoso".
+     *
+     * @param  array $body     Respuesta completa de Anthropic.
+     * @param  array $indices  Los índices que se mandaron.
+     * @return array|null  indice => veredicto, o null si no hay un JSON legible.
+     */
+    protected function parse_candidatas_response(array $body, array $indices)
+    {
+        if (!isset($body['content']) || !is_array($body['content'])) {
+            return null;
+        }
+
+        $texto = '';
+
+        foreach ($body['content'] as $bloque) {
+            if (isset($bloque['type']) && $bloque['type'] === 'text' && isset($bloque['text'])) {
+                $texto .= $bloque['text'];
+            }
+        }
+
+        $texto = trim($texto);
+        $texto = preg_replace('/^```(?:json)?/i', '', $texto);
+        $texto = trim(preg_replace('/```$/', '', trim($texto)));
+
+        $inicio = strpos($texto, '{');
+        $fin    = strrpos($texto, '}');
+
+        if ($inicio === false || $fin === false || $fin <= $inicio) {
+            return null;
+        }
+
+        $decodificado = json_decode(substr($texto, $inicio, $fin - $inicio + 1), true);
+
+        if (!is_array($decodificado) || !isset($decodificado['candidatas']) || !is_array($decodificado['candidatas'])) {
+            return null;
+        }
+
+        // Por defecto, todas sin evaluar: se completan con lo que el modelo sí contestó.
+        $resultados = $this->candidatas_sin_evaluar($indices, 'La IA no dio un veredicto para esta imagen.', true)['resultados'];
+
+        foreach ($decodificado['candidatas'] as $entrada) {
+            if (!is_array($entrada) || !isset($entrada['indice'])) {
+                continue;
+            }
+
+            $indice = (int) $entrada['indice'];
+
+            if (!array_key_exists($indice, $resultados)) {
+                continue;
+            }
+
+            $veredicto = isset($entrada['es_el_producto']) ? $entrada['es_el_producto'] : null;
+
+            // Tolerancia al formato viejo de validate(), que era booleano.
+            if ($veredicto === true) {
+                $veredicto = 'si';
+            } elseif ($veredicto === false) {
+                $veredicto = 'no';
+            }
+
+            $veredicto = strtolower(trim((string) $veredicto));
+
+            if ($veredicto === 'sí') {
+                $veredicto = 'si';
+            }
+
+            if (!in_array($veredicto, self::VEREDICTOS_DE_CANDIDATA, true)) {
+                $veredicto = 'dudoso';
+            }
+
+            $confianza = isset($entrada['confianza']) ? strtolower(trim((string) $entrada['confianza'])) : '';
+
+            if (!in_array($confianza, self::ALLOWED_CONFIDENCES, true)) {
+                $confianza = 'low';
+            }
+
+            $problemas = [];
+
+            if (isset($entrada['problemas']) && is_array($entrada['problemas'])) {
+                foreach ($entrada['problemas'] as $problema) {
+                    $problema = strtolower(trim((string) $problema));
+
+                    if (in_array($problema, self::PROBLEMAS_DE_CANDIDATA, true) && !in_array($problema, $problemas, true)) {
+                        $problemas[] = $problema;
+                    }
+                }
+            }
+
+            if ($veredicto === 'si' && in_array('otro_producto', $problemas, true)) {
+                $veredicto = 'dudoso';
+            }
+
+            $motivo = isset($entrada['motivo']) ? trim((string) $entrada['motivo']) : '';
+
+            $resultados[$indice] = [
+                'es_el_producto' => $veredicto,
+                'confianza'      => $confianza,
+                'fondo_blanco'   => isset($entrada['fondo_blanco']) ? (bool) $entrada['fondo_blanco'] : null,
+                'problemas'      => $problemas,
+                'motivo'         => $motivo !== '' ? $motivo : 'La IA no explicó el motivo.',
+            ];
+        }
+
+        return $resultados;
+    }
+
+    /**
+     * System prompt de evaluar_candidatas(). Conserva la REGLA ANTI-COMPLACENCIA de
+     * build_system_prompt() —es el núcleo de la funcionalidad: los modelos de visión se
+     * autocalifican "alta" casi siempre— y suma lo propio de comparar varias fotos: una entrada por
+     * candidata, fondo blanco, problemas de una foto de catálogo y las acepciones argentinas (un
+     * comercio argentino le dice "pava" a lo que en otro lado es un ave).
+     *
+     * @return string
+     */
+    protected function build_system_prompt_candidatas()
+    {
+        return implode("\n", [
+            'Tu tarea es revisar fotos candidatas para el catálogo online de un comercio argentino',
+            '(ferretería, almacén, distribuidora, mayorista, ecommerce) y decir, para CADA candidata,',
+            'si muestra el producto del artículo. Te paso hasta 4 imágenes, cada una precedida por',
+            '"Candidata N:", y después los datos del artículo tal como están cargados en el sistema.',
+            '',
+            'Respondés ÚNICAMENTE con un objeto JSON válido, sin texto antes ni después, sin',
+            'backticks, sin markdown. Estructura exacta, con una entrada por candidata:',
+            '',
+            '{"candidatas": [{"indice": 1, "es_el_producto": "si", "confianza": "high", "fondo_blanco": true, "problemas": [], "motivo": "..."}]}',
+            '',
+            '- "indice": el número de la candidata.',
+            '- "es_el_producto": "si", "no" o "dudoso".',
+            '- "confianza": "high", "medium" o "low".',
+            '- "fondo_blanco": true si el fondo es blanco liso, de foto de catálogo; false si no.',
+            '- "problemas": lista, que puede estar vacía, con cualquiera de estos valores:',
+            '  "marca_de_agua", "texto_superpuesto", "varias_unidades", "foto_de_ambiente", "collage",',
+            '  "borrosa", "otro_producto".',
+            '- "motivo": una sola frase corta y clara en español rioplatense, porque se le muestra tal',
+            '  cual a un usuario real. Ejemplo bueno: "Es la botella de 1,5 L de esa marca, sobre fondo',
+            '  blanco." Ejemplo malo (no hacer esto): "The image appears to show the product."',
+            '',
+            '"otro_producto" es un producto parecido pero distinto (otra marca, otra variante, otro',
+            'tamaño). Si lo marcás, "es_el_producto" no puede ser "si".',
+            '',
+            'ACEPCIONES ARGENTINAS: leé el nombre con el vocabulario de un comercio argentino. "Pava" es',
+            'la pava para calentar agua (no un ave), "canilla" es un grifo, "birome" es un bolígrafo,',
+            '"manteca" es mantequilla, "frutilla" es fresa, "palta" es aguacate, "remera" es una camiseta,',
+            '"pileta" es una bacha o una piscina, "garrafa" es un envase de gas, "bulón" es un perno,',
+            '"tarugo" es un taco de fijación, "mecha" es una broca, "lavandina" es lejía y "repasador"',
+            'es un paño de cocina.',
+            '',
+            'LÍMITE IMPORTANTE: no podés confirmar el modelo o código exacto del producto, ni leer un',
+            'código de barras en la foto. Solo evaluás si la imagen es consistente con lo que el',
+            'artículo dice ser (tipo de producto, marca, variante y tamaño cuando se ven).',
+            '',
+            'REGLA ANTI-COMPLACENCIA (la más importante, no la relajes): si en la imagen NO se ve una',
+            'marca o un texto que coincida con el artículo, y el producto es genérico (un tornillo, una',
+            'bolsa, un cable, un caño), la confianza tiene que ser "low", no "medium" ni "high", aunque',
+            'la imagen "parezca" del tipo de producto correcto. Decir "dudoso" o que no se puede',
+            'determinar con certeza es una respuesta correcta y esperada, no un fracaso. "high" es solo',
+            'cuando el tipo de producto, la marca y la variante se ven y coinciden.',
+        ]);
+    }
+
+    /**
+     * Texto final del mensaje de evaluar_candidatas(): los datos del artículo (los mismos que usa
+     * build_user_prompt()) y la pregunta por todas las candidatas.
+     *
+     * @param  Article $article
+     * @param  array   $indices
+     * @return string
+     */
+    protected function build_user_prompt_candidatas(Article $article, array $indices)
+    {
+        $lines   = [];
+        $lines[] = 'DATOS DEL ARTÍCULO:';
+        $lines[] = '- Nombre: '.($article->name ?: '(sin nombre)');
+
+        if ($article->bar_code) {
+            $lines[] = '- Código de barras: '.$article->bar_code;
+        }
+
+        if ($article->brand && $article->brand->name) {
+            $lines[] = '- Marca: '.$article->brand->name;
+        }
+
+        if ($article->category && $article->category->name) {
+            $lines[] = '- Categoría: '.$article->category->name;
+        }
+
+        $lines[] = '';
+        $lines[] = 'Candidatas a evaluar: '.implode(', ', $indices).'. ¿Cuáles muestran este producto? Respondé solo con el JSON indicado, una entrada por candidata.';
+
+        return implode("\n", $lines);
     }
 }
