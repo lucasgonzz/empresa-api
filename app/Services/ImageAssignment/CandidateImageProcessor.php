@@ -686,7 +686,11 @@ class CandidateImageProcessor
                         ->timeout(self::TIMEOUT_DESCARGA)
                         ->withHeaders([
                             'User-Agent'      => self::USER_AGENT,
-                            'Accept'          => 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                            // 🔴 SIN image/avif, a diferencia del Accept de un navegador: los CDN que
+                            // negocian el formato devuelven AVIF si se lo anuncia, y el GD de PHP 7.4
+                            // no lo sabe leer (getimagesizefromstring da false y la candidata quedaría
+                            // como "no es una imagen"). webp, jpeg y png los lee todos.
+                            'Accept'          => 'image/webp,image/jpeg,image/png,image/gif;q=0.9,*/*;q=0.5',
                             'Accept-Language' => 'es-AR,es;q=0.9,en;q=0.5',
                         ])
                         ->get($pedido['url']);
