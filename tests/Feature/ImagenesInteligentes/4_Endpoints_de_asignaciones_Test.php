@@ -234,6 +234,10 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
         $respuesta->assertJsonPath('model.status', 'aprobada');
         $respuesta->assertJsonPath('model.revisado_por', $this->owner->name);
 
+        // Ya es una imagen asignada: sus avisos son los de una asignada (contrato §5.2, solo
+        // "Fondo no blanco"); el "confianza media" por el que fue a revisar no la sigue.
+        $respuesta->assertJsonPath('model.avisos', []);
+
         $item->refresh();
         $this->assertSame(ImageAssignmentItem::STATUS_APROBADA, $item->status);
         $this->assertMatchesRegularExpression('/^\d+\.webp$/', $item->imagen_archivo, 'Deja el prefijo imgcand_: ya es una imagen real.');
@@ -292,6 +296,7 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
 
         $this->assertFalse(Storage::disk('public')->exists($candidata));
         $this->assertNull($item->fresh()->imagen_url);
+        $this->assertNull($item->fresh()->imagen_meta, 'Sin imagen no quedan datos de imagen (ni avisos) a la vista.');
         $this->assertSame(0, Image::where('imageable_type', 'article')->where('imageable_id', $item->article_id)->count());
 
         // Una asignada no se "rechaza".
@@ -314,6 +319,12 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
             }
         }
 
+        // La segunda fue a revisar con el fondo no blanco: aprobada, ese aviso es el que le queda.
+        $meta = $items[1]->fresh()->imagen_meta;
+        $meta['fondo_blanco'] = false;
+        $meta['avisos']       = ['Fondo no blanco', 'La IA lo reconoce con confianza media'];
+        $items[1]->update(['imagen_meta' => $meta]);
+
         $aprobar = $this->postJson('api/image-assignment-items/aprobar-varios', ['ids' => [$items[0]->id, $items[1]->id, $items[2]->id]]);
 
         $aprobar->assertStatus(200);
@@ -321,6 +332,9 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
         $this->assertCount(1, $aprobar->json('fallidos'));
         $this->assertSame((int) $items[2]->id, (int) $aprobar->json('fallidos.0.id'));
         $this->assertNotEmpty($aprobar->json('fallidos.0.message'));
+
+        $this->assertSame([], $items[0]->fresh()->imagen_meta['avisos']);
+        $this->assertSame(['Fondo no blanco'], $items[1]->fresh()->imagen_meta['avisos']);
 
         $rechazar = $this->postJson('api/image-assignment-items/rechazar-varios', ['ids' => [$items[3]->id, $items[4]->id]]);
 
@@ -358,6 +372,7 @@ class Endpoints_de_asignaciones_Test extends ImagenesInteligentesTestCase
 
         $this->assertNull(Image::find($imagen->id), 'La fila de images se borró (ImageController::deleteImageModel).');
         $this->assertFalse(Storage::disk('public')->exists($archivo));
+        $this->assertNull($item->fresh()->imagen_meta);
 
         // Solo se quita lo asignado.
         $a_revisar = ImageAssignmentItem::where('run_id', $run->id)->where('status', 'a_revisar')->first();

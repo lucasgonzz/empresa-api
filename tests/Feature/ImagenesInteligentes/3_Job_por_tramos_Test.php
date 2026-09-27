@@ -206,8 +206,23 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
     }
 
     /**
+     * La ficha de un tramo (el job la genera al despacharse y la escribe en lo que reclama).
+     *
+     * @param  \App\Jobs\ProcessImageAssignmentRunJob $job
+     * @return string
+     */
+    protected function ficha_del_tramo(ProcessImageAssignmentRunJob $job)
+    {
+        $propiedad = new \ReflectionProperty($job, 'tramo');
+        $propiedad->setAccessible(true);
+
+        return (string) $propiedad->getValue($job);
+    }
+
+    /**
      * El tramo murió: el artículo vuelve a pendiente y se re-despacha; al segundo intento ese
-     * artículo queda error_interno; con tres fallos seguidos la asignación queda fallida.
+     * artículo queda error_interno; con tres fallos seguidos la asignación queda fallida. Y un
+     * artículo que está procesando OTRO tramo (otra ficha) no se toca.
      *
      * @group imagenes-inteligentes
      * @test
@@ -222,13 +237,21 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
 
         Queue::fake();
 
-        $job = new ProcessImageAssignmentRunJob($run->id);
+        $job   = new ProcessImageAssignmentRunJob($run->id);
+        $ficha = $this->ficha_del_tramo($job);
 
-        // 1er fallo con el artículo en su primer intento: vuelve a pendiente y se re-despacha.
-        $venenoso->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1]);
+        $this->assertNotSame('', $ficha, 'Cada tramo nace con su ficha.');
+
+        // Un artículo que procesa OTRO tramo vivo: el failed() de este no lo puede tocar.
+        $sano->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1, 'tramo' => 'ficha-de-otro-tramo']);
+
+        // 1er fallo con el artículo en su primer intento (reclamado por ESTE tramo): vuelve a
+        // pendiente y se re-despacha.
+        $venenoso->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1, 'tramo' => $ficha]);
         $job->failed(new \RuntimeException('Se reinició el worker (prueba)'));
 
         $this->assertSame(ImageAssignmentItem::STATUS_PENDIENTE, $venenoso->fresh()->status);
+        $this->assertSame(ImageAssignmentItem::STATUS_PROCESANDO, $sano->fresh()->status, 'El de otro tramo sigue procesando.');
         $this->assertSame(1, (int) $run->fresh()->fallos_consecutivos);
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
 
@@ -236,7 +259,7 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
         // (refresh: el job lo devolvió a pendiente por SQL y el modelo en memoria seguía diciendo
         // "procesando"; sin releerlo, update() no vería el cambio de estado y no lo escribiría).
         $venenoso->refresh();
-        $venenoso->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 2]);
+        $venenoso->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 2, 'tramo' => $ficha]);
         $job->failed(new \RuntimeException('Otra vez (prueba)'));
 
         $venenoso->refresh();
@@ -246,8 +269,10 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
         $this->assertSame(1, (int) $run->fresh()->procesados);
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 2);
 
-        // 3er fallo seguido: la asignación queda fallida (y el artículo sano vuelve a pendiente).
-        $sano->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1]);
+        // 3er fallo seguido: la asignación queda fallida (y el artículo sano, que ahora sí reclamó
+        // este tramo, vuelve a pendiente).
+        $sano->refresh();
+        $sano->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1, 'tramo' => $ficha]);
         $job->failed(new \RuntimeException('Tercera (prueba)'));
 
         $run->refresh();
@@ -344,5 +369,91 @@ class Job_por_tramos_Test extends ImagenesInteligentesTestCase
         $this->assertSame(0, (int) $run->busquedas, 'Las búsquedas que fallaron no cuentan.');
         $this->assertSame(5, ImageAssignmentItem::where('run_id', $run->id)->where('motivo', 'error_de_busqueda')->count());
         $this->assertSame(2, ImageAssignmentItem::where('run_id', $run->id)->where('status', ImageAssignmentItem::STATUS_PENDIENTE)->count());
+    }
+
+    /**
+     * 🔴 El corte por el proveedor cuenta ENTRE tramos: con el proveedor colgado (15 s de timeout
+     * por búsqueda) entra un artículo por tramo, y un contador que volviera a cero en cada tramo no
+     * llegaba nunca al corte. Reanudarla arranca la cuenta de cero.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function los_errores_del_proveedor_se_cuentan_entre_tramos()
+    {
+        $articulos = [];
+
+        for ($i = 0; $i < 7; $i++) {
+            $articulos[] = $this->nuevo_articulo('Proveedor colgado '.$i, $this->con_verificador('77900050000'.$i));
+        }
+
+        $run = $this->asignacion($articulos);
+
+        $this->falsear(['error' => 'Not enough credits'], [], []);
+
+        // Un artículo por tramo, como con el proveedor colgado.
+        config(['services.imagenes_inteligentes.segundos_por_tramo' => 0]);
+
+        Queue::fake();
+
+        for ($tramo = 1; $tramo <= 4; $tramo++) {
+            (new ProcessImageAssignmentRunJob($run->id))->handle();
+
+            $this->assertSame(ImageAssignmentRun::STATUS_EN_PROCESO, $run->fresh()->status, 'Tramo '.$tramo.': todavía no llegó al corte.');
+            $this->assertSame($tramo, (int) $run->fresh()->errores_proveedor_seguidos);
+        }
+
+        // El quinto tramo es el quinto artículo seguido sin poder buscar: frena.
+        (new ProcessImageAssignmentRunJob($run->id))->handle();
+
+        $run->refresh();
+        $this->assertSame(ImageAssignmentRun::STATUS_FALLIDA, $run->status);
+        $this->assertStringContainsString('falló en 5 artículos seguidos', (string) $run->motivo_estado);
+        $this->assertSame(5, (int) $run->procesados);
+        $this->assertSame(2, ImageAssignmentItem::where('run_id', $run->id)->where('status', ImageAssignmentItem::STATUS_PENDIENTE)->count());
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class, 4);
+
+        // Reanudada (cuando se resolvió lo del proveedor), la racha arranca de cero.
+        $this->assertSame(200, (int) ImageAssignmentRunHelper::reanudar($run)['status']);
+        $this->assertSame(0, (int) $run->fresh()->errores_proveedor_seguidos);
+    }
+
+    /**
+     * 🔴 Si el último artículo gasta la última búsqueda del día, la asignación terminó BIEN: no
+     * quedó nada sin procesar y el aviso no puede decir que se cortó por el cupo.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function si_el_ultimo_articulo_gasta_la_ultima_busqueda_termina_normal()
+    {
+        $this->owner->google_cuota = 2;
+        $this->owner->save();
+
+        $articulos = $this->articulos_asignables(2);
+        $run       = $this->asignacion($articulos, ['aplica_tope_diario' => true]);
+
+        Queue::fake();
+
+        (new ProcessImageAssignmentRunJob($run->id))->handle();
+
+        $run->refresh();
+        $this->assertSame(ImageAssignmentRun::STATUS_TERMINADA, $run->status);
+        $this->assertNull($run->motivo_estado, 'Terminó normal: no hay motivo de corte.');
+        $this->assertSame(2, (int) $run->busquedas);
+        $this->assertSame(2, ImageAssignmentItem::where('run_id', $run->id)->where('status', ImageAssignmentItem::STATUS_ASIGNADA)->count());
+        $this->assertSame(0, ImageAssignmentItem::where('run_id', $run->id)->where('status', ImageAssignmentItem::STATUS_SIN_PROCESAR)->count());
+
+        $contador = GeocoderCounter::where('user_id', $this->owner->id)->whereDate('created_at', Carbon::today())->first();
+        $this->assertSame(2, (int) $contador->counter, 'El cupo del día quedó en cero, justo.');
+
+        Event::assertDispatched(ArticleBatchImagesProcessed::class, function ($evento) use ($run) {
+            return $evento->batch_uuid === $run->uuid
+                && $evento->quota_reached === false
+                && $evento->skipped_by_quota === 0
+                && $evento->processed === 2;
+        });
+
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, BackgroundProcess::find($run->background_process_id)->status);
     }
 }

@@ -922,14 +922,20 @@ class CandidateImageProcessor
     /**
      * Recorta un texto para el diagnóstico (las URLs de algunos CDN pasan los mil caracteres).
      *
+     * 🔴 mb_strcut y no substr: substr corta en el byte 500 aunque caiga en la mitad de una letra
+     * acentuada o de una ñ de la URL, y un UTF-8 inválido hace fallar el json del diagnóstico al
+     * guardar el artículo (JsonEncodingException): el artículo se reintentaba y terminaba como
+     * error_interno con las búsquedas ya pagadas. mb_strcut corta por bytes pero en un borde de
+     * carácter.
+     *
      * @param  mixed $texto
-     * @param  int   $largo
+     * @param  int   $largo  En bytes (es lo que importa para la columna y el json).
      * @return string
      */
     protected function recortar($texto, $largo = 500)
     {
         $texto = trim((string) $texto);
 
-        return strlen($texto) > $largo ? substr($texto, 0, $largo) : $texto;
+        return strlen($texto) > $largo ? mb_strcut($texto, 0, $largo, 'UTF-8') : $texto;
     }
 }

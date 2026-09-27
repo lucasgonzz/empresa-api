@@ -77,11 +77,24 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
     protected $run_id;
 
     /**
+     * @var string Ficha de ESTE tramo: se genera al despachar (viaja en el payload, así que handle()
+     * y failed() ven la misma) y se escribe en cada artículo que el tramo reclama.
+     *
+     * 🔴 Es lo que evita procesar dos veces un artículo. Sin ella, el failed() de un tramo que murió
+     * hace una hora (el worker del shared lo levanta recién al vencer retry_after) devolvía a
+     * pendiente TODOS los artículos "procesando" de la asignación, incluido el que en ese momento
+     * procesaba un tramo vivo (por ejemplo después de una reanudación): otro tramo lo volvía a
+     * reclamar y el artículo terminaba con dos imágenes.
+     */
+    protected $tramo = '';
+
+    /**
      * @param int $run_id
      */
     public function __construct($run_id)
     {
         $this->run_id = (int) $run_id;
+        $this->tramo  = (string) Str::uuid();
 
         // Shared hosting: cola 'excel' (separada del asistente). VPS: la default (patrón de ProcessArticleChunk).
         $this->queue = config('app.VPS') ? null : 'excel';
@@ -131,9 +144,6 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         // comiera el tiempo del tramo sin cortarlo nunca.
         $trabajados = 0;
 
-        $articulos_con_error_de_proveedor = 0;
-        $ultimo_error_de_proveedor        = '';
-
         while (true) {
             // Fin del tramo: siempre después de al menos un artículo (si no, un presupuesto chico
             // re-encolaría para siempre sin avanzar).
@@ -148,12 +158,6 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             // La detuvieron (o la cerró otro tramo): se corta sin tocar nada más. El aviso de salida
             // lo emitió quien la cambió de estado.
             if ($run->status !== ImageAssignmentRun::STATUS_EN_PROCESO) {
-                return;
-            }
-
-            if ($run->aplica_tope_diario && (int) ImagenesAutomaticasHelper::cuota_de($owner)['disponibles'] <= 0) {
-                $this->cortar_por_cupo($run);
-
                 return;
             }
 
@@ -172,6 +176,14 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 if (!$en_curso) {
                     ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, null);
                 }
+
+                return;
+            }
+
+            // El cupo se mira DESPUÉS de saber que queda algo por hacer: si el último artículo gastó
+            // la última búsqueda del día, la asignación terminó bien y no por falta de cupo.
+            if ($run->aplica_tope_diario && (int) ImagenesAutomaticasHelper::cuota_de($owner)['disponibles'] <= 0) {
+                $this->cortar_por_cupo($run);
 
                 return;
             }
@@ -214,19 +226,14 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 return;
             }
 
-            if ($resultado['error_de_proveedor']) {
-                $articulos_con_error_de_proveedor++;
-                $ultimo_error_de_proveedor = $this->ultimo_error_del_diagnostico($item->fresh());
-            } else {
-                $articulos_con_error_de_proveedor = 0;
-            }
+            if ($this->contar_error_de_proveedor($run, (bool) $resultado['error_de_proveedor']) >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
+                $ultimo_error = $this->ultimo_error_del_diagnostico($item->fresh());
 
-            if ($articulos_con_error_de_proveedor >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
                 ImageAssignmentRunHelper::terminar(
                     $run,
                     ImageAssignmentRun::STATUS_FALLIDA,
                     'El proveedor de búsqueda falló en '.self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR.' artículos seguidos'
-                        .($ultimo_error_de_proveedor !== '' ? ' ('.$ultimo_error_de_proveedor.')' : '')
+                        .($ultimo_error !== '' ? ' ('.$ultimo_error.')' : '')
                         .'. Se frenó para no seguir recorriendo artículos sin poder buscar; se puede reanudar cuando esté resuelto.'
                 );
 
@@ -260,8 +267,11 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 ? $e->getMessage()
                 : 'El proceso se interrumpió sin dejar traza (probable falta de memoria, timeout o worker reiniciado).';
 
+            // Solo el artículo que reclamó ESTE tramo (ver $tramo): uno "procesando" con otra ficha
+            // es de un tramo vivo y no se toca.
             $en_curso = ImageAssignmentItem::where('run_id', $run->id)
                 ->where('status', ImageAssignmentItem::STATUS_PROCESANDO)
+                ->where('tramo', $this->tramo)
                 ->get();
 
             foreach ($en_curso as $item) {
@@ -342,6 +352,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             ->update([
                 'status'     => ImageAssignmentItem::STATUS_PROCESANDO,
                 'intentos'   => DB::raw('intentos + 1'),
+                'tramo'      => $this->tramo,
                 'updated_at' => Carbon::now(),
             ]);
 
@@ -371,6 +382,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         DB::table('image_assignment_items')
             ->where('id', $item->id)
             ->where('status', ImageAssignmentItem::STATUS_PROCESANDO)
+            ->where('tramo', $this->tramo)
             ->update([
                 'status'     => ImageAssignmentItem::STATUS_PENDIENTE,
                 'updated_at' => Carbon::now(),
@@ -392,6 +404,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             $afectadas = DB::table('image_assignment_items')
                 ->where('id', $item->id)
                 ->where('status', ImageAssignmentItem::STATUS_PROCESANDO)
+                ->where('tramo', $this->tramo)
                 ->update([
                     'status'         => ImageAssignmentItem::STATUS_NO_ASIGNADA,
                     'motivo'         => 'error_interno',
@@ -437,12 +450,13 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             ->where('status', ImageAssignmentItem::STATUS_SIN_PROCESAR)
             ->count();
 
-        ImageAssignmentRunHelper::terminar(
-            $run,
-            ImageAssignmentRun::STATUS_TERMINADA,
-            'Se agotó el cupo diario de búsquedas: '.($sin_procesar === 1 ? '1 artículo quedó' : $sin_procesar.' artículos quedaron').' sin procesar. Se pueden volver a mandar mañana.',
-            true
-        );
+        // Sin nada sin procesar, el cupo se agotó en la búsqueda del ÚLTIMO artículo (el motor lo
+        // avisó): no hay "N artículos" que decir.
+        $motivo = $sin_procesar > 0
+            ? 'Se agotó el cupo diario de búsquedas: '.($sin_procesar === 1 ? '1 artículo quedó' : $sin_procesar.' artículos quedaron').' sin procesar. Se pueden volver a mandar mañana.'
+            : 'Se agotó el cupo diario de búsquedas con el último artículo: no se llegó a completar su búsqueda.';
+
+        ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, $motivo, true);
     }
 
     /**
@@ -471,6 +485,33 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 'busquedas'    => (int) $run->busquedas,
             ],
         ]);
+    }
+
+    /**
+     * Lleva la cuenta, EN LA ASIGNACIÓN, de los artículos seguidos en los que todas las búsquedas
+     * fallaron por el proveedor, y devuelve el valor actual. Vive en la asignación y no en una
+     * variable del tramo: con el proveedor colgado (15 s de timeout por búsqueda) entran uno o dos
+     * artículos por tramo, y un contador local volvía a cero en cada tramo sin llegar nunca al corte.
+     *
+     * @param  \App\Models\ImageAssignmentRun $run
+     * @param  bool $fallo  El artículo recién procesado falló por el proveedor.
+     * @return int
+     */
+    protected function contar_error_de_proveedor(ImageAssignmentRun $run, $fallo)
+    {
+        if ($fallo) {
+            DB::table('image_assignment_runs')
+                ->where('id', $run->id)
+                ->update(['errores_proveedor_seguidos' => DB::raw('errores_proveedor_seguidos + 1')]);
+
+            return (int) DB::table('image_assignment_runs')->where('id', $run->id)->value('errores_proveedor_seguidos');
+        }
+
+        if ((int) $run->errores_proveedor_seguidos > 0) {
+            DB::table('image_assignment_runs')->where('id', $run->id)->update(['errores_proveedor_seguidos' => 0]);
+        }
+
+        return 0;
     }
 
     /**

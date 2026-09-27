@@ -70,7 +70,7 @@ class GoogleCustomSearchImageProvider implements ImageSearchProvider
         // items null = error HTTP o de red; api_error con items = Google respondió 200 con un
         // bloque `error` (el trait tampoco lo cuenta como búsqueda). Las dos cosas son un fallo.
         if (is_null($resultado['items']) || !is_null($resultado['api_error'])) {
-            $error = (string) $resultado['api_error'];
+            $error = $this->sin_credenciales((string) $resultado['api_error']);
 
             return [
                 'ok'         => false,
@@ -110,6 +110,31 @@ class GoogleCustomSearchImageProvider implements ImageSearchProvider
             'resultados' => $resultados,
             'total'      => $resultado['total_results'],
         ];
+    }
+
+    /**
+     * El mensaje de error sin la clave ni el cx.
+     *
+     * 🔴 Un error de conexión o un timeout de Guzzle trae la URL COMPLETA del pedido ("cURL error
+     * 28: ... for https://www.googleapis.com/customsearch/v1?key=AIza...&cx=..."), y el trait lo
+     * devuelve tal cual. Ese texto termina en el diagnóstico del artículo, en el motivo de la
+     * asignación y en el registro visible, que ve cualquier usuario del comercio: sin esto se le
+     * mostraba la clave de Google, que es prácticamente una sola para toda la flota. El trait no se
+     * toca (lo usan el job viejo y el de categorías), así que se limpia acá.
+     *
+     * @param  string $mensaje
+     * @return string
+     */
+    protected function sin_credenciales($mensaje)
+    {
+        $mensaje = (string) preg_replace('/([?&](?:key|cx)=)[^&\s"\'<>]*/i', '$1***', (string) $mensaje);
+
+        // Por si la clave aparece suelta en el texto (sin el ?key=).
+        if ($this->google_api_key !== '') {
+            $mensaje = str_replace($this->google_api_key, '***', $mensaje);
+        }
+
+        return $mensaje;
     }
 
     /**

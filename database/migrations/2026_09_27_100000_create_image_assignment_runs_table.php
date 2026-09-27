@@ -82,6 +82,12 @@ class CreateImageAssignmentRunsTable extends Migration
             // Tramos seguidos que murieron sin terminar (ver ProcessImageAssignmentRunJob::failed()).
             $table->unsignedTinyInteger('fallos_consecutivos')->default(0);
 
+            // Artículos seguidos en los que TODAS las búsquedas fallaron por el proveedor (sin
+            // créditos, clave revocada, caído). Vive en la asignación y no en el tramo: con el
+            // proveedor colgado entran uno o dos artículos por tramo y un contador local no llegaría
+            // nunca al corte (ProcessImageAssignmentRunJob::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR).
+            $table->unsignedSmallInteger('errores_proveedor_seguidos')->default(0);
+
             // El registro visible (background_processes) de esta corrida.
             $table->unsignedBigInteger('background_process_id')->nullable();
 

@@ -10,6 +10,7 @@ use App\Models\Image;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -298,10 +299,27 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
         $run->update(['status' => ImageAssignmentRun::STATUS_EN_PROCESO, 'last_progress_at' => Carbon::now()]);
         $this->postJson('api/image-assignment-runs/'.$run->id.'/reanudar')->assertStatus(422);
 
-        // Una trabada (sin avanzar hace más de 15 minutos) sí, y lo que quedó a medias vuelve a pendiente.
+        // Una trabada (sin avanzar hace más de 15 minutos) sí, y lo que quedó a medias hace rato (de
+        // un worker muerto) vuelve a pendiente. Lo que se reclamó recién lo está terminando un
+        // tramo vivo: se deja (si no, otro tramo lo procesaría de nuevo en paralelo).
         $run->update(['last_progress_at' => Carbon::now()->subMinutes(20)]);
-        $a_medias = ImageAssignmentItem::where('run_id', $run->id)->orderBy('orden')->first();
-        $a_medias->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1]);
+        $items    = ImageAssignmentItem::where('run_id', $run->id)->orderBy('orden')->get();
+        $a_medias = $items[0];
+        $reciente = $items[1];
+
+        DB::table('image_assignment_items')->where('id', $a_medias->id)->update([
+            'status'     => ImageAssignmentItem::STATUS_PROCESANDO,
+            'intentos'   => 1,
+            'tramo'      => 'ficha-de-un-tramo-muerto',
+            'updated_at' => Carbon::now()->subMinutes(20),
+        ]);
+
+        DB::table('image_assignment_items')->where('id', $reciente->id)->update([
+            'status'     => ImageAssignmentItem::STATUS_PROCESANDO,
+            'intentos'   => 1,
+            'tramo'      => 'ficha-de-un-tramo-vivo',
+            'updated_at' => Carbon::now()->subMinute(),
+        ]);
 
         $this->assertTrue($this->getJson('api/image-assignment-runs/'.$run->id)->json('model.trabada'));
 
@@ -313,6 +331,7 @@ class Catalogo_completo_Test extends ImagenesInteligentesTestCase
             ->assertJsonPath('model.trabada', false);
 
         $this->assertSame(ImageAssignmentItem::STATUS_PENDIENTE, $a_medias->fresh()->status);
+        $this->assertSame(ImageAssignmentItem::STATUS_PROCESANDO, $reciente->fresh()->status, 'El que procesa un tramo vivo no se repone.');
         Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
     }
 }

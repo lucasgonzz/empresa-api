@@ -2,8 +2,13 @@
 
 namespace Tests\Feature\ImagenesInteligentes;
 
+use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
 use App\Models\Image;
 use App\Models\ImageAssignmentItem;
+use App\Models\ImageAssignmentRun;
+use App\Services\ImageAssignment\ArticleImageAssignmentEngine;
+use GuzzleHttp\Exception\ConnectException;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -488,6 +493,179 @@ class Motor_de_asignacion_Test extends ImagenesInteligentesTestCase
         $this->assertSame(0, (int) $item_sin_datos->busquedas);
 
         $this->assertSame([], $this->consultas_serper);
+    }
+
+    /**
+     * Entre las que la IA dio "si" manda el tamaño (plan §6.6): si ninguna se puede asignar sola,
+     * la de 1200 px con confianza baja le gana a la de 450 px con confianza media, y va a revisar
+     * como dudosa.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function entre_dos_si_que_no_se_pueden_asignar_gana_la_mas_grande()
+    {
+        $articulo = $this->nuevo_articulo('Balde de plástico 10 L', self::CODIGO_REAL);
+        $run      = $this->asignacion([$articulo]);
+
+        $this->falsear(
+            [self::CODIGO_REAL => [
+                $this->resultado($this->url_imagen('chica-media'), 450, 450, 1),
+                $this->resultado($this->url_imagen('grande-baja'), 1200, 1200, 2),
+            ]],
+            [
+                $this->url_imagen('chica-media') => $this->png(450, 450, 'azul'),
+                $this->url_imagen('grande-baja') => $this->png(1200, 1200, 'rojo'),
+            ],
+            [
+                'azul' => $this->veredicto('si', 'medium'),
+                'rojo' => $this->veredicto('si', 'low'),
+            ]
+        );
+
+        $item = $this->procesar($run, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('ia_dudosa', $item->motivo, 'Una "si" con confianza baja se revisa como dudosa.');
+        $this->assertSame(1200, (int) $item->imagen_meta['ancho']);
+        $this->assertSame('rojo', $this->color_del_centro($item->imagen_archivo));
+    }
+
+    /**
+     * 🔴 Un artículo que mientras se procesaba pasó a otro tramo (una reanudación lo devolvió a la
+     * fila y lo reclamó otro) no se cierra dos veces: el motor tira, no queda ninguna fila de
+     * images y el artículo sigue siendo del otro tramo. Las búsquedas que ya se pagaron igual
+     * quedan contadas en la asignación.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function un_articulo_que_reclamo_otro_tramo_no_se_cierra_dos_veces()
+    {
+        $articulo = $this->nuevo_articulo('Escalera de aluminio 5 escalones', self::CODIGO_REAL);
+        $run      = $this->asignacion([$articulo]);
+
+        $item = ImageAssignmentItem::where('run_id', $run->id)->first();
+        $item->update(['status' => ImageAssignmentItem::STATUS_PROCESANDO, 'intentos' => 1, 'tramo' => 'ficha-de-este-tramo']);
+
+        $this->falsear(
+            [self::CODIGO_REAL => [$this->resultado($this->url_imagen('escalera'), 1000, 1000, 1)]],
+            [$this->url_imagen('escalera') => $this->png(1000, 1000, 'rojo')],
+            ['rojo' => $this->veredicto('si', 'high')],
+            function () use ($item) {
+                // Mientras este tramo busca, otro tramo se queda con el artículo.
+                ImageAssignmentItem::where('id', $item->id)->update(['tramo' => 'ficha-de-otro-tramo']);
+            }
+        );
+
+        $excepcion = null;
+
+        try {
+            (new ArticleImageAssignmentEngine($run->fresh()))->procesar($item->fresh());
+        } catch (\RuntimeException $e) {
+            $excepcion = $e;
+        }
+
+        $this->assertNotNull($excepcion, 'El motor no puede cerrar un artículo que ya es de otro tramo.');
+        $this->assertStringContainsString('ya no es de este tramo', $excepcion->getMessage());
+
+        $this->assertSame(0, Image::where('imageable_type', 'article')->where('imageable_id', $articulo->id)->count(), 'La fila de images se deshizo.');
+
+        $this->assertSame([], Storage::disk('public')->allFiles(), 'El .webp que se había guardado se borró: no queda huérfano.');
+
+        $item->refresh();
+        $this->assertSame(ImageAssignmentItem::STATUS_PROCESANDO, $item->status);
+        $this->assertSame('ficha-de-otro-tramo', $item->tramo);
+
+        $run->refresh();
+        $this->assertSame(0, (int) $run->procesados);
+        $this->assertSame(1, (int) $run->busquedas, 'La búsqueda ya se pagó: se cuenta aunque el artículo no se cierre.');
+        $this->assertSame(1, (int) $run->validaciones_ia);
+    }
+
+    /**
+     * Una URL de más de 500 bytes con letras acentuadas justo en el corte no rompe el guardado
+     * del diagnóstico (el corte es por borde de carácter, no por byte).
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function una_url_larga_con_acentos_no_rompe_el_diagnostico()
+    {
+        $articulo = $this->nuevo_articulo('Tijera de podar', self::CODIGO_REAL);
+        $run      = $this->asignacion([$articulo]);
+
+        // 499 bytes y después "ñ" (2 bytes): un corte por byte en 500 la partiría al medio.
+        $url = 'https://imagenes.test/'.str_repeat('a', 499 - strlen('https://imagenes.test/')).'ñandú-tijera.png';
+
+        $this->falsear(
+            [self::CODIGO_REAL => [$this->resultado($url, 200, 200, 1)]],
+            [],
+            []
+        );
+
+        $item = $this->procesar($run, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_NO_ASIGNADA, $item->status);
+        $this->assertSame('imagenes_chicas', $item->motivo);
+
+        $guardada = $this->diagnostico_de($item, 'codigo_de_barras')['candidatas'][0]['url'];
+        $this->assertLessThanOrEqual(500, strlen($guardada));
+        $this->assertTrue(mb_check_encoding($guardada, 'UTF-8'), 'El recorte no dejó un UTF-8 inválido.');
+    }
+
+    /**
+     * 🔴 Un timeout de Google trae la URL COMPLETA del pedido, con la clave y el cx, y ese texto
+     * termina en el diagnóstico del artículo, que ve cualquier usuario del comercio: tiene que llegar
+     * tapado (el error en sí se sigue viendo). Lo mismo si Serper nombrara su clave en un error.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function un_error_del_proveedor_nunca_deja_la_clave_a_la_vista()
+    {
+        config(['services.google_search.api_key' => 'AIzaCLAVE-DE-GOOGLE-DE-PRUEBA']);
+
+        // Google: un timeout de Guzzle, que nombra la URL entera.
+        $articulo = $this->nuevo_articulo('Pala ancha con cabo', self::CODIGO_REAL);
+        $run      = $this->asignacion([$articulo], ['proveedor' => ImageAssignmentRun::PROVEEDOR_GOOGLE]);
+
+        Http::swap(new \Illuminate\Http\Client\Factory(app('events')));
+        Http::fake(function ($request) {
+            if (strpos($request->url(), 'googleapis.com') !== false) {
+                throw new ConnectException(
+                    'cURL error 28: Operation timed out after 15001 milliseconds with 0 bytes received for '.$request->url(),
+                    $request->toPsrRequest()
+                );
+            }
+
+            return Http::response('no encontrada', 404, ['Content-Type' => 'text/plain']);
+        });
+
+        $item = $this->procesar($run, $articulo);
+
+        $this->assertSame(ImageAssignmentItem::STATUS_NO_ASIGNADA, $item->status);
+        $this->assertSame('error_de_busqueda', $item->motivo);
+
+        $a_la_vista = json_encode($item->diagnostico, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).' '.$item->motivo_detalle;
+
+        $this->assertStringContainsString('Operation timed out', $a_la_vista, 'El error se sigue viendo.');
+        $this->assertStringContainsString('key=***', $a_la_vista);
+        $this->assertStringNotContainsString('AIzaCLAVE-DE-GOOGLE-DE-PRUEBA', $a_la_vista);
+        $this->assertStringNotContainsString(ImagenesAutomaticasHelper::CX, $a_la_vista);
+
+        // Serper: un error que (hipotéticamente) nombra la clave.
+        $otro     = $this->nuevo_articulo('Rastrillo de 14 dientes', $this->con_verificador('779000600001'));
+        $otro_run = $this->asignacion([$otro]);
+
+        $this->falsear(['error' => 'Invalid API key SERPER-DE-PRUEBA'], [], []);
+
+        $otro_item = $this->procesar($otro_run, $otro);
+
+        $a_la_vista = json_encode($otro_item->diagnostico, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).' '.$otro_item->motivo_detalle;
+
+        $this->assertStringContainsString('Invalid API key', $a_la_vista);
+        $this->assertStringNotContainsString('SERPER-DE-PRUEBA', $a_la_vista);
     }
 
     /**

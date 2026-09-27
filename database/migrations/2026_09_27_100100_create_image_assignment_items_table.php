@@ -87,6 +87,11 @@ class CreateImageAssignmentItemsTable extends Migration
             // queda como error_interno: uno "venenoso" no puede trabar la corrida entera.
             $table->unsignedTinyInteger('intentos')->default(0);
 
+            // La ficha del tramo (job) que lo reclamó. Con ella el failed() de un tramo muerto solo
+            // devuelve SU artículo, y el motor no cierra un artículo que mientras tanto reclamó otro
+            // tramo (por una reanudación): sin esto, un mismo artículo podía quedar con dos imágenes.
+            $table->string('tramo', 40)->nullable();
+
             // Diagnóstico por criterio de búsqueda (ver el docblock de la clase).
             $table->json('diagnostico')->nullable();
 

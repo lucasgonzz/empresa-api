@@ -77,6 +77,14 @@ class ImageAssignmentRunHelper
     /** Cuántos ids acepta como mucho un aprobar/rechazar en lote (una página es de 100 como mucho). */
     const MAXIMO_EN_LOTE = 200;
 
+    /**
+     * Al reanudar, un artículo "procesando" vuelve a la fila solo si no se tocó hace más de estos
+     * minutos. El timeout de un tramo es de 5 minutos: uno más nuevo lo está terminando un tramo
+     * VIVO (el caso de detener y reanudar enseguida), y devolverlo haría que otro tramo lo procese
+     * de nuevo en paralelo.
+     */
+    const MINUTOS_PARA_DAR_POR_MUERTO_UN_ARTICULO = 10;
+
     /** Estimación que se muestra antes de lanzar el catálogo (plan §3). */
     const BUSQUEDAS_ESTIMADAS_POR_ARTICULO = 1.5;
     const SEGUNDOS_ESTIMADOS_POR_ARTICULO  = 8;
@@ -822,11 +830,18 @@ class ImageAssignmentRunHelper
 
             TiendaNubeSyncArticleService::add_article_to_sync($article);
 
+            // Ya es una imagen asignada: sus avisos pasan a ser los de una asignada (contrato §5.2:
+            // solo "Fondo no blanco"). Por qué había ido a revisar queda en `motivo` y en el
+            // diagnóstico; "aprobada por X" lo dice revisado_por.
+            $meta = is_array($item->imagen_meta) ? $item->imagen_meta : [];
+            $meta['avisos'] = isset($meta['fondo_blanco']) && $meta['fondo_blanco'] === false ? ['Fondo no blanco'] : [];
+
             $item->fill([
                 'status'         => ImageAssignmentItem::STATUS_APROBADA,
                 'image_id'       => (int) $imagen->id,
                 'imagen_url'     => $url,
                 'imagen_archivo' => $definitivo,
+                'imagen_meta'    => $meta,
                 'revisado_por'   => self::entero_o_null($auth_user_id),
                 'revisado_at'    => Carbon::now(),
             ]);
@@ -871,6 +886,8 @@ class ImageAssignmentRunHelper
                 'motivo_detalle' => 'Se propuso una imagen y '.(is_null($quien) ? 'se rechazó' : 'la rechazó '.$quien).'.',
                 'imagen_url'     => null,
                 'imagen_archivo' => null,
+                // Sin imagen no hay datos de imagen que mostrar (lo que se vio sigue en el diagnóstico).
+                'imagen_meta'    => null,
                 'revisado_por'   => self::entero_o_null($auth_user_id),
                 'revisado_at'    => Carbon::now(),
             ]);
@@ -931,6 +948,7 @@ class ImageAssignmentRunHelper
                 'motivo_detalle' => 'Se había asignado una imagen y '.(is_null($quien) ? 'se quitó' : 'la quitó '.$quien).'.',
                 'imagen_url'     => null,
                 'imagen_archivo' => null,
+                'imagen_meta'    => null,
                 'image_id'       => null,
                 'revisado_por'   => self::entero_o_null($auth_user_id),
                 'revisado_at'    => Carbon::now(),
@@ -1020,20 +1038,30 @@ class ImageAssignmentRunHelper
      */
     public static function reanudar(ImageAssignmentRun $run)
     {
-        $trabada = $run->esta_trabada();
+        return DB::transaction(function () use ($run) {
+            /*
+             * 🔴 La decisión se toma sobre la fila BLOQUEADA, no sobre la copia que llegó: si un
+             * tramo la terminó entre que se leyó y ahora, reanudarla con la copia vieja la dejaba en
+             * proceso con un registro visible huérfano. El cierre de un tramo (terminar()) es un
+             * UPDATE sobre esta misma fila, así que espera a que esto termine (o esto a él).
+             */
+            $run = ImageAssignmentRun::where('id', $run->id)->lockForUpdate()->first();
 
-        if (!$trabada && !in_array($run->status, [ImageAssignmentRun::STATUS_DETENIDA, ImageAssignmentRun::STATUS_FALLIDA], true)) {
-            return ['status' => 422, 'message' => 'Solo se puede reanudar una asignación detenida, fallida o que parece trabada.'];
-        }
+            $trabada = !is_null($run) && $run->esta_trabada();
 
-        return DB::transaction(function () use ($run, $trabada) {
+            if (is_null($run) || (!$trabada && !in_array($run->status, [ImageAssignmentRun::STATUS_DETENIDA, ImageAssignmentRun::STATUS_FALLIDA], true))) {
+                return ['status' => 422, 'message' => 'Solo se puede reanudar una asignación detenida, fallida o que parece trabada.'];
+            }
+
             $ahora = Carbon::now();
 
             // Lo que un worker muerto dejó a medias vuelve a la fila (conserva sus intentos: un
-            // artículo que ya hizo caer dos veces el proceso queda como error_interno).
+            // artículo que ya hizo caer dos veces el proceso queda como error_interno). Solo lo que
+            // no se tocó hace rato: uno reciente lo está terminando un tramo vivo (ver la constante).
             DB::table('image_assignment_items')
                 ->where('run_id', $run->id)
                 ->where('status', ImageAssignmentItem::STATUS_PROCESANDO)
+                ->where('updated_at', '<', $ahora->copy()->subMinutes(self::MINUTOS_PARA_DAR_POR_MUERTO_UN_ARTICULO))
                 ->update(['status' => ImageAssignmentItem::STATUS_PENDIENTE, 'updated_at' => $ahora]);
 
             $pendientes = ImageAssignmentItem::where('run_id', $run->id)
@@ -1042,12 +1070,13 @@ class ImageAssignmentRunHelper
 
             $run->fill([
                 // La trabada sigue "en proceso" (el tramo nuevo la toma así); las otras vuelven a esperar al worker.
-                'status'              => $trabada ? ImageAssignmentRun::STATUS_EN_PROCESO : ImageAssignmentRun::STATUS_PENDIENTE,
-                'motivo_estado'       => null,
-                'finished_at'         => null,
-                'fallos_consecutivos' => 0,
-                'last_progress_at'    => $ahora,
-                'visto_at'            => null,
+                'status'                     => $trabada ? ImageAssignmentRun::STATUS_EN_PROCESO : ImageAssignmentRun::STATUS_PENDIENTE,
+                'motivo_estado'              => null,
+                'finished_at'                => null,
+                'fallos_consecutivos'        => 0,
+                'errores_proveedor_seguidos' => 0,
+                'last_progress_at'           => $ahora,
+                'visto_at'                   => null,
             ]);
 
             $proceso = is_null($run->background_process_id) ? null : BackgroundProcess::find($run->background_process_id);

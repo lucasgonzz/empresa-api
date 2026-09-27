@@ -18,6 +18,7 @@ use App\Services\Traits\GoogleSearchHelpers;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -313,6 +314,11 @@ class ArticleImageAssignmentEngine
             $contexto['busquedas_nombre']++;
         }
 
+        $this->sumar_a_la_asignacion([
+            'busquedas' => 1,
+            ($criterio === self::CRITERIO_CODIGO ? 'busquedas_codigo' : 'busquedas_nombre') => 1,
+        ]);
+
         $this->descontar_del_cupo_diario();
 
         $resultados = isset($respuesta['resultados']) && is_array($respuesta['resultados']) ? $respuesta['resultados'] : [];
@@ -356,6 +362,7 @@ class ArticleImageAssignmentEngine
             // Validaciones = llamadas que Anthropic respondió (las que se pagan).
             if ($veredicto['llamada_hecha']) {
                 $contexto['validaciones']++;
+                $this->sumar_a_la_asignacion(['validaciones_ia' => 1]);
             }
 
             $hay_asignable = false;
@@ -422,8 +429,10 @@ class ArticleImageAssignmentEngine
      * Arma la candidata del pozo (la que compite en el ranking) con el veredicto de la IA ya
      * interpretado: el grupo, si se puede asignar sola y por qué habría que revisarla.
      *
-     * Grupos: 3 = la IA dijo "si" con confianza alta o media; 2 = "dudoso", o "si" con confianza
-     * baja (la regla anti-complacencia manda "low" cuando no puede confirmar); 1 = sin evaluar.
+     * Grupos: 3 = la IA dijo "si" (con la confianza que sea: el plan ordena ENTRE LAS "SI" por
+     * tamaño, fondo y recién después confianza); 2 = "dudoso"; 1 = sin evaluar. Una "si" con
+     * confianza baja compite como "si" pero, si gana, va a revisar como dudosa (la regla
+     * anti-complacencia manda "low" cuando no puede confirmar).
      *
      * @param  string $criterio
      * @param  array  $candidata  La del diagnóstico (url, pagina, dominio, posicion).
@@ -438,9 +447,9 @@ class ArticleImageAssignmentEngine
         $problemas = isset($ia['problemas']) && is_array($ia['problemas']) ? array_values($ia['problemas']) : [];
         $lado      = min((int) $lista['ancho'], (int) $lista['alto']);
 
-        if ($veredicto === 'si' && ($confianza === 'high' || $confianza === 'medium')) {
+        if ($veredicto === 'si') {
             $grupo = 3;
-        } elseif ($veredicto === 'si' || $veredicto === 'dudoso') {
+        } elseif ($veredicto === 'dudoso') {
             $grupo = 2;
         } else {
             $grupo = 1;
@@ -460,7 +469,9 @@ class ArticleImageAssignmentEngine
             $motivos[] = 'sin_validacion_ia';
         }
 
-        if ($grupo === 2) {
+        // "si" con confianza baja: la regla anti-complacencia manda "low" cuando no puede confirmar,
+        // así que para revisar es lo mismo que "dudoso".
+        if ($grupo === 2 || ($veredicto === 'si' && $confianza !== 'high' && $confianza !== 'medium')) {
             $motivos[] = 'ia_dudosa';
         }
 
@@ -531,9 +542,10 @@ class ArticleImageAssignmentEngine
      * asignar sola, y el artículo terminaba a revisar — justo lo que la búsqueda por nombre existe
      * para evitar ("una búsqueda más a cambio de menos revisión manual").
      *
-     * Después: grupo del veredicto (si > dudoso > sin evaluar), nivel de TAMAÑO, FONDO BLANCO
-     * medido, confianza de la IA, menos problemas, el criterio (a igualdad, la del código de barras,
-     * que es una búsqueda más precisa) y la posición en los resultados.
+     * Después: grupo del veredicto (si > dudoso > sin evaluar) y, adentro de cada grupo, el orden
+     * del plan §6.6: nivel de TAMAÑO, FONDO BLANCO medido, confianza de la IA, menos problemas; a
+     * igualdad, el criterio (la del código de barras, que es una búsqueda más precisa) y la posición
+     * en los resultados.
      *
      * @param  array $candidata
      * @return array
@@ -650,36 +662,44 @@ class ArticleImageAssignmentEngine
             $detalle = 'Se asignó una imagen de '.$medidas.' encontrada buscando por '.$etiqueta_criterio.'.'
                 .($ganadora['fondo_blanco'] ? '' : ' El fondo no es blanco.');
 
-            // El closure queda atado a $this (PHP >= 5.4), así que puede llamar a cerrar() aunque sea protegido.
-            return DB::transaction(function () use ($item, $article, $contexto, $ganadora, $guardada, $meta, $detalle) {
-                $imagen = Image::create([
-                    'hosting_url'    => $guardada['url'],
-                    'imageable_id'   => $article->id,
-                    'imageable_type' => 'article',
-                ]);
+            try {
+                // El closure queda atado a $this (PHP >= 5.4), así que puede llamar a cerrar() aunque sea protegido.
+                return DB::transaction(function () use ($item, $article, $contexto, $ganadora, $guardada, $meta, $detalle) {
+                    $imagen = Image::create([
+                        'hosting_url'    => $guardada['url'],
+                        'imageable_id'   => $article->id,
+                        'imageable_type' => 'article',
+                    ]);
 
-                /*
-                 * Marca para Tienda Nube, igual que el job viejo. 🔴 SIN `timestamps = false`, a
-                 * diferencia del job viejo: el save() tiene que actualizar updated_at para que el
-                 * sync incremental del front (sync_articles.js) vuelva a bajar el artículo con su
-                 * imagen nueva (mismo motivo documentado en ImageController::setImage()).
-                 */
-                $article->needs_sync_with_tn = true;
-                $article->save();
+                    /*
+                     * Marca para Tienda Nube, igual que el job viejo. 🔴 SIN `timestamps = false`, a
+                     * diferencia del job viejo: el save() tiene que actualizar updated_at para que el
+                     * sync incremental del front (sync_articles.js) vuelva a bajar el artículo con su
+                     * imagen nueva (mismo motivo documentado en ImageController::setImage()).
+                     */
+                    $article->needs_sync_with_tn = true;
+                    $article->save();
 
-                TiendaNubeSyncArticleService::add_article_to_sync($article);
+                    TiendaNubeSyncArticleService::add_article_to_sync($article);
 
-                return $this->cerrar($item, $contexto, [
-                    'status'         => ImageAssignmentItem::STATUS_ASIGNADA,
-                    'motivo'         => null,
-                    'motivo_detalle' => $detalle,
-                    'criterio_usado' => $ganadora['criterio'],
-                    'imagen_url'     => $guardada['url'],
-                    'imagen_archivo' => $guardada['archivo'],
-                    'imagen_meta'    => $meta,
-                    'image_id'       => $imagen->id,
-                ]);
-            });
+                    return $this->cerrar($item, $contexto, [
+                        'status'         => ImageAssignmentItem::STATUS_ASIGNADA,
+                        'motivo'         => null,
+                        'motivo_detalle' => $detalle,
+                        'criterio_usado' => $ganadora['criterio'],
+                        'imagen_url'     => $guardada['url'],
+                        'imagen_archivo' => $guardada['archivo'],
+                        'imagen_meta'    => $meta,
+                        'image_id'       => $imagen->id,
+                    ]);
+                });
+            } catch (\Throwable $e) {
+                // El cierre se deshizo (el artículo ya era de otro tramo, o falló la base): la fila
+                // de images no quedó, así que el archivo recién guardado no lo usa nadie.
+                $this->borrar_archivo_sin_usar($guardada['archivo']);
+
+                throw $e;
+            }
         }
 
         $motivo = $this->motivo_principal_de_revision($ganadora);
@@ -687,15 +707,46 @@ class ArticleImageAssignmentEngine
         $detalle = 'Buscando por '.$etiqueta_criterio.' apareció una imagen de '.$medidas.', pero hay que revisarla: '
             .$this->lista_legible($this->avisos_en_minuscula($avisos)).'.';
 
-        return $this->cerrar($item, $contexto, [
-            'status'         => ImageAssignmentItem::STATUS_A_REVISAR,
-            'motivo'         => $motivo,
-            'motivo_detalle' => $detalle,
-            'criterio_usado' => $ganadora['criterio'],
-            'imagen_url'     => $guardada['url'],
-            'imagen_archivo' => $guardada['archivo'],
-            'imagen_meta'    => $meta,
-        ]);
+        try {
+            return $this->cerrar($item, $contexto, [
+                'status'         => ImageAssignmentItem::STATUS_A_REVISAR,
+                'motivo'         => $motivo,
+                'motivo_detalle' => $detalle,
+                'criterio_usado' => $ganadora['criterio'],
+                'imagen_url'     => $guardada['url'],
+                'imagen_archivo' => $guardada['archivo'],
+                'imagen_meta'    => $meta,
+            ]);
+        } catch (\Throwable $e) {
+            // Mismo caso: el item no quedó apuntando a esta candidata.
+            $this->borrar_archivo_sin_usar($guardada['archivo']);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Borra del storage un archivo recién guardado cuyo cierre se deshizo (si no, queda un .webp
+     * huérfano que ninguna fila de images ni ningún item nombra).
+     *
+     * @param  string $archivo
+     * @return void
+     */
+    protected function borrar_archivo_sin_usar($archivo)
+    {
+        if (!is_string($archivo) || $archivo === '') {
+            return;
+        }
+
+        try {
+            Storage::disk('public')->delete($archivo);
+        } catch (\Throwable $e) {
+            Log::warning('[ImagenesInteligentes] No se pudo borrar un archivo que quedó sin usar.', [
+                'run_id'  => $this->run->id,
+                'archivo' => $archivo,
+                'error'   => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -745,6 +796,20 @@ class ArticleImageAssignmentEngine
         $ahora  = Carbon::now();
 
         DB::transaction(function () use ($item, $contexto, $datos, $cuenta_procesado, $diagnostico, $run_id, $ahora) {
+            /*
+             * 🔴 Solo se cierra si el artículo sigue siendo de ESTE tramo. Si mientras se procesaba
+             * lo devolvió a pendiente una reanudación (o el failed() de otro tramo) y lo reclamó
+             * otro tramo, cerrarlo acá lo dejaría con dos imágenes. La excepción deshace también la
+             * fila de images de una asignada (esto corre adentro de su misma transacción).
+             */
+            $actual = ImageAssignmentItem::where('id', $item->id)->lockForUpdate()->first(['id', 'status', 'tramo']);
+
+            if (is_null($actual)
+                || $actual->status !== ImageAssignmentItem::STATUS_PROCESANDO
+                || (string) $actual->tramo !== (string) $item->tramo) {
+                throw new \RuntimeException('El artículo '.$item->article_id.' ya no es de este tramo: no se cierra dos veces.');
+            }
+
             $item->fill(array_merge([
                 'motivo'          => null,
                 'motivo_detalle'  => null,
@@ -761,15 +826,12 @@ class ArticleImageAssignmentEngine
             ]));
             $item->save();
 
-            // Incrementos atómicos: un tramo reanudado no pisa lo que sumó el anterior.
+            // Incremento atómico: un tramo reanudado no pisa lo que sumó el anterior. Las búsquedas y
+            // las validaciones ya se sumaron en el momento (sumar_a_la_asignacion()).
             DB::table('image_assignment_runs')
                 ->where('id', $run_id)
                 ->update([
                     'procesados'       => DB::raw('procesados + '.($cuenta_procesado ? 1 : 0)),
-                    'busquedas'        => DB::raw('busquedas + '.(int) $contexto['busquedas']),
-                    'busquedas_codigo' => DB::raw('busquedas_codigo + '.(int) $contexto['busquedas_codigo']),
-                    'busquedas_nombre' => DB::raw('busquedas_nombre + '.(int) $contexto['busquedas_nombre']),
-                    'validaciones_ia'  => DB::raw('validaciones_ia + '.(int) $contexto['validaciones']),
                     'last_progress_at' => $ahora,
                     'updated_at'       => $ahora,
                 ]);
@@ -1190,6 +1252,28 @@ class ArticleImageAssignmentEngine
     /* ----------------------------------------------------------------------------------------
      * Cupo diario
      * -------------------------------------------------------------------------------------- */
+
+    /**
+     * Suma a los contadores de la asignación EN EL MOMENTO de cada búsqueda o llamada a la IA que
+     * se pagó, con un incremento atómico. No al cerrar el artículo: si el motor revienta a mitad de
+     * un artículo (y se lo reintenta), esas búsquedas ya se cobraron y el cupo del día ya se
+     * descontó, así que la asignación tiene que mostrarlas igual.
+     *
+     * @param  array $sumas  columna => cantidad (busquedas, busquedas_codigo, busquedas_nombre, validaciones_ia).
+     * @return void
+     */
+    protected function sumar_a_la_asignacion(array $sumas)
+    {
+        $cambios = ['updated_at' => Carbon::now()];
+
+        foreach ($sumas as $columna => $cantidad) {
+            if (in_array($columna, ['busquedas', 'busquedas_codigo', 'busquedas_nombre', 'validaciones_ia'], true)) {
+                $cambios[$columna] = DB::raw($columna.' + '.(int) $cantidad);
+            }
+        }
+
+        DB::table('image_assignment_runs')->where('id', $this->run->id)->update($cambios);
+    }
 
     /**
      * ¿Queda cupo diario? Lo decide ImagenesAutomaticasHelper::cuota_de(), el mismo que usan la

@@ -145,6 +145,12 @@ class SerperImageSearchProvider implements ImageSearchProvider
      */
     protected function fallo($error)
     {
+        // Defensivo: la clave viaja en un header y Guzzle no pone headers en sus mensajes, pero este
+        // texto termina a la vista de cualquier usuario del comercio (diagnóstico, registro visible).
+        if ($this->api_key !== '') {
+            $error = str_replace($this->api_key, '***', (string) $error);
+        }
+
         return [
             'ok'         => false,
             'error'      => $error,
