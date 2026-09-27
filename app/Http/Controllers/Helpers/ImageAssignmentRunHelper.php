@@ -40,8 +40,11 @@ use Illuminate\Support\Str;
  */
 class ImageAssignmentRunHelper
 {
-    /** Tipo del registro visible: el mismo de siempre, así la píldora de procesos no cambia. */
-    const TIPO_DE_PROCESO = 'imagenes_automaticas';
+    /**
+     * Tipo del registro visible: el mismo de siempre, así la píldora de procesos no cambia. Se toma
+     * de ImagenesAutomaticasHelper para que los dos no puedan quedar distintos.
+     */
+    const TIPO_DE_PROCESO = ImagenesAutomaticasHelper::TIPO_DE_PROCESO;
 
     /** Título del registro visible de las asignaciones por selección y del asistente. */
     const TITULO_DE_PROCESO = 'Imágenes automáticas';
