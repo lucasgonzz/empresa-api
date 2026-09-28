@@ -24,6 +24,7 @@ use App\Models\PriceType;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
+use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\MercadoPago\MercadoPagoOAuthService;
 use App\Services\Zipnova\ZipnovaClient;
 use Carbon\Carbon;
@@ -72,7 +73,8 @@ class DemoSetupHelper
      *                                   usan_cuentas_corrientes, ventas_con_fecha_de_entrega,
      *                                   address_1..3, price_type_1..3,
      *                                   demo_eventos_token, demo_eventos_url, demo_plan,
-     *                                   demo_media_urls (mision 50, las cuatro opcionales)
+     *                                   demo_media_urls (mision 50, las cuatro opcionales),
+     *                                   serper_api_key (opcional, misión serper-en-user-setup)
      *
      * @return User Usuario creado
      */
@@ -680,6 +682,12 @@ class DemoSetupHelper
             'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
                 ? (int) $data['google_cuota']
                 : 100,
+            // Clave de Serper de la demo (misión serper-en-user-setup, 28/9/2026): la manda admin-api
+            // (RunDemoSetupService: la de demos, o la de clientes si la de demos está vacía) SOLO si
+            // está cargada. Sin fallback propio: si no llega queda null y el buscador de imágenes usa
+            // SERPER_API_KEY del .env (ImageSearchProviderFactory::clave_serper_para()). 🔴 Es un
+            // secreto: User::$hidden la saca de toda respuesta al navegador.
+            'serper_api_key'                => ImageSearchProviderFactory::clave_serper_del_payload($data),
             'listas_de_precio'              => !empty($data['use_price_lists']) ? 1 : 0,
             // Pedido de Lucas (25/8/2026): en la demo estos avisos al iniciar sesion quedan apagados por defecto.
             'show_stock_min_al_iniciar'     => 0,
