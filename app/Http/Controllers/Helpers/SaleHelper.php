@@ -26,6 +26,7 @@ use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
+use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleCajaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\Helpers\sale\UpdateHelper;
@@ -1149,6 +1150,15 @@ class SaleHelper extends Controller {
                         'delivered_amount'      => $previus_article->pivot->delivered_amount,
                         'discount'              => $previus_article->pivot->discount,
                         'checked_amount'        => $previus_article->pivot->amount,
+                        /*
+                            La base del renglon viaja con su precio (mision
+                            recargos-en-precios-editable, 28/9/2026): este renglon se re-adjunta
+                            con el MISMO `price` que tenia, asi que si ese precio traia el recargo
+                            adentro, sigue trayendolo. Sin esta linea el renglon volveria con la
+                            base en NULL y la venta —con la opcion prendida— quedaria bloqueada
+                            para siempre en VENDER por un renglon que nadie toco.
+                        */
+                        'price_vender_sin_recargos' => RecargosEnPreciosEsquemaHelper::base_del_pivot($previus_article->pivot),
                         'created_at'            => Carbon::now(),
                     ];
                     Self::attachArticle($sale, $article);
@@ -1295,7 +1305,9 @@ class SaleHelper extends Controller {
                         if ($otro_precio['amount'] == '') {
                             $otro_precio['amount'] = 1;
                         }
-                        
+
+                        $otro_precio = Self::precio_y_base_de_varios_precios($otro_precio);
+
                         // $fecha_agregado = Self::get_fecha_agregado_for_item($otro_precio, $fecha_agregado_map);
                         Self::attachArticle($sale, $otro_precio, null);
 
@@ -1389,6 +1401,43 @@ class SaleHelper extends Controller {
         return $total;
     }
 
+    /**
+     * El precio que se guarda y su base, para UN renglon de `varios_precios` (mision
+     * recargos-en-precios-editable, 28/9/2026).
+     *
+     * 🔴 ACA EL PRECIO QUE SE GUARDA NO ES `price_vender`, SI VIENE `price_vender_con_recargos`. Es
+     * el unico tipo de renglon donde pasa: en `varios_precios` `price_vender` es LO QUE TIPEO EL
+     * VENDEDOR en el input de cada precio, y la SPA no lo pisa con el precio recargado (si lo
+     * pisara, apagar y prender la opcion le iria cambiando el numero que escribio). Por eso manda
+     * el precio final aparte, en `price_vender_con_recargos`, y la base en
+     * `price_vender_sin_recargos`.
+     *
+     * Sin `price_vender_con_recargos` —SPA vieja, u opcion apagada— se guarda `price_vender` como
+     * siempre y la base va en NULL AUNQUE VENGA `price_vender_sin_recargos`: en ese caso el precio
+     * guardado es el tipeado, que no tiene el recargo adentro, y una base NO NULL diria lo
+     * contrario. La invariante de la columna manda sobre lo que diga el payload.
+     *
+     * @param  array  $otro_precio  Un elemento de `varios_precios`, ya con `id`, `name` y `amount`.
+     * @return array  El mismo elemento, con `price_vender` y `price_vender_sin_recargos` resueltos.
+     */
+    static function precio_y_base_de_varios_precios($otro_precio) {
+
+        $con_recargos = isset($otro_precio['price_vender_con_recargos'])
+                            ? $otro_precio['price_vender_con_recargos']
+                            : null;
+
+        if (!is_null($con_recargos) && $con_recargos !== '' && is_numeric($con_recargos)) {
+
+            $otro_precio['price_vender'] = $con_recargos;
+
+            return $otro_precio;
+        }
+
+        $otro_precio['price_vender_sin_recargos'] = null;
+
+        return $otro_precio;
+    }
+
     static function usa_stock($article) {
         $_article = Article::find($article['id']);
         if (!is_null($_article)) {
@@ -1414,7 +1463,19 @@ class SaleHelper extends Controller {
 
         $ganancia = (float)$price - (float)$cost;
 
-        $sale->articles()->attach($article['id'], [
+        /*
+            🔴 La base (`price_sin_recargos_de_venta`) entra por la guarda de esquema y NO como una
+            clave mas de este array (mision recargos-en-precios-editable, 28/9/2026): en la ventana
+            del deploy la columna no existe y nombrarla tumba el alta de TODA venta. Ver
+            `RecargosEnPreciosEsquemaHelper`.
+
+            La API no la calcula ni la valida contra `price`: la calcula la SPA, que es la que
+            recarga el precio. Clave ausente (SPA vieja) = NULL, y en una venta con la opcion
+            prendida eso la deja bloqueada en VENDER — el modo de falla seguro. No se "completa"
+            dividiendo `price` por el factor de los recargos: el precio guardado puede venir
+            redondeado, y un precio adivinado es justo lo que la columna existe para evitar.
+        */
+        $sale->articles()->attach($article['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
             'amount'                => $amount,
             'ganancia'              => $ganancia * $amount,
             'cost'                  => $cost,
@@ -1441,7 +1502,7 @@ class SaleHelper extends Controller {
             'fecha_agregado'        => $fecha_agregado,
 
             'created_at'            => Carbon::now(),
-        ]);
+        ], RecargosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'));
 
         if (!is_null($delivered_amount) && !$sale->en_acopio) {
             $sale->en_acopio = 1;
@@ -1487,10 +1548,20 @@ class SaleHelper extends Controller {
                  */
                 $price_sin_iva = Self::get_price_sin_iva($item, $item['price_vender']);
 
-                $cambios = [
+                /*
+                    La base se escribe SIEMPRE que se escribe el precio, aunque la clave no venga
+                    (mision recargos-en-precios-editable, 28/9/2026). Con la clave, es la que
+                    calculo el modal de "Actualizar precios" de la SPA nueva. SIN la clave (SPA
+                    vieja) va NULL, y no se deja la base vieja: la base describe al `price` de la
+                    MISMA fila, y un precio nuevo con la base del precio anterior haria que VENDER,
+                    al reabrir la venta, recalcule desde un numero que ya no existe — o sea, que
+                    cambie el precio que el vendedor acaba de poner. NULL la deja bloqueada, que es
+                    lo seguro.
+                */
+                $cambios = RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                     'price' => $item['price_vender'],
                     'price_sin_iva' => $price_sin_iva,
-                ];
+                ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'article_sale');
 
                 /** Línea actual, para leerle el costo y la cantidad que ya tiene guardados. */
                 $linea = $sale->articles()->find($item['id']);
@@ -1509,9 +1580,10 @@ class SaleHelper extends Controller {
                 $service = Service::find($item['id']);
                 $service->price = $item['price_vender'];
                 $service->save();
-                $sale->services()->updateExistingPivot($item['id'], [
+                // La base va con el precio, por el mismo motivo que en el renglon de articulo de arriba.
+                $sale->services()->updateExistingPivot($item['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                         'price' => $item['price_vender'],
-                                                    ]);
+                                                    ], RecargosEnPreciosEsquemaHelper::base_del_item($item), 'sale_service'));
             }
         }
     }
@@ -1651,14 +1723,28 @@ class SaleHelper extends Controller {
         return round($price_with_iva / (((float) $iva_percentage / 100) + 1), 2);
     }
 
+    /*
+        Los tres `attach*` de abajo (promociones, combos y servicios) guardan la base del renglon
+        igual que `attachArticle()`, y por la misma guarda de esquema (mision
+        recargos-en-precios-editable, 28/9/2026).
+
+        🔴 NO SE FILTRA POR TIPO NI POR `surchages_in_services`. Desde esta mision, con la opcion
+        prendida, combos y promociones TAMBIEN llevan el recargo adentro del precio (decision 2 de
+        Lucas: la opcion decide donde se ve el recargo, nunca si se cobra), y un servicio lo lleva
+        solo si la venta tiene "recargos en servicios". Esa regla la aplica la SPA, que es la que
+        recarga el precio: un servicio sin recargo llega con la clave en null. Si el back filtrara
+        por su cuenta, dos lugares decidirian lo mismo y el dia que no coincidan un renglon con el
+        recargo adentro quedaria sin base (bloqueado) o uno sin recargo quedaria con base (y apagar
+        la opcion le cambiaria el precio).
+    */
     static function attachPromocionVinotecas($sale, $promocion_vinotecas, $previus_promos) {
         foreach ($promocion_vinotecas as $promo) {
             if (isset($promo['is_promocion_vinoteca'])) {
-                $sale->promocion_vinotecas()->attach($promo['id'], [
+                $sale->promocion_vinotecas()->attach($promo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                             'amount' => (float)$promo['amount'],
                                                             'price' => $promo['price_vender'],
                                                             'created_at' => Carbon::now(),
-                                                        ]);
+                                                        ], RecargosEnPreciosEsquemaHelper::base_del_item($promo), 'promocion_vinoteca_sale'));
                 PromocionVinotecaHelper::discount_stock_promocion_vinoteca($sale, $promo, $previus_promos);
             }
         }
@@ -1667,11 +1753,11 @@ class SaleHelper extends Controller {
     static function attachCombos($sale, $combos, $previus_combos) {
         foreach ($combos as $combo) {
             if (isset($combo['is_combo'])) {
-                $sale->combos()->attach($combo['id'], [
+                $sale->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                                                             'amount' => (float)$combo['amount'],
                                                             'price' => $combo['price_vender'],
                                                             'created_at' => Carbon::now(),
-                                                        ]);
+                                                        ], RecargosEnPreciosEsquemaHelper::base_del_item($combo), 'combo_sale'));
 
                 ComboHelper::discount_articles_stock($sale, $combo, $previus_combos);
             }
@@ -1681,12 +1767,12 @@ class SaleHelper extends Controller {
     static function attachServices($sale, $services) {
         foreach ($services as $service) {
             if (isset($service['is_service'])) {
-                $sale->services()->attach($service['id'], [
+                $sale->services()->attach($service['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
                     'price' => $service['price_vender'],
                     'amount' => $service['amount'],
                     'returned_amount'   => Self::getReturnedAmount($service),
                     'discount' => Self::getDiscount($service),
-                ]);
+                ], RecargosEnPreciosEsquemaHelper::base_del_item($service), 'sale_service'));
             }
         }
     }
@@ -2318,6 +2404,14 @@ class SaleHelper extends Controller {
             }
         }
 
+        /*
+            🔴 La guarda del flag envuelve a LOS CUATRO buckets, combos y promociones incluidos, y
+            asi tiene que quedar. Desde la mision recargos-en-precios-editable (28/9/2026), con la
+            opcion prendida VENDER mete el recargo adentro del precio de combos y promociones
+            tambien (antes no lo hacia y el recargo, directamente, no se cobraba en ellos). Sacar
+            un bucket de esta guarda —"total, los combos nunca lo traian adentro"— lo cobraria dos
+            veces.
+        */
         if (
             $with_surchages
             && !$sale->aplicar_recargos_directo_a_items
