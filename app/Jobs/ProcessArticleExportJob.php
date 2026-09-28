@@ -151,7 +151,7 @@ class ProcessArticleExportJob implements ShouldQueue
             $ultimo_latido = time();
             $exported_count = $streamer->guardar($relative_path, function ($escritos) use ($proceso, $export_history, &$ultimo_latido) {
 
-                // El helper ya limita la frecuencia de escritura y de broadcast.
+                // Una lectura y una escritura por lote de mil; el broadcast lo limita el helper.
                 BackgroundProcessHelper::avanzar($proceso, $escritos);
 
                 if (!is_null($export_history) && time() - $ultimo_latido >= 60) {

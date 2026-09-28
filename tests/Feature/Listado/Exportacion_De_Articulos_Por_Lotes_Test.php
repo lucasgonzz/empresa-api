@@ -171,6 +171,68 @@ class Exportacion_De_Articulos_Por_Lotes_Test extends EmpresaTestCase
         $this->assertTrue(is_float($costo[1]), 'El costo (decimal de MySQL, llega como string) tiene que salir como número.');
     }
 
+    /**
+     * Sin listas_de_precio (el caso de Servian) los encabezados de las listas van al final, y
+     * hasta el 28/9/2026 los valores se insertaban después de "Aplicar Iva": desde "Categoria" en
+     * adelante cada valor caía en la columna de al lado. Cada columna tiene que decir lo suyo.
+     *
+     * @test
+     */
+    public function sin_listas_de_precio_cada_valor_queda_bajo_su_encabezado()
+    {
+        DB::table('users')->where('id', $this->user_id)->update(['listas_de_precio' => 0]);
+        $ids = $this->sembrar_catalogo(1);
+        $categoria = DB::table('categories')->insertGetId(['user_id' => $this->user_id, 'name' => 'Categoria Alineada', 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('articles')->where('id', $ids[0])->update(['category_id' => $categoria, 'descripcion' => 'Descripcion alineada', 'stock_min' => 7]);
+
+        (new ArticleExportStreamer($this->user_id, [$ids[0]]))->guardar('alineado.xlsx');
+
+        $filas = $this->leer(Storage::disk('local')->path('alineado.xlsx'));
+        $encabezados = array_column($filas[0], 1);
+        $celda = function ($titulo) use ($filas, $encabezados) {
+            $indice = array_search($titulo, $encabezados);
+            $this->assertNotFalse($indice, 'Falta la columna ' . $titulo);
+            return $filas[1][$indice][1];
+        };
+
+        $this->assertCount(count($encabezados), $filas[1], 'La fila no tiene el mismo ancho que los encabezados.');
+        $this->assertSame('Articulo por lotes ñandú 1', $celda('Nombre'));
+        $this->assertSame('Categoria Alineada', $celda('Categoria'));
+        $this->assertSame('Descripcion alineada', $celda('Descripcion'));
+        $this->assertSame('2026-09-28 10:00:00', $celda('Creado'));
+        $this->assertSame('2026-09-28 10:00:00', $celda('Actualizado'));
+        $this->assertSame('', $celda('Lista Lotes'), 'Sin listas_de_precio la columna de la lista va vacía, no con otro dato.');
+    }
+
+    /**
+     * Excel no abre un archivo con una celda de más de 32.767 caracteres. PhpSpreadsheet recortaba;
+     * `descripcion` es TEXT, así que alcanza con un artículo con una descripción larga.
+     *
+     * @test
+     */
+    public function una_descripcion_larga_se_recorta_como_lo_hacia_phpspreadsheet()
+    {
+        $ids = $this->sembrar_catalogo(1);
+        DB::table('articles')->where('id', $ids[0])->update(['descripcion' => "Linea 1\r\n" . str_repeat('á', 100) . str_repeat('a', 40000)]);
+
+        (new ArticleExportStreamer($this->user_id, [$ids[0]]))->guardar('larga.xlsx');
+        Excel::store(new ArticleExport(Article::where('id', $ids[0])->get(), $this->user_id), 'larga-maatwebsite.xlsx');
+
+        $filas = $this->leer(Storage::disk('local')->path('larga.xlsx'));
+        $encabezados = array_column($filas[0], 1);
+        $descripcion = $filas[1][array_search('Descripcion', $encabezados)][1];
+
+        $referencia = $this->leer(Storage::disk('local')->path('larga-maatwebsite.xlsx'));
+        $descripcion_referencia = $referencia[1][array_search('Descripcion', array_column($referencia[0], 1))][1];
+
+        // PhpSpreadsheet recorta a 32.767 y DESPUÉS convierte CRLF en LF: con un salto queda uno menos.
+        $this->assertLessThanOrEqual(32767, mb_strlen($descripcion, 'UTF-8'));
+        $this->assertGreaterThan(32000, mb_strlen($descripcion, 'UTF-8'));
+        $this->assertSame($descripcion_referencia, $descripcion);
+        $this->assertSame(0, strpos($descripcion, "Linea 1\ná"), 'El salto de línea tiene que quedar como \n.');
+        $this->assertSame($this->leer(Storage::disk('local')->path('larga-maatwebsite.xlsx')), $filas);
+    }
+
     /** @test */
     public function la_seleccion_exporta_solo_los_ids_pedidos_del_comercio_sin_filtrar_por_estado()
     {
@@ -193,7 +255,7 @@ class Exportacion_De_Articulos_Por_Lotes_Test extends EmpresaTestCase
         }, array_slice($filas, 1));
 
         $this->assertSame(3, $escritos);
-        $this->assertSame([$ids[4], $ids[1], $ids[0]], $numeros, 'Tienen que salir los tres pedidos del comercio, por id descendente, incluido el inactivo.');
+        $this->assertSame([$ids[0], $ids[1], $ids[4]], $numeros, 'Tienen que salir los tres pedidos del comercio, por id ascendente como antes, incluido el inactivo.');
         $this->assertNotContains((int) $ajeno, $numeros, 'Se coló un artículo de otro comercio.');
     }
 

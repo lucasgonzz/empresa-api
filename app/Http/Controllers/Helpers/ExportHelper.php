@@ -533,7 +533,8 @@ class ExportHelper {
 
 			foreach ($articles as $article) {
 
-				$article_addresses = $article->addresses->keyBy('id');
+				// unique() antes de keyBy(): con un pivot repetido, find() devolvía el primero.
+				$article_addresses = $article->addresses->unique('id')->keyBy('id');
 
 				foreach ($addresses as $address) {
 
@@ -802,6 +803,35 @@ class ExportHelper {
 		return $article;
 	}
 
+	/**
+	 * Valores de las listas de precio sin listas_de_precio, uno por lista y en el orden de los
+	 * encabezados (getPriceTypes(), por position ascendente), que setPriceTypesHeadings() pone al
+	 * final. Con lista_de_precios_por_categoria es el precio final del pivot de esa lista (vacío si
+	 * el artículo no la tiene: antes se salteaba y corría las columnas siguientes); si no, el
+	 * atributo con el nombre de la lista ("caso Colman").
+	 *
+	 * @param \App\Models\Article $article
+	 * @return array
+	 */
+	static function valores_de_listas_al_final($article) {
+
+		$values = [];
+		$por_categoria = self::tiene_extencion('lista_de_precios_por_categoria');
+		$article_price_types = $por_categoria ? $article->price_types->unique('id')->keyBy('id') : null;
+
+		foreach (Self::getPriceTypes() as $price_type) {
+
+			if ($por_categoria) {
+				$article_price_type = $article_price_types->get($price_type->id);
+				$values[] = $article_price_type ? $article_price_type->pivot->final_price : null;
+			} else {
+				$values[] = Self::valor($article, $price_type->name);
+			}
+		}
+
+		return $values;
+	}
+
 	static function get_price_types_values_in_order($article) {
 
 		$values = [];
@@ -849,7 +879,8 @@ class ExportHelper {
 			}
 
 			// Caso sin dólares: relación price_types pivot (ya cargada; antes, una consulta por lista)
-			$article_price_types = $article->price_types->keyBy('id');
+			// unique() antes de keyBy(): con un pivot repetido, find() devolvía el primero.
+			$article_price_types = $article->price_types->unique('id')->keyBy('id');
 			foreach ($price_types as $price_type) {
 
 				$article_price_type = $article_price_types->get($price_type->id);

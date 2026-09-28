@@ -223,15 +223,30 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
                 ['Margen de ganancia', 'Precio', 'Precio Final', 'Precio Final Anterior']
             );
 
-            // 2) insertar valores en la MISMA posición que headings (después de Aplicar Iva)
-            $headings_pre_price_types = $this->get_headings_pre_price_types();
-            $aplicar_iva_index = array_search('Aplicar Iva', $headings_pre_price_types);
+            /*
+             * 2) insertar los valores en la MISMA posición que setPriceTypesHeadings() puso los
+             * encabezados. Con listas_de_precio van después de "Aplicar Iva" (tres columnas por
+             * lista). Sin listas_de_precio los encabezados van AL FINAL (antes de precios en
+             * blanco y fechas), una columna por lista.
+             *
+             * 🔴 Hasta el 28/9/2026 el caso sin listas_de_precio también insertaba después de
+             * "Aplicar Iva": desde "Categoria" en adelante cada valor caía en la columna de al
+             * lado (Categoria, Marca y Descripcion vacías o con precios; el stock bajo el nombre
+             * de una lista). Es el caso de Servian. Reimportar ese Excel pisaba datos.
+             */
+            if (ExportHelper::usa_listas_de_precio()) {
 
-            $values = ExportHelper::get_price_types_values_in_order($article);
+                $headings_pre_price_types = $this->get_headings_pre_price_types();
+                $aplicar_iva_index = array_search('Aplicar Iva', $headings_pre_price_types);
 
-            // insertar después de aplicar_iva
-            array_splice($map, $aplicar_iva_index + 1, 0, $values);
+                $values = ExportHelper::get_price_types_values_in_order($article);
 
+                // insertar después de aplicar_iva
+                array_splice($map, $aplicar_iva_index + 1, 0, $values);
+            } else {
+
+                $map = array_merge($map, ExportHelper::valores_de_listas_al_final($article));
+            }
         }
 
         // $map = ExportHelper::mapPriceTypes($map, $article);

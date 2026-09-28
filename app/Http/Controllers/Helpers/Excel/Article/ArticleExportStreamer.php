@@ -42,6 +42,17 @@ class ArticleExportStreamer
     const NOMBRE_HOJA = 'Worksheet';
 
     /**
+     * Largo máximo de una celda de texto en Excel (DataType::MAX_STRING_LENGTH de PhpSpreadsheet).
+     */
+    const MAX_TEXTO = 32767;
+
+    /**
+     * Temporales con más de estas horas en la carpeta de trabajo son de una exportación que murió
+     * sin pasar por el finally (timeout, kill del hosting, falta de memoria) y se borran.
+     */
+    const HORAS_TEMPORAL_HUERFANO = 6;
+
+    /**
      * @var int
      */
     protected $owner_user_id;
@@ -70,8 +81,8 @@ class ArticleExportStreamer
 
         if (is_array($article_ids) && count($article_ids)) {
             $ids = array_values(array_unique(array_map('intval', $article_ids)));
-            // Mismo orden que el recorrido del catálogo completo: id descendente.
-            rsort($ids);
+            // Mismo orden que salía antes (whereIn sin ORDER BY: por PK, ascendente).
+            sort($ids);
             $this->article_ids = $ids;
         } else {
             $this->article_ids = null;
@@ -127,7 +138,11 @@ class ArticleExportStreamer
             // Se sube por stream: el archivo no pasa por memoria aunque pese decenas de MB.
             $stream = fopen($temporal, 'r');
             try {
-                Storage::put($relative_path, $stream);
+                // El Excel::store() de antes no lo miraba: un archivo que no se pudo copiar
+                // quedaba "completado" con un link roto.
+                if (Storage::put($relative_path, $stream) === false) {
+                    throw new \RuntimeException('No se pudo guardar el Excel en ' . $relative_path);
+                }
             } finally {
                 if (is_resource($stream)) {
                     fclose($stream);
@@ -196,7 +211,8 @@ class ArticleExportStreamer
      *
      * Catálogo completo: paginado por clave (id < último id del lote anterior), que sobre el
      * índice de user_id no se degrada como un OFFSET a medida que avanza.
-     * Selección: los ids pedidos en tramos de LOTE, sin filtrar por estado (como antes).
+     * Selección: los ids pedidos en tramos de LOTE, por id ascendente y sin filtrar por estado
+     * (como antes).
      *
      * @param ArticleExport $export
      * @param callable      $procesar Recibe una Collection de artículos por lote.
@@ -210,7 +226,7 @@ class ArticleExportStreamer
 
                 $articles = $export->consulta_articulos(false)
                                 ->whereIn('articles.id', $ids)
-                                ->orderBy('articles.id', 'DESC')
+                                ->orderBy('articles.id', 'ASC')
                                 ->get();
 
                 if ($articles->count()) {
@@ -274,8 +290,9 @@ class ArticleExportStreamer
      * - Texto que parece número (el regex de DefaultValueBinder) se escribe como número, salvo con
      *   ceros a la izquierda ("00123") o enteros más grandes que PHP_INT_MAX, que siguen como texto.
      *   Los decimales de MySQL llegan como string: sin esto el costo y el precio saldrían como texto.
-     * - Única diferencia a propósito: un texto que empieza con "=" PhpSpreadsheet lo escribía como
-     *   fórmula (y Excel mostraba #¿NOMBRE?); acá queda como texto.
+     * - Diferencias a propósito: un texto que empieza con "=" PhpSpreadsheet lo escribía como
+     *   fórmula (y Excel mostraba #¿NOMBRE?), y un texto igual a un código de error de Excel
+     *   ("#N/A", "#REF!"...) como celda de error; acá los dos quedan como texto.
      *
      * @param mixed $valor
      * @return array|null [tipo, valor] de XlsxStreamWriter, o null si la celda va vacía.
@@ -307,6 +324,18 @@ class ArticleExportStreamer
         $numero = $this->como_numero($valor);
         if (!is_null($numero)) {
             return [XlsxStreamWriter::TIPO_NUMERO, $numero];
+        }
+
+        /*
+         * DataType::checkString() de PhpSpreadsheet: una celda de texto no puede pasar de 32.767
+         * caracteres (Excel directamente no abre el archivo; alcanza con una descripción larga)
+         * y los saltos de línea van como \n.
+         */
+        if (strlen($valor) > self::MAX_TEXTO) {
+            $valor = mb_substr($valor, 0, self::MAX_TEXTO, 'UTF-8');
+        }
+        if (strpos($valor, "\r") !== false) {
+            $valor = str_replace(["\r\n", "\r"], "\n", $valor);
         }
 
         return [XlsxStreamWriter::TIPO_TEXTO, $valor];
@@ -390,6 +419,26 @@ class ArticleExportStreamer
             @mkdir($carpeta, 0775, true);
         }
 
+        $this->borrar_temporales_huerfanos($carpeta);
+
         return $carpeta;
+    }
+
+    /**
+     * Borra los temporales viejos que dejó una exportación que murió a mitad: el XML de la hoja de
+     * un catálogo grande pesa más de un giga y nada más lo limpiaría.
+     *
+     * @param string $carpeta
+     * @return void
+     */
+    protected function borrar_temporales_huerfanos($carpeta)
+    {
+        $limite = time() - self::HORAS_TEMPORAL_HUERFANO * 3600;
+
+        foreach ((array) glob($carpeta . DIRECTORY_SEPARATOR . '*') as $archivo) {
+            if (is_file($archivo) && @filemtime($archivo) < $limite) {
+                @unlink($archivo);
+            }
+        }
     }
 }
