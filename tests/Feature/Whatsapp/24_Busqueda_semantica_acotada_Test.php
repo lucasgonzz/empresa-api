@@ -36,8 +36,13 @@ class ArticleEmbeddingServiceConTandaChica extends ArticleEmbeddingService
  * - el backfill perezoso deja los compactos guardados y una segunda búsqueda da lo mismo;
  * - los filtros de siempre (activo, no borrado, del dueño, con embedding) siguen valiendo, y la
  *   búsqueda no compacta artículos de otro dueño;
- * - `persistir_embedding()` —el único escritor de vectores— mantiene el compacto sincronizado;
- * - el recorrido en varias tandas da el mismo top-K que la fuerza bruta;
+ * - `persistir_embedding()` —el único escritor de vectores— BORRA el compacto en vez de escribirlo
+ *   (el job pone el sello de frescura después, así que uno escrito ahí nacería viejo);
+ * - un compacto viejo (su `embedding_generated_at` ya no coincide con el del artículo, como deja
+ *   un frente con la versión anterior al re-indexar) no se usa: se recompacta desde el JSON, tanto
+ *   en la búsqueda como en el comando;
+ * - el recorrido en varias tandas da el mismo top-K que la fuerza bruta, y a igual score gana el
+ *   id menor;
  * - el comando `articles:compactar-embeddings` compacta los que faltan y no pisa los que están.
  *
  * La memoria en sí no se testea acá (sembrar miles de vectores de 1536 floats haría la suite
@@ -149,6 +154,25 @@ class Busqueda_semantica_acotada_Test extends TestCase
         $binario = DB::table('article_compact_embeddings')->where('article_id', $article_id)->value('vector');
 
         return is_null($binario) ? null : array_values(unpack('g*', $binario));
+    }
+
+    /**
+     * Deja un compacto FRESCO para el artículo, como lo dejaría el recorrido: el vector sale del
+     * JSON actual y el sello es el `embedding_generated_at` actual del artículo.
+     *
+     * @param int $article_id
+     * @return void
+     */
+    protected function compactar_a_mano($article_id)
+    {
+        $fila = DB::table('articles')->where('id', $article_id)->first();
+
+        DB::table('article_compact_embeddings')->insert([
+            'article_id'             => $article_id,
+            'user_id'                => $fila->user_id,
+            'vector'                 => (new ArticleEmbeddingService())->compactar_vector(json_decode($fila->embedding, true)),
+            'embedding_generated_at' => $fila->embedding_generated_at,
+        ]);
     }
 
     /**
@@ -279,8 +303,9 @@ class Busqueda_semantica_acotada_Test extends TestCase
         $this->assertNotEmpty($consultas);
 
         foreach ($consultas as $sql) {
-            // El nombre de la tabla nueva contiene "embeddings": se saca antes de buscar la columna.
-            $sin_tabla = str_replace('article_compact_embeddings', '', $sql);
+            // El nombre de la tabla nueva y la columna del sello contienen "embedding": se sacan
+            // antes de buscar la columna pesada. Comparar el sello es barato (no arrastra el JSON).
+            $sin_tabla = str_replace(['article_compact_embeddings', 'embedding_generated_at'], '', $sql);
 
             $this->assertStringNotContainsString(
                 'embedding',
@@ -326,11 +351,15 @@ class Busqueda_semantica_acotada_Test extends TestCase
      * @group whatsapp
      * @test
      */
-    public function persistir_embedding_sincroniza_el_compacto_y_lo_borra_con_norma_cero()
+    public function persistir_embedding_guarda_el_json_y_borra_el_compacto()
     {
-        $articulo = $this->articulo('Persistir', null, ['user_id' => $this->otro_comercio->id]);
-        $servicio = new ArticleEmbeddingService();
+        $this->fingir_openai([0.0, 1.0, 0.0]);
 
+        $articulo = $this->articulo('Persistir', [1.0, 0.0, 0.0]);
+        $this->compactar_a_mano($articulo->id);
+        $this->assertNotNull($this->compacto_de($articulo->id), 'Precondición: el artículo arranca compactado.');
+
+        $servicio = new ArticleEmbeddingService();
         $servicio->persistir_embedding((int) $articulo->id, [0.0, 3.0, 4.0]);
 
         // Se compara decodificado: la columna es JSON y MySQL la re-serializa con espacios.
@@ -340,23 +369,137 @@ class Busqueda_semantica_acotada_Test extends TestCase
             'El JSON completo sigue siendo la fuente de verdad.'
         );
 
-        $fila = DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->first();
-        $this->assertNotNull($fila);
-        $this->assertEquals($this->otro_comercio->id, $fila->user_id, 'El dueño se lee de articles, no se inventa.');
+        // No lo escribe: el job pone el sello DESPUÉS, así que un compacto escrito acá nacería viejo.
+        $this->assertNull($this->compacto_de($articulo->id), 'persistir_embedding borra el compacto; lo re-arma el recorrido.');
+
+        // Y el artículo no se pierde: la búsqueda lo compacta desde el JSON nuevo.
+        $resultados = $servicio->search_similar_articles('x', (int) $this->comercio->id, 5);
+        $this->assertEquals([$articulo->id], $this->ids($resultados));
 
         $compacto = $this->compacto_de($articulo->id);
         $this->assertEqualsWithDelta(0.0, $compacto[0], 1e-6);
         $this->assertEqualsWithDelta(0.6, $compacto[1], 1e-6);
         $this->assertEqualsWithDelta(0.8, $compacto[2], 1e-6);
 
-        // Re-indexar reemplaza el compacto (upsert), no agrega otra fila.
-        $servicio->persistir_embedding((int) $articulo->id, [5.0, 0.0, 0.0]);
-        $this->assertEquals(1, DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->count());
-        $this->assertEqualsWithDelta(1.0, $this->compacto_de($articulo->id)[0], 1e-6);
-
-        // Norma cero: el compacto viejo se borra, para no rankear con un vector que ya no es el suyo.
+        // Norma cero: también borra, y la búsqueda no lo compacta (no hay dirección que comparar).
         $servicio->persistir_embedding((int) $articulo->id, [0.0, 0.0, 0.0]);
         $this->assertNull($this->compacto_de($articulo->id));
+        $this->assertCount(0, $servicio->search_similar_articles('x', (int) $this->comercio->id, 5));
+        $this->assertNull($this->compacto_de($articulo->id));
+    }
+
+    /**
+     * El caso real de la flota: el cron quedó en el frente con la versión anterior, que re-indexa
+     * `articles.embedding` y `embedding_generated_at` SIN conocer `article_compact_embeddings`.
+     * Se simula escribiendo las dos columnas por SQL crudo, sin pasar por `persistir_embedding()`.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_compacto_viejo_se_recompacta_en_la_busqueda()
+    {
+        $this->fingir_openai([1.0, 0.0, 0.0]);
+
+        $cerca = $this->articulo('Frescura cerca', [1.0, 0.0, 0.0]);
+        $lejos = $this->articulo('Frescura lejos', [0.6, 0.8, 0.0]);
+
+        DB::table('articles')->whereIn('id', [$cerca->id, $lejos->id])
+            ->update(['embedding_generated_at' => '2026-09-01 10:00:00']);
+        $this->compactar_a_mano($cerca->id);
+        $this->compactar_a_mano($lejos->id);
+
+        $servicio = new ArticleEmbeddingService();
+        $this->assertEquals([$cerca->id, $lejos->id], $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 5)));
+
+        // El frente viejo re-indexa "cerca" con un vector ortogonal a la consulta.
+        DB::table('articles')->where('id', $cerca->id)->update([
+            'embedding'              => json_encode([0.0, 0.0, 1.0]),
+            'embedding_generated_at' => '2026-09-28 18:30:00',
+        ]);
+
+        // Con el compacto viejo "cerca" seguiría primero; con el vector vigente queda último.
+        $this->assertEquals(
+            [$lejos->id, $cerca->id],
+            $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 5)),
+            'Un compacto cuyo sello no coincide no se puede usar: rankearía con el vector anterior para siempre.'
+        );
+
+        $fila = DB::table('article_compact_embeddings')->where('article_id', $cerca->id)->first();
+        $this->assertEquals('2026-09-28 18:30:00', $fila->embedding_generated_at, 'El compacto nuevo lleva el sello nuevo.');
+        $this->assertEqualsWithDelta(1.0, $this->compacto_de($cerca->id)[2], 1e-6);
+
+        // Ya fresco: una búsqueda más da lo mismo y no deja filas repetidas.
+        $this->assertEquals([$lejos->id, $cerca->id], $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 5)));
+        $this->assertEquals(1, DB::table('article_compact_embeddings')->where('article_id', $cerca->id)->count());
+    }
+
+    /**
+     * @group whatsapp
+     * @test
+     */
+    public function el_comando_tambien_recompacta_los_viejos()
+    {
+        $articulo = $this->articulo('Frescura comando', [1.0, 0.0, 0.0]);
+        DB::table('articles')->where('id', $articulo->id)->update(['embedding_generated_at' => '2026-09-01 10:00:00']);
+        $this->compactar_a_mano($articulo->id);
+
+        // Re-indexado por el frente viejo.
+        DB::table('articles')->where('id', $articulo->id)->update([
+            'embedding'              => json_encode([0.0, 2.0, 0.0]),
+            'embedding_generated_at' => '2026-09-28 18:30:00',
+        ]);
+
+        Artisan::call('articles:compactar-embeddings', ['--user_id' => $this->comercio->id]);
+        $this->assertStringContainsString('1 artículo(s) compactado(s)', Artisan::output());
+
+        $this->assertEqualsWithDelta(1.0, $this->compacto_de($articulo->id)[1], 1e-6);
+        $this->assertEquals(
+            '2026-09-28 18:30:00',
+            DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->value('embedding_generated_at')
+        );
+
+        // Ya fresco: la segunda corrida no encuentra nada.
+        Artisan::call('articles:compactar-embeddings', ['--user_id' => $this->comercio->id]);
+        $this->assertStringContainsString('0 artículo(s) compactado(s)', Artisan::output());
+    }
+
+    /**
+     * @group whatsapp
+     * @test
+     */
+    public function a_igual_score_gana_el_id_menor_y_el_orden_es_estable()
+    {
+        $this->fingir_openai([1.0, 0.0, 0.0]);
+
+        // Cuatro artículos con el MISMO vector; K = 2 obliga a desempatar.
+        $primero = $this->articulo('Empate 1', [0.6, 0.8, 0.0]);
+        $segundo = $this->articulo('Empate 2', [0.6, 0.8, 0.0]);
+        $this->articulo('Empate 3', [0.6, 0.8, 0.0]);
+        $this->articulo('Empate 4', [0.6, 0.8, 0.0]);
+
+        $servicio = new ArticleEmbeddingServiceConTandaChica();
+
+        // Primera corrida (desde el JSON), segunda (desde el compacto) y con la tanda de producción.
+        $this->assertEquals([$primero->id, $segundo->id], $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 2)));
+        $this->assertEquals([$primero->id, $segundo->id], $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 2)));
+        $this->assertEquals(
+            [$primero->id, $segundo->id],
+            $this->ids((new ArticleEmbeddingService())->search_similar_articles('x', (int) $this->comercio->id, 2))
+        );
+    }
+
+    /**
+     * @group whatsapp
+     * @test
+     */
+    public function con_limit_cero_devuelve_una_coleccion_vacia()
+    {
+        $this->fingir_openai([1.0, 0.0, 0.0]);
+        $this->articulo('Limit cero', [1.0, 0.0, 0.0]);
+
+        $resultados = (new ArticleEmbeddingService())->search_similar_articles('x', (int) $this->comercio->id, 0);
+
+        $this->assertCount(0, $resultados);
     }
 
     /**
@@ -411,10 +554,10 @@ class Busqueda_semantica_acotada_Test extends TestCase
 
         for ($n = 0; $n < 20; $n++) {
             $vector   = $aleatorio();
-            $articulo = $this->articulo('Tanda ' . $n, $n % 2 === 0 ? $vector : null);
+            $articulo = $this->articulo('Tanda ' . $n, $vector);
 
             if ($n % 2 === 1) {
-                $servicio->persistir_embedding((int) $articulo->id, $vector);
+                $this->compactar_a_mano($articulo->id);
             }
 
             $similitud[$articulo->id] = $this->coseno($consulta, $vector);
