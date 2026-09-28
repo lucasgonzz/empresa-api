@@ -248,6 +248,49 @@ class Busqueda_semantica_acotada_Test extends TestCase
     }
 
     /**
+     * Guarda de rendimiento: con todo compactado, ninguna consulta de la búsqueda puede nombrar la
+     * columna `articles.embedding`. Medido con 8.000 artículos, un simple `a.embedding IS NOT NULL`
+     * hace que InnoDB lea los ~28 KB de JSON de cada fila aunque no los devuelva (1,47 s contra
+     * 0,08 s). Si alguien "restituye" ese filtro en la pasada de los compactos, esto se pone rojo.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function con_todo_compactado_ninguna_consulta_toca_la_columna_embedding()
+    {
+        $this->fingir_openai([1.0, 0.0, 0.0]);
+
+        $this->articulo('Guarda A', [1.0, 0.0, 0.0]);
+        $this->articulo('Guarda B', [0.0, 1.0, 0.0]);
+
+        $servicio = new ArticleEmbeddingService();
+
+        // Primera búsqueda: compacta (acá SÍ se lee el JSON, es el backfill).
+        $servicio->search_similar_articles('x', (int) $this->comercio->id, 5);
+
+        $consultas = [];
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = $query->sql;
+        });
+
+        $resultados = $servicio->search_similar_articles('x', (int) $this->comercio->id, 5);
+        $this->assertCount(2, $resultados);
+
+        $this->assertNotEmpty($consultas);
+
+        foreach ($consultas as $sql) {
+            // El nombre de la tabla nueva contiene "embeddings": se saca antes de buscar la columna.
+            $sin_tabla = str_replace('article_compact_embeddings', '', $sql);
+
+            $this->assertStringNotContainsString(
+                'embedding',
+                $sin_tabla,
+                'Con todo compactado, la búsqueda no puede nombrar articles.embedding: ' . $sql
+            );
+        }
+    }
+
+    /**
      * @group whatsapp
      * @test
      */

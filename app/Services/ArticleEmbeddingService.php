@@ -801,16 +801,38 @@ class ArticleEmbeddingService
      * 3. **Los datos del artículo se traen al final**, en una segunda consulta y solo para los K
      *    ganadores: el recorrido lee apenas `id` y el vector.
      *
-     * **Backfill perezoso.** El JOIN es LEFT: los artículos que todavía no tienen compacto (los de
-     * antes del deploy, o uno cuyo compacto se borró) traen su JSON —y SOLO ellos, por el `CASE`—,
-     * se compactan al vuelo, se usan en esta misma búsqueda y se guardan al final de la tanda. La
-     * primera búsqueda de cada dueño paga ese costo una vez, con la memoria igual acotada por
-     * tanda; de ahí en adelante el JSON no viaja nunca más. Guardar es un efecto secundario: si
-     * falla se loguea y la búsqueda sigue, porque la respuesta al cliente no puede depender de él.
+     * El recorrido va en DOS PASADAS, y separarlas no es cosmético:
      *
-     * Los filtros son EXACTAMENTE los de siempre (dueño, activo, no borrado, con embedding) y se
-     * aplican sobre `articles`: por eso una fila compacta huérfana (de un artículo borrado a mano,
-     * inactivo o de otro dueño) nunca aparece, y un compacto de otro dueño no se lee jamás.
+     * - **Pasada 1, los que ya tienen compacto** (`JOIN` con `article_compact_embeddings`). 🔴 ESTA
+     *   CONSULTA NO NOMBRA `a.embedding` EN NINGÚN LADO, NI SIQUIERA EN UN `IS NOT NULL`, y es a
+     *   propósito: medido con 8.000 artículos (28/9/2026), cualquier referencia a esa columna hace
+     *   que InnoDB lea el JSON de ~28 KB de cada fila aunque no lo devuelva —la misma consulta tarda
+     *   1,47 s con `a.embedding IS NOT NULL` y 0,08 s sin él—. El filtro "con embedding" está
+     *   garantizado igual por construcción: una fila compacta solo nace de un embedding no nulo
+     *   (en `persistir_embedding()`, el único escritor de vectores, o en la pasada 2), y ningún
+     *   código de empresa-api ni de tienda-api pone `articles.embedding` en NULL sobre un artículo
+     *   existente (verificado por grep el 28/9/2026; `DuplicarRecetaHelper` lo hace, pero sobre la
+     *   copia nueva, que todavía no tiene compacto). Si algún día alguien agrega un camino que
+     *   borre el embedding, tiene que borrar también la fila compacta, o ese artículo seguiría
+     *   apareciendo con su vector viejo.
+     * - **Pasada 2, los que todavía no tienen compacto** (backfill perezoso: los de antes del
+     *   deploy, o uno cuyo compacto se borró). Primero se listan SOLO sus ids —de nuevo sin tocar
+     *   `a.embedding`—, y recién para cada tanda de ids se trae el JSON con `embedding IS NOT NULL`,
+     *   que acá sí es el filtro de siempre. Se compactan al vuelo, se usan en esta misma búsqueda y
+     *   se guardan al final de la tanda. La primera búsqueda de cada dueño paga ese costo una vez,
+     *   con la memoria igual acotada por tanda; de ahí en adelante la pasada 2 solo ve los
+     *   artículos sin vector (que son pocos y no traen nada pesado). Guardar es un efecto
+     *   secundario: si falla se loguea y la búsqueda sigue, porque la respuesta al cliente no puede
+     *   depender de él.
+     *
+     * El orden de las pasadas importa: si la 2 fuera primero, lo que ella compacta volvería a
+     * aparecer en la 1 y se contaría dos veces. Con la 1 primero, lo único que puede pasar es que
+     * otro proceso compacte un artículo justo entre las dos pasadas y esta búsqueda puntual no lo
+     * vea; la siguiente sí.
+     *
+     * Los filtros de dueño, activo y no borrado se aplican siempre sobre `articles`: por eso una
+     * fila compacta huérfana (de un artículo borrado a mano, inactivo o de otro dueño) nunca
+     * aparece, y un compacto de otro dueño no se lee jamás.
      *
      * Desempate determinístico: a igual similitud gana el id menor, para que la misma consulta
      * sobre el mismo catálogo devuelva siempre el mismo orden.
@@ -842,30 +864,44 @@ class ArticleEmbeddingService
         // Índice dentro de $mejores del peor candidato actual (se recalcula solo al reemplazar).
         $indice_peor = null;
 
-        $consulta_sql = DB::table('articles as a')
-            ->leftJoin('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
-            ->where('a.user_id', $user_id)
-            ->where('a.status', 'active')
-            ->whereNull('a.deleted_at')
-            ->whereNotNull('a.embedding')
+        // ── Pasada 1: artículos con compacto. Sin referencias a a.embedding (ver docblock). ──
+        $this->articulos_del_dueno($user_id)
+            ->join('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
             ->select('a.id', 'e.vector')
-            // El JSON grande viaja SOLO para los artículos que todavía no tienen compacto.
-            ->selectRaw('CASE WHEN e.vector IS NULL THEN a.embedding ELSE NULL END AS embedding_json');
-
-        $consulta_sql->chunkById(static::TANDA_BUSQUEDA, function ($filas) use ($consulta, $limit, $user_id, &$mejores, &$indice_peor) {
-
-            // Compactos armados en esta tanda desde el JSON: article_id => binario.
-            $compactos_nuevos = [];
-
-            foreach ($filas as $fila) {
-                $article_id = (int) $fila->id;
-
-                if (! is_null($fila->vector)) {
+            ->chunkById(static::TANDA_BUSQUEDA, function ($filas) use ($consulta, $limit, &$mejores, &$indice_peor) {
+                foreach ($filas as $fila) {
                     // unpack devuelve claves 1..n: array_values las deja en 0..n-1 para el producto punto.
                     $vector = array_values(unpack('g*', $fila->vector));
-                } else {
-                    // Sin compacto: se arma desde el JSON y se anota para guardarlo al final de la tanda.
-                    $completo = json_decode((string) $fila->embedding_json, true);
+
+                    $this->considerar_candidato(
+                        $mejores,
+                        $indice_peor,
+                        $limit,
+                        $this->producto_punto($consulta, $vector),
+                        (int) $fila->id
+                    );
+                }
+            }, 'a.id', 'id');
+
+        // ── Pasada 2: artículos sin compacto (backfill perezoso). Primero solo los ids. ──
+        $this->articulos_del_dueno($user_id)
+            ->leftJoin('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
+            ->whereNull('e.article_id')
+            ->select('a.id')
+            ->chunkById(static::TANDA_BUSQUEDA, function ($filas) use ($consulta, $limit, $user_id, &$mejores, &$indice_peor) {
+
+                // El JSON se trae recién acá, por clave primaria y solo para esta tanda de ids.
+                $con_json = DB::table('articles')
+                    ->whereIn('id', $filas->pluck('id')->all())
+                    ->whereNotNull('embedding')
+                    ->select('id', 'embedding')
+                    ->get();
+
+                // Compactos armados en esta tanda desde el JSON: article_id => binario.
+                $compactos_nuevos = [];
+
+                foreach ($con_json as $fila) {
+                    $completo = json_decode((string) $fila->embedding, true);
 
                     if (! is_array($completo) || empty($completo)) {
                         // JSON inválido o vacío: se saltea, igual que hacía la versión anterior.
@@ -879,42 +915,35 @@ class ArticleEmbeddingService
                         continue;
                     }
 
-                    $compactos_nuevos[$article_id] = $binario;
-                    $vector = array_values(unpack('g*', $binario));
-                }
+                    $compactos_nuevos[(int) $fila->id] = $binario;
 
-                $score = $this->producto_punto($consulta, $vector);
-
-                if (count($mejores) < $limit) {
-                    // Todavía hay lugar: entra directo y el peor se recalcula.
-                    $mejores[]   = ['score' => $score, 'id' => $article_id];
-                    $indice_peor = $this->indice_del_peor($mejores);
-                    continue;
-                }
-
-                // Lleno: entra solo si le gana al peor (a igual score, gana el id menor).
-                if ($this->es_mejor_candidato($score, $article_id, $mejores[$indice_peor])) {
-                    $mejores[$indice_peor] = ['score' => $score, 'id' => $article_id];
-                    $indice_peor           = $this->indice_del_peor($mejores);
-                }
-            }
-
-            // Backfill perezoso: efecto secundario que nunca corta la búsqueda.
-            if (! empty($compactos_nuevos)) {
-                try {
-                    $this->guardar_compactos($compactos_nuevos, $user_id);
-                } catch (\Throwable $e) {
-                    Log::channel('daily')->warning(
-                        'ArticleEmbeddingService: no se pudieron guardar vectores compactos durante la búsqueda; se reintenta en la próxima.',
-                        [
-                            'user_id'   => $user_id,
-                            'articulos' => count($compactos_nuevos),
-                            'error'     => $e->getMessage(),
-                        ]
+                    // Se compara con el compacto recién armado, no con el JSON: así la primera
+                    // búsqueda y las siguientes rankean exactamente igual.
+                    $this->considerar_candidato(
+                        $mejores,
+                        $indice_peor,
+                        $limit,
+                        $this->producto_punto($consulta, array_values(unpack('g*', $binario))),
+                        (int) $fila->id
                     );
                 }
-            }
-        }, 'a.id', 'id');
+
+                // Backfill perezoso: efecto secundario que nunca corta la búsqueda.
+                if (! empty($compactos_nuevos)) {
+                    try {
+                        $this->guardar_compactos($compactos_nuevos, $user_id);
+                    } catch (\Throwable $e) {
+                        Log::channel('daily')->warning(
+                            'ArticleEmbeddingService: no se pudieron guardar vectores compactos durante la búsqueda; se reintenta en la próxima.',
+                            [
+                                'user_id'   => $user_id,
+                                'articulos' => count($compactos_nuevos),
+                                'error'     => $e->getMessage(),
+                            ]
+                        );
+                    }
+                }
+            }, 'a.id', 'id');
 
         if (empty($mejores)) {
             return collect([]);
@@ -957,6 +986,54 @@ class ArticleEmbeddingService
         }
 
         return collect($resultados);
+    }
+
+    /**
+     * Consulta base de las dos pasadas de la búsqueda: los artículos de un dueño que están activos
+     * y no borrados, con el alias `a`.
+     *
+     * Existe para que los filtros de siempre vivan en UN solo lugar y las dos pasadas no puedan
+     * divergir. A propósito NO incluye `embedding IS NOT NULL`: ver el bloque rojo de
+     * `search_similar_articles_in_php()`.
+     *
+     * @param int $user_id Dueño del catálogo.
+     *
+     * @return \Illuminate\Database\Query\Builder
+     */
+    protected function articulos_del_dueno(int $user_id)
+    {
+        return DB::table('articles as a')
+            ->where('a.user_id', $user_id)
+            ->where('a.status', 'active')
+            ->whereNull('a.deleted_at');
+    }
+
+    /**
+     * Ofrece un candidato al top-K: entra si todavía hay lugar, o si le gana al peor.
+     *
+     * @param array<int, array{score: float, id: int}> $mejores     Top-K acumulado (por referencia).
+     * @param int|null                                 $indice_peor Índice del peor (por referencia).
+     * @param int                                      $limit       K.
+     * @param float                                    $score       Similitud del candidato.
+     * @param int                                      $article_id  Id del candidato.
+     *
+     * @return void
+     */
+    protected function considerar_candidato(array &$mejores, &$indice_peor, int $limit, float $score, int $article_id): void
+    {
+        if (count($mejores) < $limit) {
+            // Todavía hay lugar: entra directo y el peor se recalcula.
+            $mejores[]   = ['score' => $score, 'id' => $article_id];
+            $indice_peor = $this->indice_del_peor($mejores);
+
+            return;
+        }
+
+        // Lleno: entra solo si le gana al peor (a igual score, gana el id menor).
+        if ($this->es_mejor_candidato($score, $article_id, $mejores[$indice_peor])) {
+            $mejores[$indice_peor] = ['score' => $score, 'id' => $article_id];
+            $indice_peor           = $this->indice_del_peor($mejores);
+        }
     }
 
     /**
