@@ -17,17 +17,30 @@ class MessageSend extends Notification
     private $for_commerce;
 
     /**
+     * Comercio (usuario dueño) que firma el mail. null = se toma de la sesión, como siempre.
+     *
+     * @var \App\Models\User|null
+     */
+    private $commerce;
+
+    /**
      * Create a new notification instance.
+     *
+     * `$commerce` (misión mensajes-tienda-online, 28/9/2026): la respuesta manual del comercio se
+     * notifica DESPUÉS de mandada la respuesta (`NotificarRespuestaAlComprador`), y ahí el comercio
+     * del mail tiene que venir explícito en vez de salir de `UserHelper::getFullModel()`. Los
+     * llamadores de siempre no lo pasan y siguen igual.
      *
      * @return void
      */
-    public function __construct($message, $for_commerce = false, $title = null, $url = null, $send_email = true)
+    public function __construct($message, $for_commerce = false, $title = null, $url = null, $send_email = true, $commerce = null)
     {
         $this->message = $message;
         $this->for_commerce = $for_commerce;
         $this->title = $title;
         $this->url = $url;
         $this->send_email = $send_email;
+        $this->commerce = $commerce;
     }
 
     /**
@@ -76,7 +89,7 @@ class MessageSend extends Notification
 
     public function toMail($notifiable)
     {
-        $user = UserHelper::getFullModel();
+        $user = !is_null($this->commerce) ? $this->commerce : UserHelper::getFullModel();
         Log::info('mail logo_url: '.$user->image_url);
         return (new MailMessage)
                     ->from('contacto@comerciocity.com', 'comerciocity.com')
@@ -86,6 +99,11 @@ class MessageSend extends Notification
                         'message'   => $this->message->text,
                         'logo_url'  => 'https://api.comerciocity.com/public/storage/logo.png',
                         // 'logo_url'  => $user->image_url,
+                        // 🔴 La vista es compartida con `MantenimientoMail`, que la usa con una lista
+                        // de `messages`, y la recorre siempre con `@foreach($messages ...)`. Sin esta
+                        // clave el mail NO SE PODÍA ARMAR: "Undefined variable: messages" (medido el
+                        // 28/9/2026 en la misión mensajes-tienda-online). Acá el texto ya va en `message`.
+                        'messages'  => [],
                     ]);
         // if (!is_null($this->url)) {
         //     $mail_message->action('Ver producto en la tienda', $this->url);
