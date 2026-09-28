@@ -20,9 +20,50 @@ use Illuminate\Support\Facades\Log;
  * El patrón de cliente HTTP sigue el mismo esquema de build_http_client()
  * utilizado en SupportAiSuggestionService (admin-api), incluyendo el
  * manejo de verificación TLS configurable por entorno.
+ *
+ * 🔴 LA BÚSQUEDA EN MYSQL NO LEE `articles.embedding` (misión rag-whatsapp-memoria-acotada,
+ * 28/9/2026). Hasta esa misión, cada mensaje del cliente traía a memoria el JSON de 1536 floats
+ * (~28 KB) de TODOS los artículos del dueño y los decodificaba a la vez; en catálogos grandes el
+ * proceso moría por memoria (demo3: 768 MB agotados en cada "Sugerir respuesta") y el navegador lo
+ * veía como un error de CORS. Hoy cada artículo tiene además un vector COMPACTO en la tabla
+ * `article_compact_embeddings` —los primeros 512 valores, normalizados, en float32 binario: 2 KB—
+ * y la búsqueda recorre esa tabla por tandas quedándose solo con los mejores K, así que la memoria
+ * no depende del tamaño del catálogo. El JSON completo sigue siendo la fuente de verdad: el
+ * compacto se deriva de él (en `persistir_embedding()` o, de forma perezosa, en la propia
+ * búsqueda) y nunca se le pide nada a OpenAI para armarlo.
  */
 class ArticleEmbeddingService
 {
+    /**
+     * Cantidad de dimensiones del vector compacto que usa la búsqueda en MySQL.
+     *
+     * `text-embedding-3-small` está entrenado con Matryoshka Representation Learning: OpenAI
+     * documenta que sus vectores se pueden acortar quedándose con los primeros N valores y
+     * re-normalizando, sin que el vector pierda las propiedades que representan el concepto. Así se
+     * evita re-generar nada ni pagarle a OpenAI otra vez: el compacto sale del vector que ya está.
+     *
+     * 512 es el punto medio razonable: 3x menos multiplicaciones que 1536 por artículo y 2048 bytes
+     * por fila en vez de ~28 KB de JSON (14x menos bytes leídos de MySQL por búsqueda), con una
+     * calidad de ranking que OpenAI reporta muy cerca de la del vector completo.
+     *
+     * 🔴 Si alguien cambia este número, los compactos ya guardados quedan con otra longitud: el
+     * producto punto corta en la más corta de las dos y el ranking se degrada sin ningún error. En
+     * ese caso hay que vaciar `article_compact_embeddings` y volver a correr
+     * `articles:compactar-embeddings`.
+     */
+    const DIMENSIONES_COMPACTAS = 512;
+
+    /**
+     * Artículos por tanda en el recorrido de la búsqueda.
+     *
+     * Es lo que acota la memoria: en el peor caso (artículos todavía sin compacto, que traen su
+     * JSON de ~28 KB para compactarlo al vuelo) una tanda son ~14 MB; con todo compactado, ~1 MB.
+     * Tandas más chicas suman idas y vueltas a MySQL sin ganar nada que importe; más grandes
+     * vuelven a acercar el pico de memoria al tamaño del catálogo, que es justo lo que se quiere
+     * evitar.
+     */
+    const TANDA_BUSQUEDA = 500;
+
     /**
      * Endpoint de la API de embeddings de OpenAI.
      */
@@ -417,6 +458,14 @@ class ArticleEmbeddingService
      *   se guardan como texto JSON en una columna vector. El síntoma sería una búsqueda
      *   semántica que devuelve cualquier cosa, sin ningún error.
      *
+     * 🔴 EN MYSQL, ADEMÁS, SINCRONIZA EL VECTOR COMPACTO (misión rag-whatsapp-memoria-acotada).
+     * Este método es el ÚNICO escritor de `articles.embedding` —lo usan el job que indexa y el
+     * seeder de semilla—, así que actualizar `article_compact_embeddings` acá alcanza para que el
+     * compacto nunca quede atrás del JSON. Si el vector nuevo no se puede compactar (vacío o de
+     * norma cero), la fila compacta se BORRA: quedarse con la vieja haría que la búsqueda rankee
+     * el artículo por un vector que ya no es el suyo. Un artículo sin fila compacta no se pierde:
+     * la búsqueda lo vuelve a intentar desde el JSON.
+     *
      * @param int               $article_id Artículo destino.
      * @param array<int, float> $embedding  Vector completo, tal como lo devuelve OpenAI.
      *
@@ -425,7 +474,8 @@ class ArticleEmbeddingService
     public function persistir_embedding(int $article_id, array $embedding): void
     {
         if ($this->uses_pgvector()) {
-            // PostgreSQL: literal [f1,f2,...] con cast ::vector.
+            // PostgreSQL: literal [f1,f2,...] con cast ::vector. La búsqueda por pgvector no usa
+            // el compacto, así que en esta rama no se toca article_compact_embeddings.
             $vector_string = '['.implode(',', $embedding).']';
 
             DB::statement(
@@ -440,14 +490,235 @@ class ArticleEmbeddingService
         DB::table('articles')
             ->where('id', $article_id)
             ->update(['embedding' => json_encode($embedding)]);
+
+        // Vector compacto derivado del mismo array (null si no hay nada que normalizar).
+        $compacto = $this->compactar_vector($embedding);
+
+        if (is_null($compacto)) {
+            DB::table('article_compact_embeddings')->where('article_id', $article_id)->delete();
+
+            return;
+        }
+
+        // El dueño se lee de articles: la firma de este método no lo trae (y no se cambia, porque
+        // la usa el seeder de semilla). Si el artículo no existe no hay nada que sincronizar.
+        $user_id = DB::table('articles')->where('id', $article_id)->value('user_id');
+
+        if (is_null($user_id)) {
+            return;
+        }
+
+        $this->guardar_compactos([$article_id => $compacto], (int) $user_id);
+    }
+
+    /**
+     * Arma el vector compacto de un embedding, listo para guardar en `article_compact_embeddings`.
+     *
+     * Se queda con los primeros `DIMENSIONES_COMPACTAS` valores (o con todos, si el vector es más
+     * corto: los tests usan vectores de 3), los normaliza a norma 1 y los empaqueta como float32
+     * little-endian con `pack('g*')`. Con 512 dimensiones son exactamente 2048 bytes.
+     *
+     * Por qué float32 y no float64 (`pack('e*')`): la mitad de bytes, y la precisión de float32
+     * (~7 dígitos) sobra para ordenar por similitud; los vectores de OpenAI ni siquiera traen más
+     * dígitos significativos que esos.
+     *
+     * @param array<int, float> $vector Vector completo (típicamente 1536 floats de OpenAI).
+     *
+     * @return string|null Binario empaquetado, o null si el vector está vacío o su norma es cero
+     *                     (no hay dirección que comparar).
+     */
+    public function compactar_vector(array $vector): ?string
+    {
+        $normalizado = $this->vector_normalizado($vector);
+
+        if (is_null($normalizado)) {
+            return null;
+        }
+
+        // Spread de un array con claves numéricas: permitido en PHP 7.4.
+        return pack('g*', ...$normalizado);
+    }
+
+    /**
+     * Trunca un vector a `DIMENSIONES_COMPACTAS` valores y lo normaliza a norma 1.
+     *
+     * Es la mitad común entre el vector de la consulta (que se compara en memoria y nunca se
+     * empaqueta) y el de cada artículo (que se empaqueta en `compactar_vector()`). Tener los dos
+     * normalizados es lo que permite que la similitud de coseno sea un simple producto punto.
+     *
+     * @param array<int, float> $vector Vector de cualquier largo.
+     *
+     * @return array<int, float>|null Lista de floats (claves 0..n-1) de norma 1, o null si el
+     *                                vector está vacío o tiene norma cero.
+     */
+    protected function vector_normalizado(array $vector): ?array
+    {
+        // array_values: el vector puede venir con claves no consecutivas (p. ej. de un unpack).
+        $truncado = array_slice(array_values($vector), 0, self::DIMENSIONES_COMPACTAS);
+
+        if (empty($truncado)) {
+            return null;
+        }
+
+        // Suma de cuadrados, casteando cada valor (el JSON puede traer enteros como 1 o 0).
+        $suma_cuadrados = 0.0;
+
+        foreach ($truncado as $indice => $valor) {
+            $valor              = (float) $valor;
+            $truncado[$indice]  = $valor;
+            $suma_cuadrados    += $valor * $valor;
+        }
+
+        if ($suma_cuadrados <= 0.0) {
+            return null;
+        }
+
+        $norma = sqrt($suma_cuadrados);
+
+        foreach ($truncado as $indice => $valor) {
+            $truncado[$indice] = $valor / $norma;
+        }
+
+        return $truncado;
+    }
+
+    /**
+     * Producto punto entre dos vectores, hasta la longitud del más corto.
+     *
+     * Con los dos vectores normalizados (norma 1) es exactamente la similitud de coseno, sin las
+     * dos raíces ni las dos normas por artículo que calculaba el método viejo. Recorre hasta
+     * `min(count)` por si alguna vez conviven compactos de distinto largo: no rompe, aunque en ese
+     * caso el ranking pierde calidad (ver el bloque rojo de `DIMENSIONES_COMPACTAS`).
+     *
+     * @param array<int, float> $vector_a Lista con claves 0..n-1.
+     * @param array<int, float> $vector_b Lista con claves 0..n-1.
+     *
+     * @return float Entre -1 y 1 para vectores normalizados; mayor = más similar.
+     */
+    protected function producto_punto(array $vector_a, array $vector_b): float
+    {
+        $largo = min(count($vector_a), count($vector_b));
+        $suma  = 0.0;
+
+        for ($indice = 0; $indice < $largo; $indice++) {
+            $suma += $vector_a[$indice] * $vector_b[$indice];
+        }
+
+        return $suma;
+    }
+
+    /**
+     * Guarda (inserta o reemplaza) vectores compactos de artículos de un mismo dueño.
+     *
+     * Un solo `INSERT ... ON DUPLICATE KEY UPDATE` por llamada, por la clave primaria
+     * `article_id`: es lo que permite que la búsqueda persista una tanda entera de compactos
+     * nuevos en una sola ida a MySQL.
+     *
+     * El binario viaja como parámetro del statement preparado (Laravel usa prepares nativos en
+     * MySQL), así que no pasa por ningún escape de texto ni por el charset de la conexión.
+     *
+     * @param array<int, string> $compactos Mapa article_id => binario de `compactar_vector()`.
+     * @param int                $user_id   Dueño de todos esos artículos.
+     *
+     * @return void
+     */
+    protected function guardar_compactos(array $compactos, int $user_id): void
+    {
+        if (empty($compactos)) {
+            return;
+        }
+
+        // Filas a insertar, una por artículo.
+        $filas = [];
+
+        foreach ($compactos as $article_id => $binario) {
+            $filas[] = [
+                'article_id' => (int) $article_id,
+                'user_id'    => $user_id,
+                'vector'     => $binario,
+            ];
+        }
+
+        DB::table('article_compact_embeddings')->upsert($filas, ['article_id'], ['user_id', 'vector']);
+    }
+
+    /**
+     * Compacta, por tandas, los artículos que tienen `articles.embedding` y todavía no tienen fila
+     * en `article_compact_embeddings`. Es el motor del comando `articles:compactar-embeddings`.
+     *
+     * Adelanta el mismo trabajo que el backfill perezoso de la búsqueda, para que el primer
+     * mensaje de cada cliente después del deploy no lo pague. Diferencias con ese camino:
+     *
+     * - No filtra por status ni por borrado: compacta todo lo que tenga vector, así un artículo
+     *   que se reactiva ya tiene su compacto listo. La búsqueda igual filtra sobre `articles`, así
+     *   que un compacto de un artículo inactivo nunca aparece en una respuesta.
+     * - No toca los que ya tienen compacto (el `LEFT JOIN ... IS NULL`): correrlo dos veces no hace
+     *   nada la segunda.
+     * - NO llama a OpenAI: solo re-empaqueta el vector que ya está guardado. Por eso no le afecta
+     *   `EMBEDDINGS_GENERACION_PAUSADA` y no cuesta plata.
+     *
+     * La paginación es por id (`chunkById`), así que el hecho de que las filas ya compactadas
+     * dejen de cumplir el `IS NULL` a medida que se recorre no hace saltear ninguna.
+     *
+     * @param int|null $user_id Si viene, solo los artículos de ese dueño; si no, toda la base
+     *                          (una base compartida puede tener varios comercios adentro).
+     * @param int      $tanda   Artículos por tanda (cada uno trae su JSON de ~28 KB).
+     *
+     * @return array{compactados: int, salteados: int} `salteados` son los que tienen un JSON
+     *                                                 inválido, vacío o de norma cero.
+     */
+    public function compactar_pendientes($user_id = null, int $tanda = 200): array
+    {
+        $totales = ['compactados' => 0, 'salteados' => 0];
+
+        $consulta = DB::table('articles as a')
+            ->leftJoin('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
+            ->whereNotNull('a.embedding')
+            ->whereNull('e.article_id')
+            ->select('a.id', 'a.user_id', 'a.embedding');
+
+        if (! is_null($user_id)) {
+            $consulta->where('a.user_id', (int) $user_id);
+        }
+
+        $consulta->chunkById($tanda, function ($filas) use (&$totales) {
+
+            // Compactos de la tanda agrupados por dueño: user_id => [article_id => binario].
+            $por_dueno = [];
+
+            foreach ($filas as $fila) {
+                $completo = json_decode((string) $fila->embedding, true);
+                $binario  = is_array($completo) ? $this->compactar_vector($completo) : null;
+
+                if (is_null($binario)) {
+                    $totales['salteados']++;
+                    continue;
+                }
+
+                $por_dueno[(int) $fila->user_id][(int) $fila->id] = $binario;
+            }
+
+            foreach ($por_dueno as $dueno_id => $compactos) {
+                $this->guardar_compactos($compactos, (int) $dueno_id);
+                $totales['compactados'] += count($compactos);
+            }
+        }, 'a.id', 'id');
+
+        return $totales;
     }
 
     /**
      * Busca artículos similares semánticamente a una consulta de texto.
      *
-     * Genera el embedding del query y ejecuta una búsqueda de vecinos más
-     * cercanos usando el operador <=> (distancia de coseno) de pgvector,
-     * filtrando por user_id, status activo y registros no eliminados.
+     * Genera el embedding del query y busca los artículos más cercanos del dueño, filtrando por
+     * user_id, status activo, registros no eliminados y con embedding cargado. La búsqueda es
+     * EXACTA contra todo el catálogo (nada queda afuera por un índice aproximado):
+     *
+     * - En PostgreSQL, con el operador <=> (distancia de coseno) de pgvector.
+     * - En MySQL (toda la flota hoy), con `search_similar_articles_in_php()`: recorrido por
+     *   tandas sobre el vector compacto de `article_compact_embeddings`, quedándose solo con los
+     *   `$limit` mejores. La memoria no depende del tamaño del catálogo; el detalle está en el
+     *   docblock de ese método.
      *
      * @param string $query   Texto de búsqueda en lenguaje natural.
      * @param int    $user_id ID del usuario/tenant propietario de los artículos.
@@ -511,99 +782,228 @@ class ArticleEmbeddingService
     }
 
     /**
-     * Búsqueda por similitud de coseno en PHP para entornos sin pgvector (p. ej. MySQL en WAMP).
+     * Búsqueda exacta por similitud de coseno en PHP, para entornos sin pgvector (MySQL: toda la
+     * flota), con memoria acotada.
      *
-     * @param array<int, float> $query_embedding Vector de la consulta.
+     * 🔴 POR QUÉ ESTÁ ESCRITO ASÍ (misión rag-whatsapp-memoria-acotada, 28/9/2026). La versión
+     * anterior hacía `->get()` de TODOS los artículos del dueño CON `articles.embedding` (JSON de
+     * 1536 floats, ~28 KB cada uno), los decodificaba todos y recién ahí ordenaba. Por cada mensaje
+     * del cliente. En demo3 eso agotaba los 768 MB del proceso en `Connection.php` y el "Sugerir
+     * respuesta" moría antes del middleware de CORS. Comparar contra TODO el catálogo está bien (es
+     * lo que da la mejor respuesta); lo que estaba mal era transferir y decodificar el vector
+     * gigante de cada artículo y tenerlos todos en memoria a la vez. Ahora:
+     *
+     * 1. **Vector compacto**: se compara contra `article_compact_embeddings` (512 dims normalizadas,
+     *    2 KB en float32), no contra el JSON. `unpack` es C, no el parser JSON, y con los dos
+     *    vectores normalizados el coseno es un producto punto de 512 términos.
+     * 2. **Tandas de `TANDA_BUSQUEDA`** con `chunkById`, guardando solo el top-K mientras se
+     *    recorre. La memoria no depende del tamaño del catálogo.
+     * 3. **Los datos del artículo se traen al final**, en una segunda consulta y solo para los K
+     *    ganadores: el recorrido lee apenas `id` y el vector.
+     *
+     * **Backfill perezoso.** El JOIN es LEFT: los artículos que todavía no tienen compacto (los de
+     * antes del deploy, o uno cuyo compacto se borró) traen su JSON —y SOLO ellos, por el `CASE`—,
+     * se compactan al vuelo, se usan en esta misma búsqueda y se guardan al final de la tanda. La
+     * primera búsqueda de cada dueño paga ese costo una vez, con la memoria igual acotada por
+     * tanda; de ahí en adelante el JSON no viaja nunca más. Guardar es un efecto secundario: si
+     * falla se loguea y la búsqueda sigue, porque la respuesta al cliente no puede depender de él.
+     *
+     * Los filtros son EXACTAMENTE los de siempre (dueño, activo, no borrado, con embedding) y se
+     * aplican sobre `articles`: por eso una fila compacta huérfana (de un artículo borrado a mano,
+     * inactivo o de otro dueño) nunca aparece, y un compacto de otro dueño no se lee jamás.
+     *
+     * Desempate determinístico: a igual similitud gana el id menor, para que la misma consulta
+     * sobre el mismo catálogo devuelva siempre el mismo orden.
+     *
+     * @param array<int, float> $query_embedding Vector de la consulta, completo (1536 floats).
      * @param int               $user_id         Tenant propietario del catálogo.
-     * @param int               $limit           Cantidad máxima de resultados.
+     * @param int               $limit           Cantidad máxima de resultados (el K del top-K).
      *
-     * @return Collection
+     * @return Collection Colección de stdClass con id, name, final_price, stock, bar_code, slug y
+     *                    online, en orden de similitud descendente. Es la MISMA forma que devolvía
+     *                    la versión anterior: `WhatsappBotAiService` depende de ella.
      */
     protected function search_similar_articles_in_php(array $query_embedding, int $user_id, int $limit): Collection
     {
-        // `online` viaja igual que en la rama pgvector, y por el mismo motivo: se selecciona
-        // para que el agente sepa si puede pasar el link, pero NO se filtra, para que el
-        // artículo siga estando en el catálogo con su precio y su stock. El razonamiento
-        // completo está en el docblock de `search_similar_articles()`.
-        $rows = DB::table('articles')
-            ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'slug', 'online', 'embedding')
-            ->where('user_id', $user_id)
-            ->where('status', 'active')
-            ->whereNull('deleted_at')
-            ->whereNotNull('embedding')
-            ->get();
+        // Vector de la consulta, truncado y normalizado igual que los compactos.
+        $consulta = $this->vector_normalizado($query_embedding);
 
-        $scored = [];
-
-        foreach ($rows as $row) {
-            $article_embedding = json_decode((string) $row->embedding, true);
-
-            if (! is_array($article_embedding) || empty($article_embedding)) {
-                continue;
-            }
-
-            $similarity = $this->cosine_similarity($query_embedding, $article_embedding);
-
-            $scored[] = [
-                'similarity' => $similarity,
-                'row'        => $row,
-            ];
+        if (is_null($consulta) || $limit <= 0) {
+            return collect([]);
         }
 
-        usort($scored, function ($left, $right) {
-            if ($left['similarity'] === $right['similarity']) {
-                return 0;
+        /*
+         * Top-K acumulado: lista de ['score' => float, 'id' => int] de largo <= $limit. Con K
+         * chico (8 en el agente) un recorrido lineal para encontrar el peor es más simple y
+         * igual de rápido que un heap.
+         */
+        $mejores = [];
+
+        // Índice dentro de $mejores del peor candidato actual (se recalcula solo al reemplazar).
+        $indice_peor = null;
+
+        $consulta_sql = DB::table('articles as a')
+            ->leftJoin('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
+            ->where('a.user_id', $user_id)
+            ->where('a.status', 'active')
+            ->whereNull('a.deleted_at')
+            ->whereNotNull('a.embedding')
+            ->select('a.id', 'e.vector')
+            // El JSON grande viaja SOLO para los artículos que todavía no tienen compacto.
+            ->selectRaw('CASE WHEN e.vector IS NULL THEN a.embedding ELSE NULL END AS embedding_json');
+
+        $consulta_sql->chunkById(static::TANDA_BUSQUEDA, function ($filas) use ($consulta, $limit, $user_id, &$mejores, &$indice_peor) {
+
+            // Compactos armados en esta tanda desde el JSON: article_id => binario.
+            $compactos_nuevos = [];
+
+            foreach ($filas as $fila) {
+                $article_id = (int) $fila->id;
+
+                if (! is_null($fila->vector)) {
+                    // unpack devuelve claves 1..n: array_values las deja en 0..n-1 para el producto punto.
+                    $vector = array_values(unpack('g*', $fila->vector));
+                } else {
+                    // Sin compacto: se arma desde el JSON y se anota para guardarlo al final de la tanda.
+                    $completo = json_decode((string) $fila->embedding_json, true);
+
+                    if (! is_array($completo) || empty($completo)) {
+                        // JSON inválido o vacío: se saltea, igual que hacía la versión anterior.
+                        continue;
+                    }
+
+                    $binario = $this->compactar_vector($completo);
+
+                    if (is_null($binario)) {
+                        // Vector de norma cero: no hay dirección con la que comparar.
+                        continue;
+                    }
+
+                    $compactos_nuevos[$article_id] = $binario;
+                    $vector = array_values(unpack('g*', $binario));
+                }
+
+                $score = $this->producto_punto($consulta, $vector);
+
+                if (count($mejores) < $limit) {
+                    // Todavía hay lugar: entra directo y el peor se recalcula.
+                    $mejores[]   = ['score' => $score, 'id' => $article_id];
+                    $indice_peor = $this->indice_del_peor($mejores);
+                    continue;
+                }
+
+                // Lleno: entra solo si le gana al peor (a igual score, gana el id menor).
+                if ($this->es_mejor_candidato($score, $article_id, $mejores[$indice_peor])) {
+                    $mejores[$indice_peor] = ['score' => $score, 'id' => $article_id];
+                    $indice_peor           = $this->indice_del_peor($mejores);
+                }
             }
 
-            return $left['similarity'] < $right['similarity'] ? 1 : -1;
+            // Backfill perezoso: efecto secundario que nunca corta la búsqueda.
+            if (! empty($compactos_nuevos)) {
+                try {
+                    $this->guardar_compactos($compactos_nuevos, $user_id);
+                } catch (\Throwable $e) {
+                    Log::channel('daily')->warning(
+                        'ArticleEmbeddingService: no se pudieron guardar vectores compactos durante la búsqueda; se reintenta en la próxima.',
+                        [
+                            'user_id'   => $user_id,
+                            'articulos' => count($compactos_nuevos),
+                            'error'     => $e->getMessage(),
+                        ]
+                    );
+                }
+            }
+        }, 'a.id', 'id');
+
+        if (empty($mejores)) {
+            return collect([]);
+        }
+
+        // Orden final del ranking: score descendente y, a igual score, id ascendente.
+        usort($mejores, function ($izquierda, $derecha) {
+            if ($izquierda['score'] == $derecha['score']) {
+                return $izquierda['id'] <=> $derecha['id'];
+            }
+
+            return $izquierda['score'] < $derecha['score'] ? 1 : -1;
         });
 
-        $top_rows = array_slice($scored, 0, $limit);
-        $results  = [];
+        // Ids ganadores, en el orden del ranking.
+        $ids = array_map(function ($candidato) {
+            return $candidato['id'];
+        }, $mejores);
 
-        foreach ($top_rows as $item) {
-            $row = $item['row'];
-            unset($row->embedding);
-            $results[] = $row;
+        /*
+         * Segunda consulta, solo para los K ganadores: los datos que el agente necesita. `online`
+         * viaja igual que en la rama pgvector, y por el mismo motivo: se selecciona para que el
+         * agente sepa si puede pasar el link, pero NO se filtra, para que el artículo siga estando
+         * en el catálogo con su precio y su stock. El razonamiento completo está en el docblock de
+         * `search_similar_articles()`.
+         */
+        $datos = DB::table('articles')
+            ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'slug', 'online')
+            ->whereIn('id', $ids)
+            ->get()
+            ->keyBy('id');
+
+        // Se devuelve en el orden del ranking; whereIn no garantiza ningún orden.
+        $resultados = [];
+
+        foreach ($ids as $id) {
+            if (isset($datos[$id])) {
+                $resultados[] = $datos[$id];
+            }
         }
 
-        return collect($results);
+        return collect($resultados);
     }
 
     /**
-     * Similitud de coseno entre dos vectores del mismo tamaño.
+     * Devuelve el índice del peor candidato de un top-K: el de menor score y, a igual score, el de
+     * id mayor (el que perdería el desempate).
      *
-     * @param array<int, float> $vector_a
-     * @param array<int, float> $vector_b
+     * @param array<int, array{score: float, id: int}> $candidatos Lista no vacía.
      *
-     * @return float Valor entre -1 y 1; mayor = más similar.
+     * @return int Índice dentro de `$candidatos`.
      */
-    protected function cosine_similarity(array $vector_a, array $vector_b): float
+    protected function indice_del_peor(array $candidatos): int
     {
-        $length = min(count($vector_a), count($vector_b));
+        $indice_peor = null;
 
-        if ($length === 0) {
-            return 0.0;
+        foreach ($candidatos as $indice => $candidato) {
+            if (is_null($indice_peor)) {
+                $indice_peor = $indice;
+                continue;
+            }
+
+            $peor = $candidatos[$indice_peor];
+
+            if ($candidato['score'] < $peor['score']
+                || ($candidato['score'] == $peor['score'] && $candidato['id'] > $peor['id'])) {
+                $indice_peor = $indice;
+            }
         }
 
-        $dot_product = 0.0;
-        $norm_a      = 0.0;
-        $norm_b      = 0.0;
+        return (int) $indice_peor;
+    }
 
-        for ($index = 0; $index < $length; $index++) {
-            $value_a = (float) $vector_a[$index];
-            $value_b = (float) $vector_b[$index];
-
-            $dot_product += $value_a * $value_b;
-            $norm_a      += $value_a * $value_a;
-            $norm_b      += $value_b * $value_b;
+    /**
+     * Decide si un candidato nuevo le gana al peor del top-K.
+     *
+     * @param float                         $score      Similitud del candidato.
+     * @param int                           $article_id Id del candidato.
+     * @param array{score: float, id: int}  $peor       Peor candidato actual del top-K.
+     *
+     * @return bool `true` si tiene más score, o el mismo score y un id menor.
+     */
+    protected function es_mejor_candidato(float $score, int $article_id, array $peor): bool
+    {
+        if ($score > $peor['score']) {
+            return true;
         }
 
-        if ($norm_a <= 0.0 || $norm_b <= 0.0) {
-            return 0.0;
-        }
-
-        return $dot_product / (sqrt($norm_a) * sqrt($norm_b));
+        return $score == $peor['score'] && $article_id < $peor['id'];
     }
 
     /**
