@@ -2,17 +2,19 @@
 
 namespace Tests\Feature\TiendaMensajes;
 
+use App\Http\Controllers\CommonLaravel\Helpers\StringHelper;
+use App\Models\Message;
 use Tests\EmpresaTestCase;
 
 /**
  * Los endpoints viejos de mensajes, que siguen vivos para la SPA de los clientes sin actualizar
- * (misión mensajes-tienda-online, 28/9/2026, contrato C4): `GET message/{buyer_id}` y
- * `GET message/set-read/{buyer_id}`.
+ * (misión mensajes-tienda-online, 28/9/2026, contrato C4): `GET message/{buyer_id}`,
+ * `GET message/set-read/{buyer_id}` y `POST message`.
  *
  * Hasta esta misión no verificaban que el comprador fuera del comercio: en las bases compartidas
  * (`u767360347_empresa`, 51 comercios adentro) se leían y se marcaban chats ajenos por id. Ahora
- * un comprador ajeno da la lista vacía y el `set-read` no toca nada. Un pedido legítimo sigue
- * dando lo mismo que antes.
+ * un comprador ajeno da la lista vacía, el `set-read` no toca nada y el `POST` da 404. Un pedido
+ * legítimo sigue dando lo mismo que antes.
  *
  * PHP 7.4.
  */
@@ -105,5 +107,53 @@ class EndpointsViejosTest extends EmpresaTestCase
         });
 
         $this->assertCount(1, $updates);
+    }
+
+    /**
+     * @test
+     */
+    public function el_post_viejo_a_un_comprador_ajeno_da_404_y_no_guarda_nada()
+    {
+        $ajeno = $this->crear_comprador_de($this->crear_dueno('viejos ajeno post'));
+
+        $this->postJson('api/message', ['buyer_id' => $ajeno->id, 'text' => 'Te escribo desde otro comercio'])
+             ->assertStatus(404)
+             ->assertExactJson(['message' => 'Comprador no encontrado.']);
+
+        $this->assertSame(0, Message::where('buyer_id', $ajeno->id)->count());
+    }
+
+    /**
+     * Para un comprador propio, la respuesta de siempre: 201 `{ model }` con el mensaje completo del
+     * `withAll()` y el texto pasado por `onlyFirstWordUpperCase` (el endpoint viejo lo reescribe;
+     * el nuevo no).
+     *
+     * @test
+     */
+    public function el_post_viejo_a_un_comprador_propio_responde_igual_que_antes()
+    {
+        $comprador = $this->crear_comprador_de($this->dueno);
+
+        $json = $this->postJson('api/message', ['buyer_id' => $comprador->id, 'text' => 'HOLA, te ESCRIBO'])
+                     ->assertStatus(201)
+                     ->json();
+
+        $this->assertSame(['model'], array_keys($json));
+
+        $model = $json['model'];
+
+        $claves = array_keys($model);
+        sort($claves);
+
+        $esperadas = ['article', 'article_id', 'buyer_id', 'created_at', 'from_buyer', 'id', 'order_id', 'read', 'text', 'type', 'updated_at', 'user_id'];
+
+        $this->assertSame($esperadas, $claves);
+        $this->assertSame(StringHelper::onlyFirstWordUpperCase('HOLA, te ESCRIBO'), $model['text']);
+        $this->assertSame('Hola, te escribo', $model['text']);
+        $this->assertSame($comprador->id, (int) $model['buyer_id']);
+        $this->assertSame($this->dueno->id, (int) $model['user_id']);
+        $this->assertSame(0, (int) $model['from_buyer']);
+        $this->assertNull($model['article']);
+        $this->assertSame(1, Message::where('buyer_id', $comprador->id)->count());
     }
 }
