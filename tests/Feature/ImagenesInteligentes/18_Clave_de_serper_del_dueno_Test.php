@@ -16,11 +16,11 @@ use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\GoogleCustomSearchImageProvider;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\ImageSearch\SerperImageSearchProvider;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use ReflectionMethod;
 
@@ -68,6 +68,9 @@ class Clave_de_serper_del_dueno_Test extends ImagenesInteligentesTestCase
     const ID_USER_SETUP           = 900281;
     const ID_USER_SETUP_SIN_FORMA = 900300;
     const ID_DEMO_SETUP           = 900321;
+
+    /** @var array Las líneas de log capturadas por capturar_logs(): [nivel, texto (mensaje + contexto)]. */
+    protected $logs = [];
 
     protected function setUp(): void
     {
@@ -186,6 +189,47 @@ class Clave_de_serper_del_dueno_Test extends ImagenesInteligentesTestCase
     }
 
     /**
+     * Empieza a juntar TODAS las líneas de log del test (de cualquier nivel) en $this->logs, con un
+     * listener de MessageLogged. A diferencia de Log::spy() + shouldHaveReceived(), que pasa con que
+     * UNA llamada cumpla, esto deja afirmar que NINGUNA línea trae algo.
+     *
+     * @return void
+     */
+    protected function capturar_logs()
+    {
+        $this->logs = [];
+
+        $test = $this;
+
+        Event::listen(MessageLogged::class, function (MessageLogged $evento) use ($test) {
+            $test->logs[] = [
+                'nivel' => (string) $evento->level,
+                'texto' => (string) $evento->message.' '.$test->contexto_como_texto((array) $evento->context),
+            ];
+        });
+    }
+
+    /**
+     * El contexto de una línea de log como texto, con las excepciones abiertas (json_encode de un
+     * Throwable da `{}` y escondería lo que trae).
+     *
+     * @param  array $contexto
+     * @return string
+     */
+    public function contexto_como_texto(array $contexto)
+    {
+        $plano = [];
+
+        foreach ($contexto as $clave => $valor) {
+            $plano[$clave] = $valor instanceof \Throwable
+                ? $valor->getMessage().' '.$valor->getTraceAsString()
+                : $valor;
+        }
+
+        return (string) json_encode($plano, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    }
+
+    /**
      * Un artículo con código real, y el Serper / la IA falsos que le asignan una imagen.
      *
      * @return \App\Models\Article
@@ -254,42 +298,61 @@ class Clave_de_serper_del_dueno_Test extends ImagenesInteligentesTestCase
      * dueño (más larga que la columna reventaría el INSERT) ni ganarle a una buena del .env. Se
      * descarta, se avisa en el log SIN el valor, y la instalación sigue.
      *
+     * Caso por caso (revisión independiente del 28/9/2026): en CADA uno tiene que salir el aviso, y
+     * NINGUNA línea de log —de ningún nivel— puede traer el valor. La versión anterior pasaba con que
+     * una sola llamada a Log::warning cumpliera (shouldHaveReceived()->atLeast()->times(1)), así que
+     * no probaba lo que decía: un aviso con el valor adentro no la ponía en rojo.
+     *
      * @group imagenes-inteligentes
      * @test
      */
     public function el_user_setup_descarta_lo_que_no_tiene_forma_de_clave_y_el_alta_sigue()
     {
-        Log::spy();
+        $this->capturar_logs();
 
-        $larga = str_repeat('a', ImageSearchProviderFactory::LARGO_MAXIMO_CLAVE_SERPER + 1);
-
+        // caso => [el valor que viaja en el payload, los pedazos suyos que no pueden aparecer en ningún
+        // log]. Pedazos y no el valor entero: un valor recortado o con el salto de línea escapado en el
+        // JSON del contexto tiene que ponerlo en rojo igual.
         $casos = [
-            'más larga que la columna' => $larga,
-            'con espacios en el medio' => 'serper con espacios 0123456789abcdef',
-            'con un salto de línea'    => "serperPrimeraParte\nsegundaParte0123",
-            'un array'                 => ['no', 'es', 'texto'],
-            'un número'                => 12345678901234,
+            'más larga que la columna' => [
+                'serperLarga'.str_repeat('x', ImageSearchProviderFactory::LARGO_MAXIMO_CLAVE_SERPER),
+                ['serperLarga'],
+            ],
+            'con espacios en el medio' => ['serper con espacios 0123456789abcdef', ['serper con espacios', '0123456789abcdef']],
+            'con un salto de línea'    => ["serperPrimeraParte\nsegundaParte0123", ['serperPrimeraParte', 'segundaParte0123']],
+            'un array'                 => [['serperAdentroDeUnArray0123456789'], ['serperAdentroDeUnArray']],
+            'un número'                => [12345678901234, ['12345678901234']],
         ];
 
         $id = self::ID_USER_SETUP_SIN_FORMA;
 
-        foreach ($casos as $caso => $valor) {
+        foreach ($casos as $caso => $datos) {
             $id++;
+
+            list($valor, $prohibidos) = $datos;
+
+            // Solo las líneas de log de ESTE caso.
+            $this->logs = [];
 
             $user = $this->alta_por_user_setup($id, ['serper_api_key' => $valor]);
 
             $this->assertNotNull(User::find($user->id), 'Caso "'.$caso.'": el alta del dueño tiene que seguir.');
             $this->assertNull($this->clave_guardada($user->id), 'Caso "'.$caso.'": no se guarda lo que no es una clave.');
+
+            // El aviso sale en este caso...
+            $avisos = array_filter($this->logs, function ($log) {
+                return $log['nivel'] === 'warning' && strpos($log['texto'], 'clave de Serper') !== false;
+            });
+
+            $this->assertNotEmpty($avisos, 'Caso "'.$caso.'": tiene que salir el aviso en el log.');
+
+            // ...y ninguna línea de log, de ningún nivel, trae el valor.
+            foreach ($this->logs as $log) {
+                foreach ($prohibidos as $prohibido) {
+                    $this->assertStringNotContainsString($prohibido, $log['texto'], 'Caso "'.$caso.'": una línea de log ('.$log['nivel'].') trae el valor.');
+                }
+            }
         }
-
-        // El aviso sale, y nunca con el valor (ni el largo ni el del medio con espacios).
-        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) use ($larga) {
-            $todo = $mensaje.' '.json_encode($contexto);
-
-            return strpos($mensaje, 'clave de Serper') !== false
-                && strpos($todo, $larga) === false
-                && strpos($todo, 'serper con espacios') === false;
-        })->atLeast()->times(1);
     }
 
     /**
