@@ -190,7 +190,13 @@ class UserSetupHelper
             'name'                          => $display_name,
             'use_archivos_de_intercambio'   => 0,
             'company_name'                  => $data['company_name'] ?? null,
-            'image_url'                     => 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
+            // Logo del negocio (se estampa en los comprobantes, ver PdfHelper): admin-api lo manda
+            // opcionalmente como 'logo_url' desde el formulario de implementacion; el placeholder
+            // de abajo es el fallback historico para cuando no llega (admin viejo, o cliente que
+            // completo el form antes de este campo), no un valor fijo.
+            'image_url'                     => (isset($data['logo_url']) && trim((string) $data['logo_url']) !== '')
+                ? trim((string) $data['logo_url'])
+                : 'https://api-demo.comerciocity.com/public/storage/174292591094040.png',
             'doc_number'                    => $data['doc_number'] ?? null,
             'impresora'                     => 'comerciocity',
             'email'                         => $data['email'] ?? null,
