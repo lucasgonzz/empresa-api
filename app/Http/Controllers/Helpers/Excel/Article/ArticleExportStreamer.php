@@ -3,12 +3,11 @@
 namespace App\Http\Controllers\Helpers\Excel\Article;
 
 use App\Exports\ArticleExport;
+use App\Http\Controllers\Helpers\Excel\XlsxStreamWriter;
 use App\Models\Article;
 use DateTimeInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use OpenSpout\Common\Entity\Cell;
-use OpenSpout\Writer\Common\Creator\WriterEntityFactory;
 use PhpOffice\PhpSpreadsheet\Shared\StringHelper;
 
 /**
@@ -24,8 +23,8 @@ use PhpOffice\PhpSpreadsheet\Shared\StringHelper;
  * - Las columnas, su orden y su contenido siguen saliendo de ArticleExport::headings() y ::map():
  *   este archivo solo cambia CÓMO se recorre el catálogo y CÓMO se escribe el archivo.
  * - Se recorre por lotes de LOTE artículos, por id descendente (el mismo orden de antes).
- * - Se escribe con OpenSpout (ya estaba en el composer.lock para leer Excel), que vuelca cada fila
- *   al disco apenas la recibe.
+ * - Se escribe con XlsxStreamWriter, que vuelca cada fila al disco apenas la recibe (ahí está por
+ *   qué no OpenSpout).
  * - El tipado de cada celda replica el de maatwebsite + PhpSpreadsheet (ver celda()), para que
  *   exportar y volver a importar el mismo archivo siga dando exactamente lo mismo.
  */
@@ -163,21 +162,17 @@ class ArticleExportStreamer
          */
         $export = new ArticleExport(null, $this->owner_user_id);
 
-        $writer = WriterEntityFactory::createXLSXWriter();
-        $writer->setTempFolder($this->carpeta_temporal());
-        $writer->openToFile($ruta_absoluta);
+        $writer = new XlsxStreamWriter($ruta_absoluta, $this->carpeta_temporal(), self::NOMBRE_HOJA);
 
         $escritos = 0;
 
         try {
-            $writer->getCurrentSheet()->setName(self::NOMBRE_HOJA);
-
-            $writer->addRow($this->fila($export->headings()));
+            $writer->agregar_fila($this->fila($export->headings()));
 
             $this->recorrer_lotes($export, function ($articles) use ($writer, $export, &$escritos, $al_avanzar) {
 
                 foreach ($export->preparar_filas($articles) as $row) {
-                    $writer->addRow($this->fila($export->map($row)));
+                    $writer->agregar_fila($this->fila($export->map($row)));
                 }
 
                 $escritos += $articles->count();
@@ -186,9 +181,12 @@ class ArticleExportStreamer
                     call_user_func($al_avanzar, $escritos);
                 }
             });
-        } finally {
-            $writer->close();
+        } catch (\Throwable $e) {
+            $writer->descartar();
+            throw $e;
         }
+
+        $writer->cerrar();
 
         return $escritos;
     }
@@ -250,20 +248,20 @@ class ArticleExportStreamer
     }
 
     /**
-     * Convierte un array de valores en una fila de OpenSpout.
+     * Convierte un array de valores en las celdas tipadas de una fila.
      *
      * @param array $valores
-     * @return \OpenSpout\Common\Entity\Row
+     * @return array
      */
     protected function fila(array $valores)
     {
-        $cells = [];
+        $celdas = [];
 
         foreach ($valores as $valor) {
-            $cells[] = $this->celda($valor);
+            $celdas[] = $this->celda($valor);
         }
 
-        return WriterEntityFactory::createRow($cells);
+        return $celdas;
     }
 
     /**
@@ -280,12 +278,12 @@ class ArticleExportStreamer
      *   fórmula (y Excel mostraba #¿NOMBRE?); acá queda como texto.
      *
      * @param mixed $valor
-     * @return \OpenSpout\Common\Entity\Cell
+     * @return array|null [tipo, valor] de XlsxStreamWriter, o null si la celda va vacía.
      */
     protected function celda($valor)
     {
         if ($valor == null) {
-            return new Cell(null);
+            return null;
         }
 
         if (is_array($valor)) {
@@ -296,21 +294,22 @@ class ArticleExportStreamer
             $valor = (string) $valor;
         }
 
-        if (is_bool($valor) || is_int($valor) || is_float($valor)) {
-            return new Cell($valor);
+        if (is_bool($valor)) {
+            return [XlsxStreamWriter::TIPO_BOOLEANO, $valor];
+        }
+
+        if (is_int($valor) || is_float($valor)) {
+            return [XlsxStreamWriter::TIPO_NUMERO, $valor];
         }
 
         $valor = $this->utf8_valido((string) $valor);
 
         $numero = $this->como_numero($valor);
         if (!is_null($numero)) {
-            return new Cell($numero);
+            return [XlsxStreamWriter::TIPO_NUMERO, $numero];
         }
 
-        $cell = new Cell($valor);
-        $cell->setType(Cell::TYPE_STRING);
-
-        return $cell;
+        return [XlsxStreamWriter::TIPO_TEXTO, $valor];
     }
 
     /**
@@ -378,7 +377,7 @@ class ArticleExportStreamer
     }
 
     /**
-     * Carpeta de trabajo de OpenSpout (arma ahí las partes del .xlsx y las borra al cerrar).
+     * Carpeta de trabajo: ahí se arma el XML de la hoja y el .xlsx antes de subirlo.
      * Dentro de storage y no en /tmp: en el hosting compartido el /tmp es chico y compartido.
      *
      * @return string

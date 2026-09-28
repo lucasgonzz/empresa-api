@@ -22,6 +22,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     protected $headings_pre_addresses_cache = null;
     protected $headings_pre_price_types_cache = null;
 
+    protected $columnas_cache = null;
+
     function __construct($models, $user_id, $archivo_base = false) {
         $this->models = $models;
         $this->user_id = $user_id;
@@ -297,16 +299,68 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     }
 
     /**
-     * Consulta de los artículos del dueño con las relaciones del Excel, sin la columna
-     * `embedding` (hasta 29 KB por fila que el Excel no usa).
+     * Columnas de `articles` que lee el Excel (map() y ExportHelper). `articles` tiene más de cien
+     * columnas y el Excel usa menos de cuarenta: hidratar solo éstas es la mitad del trabajo por
+     * artículo, y deja afuera `embedding` (hasta 29 KB por fila).
+     *
+     * Las listas de precio sin listas_de_precio (el "caso Colman") y el stock por depósito se leen
+     * como $article->{nombre}: si alguno de esos nombres es una columna real, se trae también,
+     * para que salga exactamente lo mismo que antes.
+     *
+     * @return array Columnas prefijadas con la tabla.
+     */
+    public function columnas()
+    {
+        $leidas = [
+            'id', 'user_id', 'status',
+            'bar_code', 'sku', 'provider_code', 'name', 'provider_id',
+            'cost_in_dollars', 'cost', 'iva_id', 'aplicar_iva',
+            'percentage_gain', 'price', 'final_price', 'previus_final_price',
+            'category_id', 'sub_category_id', 'brand_id', 'descripcion', 'unidad_medida_id', 'unidades_individuales',
+            'stock', 'stock_min',
+            'espesor', 'modelo', 'pastilla', 'diametro', 'litros', 'contenido', 'cm3', 'calipers', 'juego',
+            'tipo_envase_id', 'unidades_por_bulto',
+            'percentage_gain_blanco', 'final_price_blanco',
+            'created_at', 'updated_at',
+        ];
+
+        foreach (ExportHelper::getPriceTypes() as $price_type) {
+            $leidas[] = $price_type->name;
+        }
+        foreach (ExportHelper::getAddresses() as $address) {
+            $leidas[] = $address->street;
+            $leidas[] = 'stock_min_'.$address->street;
+            $leidas[] = 'stock_max_'.$address->street;
+        }
+
+        $leidas = array_flip($leidas);
+        $columnas = [];
+
+        // columnas_sin_embedding() ya viene prefijada ('articles.x') y cacheada.
+        foreach (Article::columnas_sin_embedding() as $columna) {
+            $partes = explode('.', $columna);
+            if (isset($leidas[end($partes)])) {
+                $columnas[] = $columna;
+            }
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * Consulta de los artículos del dueño con las columnas y relaciones que usa el Excel.
      *
      * @param bool $solo_activos
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function consulta_articulos($solo_activos = true)
     {
+        if (is_null($this->columnas_cache)) {
+            $this->columnas_cache = $this->columnas();
+        }
+
         $query = Article::where('articles.user_id', $this->user_id)
-                        ->sinEmbedding()
+                        ->select($this->columnas_cache)
                         ->with(self::relaciones());
 
         if ($solo_activos) {
