@@ -127,12 +127,18 @@ class ImportHistoryIndexPaginationTest extends TestCase
     }
 
     /**
-     * El mismo request no dispara una consulta por cada historial de la página (el
-     * N+1 que traía el `->with('chunks.article_import_result_observations')` viejo,
-     * multiplicado además por CADA chunk de CADA historial). Con 5 historiales en la
-     * página, un puñado fijo de consultas alcanza: el conteo de paginate(), el
-     * select de la página y la resolución del usuario autenticado -- ninguna crece
-     * con la cantidad de chunks u observaciones que tenga cada importación.
+     * El mismo request no vuelve a traer relaciones vía `->with(...)`: el conteo de
+     * consultas se mantiene fijo (no depende de cuántos chunks u observaciones tenga
+     * cada importación) y **tampoco** admite las 1-2 consultas extra que agregaría
+     * reintroducir `->with('chunks')` (aunque sea SIN `.article_import_result_observations`).
+     *
+     * 🔴 El tope tiene que ser el número exacto medido, no un "tope generoso": un
+     * `->with('chunks')` es eager loading (dos consultas fijas por relación, un
+     * `WHERE IN`), no un N+1 clásico que escale con la cantidad de filas -- así que
+     * un tope laxo tipo 10 NO detecta que alguien reintrodujo la relación. Medido en
+     * esta misma suite (chequeo independiente, 28/9/2026): sin relaciones, **3**
+     * consultas (paginate + count + el auth de Sanctum); reintroduciendo
+     * `->with('chunks')`, **4**. El tope de abajo tiene que matar ese mutante.
      *
      * @return void
      */
@@ -160,18 +166,10 @@ class ImportHistoryIndexPaginationTest extends TestCase
         $consultas = count(DB::getQueryLog());
         DB::disableQueryLog();
 
-        /*
-         * Tope generoso (10): lo que importa no es un número exacto sino que NO
-         * escale con la cantidad de historiales/chunks/observaciones -- antes del
-         * arreglo, 5 historiales con 1 chunk y 1 observación cada uno ya disparaban
-         * de a 3 consultas extra por historial (chunks + observations + el propio
-         * lazy-load), sin contar que cada chunk real de producción trae muchas más
-         * observaciones que este fixture.
-         */
         $this->assertLessThanOrEqual(
-            10,
+            3,
             $consultas,
-            'El índice de historial parece estar volviendo a cargar relaciones por fila.'
+            'El índice de historial parece estar volviendo a cargar relaciones (with/eager-load).'
         );
     }
 
