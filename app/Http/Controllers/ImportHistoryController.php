@@ -169,15 +169,35 @@ class ImportHistoryController extends Controller
     }
 
     /**
-     * Devuelve los chunks (ArticleImportResult) de un historial de importacion.
+     * Devuelve los chunks (ArticleImportResult) de un historial de importacion, paginados.
      * Verifica que el historial pertenezca al usuario autenticado antes de
      * listar sus chunks, para no exponer datos de importaciones ajenas
      * (grupo 240, prompt 01).
      *
-     * @param int $import_history_id ID del historial de importacion.
+     * Antes traia TODOS los chunks del historial de una sola vez, con
+     * `with('article_import_result_observations')` sin ningun limite -- igual que index()
+     * antes de paginarse (misma mision), pero aca el caso extremo pesa mas: cada fila
+     * procesada del Excel deja exactamente una observacion (ProcessArticleChunk::handle()
+     * / ArticleImport::model()), asi que una importacion grande de una sola tanda puede
+     * dejar cientos de miles. Medido con 587 chunks x 200 observaciones (~117.400 filas,
+     * el mismo volumen del slow log real de Servian): agota el memory_limit de 128MB de
+     * un worker default y, con 2GB, tarda 4,17s y pesa 41,26MB (mision de seguimiento,
+     * 28/9/2026). Ahora pagina de a 20 (page por query string), con `with()` acotado a
+     * los chunks de la pagina actual -- no a todos.
+     *
+     * `orderBy('chunk_number')` es necesario para que la paginacion sea estable: sin un
+     * orden explicito, MySQL no garantiza que dos paginas consecutivas no se solapen ni
+     * salteen filas.
+     *
+     * El boton "Filas" de chunks/Index.vue sigue leyendo
+     * `chunk.article_import_result_observations` ya cargado en memoria (no pide aparte),
+     * asi que sigue andando para cualquier chunk que la pagina actual traiga.
+     *
+     * @param int                       $import_history_id ID del historial de importacion.
+     * @param \Illuminate\Http\Request  $request            query: page (default 1).
      * @return \Illuminate\Http\JsonResponse
      */
-    function chunks($import_history_id) {
+    function chunks($import_history_id, Request $request) {
         /* Confirmamos que el historial exista y sea del usuario autenticado. */
         $import_history = ImportHistory::where('id', $import_history_id)
                             ->where('user_id', $this->userId())
@@ -187,11 +207,25 @@ class ImportHistoryController extends Controller
             return response()->json(['message' => 'No se encontro la importacion'], 404);
         }
 
-        $models = ArticleImportResult::where('import_history_id', $import_history_id)
-                                    ->with('article_import_result_observations')
-                                    ->get();
+        $pagina_pedida = (int) $request->query('page', 1);
+        if ($pagina_pedida < 1) {
+            $pagina_pedida = 1;
+        }
 
-        return response()->json(['models' => $models], 200);
+        $models = ArticleImportResult::where('import_history_id', $import_history_id)
+                                    ->orderBy('chunk_number', 'ASC')
+                                    ->with('article_import_result_observations')
+                                    ->paginate(20, ['*'], 'page', $pagina_pedida);
+
+        return response()->json([
+            'models'     => $models->items(),
+            'pagination' => [
+                'current_page' => $models->currentPage(),
+                'last_page'    => $models->lastPage(),
+                'total'        => $models->total(),
+                'per_page'     => $models->perPage(),
+            ],
+        ], 200);
     }
 
     /**

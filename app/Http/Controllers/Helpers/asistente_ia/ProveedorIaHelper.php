@@ -41,17 +41,18 @@ use Illuminate\Support\Facades\Log;
  */
 class ProveedorIaHelper
 {
-    /** Claude, de Anthropic: el proveedor de siempre y el default del sistema. */
+    /** Claude, de Anthropic: la alternativa más cara, la de siempre hasta el 28/9/2026. */
     const ANTHROPIC = 'anthropic';
 
-    /** DeepSeek: la alternativa más económica, por su endpoint compatible con Anthropic. */
+    /** DeepSeek: por su endpoint compatible con Anthropic, el default del sistema desde el
+     * 28/9/2026 (misión agente-ia-default-deepseek-directo, pedido de Lucas). */
     const DEEPSEEK = 'deepseek';
 
     /** Los proveedores válidos, en el orden en que se ofrecen (y en el que se cae al buscar clave). */
     const PROVEEDORES = [self::ANTHROPIC, self::DEEPSEEK];
 
     /** Default del proveedor (coincide con el default de la columna `users.agente_proveedor`). */
-    const PROVEEDOR_POR_DEFECTO = self::ANTHROPIC;
+    const PROVEEDOR_POR_DEFECTO = self::DEEPSEEK;
 
     /** Default del pensamiento (coincide con el default de la columna `users.agente_pensamiento`). */
     const PENSAMIENTO_POR_DEFECTO = 'agil';

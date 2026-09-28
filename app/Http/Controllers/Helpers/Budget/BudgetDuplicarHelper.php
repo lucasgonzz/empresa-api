@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
+use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Budget;
 use App\Models\BudgetStatus;
@@ -184,6 +185,16 @@ class BudgetDuplicarHelper {
                     'location' => $article->pivot->location,
                     'price' => $article->pivot->price,
                     'price_type_personalizado_id' => $article->pivot->price_type_personalizado_id,
+                    /*
+                        La base viaja con el precio (mision recargos-en-precios-editable, 28/9/2026):
+                        el duplicado copia el `price` del origen tal cual y tambien la opcion
+                        `aplicar_recargos_directo_a_items` (ver `duplicate()`), asi que si el precio
+                        trae el recargo adentro, sigue trayendolo. La clave va SIEMPRE, aunque sea
+                        null: con la clave ausente `BudgetHelper::base_para_renglon()` buscaria una
+                        base guardada del duplicado, que no tiene ninguna. Mismo criterio en
+                        servicios, promociones y combos, mas abajo.
+                    */
+                    RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot),
                 ],
             ];
         }
@@ -205,6 +216,7 @@ class BudgetDuplicarHelper {
                 'pivot' => [
                     'amount' => $service->pivot->amount,
                     'price' => $service->pivot->price,
+                    RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($service->pivot),
                 ],
             ];
         }
@@ -226,6 +238,7 @@ class BudgetDuplicarHelper {
                 'pivot' => [
                     'amount' => $promo->pivot->amount,
                     'price' => $promo->pivot->price,
+                    RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot),
                 ],
             ];
         }
@@ -257,6 +270,7 @@ class BudgetDuplicarHelper {
                 'pivot' => [
                     'amount' => $combo->pivot->amount,
                     'price' => $combo->pivot->price,
+                    RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot),
                 ],
             ];
         }
