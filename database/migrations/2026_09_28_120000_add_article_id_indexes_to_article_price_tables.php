@@ -27,16 +27,18 @@ use Illuminate\Support\Facades\Schema;
 class AddArticleIdIndexesToArticlePriceTables extends Migration
 {
     /**
-     * Tabla => [nombre del índice, columnas]. En los pivots de listas va también `price_type_id`:
-     * la relación los lee por artículo y los ordena por lista.
+     * Tabla => [nombre del índice, columnas]. Solo `article_id` también en los pivots de listas:
+     * un índice (article_id, price_type_id) haría que MySQL devuelva las listas de un artículo
+     * ordenadas por lista en vez de por id del pivot, y hay lecturas sin ORDER BY (el catálogo
+     * PDF, la ficha IA) que mostrarían otro orden.
      */
     const INDICES = [
         'article_discounts'          => ['article_discounts_article_id_idx', ['article_id']],
         'article_surchages'          => ['article_surchages_article_id_idx', ['article_id']],
         'article_discount_blancos'   => ['article_discount_blancos_article_id_idx', ['article_id']],
         'article_surchage_blancos'   => ['article_surchage_blancos_article_id_idx', ['article_id']],
-        'article_price_type'         => ['article_price_type_article_id_idx', ['article_id', 'price_type_id']],
-        'article_price_type_monedas' => ['apt_monedas_article_id_idx', ['article_id', 'price_type_id']],
+        'article_price_type'         => ['article_price_type_article_id_idx', ['article_id']],
+        'article_price_type_monedas' => ['apt_monedas_article_id_idx', ['article_id']],
     ];
 
     /**
