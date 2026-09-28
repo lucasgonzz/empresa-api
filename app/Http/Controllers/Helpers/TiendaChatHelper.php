@@ -29,11 +29,17 @@ use Illuminate\Support\Facades\Log;
 class TiendaChatHelper
 {
     /**
-     * Largo máximo del texto que viaja en el evento. El límite de Pusher es 10 KB por evento y
-     * `json_encode` escapa cada acento como `á` (6 bytes): 2000 caracteres dejan margen para
-     * el resto del payload. Si se recorta, `text_truncado` va en true y la SPA pide la página 1.
+     * Largo máximo del texto que viaja en el evento, en CARACTERES (contrato C1, corregido el
+     * 28/9/2026: era 2000).
+     *
+     * El límite de Pusher es 10 KB por evento, y el SDK codifica la data con `json_encode` sin
+     * `JSON_UNESCAPED_UNICODE`: cada acento sale como `\u00e1` (6 bytes) y cada emoji como un par
+     * de escapes `\ud83d\ude00` (12 bytes). Con 2000 caracteres acentuados el evento medía
+     * 12.437 bytes y Pusher lo rechazaba. Con 500, el peor caso (500 emojis) queda en ~6,5 KB
+     * contando el resto del payload. Si se recorta, `text_truncado` va en true y la SPA pide la
+     * página 1 en silencio. tienda-api recorta igual: los dos emisores tienen que coincidir.
      */
-    const LARGO_MAXIMO_TEXTO_EVENTO = 2000;
+    const LARGO_MAXIMO_TEXTO_EVENTO = 500;
 
     /** Largo del texto del último mensaje en una fila de la bandeja (`Chat.last_message.text`). */
     const LARGO_TEXTO_EN_BANDEJA = 200;
@@ -160,7 +166,7 @@ class TiendaChatHelper
     }
 
     /**
-     * `message` del evento, con el texto recortado a 2000 caracteres.
+     * `message` del evento, con el texto recortado a 500 caracteres.
      *
      * @param  \App\Models\Message  $message
      * @return array

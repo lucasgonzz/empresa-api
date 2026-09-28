@@ -21,7 +21,8 @@ use Tests\EmpresaTestCase;
  * - 201 con la forma `Mensaje` exacta; el mensaje se guarda con `user_id` = dueño (aunque escriba
  *   un empleado), `from_buyer = 0`, `read = 0`, `type = null` y el texto TAL CUAL (solo el trim).
  * - El evento C1 al canal `private-tienda-mensajes.{dueño}`, con `broadcastAs` y los tipos del
- *   contrato. El texto del evento se recorta a 2000 y el payload entra en los 10 KB de Pusher.
+ *   contrato. El texto del evento se recorta a 500 caracteres y el payload entra en los 10 KB de
+ *   Pusher, también en el peor caso (500 emojis).
  * - `MessageSend` al comprador por `message.from_commerce.{buyer_id}`, con el mensaje releído de la
  *   base, y el mail según la regla de 30 minutos (sí la primera vez, no a los 10, sí a los 31).
  * - 422 con texto vacío, de puros espacios o de más de 5000; 404 con un comprador ajeno.
@@ -192,13 +193,13 @@ class EnviarMensajeTest extends EmpresaTestCase
     /**
      * @test
      */
-    public function el_texto_del_evento_se_recorta_a_2000_caracteres_y_la_api_lo_guarda_entero()
+    public function el_texto_del_evento_se_recorta_a_500_caracteres_y_la_api_lo_guarda_entero()
     {
         Event::fake([TiendaChatActualizado::class]);
         Notification::fake();
 
-        // Con acentos, para que el recorte sea por caracteres (mb_substr) y no por bytes.
-        $texto = str_repeat('á', 2500);
+        // 501 con acentos: uno de más, y el recorte tiene que ser por caracteres (mb_substr), no por bytes.
+        $texto = str_repeat('á', 501);
 
         $mensaje = $this->postJson($this->ruta(), ['text' => $texto])->assertStatus(201)->json('message');
 
@@ -209,8 +210,28 @@ class EnviarMensajeTest extends EmpresaTestCase
         $payload = $this->eventos_emitidos()[0]->broadcastWith();
 
         $this->assertSame(true, $payload['message']['text_truncado']);
-        $this->assertSame(2000, mb_strlen($payload['message']['text']));
-        $this->assertSame(str_repeat('á', 2000), $payload['message']['text']);
+        $this->assertSame(500, mb_strlen($payload['message']['text']));
+        $this->assertSame(str_repeat('á', 500), $payload['message']['text']);
+    }
+
+    /**
+     * El borde: 500 caracteres justos viajan enteros. Se recorta solo lo que pasa de 500.
+     *
+     * @test
+     */
+    public function un_texto_de_500_caracteres_justos_viaja_entero_en_el_evento()
+    {
+        Event::fake([TiendaChatActualizado::class]);
+        Notification::fake();
+
+        $texto = str_repeat('á', 500);
+
+        $this->postJson($this->ruta(), ['text' => $texto])->assertStatus(201);
+
+        $payload = $this->eventos_emitidos()[0]->broadcastWith();
+
+        $this->assertSame(false, $payload['message']['text_truncado']);
+        $this->assertSame($texto, $payload['message']['text']);
     }
 
     /**
@@ -221,53 +242,70 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function un_mensaje_largo_normal_entra_en_los_10_kb_de_pusher()
     {
+        $frase = 'Hola, ¿cómo andás? Te confirmo que el pedido sale mañana a la mañana por el correo. ';
+
+        $this->assertLessThan(10240, $this->bytes_del_evento_para(mb_substr(str_repeat($frase, 100), 0, 5000)));
+    }
+
+    /**
+     * 🔴 El peor caso con acentos: 5000 caracteres acentuados (el máximo que acepta la API), de
+     * los que viajan 500. El SDK escapa cada acento como `\u00e1` (6 bytes). Con el recorte viejo
+     * de 2000 este mismo caso medía 12.437 bytes y Pusher lo rechazaba.
+     *
+     * @test
+     */
+    public function el_peor_caso_con_acentos_entra_en_los_10_kb_de_pusher()
+    {
+        $bytes = $this->bytes_del_evento_para(str_repeat('á', 5000), str_repeat('á', 500));
+
+        $this->assertLessThan(10240, $bytes, '500 caracteres acentuados pesan '.$bytes.' bytes en el evento.');
+    }
+
+    /**
+     * 🔴 El peor caso de todos: 5000 emojis, de los que viajan 500. Cada emoji sale del SDK como un
+     * par de escapes `\ud83d\ude00` (12 bytes), que es lo más pesado que puede tener un carácter.
+     * Y el recorte no puede partir un emoji por la mitad: `mb_substr` cuenta caracteres, no bytes.
+     *
+     * @test
+     */
+    public function el_peor_caso_con_emojis_entra_en_los_10_kb_de_pusher()
+    {
+        $emoji = "\u{1F600}";
+
+        $bytes = $this->bytes_del_evento_para(str_repeat($emoji, 5000), str_repeat($emoji, 500));
+
+        $this->assertLessThan(10240, $bytes, '500 emojis pesan '.$bytes.' bytes en el evento.');
+    }
+
+    /**
+     * Manda `$texto` y devuelve cuántos bytes pesa la data del evento C1 codificada EXACTAMENTE como
+     * la codifica el SDK de Pusher antes de mandarla (`Pusher::make_event()`, vendor:
+     * `json_encode($data, JSON_THROW_ON_ERROR)`, sin `JSON_UNESCAPED_UNICODE`). Ese es el tamaño
+     * que Pusher compara contra su límite de 10 KB por evento.
+     *
+     * De paso afirma que el texto se recortó a 500 y, si se pasa, que quedó exactamente así.
+     *
+     * @param  string  $texto
+     * @param  string|null  $texto_esperado_en_el_evento
+     * @return int
+     */
+    protected function bytes_del_evento_para($texto, $texto_esperado_en_el_evento = null)
+    {
         Event::fake([TiendaChatActualizado::class]);
         Notification::fake();
-
-        $frase = 'Hola, ¿cómo andás? Te confirmo que el pedido sale mañana a la mañana por el correo. ';
-        $texto = mb_substr(str_repeat($frase, 100), 0, 5000);
 
         $this->postJson($this->ruta(), ['text' => $texto])->assertStatus(201);
 
         $payload = $this->eventos_emitidos()[0]->broadcastWith();
 
         $this->assertSame(true, $payload['message']['text_truncado']);
-        // json_encode con los flags por defecto: es lo que hace el SDK de Pusher con la data.
-        $this->assertLessThan(10240, strlen(json_encode($payload)));
-    }
+        $this->assertSame(500, mb_strlen($payload['message']['text']));
 
-    /**
-     * ⚠️ PENDIENTE DE DECISIÓN SOBRE EL CONTRATO C1 (no es un error de esta implementación).
-     *
-     * El contrato recorta el texto a 2000 CARACTERES para no pasar los 10 KB de Pusher, pero el SDK
-     * codifica la data con `json_encode` sin `JSON_UNESCAPED_UNICODE`: cada acento pesa 6 bytes
-     * (`á`) y cada emoji 12. Con 2000 caracteres acentuados el payload mide ~12,4 KB y Pusher
-     * lo rechaza (el `try/catch` de `TiendaChatHelper::emitir()` lo ataja y el mensaje queda
-     * guardado; la SPA lo ve al entrar o al reconectar, no en vivo).
-     *
-     * No se toca el 2000 porque tienda-api emite el mismo payload y los dos lados tienen que
-     * recortar igual. Este test deja la medición a la vista hasta que se decida: si el contrato
-     * pasa a garantizar los 10 KB, la aserción de abajo queda en pie y pasa sola.
-     *
-     * @test
-     */
-    public function el_peor_caso_de_2000_caracteres_acentuados_entra_en_los_10_kb_de_pusher()
-    {
-        Event::fake([TiendaChatActualizado::class]);
-        Notification::fake();
-
-        $this->postJson($this->ruta(), ['text' => str_repeat('á', 5000)])->assertStatus(201);
-
-        $bytes = strlen(json_encode($this->eventos_emitidos()[0]->broadcastWith()));
-
-        if ($bytes >= 10240) {
-            $this->markTestIncomplete(
-                'Contrato C1 pendiente de decisión: 2000 caracteres acentuados pesan '.$bytes.' bytes '.
-                'en el evento (json_encode escapa cada acento como á), más que los 10240 de Pusher.'
-            );
+        if (!is_null($texto_esperado_en_el_evento)) {
+            $this->assertSame($texto_esperado_en_el_evento, $payload['message']['text']);
         }
 
-        $this->assertLessThan(10240, $bytes);
+        return strlen(json_encode($payload, JSON_THROW_ON_ERROR));
     }
 
     /**
