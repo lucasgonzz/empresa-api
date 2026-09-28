@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\Excel\Article;
 
 use App\Exports\ArticleExport;
+use App\Http\Controllers\Helpers\ColumnFiltersHelper;
 use App\Http\Controllers\Helpers\Excel\XlsxStreamWriter;
 use App\Models\Article;
 use DateTimeInterface;
@@ -58,11 +59,21 @@ class ArticleExportStreamer
     protected $owner_user_id;
 
     /**
-     * Ids pedidos (selección o filtro del listado); null exporta todos los artículos activos.
+     * Ids pedidos (selección del listado o conflictos de descuentos de un proveedor); null si no
+     * es una selección.
      *
      * @var array|null
      */
     protected $article_ids;
+
+    /**
+     * Filtros del listado, tal como los manda la SPA (los mismos que recibe
+     * ColumnFiltersHelper::apply()); null si no es una exportación filtrada. Sin ids ni filtros se
+     * exportan todos los artículos activos.
+     *
+     * @var array|null
+     */
+    protected $filters;
 
     /**
      * Tamaño de lote vigente (LOTE salvo en los tests, que lo achican para cruzar varios lotes).
@@ -74,8 +85,9 @@ class ArticleExportStreamer
     /**
      * @param int        $owner_user_id
      * @param array|null $article_ids
+     * @param array|null $filters     Filtros del listado. Si vienen ids, mandan los ids.
      */
-    public function __construct($owner_user_id, $article_ids = null)
+    public function __construct($owner_user_id, $article_ids = null, $filters = null)
     {
         $this->owner_user_id = (int) $owner_user_id;
 
@@ -87,6 +99,50 @@ class ArticleExportStreamer
         } else {
             $this->article_ids = null;
         }
+
+        $this->filters = (is_null($this->article_ids) && is_array($filters) && count($filters)) ? $filters : null;
+    }
+
+    /**
+     * Aplica los filtros del listado a una consulta de artículos, igual que el buscador del
+     * listado (SearchController::search()), y le saca cualquier orden: el Excel sale por id
+     * ascendente (por ids salía así dentro de cada tramo de mil artículos).
+     *
+     * Por qué esto y no ids (28/9/2026): antes el pedido web corría el buscador completo
+     * (withAll() y ->get() de todos los artículos filtrados) solo para sacarles el id y mandarle
+     * la lista al job. Con un filtro amplio en un catálogo como el de Servian eran cientos de miles
+     * de modelos hidratados en el request. Ahora el request solo cuenta, y el job reaplica el
+     * filtro y lo recorre por lotes.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param array $filters
+     * @return array ['models' => Builder, 'used_filters' => array]
+     */
+    public static function aplicar_filtros($query, array $filters)
+    {
+        $resultado = ColumnFiltersHelper::apply($query, $filters, 'article', Article::class);
+
+        // ColumnFiltersHelper puede agregar un ORDER BY (el "ordenar de" de una columna); el
+        // recorrido por lotes necesita ordenar por id.
+        $resultado['models'] = $resultado['models']->reorder();
+
+        return $resultado;
+    }
+
+    /**
+     * Consulta de los artículos que cumplen los filtros, sin columnas ni relaciones del Excel:
+     * para contarlos en el request.
+     *
+     * @param int   $owner_user_id
+     * @param array $filters
+     * @return array ['models' => Builder, 'used_filters' => array]
+     */
+    public static function consulta_de_filtros($owner_user_id, array $filters)
+    {
+        $query = Article::where('articles.user_id', (int) $owner_user_id)
+                        ->where('articles.status', 'active');
+
+        return self::aplicar_filtros($query, $filters);
     }
 
     /**
@@ -112,6 +168,10 @@ class ArticleExportStreamer
     {
         if (!is_null($this->article_ids)) {
             return count($this->article_ids);
+        }
+
+        if (!is_null($this->filters)) {
+            return self::consulta_de_filtros($this->owner_user_id, $this->filters)['models']->count();
         }
 
         return Article::where('user_id', $this->owner_user_id)
@@ -235,6 +295,46 @@ class ArticleExportStreamer
 
                 unset($articles);
             }
+
+            return;
+        }
+
+        if (!is_null($this->filters)) {
+
+            /*
+             * Filtro del listado: el mismo paginado por clave, pero ascendente (id > último). Por
+             * ids salía por id ascendente dentro de cada tramo de mil; ahora sale todo por id
+             * ascendente. Cada lote reaplica el filtro sobre una consulta nueva: el Builder de
+             * Eloquent no se puede reusar entre lotes.
+             *
+             * El tope de id se fija al arrancar: un artículo creado mientras se escribe el Excel
+             * no entra (el recorrido ascendente lo alcanzaría) y lo escrito coincide con el total
+             * de la barra.
+             */
+            $ultimo_id = null;
+            $id_tope = (int) Article::where('user_id', $this->owner_user_id)->max('id');
+
+            do {
+                $query = self::aplicar_filtros($export->consulta_articulos(true), $this->filters)['models']
+                            ->where('articles.id', '<=', $id_tope)
+                            ->orderBy('articles.id', 'ASC')
+                            ->limit($this->lote);
+
+                if (!is_null($ultimo_id)) {
+                    $query->where('articles.id', '>', $ultimo_id);
+                }
+
+                $articles = $query->get();
+                $cantidad = $articles->count();
+
+                if ($cantidad) {
+                    $ultimo_id = $articles->last()->id;
+                    $procesar($articles);
+                }
+
+                unset($articles, $query);
+
+            } while ($cantidad == $this->lote);
 
             return;
         }
