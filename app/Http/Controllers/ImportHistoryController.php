@@ -99,13 +99,47 @@ class ImportHistoryController extends Controller
         ], 202);
     }
 
-    function index($model_name) {
-        $models = ImportHistory::where('user_id', $this->userId())
+    /**
+     * Historial de importaciones de un modelo, paginado y sin relaciones.
+     *
+     * Antes traía las últimas 10 CON `chunks.article_import_result_observations` sin
+     * límite: en producción de Servian eso generó consultas de hasta 118.000 filas /
+     * 113 MB (misión importacion-lento-vender-y-historial, 28/9/2026) -- un dueño con
+     * muchas importaciones grandes trae, de una sola vez, todos los lotes y todas las
+     * observaciones de cada una, cuando la tabla del historial solo pinta columnas
+     * propias de `ImportHistory` (relevado del `.vue` real, no a ojo). Los lotes de cada
+     * importación ("Lotes") ya son un endpoint aparte (`chunks()`, más abajo) que el
+     * frontend pide bajo demanda al abrir ese modal puntual.
+     *
+     * `select()` explícito + `paginate(5)` en vez de `take(10)`: el `select` sobrevive al
+     * `paginate()` (Eloquent solo usa el `['*']` del segundo argumento si el builder
+     * todavía no tiene columnas seteadas -- mismo mecanismo que ya documenta
+     * `SearchController::globalSearch()` en este mismo repo).
+     *
+     * @param string                    $model_name
+     * @param \Illuminate\Http\Request  $request     query: page (default 1).
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function index($model_name, Request $request) {
+        $pagina_pedida = (int) $request->query('page', 1);
+        if ($pagina_pedida < 1) {
+            $pagina_pedida = 1;
+        }
+
+        $models = ImportHistory::select([
+                                    'id', 'created_at', 'terminado_at', 'status', 'user_id',
+                                    'employee_id', 'filas_procesadas', 'created_models',
+                                    'updated_models', 'articles_match', 'articles_repetidos',
+                                    'error_message', 'error_trace', 'provider_id', 'columnas',
+                                    'operaciones', 'observations', 'total_chunks',
+                                    'processed_chunks', 'conflicts_count', 'excel_url',
+                                    'rollback_status', 'rolled_back_at', 'rollback_error',
+                                    'matching_counts_json', 'model_name',
+                                ])
+                                ->where('user_id', $this->userId())
                                 ->where('model_name', $model_name)
                                 ->orderBy('id', 'DESC')
-                                ->with('chunks.article_import_result_observations')
-                                ->take(10)
-                                ->get();
+                                ->paginate(5, ['*'], 'page', $pagina_pedida);
 
         /*
          * matching_counts_json se guarda como texto plano (json_encode) en BD, igual que
@@ -114,7 +148,7 @@ class ImportHistoryController extends Controller
          * anidado. filas_ambiguas e identificadores_descartados ya viajan tal cual porque
          * son columnas enteras (grupo 232, prompt 03; la UI que los consuma es otro prompt).
          */
-        $models->each(function ($model) {
+        $models->getCollection()->each(function ($model) {
             $model->matching_counts_json = is_null($model->matching_counts_json)
                 ? null
                 : json_decode($model->matching_counts_json, true);
@@ -123,7 +157,15 @@ class ImportHistoryController extends Controller
             $model->can_revert = $model->puede_revertirse();
         });
 
-        return response()->json(['models' => $models], 200);
+        return response()->json([
+            'models'     => $models->items(),
+            'pagination' => [
+                'current_page' => $models->currentPage(),
+                'last_page'    => $models->lastPage(),
+                'total'        => $models->total(),
+                'per_page'     => $models->perPage(),
+            ],
+        ], 200);
     }
 
     /**
