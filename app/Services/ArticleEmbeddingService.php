@@ -29,8 +29,9 @@ use Illuminate\Support\Facades\Log;
  * `article_compact_embeddings` —los primeros 512 valores, normalizados, en float32 binario: 2 KB—
  * y la búsqueda recorre esa tabla por tandas quedándose solo con los mejores K, así que la memoria
  * no depende del tamaño del catálogo. El JSON completo sigue siendo la fuente de verdad: el
- * compacto se deriva de él (en `persistir_embedding()` o, de forma perezosa, en la propia
- * búsqueda) y nunca se le pide nada a OpenAI para armarlo.
+ * compacto se deriva de él —de forma perezosa en la propia búsqueda, o de una con el comando
+ * `articles:compactar-embeddings`—, lleva un sello de frescura (`embedding_generated_at`) que lo
+ * invalida cuando el artículo se re-indexa, y nunca se le pide nada a OpenAI para armarlo.
  */
 class ArticleEmbeddingService
 {
@@ -458,13 +459,28 @@ class ArticleEmbeddingService
      *   se guardan como texto JSON en una columna vector. El síntoma sería una búsqueda
      *   semántica que devuelve cualquier cosa, sin ningún error.
      *
-     * 🔴 EN MYSQL, ADEMÁS, SINCRONIZA EL VECTOR COMPACTO (misión rag-whatsapp-memoria-acotada).
-     * Este método es el ÚNICO escritor de `articles.embedding` —lo usan el job que indexa y el
-     * seeder de semilla—, así que actualizar `article_compact_embeddings` acá alcanza para que el
-     * compacto nunca quede atrás del JSON. Si el vector nuevo no se puede compactar (vacío o de
-     * norma cero), la fila compacta se BORRA: quedarse con la vieja haría que la búsqueda rankee
-     * el artículo por un vector que ya no es el suyo. Un artículo sin fila compacta no se pierde:
-     * la búsqueda lo vuelve a intentar desde el JSON.
+     * 🔴 EN MYSQL, ADEMÁS, BORRA EL VECTOR COMPACTO DEL ARTÍCULO; NO LO ESCRIBE (misión
+     * rag-whatsapp-memoria-acotada). Parece al revés, y es a propósito:
+     *
+     * - El compacto lleva un sello de frescura (`embedding_generated_at`, copiado de `articles`) y
+     *   solo vale mientras coincida con el del artículo. `GenerateArticleEmbeddingJob` pone
+     *   `articles.embedding_generated_at = now()` DESPUÉS de llamar a este método, así que
+     *   cualquier compacto que se escribiera acá nacería con un sello viejo y se recalcularía
+     *   igual en la primera búsqueda: sería trabajo tirado.
+     * - Borrar es más robusto que escribir: una fila que no está no puede quedar vieja, y el
+     *   artículo no se pierde — la búsqueda (pasada 2) y `articles:compactar-embeddings` lo
+     *   compactan desde el JSON. Además evita el upsert concurrente contra la misma tabla que hace
+     *   la búsqueda, que es la receta de un deadlock.
+     *
+     * O sea: **el único escritor de `article_compact_embeddings` es el recorrido** (la búsqueda y
+     * el comando), que siempre guarda el vector junto con el sello leído EN LA MISMA LECTURA DE
+     * FILA que el JSON. El seeder de la ferretería, que también pasa por acá y después siembra
+     * `embedding_generated_at`, queda bien por el mismo camino: su compacto nace en la primera
+     * búsqueda o con el comando.
+     *
+     * El borrado va en try/catch: el vector completo ya quedó guardado, y si el borrado fallara el
+     * sello desactualizado igual haría que la búsqueda no use ese compacto. No vale la pena tirar
+     * el job (que reintentaría y le volvería a pagar a OpenAI) por algo que se corrige solo.
      *
      * @param int               $article_id Artículo destino.
      * @param array<int, float> $embedding  Vector completo, tal como lo devuelve OpenAI.
@@ -491,24 +507,18 @@ class ArticleEmbeddingService
             ->where('id', $article_id)
             ->update(['embedding' => json_encode($embedding)]);
 
-        // Vector compacto derivado del mismo array (null si no hay nada que normalizar).
-        $compacto = $this->compactar_vector($embedding);
-
-        if (is_null($compacto)) {
+        // El compacto viejo se descarta: lo re-arma el recorrido con el sello correcto (ver docblock).
+        try {
             DB::table('article_compact_embeddings')->where('article_id', $article_id)->delete();
-
-            return;
+        } catch (\Throwable $e) {
+            Log::channel('daily')->warning(
+                'ArticleEmbeddingService: no se pudo borrar el vector compacto al persistir; el sello de frescura lo invalida igual.',
+                [
+                    'article_id' => $article_id,
+                    'error'      => $e->getMessage(),
+                ]
+            );
         }
-
-        // El dueño se lee de articles: la firma de este método no lo trae (y no se cambia, porque
-        // la usa el seeder de semilla). Si el artículo no existe no hay nada que sincronizar.
-        $user_id = DB::table('articles')->where('id', $article_id)->value('user_id');
-
-        if (is_null($user_id)) {
-            return;
-        }
-
-        $this->guardar_compactos([$article_id => $compacto], (int) $user_id);
     }
 
     /**
@@ -617,8 +627,16 @@ class ArticleEmbeddingService
      * El binario viaja como parámetro del statement preparado (Laravel usa prepares nativos en
      * MySQL), así que no pasa por ningún escape de texto ni por el charset de la conexión.
      *
-     * @param array<int, string> $compactos Mapa article_id => binario de `compactar_vector()`.
-     * @param int                $user_id   Dueño de todos esos artículos.
+     * 🔴 El sello (`embedding_generated_at`) tiene que ser el que se leyó en la MISMA fila que el
+     * JSON compactado, nunca uno leído aparte ni `now()`: es lo que garantiza que el sello siempre
+     * corresponda al vector guardado. Si entre esa lectura y este guardado alguien re-indexa el
+     * artículo, el sello guardado queda viejo y la próxima búsqueda lo recompacta: el error
+     * posible es trabajo de más, nunca un vector equivocado dado por fresco.
+     *
+     * @param array<int, array{vector: string, embedding_generated_at: string|null}> $compactos
+     *        Mapa article_id => ['vector' => binario de `compactar_vector()`,
+     *        'embedding_generated_at' => sello leído junto con el JSON].
+     * @param int $user_id Dueño de todos esos artículos.
      *
      * @return void
      */
@@ -631,20 +649,49 @@ class ArticleEmbeddingService
         // Filas a insertar, una por artículo.
         $filas = [];
 
-        foreach ($compactos as $article_id => $binario) {
+        foreach ($compactos as $article_id => $compacto) {
             $filas[] = [
-                'article_id' => (int) $article_id,
-                'user_id'    => $user_id,
-                'vector'     => $binario,
+                'article_id'             => (int) $article_id,
+                'user_id'                => $user_id,
+                'vector'                 => $compacto['vector'],
+                'embedding_generated_at' => $compacto['embedding_generated_at'],
             ];
         }
 
-        DB::table('article_compact_embeddings')->upsert($filas, ['article_id'], ['user_id', 'vector']);
+        DB::table('article_compact_embeddings')->upsert(
+            $filas,
+            ['article_id'],
+            ['user_id', 'vector', 'embedding_generated_at']
+        );
     }
 
     /**
-     * Compacta, por tandas, los artículos que tienen `articles.embedding` y todavía no tienen fila
-     * en `article_compact_embeddings`. Es el motor del comando `articles:compactar-embeddings`.
+     * Condición SQL de "compacto fresco": el sello del compacto coincide con el del artículo.
+     *
+     * Igualdad null-safe (`<=>`) porque `articles.embedding_generated_at` puede ser NULL (artículos
+     * vectorizados antes de que existiera la columna, o sembrados a mano): NULL contra NULL es
+     * fresco, que es lo correcto — el compacto salió de ese mismo estado del artículo.
+     *
+     * Se lee solo `embedding_generated_at` de `articles`, que es una columna chica: compararla NO
+     * arrastra el JSON de `embedding` (ver el bloque rojo de `search_similar_articles_in_php()`).
+     *
+     * Asume los alias `a` (articles) y `e` (article_compact_embeddings).
+     *
+     * @return string
+     */
+    protected function condicion_compacto_fresco(): string
+    {
+        return 'e.embedding_generated_at <=> a.embedding_generated_at';
+    }
+
+    /**
+     * Compacta, por tandas, los artículos que tienen `articles.embedding` y cuyo compacto falta o
+     * está viejo (su sello no coincide con `articles.embedding_generated_at`). Es el motor del
+     * comando `articles:compactar-embeddings`.
+     *
+     * Los viejos se tratan igual que los faltantes porque es la única forma de reparar lo que deja
+     * un frente con la versión anterior: ese código re-indexa `articles.embedding` sin conocer esta
+     * tabla, y un comando que solo mirara los faltantes no vería nada que hacer.
      *
      * Adelanta el mismo trabajo que el backfill perezoso de la búsqueda, para que el primer
      * mensaje de cada cliente después del deploy no lo pague. Diferencias con ese camino:
@@ -652,13 +699,12 @@ class ArticleEmbeddingService
      * - No filtra por status ni por borrado: compacta todo lo que tenga vector, así un artículo
      *   que se reactiva ya tiene su compacto listo. La búsqueda igual filtra sobre `articles`, así
      *   que un compacto de un artículo inactivo nunca aparece en una respuesta.
-     * - No toca los que ya tienen compacto (el `LEFT JOIN ... IS NULL`): correrlo dos veces no hace
-     *   nada la segunda.
+     * - No toca los que tienen un compacto fresco: correrlo dos veces no hace nada la segunda.
      * - NO llama a OpenAI: solo re-empaqueta el vector que ya está guardado. Por eso no le afecta
      *   `EMBEDDINGS_GENERACION_PAUSADA` y no cuesta plata.
      *
      * La paginación es por id (`chunkById`), así que el hecho de que las filas ya compactadas
-     * dejen de cumplir el `IS NULL` a medida que se recorre no hace saltear ninguna.
+     * dejen de cumplir la condición a medida que se recorre no hace saltear ninguna.
      *
      * @param int|null $user_id Si viene, solo los artículos de ese dueño; si no, toda la base
      *                          (una base compartida puede tener varios comercios adentro).
@@ -671,11 +717,15 @@ class ArticleEmbeddingService
     {
         $totales = ['compactados' => 0, 'salteados' => 0];
 
+        // El JSON y el sello salen de la MISMA fila, en la misma consulta.
         $consulta = DB::table('articles as a')
             ->leftJoin('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
             ->whereNotNull('a.embedding')
-            ->whereNull('e.article_id')
-            ->select('a.id', 'a.user_id', 'a.embedding');
+            ->where(function ($sin_compacto_fresco) {
+                $sin_compacto_fresco->whereNull('e.article_id')
+                    ->orWhereRaw('NOT ('.$this->condicion_compacto_fresco().')');
+            })
+            ->select('a.id', 'a.user_id', 'a.embedding', 'a.embedding_generated_at');
 
         if (! is_null($user_id)) {
             $consulta->where('a.user_id', (int) $user_id);
@@ -683,7 +733,7 @@ class ArticleEmbeddingService
 
         $consulta->chunkById($tanda, function ($filas) use (&$totales) {
 
-            // Compactos de la tanda agrupados por dueño: user_id => [article_id => binario].
+            // Compactos de la tanda agrupados por dueño: user_id => [article_id => compacto].
             $por_dueno = [];
 
             foreach ($filas as $fila) {
@@ -695,7 +745,10 @@ class ArticleEmbeddingService
                     continue;
                 }
 
-                $por_dueno[(int) $fila->user_id][(int) $fila->id] = $binario;
+                $por_dueno[(int) $fila->user_id][(int) $fila->id] = [
+                    'vector'                 => $binario,
+                    'embedding_generated_at' => $fila->embedding_generated_at,
+                ];
             }
 
             foreach ($por_dueno as $dueno_id => $compactos) {
@@ -803,32 +856,47 @@ class ArticleEmbeddingService
      *
      * El recorrido va en DOS PASADAS, y separarlas no es cosmético:
      *
-     * - **Pasada 1, los que ya tienen compacto** (`JOIN` con `article_compact_embeddings`). 🔴 ESTA
-     *   CONSULTA NO NOMBRA `a.embedding` EN NINGÚN LADO, NI SIQUIERA EN UN `IS NOT NULL`, y es a
-     *   propósito: medido con 8.000 artículos (28/9/2026), cualquier referencia a esa columna hace
-     *   que InnoDB lea el JSON de ~28 KB de cada fila aunque no lo devuelva —la misma consulta tarda
-     *   1,47 s con `a.embedding IS NOT NULL` y 0,08 s sin él—. El filtro "con embedding" está
-     *   garantizado igual por construcción: una fila compacta solo nace de un embedding no nulo
-     *   (en `persistir_embedding()`, el único escritor de vectores, o en la pasada 2), y ningún
-     *   código de empresa-api ni de tienda-api pone `articles.embedding` en NULL sobre un artículo
-     *   existente (verificado por grep el 28/9/2026; `DuplicarRecetaHelper` lo hace, pero sobre la
-     *   copia nueva, que todavía no tiene compacto). Si algún día alguien agrega un camino que
-     *   borre el embedding, tiene que borrar también la fila compacta, o ese artículo seguiría
-     *   apareciendo con su vector viejo.
-     * - **Pasada 2, los que todavía no tienen compacto** (backfill perezoso: los de antes del
-     *   deploy, o uno cuyo compacto se borró). Primero se listan SOLO sus ids —de nuevo sin tocar
+     * **Compacto fresco.** Cada compacto guarda el `embedding_generated_at` del artículo que tenía
+     * la fila de la que salió su JSON, y solo se usa mientras coincida con el actual (ver
+     * `condicion_compacto_fresco()`). Hace falta porque cada cliente tiene DOS frentes sobre la
+     * misma base: si el cron quedó en el frente con la versión anterior, ese código re-indexa
+     * `articles.embedding` sin saber que existe esta tabla, y sin el sello el compacto rankearía
+     * para siempre con el vector viejo, sin ningún error. Lo mismo después de un rollback.
+     *
+     * - **Pasada 1, los que tienen compacto fresco** (`JOIN` con `article_compact_embeddings` +
+     *   sello igual). 🔴 ESTA CONSULTA NO NOMBRA `a.embedding` EN NINGÚN LADO, NI SIQUIERA EN UN
+     *   `IS NOT NULL`, y es a propósito: medido con 8.000 artículos (28/9/2026), cualquier
+     *   referencia a esa columna hace que InnoDB lea el JSON de ~28 KB de cada fila aunque no lo
+     *   devuelva —la misma consulta tarda 1,47 s con `a.embedding IS NOT NULL` y 0,08 s sin él—.
+     *   `a.embedding_generated_at` sí se puede comparar: es una columna chica, en la fila, y no
+     *   arrastra el JSON. El filtro "con embedding" está garantizado igual por construcción: un
+     *   compacto solo nace de un JSON no nulo (en la pasada 2 o en el comando), y ningún código de
+     *   empresa-api ni de tienda-api pone `articles.embedding` en NULL sobre un artículo existente
+     *   (verificado por grep el 28/9/2026; `DuplicarRecetaHelper` lo hace, pero sobre la copia
+     *   nueva, que todavía no tiene compacto). Si algún día alguien agrega un camino que borre el
+     *   embedding sin tocar `embedding_generated_at`, tiene que borrar también la fila compacta.
+     * - **Pasada 2, los que no tienen compacto o lo tienen viejo** (backfill perezoso: los de antes
+     *   del deploy, los re-indexados por un frente viejo, o uno cuyo compacto borró
+     *   `persistir_embedding()`). Primero se listan SOLO sus ids —de nuevo sin tocar
      *   `a.embedding`—, y recién para cada tanda de ids se trae el JSON con `embedding IS NOT NULL`,
-     *   que acá sí es el filtro de siempre. Se compactan al vuelo, se usan en esta misma búsqueda y
-     *   se guardan al final de la tanda. La primera búsqueda de cada dueño paga ese costo una vez,
-     *   con la memoria igual acotada por tanda; de ahí en adelante la pasada 2 solo ve los
-     *   artículos sin vector (que son pocos y no traen nada pesado). Guardar es un efecto
-     *   secundario: si falla se loguea y la búsqueda sigue, porque la respuesta al cliente no puede
-     *   depender de él.
+     *   que acá sí es el filtro de siempre, JUNTO CON su `embedding_generated_at` en la misma
+     *   lectura de fila (así el sello que se guarda siempre corresponde al vector compactado). Se
+     *   compactan al vuelo, se usan en esta misma búsqueda y se guardan al final de la tanda. La
+     *   primera búsqueda de cada dueño paga ese costo una vez, con la memoria igual acotada por
+     *   tanda; de ahí en adelante la pasada 2 solo ve los artículos sin vector y los re-indexados.
+     *   🔴 Los artículos SIN vector se vuelven a listar en cada mensaje, y está bien así: medido
+     *   el 28/9/2026 con 8.000 compactos + 8.000 sin vector, listarlos suma ~0,1 s por búsqueda
+     *   (0,57 s → 0,67 s), mientras que sacarlos con `a.embedding IS NOT NULL` en ESTA consulta
+     *   la lleva a 1,4–1,9 s, porque vuelve a arrastrar el JSON de todos los que sí tienen
+     *   vector. El `IS NOT NULL` va solo en la lectura por clave primaria de cada tanda.
+     *   Guardar es un efecto secundario: si falla se loguea y la búsqueda sigue, porque la
+     *   respuesta al cliente no puede depender de él.
      *
      * El orden de las pasadas importa: si la 2 fuera primero, lo que ella compacta volvería a
      * aparecer en la 1 y se contaría dos veces. Con la 1 primero, lo único que puede pasar es que
      * otro proceso compacte un artículo justo entre las dos pasadas y esta búsqueda puntual no lo
-     * vea; la siguiente sí.
+     * vea; la siguiente sí. El caso inverso —un artículo que la pasada 1 ya contó y que se
+     * re-indexa antes de la 2— lo cubre `considerar_candidato()`, que no admite ids repetidos.
      *
      * Los filtros de dueño, activo y no borrado se aplican siempre sobre `articles`: por eso una
      * fila compacta huérfana (de un artículo borrado a mano, inactivo o de otro dueño) nunca
@@ -864,9 +932,10 @@ class ArticleEmbeddingService
         // Índice dentro de $mejores del peor candidato actual (se recalcula solo al reemplazar).
         $indice_peor = null;
 
-        // ── Pasada 1: artículos con compacto. Sin referencias a a.embedding (ver docblock). ──
+        // ── Pasada 1: compactos frescos. Sin referencias a a.embedding (ver docblock). ──
         $this->articulos_del_dueno($user_id)
             ->join('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
+            ->whereRaw($this->condicion_compacto_fresco())
             ->select('a.id', 'e.vector')
             ->chunkById(static::TANDA_BUSQUEDA, function ($filas) use ($consulta, $limit, &$mejores, &$indice_peor) {
                 foreach ($filas as $fila) {
@@ -883,21 +952,25 @@ class ArticleEmbeddingService
                 }
             }, 'a.id', 'id');
 
-        // ── Pasada 2: artículos sin compacto (backfill perezoso). Primero solo los ids. ──
+        // ── Pasada 2: sin compacto o con compacto viejo (backfill perezoso). Primero solo los ids. ──
         $this->articulos_del_dueno($user_id)
             ->leftJoin('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
-            ->whereNull('e.article_id')
+            ->where(function ($sin_compacto_fresco) {
+                $sin_compacto_fresco->whereNull('e.article_id')
+                    ->orWhereRaw('NOT ('.$this->condicion_compacto_fresco().')');
+            })
             ->select('a.id')
             ->chunkById(static::TANDA_BUSQUEDA, function ($filas) use ($consulta, $limit, $user_id, &$mejores, &$indice_peor) {
 
-                // El JSON se trae recién acá, por clave primaria y solo para esta tanda de ids.
+                // El JSON se trae recién acá, por clave primaria y solo para esta tanda de ids,
+                // con su sello en la MISMA lectura de fila.
                 $con_json = DB::table('articles')
                     ->whereIn('id', $filas->pluck('id')->all())
                     ->whereNotNull('embedding')
-                    ->select('id', 'embedding')
+                    ->select('id', 'embedding', 'embedding_generated_at')
                     ->get();
 
-                // Compactos armados en esta tanda desde el JSON: article_id => binario.
+                // Compactos armados en esta tanda desde el JSON: article_id => [vector, sello].
                 $compactos_nuevos = [];
 
                 foreach ($con_json as $fila) {
@@ -915,7 +988,10 @@ class ArticleEmbeddingService
                         continue;
                     }
 
-                    $compactos_nuevos[(int) $fila->id] = $binario;
+                    $compactos_nuevos[(int) $fila->id] = [
+                        'vector'                 => $binario,
+                        'embedding_generated_at' => $fila->embedding_generated_at,
+                    ];
 
                     // Se compara con el compacto recién armado, no con el JSON: así la primera
                     // búsqueda y las siguientes rankean exactamente igual.
@@ -1021,6 +1097,21 @@ class ArticleEmbeddingService
      */
     protected function considerar_candidato(array &$mejores, &$indice_peor, int $limit, float $score, int $article_id): void
     {
+        /*
+         * Id ya presente: pasa si la pasada 1 lo contó y otro proceso lo re-indexó antes de la 2.
+         * Se queda con el score nuevo (el de la pasada 2 sale del vector vigente) y NO se agrega
+         * otra entrada: el agente no puede recibir el mismo artículo dos veces. K es chico, así
+         * que el recorrido lineal no cuesta nada.
+         */
+        foreach ($mejores as $indice => $candidato) {
+            if ($candidato['id'] === $article_id) {
+                $mejores[$indice]['score'] = $score;
+                $indice_peor               = $this->indice_del_peor($mejores);
+
+                return;
+            }
+        }
+
         if (count($mejores) < $limit) {
             // Todavía hay lugar: entra directo y el peor se recalcula.
             $mejores[]   = ['score' => $score, 'id' => $article_id];

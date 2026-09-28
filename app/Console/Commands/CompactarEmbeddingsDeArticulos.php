@@ -11,19 +11,21 @@ use Illuminate\Console\Command;
  *
  * La búsqueda semántica del agente de WhatsApp compara contra un vector compacto de cada artículo
  * (512 dims normalizadas, float32 binario) en vez del JSON de 1536 floats. Ese compacto se arma
- * solo: lo escribe `ArticleEmbeddingService::persistir_embedding()` cada vez que se indexa un
- * artículo, y la propia búsqueda compacta al vuelo los que falten (backfill perezoso). Este comando
- * hace ese mismo backfill de una, para que el primer mensaje de cada cliente después del deploy no
- * pague el costo de compactar todo el catálogo.
+ * solo: la propia búsqueda compacta al vuelo los que faltan y los que quedaron viejos (su sello
+ * `embedding_generated_at` ya no coincide con el del artículo, porque se re-indexó —desde esta
+ * versión, desde un frente con la versión anterior o después de un rollback—). Este comando hace
+ * ese mismo backfill de una, para que el primer mensaje de cada cliente después del deploy no pague
+ * el costo de compactar todo el catálogo.
  *
  * - Es OPCIONAL: sin correrlo todo funciona igual, solo que la primera búsqueda de cada dueño es
  *   más lenta.
- * - No se agenda en el scheduler: después de la primera corrida no queda nada que hacer, porque
- *   los artículos nuevos o re-indexados ya nacen con su compacto.
+ * - No se agenda en el scheduler: después de la primera corrida lo que queda (artículos nuevos o
+ *   re-indexados) es poco y lo resuelve la búsqueda sola. Sirve también a mano, para reparar de un
+ *   saque un catálogo que un frente viejo re-indexó entero.
  * - NO llama a OpenAI: re-empaqueta el vector que ya está en `articles.embedding`. Por eso no lo
  *   frena `EMBEDDINGS_GENERACION_PAUSADA` ni el gate de la extensión `whatsapp_ia`, y no cuesta
  *   plata.
- * - Es idempotente: solo toca los artículos que todavía no tienen fila compacta.
+ * - Es idempotente: solo toca los artículos sin compacto o con compacto viejo.
  *
  * Uso:
  *   php artisan articles:compactar-embeddings              # toda la base
@@ -44,7 +46,7 @@ class CompactarEmbeddingsDeArticulos extends Command
      *
      * @var string
      */
-    protected $description = 'Arma el vector compacto de la búsqueda semántica para los artículos que todavía no lo tienen (no llama a OpenAI)';
+    protected $description = 'Arma el vector compacto de la búsqueda semántica para los artículos que no lo tienen o lo tienen viejo (no llama a OpenAI)';
 
     /**
      * Artículos por tanda. Cada uno trae su JSON de ~28 KB, así que 200 son ~6 MB por tanda.

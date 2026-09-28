@@ -29,8 +29,16 @@ use Illuminate\Support\Facades\Schema;
  * - `user_id` con índice: permite recorrer o limpiar lo de un dueño sin pasar por `articles`.
  * - `vector` BLOB NOT NULL: una fila sin vector no tiene sentido; el servicio borra la fila en vez
  *   de dejarla vacía.
- * - Sin foreign keys (regla del repo) y sin timestamps (nadie los lee; la fila se reescribe entera
- *   cada vez que cambia el vector del artículo).
+ * - `embedding_generated_at`: el SELLO DE FRESCURA. Es copia del `articles.embedding_generated_at`
+ *   que tenía el artículo en la misma lectura de fila de la que salió el JSON compactado. Un
+ *   compacto vale solo mientras los dos sellos coincidan (igualdad null-safe `<=>`); si no, la
+ *   búsqueda y el comando lo re-arman desde el JSON. Existe porque cada cliente tiene DOS frentes
+ *   sobre la misma base: si el cron quedó en el frente viejo, `articles:generate-embeddings` de esa
+ *   versión re-indexa `articles.embedding` sin saber que esta tabla existe, y sin el sello el
+ *   compacto quedaría rankeando para siempre con el vector anterior, sin ningún error. Lo mismo con
+ *   un rollback de versión. Nullable porque `articles.embedding_generated_at` también lo es.
+ * - Sin foreign keys (regla del repo) y sin `created_at`/`updated_at` (nadie los lee; la fila se
+ *   reescribe entera cada vez que cambia el vector del artículo).
  *
  * 🔴 SIN BACKFILL ACÁ, a propósito: esta migración la corre `DeploymentService` en cada cliente, y
  * compactar 15.000 artículos × 28 KB adentro del despliegue lo alarga sin necesidad. El relleno es
@@ -60,6 +68,9 @@ class CreateArticleCompactEmbeddingsTable extends Migration
 
             /* 512 floats float32 little-endian (pack('g*')), vector de norma 1: 2048 bytes. */
             $table->binary('vector');
+
+            /* Sello de frescura: articles.embedding_generated_at del JSON que se compactó. */
+            $table->timestamp('embedding_generated_at')->nullable();
         });
     }
 
