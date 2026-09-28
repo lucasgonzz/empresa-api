@@ -49,7 +49,13 @@ class LogoPaletteAiService
 
     /** @var array Ratios minimos de contraste exigidos (validacion determinista, punto 2.d). */
     const MIN_CONTRAST_TEXT_ON_PRIMARY       = 4.5;
-    const MIN_CONTRAST_HOVER_TEXT_ON_PRIMARY = 3.0;
+
+    // Mismo piso que el texto normal (4.5), no el piso reducido de WCAG para "texto grande"
+    // (3.0). Ese piso reducido solo aplica a texto >=18pt (o >=14pt en negrita); el hover del
+    // nav en tienda-spa (ItemsList.vue, _sidebars.sass, login/Form.vue) nunca agranda el texto,
+    // solo le cambia el color al mismo tamaño de siempre. Usar 3.0 acá dejaba pasar paletas con
+    // un hover_text_color numericamente "valido" pero dificil de distinguir contra el primario.
+    const MIN_CONTRAST_HOVER_TEXT_ON_PRIMARY = 4.5;
     const MIN_CONTRAST_PRIMARY_VS_SECONDARY  = 1.3;
     const MIN_CONTRAST_PRIMARY_VS_BACKGROUND = 3.0;
 
@@ -322,8 +328,9 @@ class LogoPaletteAiService
             $text = ColorContrastHelper::best_text_on($primary);
         }
 
-        // 3. Mismo criterio para hover_text_color, con un piso mas laxo (3.0) porque suele ser
-        // un texto secundario/de menor tamaño relativo.
+        // 3. Mismo criterio para hover_text_color, con el mismo piso que text_color (4.5): en
+        // tienda-spa el hover se renderiza al mismo tamaño que el texto normal, nunca mas grande,
+        // asi que no corresponde el piso reducido de WCAG para "texto grande".
         if (ColorContrastHelper::contrast_ratio($hover_text, $primary) < self::MIN_CONTRAST_HOVER_TEXT_ON_PRIMARY) {
             $hover_text = ColorContrastHelper::best_text_on($primary);
         }
