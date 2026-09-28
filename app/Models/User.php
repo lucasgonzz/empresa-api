@@ -37,6 +37,13 @@ class User extends Authenticatable
         // la key publica del export de articulos (grupo 211) quedaria filtrada en
         // cualquier respuesta de API que incluya al usuario.
         'articles_export_key',
+        // Clave de Serper del comercio (mision serper-en-user-setup, 28/9/2026): la guardan
+        // UserSetupHelper y DemoSetupHelper con lo que manda el admin, y la lee solo el servidor
+        // (ImageSearchProviderFactory::clave_serper_para) para buscar imagenes. Por el mismo
+        // motivo que la de arriba no puede viajar en get_user ni en update -- y un empleado recibe
+        // al dueño entero adentro de su get_user (AuthController::set_employee_props) --. La SPA
+        // no la necesita: a diferencia de la de Google, el navegador nunca busca en Serper.
+        'serper_api_key',
     ];
 
     protected $casts = [
