@@ -65,19 +65,30 @@ class ProcessArticleExportJob implements ShouldQueue
     protected $export_history_id;
 
     /**
+     * Filtros del listado, cuando se exportan los artículos filtrados. El job los reaplica y
+     * recorre el resultado por lotes (antes el request resolvía los filtros a una lista de ids).
+     * Un job encolado antes de este cambio no trae la propiedad: queda en null.
+     *
+     * @var array|null
+     */
+    protected $filters = null;
+
+    /**
      * Crea el job de exportación en segundo plano.
      *
      * @param int $owner_user_id
      * @param int $auth_user_id
      * @param array $article_ids
      * @param int $export_history_id
+     * @param array|null $filters Filtros del listado (solo si $article_ids viene vacío).
      */
-    public function __construct($owner_user_id, $auth_user_id, $article_ids, $export_history_id)
+    public function __construct($owner_user_id, $auth_user_id, $article_ids, $export_history_id, $filters = null)
     {
         $this->owner_user_id = (int) $owner_user_id;
         $this->auth_user_id = (int) $auth_user_id;
         $this->article_ids = is_array($article_ids) ? $article_ids : [];
         $this->export_history_id = (int) $export_history_id;
+        $this->filters = (is_array($filters) && count($filters)) ? $filters : null;
 
         /*
          * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel),
@@ -127,6 +138,9 @@ class ProcessArticleExportJob implements ShouldQueue
 
             $es_seleccion = count($this->article_ids) > 0;
 
+            // Filtrados del listado: el job reaplica el filtro (ver ArticleExportStreamer).
+            $filtros = $es_seleccion ? null : $this->filters;
+
             $file_name = 'comerciocity-articulos_' . date_format(Carbon::now(), 'd-m-y_H-i-s') . '_' . uniqid() . '.xlsx';
             $relative_path = 'exported-files/' . $file_name;
 
@@ -135,7 +149,7 @@ class ProcessArticleExportJob implements ShouldQueue
              * Excel::store() de un FromCollection que traía el catálogo entero de una. Con los
              * 750k artículos de Servian el worker reventaba 4 GB al minuto (28/9/2026).
              */
-            $streamer = new ArticleExportStreamer($this->owner_user_id, $es_seleccion ? $this->article_ids : null);
+            $streamer = new ArticleExportStreamer($this->owner_user_id, $es_seleccion ? $this->article_ids : null, $filtros);
 
             $proceso = BackgroundProcessHelper::por_referencia($export_history);
             BackgroundProcessHelper::avanzar($proceso, 0, [
@@ -176,7 +190,7 @@ class ProcessArticleExportJob implements ShouldQueue
                 [
                     'title' => 'Resultado de la exportacion',
                     'parrafos' => [
-                        $es_seleccion
+                        ($es_seleccion || !is_null($filtros))
                             ? $exported_count . ' articulos exportados'
                             : 'Exportacion solicitada para todos los articulos (' . $exported_count . ')',
                     ],

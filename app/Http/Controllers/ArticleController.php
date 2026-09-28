@@ -41,6 +41,8 @@ use App\Imports\ProvinciaImport;
 use App\Jobs\ProcessArticleImport;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Jobs\ProcessArticleExportJob;
+use App\Http\Controllers\Helpers\Excel\Article\ArticleExportStreamer;
+use App\Services\Filter\FilterHistoryService;
 use App\Jobs\ProcessDeleteArticleFromTiendaNube;
 use App\Models\ArticlePdf as ArticlePdfLayout;
 use App\Jobs\ProcessSyncArticleToTiendaNube;
@@ -833,6 +835,11 @@ class ArticleController extends Controller
          */
         $article_ids = [];
 
+        /**
+         * Filtros del listado que viajan al job (null si no es una exportación filtrada).
+         */
+        $filters_para_el_job = null;
+
         if ($request->has('filters')) {
             // Filtros serializados que llegan desde frontend para el exportado.
             $jsonData = $request->query('filters');
@@ -844,17 +851,34 @@ class ArticleController extends Controller
                 ], 422);
             }
 
-            $search_ct = new SearchController();
-            $models = $search_ct->search($request, 'article', $filters);
+            /*
+             * Solo se CUENTA (28/9/2026). Antes esto corría el buscador completo -withAll() y
+             * ->get() de todos los artículos filtrados- para sacarles el id y mandarle la lista al
+             * job: con un filtro amplio en un catálogo como el de Servian (750k) eran cientos de
+             * miles de modelos en el request. Ahora el job reaplica los mismos filtros
+             * (ColumnFiltersHelper, igual que el buscador) y los recorre por lotes.
+             */
+            $filtrado = ArticleExportStreamer::consulta_de_filtros($this->userId(), $filters);
+            $cantidad = $filtrado['models']->count();
 
-            // Se extraen solo IDs para evitar serializar modelos completos al job.
-            $article_ids = $models->pluck('id')->toArray();
+            // Mismo registro que dejaba el buscador al resolver el filtro de la exportación.
+            FilterHistoryService::log_action([
+                'user_id'         => $this->userId(true),
+                'auth_user_id'    => $this->userId(false),
+                'action'          => 'busqueda',
+                'model_name'      => 'article',
+                'filtrados_count' => $cantidad,
+                'afectados_count' => 0,
+                'used_filters'    => $filtrado['used_filters'],
+            ]);
 
-            if (!count($article_ids)) {
+            if (!$cantidad) {
                 return response()->json([
                     'message' => 'No hay articulos que coincidan con el filtro para exportar',
                 ], 422);
             }
+
+            $filters_para_el_job = $filters;
         } else if ($request->has('articles_id')) {
             // IDs seleccionados manualmente desde listado.
             $ids = explode('-', $request->query('articles_id'));
@@ -877,7 +901,8 @@ class ArticleController extends Controller
             $this->userId(),
             $this->userId(false),
             $article_ids,
-            $export_history->id
+            $export_history->id,
+            $filters_para_el_job
         );
 
         return response()->json([
