@@ -27,8 +27,9 @@ class ExportHistoryHelper
          * El registro visible (misión procesos-en-segundo-plano, 18/9/2026) nace acá, en el
          * request, y en `pendiente`: entre que el usuario apretó "Exportar" y que un worker
          * levanta el job pueden pasar minutos en el shared hosting, y en ese rato la píldora ya
-         * tiene que decir que hay algo esperando. El job lo pasa a en_proceso al arrancar. Sin
-         * total: generar un Excel no tiene unidades que contar, la barra es indeterminada.
+         * tiene que decir que hay algo esperando. El job lo pasa a en_proceso al arrancar. Nace
+         * sin total; la exportación de artículos lo completa con la cantidad de artículos al
+         * arrancar y avanza por lote (misión exportacion-articulos-streaming, 28/9/2026).
          */
         BackgroundProcessHelper::iniciar($user_id, 'exportacion', 'Exportación de ' . DeleteModelsHelper::get_model_label($model_name), [
             'auth_user_id' => $employee_id,

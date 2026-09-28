@@ -2,12 +2,11 @@
 
 namespace App\Jobs;
 
-use App\Exports\ArticleExport;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\Excel\Article\ArticleExportStreamer;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Http\Controllers\Helpers\jobs\BackgroundJobFailureHandler;
 use App\Jobs\Concerns\InstrumentaMemoria;
-use App\Models\Article;
 use App\Models\ExportHistory;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
@@ -18,7 +17,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
-use Maatwebsite\Excel\Facades\Excel;
 
 class ProcessArticleExportJob implements ShouldQueue
 {
@@ -67,19 +65,30 @@ class ProcessArticleExportJob implements ShouldQueue
     protected $export_history_id;
 
     /**
+     * Filtros del listado, cuando se exportan los artículos filtrados. El job los reaplica y
+     * recorre el resultado por lotes (antes el request resolvía los filtros a una lista de ids).
+     * Un job encolado antes de este cambio no trae la propiedad: queda en null.
+     *
+     * @var array|null
+     */
+    protected $filters = null;
+
+    /**
      * Crea el job de exportación en segundo plano.
      *
      * @param int $owner_user_id
      * @param int $auth_user_id
      * @param array $article_ids
      * @param int $export_history_id
+     * @param array|null $filters Filtros del listado (solo si $article_ids viene vacío).
      */
-    public function __construct($owner_user_id, $auth_user_id, $article_ids, $export_history_id)
+    public function __construct($owner_user_id, $auth_user_id, $article_ids, $export_history_id, $filters = null)
     {
         $this->owner_user_id = (int) $owner_user_id;
         $this->auth_user_id = (int) $auth_user_id;
         $this->article_ids = is_array($article_ids) ? $article_ids : [];
         $this->export_history_id = (int) $export_history_id;
+        $this->filters = (is_array($filters) && count($filters)) ? $filters : null;
 
         /*
          * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel),
@@ -127,20 +136,43 @@ class ProcessArticleExportJob implements ShouldQueue
                 return;
             }
 
-            $models = null;
-            if (count($this->article_ids)) {
-                $models = Article::where('user_id', $this->owner_user_id)
-                                ->whereIn('id', $this->article_ids)
-                                ->get();
-            }
+            $es_seleccion = count($this->article_ids) > 0;
+
+            // Filtrados del listado: el job reaplica el filtro (ver ArticleExportStreamer).
+            $filtros = $es_seleccion ? null : $this->filters;
 
             $file_name = 'comerciocity-articulos_' . date_format(Carbon::now(), 'd-m-y_H-i-s') . '_' . uniqid() . '.xlsx';
             $relative_path = 'exported-files/' . $file_name;
 
-            $article_export = new ArticleExport($models, $this->owner_user_id);
-            Excel::store($article_export, $relative_path);
+            /*
+             * El Excel se escribe por lotes (ArticleExportStreamer): antes esto era un
+             * Excel::store() de un FromCollection que traía el catálogo entero de una. Con los
+             * 750k artículos de Servian el worker reventaba 4 GB al minuto (28/9/2026).
+             */
+            $streamer = new ArticleExportStreamer($this->owner_user_id, $es_seleccion ? $this->article_ids : null, $filtros);
 
-            $exported_count = !is_null($models) ? $models->count() : $article_export->collection()->count();
+            $proceso = BackgroundProcessHelper::por_referencia($export_history);
+            BackgroundProcessHelper::avanzar($proceso, 0, [
+                'total' => $streamer->total(),
+                'etapa' => 'Escribiendo los artículos',
+            ]);
+
+            /*
+             * Latido del historial: el watchdog (historiales:detectar-colgados) da por muerta una
+             * exportación cuyo updated_at no se mueve en 90 minutos. Con avance real por lote, una
+             * exportación larga pero viva no puede caer en esa red.
+             */
+            $ultimo_latido = time();
+            $exported_count = $streamer->guardar($relative_path, function ($escritos) use ($proceso, $export_history, &$ultimo_latido) {
+
+                // Una lectura y una escritura por lote de mil; el broadcast lo limita el helper.
+                BackgroundProcessHelper::avanzar($proceso, $escritos);
+
+                if (!is_null($export_history) && time() - $ultimo_latido >= 60) {
+                    $export_history->touch();
+                    $ultimo_latido = time();
+                }
+            });
 
             $download_link = $export_history
                 ? ExportHistoryHelper::mark_completed($export_history, $file_name, $exported_count)
@@ -158,7 +190,7 @@ class ProcessArticleExportJob implements ShouldQueue
                 [
                     'title' => 'Resultado de la exportacion',
                     'parrafos' => [
-                        !is_null($models)
+                        ($es_seleccion || !is_null($filtros))
                             ? $exported_count . ' articulos exportados'
                             : 'Exportacion solicitada para todos los articulos (' . $exported_count . ')',
                     ],

@@ -607,6 +607,15 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::get('message/set-read/{buyer_id}', 'MessageController@setRead');
     Route::post('message', 'MessageController@store');
 
+    // Submódulo "Mensajes" de Tienda Online (misión mensajes-tienda-online, 28/9/2026). Los tres
+    // de arriba quedan vivos para la SPA vieja de los clientes sin actualizar.
+    // 🔴 `tienda-chats/resumen` va ANTES de las rutas con `{buyer_id}`.
+    Route::get('tienda-chats', 'TiendaChatController@index');
+    Route::get('tienda-chats/resumen', 'TiendaChatController@resumen');
+    Route::get('tienda-chats/{buyer_id}/mensajes', 'TiendaChatController@mensajes');
+    Route::post('tienda-chats/{buyer_id}/mensajes', 'TiendaChatController@enviar');
+    Route::post('tienda-chats/{buyer_id}/leer', 'TiendaChatController@leer');
+
     //Route::resource('-', '-Controller');
 
     // CurrentAcounts

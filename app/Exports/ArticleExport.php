@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ExportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
@@ -20,6 +21,10 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
     protected $headings_pre_addresses_cache = null;
     protected $headings_pre_price_types_cache = null;
+
+    protected $columnas_cache = null;
+
+    protected $relaciones_cache = null;
 
     function __construct($models, $user_id, $archivo_base = false) {
         $this->models = $models;
@@ -145,34 +150,34 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
         // Bloque base sin columnas de stock: el stock va después de autopartes/distribuidora o se reemplaza por sucursales.
         $map = [
-            $article->id,
-            $article->bar_code,
-            $article->sku,
-            $article->provider_code,
-            $article->name,
+            ExportHelper::valor($article, 'id'),
+            ExportHelper::valor($article, 'bar_code'),
+            ExportHelper::valor($article, 'sku'),
+            ExportHelper::valor($article, 'provider_code'),
+            ExportHelper::valor($article, 'name'),
             !is_null($article->provider) ? $article->provider->name : '',
 
             $this->getCostInDollars($article),
-            $article->cost,
+            ExportHelper::valor($article, 'cost'),
 
-            $article->discounts_percentage_formated,
-            $article->surchages_percentage_formated,
-            $article->discounts_amount_formated,
-            $article->surchages_amount_formated,
+            ExportHelper::valor($article, 'discounts_percentage_formated'),
+            ExportHelper::valor($article, 'surchages_percentage_formated'),
+            ExportHelper::valor($article, 'discounts_amount_formated'),
+            ExportHelper::valor($article, 'surchages_amount_formated'),
 
             !is_null($article->iva) ? $article->iva->percentage : '',
-            $article->aplicar_iva ? 'Si' : 'No',
-            $article->percentage_gain,
-            $article->price,
-            $article->final_price,
-            $article->previus_final_price,
+            ExportHelper::valor($article, 'aplicar_iva') ? 'Si' : 'No',
+            ExportHelper::valor($article, 'percentage_gain'),
+            ExportHelper::valor($article, 'price'),
+            ExportHelper::valor($article, 'final_price'),
+            ExportHelper::valor($article, 'previus_final_price'),
 
             !is_null($article->category) ? $article->category->name : '',
             !is_null($article->sub_category) ? $article->sub_category->name : '',
             !is_null($article->brand) ? $article->brand->name : '',
-            $article->descripcion,
+            ExportHelper::valor($article, 'descripcion'),
             $this->getUnidadMedida($article),
-            $article->unidades_individuales,
+            ExportHelper::valor($article, 'unidades_individuales'),
         ];
 
         $map = ExportHelper::map_autopartes($map, $article);
@@ -183,7 +188,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $addresses = ExportHelper::getAddresses();
         if (count($addresses) >= 1) {
 
-            if ($row->is_variant && $row->variant) {
+            if (ExportHelper::valor($row, 'is_variant') && ExportHelper::valor($row, 'variant')) {
 
                 $map = ExportHelper::map_variant_stock_addresses($map, $row);
             } else {
@@ -193,16 +198,16 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         } else {
 
             // Sin sucursales: conservar stock del artículo o stock de la variante en la misma posición que headings.
-            $map[] = $row->is_variant && $row->variant ? $row->variant->stock : $article->stock;
-            $map[] = $article->stock_min;
+            $map[] = ExportHelper::valor($row, 'is_variant') && ExportHelper::valor($row, 'variant') ? $row->variant->stock : ExportHelper::valor($article, 'stock');
+            $map[] = ExportHelper::valor($article, 'stock_min');
         }
 
-        if ($row->is_variant && $row->variant) {
+        if (ExportHelper::valor($row, 'is_variant') && ExportHelper::valor($row, 'variant')) {
 
             $map = ExportHelper::map_property_types($map, $row);
         } else {
 
-            if (UserHelper::hasExtencion('article_variants', $this->user)) {
+            if (ExportHelper::tiene_extencion('article_variants')) {
                 $map = ExportHelper::map_property_types_vacios($map);
             }
         }
@@ -218,15 +223,30 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
                 ['Margen de ganancia', 'Precio', 'Precio Final', 'Precio Final Anterior']
             );
 
-            // 2) insertar valores en la MISMA posición que headings (después de Aplicar Iva)
-            $headings_pre_price_types = $this->get_headings_pre_price_types();
-            $aplicar_iva_index = array_search('Aplicar Iva', $headings_pre_price_types);
+            /*
+             * 2) insertar los valores en la MISMA posición que setPriceTypesHeadings() puso los
+             * encabezados. Con listas_de_precio van después de "Aplicar Iva" (tres columnas por
+             * lista). Sin listas_de_precio los encabezados van AL FINAL (antes de precios en
+             * blanco y fechas), una columna por lista.
+             *
+             * 🔴 Hasta el 28/9/2026 el caso sin listas_de_precio también insertaba después de
+             * "Aplicar Iva": desde "Categoria" en adelante cada valor caía en la columna de al
+             * lado (Categoria, Marca y Descripcion vacías o con precios; el stock bajo el nombre
+             * de una lista). Es el caso de Servian. Reimportar ese Excel pisaba datos.
+             */
+            if (ExportHelper::usa_listas_de_precio()) {
 
-            $values = ExportHelper::get_price_types_values_in_order($article);
+                $headings_pre_price_types = $this->get_headings_pre_price_types();
+                $aplicar_iva_index = array_search('Aplicar Iva', $headings_pre_price_types);
 
-            // insertar después de aplicar_iva
-            array_splice($map, $aplicar_iva_index + 1, 0, $values);
+                $values = ExportHelper::get_price_types_values_in_order($article);
 
+                // insertar después de aplicar_iva
+                array_splice($map, $aplicar_iva_index + 1, 0, $values);
+            } else {
+
+                $map = array_merge($map, ExportHelper::valores_de_listas_al_final($article));
+            }
         }
 
         // $map = ExportHelper::mapPriceTypes($map, $article);
@@ -241,7 +261,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
      * @param \Illuminate\Support\Collection $articles
      * @return \Illuminate\Support\Collection
      */
-    protected function expandWithVariants($articles)
+    public function expandWithVariants($articles)
     {
         $rows = collect();
 
@@ -264,6 +284,225 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     }
 
 
+    /**
+     * Todas las relaciones que leen map() y ExportHelper, para cargarlas por lote y no por fila.
+     *
+     * Antes faltaban `provider`, `category` y `unidad_medida` (una consulta por fila cada una) y
+     * `price_type_monedas` y los depósitos y valores de las variantes; y sobraba `providers`, que
+     * el Excel no lee.
+     *
+     * @return array
+     */
+    public static function relaciones()
+    {
+        return [
+            'iva',
+            'provider',
+            'category',
+            'sub_category',
+            'brand',
+            'unidad_medida',
+            'tipo_envase',
+            'article_discounts',
+            'article_surchages',
+            'article_discounts_blanco',
+            'article_surchages_blanco',
+            'addresses',
+            'price_types',
+            'price_type_monedas',
+            'article_variants.addresses',
+            'article_variants.article_property_values',
+        ];
+    }
+
+    /**
+     * Relaciones de relaciones() que el Excel de ESTE comercio no va a leer, según sus
+     * extensiones, listas de precio y depósitos. Cada relación cuesta una consulta y su
+     * hidratación por lote aunque venga vacía; en Servian eran cinco de dieciséis.
+     *
+     * @return array Nombre de relación => true si es de un modelo (belongsTo), false si es colección.
+     */
+    public function relaciones_omitidas()
+    {
+        $omitidas = [];
+
+        // Solo mapPreciosBlanco() usa las columnas en blanco, y solo con la extensión.
+        if (!ExportHelper::tiene_extencion('articulos_precios_en_blanco')) {
+            $omitidas['article_discounts_blanco'] = false;
+            $omitidas['article_surchages_blanco'] = false;
+        }
+
+        // Solo map_propiedades_de_distribuidora() lee el tipo de envase, y solo con la extensión.
+        if (!ExportHelper::tiene_extencion('propiedades_de_distribuidora')) {
+            $omitidas['tipo_envase'] = true;
+        }
+
+        if (count(ExportHelper::getAddresses()) < 1) {
+            $omitidas['addresses'] = false;
+        }
+
+        /*
+         * Las listas de precio se leen de uno de tres lugares (get_price_types_values_in_order):
+         * price_type_monedas con listas_de_precio + ventas_en_dolares; el pivot price_types con
+         * listas_de_precio sin dólares o con lista_de_precios_por_categoria; o un atributo con el
+         * nombre de la lista (el "caso Colman"), que no necesita ninguno de los dos.
+         */
+        $hay_listas = count(ExportHelper::getPriceTypes()) >= 1;
+        $usa_listas = ExportHelper::usa_listas_de_precio();
+        $en_dolares = ExportHelper::tiene_extencion('ventas_en_dolares');
+
+        if (!($hay_listas && $usa_listas && $en_dolares)) {
+            $omitidas['price_type_monedas'] = false;
+        }
+
+        $lee_pivot = $usa_listas
+            ? !$en_dolares
+            : ExportHelper::tiene_extencion('lista_de_precios_por_categoria');
+
+        if (!($hay_listas && $lee_pivot)) {
+            $omitidas['price_types'] = false;
+        }
+
+        return $omitidas;
+    }
+
+    /**
+     * relaciones() menos las omitidas para este comercio.
+     *
+     * @return array
+     */
+    public function relaciones_a_cargar()
+    {
+        $omitidas = $this->relaciones_omitidas();
+
+        return array_values(array_filter(self::relaciones(), function ($relacion) use ($omitidas) {
+            return !array_key_exists($relacion, $omitidas);
+        }));
+    }
+
+    /**
+     * Deja vacías las relaciones omitidas, para que un helper que igual las toque (setPriceTypes()
+     * ordena price_types siempre que haya listas) no dispare una consulta por artículo.
+     *
+     * @param \Illuminate\Support\Collection $articles
+     * @return void
+     */
+    protected function completar_relaciones_omitidas($articles)
+    {
+        $omitidas = $this->relaciones_omitidas();
+
+        foreach ($articles as $article) {
+            foreach ($omitidas as $relacion => $es_modelo) {
+                if (!$article->relationLoaded($relacion)) {
+                    $article->setRelation($relacion, $es_modelo ? null : new EloquentCollection());
+                }
+            }
+        }
+    }
+
+    /**
+     * Columnas de `articles` que lee el Excel (map() y ExportHelper). `articles` tiene más de cien
+     * columnas y el Excel usa menos de cuarenta: hidratar solo éstas es la mitad del trabajo por
+     * artículo, y deja afuera `embedding` (hasta 29 KB por fila).
+     *
+     * Las listas de precio sin listas_de_precio (el "caso Colman") y el stock por depósito se leen
+     * como $article->{nombre}: si alguno de esos nombres es una columna real, se trae también,
+     * para que salga exactamente lo mismo que antes.
+     *
+     * @return array Columnas prefijadas con la tabla.
+     */
+    public function columnas()
+    {
+        $leidas = [
+            'id', 'user_id', 'status',
+            'bar_code', 'sku', 'provider_code', 'name', 'provider_id',
+            'cost_in_dollars', 'cost', 'iva_id', 'aplicar_iva',
+            'percentage_gain', 'price', 'final_price', 'previus_final_price',
+            'category_id', 'sub_category_id', 'brand_id', 'descripcion', 'unidad_medida_id', 'unidades_individuales',
+            'stock', 'stock_min',
+            'espesor', 'modelo', 'pastilla', 'diametro', 'litros', 'contenido', 'cm3', 'calipers', 'juego',
+            'tipo_envase_id', 'unidades_por_bulto',
+            'percentage_gain_blanco', 'final_price_blanco',
+            'created_at', 'updated_at',
+        ];
+
+        foreach (ExportHelper::getPriceTypes() as $price_type) {
+            $leidas[] = $price_type->name;
+        }
+        foreach (ExportHelper::getAddresses() as $address) {
+            $leidas[] = $address->street;
+            $leidas[] = 'stock_min_'.$address->street;
+            $leidas[] = 'stock_max_'.$address->street;
+        }
+
+        $leidas = array_flip($leidas);
+        $columnas = [];
+
+        // columnas_sin_embedding() ya viene prefijada ('articles.x') y cacheada.
+        foreach (Article::columnas_sin_embedding() as $columna) {
+            $partes = explode('.', $columna);
+            if (isset($leidas[end($partes)])) {
+                $columnas[] = $columna;
+            }
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * Consulta de los artículos del dueño con las columnas y relaciones que usa el Excel.
+     *
+     * @param bool $solo_activos
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function consulta_articulos($solo_activos = true)
+    {
+        if (is_null($this->columnas_cache)) {
+            $this->columnas_cache = $this->columnas();
+        }
+
+        if (is_null($this->relaciones_cache)) {
+            $this->relaciones_cache = $this->relaciones_a_cargar();
+        }
+
+        $query = Article::where('articles.user_id', $this->user_id)
+                        ->select($this->columnas_cache)
+                        ->with($this->relaciones_cache);
+
+        if ($solo_activos) {
+            $query->where('articles.status', 'active');
+        }
+
+        return $query;
+    }
+
+    /**
+     * Arma las filas del Excel para un lote de artículos: descuentos y recargos formateados,
+     * stock por depósito, listas de precio ordenadas y una fila más por cada variante.
+     *
+     * @param \Illuminate\Support\Collection $articles Artículos con relaciones() cargadas.
+     * @return \Illuminate\Support\Collection
+     */
+    public function preparar_filas($articles)
+    {
+        $this->completar_relaciones_omitidas($articles);
+
+        // Aplico descuentos y recargos, en negro y en blanco
+        $articles = ExportHelper::set_descuentos_y_recargos($articles);
+        $articles = ExportHelper::setAddresses($articles);
+        $articles = ExportHelper::setPriceTypes($articles);
+
+        // Expandir colección con variantes
+        return $this->expandWithVariants($articles);
+    }
+
+    /**
+     * Camino de maatwebsite (Excel::download / Excel::store). La exportación del listado ya no
+     * pasa por acá sino por ArticleExportStreamer, que escribe por lotes; esto queda para la
+     * planilla base (archivo_base, solo encabezados) y para cualquier llamada con pocos modelos.
+     *
+     * @return \Illuminate\Support\Collection
+     */
     public function collection()
     {
         set_time_limit(999999);
@@ -271,32 +510,16 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $articles = collect();
         } else if (!is_null($this->models)) {
             $articles = $this->models;
+            if ($articles instanceof EloquentCollection) {
+                $articles->loadMissing(self::relaciones());
+            }
         } else {
-            $articles = Article::where('user_id', $this->user->id)
-                            ->where('status', 'active')
-                            ->with('iva')
-                            ->with('article_discounts')
-                            ->with('article_surchages')
-                            ->with('article_discounts_blanco')
-                            ->with('article_surchages_blanco')
-                            ->with('providers')
-                            ->with('sub_category')
-                            ->with('addresses')
-                            ->with('price_types')
-                            ->with('tipo_envase')
-                            ->with('brand')
-                            ->with('article_variants')
-                            ->orderBy('id', 'DESC')
+            $articles = $this->consulta_articulos(true)
+                            ->orderBy('articles.id', 'DESC')
                             ->get();
         }
 
-        // Aplico descuentos y recargos, en negro y en blanco
-        $articles = ExportHelper::set_descuentos_y_recargos($articles);
-        $articles = ExportHelper::setAddresses($articles);
-        $articles = ExportHelper::setPriceTypes($articles);
-        
-        // Expandir colección con variantes
-        return $this->expandWithVariants($articles);
+        return $this->preparar_filas($articles);
     }
 
     public function headings(): array
@@ -323,7 +546,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     }
 
     function getCostInDollars($article) {
-        if ($article->cost_in_dollars) {
+        if (ExportHelper::valor($article, 'cost_in_dollars')) {
             return 'USD';
         }
         return 'ARS';
