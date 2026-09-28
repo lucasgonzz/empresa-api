@@ -101,6 +101,16 @@ class Acciones_service_y_job_Test extends TestCase
             'password'     => Hash::make('secret'),
         ]);
 
+        /*
+         * EXPLÍCITO en 'cauteloso': este archivo prueba el ciclo de vida de la TARJETA de
+         * propuesta (reemplazo, corrección, descarte por job fallido) y necesita que nada se
+         * auto-ejecute. Desde la misión agente-ia-default-deepseek-directo (28/9/2026) el default
+         * de la columna es 'directo', que sí auto-ejecuta un gasto — sin este seteo estos tests
+         * dejarían de ver la tarjeta en estado "propuesta".
+         */
+        $this->comercio->agente_confianza = 'cauteloso';
+        $this->comercio->save();
+
         $this->service = new AsistenteIaService();
     }
 
