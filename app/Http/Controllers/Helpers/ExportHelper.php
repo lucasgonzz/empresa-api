@@ -24,6 +24,17 @@ class ExportHelper {
 	protected static $article_export_owner_user = null;
 
 	/**
+	 * Memo de lo que no cambia durante UNA exportación (listas de precio, depósitos, tipos de
+	 * propiedad, extensiones). Antes cada una de esas lecturas era una consulta por fila: con los
+	 * 750k artículos de Servian eran millones de consultas iguales. Vive solo mientras hay contexto
+	 * de exportación y se vacía al fijarlo y al limpiarlo, para que un worker que corre jobs de a
+	 * uno no le arrastre al siguiente las listas de precio de éste.
+	 *
+	 * @var array
+	 */
+	protected static $article_export_cache = [];
+
+	/**
 	 * Fija el usuario dueño para que consultas de PriceType, Address y flags coincidan con ArticleExport.
 	 *
 	 * @param User|null $user Modelo User dueño (mismo id que ArticleExport::$user_id).
@@ -31,6 +42,7 @@ class ExportHelper {
 	 */
 	static function set_article_export_owner_user($user) {
 		self::$article_export_owner_user = $user;
+		self::$article_export_cache = [];
 	}
 
 	/**
@@ -40,6 +52,48 @@ class ExportHelper {
 	 */
 	static function clear_article_export_owner_user() {
 		self::$article_export_owner_user = null;
+		self::$article_export_cache = [];
+	}
+
+	/**
+	 * Devuelve el valor memorizado de $clave o lo calcula. Sin contexto de exportación (un pedido
+	 * HTTP suelto) no memoriza: calcula siempre, como antes.
+	 *
+	 * @param string   $clave
+	 * @param callable $calcular
+	 * @return mixed
+	 */
+	protected static function memo($clave, callable $calcular) {
+		if (is_null(self::$article_export_owner_user)) {
+			return $calcular();
+		}
+		if (!array_key_exists($clave, self::$article_export_cache)) {
+			self::$article_export_cache[$clave] = $calcular();
+		}
+		return self::$article_export_cache[$clave];
+	}
+
+	/**
+	 * hasExtencion() del dueño de la exportación, memorizado durante la exportación.
+	 *
+	 * @param string $slug
+	 * @return bool
+	 */
+	static function tiene_extencion($slug) {
+		return self::memo('extencion.'.$slug, function () use ($slug) {
+			return UserHelper::hasExtencion($slug, self::article_export_context_user());
+		});
+	}
+
+	/**
+	 * uses_listas_de_precio() del dueño de la exportación, memorizado durante la exportación.
+	 *
+	 * @return bool
+	 */
+	static function usa_listas_de_precio() {
+		return self::memo('listas_de_precio', function () {
+			return UserHelper::uses_listas_de_precio(self::article_export_context_user());
+		});
 	}
 
 	/**
@@ -62,21 +116,27 @@ class ExportHelper {
 	}
 
 	static function getPriceTypes() {
-		return PriceType::where('user_id', self::article_export_owner_user_id())
-								->whereNotNull('position')
-								->orderBy('position', 'ASC')
-								->get();
+		return self::memo('price_types', function () {
+			return PriceType::where('user_id', self::article_export_owner_user_id())
+									->whereNotNull('position')
+									->orderBy('position', 'ASC')
+									->get();
+		});
 	}
 
 	static function getAddresses() {
-		return Address::where('user_id', self::article_export_owner_user_id())
-						->orderBy('id', 'ASC')
-						->get();
+		return self::memo('addresses', function () {
+			return Address::where('user_id', self::article_export_owner_user_id())
+							->orderBy('id', 'ASC')
+							->get();
+		});
 	}
 
 	static function getPropertyTypes() {
-		return ArticlePropertyType::orderBy('created_at', 'DESC')
-						->get();
+		return self::memo('property_types', function () {
+			return ArticlePropertyType::orderBy('created_at', 'DESC')
+							->get();
+		});
 	}
 
 	static function map_property_types($map, $article) {
@@ -154,7 +214,7 @@ class ExportHelper {
 
 	static function map_unidades_individuales($map, $article) {
 		
-		if (UserHelper::hasExtencion('articulos_unidades_individuales', self::article_export_context_user())) {
+		if (self::tiene_extencion('articulos_unidades_individuales')) {
 
 			$map[] = $article->unidades_individuales;
 		}
@@ -164,7 +224,7 @@ class ExportHelper {
 
 	static function map_autopartes($map, $article) {
 		
-		if (UserHelper::hasExtencion('autopartes', self::article_export_context_user())) {
+		if (self::tiene_extencion('autopartes')) {
 
 			$map[] = $article->espesor;
 			$map[] = $article->modelo;
@@ -183,7 +243,7 @@ class ExportHelper {
 	}
 
 	static function map_propiedades_de_distribuidora($map, $article) {
-		if (UserHelper::hasExtencion('propiedades_de_distribuidora', self::article_export_context_user())) {
+		if (self::tiene_extencion('propiedades_de_distribuidora')) {
 
 			if (!is_null($article->tipo_envase)) {
 				$map[] = $article->tipo_envase->name;
@@ -234,9 +294,9 @@ class ExportHelper {
 
 		if (count($price_types) >= 1) {
 
-			if (UserHelper::uses_listas_de_precio(self::article_export_context_user())) {
+			if (self::usa_listas_de_precio()) {
 
-				if (UserHelper::hasExtencion('ventas_en_dolares', self::article_export_context_user())) {
+				if (self::tiene_extencion('ventas_en_dolares')) {
 
 					foreach ($article->price_type_monedas as $price_type_moneda) {
 
@@ -287,7 +347,7 @@ class ExportHelper {
 				}
 
 
-			} else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', self::article_export_context_user())) {
+			} else if (self::tiene_extencion('lista_de_precios_por_categoria')) {
 				
 				// Caso Golo_norte
 
@@ -320,7 +380,7 @@ class ExportHelper {
 	
 	static function mapPreciosBlanco($map, $article) {
 
-		if (UserHelper::hasExtencion('articulos_precios_en_blanco', self::article_export_context_user())) {
+		if (self::tiene_extencion('articulos_precios_en_blanco')) {
 
 			$map[] = $article->discounts_blanco_formated;
 			$map[] = $article->surchages_blanco_formated;
@@ -332,7 +392,7 @@ class ExportHelper {
 	}
 
 	static function set_unidades_individuales($headings) {
-		if (UserHelper::hasExtencion('articulos_unidades_individuales', self::article_export_context_user())) {
+		if (self::tiene_extencion('articulos_unidades_individuales')) {
 
 				$headings[] = 'U Individuales';
 		}
@@ -347,7 +407,7 @@ class ExportHelper {
 	 * @return array Headings con columnas de autopartes insertadas si aplica la extensión.
 	 */
 	static function set_props_autopartes($headings) {
-		if (UserHelper::hasExtencion('autopartes', self::article_export_context_user())) {
+		if (self::tiene_extencion('autopartes')) {
 
 			// Posición inmediatamente posterior a "U individuales" para mantener coherencia con el map.
 			$u_individuales_index = array_search('U individuales', $headings);
@@ -379,7 +439,7 @@ class ExportHelper {
 	 * @return array Headings con columnas de distribuidora insertadas si aplica la extensión.
 	 */
 	static function set_propiedades_de_distribuidora($headings) {
-		if (UserHelper::hasExtencion('propiedades_de_distribuidora', self::article_export_context_user())) {
+		if (self::tiene_extencion('propiedades_de_distribuidora')) {
 
 			// Bloque de stock global comienza en "Stock actual"; las columnas de distribuidora van antes.
 			$stock_index = array_search('Stock actual', $headings);
@@ -394,20 +454,32 @@ class ExportHelper {
 		return $headings;
 	}
 
+	/**
+	 * Copia al artículo el stock de cada depósito (cantidad, mínimo y máximo del pivot) con el
+	 * nombre del depósito como atributo, que es lo que después lee mapAddresses().
+	 *
+	 * Lee la relación `addresses` ya cargada: antes hacía `$article->addresses()->find()` por
+	 * artículo y por depósito, una consulta cada vez.
+	 *
+	 * @param \Illuminate\Support\Collection $articles
+	 * @return \Illuminate\Support\Collection
+	 */
 	static function setAddresses($articles) {
 		$addresses = Self::getAddresses();
 		if (count($addresses) >= 1) {
 
-			foreach ($addresses as $address) {
-				foreach ($articles as $article) {
+			foreach ($articles as $article) {
 
-					$article_address = $article->addresses()->find($address->id);
+				$article_addresses = $article->addresses->keyBy('id');
+
+				foreach ($addresses as $address) {
+
+					$article_address = $article_addresses->get($address->id);
 					if ($article_address) {
 						$article->{$address->street} = $article_address->pivot->amount;
 						$article->{'stock_min_'.$address->street} = $article_address->pivot->stock_min;
 						$article->{'stock_max_'.$address->street} = $article_address->pivot->stock_max;
 					}
-					// $article->setRelation('addresses', $article->addresses()->orderBy('id', 'ASC')->get());
 				}
 			}
 		}
@@ -435,7 +507,7 @@ class ExportHelper {
 
 	static function setPropertyTypesHeadings($headings) {
 
-		if (UserHelper::hasExtencion('article_variants', self::article_export_context_user())) {
+		if (self::tiene_extencion('article_variants')) {
 			$models = Self::getPropertyTypes();
 			if (count($models) >= 1) {
 				foreach ($models as $property_type) {
@@ -471,7 +543,7 @@ class ExportHelper {
 				
 				// dd($price_type->name);
 
-				if (UserHelper::uses_listas_de_precio(self::article_export_context_user())) {
+				if (self::usa_listas_de_precio()) {
 
 					array_splice($headings, $aplicar_iva_index, 0, '$ Final '.$price_type->name);
 					array_splice($headings, $aplicar_iva_index, 0, '% '.$price_type->name);
@@ -496,7 +568,7 @@ class ExportHelper {
 
 	static function setPreciosBlancoHeadings($headings) {
 
-		if (UserHelper::hasExtencion('articulos_precios_en_blanco', self::article_export_context_user())) {
+		if (self::tiene_extencion('articulos_precios_en_blanco')) {
 			$headings[] = 'Descuentos EN BLANCO';
 			$headings[] = 'Recargos EN BLANCO';
 			$headings[] = 'Margen de ganancia EN BLANCO';
@@ -539,8 +611,9 @@ class ExportHelper {
 	static function setPriceTypes($articles) {
 		$price_types = Self::getPriceTypes();
 		if (count($price_types) >= 1) {
+			// Ordena la relación ya cargada; antes era una consulta por artículo.
 			foreach ($articles as $article) {
-				$article->setRelation('price_types', $article->price_types()->orderBy('position', 'ASC')->get());
+				$article->setRelation('price_types', $article->price_types->sortBy('position')->values());
 			}
 		}
 		return $articles;
@@ -665,9 +738,9 @@ class ExportHelper {
 
 		$price_types = $price_types->reverse();
 
-		if (UserHelper::uses_listas_de_precio(self::article_export_context_user())) {
+		if (self::usa_listas_de_precio()) {
 
-			if (UserHelper::hasExtencion('ventas_en_dolares', self::article_export_context_user())) {
+			if (self::tiene_extencion('ventas_en_dolares')) {
 
 
 				// IMPORTANTÍSIMO: iterar SIEMPRE por $price_types (ordenados por position)
@@ -700,10 +773,11 @@ class ExportHelper {
 				return $values;
 			}
 
-			// Caso sin dólares: relación price_types pivot
+			// Caso sin dólares: relación price_types pivot (ya cargada; antes, una consulta por lista)
+			$article_price_types = $article->price_types->keyBy('id');
 			foreach ($price_types as $price_type) {
 
-				$article_price_type = $article->price_types()->find($price_type->id);
+				$article_price_type = $article_price_types->get($price_type->id);
 
 				if ($article_price_type) {
 
@@ -723,9 +797,9 @@ class ExportHelper {
 		}
 
 		// Otros casos
-		if (UserHelper::hasExtencion('lista_de_precios_por_categoria', self::article_export_context_user())) {
+		if (self::tiene_extencion('lista_de_precios_por_categoria')) {
 
-			$price_types_ordenados = $article->price_types()->orderBy('position', 'ASC')->get();
+			$price_types_ordenados = $article->price_types->sortBy('position');
 			foreach ($price_types_ordenados as $price_type) {
 				$values[] = $price_type->pivot->final_price;
 			}

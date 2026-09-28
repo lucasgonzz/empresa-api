@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ExportHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\WithHeadings;
@@ -202,7 +203,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $map = ExportHelper::map_property_types($map, $row);
         } else {
 
-            if (UserHelper::hasExtencion('article_variants', $this->user)) {
+            if (ExportHelper::tiene_extencion('article_variants')) {
                 $map = ExportHelper::map_property_types_vacios($map);
             }
         }
@@ -241,7 +242,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
      * @param \Illuminate\Support\Collection $articles
      * @return \Illuminate\Support\Collection
      */
-    protected function expandWithVariants($articles)
+    public function expandWithVariants($articles)
     {
         $rows = collect();
 
@@ -264,6 +265,82 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     }
 
 
+    /**
+     * Todas las relaciones que leen map() y ExportHelper, para cargarlas por lote y no por fila.
+     *
+     * Antes faltaban `provider`, `category` y `unidad_medida` (una consulta por fila cada una) y
+     * `price_type_monedas` y los depósitos y valores de las variantes; y sobraba `providers`, que
+     * el Excel no lee.
+     *
+     * @return array
+     */
+    public static function relaciones()
+    {
+        return [
+            'iva',
+            'provider',
+            'category',
+            'sub_category',
+            'brand',
+            'unidad_medida',
+            'tipo_envase',
+            'article_discounts',
+            'article_surchages',
+            'article_discounts_blanco',
+            'article_surchages_blanco',
+            'addresses',
+            'price_types',
+            'price_type_monedas',
+            'article_variants.addresses',
+            'article_variants.article_property_values',
+        ];
+    }
+
+    /**
+     * Consulta de los artículos del dueño con las relaciones del Excel, sin la columna
+     * `embedding` (hasta 29 KB por fila que el Excel no usa).
+     *
+     * @param bool $solo_activos
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function consulta_articulos($solo_activos = true)
+    {
+        $query = Article::where('articles.user_id', $this->user_id)
+                        ->sinEmbedding()
+                        ->with(self::relaciones());
+
+        if ($solo_activos) {
+            $query->where('articles.status', 'active');
+        }
+
+        return $query;
+    }
+
+    /**
+     * Arma las filas del Excel para un lote de artículos: descuentos y recargos formateados,
+     * stock por depósito, listas de precio ordenadas y una fila más por cada variante.
+     *
+     * @param \Illuminate\Support\Collection $articles Artículos con relaciones() cargadas.
+     * @return \Illuminate\Support\Collection
+     */
+    public function preparar_filas($articles)
+    {
+        // Aplico descuentos y recargos, en negro y en blanco
+        $articles = ExportHelper::set_descuentos_y_recargos($articles);
+        $articles = ExportHelper::setAddresses($articles);
+        $articles = ExportHelper::setPriceTypes($articles);
+
+        // Expandir colección con variantes
+        return $this->expandWithVariants($articles);
+    }
+
+    /**
+     * Camino de maatwebsite (Excel::download / Excel::store). La exportación del listado ya no
+     * pasa por acá sino por ArticleExportStreamer, que escribe por lotes; esto queda para la
+     * planilla base (archivo_base, solo encabezados) y para cualquier llamada con pocos modelos.
+     *
+     * @return \Illuminate\Support\Collection
+     */
     public function collection()
     {
         set_time_limit(999999);
@@ -271,32 +348,16 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $articles = collect();
         } else if (!is_null($this->models)) {
             $articles = $this->models;
+            if ($articles instanceof EloquentCollection) {
+                $articles->loadMissing(self::relaciones());
+            }
         } else {
-            $articles = Article::where('user_id', $this->user->id)
-                            ->where('status', 'active')
-                            ->with('iva')
-                            ->with('article_discounts')
-                            ->with('article_surchages')
-                            ->with('article_discounts_blanco')
-                            ->with('article_surchages_blanco')
-                            ->with('providers')
-                            ->with('sub_category')
-                            ->with('addresses')
-                            ->with('price_types')
-                            ->with('tipo_envase')
-                            ->with('brand')
-                            ->with('article_variants')
-                            ->orderBy('id', 'DESC')
+            $articles = $this->consulta_articulos(true)
+                            ->orderBy('articles.id', 'DESC')
                             ->get();
         }
 
-        // Aplico descuentos y recargos, en negro y en blanco
-        $articles = ExportHelper::set_descuentos_y_recargos($articles);
-        $articles = ExportHelper::setAddresses($articles);
-        $articles = ExportHelper::setPriceTypes($articles);
-        
-        // Expandir colección con variantes
-        return $this->expandWithVariants($articles);
+        return $this->preparar_filas($articles);
     }
 
     public function headings(): array
