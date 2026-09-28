@@ -49,10 +49,13 @@ class ConfianzaDelAgenteIaHelper
     /**
      * El default, que coincide con el de la columna `users.agente_confianza`.
      *
-     * 🔴 SIGUE SIENDO `resuelto`: nadie cambia de comportamiento porque esta misión exista. El modo
-     * directo se prende a mano desde la configuración del asistente.
+     * 🔴 DESDE EL 28/9/2026 ES `directo` (misión agente-ia-default-deepseek-directo, pedido de
+     * Lucas): un negocio nuevo arranca con el agente ejecutando en el acto lo que
+     * `HerramientasDeCarga::AUTO_CONFIRMABLES_DIRECTO` permite. Un dueño que ya tenía guardado
+     * `cauteloso` o `resuelto` explícitamente NO cambia de comportamiento — esto solo mueve el
+     * default de columna, no reescribe filas existentes.
      */
-    const POR_DEFECTO = self::RESUELTO;
+    const POR_DEFECTO = self::DIRECTO;
 
     /**
      * El modo tal como está guardado en el dueño, o cadena vacía si no hay nada legible.

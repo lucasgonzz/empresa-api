@@ -806,13 +806,18 @@ class DemoSetupHelper
 
             /*
                 D2 (18/8/2026): el ítem de menú de WhatsApp lo gatea 'whatsapp'
-                (empresa-spa/src/router/routes.js), no 'whatsapp_ia'. Sin 'whatsapp' el
-                módulo no aparece nunca en el menú, aunque se asigne 'whatsapp_ia' a mano
-                desde /user/extencions/edit. Van las dos juntas: 'whatsapp_ia' sola no tiene
-                ningún efecto visible porque el módulo que la usa ni se muestra.
+                (empresa-spa/src/router/routes.js). Sigue yendo de base para que el módulo de
+                chat aparezca en el menú de toda demo.
+
+                🔴 Misión agente-ia-default-deepseek-directo (28/9/2026): 'whatsapp_ia' DEJA de
+                sembrarse acá. Es otra cosa -- gatilla el embedding vectorial del catálogo
+                (ArticleObserver, DescriptionObserver, articles:generate-embeddings) para que el
+                agente de WhatsApp con IA responda consultas semánticas -- y se activa aparte, por
+                cliente, cuando Lucas la prende a mano (mismo fix que ya tenía
+                UserSetupHelper::base_extencions() desde el 10/9/2026; acá había quedado sin
+                replicar y toda demo nueva seguía naciendo con embeddings encendidos).
             */
             'whatsapp',
-            'whatsapp_ia',
         ];
     }
 
@@ -835,9 +840,9 @@ class DemoSetupHelper
             /*
                 D3 (misión 63): los dos permisos de los chats de WhatsApp no están en
                 `PermissionSeeder` -- viven solo en este seeder suelto. Toda demo recibe de base
-                las extensiones 'whatsapp' y 'whatsapp_ia' (ver base_extencions()), así que sin
-                esta línea el módulo aparece en el menú y la pantalla de empleados no tiene con
-                qué darle permiso a nadie. Es `firstOrCreate`, no duplica.
+                la extensión 'whatsapp' (ver base_extencions()), así que sin esta línea el módulo
+                aparece en el menú y la pantalla de empleados no tiene con qué darle permiso a
+                nadie. Es `firstOrCreate`, no duplica.
             */
             'PermissionEmpresaWhatsappSeeder',
 

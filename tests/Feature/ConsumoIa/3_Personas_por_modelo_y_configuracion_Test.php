@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ConsumoIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\AiTokenUsage;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -380,7 +381,7 @@ class Personas_por_modelo_y_configuracion_Test extends TestCase
         $this->assertEquals([], $respuesta['dias']);
         $this->assertEquals([], $respuesta['personas']);
         $this->assertEquals([], $respuesta['personas_modelos']);
-        $this->assertEquals('anthropic', $respuesta['configuracion']['proveedor']);
+        $this->assertEquals(ProveedorIaHelper::PROVEEDOR_POR_DEFECTO, $respuesta['configuracion']['proveedor']);
     }
 
     /**
