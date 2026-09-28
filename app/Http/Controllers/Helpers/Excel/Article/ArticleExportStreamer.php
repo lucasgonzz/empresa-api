@@ -106,7 +106,7 @@ class ArticleExportStreamer
     /**
      * Aplica los filtros del listado a una consulta de artículos, igual que el buscador del
      * listado (SearchController::search()), y le saca cualquier orden: el Excel sale por id
-     * ascendente, como salía cuando la exportación filtrada pasaba por ids.
+     * ascendente (por ids salía así dentro de cada tramo de mil artículos).
      *
      * Por qué esto y no ids (28/9/2026): antes el pedido web corría el buscador completo
      * (withAll() y ->get() de todos los artículos filtrados) solo para sacarles el id y mandarle
@@ -302,14 +302,21 @@ class ArticleExportStreamer
         if (!is_null($this->filters)) {
 
             /*
-             * Filtro del listado: el mismo paginado por clave, pero ascendente (id > último), que
-             * es el orden en que salía cuando esto pasaba por ids. Cada lote reaplica el filtro
-             * sobre una consulta nueva: el Builder de Eloquent no se puede reusar entre lotes.
+             * Filtro del listado: el mismo paginado por clave, pero ascendente (id > último). Por
+             * ids salía por id ascendente dentro de cada tramo de mil; ahora sale todo por id
+             * ascendente. Cada lote reaplica el filtro sobre una consulta nueva: el Builder de
+             * Eloquent no se puede reusar entre lotes.
+             *
+             * El tope de id se fija al arrancar: un artículo creado mientras se escribe el Excel
+             * no entra (el recorrido ascendente lo alcanzaría) y lo escrito coincide con el total
+             * de la barra.
              */
             $ultimo_id = null;
+            $id_tope = (int) Article::where('user_id', $this->owner_user_id)->max('id');
 
             do {
                 $query = self::aplicar_filtros($export->consulta_articulos(true), $this->filters)['models']
+                            ->where('articles.id', '<=', $id_tope)
                             ->orderBy('articles.id', 'ASC')
                             ->limit($this->lote);
 
