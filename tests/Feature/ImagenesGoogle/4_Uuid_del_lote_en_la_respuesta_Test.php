@@ -3,6 +3,8 @@
 namespace Tests\Feature\ImagenesGoogle;
 
 use App\Jobs\ProcessArticleBatchImagesJob;
+use App\Jobs\ProcessImageAssignmentRunJob;
+use App\Models\ImageAssignmentRun;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Auth;
@@ -121,18 +123,26 @@ class Uuid_del_lote_en_la_respuesta_Test extends TestCase
     }
 
     /**
-     * Test 2 -- 🔴 el uuid prometido es EXACTAMENTE el que se lleva el job encolado.
+     * Test 2 -- 🔴 el uuid prometido es EXACTAMENTE el de la corrida encolada.
      *
-     * Es el corazon del arreglo: si el controlador devolviera un uuid y despachara el job sin
-     * el, el frontend filtraria por un uuid que el evento nunca va a traer y el modal no
+     * Es el corazon del arreglo: si el controlador devolviera un uuid y encolara la corrida con
+     * otro, el frontend filtraria por un uuid que el evento nunca va a traer y el modal no
      * aparece mas para nadie. Ese fallo no se nota mirando la respuesta del endpoint, que
      * sigue devolviendo un uuid perfectamente valido.
      *
+     * 🔁 CAMBIO DE CONTRATO A PROPOSITO (mision imagenes-catalogo-completo, 27/9/2026, plan §8):
+     * hasta esa mision el endpoint encolaba ProcessArticleBatchImagesJob con el uuid adentro. Ahora
+     * crea una ASIGNACION (image_assignment_runs) cuyo `uuid` es el que devuelve la respuesta, y
+     * encola ProcessImageAssignmentRunJob con el id de esa asignacion; el evento de fin de corrida
+     * sale con `$run->uuid` (ImageAssignmentRunHelper::avisar_salida_de_proceso). La intencion del
+     * test es la misma: que lo que se encola lleve el uuid prometido. Ahora se sigue la cadena
+     * respuesta → asignacion con ese uuid → job encolado con el id de esa asignacion. Ninguna otra
+     * asercion de este archivo cambio (los tests 4 y 5 siguen cubriendo al job viejo, que se queda
+     * para los que ya estaban encolados).
+     *
      * ⚠️ ALCANCE, para no leer de mas en este test: llega hasta el job ENCOLADO. NO corre
-     * handle(), asi que no cubre el caso de que handle() ignore `$this->batch_uuid` y genere
-     * uno nuevo. Correr handle() de verdad arrastraria busqueda en Google, descarga de
-     * imagenes y validacion por IA, que es justamente lo que el resto de esta carpeta evita.
-     * Esa linea queda protegida por su comentario en el job, no por un test.
+     * handle(). Que el evento salga con ese uuid lo cubre
+     * tests/Feature/ImagenesInteligentes/3_Job_por_tramos_Test.
      *
      * @return void
      */
@@ -147,11 +157,17 @@ class Uuid_del_lote_en_la_respuesta_Test extends TestCase
 
         $uuid_prometido = (string) $this->disparar_lote($user)->json('batch_uuid');
 
-        $self = $this;
+        $asignacion = ImageAssignmentRun::where('uuid', $uuid_prometido)->first();
 
-        Queue::assertPushed(ProcessArticleBatchImagesJob::class,
-            function ($job) use ($self, $uuid_prometido) {
-                return $self->uuid_del_job($job) === $uuid_prometido;
+        $this->assertNotNull($asignacion, 'La respuesta tiene que devolver el uuid de la asignacion creada.');
+        $this->assertSame((int) $user->id, (int) $asignacion->user_id);
+
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class,
+            function ($job) use ($asignacion) {
+                $property = new ReflectionProperty($job, 'run_id');
+                $property->setAccessible(true);
+
+                return (int) $property->getValue($job) === (int) $asignacion->id;
             });
     }
 

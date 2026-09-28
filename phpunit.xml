@@ -59,6 +59,15 @@
         <server name="DB_ENGINE" value="InnoDB"/>
         <server name="MAIL_MAILER" value="array"/>
         <server name="QUEUE_CONNECTION" value="sync"/>
+        <!--
+            SERPER_API_KEY vacia a proposito (mision imagenes-catalogo-completo, 27/9/2026). Con la
+            cola en sync, cualquier test que dispare la asignacion de imagenes corre el job en linea:
+            si el .env.testing de un slot tiene una clave real, el test sale a buscar a Serper (pago)
+            y baja fotos de verdad. Paso en s22 con Acciones_gasto_Test, que recorre todas las
+            herramientas del asistente. Los tests de imagenes fijan su propia clave falsa por
+            config(), asi que no dependen de este valor.
+        -->
+        <server name="SERPER_API_KEY" value=""/>
         <server name="SESSION_DRIVER" value="array"/>
         <server name="TELESCOPE_ENABLED" value="false"/>
     </php>

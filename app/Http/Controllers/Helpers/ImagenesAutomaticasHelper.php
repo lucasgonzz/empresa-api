@@ -2,11 +2,11 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Jobs\ProcessArticleBatchImagesJob;
+use App\Models\BackgroundProcess;
 use App\Models\GeocoderCounter;
+use App\Models\ImageAssignmentRun;
 use App\Models\User;
 use Carbon\Carbon;
-use Illuminate\Support\Str;
 
 /**
  * Encolar la búsqueda automática de imágenes para artículos (misión
@@ -15,15 +15,21 @@ use Illuminate\Support\Str;
  * (el botón del listado) y el asistente (proponer_imagenes_para_articulos): un solo lugar decide la
  * clave de Google, el cx, la cuota diaria y el uuid de la corrida.
  *
- * 🔴 EL REGISTRO VISIBLE NACE ACÁ, `pendiente`, AL ENCOLAR. Antes lo abría el job al arrancar, y en
- * el shared hosting el worker pasa una vez por minuto: hasta entonces la persona que acababa de
- * mandar la búsqueda no veía ningún proceso (mismo motivo por el que la masiva nace pendiente en
- * MasiveUpdateHelper::create_pending_update). El job lo retoma por
- * BackgroundProcessHelper::ultimo_activo($owner_id, 'imagenes_automaticas') y lo pasa a en_proceso
- * (constructor B de la misión); si no lo encuentra, lo abre como siempre.
+ * Desde la misión imagenes-catalogo-completo (27/9/2026) encolar() crea una ASIGNACIÓN
+ * (image_assignment_runs + un item por artículo, ImageAssignmentRunHelper::crear()) y despacha
+ * ProcessImageAssignmentRunJob, que busca la MEJOR imagen (tamaño, fondo blanco, IA comparando
+ * candidatas) y deja el diagnóstico en Alertas → Imágenes. Por fuera nada cambia: misma firma, el
+ * mismo retorno y el uuid de la corrida (ahora el de la asignación) para el aviso de Pusher.
+ * ProcessArticleBatchImagesJob ya no se despacha, pero se queda: un job encolado antes del deploy
+ * se tiene que poder deserializar y correr.
  *
- * cuota_de() y credenciales() las usa también el constructor B para las imágenes de categorías
- * (contrato §6), que consumen la MISMA cuota diaria de Google que las de artículos.
+ * 🔴 EL REGISTRO VISIBLE NACE AL ENCOLAR, `pendiente` (ahora con referencia a la asignación). En el
+ * shared hosting el worker pasa una vez por minuto: hasta entonces la persona que acababa de mandar
+ * la búsqueda no vería ningún proceso (mismo motivo por el que la masiva nace pendiente en
+ * MasiveUpdateHelper::create_pending_update).
+ *
+ * cuota_de() y credenciales() las usan también las imágenes de categorías, que consumen la MISMA
+ * cuota diaria de Google que las de artículos, y las asignaciones por selección (el tope diario).
  */
 class ImagenesAutomaticasHelper
 {
@@ -89,62 +95,42 @@ class ImagenesAutomaticasHelper
     }
 
     /**
-     * Encola la búsqueda de imágenes para esos artículos y abre el registro visible en `pendiente`.
+     * Encola la búsqueda de imágenes para esos artículos: crea la asignación (en el orden recibido),
+     * abre el registro visible en `pendiente` y despacha el job. Ver ImageAssignmentRunHelper::crear().
      *
-     * El uuid de la corrida se genera ACÁ y no adentro del job, para poder devolvérselo a quien
-     * disparó el lote: el canal `article_batch_images.{owner_id}` es PÚBLICO y sin un uuid conocido
-     * de antemano la pestaña no sabe cuál de los eventos que llegan es el suyo (medido el 28/8/2026
-     * entre dos instancias de demo).
+     * El uuid de la corrida (el de la asignación) se genera ACÁ y no adentro del job, para poder
+     * devolvérselo a quien disparó el lote: el canal `article_batch_images.{owner_id}` es PÚBLICO y
+     * sin un uuid conocido de antemano la pestaña no sabe cuál de los eventos que llegan es el suyo
+     * (medido el 28/8/2026 entre dos instancias de demo).
+     *
+     * Las asignaciones por selección y del asistente aplican el tope diario del dueño (su cupo de
+     * búsquedas de Google de siempre), aunque busquen con Serper: el dueño sigue con su tope.
+     *
+     * 🔴 El despacho va con afterCommit() explícito (adentro de ImageAssignmentRunHelper::crear()):
+     * desde el asistente la cadena es EjecutorAccionesIaHelper → DB::transaction →
+     * PropuestaImagenesArticulosIaHelper::ejecutar → acá, y en redis `after_commit` está en false.
      *
      * @param  \App\Models\User  $owner
      * @param  array  $article_ids
      * @param  int|null  $auth_user_id  Quién lo pidió (para el registro visible).
+     * @param  string  $origen  'seleccion' (el botón del listado, por defecto) o 'asistente'. Va último
+     *                          y con default para no romper a ningún llamador.
      * @return array  ['batch_uuid' => string, 'proceso' => \App\Models\BackgroundProcess|null]
      */
-    public static function encolar(User $owner, array $article_ids, $auth_user_id = null)
+    public static function encolar(User $owner, array $article_ids, $auth_user_id = null, $origen = ImageAssignmentRun::ORIGEN_SELECCION)
     {
-        $credenciales = self::credenciales($owner);
+        $origen = $origen === ImageAssignmentRun::ORIGEN_ASISTENTE
+            ? ImageAssignmentRun::ORIGEN_ASISTENTE
+            : ImageAssignmentRun::ORIGEN_SELECCION;
 
-        $ids = [];
-
-        foreach ($article_ids as $article_id) {
-
-            $ids[] = (int) $article_id;
-        }
-
-        $batch_uuid = (string) Str::uuid();
-
-        $proceso = BackgroundProcessHelper::iniciar($owner->id, self::TIPO_DE_PROCESO, 'Imágenes automáticas', [
-            'auth_user_id' => $auth_user_id,
-            'total'        => count($ids),
-            'unidad'       => 'artículos',
-            'detalle'      => count($ids) . ' artículos',
-            'status'       => 'pendiente',
-            'etapa'        => 'En espera del procesador',
+        $run = ImageAssignmentRunHelper::crear($owner, $article_ids, $origen, $auth_user_id, [
+            'aplica_tope_diario' => true,
         ]);
 
-        /*
-         * 🔴 `afterCommit()` EXPLÍCITO, mismo criterio que RunProviderOrderScanJob en
-         * ProviderOrderScanAltaHelper. Desde la pantalla esto corre sin transacción y despacha de
-         * inmediato, igual que antes. Desde el asistente la cadena es EjecutorAccionesIaHelper →
-         * DB::transaction → PropuestaImagenesArticulosIaHelper::ejecutar → acá: sin esto, un worker
-         * libre (redis, en el VPS) puede tomar el job ANTES del commit, no encontrar el registro
-         * `pendiente` que se acaba de abrir y abrir otro — el pendiente quedaría colgado tres horas
-         * hasta que el listado lo dé por muerto. El default de config no alcanza: `after_commit`
-         * es true solo en la conexión `database`, en `redis` está en false.
-         */
-        ProcessArticleBatchImagesJob::dispatch(
-            $ids,
-            (int) $owner->id,
-            $credenciales['api_key'],
-            $credenciales['cx'],
-            $credenciales['cuota'],
-            $batch_uuid,
-            is_null($proceso) ? null : (int) $proceso->id
-        )->afterCommit();
+        $proceso = is_null($run->background_process_id) ? null : BackgroundProcess::find($run->background_process_id);
 
         return [
-            'batch_uuid' => $batch_uuid,
+            'batch_uuid' => (string) $run->uuid,
             'proceso'    => $proceso,
         ];
     }

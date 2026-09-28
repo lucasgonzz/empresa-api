@@ -39,6 +39,25 @@ class ColumnFiltersHelper
 
             if (isset($filter['type'])) {
 
+                /*
+                 * "Sin imágenes" / "Con imágenes" en la columna de imágenes del listado (misión
+                 * imagenes-catalogo-completo, 27/9/2026). Las imágenes no son una columna sino una
+                 * relación (morphMany), así que "en blanco" es que no tenga ninguna y "no en blanco"
+                 * que tenga al menos una. Va ANTES y con `continue` porque ninguna de las ramas de
+                 * abajo sirve para este tipo: la genérica de en_blanco haría `images IS NULL` sobre
+                 * una columna que no existe (error de SQL), y ordenar por `images` también.
+                 */
+                if ($filter['type'] == 'images') {
+                    $presencia = self::apply_images_presence_filter($models, $filter, $model_name);
+                    $models    = $presencia['models'];
+
+                    if (!is_null($presencia['used_filter'])) {
+                        $used_filters[] = $presencia['used_filter'];
+                    }
+
+                    continue;
+                }
+
                 if (isset($filter['ordenar_de'])
                 && $filter['ordenar_de'] != '') {
                     // Delegamos el ordenamiento en un helper que sabe ordenar tanto por columnas
@@ -411,6 +430,81 @@ class ColumnFiltersHelper
         }
 
         return ['models' => $models, 'used_filters' => $used_filters];
+    }
+
+    /**
+     * Filtro de presencia sobre una relacion (tipo `images`): `en_blanco` = sin ningun registro de
+     * la relacion (whereDoesntHave), `no_en_blanco` = con al menos uno (whereHas). Misión
+     * imagenes-catalogo-completo (27/9/2026): "Sin imágenes" / "Con imágenes" del listado.
+     *
+     * Solo se aplica si la key es de verdad una relacion declarada en el propio modelo (ver
+     * is_own_relation()); si no, el filtro se ignora sin romper la busqueda y no se anota en
+     * used_filters. Sin en_blanco ni no_en_blanco tampoco hace nada.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $models
+     * @param  array                                 $filter
+     * @param  string                                $model_name  Clase Eloquent del modelo.
+     * @return array  ['models' => Builder, 'used_filter' => array|null]
+     */
+    protected static function apply_images_presence_filter($models, $filter, $model_name)
+    {
+        $key = isset($filter['key']) ? (string) $filter['key'] : '';
+
+        $en_blanco    = isset($filter['en_blanco']) && (boolean) $filter['en_blanco'];
+        $no_en_blanco = !$en_blanco && isset($filter['no_en_blanco']) && (boolean) $filter['no_en_blanco'];
+
+        if ((!$en_blanco && !$no_en_blanco) || !self::is_own_relation($model_name, $key)) {
+            return ['models' => $models, 'used_filter' => null];
+        }
+
+        $models = $en_blanco ? $models->whereDoesntHave($key) : $models->whereHas($key);
+
+        return [
+            'models'      => $models,
+            'used_filter' => [
+                'key'       => $key,
+                'operator'  => $en_blanco ? 'en_blanco' : 'no_en_blanco',
+                'value'     => true,
+                'type'      => $filter['type'],
+            ],
+        ];
+    }
+
+    /**
+     * ¿La key es una relacion declarada en el PROPIO archivo del modelo?
+     *
+     * La key sale del request y whereHas() la invoca como metodo sobre una instancia nueva del
+     * modelo: sin estas guardas, una key como `restore` (SoftDeletes) o `save` terminaria llamando
+     * a ese metodo. Por eso, ademas de publico, no estatico y sin parametros obligatorios (el mismo
+     * criterio que relation_for_blank_check()), se exige que este declarado en el archivo del modelo
+     * y no en un trait ni en Eloquent, y que lo que devuelva sea una Relation.
+     *
+     * @param  string $model_name
+     * @param  string $key
+     * @return bool
+     */
+    protected static function is_own_relation($model_name, $key)
+    {
+        if (!is_string($key) || !preg_match('/^[a-z_][a-z0-9_]*$/i', $key) || !class_exists($model_name)) {
+            return false;
+        }
+
+        $instance = new $model_name();
+
+        if (!method_exists($instance, $key)) {
+            return false;
+        }
+
+        $reflection = new \ReflectionMethod($instance, $key);
+
+        if (!$reflection->isPublic()
+            || $reflection->isStatic()
+            || $reflection->getNumberOfRequiredParameters() > 0
+            || $reflection->getFileName() !== (new \ReflectionClass($model_name))->getFileName()) {
+            return false;
+        }
+
+        return $instance->$key() instanceof \Illuminate\Database\Eloquent\Relations\Relation;
     }
 
     /**

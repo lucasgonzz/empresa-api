@@ -4,7 +4,9 @@ namespace App\Services;
 
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
 use App\Models\Article;
+use App\Models\ImageServiceCall;
 use App\Models\User;
+use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\Traits\BusquedaDeImagenesEnGoogle;
 use App\Services\Traits\GoogleSearchHelpers;
 use Illuminate\Support\Facades\Http;
@@ -533,7 +535,14 @@ class BusquedaPorCodigoDeBarrasService
                 break;
             }
 
+            // Registro de consultas (misión imagenes-catalogo-completo, plan §13, A4): el estado
+            // HTTP lo anota la escucha de ImageServiceCallLogger (el trait no lo devuelve).
+            ImageServiceCallLogger::antes_de_buscar_en_custom_search();
+            $inicio_del_registro = microtime(true);
+
             $resultado = $this->fetch_google_image_results($consulta, $this->get_or_create_counter());
+
+            $this->registrar_busqueda_de_google($consulta, $ean, $nombre, $resultado, $inicio_del_registro);
 
             if (! is_null($resultado['api_error']) || empty($resultado['items'])) {
                 continue;
@@ -1550,5 +1559,49 @@ class BusquedaPorCodigoDeBarrasService
         }
 
         return null;
+    }
+
+    /**
+     * Deja una búsqueda de Google de esta búsqueda por código en el registro de consultas
+     * (image_service_calls, origen `asistente_codigo_de_barras`): lo que el admin muestra por cliente
+     * (misión imagenes-catalogo-completo, plan §13, A4). No hay artículo guardado detrás: va el nombre
+     * con el que se buscó. El logger nunca lanza y tapa las claves del error.
+     *
+     * @param  string      $consulta
+     * @param  string      $ean
+     * @param  string|null $nombre
+     * @param  array       $resultado  El de BusquedaDeImagenesEnGoogle::fetch_google_image_results().
+     * @param  float       $inicio     microtime(true) de antes de la búsqueda.
+     * @return void
+     */
+    protected function registrar_busqueda_de_google($consulta, $ean, $nombre, array $resultado, $inicio)
+    {
+        $ok    = !is_null($resultado['items']) && is_null($resultado['api_error']);
+        $total = $ok && is_array($resultado['items']) ? count($resultado['items']) : null;
+
+        if (!$ok) {
+            $resumen = 'Google respondió con error';
+        } elseif ($total === 0) {
+            $resumen = 'Sin resultados';
+        } else {
+            $resumen = $total === 1 ? '1 resultado' : $total.' resultados';
+        }
+
+        ImageServiceCallLogger::registrar([
+            'user_id'      => is_null($this->owner) ? 0 : (int) $this->owner->id,
+            'article_name' => trim((string) $nombre) !== '' ? (string) $nombre : 'Producto con código '.$ean,
+            'origen'       => ImageServiceCall::ORIGEN_ASISTENTE_CODIGO_DE_BARRAS,
+            'tipo'         => ImageServiceCall::TIPO_BUSQUEDA,
+            'proveedor'    => ImageServiceCall::PROVEEDOR_GOOGLE,
+            'criterio'     => (string) $consulta === (string) $ean ? 'codigo_de_barras' : 'nombre',
+            'consulta'     => (string) $consulta,
+            'ok'           => $ok,
+            'cobrada'      => $ok,
+            'http_status'  => ImageServiceCallLogger::estado_de_custom_search(),
+            'error'        => $ok ? null : (string) $resultado['api_error'],
+            'resultados'   => $total,
+            'resumen'      => $resumen,
+            'duracion_ms'  => ImageServiceCallLogger::milisegundos_desde($inicio),
+        ]);
     }
 }

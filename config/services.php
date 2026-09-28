@@ -314,6 +314,47 @@ return [
     ],
 
     /**
+     * Serper (https://serper.dev): Google Imágenes por API, el proveedor de búsqueda de las
+     * asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026).
+     *
+     * Por qué existe además de Google Custom Search: Custom Search da 100 búsquedas por día por
+     * proyecto (el 22/9/2026 el panel no dejó subirlas), la clave es prácticamente una sola para
+     * toda la flota y el servicio se apaga el 1/1/2027. Serper cobra USD 0,30 a 1 cada 1.000
+     * búsquedas y no tiene ese techo. Custom Search queda de respaldo para las asignaciones por
+     * selección de los clientes que no tengan esta clave.
+     *
+     * 🔴 "Todo el catálogo" (acceso maestro) NO se puede lanzar sin `SERPER_API_KEY`: con 100
+     * búsquedas por día un catálogo de 5.000 artículos no termina nunca. La clave se carga a mano
+     * en el .env de cada cliente (tarea manual del despliegue).
+     *
+     * `gl` y `hl` son el país y el idioma de la búsqueda (Argentina y español por defecto): cambian
+     * qué tiendas aparecen primero y en qué idioma vienen los títulos.
+     */
+    'serper' => [
+        'api_key' => env('SERPER_API_KEY', ''),
+        'gl'      => env('SERPER_GL', 'ar'),
+        'hl'      => env('SERPER_HL', 'es'),
+    ],
+
+    /**
+     * Asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026).
+     *
+     * `tope_catalogo`: artículos como máximo por cada lanzamiento de "todo el catálogo". Con más
+     * artículos sin imagen se toman primero los publicados en la tienda, después los que tienen
+     * stock y después el resto; al terminar se relanza y sigue con los que faltan. 5.000 son una
+     * noche de trabajo (~8 s por artículo).
+     *
+     * `segundos_por_tramo`: cuánto trabaja cada tramo del job antes de re-encolarse. 50 s porque en
+     * el VPS hay UN worker por cliente y el asistente / Tienda Nube no pueden esperar más que eso,
+     * y porque Hostinger mata procesos largos. Un tramo procesa siempre al menos un artículo, y el
+     * job lo acota a 20..90 s (ProcessImageAssignmentRunJob::segundos_por_tramo()).
+     */
+    'imagenes_inteligentes' => [
+        'tope_catalogo'      => (int) env('IMAGENES_TOPE_CATALOGO', 5000),
+        'segundos_por_tramo' => (int) env('IMAGENES_SEGUNDOS_POR_TRAMO', 50),
+    ],
+
+    /**
      * UPCitemdb (plan FREE, sin API key): lookup de producto por GTIN para el flujo de
      * descripciones inteligentes. Limite real: 100 requests/dia POR IP, compartidos por
      * TODOS los clientes de la plataforma. daily_cap deja margen antes de ese techo.
