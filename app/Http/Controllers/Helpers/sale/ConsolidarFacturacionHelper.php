@@ -312,7 +312,20 @@ class ConsolidarFacturacionHelper extends Controller
                     Log::info('Sobreescribiendo article '.$article->name.' con amount actualizada de : '.$items_a_adjuntar[$clave]['amount']);
                 } else {
                     Log::info('Agregando article '.$article->name.' con amount: '.$pivot->amount);
-                    /** Primera aparición del ítem: lo registra con todos los datos de pivot. */
+                    /**
+                     * Primera aparición del ítem: lo registra con todos los datos de pivot.
+                     *
+                     * 🔴 MENOS `price_sin_recargos_de_venta`, A PROPOSITO, y no es un olvido (mision
+                     * recargos-en-precios-editable, 28/9/2026). La base dice "este precio trae
+                     * adentro los recargos de ESTE comprobante", y la consolidada no tiene recargos
+                     * ni la opcion `aplicar_recargos_directo_a_items`: `consolidar()` no copia ni
+                     * `surchages` ni el flag de las originales (que ademas pueden tener la opcion
+                     * distinta entre si). Para la consolidada, `price` es el precio final y punto.
+                     * Si la base se copiara, VENDER —que con el flag en 0 muestra la base cuando la
+                     * hay— le bajaria el precio a cada renglon al abrirla y el recargo no apareceria
+                     * en ningun lado. NULL es la verdad de este comprobante. Lo mismo en combos y
+                     * servicios, mas abajo.
+                     */
                     $items_a_adjuntar[$clave] = [
                         'article_id'                  => $article->id,
                         'amount'                      => (float)$pivot->amount,

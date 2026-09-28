@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
+use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\Article;
@@ -267,7 +268,16 @@ class BudgetHelper {
 			 */
         	$ganancia = ((float)$price - (float)$cost) * (float)$amount;
 
-			$sale->articles()->attach($article->id, [
+			/*
+			 * 🔴 La base (`price_sin_recargos_de_venta`) viaja CON el precio (mision
+			 * recargos-en-precios-editable, 28/9/2026). El `price` pasa tal cual del presupuesto a
+			 * la venta, y la venta hereda `aplicar_recargos_directo_a_items` (ver `saveSale()`):
+			 * si el precio trae el recargo adentro, lo sigue trayendo. Sin la base, la venta que
+			 * nace de un presupuesto con la opcion prendida quedaria bloqueada en VENDER desde el
+			 * primer segundo, aunque el presupuesto no lo estuviera. Lo mismo en los tres
+			 * `attachSale*` de abajo.
+			 */
+			$sale->articles()->attach($article->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $price,
@@ -276,7 +286,7 @@ class BudgetHelper {
 				'price_type_personalizado_id'	    		=> $article->pivot->price_type_personalizado_id,
 				'discount'			=> $article->pivot->bonus,
 				'name'				=> $article->pivot->name,
-			]);
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'));
 
 			Log::info('sale articles:');
 			Log::info($sale->articles);
@@ -293,10 +303,10 @@ class BudgetHelper {
 
 		foreach($budget->promocion_vinotecas as $promo) {
 			
-			$sale->promocion_vinotecas()->attach($promo->id, [
+			$sale->promocion_vinotecas()->attach($promo->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $promo->pivot->amount,
 				'price'	    		=> $promo->pivot->price,
-			]);
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($promo->pivot), 'promocion_vinoteca_sale'));
 
 			$promo_array = [
 				'id'		=> $promo->id,
@@ -357,11 +367,11 @@ class BudgetHelper {
 				VENDER no. Dos filas de la misma tabla, una fechada y la otra no, segun por que
 				puerta entro la venta.
 			*/
-			$sale->combos()->attach($combo->id, [
+			$sale->combos()->attach($combo->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $combo->pivot->amount,
 				'price'	    		=> $combo->pivot->price,
 				'created_at'		=> Carbon::now(),
-			]);
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($combo->pivot), 'combo_sale'));
 
 			$articles_array = [];
 
@@ -390,10 +400,10 @@ class BudgetHelper {
 		
 		foreach($budget->services as $service) {
 			
-			$sale->services()->attach($service->id, [
+			$sale->services()->attach($service->id, RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $service->pivot->amount,
 				'price'	    		=> $service->pivot->price,
-			]);
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($service->pivot), 'sale_service'));
 
 		}
 	}
@@ -631,6 +641,11 @@ class BudgetHelper {
 		foreach ($budget->articles as $existing_article) {
 			$existing_names[$existing_article->id] = $existing_article->pivot->name;
 		}
+		/*
+		 * Y el snapshot de las bases (precio sin recargos de venta), con el mismo motivo y en el
+		 * mismo momento: ver `base_para_renglon()`.
+		 */
+		$bases_guardadas = Self::snapshot_de_bases($budget->articles);
 		$budget->articles()->detach();
 		foreach ($articles as $article) {
 			$id = (int)$article['id'];
@@ -649,13 +664,23 @@ class BudgetHelper {
 				$bonus = $article['pivot']['bonus'];
 				$location = $article['pivot']['location'];
 				$price = $article['pivot']['price'];
+
+				/*
+				 * La base se busca primero AL LADO DEL PRECIO (en `pivot`, que es donde la pone
+				 * VENDER al actualizar un renglon ya cargado) y despues en la raiz, por tolerancia.
+				 */
+				$niveles_de_la_base = [$article['pivot'], $article];
 			} else {
 
 				$amount = $article['amount'];
 				$bonus = $article['bonus'];
 				$location = $article['location'];
 				$price = $article['price'];
+
+				$niveles_de_la_base = [$article];
 			}
+
+			$base = Self::base_para_renglon($niveles_de_la_base, $id, $price, $bases_guardadas);
 			
 			$cost = SaleHelper::getCost($budget, $article);
 
@@ -693,7 +718,7 @@ class BudgetHelper {
 			} else {
 				$pivot_name = isset($existing_names[$id]) ? $existing_names[$id] : null;
 			}
-			$budget->articles()->attach($article['id'], [
+			$budget->articles()->attach($article['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
 									'cost' 		=> $cost,
@@ -701,8 +726,101 @@ class BudgetHelper {
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
 									'name' 		=> $pivot_name,
-								]);
+								], $base, 'article_budget'));
 		}
+	}
+
+	/**
+	 * Foto de las bases guardadas de un tipo de renglon del presupuesto, ANTES del `detach()`
+	 * (mision recargos-en-precios-editable, 28/9/2026).
+	 *
+	 * `id => [ ['price' => ..., 'base' => ...], ... ]`: una LISTA por id y no un valor, porque el
+	 * mismo articulo puede estar dos veces en el presupuesto con precios distintos, y cada renglon
+	 * tiene su propia base. Con un valor por id (como `$existing_names`) el segundo pisaria al
+	 * primero y la preservacion le daria a un renglon la base del otro.
+	 *
+	 * @param  \Illuminate\Support\Collection|array  $renglones  Modelos con `pivot` cargado.
+	 * @return array
+	 */
+	static function snapshot_de_bases($renglones) {
+
+		$snapshot = [];
+
+		foreach ($renglones as $renglon) {
+
+			$snapshot[$renglon->id][] = [
+				'price'	=> $renglon->pivot->price,
+				'base'	=> RecargosEnPreciosEsquemaHelper::base_del_pivot($renglon->pivot),
+			];
+		}
+
+		return $snapshot;
+	}
+
+	/**
+	 * La base (`price_sin_recargos_de_venta`) con la que se re-adjunta un renglon del presupuesto.
+	 *
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *  🔴 CLAVE AUSENTE NO ES LO MISMO QUE CLAVE EN NULL, Y ACA ES A PROPOSITO
+	 * ─────────────────────────────────────────────────────────────────────────────
+	 *
+	 *  - Con la clave `price_vender_sin_recargos` (VENDER nueva, duplicar): manda lo que vino, null
+	 *    incluido. Quien la manda sabe si el precio trae el recargo adentro.
+	 *  - SIN la clave: se PRESERVA la base guardada de ese renglon, pero SOLO si el `price` que llega
+	 *    es igual al guardado. Si el precio cambio, NULL.
+	 *
+	 *  El motivo es el form generico del modulo Presupuestos: `BudgetController::update()` lo pegan
+	 *  dos frentes, VENDER y ese form, y el form re-adjunta los renglones sin saber nada de recargos.
+	 *  Sin preservar, guardar desde ahi —cambiando una observacion— borraria todas las bases y el
+	 *  presupuesto quedaria bloqueado en VENDER. Es el mismo criterio que `$existing_names` para el
+	 *  nombre por linea: lo que el payload no nombra, no se pisa.
+	 *
+	 *  Y por que SOLO con el mismo precio: la base describe al `price` de SU fila. Si el form cambio
+	 *  el precio, la base vieja ya no lo describe, y dejarla haria que VENDER, al reabrir, recalcule
+	 *  el precio desde un numero que no tiene nada que ver con lo que el usuario escribio. NULL deja
+	 *  el presupuesto bloqueado (si tenia la opcion prendida), que es el modo de falla seguro.
+	 *
+	 *  ⚠️ Esto NO aplica a las VENTAS: `SaleController::update()` lo pega solo VENDER, y ahi clave
+	 *  ausente es la SPA vieja, que tampoco sabe si su precio trae el recargo. Ahi va NULL.
+	 *
+	 * El snapshot se recibe por referencia y el renglon usado se saca: dos renglones del mismo id y
+	 * el mismo precio no pueden llevarse los dos la misma base guardada.
+	 *
+	 * @param  array   $niveles   Arrays del renglon donde buscar la clave, en orden de prioridad.
+	 * @param  int     $id        Id del articulo / servicio / promo / combo.
+	 * @param  mixed   $price     El precio con el que se va a re-adjuntar.
+	 * @param  array   $snapshot  De `snapshot_de_bases()`, por referencia.
+	 * @return float|null
+	 */
+	static function base_para_renglon($niveles, $id, $price, &$snapshot) {
+
+		foreach ($niveles as $nivel) {
+
+			if (RecargosEnPreciosEsquemaHelper::tiene_clave($nivel)) {
+
+				return RecargosEnPreciosEsquemaHelper::base_del_item($nivel);
+			}
+		}
+
+		if (!isset($snapshot[$id])) {
+			return null;
+		}
+
+		foreach ($snapshot[$id] as $indice => $guardado) {
+
+			/*
+				Igualdad de PLATA, no de texto ni de float: el form generico re-manda el `price` del
+				pivot ("110.00"), VENDER lo manda como numero (110), y la columna tiene 2 decimales.
+			*/
+			if (abs((float) $guardado['price'] - (float) $price) < 0.005) {
+
+				array_splice($snapshot[$id], $indice, 1);
+
+				return $guardado['base'];
+			}
+		}
+
+		return null;
 	}
 
     static function getCost($item) {
@@ -725,22 +843,37 @@ class BudgetHelper {
         return null;
     }
 
+	/*
+		Servicios, promociones y combos guardan la base con la MISMA regla de preservacion que
+		los articulos (ver `base_para_renglon()`): la clave viaja en `pivot`, al lado del precio,
+		y si no viaja se preserva la guardada mientras el precio no cambie.
+
+		🔴 El snapshot se toma con `->get()` y no con la propiedad (`$budget->services`): la
+		propiedad dejaria la relacion CACHEADA con los renglones de antes del detach, y cualquiera
+		que la leyera despues en el mismo request veria renglones que ya no existen.
+	*/
 	static function attachServices($budget, $services) {
+		$bases_guardadas = Self::snapshot_de_bases($budget->services()->get());
+
 		$budget->services()->detach();
 
 		foreach ($services as $service) {
 			$id = (int)$service['id'];
 			$amount = $service['pivot']['amount'];
 			$price = $service['pivot']['price'];
-			
-			$budget->services()->attach($service['id'], [
+
+			$base = Self::base_para_renglon([$service['pivot'], $service], $id, $price, $bases_guardadas);
+
+			$budget->services()->attach($service['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
-								]);
-		}		
+								], $base, 'budget_service'));
+		}
 	}
 
 	static function attachPromocionVinotecas($budget, $promocion_vinotecas) {
+		$bases_guardadas = Self::snapshot_de_bases($budget->promocion_vinotecas()->get());
+
 		$budget->promocion_vinotecas()->detach();
 
 		foreach ($promocion_vinotecas as $service) {
@@ -748,11 +881,13 @@ class BudgetHelper {
 			$id = (int)$service['id'];
 			$amount = $service['pivot']['amount'];
 			$price = $service['pivot']['price'];
-			
-			$budget->promocion_vinotecas()->attach($service['id'], [
+
+			$base = Self::base_para_renglon([$service['pivot'], $service], $id, $price, $bases_guardadas);
+
+			$budget->promocion_vinotecas()->attach($service['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
-								]);
+								], $base, 'budget_promocion_vinoteca'));
 		}
 	}
 
@@ -802,6 +937,9 @@ class BudgetHelper {
 			return;
 		}
 
+		// La tabla ya esta garantizada por la guarda de arriba; `->get()` por lo mismo que en attachServices().
+		$bases_guardadas = Self::snapshot_de_bases($budget->combos()->get());
+
 		$budget->combos()->detach();
 
 		foreach ($combos as $combo) {
@@ -809,10 +947,12 @@ class BudgetHelper {
 			$amount = $combo['pivot']['amount'];
 			$price = $combo['pivot']['price'];
 
-			$budget->combos()->attach($combo['id'], [
+			$base = Self::base_para_renglon([$combo['pivot'], $combo], (int) $combo['id'], $price, $bases_guardadas);
+
+			$budget->combos()->attach($combo['id'], RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
-								]);
+								], $base, 'budget_combo'));
 		}
 	}
 
