@@ -405,10 +405,12 @@ class SaleController extends Controller
                 'omitir_en_cuenta_corriente'        => $request->omitir_en_cuenta_corriente,
                 // Ya resuelta y validada antes de la transacción: request → cliente → null (o 422).
                 'price_type_id'                     => $price_type_id,
-                'discounts_in_services'             => $request->discounts_in_services,
-                'surchages_in_services'             => $request->surchages_in_services,
+                // Mismo mecanismo que 'save_current_acount' arriba: columna NOT NULL con default,
+                // y el DEFAULT de MySQL no aplica si la columna viaja con NULL explícito.
+                'discounts_in_services'             => !is_null($request->discounts_in_services) ? $request->discounts_in_services : 1,
+                'surchages_in_services'             => !is_null($request->surchages_in_services) ? $request->surchages_in_services : 1,
                 'employee_id'                       => SaleHelper::getEmployeeId($request),
-                'to_check'                          => $request->to_check,
+                'to_check'                          => !is_null($request->to_check) ? $request->to_check : 0,
                 'confirmed'                         => SaleHelper::get_confirmed($request->to_check),
                 'numero_orden_de_compra'            => $request->numero_orden_de_compra,
                 'sub_total'                         => $request->sub_total,
