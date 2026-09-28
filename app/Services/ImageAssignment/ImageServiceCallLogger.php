@@ -287,14 +287,14 @@ class ImageServiceCallLogger
         $limpio = (string) preg_replace('/sk-ant-[A-Za-z0-9_\-]+/', 'sk-ant-***', $limpio);
         $limpio = (string) preg_replace('/AIza[0-9A-Za-z_\-]{10,}/', 'AIza***', $limpio);
 
-        $claves = array_merge([
+        $claves = [];
+
+        foreach (array_merge([
             config('services.serper.api_key'),
             config('services.anthropic.api_key'),
             config('services.google_search.api_key'),
             config('services.openai.api_key'),
-        ], $claves_extra);
-
-        foreach ($claves as $clave) {
+        ], $claves_extra) as $clave) {
             // Una clave que no es texto no puede estar en el mensaje.
             if (!is_null($clave) && !is_scalar($clave)) {
                 continue;
@@ -305,8 +305,17 @@ class ImageServiceCallLogger
             // Una "clave" de menos de 8 caracteres es un valor de prueba o basura: reemplazarla
             // taparía pedazos de palabras comunes del mensaje.
             if (strlen($clave) >= 8) {
-                $limpio = str_replace($clave, '***', $limpio);
+                $claves[$clave] = strlen($clave);
             }
+        }
+
+        // De la más larga a la más corta (misión serper-en-user-setup, con varias claves de un
+        // payload): si una clave está contenida en otra y se tapara primero la corta, de la larga
+        // quedaría a la vista el pedazo que no coincide.
+        arsort($claves);
+
+        foreach (array_keys($claves) as $clave) {
+            $limpio = str_replace((string) $clave, '***', $limpio);
         }
 
         return $limpio;
