@@ -35,11 +35,24 @@ use Illuminate\Support\Facades\Schema;
  *  comio la informacion): la SPA lo detecta por el NULL y lo deja bloqueado, que es el modo de
  *  falla seguro — bloquear, nunca adivinar un precio.
  *
- *  DECIMAL(25,6), no (25,2): la SPA manda el precio sin redondear, y con seis decimales "apagar"
- *  devuelve `round2(base)` = el precio que el renglon habria tenido con la opcion apagada, y
- *  "volver a prender" devuelve `round2(base × factor)` = el mismo precio que se guardo la primera
- *  vez. Con dos decimales, cada vuelta prender/apagar puede correr un centavo: base 93,457 con 10 %
- *  da 102,80, pero la base redondeada (93,46) × 1,10 da 102,81.
+ *  DECIMAL(25,6), no (25,2): la SPA manda la base sin redondear, y con seis decimales "apagar"
+ *  devuelve `round2(base)` = el precio que el renglon tenia antes de prender la opcion. Esa es la
+ *  unica promesa exacta de la columna.
+ *
+ *  ⚠️ LO QUE NO PROMETE, para que nadie lo lea de mas:
+ *
+ *  - "Volver a prender" da el mismo precio SOLO dentro de la misma edicion, mientras la base
+ *    sigue en memoria. Si se GUARDA con la opcion apagada, la base pasa a NULL y el precio queda en
+ *    `round2(base)`; prenderla en otra edicion parte de ese numero ya redondeado y da
+ *    `round2(round2(base) × factor)`, que puede correrse un centavo: base 93,457 con 10 % da 102,80
+ *    la primera vez, pero 93,46 × 1,10 da 102,81.
+ *  - El TOTAL puede moverse al prender o apagar. Desde el 28/9/2026 (decision de Lucas) la SPA
+ *    redondea a centavos el precio UNITARIO cuando lleva los recargos adentro, para que renglones,
+ *    total y factura de ARCA coincidan (antes el total salia del precio sin redondear y la suma de
+ *    los renglones daba menos: con 10.000 unidades de 0,35 y 10 % + 5 %, mas de cuarenta pesos de
+ *    diferencia, y los presupuestos grandes rebotaban con el 500 del margen de 3). Con el recargo
+ *    al pie ese redondeo por unidad no existe, asi que entre las dos formas el total difiere en
+ *    hasta medio centavo por unidad, multiplicado por la cantidad de cada renglon.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  *  LAS OCHO TABLAS, Y POR QUE CADA UNA CON SU GUARDA

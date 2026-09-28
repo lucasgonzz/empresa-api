@@ -1412,10 +1412,14 @@ class SaleHelper extends Controller {
      * el precio final aparte, en `price_vender_con_recargos`, y la base en
      * `price_vender_sin_recargos`.
      *
-     * Sin `price_vender_con_recargos` —SPA vieja, u opcion apagada— se guarda `price_vender` como
-     * siempre y la base va en NULL AUNQUE VENGA `price_vender_sin_recargos`: en ese caso el precio
-     * guardado es el tipeado, que no tiene el recargo adentro, y una base NO NULL diria lo
-     * contrario. La invariante de la columna manda sobre lo que diga el payload.
+     * La SPA nueva manda `price_vender_con_recargos` SIEMPRE, tambien con la opcion apagada: ahi
+     * vale lo mismo que el precio tipeado y `price_vender_sin_recargos` va en null, asi que se
+     * guarda el tipeado con la base en NULL sin que este metodo tenga que distinguir nada.
+     *
+     * Sin `price_vender_con_recargos` —solo la SPA VIEJA, anterior a esta mision— se guarda
+     * `price_vender` como siempre y la base va en NULL AUNQUE VENGA `price_vender_sin_recargos`: en
+     * ese caso el precio guardado es el tipeado, que no tiene el recargo adentro, y una base NO NULL
+     * diria lo contrario. La invariante de la columna manda sobre lo que diga el payload.
      *
      * @param  array  $otro_precio  Un elemento de `varios_precios`, ya con `id`, `name` y `amount`.
      * @return array  El mismo elemento, con `price_vender` y `price_vender_sin_recargos` resueltos.

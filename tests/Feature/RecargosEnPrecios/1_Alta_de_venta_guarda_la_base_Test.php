@@ -69,9 +69,10 @@ class Alta_de_venta_guarda_la_base_Test extends RecargosEnPreciosTestCase
     /**
      * Test 2 — la base se guarda con los SEIS decimales que manda la SPA.
      *
-     * Es lo que hace que apagar y volver a prender devuelva el mismo centavo (ver la migracion):
-     * base 93,457 con 10 % da 102,80; si se guardara redondeada (93,46), volver a prender daria
-     * 102,81.
+     * Es lo que hace que una venta GUARDADA con la opcion prendida, al reabrirla en otra edicion,
+     * recalcule desde la base exacta: base 93,457 con 10 % da 102,80; si la base se guardara
+     * redondeada (93,46), recalcular con la opcion prendida daria 102,81. (Si se guarda con la
+     * opcion APAGADA la base pasa a NULL y esa garantia ya no aplica: ver la migracion.)
      *
      * @test
      */

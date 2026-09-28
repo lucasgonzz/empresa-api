@@ -9,9 +9,14 @@ use App\Models\Sale;
  * Archivo 2 — EDITAR una venta ya creada prendiendo o apagando la opcion.
  *
  * Es el pedido de Lucas, visto desde la API: la SPA recalcula los precios (base <-> base × factor)
- * y manda el PUT; la API tiene que dejar cada renglon con el precio y la base nuevos, el flag
- * nuevo, y el TOTAL IGUAL. Prender o apagar nunca cambia lo que se cobra (decision 2): solo mueve el
- * recargo del precio al pie o del pie al precio.
+ * y manda el PUT; la API tiene que dejar cada renglon con el precio y la base nuevos, y el flag
+ * nuevo. Prender o apagar nunca decide SI el recargo se cobra (decision 2): solo lo mueve del precio
+ * al pie o del pie al precio.
+ *
+ * ⚠️ El total no queda identico al centavo en cualquier venta: con el recargo adentro la SPA
+ * redondea el precio UNITARIO a centavos y al pie no, asi que puede moverse hasta medio centavo por
+ * unidad (ver la migracion `2026_09_28_100000`). Los numeros de estos tests dan exacto a proposito
+ * (100 con 10 % = 110), para medir que la API guarda lo que le mandan sin mezclarlo con ese redondeo.
  *
  * El PUT es el camino real (`SaleController::update()` -> `detachItems()` -> `attachProperies()`),
  * no un `updateExistingPivot` armado a mano: es el que re-adjunta los renglones y el que tendria que

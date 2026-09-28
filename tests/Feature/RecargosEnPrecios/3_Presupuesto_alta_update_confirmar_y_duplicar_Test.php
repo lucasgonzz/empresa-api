@@ -139,7 +139,7 @@ class Presupuesto_alta_update_confirmar_y_duplicar_Test extends RecargosEnPrecio
             'promo'   => [300, null],
         ], 'update apagado');
 
-        $this->assertEqualsWithDelta(715.00, BudgetHelper::getTotal($budget), self::DELTA, 'Apagar no cambia el total: el 10 % pasa al pie.');
+        $this->assertEqualsWithDelta(715.00, BudgetHelper::getTotal($budget), self::DELTA, 'Con estos numeros, que dan exacto, apagar no cambia el total: el 10 % pasa al pie.');
     }
 
     /**
