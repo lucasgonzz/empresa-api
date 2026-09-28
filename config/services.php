@@ -323,9 +323,15 @@ return [
      * búsquedas y no tiene ese techo. Custom Search queda de respaldo para las asignaciones por
      * selección de los clientes que no tengan esta clave.
      *
-     * 🔴 "Todo el catálogo" (acceso maestro) NO se puede lanzar sin `SERPER_API_KEY`: con 100
-     * búsquedas por día un catálogo de 5.000 artículos no termina nunca. La clave se carga a mano
-     * en el .env de cada cliente (tarea manual del despliegue).
+     * 🔴 "Todo el catálogo" (acceso maestro) NO se puede lanzar sin clave de Serper: con 100
+     * búsquedas por día un catálogo de 5.000 artículos no termina nunca.
+     *
+     * La clave sale de dos lados (misión serper-en-user-setup, 28/9/2026), y la del comercio gana:
+     *   1. `users.serper_api_key` del dueño: la manda el admin en el user-setup / demo-setup de una
+     *      instalación nueva (Configuración → Implementación → Serper);
+     *   2. esta, `SERPER_API_KEY` del .env: el respaldo, y el único camino para un cliente que ya
+     *      estaba instalado (se carga a mano, tarea manual del despliegue).
+     * Ver ImageSearchProviderFactory::clave_serper_para().
      *
      * `gl` y `hl` son el país y el idioma de la búsqueda (Argentina y español por defecto): cambian
      * qué tiendas aparecen primero y en qué idioma vienen los títulos.
