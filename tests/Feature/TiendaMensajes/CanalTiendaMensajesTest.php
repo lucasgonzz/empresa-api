@@ -78,6 +78,23 @@ class CanalTiendaMensajesTest extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Un dueño tiene `owner_id` null, que castea a 0: sin la guarda `(int) $owner_id > 0`, CUALQUIER
+     * dueño quedaba autorizado a `tienda-mensajes.0`. Tampoco lo abre un empleado.
+     *
+     * @test
+     */
+    public function nadie_escucha_el_canal_del_dueno_cero()
+    {
+        $dueno = $this->crear_dueno('canal cero');
+        $empleado = $this->crear_empleado($dueno);
+
+        $this->assertNull($dueno->fresh()->owner_id, 'El fixture tiene que ser un dueño de verdad (owner_id null).');
+
+        $this->assertFalse($this->puede_escuchar($dueno, 0), 'Un dueño quedó autorizado a tienda-mensajes.0.');
+        $this->assertFalse($this->puede_escuchar($empleado, 0));
+    }
+
+    /**
      * @test
      */
     public function el_evento_sale_por_el_canal_privado_del_dueno_con_su_nombre_corto()

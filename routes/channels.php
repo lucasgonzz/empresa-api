@@ -31,9 +31,13 @@ Broadcast::channel('whatsapp.{owner_id}', function ($user, $owner_id) {
  * Por acá viaja `TiendaChatActualizado`, que emiten tienda-api (el comprador escribió) y
  * empresa-api (el comercio respondió o marcó leído). `owner_id` es el DUEÑO del comercio
  * (`buyers.user_id`). Mismo criterio que `whatsapp.{owner_id}`: el dueño y sus empleados.
+ *
+ * 🔴 El `(int) $owner_id > 0` va primero y no es decorativo: un dueño tiene `owner_id` null, que
+ * castea a 0, así que sin esa guarda cualquier dueño quedaba autorizado a `tienda-mensajes.0`.
  */
 Broadcast::channel('tienda-mensajes.{owner_id}', function ($user, $owner_id) {
-    return (int) $user->id === (int) $owner_id || (int) $user->owner_id === (int) $owner_id;
+    return (int) $owner_id > 0
+        && ((int) $user->id === (int) $owner_id || (int) $user->owner_id === (int) $owner_id);
 });
 
 /**
