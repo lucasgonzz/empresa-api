@@ -229,11 +229,12 @@ class TiendaChatController extends Controller
      * El texto va TAL CUAL (solo el trim de siempre): un mensaje escrito a mano no se reescribe, a
      * diferencia del `POST message` viejo, que le pasaba `onlyFirstWordUpperCase`.
      *
-     * Después de guardar:
+     * Después de guardar, y los dos DESPUÉS de mandada la respuesta:
      * 1. Evento C1 al canal del dueño (lo ven las otras pestañas y los empleados). En try/catch:
-     *    si Pusher está caído, el 201 sale igual.
-     * 2. El aviso al comprador (C2: broadcast a la tienda y, si corresponde, el mail), DESPUÉS de
-     *    mandada la respuesta, con `NotificarRespuestaAlComprador`.
+     *    si Pusher está caído o colgado, el 201 sale igual y sin esperar.
+     * 2. El aviso al comprador con `NotificarRespuestaAlComprador`: en vivo por
+     *    `RespuestaDelComercio` (C2', canal `tienda-respuestas.{owner}.{buyer}`) y, si corresponde,
+     *    el mail, que sale solo por mail.
      *
      * @param  \Illuminate\Http\Request  $request
      * @param  int|string  $buyer_id
@@ -275,7 +276,9 @@ class TiendaChatController extends Controller
         // Se decide antes de responder (ver el docblock de corresponde_mail()).
         $enviar_mail = TiendaChatHelper::corresponde_mail($message);
 
-        TiendaChatHelper::emitir($owner_id, $buyer, $message);
+        // Los dos avisos salen DESPUÉS de mandada la respuesta: con Pusher colgado, cada request
+        // esperaba el timeout antes de devolver el 201 de un mensaje ya guardado.
+        TiendaChatHelper::emitir_despues_de_responder($owner_id, $buyer, $message);
 
         NotificarRespuestaAlComprador::dispatchAfterResponse($message->id, $buyer->id, $owner_id, $enviar_mail);
 
@@ -287,9 +290,10 @@ class TiendaChatController extends Controller
     /**
      * `POST tienda-chats/{buyer_id}/leer`
      *
-     * Marca leídos los mensajes del comprador con UN solo `UPDATE` (nunca un loop de `save()`), y
-     * avisa por C1 con `message: null` y `unread_count: 0` para que las otras pestañas y los
-     * empleados bajen el badge.
+     * Marca leídos los mensajes del comprador con UN solo `UPDATE` (nunca un loop de `save()`) y,
+     * SOLO si ese `UPDATE` tocó alguna fila, avisa por C1 (después de la respuesta) con
+     * `message: null` y `unread_count: 0` para que las otras pestañas y los empleados bajen el
+     * badge. La respuesta HTTP es la misma en los dos casos.
      *
      * @param  int|string  $buyer_id
      * @return \Illuminate\Http\JsonResponse  200 `{ unread_count: 0 }` · 404
@@ -304,12 +308,16 @@ class TiendaChatController extends Controller
             return response()->json(['message' => BuyerHelper::MENSAJE_COMPRADOR_NO_ENCONTRADO], 404);
         }
 
-        Message::where('buyer_id', $buyer->id)
-                ->where('from_buyer', 1)
-                ->where('read', 0)
-                ->update(['read' => 1]);
+        $filas = Message::where('buyer_id', $buyer->id)
+                        ->where('from_buyer', 1)
+                        ->where('read', 0)
+                        ->update(['read' => 1]);
 
-        TiendaChatHelper::emitir($owner_id, $buyer, null, 0);
+        // Solo si cambió algo: abrir una conversación ya leída (la SPA marca leído cada vez que la
+        // abre) no le manda nada a nadie.
+        if ($filas > 0) {
+            TiendaChatHelper::emitir_despues_de_responder($owner_id, $buyer, null, 0);
+        }
 
         return response()->json(['unread_count' => 0], 200);
     }

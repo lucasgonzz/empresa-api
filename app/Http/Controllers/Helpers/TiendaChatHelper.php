@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Events\RespuestaDelComercio;
 use App\Events\TiendaChatActualizado;
 use App\Models\Message;
 use Carbon\Carbon;
@@ -9,9 +10,10 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Todo lo que el submódulo "Mensajes" de Tienda Online necesita armar a mano (misión
- * mensajes-tienda-online, 28/9/2026): el payload del evento en vivo (contrato C1), las formas
- * `Chat`, `Mensaje` y `Buyer` de la API HTTP (contrato C3), la emisión del evento sin que una
- * caída de Pusher toque nada, y la regla de "un mail cada 30 minutos" (decisión 2 de Lucas).
+ * mensajes-tienda-online, 28/9/2026): los payloads de los dos eventos en vivo (`TiendaChatActualizado`
+ * al ERP, contrato C1, y `RespuestaDelComercio` a la tienda, contrato C2'), las formas `Chat`,
+ * `Mensaje` y `Buyer` de la API HTTP (contrato C3), la emisión de los eventos sin que una caída de
+ * Pusher toque nada, y la regla de "un mail cada 30 minutos" (decisión 2 de Lucas).
  *
  * 🔴 Todo se arma campo por campo, con los tipos del contrato, y NUNCA con `$model->toArray()`:
  *
@@ -50,6 +52,33 @@ class TiendaChatHelper
     // -------------------------------------------------------------------------------------------
     //  El evento en vivo (C1)
     // -------------------------------------------------------------------------------------------
+
+    /**
+     * Agenda `emitir()` para DESPUÉS de mandada la respuesta (`app()->terminating()`), que es como
+     * lo llaman `TiendaChatController::enviar()` y `leer()`.
+     *
+     * 🔴 Por qué no se emite en el momento: la llamada a Pusher es HTTP sincrónica, y con Pusher
+     * colgado cada request esperaba el timeout del cliente (hasta 5 s) antes de responder, sobre un
+     * mensaje que ya estaba guardado. `terminating()` corre después de `fastcgi_finish_request()` /
+     * `litespeed_finish_request()`: el usuario ya tiene su 201. Es el mismo mecanismo que usan
+     * `dispatchAfterResponse()` e `InstantBroadcastChannel`.
+     *
+     * El payload también se arma adentro del callback: el `COUNT` de no leídos sale del camino de
+     * la respuesta. Y `emitir()` ya ataja todo: una excepción que se escapara de `terminating()` le
+     * pegaría el HTML del error al final del JSON que el usuario ya recibió.
+     *
+     * @param  int  $owner_id
+     * @param  \App\Models\Buyer  $buyer
+     * @param  \App\Models\Message|null  $message
+     * @param  int|null  $unread_count
+     * @return void
+     */
+    public static function emitir_despues_de_responder($owner_id, $buyer, $message = null, $unread_count = null)
+    {
+        app()->terminating(function () use ($owner_id, $buyer, $message, $unread_count) {
+            TiendaChatHelper::emitir($owner_id, $buyer, $message, $unread_count);
+        });
+    }
 
     /**
      * Emite `TiendaChatActualizado` al canal del dueño. Nunca tira: el mensaje ya está guardado
@@ -166,12 +195,13 @@ class TiendaChatHelper
     }
 
     /**
-     * `message` del evento, con el texto recortado a 500 caracteres.
+     * `message` del evento, con el texto recortado a 500 caracteres. Es la misma forma en los dos
+     * eventos en vivo: `TiendaChatActualizado` (C1) y `RespuestaDelComercio` (C2').
      *
      * @param  \App\Models\Message  $message
      * @return array
      */
-    protected static function mensaje_del_evento($message)
+    public static function mensaje_del_evento($message)
     {
         $text = (string) $message->text;
         $text_truncado = mb_strlen($text) > self::LARGO_MAXIMO_TEXTO_EVENTO;
@@ -193,6 +223,59 @@ class TiendaChatHelper
             'order_id'      => self::entero_o_null($message->order_id),
             'created_at'    => self::fecha($message->created_at),
         ];
+    }
+
+    // -------------------------------------------------------------------------------------------
+    //  La respuesta en vivo a la tienda (C2')
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Payload de `RespuestaDelComercio`: `{ message: {...} }`, con `message` exactamente igual al de
+     * `TiendaChatActualizado` (recorte a 500 y `text_truncado`).
+     *
+     * @param  \App\Models\Message  $message
+     * @return array
+     */
+    public static function payload_de_la_respuesta($message)
+    {
+        return [
+            'message' => self::mensaje_del_evento($message),
+        ];
+    }
+
+    /**
+     * Emite `RespuestaDelComercio` al canal público `tienda-respuestas.{owner_id}.{buyer_id}`, el
+     * que escucha la tienda del comprador. Nunca tira (mismo criterio y mismo log en try/catch que
+     * `emitir()`). Lo llama `NotificarRespuestaAlComprador`, que ya corre después de la respuesta.
+     *
+     * @param  int  $owner_id  Dueño del comercio (`buyers.user_id`).
+     * @param  \App\Models\Message  $message  La respuesta del comercio, releída de la base.
+     * @return bool  true si el evento salió; false si algo falló y quedó en el log.
+     */
+    public static function emitir_respuesta_a_la_tienda($owner_id, $message)
+    {
+        try {
+            event(new RespuestaDelComercio(
+                (int) $owner_id,
+                (int) $message->buyer_id,
+                self::payload_de_la_respuesta($message)
+            ));
+
+            return true;
+        } catch (\Throwable $e) {
+            try {
+                Log::warning('TiendaChatHelper: no se pudo emitir RespuestaDelComercio, el mensaje igual quedó guardado.', [
+                    'owner_id'   => $owner_id,
+                    'buyer_id'   => $message ? $message->buyer_id : null,
+                    'message_id' => $message ? $message->id : null,
+                    'error'      => $e->getMessage(),
+                ]);
+            } catch (\Throwable $e_log) {
+                // Si ni siquiera se puede loguear, lo único que importa es que muera acá adentro.
+            }
+
+            return false;
+        }
     }
 
     // -------------------------------------------------------------------------------------------

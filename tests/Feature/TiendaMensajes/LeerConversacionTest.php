@@ -4,6 +4,8 @@ namespace Tests\Feature\TiendaMensajes;
 
 use App\Events\TiendaChatActualizado;
 use App\Models\Message;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Event;
 use Tests\EmpresaTestCase;
 
@@ -12,7 +14,8 @@ use Tests\EmpresaTestCase;
  *
  * - UN solo `UPDATE` sobre `messages`, sin importar cuántos haya sin leer (nunca un loop de
  *   `save()`), y solo sobre los mensajes DEL COMPRADOR sin leer de esa conversación.
- * - Evento C1 con `message: null` y `unread_count: 0`.
+ * - Evento C1 con `message: null` y `unread_count: 0`, SOLO si el `UPDATE` tocó alguna fila, y
+ *   DESPUÉS de mandada la respuesta.
  * - 404 con un comprador ajeno, sin tocar sus mensajes.
  *
  * PHP 7.4.
@@ -137,6 +140,61 @@ class LeerConversacionTest extends EmpresaTestCase
         });
 
         $this->assertCount(1, $updates);
+    }
+
+    /**
+     * Abrir una conversación que no tiene nada sin leer no le avisa nada a nadie (la SPA marca leído
+     * cada vez que abre una). La respuesta HTTP es la misma.
+     *
+     * @test
+     */
+    public function si_no_hay_nada_para_marcar_responde_igual_y_no_emite()
+    {
+        $this->mensaje_del_comprador($this->comprador, ['read' => 1]);
+        // Un mensaje del comercio sin leer por el comprador no es "algo para marcar" del lado del comercio.
+        $this->mensaje_del_comercio($this->comprador, ['read' => 0]);
+
+        $respuesta = $this->postJson($this->ruta());
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(['unread_count' => 0], $respuesta->json());
+        $this->assertCount(0, $this->eventos_emitidos(), 'Se emitió C1 sin que el UPDATE tocara ninguna fila.');
+    }
+
+    /**
+     * @test
+     */
+    public function una_conversacion_sin_mensajes_tampoco_emite()
+    {
+        $this->postJson($this->ruta())->assertStatus(200)->assertExactJson(['unread_count' => 0]);
+
+        $this->assertCount(0, $this->eventos_emitidos());
+    }
+
+    /**
+     * Con filas marcadas, C1 sale DESPUÉS de mandada la respuesta (ver
+     * `EnviarMensajeTest::los_avisos_salen_despues_de_mandada_la_respuesta`).
+     *
+     * @test
+     */
+    public function con_filas_marcadas_emite_despues_de_mandada_la_respuesta()
+    {
+        $mensaje = $this->mensaje_del_comprador($this->comprador);
+
+        $kernel = $this->app->make(HttpKernel::class);
+
+        $request = Request::create('/'.$this->ruta(), 'POST', [], [], [], ['HTTP_ACCEPT' => 'application/json']);
+
+        $response = $kernel->handle($request);
+
+        $this->assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        $this->assertSame(1, (int) $mensaje->fresh()->read);
+        $this->assertCount(0, $this->eventos_emitidos(), 'C1 salió ANTES de mandada la respuesta.');
+
+        $kernel->terminate($request, $response);
+
+        $this->assertCount(1, $this->eventos_emitidos());
+        $this->assertNull($this->eventos_emitidos()[0]->broadcastWith()['message']);
     }
 
     /**

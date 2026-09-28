@@ -2,20 +2,20 @@
 
 namespace Tests\Feature\TiendaMensajes;
 
+use App\Events\RespuestaDelComercio;
 use App\Events\TiendaChatActualizado;
 use App\Models\Message;
-use App\Notifications\MessageSend;
-use Carbon\Carbon;
-use Illuminate\Broadcasting\BroadcastException;
-use Illuminate\Broadcasting\Broadcasters\Broadcaster;
-use Illuminate\Support\Facades\Broadcast;
+use App\Notifications\RespuestaDelComercioPorMail;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Notification;
 use Tests\EmpresaTestCase;
 
 /**
  * `POST tienda-chats/{buyer_id}/mensajes` — la respuesta manual del comercio (misión
- * mensajes-tienda-online, 28/9/2026, contratos C1, C2 y C3).
+ * mensajes-tienda-online, 28/9/2026, contratos C1 y C3). El aviso al comprador (contrato C2' y el
+ * mail) está en `RespuestaAlCompradorTest`.
  *
  * Lo que protege:
  * - 201 con la forma `Mensaje` exacta; el mensaje se guarda con `user_id` = dueño (aunque escriba
@@ -23,10 +23,8 @@ use Tests\EmpresaTestCase;
  * - El evento C1 al canal `private-tienda-mensajes.{dueño}`, con `broadcastAs` y los tipos del
  *   contrato. El texto del evento se recorta a 500 caracteres y el payload entra en los 10 KB de
  *   Pusher, también en el peor caso (500 emojis).
- * - `MessageSend` al comprador por `message.from_commerce.{buyer_id}`, con el mensaje releído de la
- *   base, y el mail según la regla de 30 minutos (sí la primera vez, no a los 10, sí a los 31).
+ * - 🔴 El evento C1 sale DESPUÉS de mandada la respuesta: con Pusher colgado, el 201 no espera.
  * - 422 con texto vacío, de puros espacios o de más de 5000; 404 con un comprador ajeno.
- * - 🔴 Pusher caído no rompe el 201: el mensaje queda guardado igual.
  *
  * Un solo POST por test (ver el docblock de `ConversacionesDePrueba`).
  *
@@ -67,32 +65,11 @@ class EnviarMensajeTest extends EmpresaTestCase
     }
 
     /**
-     * Las `MessageSend` que recibió el comprador, cada una con los canales que devolvió `via()`.
-     *
-     * @return array  `[['notification' => MessageSend, 'channels' => string[]], ...]`
-     */
-    protected function avisos_al_comprador()
-    {
-        $avisos = [];
-
-        if (!Notification::hasSent($this->comprador, MessageSend::class)) {
-            return $avisos;
-        }
-
-        Notification::assertSentTo($this->comprador, MessageSend::class, function ($notification, $channels) use (&$avisos) {
-            $avisos[] = ['notification' => $notification, 'channels' => $channels];
-            return true;
-        });
-
-        return $avisos;
-    }
-
-    /**
      * @test
      */
     public function guarda_el_mensaje_tal_cual_y_responde_201_con_la_forma_del_contrato()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $respuesta = $this->postJson($this->ruta(), ['text' => "  hola, ¿TIENEN talle 42?\nsaludos  "]);
@@ -138,7 +115,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function emite_el_evento_c1_al_canal_del_dueno_con_los_tipos_del_contrato()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         // Dos mensajes del comprador sin leer: el evento tiene que llevar unread_count = 2.
@@ -195,7 +172,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function el_texto_del_evento_se_recorta_a_500_caracteres_y_la_api_lo_guarda_entero()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         // 501 con acentos: uno de más, y el recorte tiene que ser por caracteres (mb_substr), no por bytes.
@@ -221,7 +198,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function un_texto_de_500_caracteres_justos_viaja_entero_en_el_evento()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $texto = str_repeat('á', 500);
@@ -291,7 +268,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     protected function bytes_del_evento_para($texto, $texto_esperado_en_el_evento = null)
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $this->postJson($this->ruta(), ['text' => $texto])->assertStatus(201);
@@ -313,7 +290,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function un_empleado_responde_a_nombre_del_dueno()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $this->actuar_como($this->crear_empleado($this->dueno));
@@ -326,100 +303,42 @@ class EnviarMensajeTest extends EmpresaTestCase
     }
 
     /**
-     * El aviso al comprador (C2): `MessageSend` por el canal que la tienda ya escucha, con el
-     * mensaje releído de la base, y mail la primera vez.
+     * 🔴 Los avisos salen DESPUÉS de mandada la respuesta. Antes, C1 se emitía en el momento, y con
+     * Pusher colgado cada envío esperaba el timeout (hasta 5 s) antes de devolver el 201 de un
+     * mensaje ya guardado.
+     *
+     * Se maneja el kernel a mano para separar las dos fases: `handle()` arma la respuesta que recibe
+     * el usuario y `terminate()` es lo que corre después de mandada (`fastcgi_finish_request()`).
      *
      * @test
      */
-    public function avisa_al_comprador_por_su_canal_y_por_mail_la_primera_vez()
+    public function los_avisos_salen_despues_de_mandada_la_respuesta()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
-        // Un mensaje del comprador no cuenta para la regla de 30 minutos: lo que cuenta es el comercio.
-        $this->mensaje_del_comprador($this->comprador, ['created_at' => Carbon::now()->subMinutes(2)]);
+        $kernel = $this->app->make(HttpKernel::class);
 
-        $mensaje = $this->postJson($this->ruta(), ['text' => 'Hola Ana, te respondo'])->assertStatus(201)->json('message');
+        $request = Request::create('/'.$this->ruta(), 'POST', [], [], [], [
+            'HTTP_ACCEPT'  => 'application/json',
+            'CONTENT_TYPE' => 'application/json',
+        ], json_encode(['text' => 'Después de responder']));
 
-        $avisos = $this->avisos_al_comprador();
+        $response = $kernel->handle($request);
 
-        $this->assertCount(1, $avisos);
-        $this->assertSame(['broadcast', 'mail'], $avisos[0]['channels']);
+        $this->assertSame(201, $response->getStatusCode(), (string) $response->getContent());
+        $this->assertNotNull(Message::where('buyer_id', $this->comprador->id)->where('text', 'Después de responder')->first());
 
-        $notificacion = $avisos[0]['notification'];
+        // La respuesta ya está armada y todavía no salió nada.
+        $this->assertCount(0, Event::dispatched(TiendaChatActualizado::class), 'C1 salió ANTES de mandada la respuesta.');
+        $this->assertCount(0, Event::dispatched(RespuestaDelComercio::class), 'La respuesta a la tienda salió ANTES de mandada la respuesta.');
+        Notification::assertNothingSent();
 
-        $this->assertSame('message.from_commerce.'.$this->comprador->id, $notificacion->broadcastOn());
+        $kernel->terminate($request, $response);
 
-        // El mensaje del broadcast se relee de la base: trae `from_buyer`, `read` y `type`, que el
-        // `create()` no le pasa al modelo en memoria cuando MySQL pone el default.
-        $del_broadcast = $notificacion->toBroadcast($this->comprador)->data['message'];
-
-        $this->assertSame($mensaje['id'], (int) $del_broadcast->id);
-        foreach (['from_buyer', 'read', 'type'] as $atributo) {
-            $this->assertArrayHasKey($atributo, $del_broadcast->getAttributes(), 'El mensaje del broadcast no se releyó de la base: le falta "'.$atributo.'".');
-        }
-
-        // El mail: firmado por el comercio correcto, con el asunto del contrato, y se puede armar.
-        $mail = $notificacion->toMail($this->comprador);
-
-        $this->assertSame('Comercio enviar respondió tu mensaje', $mail->subject);
-        $this->assertStringContainsString('Hola Ana, te respondo', (string) $mail->render());
-    }
-
-    /**
-     * @test
-     */
-    public function no_manda_mail_si_el_comercio_le_escribio_hace_10_minutos()
-    {
-        Event::fake([TiendaChatActualizado::class]);
-        Notification::fake();
-
-        $this->mensaje_del_comercio($this->comprador, ['created_at' => Carbon::now()->subMinutes(10)]);
-
-        $this->postJson($this->ruta(), ['text' => 'Otra cosa más'])->assertStatus(201);
-
-        $avisos = $this->avisos_al_comprador();
-
-        $this->assertCount(1, $avisos);
-        $this->assertSame(['broadcast'], $avisos[0]['channels'], 'A los 10 minutos del mensaje anterior del comercio no va mail, solo el broadcast.');
-    }
-
-    /**
-     * Cualquier mensaje del comercio cuenta, también uno automático (un pedido confirmado).
-     *
-     * @test
-     */
-    public function un_mensaje_automatico_reciente_del_comercio_tambien_frena_el_mail()
-    {
-        Event::fake([TiendaChatActualizado::class]);
-        Notification::fake();
-
-        $this->mensaje_del_comercio($this->comprador, [
-            'type'       => 'order_confirmed',
-            'created_at' => Carbon::now()->subMinutes(5),
-        ]);
-
-        $this->postJson($this->ruta(), ['text' => 'Ya lo preparamos'])->assertStatus(201);
-
-        $this->assertSame(['broadcast'], $this->avisos_al_comprador()[0]['channels']);
-    }
-
-    /**
-     * @test
-     */
-    public function vuelve_a_mandar_mail_si_pasaron_31_minutos()
-    {
-        Event::fake([TiendaChatActualizado::class]);
-        Notification::fake();
-
-        $this->mensaje_del_comercio($this->comprador, ['created_at' => Carbon::now()->subMinutes(31)]);
-        // Uno de OTRO comprador hace 1 minuto no cuenta: la regla es por conversación.
-        $otro = $this->crear_comprador_de($this->dueno);
-        $this->mensaje_del_comercio($otro, ['created_at' => Carbon::now()->subMinute()]);
-
-        $this->postJson($this->ruta(), ['text' => 'Retomo la charla'])->assertStatus(201);
-
-        $this->assertSame(['broadcast', 'mail'], $this->avisos_al_comprador()[0]['channels']);
+        $this->assertCount(1, Event::dispatched(TiendaChatActualizado::class));
+        $this->assertCount(1, Event::dispatched(RespuestaDelComercio::class));
+        Notification::assertSentTo($this->comprador, RespuestaDelComercioPorMail::class);
     }
 
     /**
@@ -427,7 +346,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function texto_vacio_de_puros_espacios_o_largo_de_mas_da_422_y_no_guarda_nada()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $casos = [
@@ -445,6 +364,7 @@ class EnviarMensajeTest extends EmpresaTestCase
 
         $this->assertSame(0, Message::where('buyer_id', $this->comprador->id)->count());
         $this->assertCount(0, $this->eventos_emitidos());
+        Event::assertNotDispatched(RespuestaDelComercio::class);
         Notification::assertNothingSent();
     }
 
@@ -453,7 +373,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function un_articulo_de_otro_comercio_da_422()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $ajeno = \App\Models\Article::create([
@@ -473,7 +393,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function con_un_articulo_propio_lo_devuelve_liviano()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $articulo = \App\Models\Article::create([
@@ -501,7 +421,7 @@ class EnviarMensajeTest extends EmpresaTestCase
      */
     public function un_comprador_ajeno_da_404_y_no_guarda_nada()
     {
-        Event::fake([TiendaChatActualizado::class]);
+        Event::fake([TiendaChatActualizado::class, RespuestaDelComercio::class]);
         Notification::fake();
 
         $ajeno = $this->crear_comprador_de($this->crear_dueno('enviar ajeno'));
@@ -512,80 +432,7 @@ class EnviarMensajeTest extends EmpresaTestCase
 
         $this->assertSame(0, Message::where('buyer_id', $ajeno->id)->count());
         $this->assertCount(0, $this->eventos_emitidos());
+        Event::assertNotDispatched(RespuestaDelComercio::class);
         Notification::assertNothingSent();
-    }
-
-    /**
-     * 🔴 Pusher caído no rompe el envío.
-     *
-     * Se bindea un broadcaster que tira como tiraría Pusher con un 502, y NO se falsea nada: el
-     * evento C1 pasa por el camino real (`event()` → `BroadcastManager::queue()` → `BroadcastEvent`
-     * → `broadcast()`), y el aviso al comprador también (`InstantBroadcastChannel` y el mail con
-     * el mailer `array`, después de la respuesta).
-     *
-     * @test
-     */
-    public function pusher_caido_no_rompe_el_201_y_el_mensaje_queda_guardado()
-    {
-        $roto = new class extends Broadcaster {
-            /** @var array Los eventos que se intentaron emitir, con sus canales. */
-            public $intentos = [];
-
-            public function auth($request)
-            {
-            }
-
-            public function validAuthenticationResponse($request, $result)
-            {
-            }
-
-            public function broadcast(array $channels, $event, array $payload = [])
-            {
-                $this->intentos[] = ['evento' => $event, 'canales' => $this->formatChannels($channels)];
-
-                throw new BroadcastException('Pusher caído (simulado): 502 Bad Gateway');
-            }
-        };
-
-        Broadcast::extend('roto', function () use ($roto) {
-            return $roto;
-        });
-
-        config([
-            'broadcasting.connections.roto' => ['driver' => 'roto'],
-            'broadcasting.default'          => 'roto',
-        ]);
-
-        $respuesta = $this->postJson($this->ruta(), ['text' => 'Esto sale igual']);
-
-        $respuesta->assertStatus(201);
-
-        $id = $respuesta->json('message.id');
-
-        $this->assertNotNull(Message::find($id), 'El mensaje no quedó guardado.');
-        $this->assertSame('Esto sale igual', Message::find($id)->text);
-
-        // Que el broadcaster roto se haya usado de verdad (si no, el test no prueba nada).
-        $intentos_c1 = array_filter($roto->intentos, function ($intento) {
-            return $intento['evento'] === 'TiendaChatActualizado';
-        });
-
-        $this->assertCount(1, $intentos_c1, 'El evento C1 no pasó por el broadcaster roto.');
-        $this->assertSame(['private-tienda-mensajes.'.$this->dueno->id], array_values($intentos_c1)[0]['canales']);
-
-        // El aviso al comprador corrió después de la respuesta: su broadcast también chocó con el
-        // Pusher caído, y el mail (que no depende de Pusher) salió igual, de punta a punta.
-        $intentos_c2 = array_filter($roto->intentos, function ($intento) {
-            return $intento['canales'] === ['message.from_commerce.'.$this->comprador->id];
-        });
-
-        $this->assertCount(1, $intentos_c2, 'El aviso al comprador no llegó a intentar su broadcast.');
-
-        $mails = app('mailer')->getSwiftMailer()->getTransport()->messages();
-
-        $this->assertCount(1, $mails, 'El mail al comprador no salió.');
-        $this->assertSame('Comercio enviar respondió tu mensaje', $mails->first()->getSubject());
-        $this->assertSame([$this->comprador->email], array_keys($mails->first()->getTo()));
-        $this->assertStringContainsString('Esto sale igual', $mails->first()->getBody());
     }
 }
