@@ -74,6 +74,69 @@ class ExportHelper {
 	}
 
 	/**
+	 * Por clase de modelo, los atributos a los que Eloquent les aplica algo al leerlos (casts,
+	 * fechas, accessors). Esos se siguen leyendo por el modelo; el resto, crudos.
+	 *
+	 * @var array
+	 */
+	protected static $atributos_con_transformacion = [];
+
+	/**
+	 * Lee un atributo de una fila del Excel sin pasar por la maquinaria de Eloquent cuando no hace
+	 * falta.
+	 *
+	 * `$article->bar_code` recorre casts, fechas, mutators y relaciones en cada lectura: ~9 µs, y
+	 * el Excel lee unas cuarenta por fila. Con 750k artículos eran minutos solo de eso. Si el
+	 * atributo está en el array del modelo y Eloquent no le aplica ninguna transformación, el valor
+	 * crudo es exactamente lo que devolvía `$article->x`; si no (no está, tiene cast, es fecha, es
+	 * una relación), se lee como siempre.
+	 *
+	 * @param \Illuminate\Database\Eloquent\Model $article
+	 * @param string $key
+	 * @return mixed
+	 */
+	static function valor($article, $key) {
+		$clase = get_class($article);
+		if (!isset(self::$atributos_con_transformacion[$clase])) {
+			self::$atributos_con_transformacion[$clase] = array_flip(array_merge(
+				array_keys($article->getCasts()),
+				$article->getDates(),
+				$article->getMutatedAttributes()
+			));
+		}
+
+		$attributes = $article->getAttributes();
+		if (array_key_exists($key, $attributes) && !isset(self::$atributos_con_transformacion[$clase][$key])) {
+			return $attributes[$key];
+		}
+
+		return $article->{$key};
+	}
+
+	/**
+	 * Lee una fecha para el Excel. El Excel la escribe como texto 'Y-m-d H:i:s' (así la formateaba
+	 * PhpSpreadsheet a partir del Carbon), que es exactamente como viene de MySQL: armar un Carbon
+	 * para volver al mismo texto costaba ~130 µs por fecha. Si el valor crudo no tiene esa forma
+	 * (null, fracciones de segundo, fecha cero), se lee por el modelo como antes.
+	 *
+	 * @param \Illuminate\Database\Eloquent\Model $article
+	 * @param string $key
+	 * @return mixed
+	 */
+	static function fecha($article, $key) {
+		$attributes = $article->getAttributes();
+		if (
+			isset($attributes[$key])
+			&& is_string($attributes[$key])
+			&& preg_match('/^[1-9]\d{3}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $attributes[$key])
+		) {
+			return $attributes[$key];
+		}
+
+		return $article->{$key};
+	}
+
+	/**
 	 * hasExtencion() del dueño de la exportación, memorizado durante la exportación.
 	 *
 	 * @param string $slug
@@ -226,16 +289,16 @@ class ExportHelper {
 		
 		if (self::tiene_extencion('autopartes')) {
 
-			$map[] = $article->espesor;
-			$map[] = $article->modelo;
-			$map[] = $article->pastilla;
-			$map[] = $article->diametro;
-			$map[] = $article->litros;
-			// $map[] = $article->descripcion;
-			$map[] = $article->contenido;
-			$map[] = $article->cm3;
-			$map[] = $article->calipers;
-			$map[] = $article->juego;
+			$map[] = Self::valor($article, 'espesor');
+			$map[] = Self::valor($article, 'modelo');
+			$map[] = Self::valor($article, 'pastilla');
+			$map[] = Self::valor($article, 'diametro');
+			$map[] = Self::valor($article, 'litros');
+			// $map[] = Self::valor($article, 'descripcion');
+			$map[] = Self::valor($article, 'contenido');
+			$map[] = Self::valor($article, 'cm3');
+			$map[] = Self::valor($article, 'calipers');
+			$map[] = Self::valor($article, 'juego');
 
 		}
 
@@ -251,8 +314,8 @@ class ExportHelper {
 				$map[] = '';
 			}
 
-			$map[] = $article->contenido;
-			$map[] = $article->unidades_por_bulto;
+			$map[] = Self::valor($article, 'contenido');
+			$map[] = Self::valor($article, 'unidades_por_bulto');
 		}
 		return $map;
 	}
@@ -281,9 +344,9 @@ class ExportHelper {
 		if (count($addresses) >= 1) {
 
 			foreach ($addresses as $address) {
-				$map[] = $article->{$address->street};
-				$map[] = $article->{'stock_min_'.$address->street};
-				$map[] = $article->{'stock_max_'.$address->street};
+				$map[] = Self::valor($article, $address->street);
+				$map[] = Self::valor($article, 'stock_min_'.$address->street);
+				$map[] = Self::valor($article, 'stock_max_'.$address->street);
 			}
 		}
 		return $map;
@@ -372,8 +435,8 @@ class ExportHelper {
 	
 	static function mapDates($map, $article) {
 
-		$map[] = $article->created_at;
-		$map[] = $article->updated_at;
+		$map[] = Self::fecha($article, 'created_at');
+		$map[] = Self::fecha($article, 'updated_at');
 			
 		return $map;
 	}
@@ -382,10 +445,10 @@ class ExportHelper {
 
 		if (self::tiene_extencion('articulos_precios_en_blanco')) {
 
-			$map[] = $article->discounts_blanco_formated;
-			$map[] = $article->surchages_blanco_formated;
-			$map[] = $article->percentage_gain_blanco;
-			$map[] = $article->final_price_blanco;
+			$map[] = Self::valor($article, 'discounts_blanco_formated');
+			$map[] = Self::valor($article, 'surchages_blanco_formated');
+			$map[] = Self::valor($article, 'percentage_gain_blanco');
+			$map[] = Self::valor($article, 'final_price_blanco');
 		}
 			
 		return $map;
@@ -479,6 +542,18 @@ class ExportHelper {
 						$article->{$address->street} = $article_address->pivot->amount;
 						$article->{'stock_min_'.$address->street} = $article_address->pivot->stock_min;
 						$article->{'stock_max_'.$address->street} = $article_address->pivot->stock_max;
+					} else {
+						/*
+						 * Sin stock en ese depósito, mapAddresses() leía un atributo inexistente
+						 * (null por el camino lento de Eloquent). Se deja el null puesto para que
+						 * valor() lo lea directo. Si el nombre ya es un atributo o una relación del
+						 * modelo, no se toca: seguiría leyéndose eso, como antes.
+						 */
+						foreach (array($address->street, 'stock_min_'.$address->street, 'stock_max_'.$address->street) as $key) {
+							if (!array_key_exists($key, $article->getAttributes()) && !method_exists($article, $key)) {
+								$article->{$key} = null;
+							}
+						}
 					}
 				}
 			}
@@ -808,7 +883,7 @@ class ExportHelper {
 		}
 
 		foreach ($price_types as $price_type) {
-			$values[] = $article->{$price_type->name};
+			$values[] = Self::valor($article, $price_type->name);
 		}
 
 		return $values;

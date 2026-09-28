@@ -24,6 +24,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
     protected $columnas_cache = null;
 
+    protected $relaciones_cache = null;
+
     function __construct($models, $user_id, $archivo_base = false) {
         $this->models = $models;
         $this->user_id = $user_id;
@@ -148,34 +150,34 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
 
         // Bloque base sin columnas de stock: el stock va después de autopartes/distribuidora o se reemplaza por sucursales.
         $map = [
-            $article->id,
-            $article->bar_code,
-            $article->sku,
-            $article->provider_code,
-            $article->name,
+            ExportHelper::valor($article, 'id'),
+            ExportHelper::valor($article, 'bar_code'),
+            ExportHelper::valor($article, 'sku'),
+            ExportHelper::valor($article, 'provider_code'),
+            ExportHelper::valor($article, 'name'),
             !is_null($article->provider) ? $article->provider->name : '',
 
             $this->getCostInDollars($article),
-            $article->cost,
+            ExportHelper::valor($article, 'cost'),
 
-            $article->discounts_percentage_formated,
-            $article->surchages_percentage_formated,
-            $article->discounts_amount_formated,
-            $article->surchages_amount_formated,
+            ExportHelper::valor($article, 'discounts_percentage_formated'),
+            ExportHelper::valor($article, 'surchages_percentage_formated'),
+            ExportHelper::valor($article, 'discounts_amount_formated'),
+            ExportHelper::valor($article, 'surchages_amount_formated'),
 
             !is_null($article->iva) ? $article->iva->percentage : '',
-            $article->aplicar_iva ? 'Si' : 'No',
-            $article->percentage_gain,
-            $article->price,
-            $article->final_price,
-            $article->previus_final_price,
+            ExportHelper::valor($article, 'aplicar_iva') ? 'Si' : 'No',
+            ExportHelper::valor($article, 'percentage_gain'),
+            ExportHelper::valor($article, 'price'),
+            ExportHelper::valor($article, 'final_price'),
+            ExportHelper::valor($article, 'previus_final_price'),
 
             !is_null($article->category) ? $article->category->name : '',
             !is_null($article->sub_category) ? $article->sub_category->name : '',
             !is_null($article->brand) ? $article->brand->name : '',
-            $article->descripcion,
+            ExportHelper::valor($article, 'descripcion'),
             $this->getUnidadMedida($article),
-            $article->unidades_individuales,
+            ExportHelper::valor($article, 'unidades_individuales'),
         ];
 
         $map = ExportHelper::map_autopartes($map, $article);
@@ -186,7 +188,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         $addresses = ExportHelper::getAddresses();
         if (count($addresses) >= 1) {
 
-            if ($row->is_variant && $row->variant) {
+            if (ExportHelper::valor($row, 'is_variant') && ExportHelper::valor($row, 'variant')) {
 
                 $map = ExportHelper::map_variant_stock_addresses($map, $row);
             } else {
@@ -196,11 +198,11 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
         } else {
 
             // Sin sucursales: conservar stock del artículo o stock de la variante en la misma posición que headings.
-            $map[] = $row->is_variant && $row->variant ? $row->variant->stock : $article->stock;
-            $map[] = $article->stock_min;
+            $map[] = ExportHelper::valor($row, 'is_variant') && ExportHelper::valor($row, 'variant') ? $row->variant->stock : ExportHelper::valor($article, 'stock');
+            $map[] = ExportHelper::valor($article, 'stock_min');
         }
 
-        if ($row->is_variant && $row->variant) {
+        if (ExportHelper::valor($row, 'is_variant') && ExportHelper::valor($row, 'variant')) {
 
             $map = ExportHelper::map_property_types($map, $row);
         } else {
@@ -299,6 +301,91 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     }
 
     /**
+     * Relaciones de relaciones() que el Excel de ESTE comercio no va a leer, según sus
+     * extensiones, listas de precio y depósitos. Cada relación cuesta una consulta y su
+     * hidratación por lote aunque venga vacía; en Servian eran cinco de dieciséis.
+     *
+     * @return array Nombre de relación => true si es de un modelo (belongsTo), false si es colección.
+     */
+    public function relaciones_omitidas()
+    {
+        $omitidas = [];
+
+        // Solo mapPreciosBlanco() usa las columnas en blanco, y solo con la extensión.
+        if (!ExportHelper::tiene_extencion('articulos_precios_en_blanco')) {
+            $omitidas['article_discounts_blanco'] = false;
+            $omitidas['article_surchages_blanco'] = false;
+        }
+
+        // Solo map_propiedades_de_distribuidora() lee el tipo de envase, y solo con la extensión.
+        if (!ExportHelper::tiene_extencion('propiedades_de_distribuidora')) {
+            $omitidas['tipo_envase'] = true;
+        }
+
+        if (count(ExportHelper::getAddresses()) < 1) {
+            $omitidas['addresses'] = false;
+        }
+
+        /*
+         * Las listas de precio se leen de uno de tres lugares (get_price_types_values_in_order):
+         * price_type_monedas con listas_de_precio + ventas_en_dolares; el pivot price_types con
+         * listas_de_precio sin dólares o con lista_de_precios_por_categoria; o un atributo con el
+         * nombre de la lista (el "caso Colman"), que no necesita ninguno de los dos.
+         */
+        $hay_listas = count(ExportHelper::getPriceTypes()) >= 1;
+        $usa_listas = ExportHelper::usa_listas_de_precio();
+        $en_dolares = ExportHelper::tiene_extencion('ventas_en_dolares');
+
+        if (!($hay_listas && $usa_listas && $en_dolares)) {
+            $omitidas['price_type_monedas'] = false;
+        }
+
+        $lee_pivot = $usa_listas
+            ? !$en_dolares
+            : ExportHelper::tiene_extencion('lista_de_precios_por_categoria');
+
+        if (!($hay_listas && $lee_pivot)) {
+            $omitidas['price_types'] = false;
+        }
+
+        return $omitidas;
+    }
+
+    /**
+     * relaciones() menos las omitidas para este comercio.
+     *
+     * @return array
+     */
+    public function relaciones_a_cargar()
+    {
+        $omitidas = $this->relaciones_omitidas();
+
+        return array_values(array_filter(self::relaciones(), function ($relacion) use ($omitidas) {
+            return !array_key_exists($relacion, $omitidas);
+        }));
+    }
+
+    /**
+     * Deja vacías las relaciones omitidas, para que un helper que igual las toque (setPriceTypes()
+     * ordena price_types siempre que haya listas) no dispare una consulta por artículo.
+     *
+     * @param \Illuminate\Support\Collection $articles
+     * @return void
+     */
+    protected function completar_relaciones_omitidas($articles)
+    {
+        $omitidas = $this->relaciones_omitidas();
+
+        foreach ($articles as $article) {
+            foreach ($omitidas as $relacion => $es_modelo) {
+                if (!$article->relationLoaded($relacion)) {
+                    $article->setRelation($relacion, $es_modelo ? null : new EloquentCollection());
+                }
+            }
+        }
+    }
+
+    /**
      * Columnas de `articles` que lee el Excel (map() y ExportHelper). `articles` tiene más de cien
      * columnas y el Excel usa menos de cuarenta: hidratar solo éstas es la mitad del trabajo por
      * artículo, y deja afuera `embedding` (hasta 29 KB por fila).
@@ -359,9 +446,13 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
             $this->columnas_cache = $this->columnas();
         }
 
+        if (is_null($this->relaciones_cache)) {
+            $this->relaciones_cache = $this->relaciones_a_cargar();
+        }
+
         $query = Article::where('articles.user_id', $this->user_id)
                         ->select($this->columnas_cache)
-                        ->with(self::relaciones());
+                        ->with($this->relaciones_cache);
 
         if ($solo_activos) {
             $query->where('articles.status', 'active');
@@ -379,6 +470,8 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
      */
     public function preparar_filas($articles)
     {
+        $this->completar_relaciones_omitidas($articles);
+
         // Aplico descuentos y recargos, en negro y en blanco
         $articles = ExportHelper::set_descuentos_y_recargos($articles);
         $articles = ExportHelper::setAddresses($articles);
@@ -438,7 +531,7 @@ class ArticleExport implements FromCollection, WithHeadings, WithMapping
     }
 
     function getCostInDollars($article) {
-        if ($article->cost_in_dollars) {
+        if (ExportHelper::valor($article, 'cost_in_dollars')) {
             return 'USD';
         }
         return 'ARS';
