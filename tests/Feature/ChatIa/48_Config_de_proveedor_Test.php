@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -112,6 +113,8 @@ class Config_de_proveedor_Test extends TestCase
      */
     public function deepseek_con_equilibrado_es_422_sin_guardar_nada()
     {
+        /* Arranca en 'anthropic' EXPLÍCITO: el test prueba "nada se tocó", no cuál es el default. */
+        $this->comercio->agente_proveedor = 'anthropic';
         $this->comercio->agente_pensamiento = 'agil';
         $this->comercio->save();
 
@@ -135,6 +138,10 @@ class Config_de_proveedor_Test extends TestCase
      */
     public function deepseek_sin_clave_en_la_instalacion_es_422_con_mensaje()
     {
+        /* Arranca en 'anthropic' EXPLÍCITO: el test prueba "la columna no se toca", no el default. */
+        $this->comercio->agente_proveedor = 'anthropic';
+        $this->comercio->save();
+
         config(['services.deepseek.api_key' => null]);
 
         $r = $this->put_config(['confianza' => 'resuelto', 'pensamiento' => 'agil', 'proveedor' => 'deepseek']);
@@ -154,6 +161,10 @@ class Config_de_proveedor_Test extends TestCase
      */
     public function un_proveedor_fuera_del_enum_es_422()
     {
+        /* Arranca en 'anthropic' EXPLÍCITO: el test prueba "la columna no se toca", no el default. */
+        $this->comercio->agente_proveedor = 'anthropic';
+        $this->comercio->save();
+
         $this->put_config(['confianza' => 'resuelto', 'pensamiento' => 'agil', 'proveedor' => 'openai'])
              ->assertStatus(422);
 
@@ -208,6 +219,7 @@ class Config_de_proveedor_Test extends TestCase
      */
     public function el_get_trae_los_proveedores_disponibles_y_los_pensamientos_por_proveedor()
     {
+        /* Sin tocar la columna: lo que trae el GET es el DEFAULT del sistema. */
         $r = $this->actingAs($this->comercio, 'sanctum')->getJson('api/user/asistente-config');
 
         $r->assertStatus(200)
@@ -216,7 +228,7 @@ class Config_de_proveedor_Test extends TestCase
               'modelo' => ['proveedor', 'modelo', 'pensamiento'],
           ])
           ->assertJson([
-              'proveedor'                  => 'anthropic',
+              'proveedor'                  => ProveedorIaHelper::PROVEEDOR_POR_DEFECTO,
               'proveedores_disponibles'    => ['anthropic', 'deepseek'],
               'pensamientos_por_proveedor' => [
                   'anthropic' => ['agil', 'equilibrado', 'profundo'],

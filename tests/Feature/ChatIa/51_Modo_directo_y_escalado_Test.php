@@ -536,21 +536,23 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
     }
 
     /**
-     * El default NO cambió: una cuenta que nunca tocó la configuración sigue en "resuelto", y una
-     * columna vacía no auto-ejecuta nada (que es lo que hacía el `!== 'resuelto'` de antes).
+     * Desde el 28/9/2026 (misión agente-ia-default-deepseek-directo) el default pasó a "directo" —
+     * pero una columna vacía SIGUE sin auto-ejecutar nada: `guardada()` no cae al default, así que
+     * un valor ilegible nunca puede terminar auto-ejecutando una carga (mismo invariante de antes,
+     * más importante todavía ahora que el default es el modo más suelto).
      *
      * @test
      */
-    public function el_default_sigue_siendo_resuelto_y_una_columna_vacia_no_ejecuta_nada()
+    public function el_default_es_directo_y_una_columna_vacia_no_ejecuta_nada()
     {
-        $this->assertSame('resuelto', ConfianzaDelAgenteIaHelper::POR_DEFECTO);
+        $this->assertSame('directo', ConfianzaDelAgenteIaHelper::POR_DEFECTO);
         $this->assertSame(['cauteloso', 'resuelto', 'directo'], ConfianzaDelAgenteIaHelper::MODOS);
 
         $this->dueno->agente_confianza = '';
         $this->dueno->save();
 
         $this->assertSame('', ConfianzaDelAgenteIaHelper::guardada($this->dueno->fresh()));
-        $this->assertSame('resuelto', ConfianzaDelAgenteIaHelper::con_default($this->dueno->fresh()));
+        $this->assertSame('directo', ConfianzaDelAgenteIaHelper::con_default($this->dueno->fresh()));
         $this->assertSame('', ConfianzaDelAgenteIaHelper::guardada(null));
         $this->assertFalse(ConfianzaDelAgenteIaHelper::es_directo($this->dueno->fresh()));
 
