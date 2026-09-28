@@ -411,7 +411,9 @@ class ImageAssignmentRunHelper
         $a_buscar  = min($tope, $conteos['candidatos']);
         $busquedas = (int) round($a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO);
 
-        $configurado = ImageSearchProviderFactory::serper_configurado();
+        // Con el dueño (misión serper-en-user-setup, 28/9/2026): alcanza con la clave del comercio,
+        // aunque el .env del servidor no tenga SERPER_API_KEY.
+        $configurado = ImageSearchProviderFactory::serper_configurado($owner);
         $ia          = self::ia_disponible();
 
         $activa = self::corrida_de_catalogo_activa((int) $owner->id);
@@ -453,10 +455,12 @@ class ImageAssignmentRunHelper
      */
     public static function crear_del_catalogo(User $owner, $auth_user_id = null)
     {
-        if (!ImageSearchProviderFactory::serper_configurado()) {
+        // La clave del comercio o la del servidor (misión serper-en-user-setup): el mensaje nombra las
+        // dos. Lo ve solo el acceso maestro, que es quien sabe dónde se carga cada una.
+        if (!ImageSearchProviderFactory::serper_configurado($owner)) {
             return [
                 'status'  => 422,
-                'message' => 'Para buscar imágenes de todo el catálogo hace falta la clave de Serper (SERPER_API_KEY) en el servidor de este cliente.',
+                'message' => 'Para buscar imágenes de todo el catálogo hace falta la clave de Serper: SERPER_API_KEY en el servidor de este cliente, o la del comercio (la manda el admin al instalar el sistema).',
                 'run'     => null,
             ];
         }

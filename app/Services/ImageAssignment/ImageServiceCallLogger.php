@@ -21,7 +21,9 @@ use Illuminate\Support\Facades\Log;
  *
  * 🔴 NUNCA GUARDA CLAVES. El `error` pasa por sin_claves() antes de grabarse: un timeout de Guzzle
  * trae la URL entera del pedido (la de Custom Search lleva `?key=...&cx=...`), y este registro lo
- * lee el admin. Los proveedores ya tapan su propia clave; esto es la segunda red.
+ * lee el admin. Los proveedores ya tapan su propia clave; esto es la segunda red. Desde la misión
+ * serper-en-user-setup (28/9/2026) la clave de Serper puede ser la del COMERCIO
+ * (users.serper_api_key), que config no conoce: registrar() la tacha también (claves_del_dueno()).
  */
 class ImageServiceCallLogger
 {
@@ -110,9 +112,10 @@ class ImageServiceCallLogger
                 'cobrada'     => array_key_exists('cobrada', $datos) ? (bool) $datos['cobrada'] : $ok,
                 'http_status' => self::estado_http($datos),
                 // Primero se tapan las claves y DESPUÉS se recorta: si el corte cayera en el medio de
-                // una clave, quedaría un pedazo de ella que ya nadie reconoce.
+                // una clave, quedaría un pedazo de ella que ya nadie reconoce. Las del servidor y la
+                // de Serper del dueño (se busca solo cuando hay un error que limpiar).
                 'error'       => isset($datos['error']) && !is_null($datos['error']) && trim((string) $datos['error']) !== ''
-                    ? mb_substr(self::utf8_valido(self::sin_claves((string) $datos['error'])), 0, 500)
+                    ? mb_substr(self::utf8_valido(self::sin_claves((string) $datos['error'], self::claves_del_dueno($user_id))), 0, 500)
                     : null,
 
                 'resultados' => self::entero_acotado($datos, 'resultados', 65535),
@@ -263,13 +266,16 @@ class ImageServiceCallLogger
 
     /**
      * El texto sin credenciales: parámetros de URL con claves (`key=`, `cx=`, `api_key=`, `token=`),
-     * claves con forma conocida sueltas (Anthropic `sk-ant-...`, Google `AIza...`) y las claves de
-     * config tal cual.
+     * claves con forma conocida sueltas (Anthropic `sk-ant-...`, Google `AIza...`), las claves de
+     * config tal cual y las que pase quien llama.
      *
      * @param  string|null $texto
+     * @param  array       $claves_extra  Claves que config no conoce y que también se tachan tal cual:
+     *                                    la de Serper del dueño (claves_del_dueno()) o la que tenga
+     *                                    el proveedor que armó el mensaje. Misión serper-en-user-setup.
      * @return string|null
      */
-    public static function sin_claves($texto)
+    public static function sin_claves($texto, array $claves_extra = [])
     {
         if (is_null($texto)) {
             return null;
@@ -281,14 +287,19 @@ class ImageServiceCallLogger
         $limpio = (string) preg_replace('/sk-ant-[A-Za-z0-9_\-]+/', 'sk-ant-***', $limpio);
         $limpio = (string) preg_replace('/AIza[0-9A-Za-z_\-]{10,}/', 'AIza***', $limpio);
 
-        $claves = [
+        $claves = array_merge([
             config('services.serper.api_key'),
             config('services.anthropic.api_key'),
             config('services.google_search.api_key'),
             config('services.openai.api_key'),
-        ];
+        ], $claves_extra);
 
         foreach ($claves as $clave) {
+            // Una clave que no es texto no puede estar en el mensaje.
+            if (!is_null($clave) && !is_scalar($clave)) {
+                continue;
+            }
+
             $clave = trim((string) $clave);
 
             // Una "clave" de menos de 8 caracteres es un valor de prueba o basura: reemplazarla
@@ -299,6 +310,45 @@ class ImageServiceCallLogger
         }
 
         return $limpio;
+    }
+
+    /**
+     * Las claves propias de un dueño que sin_claves() tiene que tachar además de las de config: hoy,
+     * su clave de Serper (users.serper_api_key, misión serper-en-user-setup, 28/9/2026). Con ella
+     * busca el proveedor (ImageSearchProviderFactory::clave_serper_para()) y config no la conoce.
+     *
+     * Lee la base (una consulta por id) y por eso se llama solo cuando hay un texto que limpiar: un
+     * error, no cada búsqueda que salió bien.
+     *
+     * Nunca lanza: si la columna todavía no existe (el código llegó antes que la migración) o la
+     * base falla, devuelve [] y quedan tachadas las de config, como antes. Nunca devuelve una clave
+     * de menos de 8 caracteres (sin_claves() tampoco la reemplazaría).
+     *
+     * @param  int|null $user_id  El DUEÑO (el user_id de la asignación o del registro).
+     * @return array
+     */
+    public static function claves_del_dueno($user_id)
+    {
+        try {
+            $user_id = (int) $user_id;
+
+            if ($user_id <= 0) {
+                return [];
+            }
+
+            $clave = trim((string) DB::table('users')->where('id', $user_id)->value('serper_api_key'));
+
+            return strlen($clave) >= 8 ? [$clave] : [];
+        } catch (\Throwable $e) {
+            // El mensaje de una consulta que falló trae el SQL, no la clave (se la está leyendo, no
+            // se la manda): puede ir al log y dice por qué falló ("Unknown column", conexión...).
+            Log::warning('[ImagenesInteligentes] No se pudo leer la clave de Serper del dueño para taparla: se tapan solo las del servidor.', [
+                'user_id' => $user_id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            return [];
+        }
     }
 
     /**
