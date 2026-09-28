@@ -41,7 +41,8 @@ use ReflectionMethod;
  *     vacío, y el job corta si no queda ninguna;
  *   - 🔴 la clave no viaja al navegador: ni en get_user del dueño, ni en el del empleado (que trae al
  *     dueño entero adentro), ni en la serialización del modelo que devuelve UserController@update;
- *   - el registro de consultas tacha la del dueño aunque el .env esté vacío.
+ *   - el registro de consultas tacha la del dueño aunque el .env esté vacío;
+ *   - si a la factory le llega un empleado, busca con la clave de su dueño (revisión del 28/9/2026).
  *
  * Nada sale a la red: Serper, las imágenes y la IA pasan por el Http::fake de ImagenesInteligentesTestCase.
  */
@@ -227,6 +228,21 @@ class Clave_de_serper_del_dueno_Test extends ImagenesInteligentesTestCase
         }
 
         return (string) json_encode($plano, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    }
+
+    /**
+     * Un empleado del comercio del test (owner_id = el dueño), sin clave de Serper propia.
+     *
+     * @return \App\Models\User
+     */
+    protected function nuevo_empleado()
+    {
+        return User::create([
+            'name'     => 'Empleado imágenes inteligentes',
+            'email'    => 'imagenes-inteligentes-empleado-'.uniqid().'@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $this->owner->id,
+        ]);
     }
 
     /**
@@ -586,6 +602,86 @@ class Clave_de_serper_del_dueno_Test extends ImagenesInteligentesTestCase
         $this->assertStringContainsString('clave de Serper', (string) $run->motivo_estado);
         $this->assertStringContainsString('SERPER_API_KEY', (string) $run->motivo_estado);
         $this->assertSame(0, $this->requests_a('google.serper.dev'), 'No sale a buscar sin clave.');
+    }
+
+    /* ----------------------------------------------------------------------------------------
+     * Empleados (revisión independiente del 28/9/2026)
+     * -------------------------------------------------------------------------------------- */
+
+    /**
+     * Si a la factory le llega un EMPLEADO, la clave es la de la fila de su dueño: el setup la guarda
+     * solo ahí, y la del empleado está vacía. Hoy todos los que llaman ya pasan al dueño; esto cubre al
+     * próximo que no. Con Google pasa lo mismo: cuenta el cupo del dueño, no el del empleado.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function la_factory_resuelve_al_dueno_si_le_pasan_un_empleado()
+    {
+        $this->sin_clave_del_servidor();
+        $this->con_clave_del_dueno();
+
+        $empleado = $this->nuevo_empleado();
+
+        $this->assertSame(self::CLAVE_DEL_DUENO, ImageSearchProviderFactory::clave_serper_para($empleado));
+        $this->assertTrue(ImageSearchProviderFactory::serper_configurado($empleado));
+        $this->assertSame('serper', ImageSearchProviderFactory::nombre_para($empleado));
+
+        // Y el pedido que sale a Serper lleva la del dueño.
+        $this->falsear([], [], []);
+
+        $respuesta = ImageSearchProviderFactory::para($empleado)->buscar('Martillo carpintero');
+
+        $this->assertTrue($respuesta['ok'], (string) $respuesta['error']);
+        $this->assertSame([self::CLAVE_DEL_DUENO], $this->claves_enviadas_a_serper());
+
+        // Google, para el dueño: el contador del cupo es el suyo.
+        $google    = ImageSearchProviderFactory::para($empleado, 'google');
+        $propiedad = new \ReflectionProperty($google, 'user_id');
+        $propiedad->setAccessible(true);
+
+        $this->assertSame((int) $this->owner->id, (int) $propiedad->getValue($google), 'Google cuenta el cupo del dueño, no el del empleado.');
+    }
+
+    /**
+     * De punta a punta, como lo hace un empleado desde el listado (POST google/batch-assign-images):
+     * con el .env vacío y el dueño con clave, la asignación es del dueño, sale con Serper y busca con
+     * la clave del dueño.
+     *
+     * @group imagenes-inteligentes
+     * @test
+     */
+    public function un_empleado_lanza_una_asignacion_y_se_busca_con_la_clave_del_dueno()
+    {
+        $articulo = $this->articulo_asignable();
+
+        $this->sin_clave_del_servidor();
+        $this->con_clave_del_dueno();
+
+        $empleado = $this->nuevo_empleado();
+
+        $this->actuar_como($empleado);
+
+        Queue::fake();
+
+        $respuesta = $this->postJson('api/google/batch-assign-images', ['article_ids' => [$articulo->id]]);
+
+        $respuesta->assertStatus(200);
+
+        $run = ImageAssignmentRun::where('uuid', $respuesta->json('batch_uuid'))->firstOrFail();
+
+        $this->assertSame((int) $this->owner->id, (int) $run->user_id, 'La asignación es del dueño, aunque la lance un empleado.');
+        $this->assertSame((int) $empleado->id, (int) $run->auth_user_id);
+        $this->assertSame(ImageAssignmentRun::PROVEEDOR_SERPER, $run->proveedor);
+
+        Queue::assertPushed(ProcessImageAssignmentRunJob::class, 1);
+
+        (new ProcessImageAssignmentRunJob($run->id))->handle();
+
+        $run->refresh();
+        $this->assertSame(ImageAssignmentRun::STATUS_TERMINADA, $run->status, (string) $run->motivo_estado);
+        $this->assertSame(ImageAssignmentItem::STATUS_ASIGNADA, ImageAssignmentItem::where('run_id', $run->id)->value('status'));
+        $this->assertSame([self::CLAVE_DEL_DUENO], $this->claves_enviadas_a_serper());
     }
 
     /* ----------------------------------------------------------------------------------------

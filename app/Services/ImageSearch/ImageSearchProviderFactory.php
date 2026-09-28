@@ -34,7 +34,7 @@ class ImageSearchProviderFactory
 {
     /**
      * Largo máximo de una clave de Serper que se acepta del payload del setup: el de la columna
-     * users.serper_api_key (migración 2026_09_28_100000). Las claves de Serper son alfanuméricas de
+     * users.serper_api_key (migración 2026_09_28_150000). Las claves de Serper son alfanuméricas de
      * 32 a 64 caracteres (el admin las valida con esa forma): una más larga no es una clave, y
      * guardarla reventaría el INSERT del dueño con la base recién vaciada (ver clave_serper_del_payload()).
      */
@@ -44,19 +44,24 @@ class ImageSearchProviderFactory
      * La clave de Serper con la que se busca para este dueño: la suya si la tiene cargada, si no la
      * del servidor. '' si no hay ninguna de las dos.
      *
-     * Espera al DUEÑO, que es la fila donde el setup guarda la clave: todos los que llaman ya lo
-     * tienen a mano (una asignación es del dueño y los endpoints lo resuelven con userId()). Si la
+     * La clave vive en la fila del DUEÑO (ahí la guarda el setup). Hoy todos los que llaman ya pasan
+     * al dueño (una asignación es del dueño y los endpoints lo resuelven con userId()), pero si llega
+     * un EMPLEADO (owner_id cargado) se busca la fila de su dueño: la del empleado no tiene clave y se
+     * caería en silencio a la del servidor, o a Google (revisión independiente del 28/9/2026). Si la
      * columna todavía no existe (el código llegó antes que la migración), el atributo da null y se
      * cae a la del servidor, como antes.
      *
-     * @param  \App\Models\User|null $owner  Null = solo la del servidor (el comportamiento de antes).
+     * @param  \App\Models\User|null $owner  El dueño (o un empleado suyo). Null = solo la del
+     *                                       servidor (el comportamiento de antes).
      * @return string
      */
     public static function clave_serper_para(User $owner = null)
     {
-        if (!is_null($owner)) {
+        $dueno = self::dueno_de($owner);
+
+        if (!is_null($dueno)) {
             // La del comercio, recortada: una fila con solo espacios cuenta como vacía.
-            $del_dueno = trim((string) $owner->serper_api_key);
+            $del_dueno = trim((string) $dueno->serper_api_key);
 
             if ($del_dueno !== '') {
                 return $del_dueno;
@@ -64,6 +69,24 @@ class ImageSearchProviderFactory
         }
 
         return trim((string) config('services.serper.api_key'));
+    }
+
+    /**
+     * El dueño real de un usuario: él mismo si es dueño (sin owner_id), la fila de su dueño si es un
+     * empleado. Si el dueño de un empleado ya no existe, el mismo usuario (no hay otra fila que mirar).
+     *
+     * @param  \App\Models\User|null $user
+     * @return \App\Models\User|null
+     */
+    protected static function dueno_de(User $user = null)
+    {
+        if (is_null($user) || empty($user->owner_id)) {
+            return $user;
+        }
+
+        $dueno = User::find((int) $user->owner_id);
+
+        return is_null($dueno) ? $user : $dueno;
     }
 
     /**
@@ -99,12 +122,16 @@ class ImageSearchProviderFactory
      * "no hay clave" sin salir a la red; el job corta antes de llegar a eso
      * (ProcessImageAssignmentRunJob::handle()).
      *
-     * @param  \App\Models\User $owner
+     * Con un empleado se arma para su dueño (dueno_de()), los dos proveedores: Serper con la clave del
+     * dueño y Google con las credenciales y el contador de cupo del dueño, no los de la fila del empleado.
+     *
+     * @param  \App\Models\User $owner   El dueño (o un empleado suyo).
      * @param  string|null      $nombre  'serper' | 'google' | null.
      * @return \App\Services\ImageSearch\ImageSearchProvider
      */
     public static function para(User $owner, $nombre = null)
     {
+        $owner  = self::dueno_de($owner);
         $nombre = is_null($nombre) ? self::nombre_para($owner) : (string) $nombre;
 
         if ($nombre === 'serper') {
