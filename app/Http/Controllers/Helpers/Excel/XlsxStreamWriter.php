@@ -56,6 +56,21 @@ class XlsxStreamWriter
     protected $letras = [];
 
     /**
+     * @var int Columnas de la fila más ancha (hasta su última celda con dato).
+     */
+    protected $max_columnas = 0;
+
+    /**
+     * @var int Posición en el XML de la hoja donde va <dimension>, que se completa al cerrar.
+     */
+    protected $posicion_dimension = 0;
+
+    /**
+     * Largo reservado para <dimension ref="A1:XFD1048576"/> (32 caracteres) más relleno.
+     */
+    const LARGO_DIMENSION = 40;
+
+    /**
      * @param string $ruta           Ruta final del .xlsx.
      * @param string $carpeta_temporal Donde se arma el XML de la hoja antes de empaquetarlo.
      * @param string $nombre_hoja
@@ -66,7 +81,7 @@ class XlsxStreamWriter
         $this->nombre_hoja = $nombre_hoja;
         $this->ruta_hoja = rtrim($carpeta_temporal, '/\\') . DIRECTORY_SEPARATOR . 'hoja-' . uniqid('', true) . '.xml';
 
-        $this->hoja = fopen($this->ruta_hoja, 'wb');
+        $this->hoja = fopen($this->ruta_hoja, 'w+b');
         if ($this->hoja === false) {
             throw new RuntimeException('No se pudo crear el archivo temporal de la hoja: ' . $this->ruta_hoja);
         }
@@ -75,8 +90,18 @@ class XlsxStreamWriter
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
             . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
             . ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            . '<sheetData>'
         );
+
+        /*
+         * <dimension> dice el rango usado de la hoja y va ANTES de las filas, cuando todavía no se
+         * sabe cuántas hay: se reserva el lugar y se completa al cerrar. No es decorativo: el
+         * lector de OpenSpout que usa el importador rellena cada fila hasta ese ancho, como pasaba
+         * con los Excel de PhpSpreadsheet; sin él, una fila termina en su última celda con dato.
+         */
+        $this->posicion_dimension = ftell($this->hoja);
+        $this->escribir(str_repeat(' ', self::LARGO_DIMENSION));
+
+        $this->escribir('<sheetData>');
     }
 
     /**
@@ -109,6 +134,10 @@ class XlsxStreamWriter
             }
 
             $columna++;
+
+            if (!is_null($celda) && $columna > $this->max_columnas) {
+                $this->max_columnas = $columna;
+            }
         }
 
         $this->escribir($xml . '</row>');
@@ -123,6 +152,11 @@ class XlsxStreamWriter
     {
         try {
             $this->escribir('</sheetData></worksheet>');
+
+            $ultima = $this->letra(max(0, $this->max_columnas - 1)) . max(1, $this->fila - 1);
+            fseek($this->hoja, $this->posicion_dimension);
+            $this->escribir(str_pad('<dimension ref="A1:' . $ultima . '"/>', self::LARGO_DIMENSION, ' '));
+
             fclose($this->hoja);
             $this->hoja = null;
 
@@ -197,8 +231,9 @@ class XlsxStreamWriter
     }
 
     /**
-     * Número como lo escribe PhpSpreadsheet: la conversión a string de PHP, con punto decimal
-     * aunque el locale use coma.
+     * Número como lo escribe PhpSpreadsheet (Writer/Xlsx/Worksheet::writeCellNumeric): la
+     * conversión a string de PHP, con punto decimal aunque el locale use coma, y un float entero
+     * con ".0" al final (725.0 y no 725), que al releerlo vuelve como float y no como int.
      *
      * @param int|float $valor
      * @return string
@@ -209,7 +244,12 @@ class XlsxStreamWriter
             return (string) $valor;
         }
 
-        return str_replace(',', '.', (string) $valor);
+        $texto = str_replace(',', '.', (string) $valor);
+        if (strpos($texto, '.') === false) {
+            $texto .= '.0';
+        }
+
+        return $texto;
     }
 
     /**
