@@ -1023,6 +1023,14 @@ class DemoSetupHelper
             'VenderLayoutSeeder',
 
             /*
+                Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno
+                por lista de precios, o uno genérico. Tiene que correr DESPUÉS de que se siembran
+                las listas: run() llama a crear_price_types() antes de este foreach, así que la
+                demo con listas nace con un diseño por lista.
+            */
+            'ArticleTicketDesignSeeder',
+
+            /*
                 D3 (misión 63): las dos únicas extensiones del padrón que `ExtencionSeeder` NO
                 trae y que hasta ahora la demo tampoco sembraba por separado. Medido: local
                 termina con 97 filas en `extencion_empresas` y la demo con 95, y las dos que
