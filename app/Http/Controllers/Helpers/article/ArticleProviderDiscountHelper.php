@@ -1032,6 +1032,13 @@ class ArticleProviderDiscountHelper {
                 'ids_a_barrer'      => $gobernados->pluck('id')->all(),
                 'mostrar_en_online' => $mostrar_en_online,
                 /*
+                 * Todos los tagueados a este proveedor que vio el plan (no solo los de la ficha): es
+                 * contra lo que se revalida la tanda antes de escribir (revalidar_contra_el_plan()).
+                 */
+                'ids_vistos'        => collect($tagueados)->pluck('id')->map(function ($id) {
+                    return (int) $id;
+                })->all(),
+                /*
                  * 🔴 Defensa en profundidad de siempre: si no hay nada que reemplazar, tampoco se
                  * crea (el articulo igual se recalcula y se cuenta, como antes). El DELETE era
                  * condicional y el CREATE no, asi que un articulo sin filas de la ficha recibia una
@@ -1632,7 +1639,12 @@ class ArticleProviderDiscountHelper {
             foreach ($escaneo['sin_descuentos'] as $article_id) {
 
                 if (isset($duenos[$article_id])) {
-                    $items_sin_descuentos[] = ['article_id' => $article_id, 'ids_a_barrer' => [], 'mostrar_en_online' => 0];
+                    /*
+                     * `ids_vistos` vacio: el escaneo vio este articulo SIN ningun descuento tagueado a
+                     * este proveedor. Si al escribir ya tiene alguno, otro proceso se lo puso despues
+                     * del escaneo y el articulo se saltea (ver revalidar_contra_el_plan()).
+                     */
+                    $items_sin_descuentos[] = ['article_id' => $article_id, 'ids_a_barrer' => [], 'mostrar_en_online' => 0, 'ids_vistos' => []];
                 }
             }
         }
@@ -1799,7 +1811,16 @@ class ArticleProviderDiscountHelper {
         $mostrar_en_online = 0;
         $ids_a_barrer = [];
 
+        /*
+         * TODOS los descuentos tagueados a este proveedor que vio el escaneo, no solo los que se van a
+         * barrer: es contra lo que se revalida la tanda antes de escribir (ver
+         * revalidar_contra_el_plan()).
+         */
+        $ids_vistos = [];
+
         foreach ($tagueados as $descuento) {
+
+            $ids_vistos[] = (int) $descuento->id;
 
             if (!$barrer_todo && !self::gobernado_por_la_ficha($descuento)) {
                 continue;
@@ -1816,6 +1837,7 @@ class ArticleProviderDiscountHelper {
             'article_id'        => $article_id,
             'ids_a_barrer'      => $ids_a_barrer,
             'mostrar_en_online' => $mostrar_en_online,
+            'ids_vistos'        => $ids_vistos,
         ];
     }
 
@@ -1848,6 +1870,11 @@ class ArticleProviderDiscountHelper {
      * El radio del fallo es la tanda: si algo tira en el articulo 150 de 1.000, esa tanda entera no
      * se escribe y las anteriores quedan firmes. La sincronizacion es idempotente (una corrida
      * posterior retoma exactamente donde quedo, ver `escanear_articulos_del_proveedor()`).
+     *
+     * 🔴 Y antes de escribir, adentro de la misma transaccion, cada tanda se revalida con candado
+     * contra lo que vio el plan (revalidar_contra_el_plan(), 29/9/2026): el articulo que otro proceso
+     * toco despues del plan se saltea entero. Sin eso, dos operaciones del mismo proveedor cruzadas
+     * le duplicaban los descuentos de la ficha a cada articulo.
      *
      * El orden de los descuentos se conserva: el INSERT lleva las filas articulo por articulo y, en
      * cada articulo, en el orden de `provider_discounts`, igual que los create() de antes. MySQL da
@@ -1925,19 +1952,35 @@ class ArticleProviderDiscountHelper {
                  * esta misma closure escribiria los articulos sin sus listas ni sus price_changes. El
                  * reintento seguro es el de afuera (volver a correr la sincronizacion).
                  */
-                DB::transaction(function () use ($vigentes, $provider, $plantilla, $duenos_de_la_tanda, &$cache_de_duenos, $auth_user_id) {
+                /* Los que de verdad se escribieron en esta tanda (sale de la transaccion). */
+                $escritos = [];
 
-                    self::escribir_descuentos_en_bloque($vigentes, $provider->id, $plantilla);
+                DB::transaction(function () use ($vigentes, $provider, $plantilla, $duenos_de_la_tanda, &$cache_de_duenos, $auth_user_id, &$escritos) {
+
+                    /*
+                     * 🔴 PRIMERO, con candado, que nadie haya tocado estos articulos despues del plan
+                     * (ver revalidar_contra_el_plan()). Sin esto, dos operaciones del mismo proveedor
+                     * que se cruzan le duplican los descuentos de la ficha a cada articulo.
+                     */
+                    $a_escribir = self::revalidar_contra_el_plan($vigentes, $provider->id);
+
+                    if (count($a_escribir) === 0) {
+                        return;
+                    }
+
+                    self::escribir_descuentos_en_bloque($a_escribir, $provider->id, $plantilla);
 
                     self::recalcular_precios_de_la_tanda(
-                        array_column($vigentes, 'article_id'),
+                        array_column($a_escribir, 'article_id'),
                         $duenos_de_la_tanda,
                         $cache_de_duenos,
                         $auth_user_id
                     );
+
+                    $escritos = $a_escribir;
                 });
 
-                foreach ($vigentes as $item) {
+                foreach ($escritos as $item) {
                     $tocados[] = (int) $item['article_id'];
                 }
             }
@@ -1948,6 +1991,115 @@ class ArticleProviderDiscountHelper {
         }
 
         return $tocados;
+    }
+
+    /**
+     * Revalida, CON CANDADO y adentro de la transaccion de la tanda, que los articulos sigan como los
+     * vio el plan, y devuelve solo los que se pueden escribir (seguimiento del 29/9/2026, bloqueante
+     * del chequeo independiente).
+     *
+     * 🔴 LA CARRERA QUE CIERRA. El plan (el escaneo de la sincronizacion, o la clasificacion de la
+     * propagacion) se arma ANTES de escribir, y escribir_descuentos_en_bloque() borra por los ids que
+     * vio el plan y despues inserta SIEMPRE. Si dos operaciones del mismo proveedor se cruzan —la
+     * propagacion en segundo plano y una propagacion sincronica que el usuario confirma al volver a
+     * guardar el proveedor, o una sincronizacion manual contra una propagacion— la segunda espera el
+     * candado de la tanda de la primera y, cuando entra, sus ids ya no existen: no borra nada e
+     * inserta OTRA copia. Reproducido: un articulo con la ficha en 15 % + 5 % quedo con 15, 5, 15, 5
+     * y el precio un 19 % mas bajo, sin ningun error. Con los articulos que no tenian descuentos (el
+     * alcance "todos") pasa lo mismo: no hay nada que barrer y se inserta dos veces.
+     *
+     * COMO LA CIERRA. Se releen, con `FOR UPDATE` (lectura con candado: ve lo ultimo commiteado y
+     * bloquea a cualquier otra tanda que quiera lo mismo hasta que esta termine), los
+     * `article_discounts` tagueados a ESTE proveedor de los articulos de la tanda, y se compara, por
+     * articulo, el conjunto de ids de ahora contra el que vio el plan (`ids_vistos`: TODOS los
+     * tagueados a este proveedor, no solo los que se iban a barrer, asi tambien cubre al articulo que
+     * el plan vio vacio). Si difiere, otro proceso toco ese articulo despues del plan, y lo que hizo
+     * es lo mas nuevo: el articulo se saltea ENTERO —ni se borra, ni se inserta, ni se recalcula por
+     * este camino, y no cuenta como tocado—. Los salteados quedan en el log.
+     *
+     * ⚠️ Lo que no cubre del todo: dos tandas que llegan a esta lectura EXACTAMENTE a la vez sobre un
+     * articulo sin ninguna fila en `article_discounts` (ni manual, ni de otro proveedor) toman solo
+     * candados de hueco, que no se excluyen entre si; al insertar, MySQL detecta el abrazo mortal y
+     * aborta una de las dos con error. Falla ruidoso (la operacion que pierde termina en error y se
+     * puede reintentar), nunca con descuentos duplicados.
+     *
+     * Un item sin `ids_vistos` (un llamador que no arma el plan con el escaneo) no se revalida: se
+     * escribe como antes.
+     *
+     * @param  array $items        Items de la tanda, de articulos que existen.
+     * @param  int   $provider_id
+     * @return array  Los items que se pueden escribir, en el mismo orden.
+     */
+    static function revalidar_contra_el_plan(array $items, $provider_id) {
+
+        $a_revisar = [];
+
+        foreach ($items as $item) {
+
+            if (array_key_exists('ids_vistos', $item)) {
+                $a_revisar[(int) $item['article_id']] = true;
+            }
+        }
+
+        if (count($a_revisar) === 0) {
+            return $items;
+        }
+
+        /*
+         * Lo de ahora, con candado, ordenado (siempre en el mismo orden: dos tandas que se cruzan
+         * toman los candados en el mismo orden y no se abrazan por el orden). Partido para no pasar
+         * el tope de placeholders de MySQL con una tanda configurada muy grande.
+         */
+        $actuales = [];
+
+        foreach (array_chunk(array_keys($a_revisar), self::IDS_POR_DELETE) as $lote) {
+
+            $filas = DB::table('article_discounts')
+                        ->whereIn('article_id', $lote)
+                        ->where('provider_id', $provider_id)
+                        ->orderBy('article_id')
+                        ->orderBy('id')
+                        ->lockForUpdate()
+                        ->get(['id', 'article_id']);
+
+            foreach ($filas as $fila) {
+                $actuales[(int) $fila->article_id][] = (int) $fila->id;
+            }
+        }
+
+        $a_escribir = [];
+        $salteados  = [];
+
+        foreach ($items as $item) {
+
+            if (!array_key_exists('ids_vistos', $item)) {
+                $a_escribir[] = $item;
+                continue;
+            }
+
+            $vistos = array_map('intval', $item['ids_vistos']);
+            sort($vistos);
+
+            $ahora = isset($actuales[(int) $item['article_id']]) ? $actuales[(int) $item['article_id']] : [];
+            sort($ahora);
+
+            if ($vistos === $ahora) {
+                $a_escribir[] = $item;
+            } else {
+                $salteados[] = (int) $item['article_id'];
+            }
+        }
+
+        if (count($salteados) > 0) {
+
+            Log::warning('ArticleProviderDiscountHelper: articulos salteados porque otro proceso les toco los descuentos despues del plan', [
+                'provider_id' => (int) $provider_id,
+                'salteados'   => count($salteados),
+                'ejemplos'    => array_slice($salteados, 0, 20),
+            ]);
+        }
+
+        return $a_escribir;
     }
 
     /**
