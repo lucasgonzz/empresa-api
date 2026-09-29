@@ -74,6 +74,10 @@ class ArticleTicketDesignHelper
     /** Patrón del `id` de un campo. La `D` hace que `$` no acepte un salto de línea final. */
     const PATRON_ID = '/^[a-z0-9_]{1,40}$/D';
 
+    /** Rango de `position`: la columna es int, y un número enorme la desbordaba (500). */
+    const POSICION_MINIMA = 0;
+    const POSICION_MAXIMA = 1000000;
+
     /** Tolerancia para comparar milímetros ya redondeados a un decimal. */
     const EPSILON = 0.0001;
 
@@ -511,7 +515,7 @@ class ArticleTicketDesignHelper
             $creados = 0;
 
             foreach ($listas as $lista) {
-                if (self::crear_diseno_de_lista_sin_candado($owner_id, $lista)) {
+                if (!is_null(self::crear_diseno_de_lista_sin_candado($owner_id, $lista))) {
                     $creados++;
                 }
             }
@@ -521,11 +525,12 @@ class ArticleTicketDesignHelper
     }
 
     /**
-     * El diseño de una lista de precios recién creada (`PriceTypeController@store`), si el dueño
-     * trabaja con listas y todavía no tiene uno de esa lista. Mismo candado que el seeder.
+     * El diseño de una lista de precios recién creada, si el dueño trabaja con listas y todavía no
+     * tiene uno de esa lista. Mismo candado que el seeder. Lo llama `PriceTypeObserver::created()`,
+     * así cubre todos los caminos que crean listas (ABM, importación de clientes, demo, seeders).
      *
      * @param  \App\Models\PriceType  $lista
-     * @return bool  Si lo creó.
+     * @return \App\Models\ArticleTicketDesign|null  El diseño creado, o null si no hacía falta.
      */
     static function crear_diseno_de_lista($lista)
     {
@@ -536,11 +541,11 @@ class ArticleTicketDesignHelper
             $dueno = self::bloquear_dueno($owner_id);
 
             if (is_null($dueno) || !is_null($dueno->owner_id)) {
-                return false;
+                return null;
             }
 
             if (!UserHelper::uses_listas_de_precio($dueno)) {
-                return false;
+                return null;
             }
 
             return self::crear_diseno_de_lista_sin_candado($owner_id, $lista);
@@ -553,7 +558,7 @@ class ArticleTicketDesignHelper
      *
      * @param  int                    $owner_id
      * @param  \App\Models\PriceType  $lista
-     * @return bool
+     * @return \App\Models\ArticleTicketDesign|null
      */
     private static function crear_diseno_de_lista_sin_candado($owner_id, $lista)
     {
@@ -562,7 +567,7 @@ class ArticleTicketDesignHelper
                                         ->exists();
 
         if ($ya_tiene) {
-            return false;
+            return null;
         }
 
         $nombre = trim((string) $lista->name);
@@ -571,15 +576,40 @@ class ArticleTicketDesignHelper
             $nombre = self::NOMBRE_GENERICO;
         }
 
-        ArticleTicketDesign::create(array(
+        return ArticleTicketDesign::create(array(
             'user_id'       => $owner_id,
             'name'          => mb_substr($nombre, 0, 120, 'UTF-8'),
             'price_type_id' => $lista->id,
-            'position'      => (int) $lista->position,
+            'position'      => self::posicion_acotada($lista->position, 0),
             'diseno'        => self::diseno_actual($lista->id),
         ));
+    }
 
-        return true;
+    /**
+     * Una `position` acotada a 0..1.000.000 (la columna es int). Lo que no es un número toma el
+     * valor por defecto.
+     *
+     * @param  mixed  $valor
+     * @param  int    $defecto
+     * @return int
+     */
+    static function posicion_acotada($valor, $defecto)
+    {
+        if (!is_numeric($valor)) {
+            return (int) $defecto;
+        }
+
+        $valor = (float) $valor;
+
+        if ($valor < self::POSICION_MINIMA) {
+            return self::POSICION_MINIMA;
+        }
+
+        if ($valor > self::POSICION_MAXIMA) {
+            return self::POSICION_MAXIMA;
+        }
+
+        return (int) round($valor);
     }
 
     /*

@@ -71,7 +71,7 @@ class ArticleTicketDesignController extends Controller
      *   - `name`: obligatorio (se recorta, hasta 120 caracteres) -> 422 si falta.
      *   - `diseno`: se normaliza. Si no viene, o viene null, arranca con el diseño de siempre con
      *     `precio_final` (§3.7). Si viene y no es un objeto -> 422.
-     *   - `position`: opcional; si no viene, va al final.
+     *   - `position`: opcional, acotada a 0..1.000.000; si no viene, va al final.
      *
      * `price_type_id` queda siempre en null: solo el sistema lo completa (seeder / alta de lista).
      *
@@ -102,17 +102,15 @@ class ArticleTicketDesignController extends Controller
             }
         }
 
-        $position = $request->input('position');
+        $al_final = ((int) ArticleTicketDesign::where('user_id', $owner_id)->max('position')) + 1;
 
-        if (!is_numeric($position)) {
-            $position = ((int) ArticleTicketDesign::where('user_id', $owner_id)->max('position')) + 1;
-        }
+        $position = ArticleTicketDesignHelper::posicion_acotada($request->input('position'), $al_final);
 
         $model = ArticleTicketDesign::create([
             'user_id'       => $owner_id,
             'name'          => $nombre,
             'price_type_id' => null,
-            'position'      => (int) $position,
+            'position'      => $position,
             'diseno'        => $diseno,
         ]);
 
@@ -144,7 +142,7 @@ class ArticleTicketDesignController extends Controller
      *   - `name`: si viene, no puede quedar vacío (422) ni pasar de 120 caracteres.
      *   - `diseno`: si viene, se normaliza (422 si no es un objeto). `null` explícito lo vuelve al
      *     diseño de siempre (con la lista del diseño, si el sistema lo generó para una).
-     *   - `position`: si viene y es un número.
+     *   - `position`: si viene y es un número, acotada a 0..1.000.000.
      *
      * @param  \Illuminate\Http\Request  $request
      * @param  mixed                     $id
@@ -190,7 +188,7 @@ class ArticleTicketDesignController extends Controller
         }
 
         if ($request->has('position') && is_numeric($request->input('position'))) {
-            $model->position = (int) $request->input('position');
+            $model->position = ArticleTicketDesignHelper::posicion_acotada($request->input('position'), $model->position);
         }
 
         $model->save();
