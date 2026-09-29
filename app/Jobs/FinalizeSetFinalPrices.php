@@ -97,11 +97,15 @@ class FinalizeSetFinalPrices implements ShouldQueue
         }
 
         /*
-         * 🔴 Las DOS condiciones, no sólo el conteo. Los chunks se despachan dentro del
-         * ->chunk(100, ...) de ProcessSetFinalPrices, así que al principio de la corrida
-         * processed_chunks puede alcanzar a total_chunks simplemente porque el bucle
-         * todavía no despachó el resto. Cerrar ahí daría un modal con números falsos y
-         * sin ningún error visible.
+         * 🔴 Las DOS condiciones, no sólo el conteo. ProcessSetFinalPrices despacha los lotes
+         * MIENTRAS recorre el alcance (por keyset: chunkById sobre articles.id, o la unión de
+         * las dos ramas del dólar global, en lotes de RecalculoDePreciosEnLote::tamanio_de_lote())
+         * y recién al terminar escribe total_chunks. Hasta ese momento total_chunks está en 0, así
+         * que el conteo solo ya daría la corrida por terminada de entrada (ningún procesado es
+         * menor que 0), con el bucle todavía despachando lotes. Cerrar ahí daría un modal con
+         * números falsos y sin ningún error visible. (PriceTypeHelper::
+         * dispatch_recalculate_for_articles() escribe el total y el flag juntos, después de
+         * despachar todo.)
          */
         if (!$run->chunks_encolados || (int) $run->processed_chunks < (int) $run->total_chunks) {
             /*
@@ -293,8 +297,11 @@ class FinalizeSetFinalPrices implements ShouldQueue
      * Un solo tope, y holgado a propósito. Se probó partirlo en dos —uno corto para la
      * corrida que ni siquiera llegó a encolar sus chunks, con el argumento de que ese bucle
      * dura segundos— y se descartó: en Windows `queue:work` no puede aplicar timeout (no hay
-     * pcntl) y el `->chunk(100)` pagina por offset, así que en un catálogo muy grande el
-     * productor puede tardar de verdad. Un tope corto ahí cierra en error una corrida SANA,
+     * pcntl), y aunque el reparto ya no pagina por offset (keyset con chunkById, en lotes de
+     * RecalculoDePreciosEnLote::tamanio_de_lote(), desde la misión recalculo-precios-motor-rapido
+     * del 28/9/2026) sigue siendo una consulta de ids y un dispatch por lote: en un catálogo muy
+     * grande, contra una base ocupada, el productor puede tardar de verdad (su propio timeout es
+     * ProcessSetFinalPrices::$timeout, 1.200 s). Un tope corto ahí cierra en error una corrida SANA,
      * le avisa al usuario que no se hizo nada mientras se está haciendo, y encima deja al
      * productor escribiendo sobre una corrida ya cerrada. Avisar tarde es malo; avisar mal es
      * peor.
