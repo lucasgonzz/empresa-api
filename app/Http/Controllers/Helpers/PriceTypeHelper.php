@@ -5,11 +5,14 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Jobs\FinalizeSetFinalPrices;
 use App\Jobs\ProcessChunkSetFinalPrices;
+use App\Jobs\ProcessSetFinalPrices;
 use App\Models\PriceType;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -65,7 +68,29 @@ class PriceTypeHelper {
 	const EXTENCION_RANGOS = 'lista_de_precios_por_rango_de_cantidad_vendida';
 
 	/**
+	 * Artículos por sentencia en el UPDATE en bloque del porcentaje del pivot
+	 * (sync_existing_articles_percentage()): los ids van como bindings del IN.
+	 *
+	 * @var int
+	 */
+	const PIVOTS_POR_UPDATE = 1000;
+
+	/**
 	 * Verifica cambios en recargos y dispara recálculo global cuando corresponde.
+	 *
+	 * La condición ($hubo_cambios) es la de siempre y no se tocó. Lo que cambió es CÓMO se
+	 * recalcula (misión recalculo-precios-motor-rapido, 28/9/2026): antes se llamaba a
+	 * ArticleHelper::setArticlesFinalPrice(), que recorría el catálogo ENTERO del dueño adentro
+	 * del request de guardar la lista, artículo por artículo, leyendo cada fila completa (con el
+	 * vector de embeddings) y con un User::find() por artículo. En un catálogo como el de Servian
+	 * (574.000 artículos) ese request no terminaba nunca. Ahora se encola el recálculo en segundo
+	 * plano, igual que al crear una lista (PriceTypeController::agregar_a_articulos_existentes()):
+	 * mismo alcance (todos los artículos no borrados del dueño), mismo cálculo (el motor en lote
+	 * deja la base exactamente igual que setFinalPrice() por artículo) y visible en la píldora de
+	 * procesos, con el nombre de la lista.
+	 *
+	 * 🔴 No volver al recálculo sincrónico "para que el precio se vea al toque": es justamente lo
+	 * que dejaba colgado el guardado de una lista en los catálogos grandes.
 	 *
 	 * @param PriceType $price_type
 	 * @return void
@@ -76,15 +101,55 @@ class PriceTypeHelper {
 		$hubo_cambios = false;
 
 		foreach ($price_type->price_type_surchages as $price_type_surchage) {
-			
+
 			if ($price_type->updated_at <= Carbon::now()->subMinute()) {
 				$hubo_cambios = true;
 			}
 		}
 
 		if ($hubo_cambios) {
-			ArticleHelper::setArticlesFinalPrice();
+			ProcessSetFinalPrices::dispatch(Self::dueno_de_la_lista($price_type), null, null, false, 'tipo_de_precio', $price_type->name);
 		}
+	}
+
+	/**
+	 * El dueño de la cuenta a la que pertenece una lista de precios: el usuario cuyo catálogo hay
+	 * que recalcular.
+	 *
+	 * Las listas se crean a nombre del dueño (PriceTypeController::store() usa $this->userId(),
+	 * que resuelve al dueño), así que en el flujo normal es $price_type->user_id y coincide con el
+	 * UserHelper::userId() que usaba setArticlesFinalPrice(). Si alguna vez una lista quedó a
+	 * nombre de un empleado, se sube a su dueño: el cálculo de precios es de la cuenta, y con un
+	 * empleado el recálculo usaría la configuración equivocada.
+	 *
+	 * @param PriceType $price_type
+	 * @return int
+	 */
+	static function dueno_de_la_lista($price_type) {
+
+		return Self::dueno_de_la_cuenta($price_type->user_id);
+	}
+
+	/**
+	 * El dueño de la cuenta de un usuario: él mismo si es dueño, su owner_id si es un empleado.
+	 *
+	 * Lo usan check_recargos() (por la lista) y dispatch_recalculate_for_articles() (por lo que le
+	 * pasen): el motor del recálculo rechaza a un empleado —calcularía con su configuración y no la
+	 * de la cuenta—, así que encolar un lote con un empleado era un lote que fallaba tres veces y
+	 * cerraba la corrida en error.
+	 *
+	 * @param int $user_id
+	 * @return int
+	 */
+	static function dueno_de_la_cuenta($user_id) {
+
+		$usuario = User::find($user_id);
+
+		if (!is_null($usuario) && !empty($usuario->owner_id)) {
+			return (int) $usuario->owner_id;
+		}
+
+		return (int) $user_id;
 	}
 
 	/**
@@ -128,17 +193,32 @@ class PriceTypeHelper {
 		// wherePivot(...) y el siguiente chunk con OFFSET salta registros (ej. solo 200/250).
 		$article_ids = $articles_query->pluck('id')->unique()->values()->all();
 
-		// Actualiza pivots en lotes sobre IDs ya resueltos (orden de memoria acotado por batch).
-		$batch_size = 200;
-		for ($offset = 0; $offset < count($article_ids); $offset += $batch_size) {
-			$article_id_chunk = array_slice($article_ids, $offset, $batch_size);
-			foreach ($article_id_chunk as $article_id) {
-				Log::info('Actualizado article_id '.$article_id.' con new_percentage: '.$new_percentage);
-				$price_type->articles()->updateExistingPivot($article_id, [
-					'percentage' => $new_percentage,
-				]);
-			}
+		/*
+		 * UPDATE en bloque del pivot (misión recalculo-precios-motor-rapido, 29/9/2026). Antes era
+		 * un updateExistingPivot() y un Log::info POR ARTÍCULO, sincrónico en el request de guardar
+		 * la lista: una lista atada a 40.000 artículos eran 80.000 sentencias antes de responder.
+		 *
+		 * 🔴 Misma semántica EXACTA que ese updateExistingPivot(), que es lo que hay que conservar:
+		 *  - Mismas filas: `WHERE price_type_id = ? AND article_id IN (...)`, con los ids ya
+		 *    elegidos arriba según el modo. updateExistingPivot() actualiza por el par
+		 *    (lista, artículo) sin mirar el percentage de la fila, así que si un artículo tiene la
+		 *    lista atada dos veces (la tabla no tiene índice único) se actualizan las dos filas,
+		 *    también en only_default_matches. Acá igual.
+		 *  - Mismo valor: $new_percentage ya normalizado ("12.50" o null), como binding.
+		 *  - Sin tocar created_at/updated_at del pivot: la relación articles() no tiene
+		 *    withTimestamps(), así que updateExistingPivot() tampoco los tocaba.
+		 * Los ids se resuelven ANTES de escribir (el pluck de arriba), así que actualizar el pivot no
+		 * cambia qué filas entran: el problema del OFFSET que explica el comentario de arriba no
+		 * aplica.
+		 */
+		foreach (array_chunk($article_ids, Self::PIVOTS_POR_UPDATE) as $tanda_de_ids) {
+			DB::table('article_price_type')
+				->where('price_type_id', $price_type->id)
+				->whereIn('article_id', $tanda_de_ids)
+				->update(['percentage' => $new_percentage]);
 		}
+
+		Log::info('sync_existing_articles_percentage: percentage '.$new_percentage.' en '.count($article_ids).' articulos de la lista '.$price_type->id);
 
 		// Recalcula precios finales de artículos afectados en segundo plano.
 		Self::dispatch_recalculate_for_articles($article_ids, $price_type->user_id);
@@ -171,6 +251,14 @@ class PriceTypeHelper {
 		}
 
 		/*
+		 * El dueño de la cuenta, no el usuario pelado que llegó (29/9/2026): el llamador de siempre
+		 * pasa $price_type->user_id, y si esa lista quedó a nombre de un empleado los lotes irían
+		 * con el empleado y el motor los rechazaría. La corrida, su registro visible y los lotes
+		 * quedan todos a nombre del dueño.
+		 */
+		$user_id = Self::dueno_de_la_cuenta($user_id);
+
+		/*
 		 * Su propia corrida, para que el aviso salga con numeros y no en el aire. SIEMPRE
 		 * una nueva: esto corre sincronico en el request web, asi que reusar la corrida
 		 * abierta del usuario lo metia como segundo productor de una corrida que un job ya
@@ -178,11 +266,24 @@ class PriceTypeHelper {
 		 */
 		$run = PriceUpdateRunHelper::abrir($user_id, $origen, $origen_detalle);
 
-		// Procesa en lotes para evitar jobs grandes y mantener bajo consumo de memoria.
-		$article_chunks = array_chunk($article_ids, 100);
+		/*
+		 * Lotes del tamaño del motor del recálculo (RecalculoDePreciosEnLote::tamanio_de_lote(), 1.000
+		 * por defecto) y no de 100 (misión recalculo-precios-motor-rapido, 28/9/2026): cada lote ya
+		 * no paga consultas por artículo sino un costo fijo por tanda, así que menos lotes es menos
+		 * costo fijo repetido y menos jobs en la cola.
+		 */
+		$article_chunks = array_chunk($article_ids, RecalculoDePreciosEnLote::tamanio_de_lote());
+
+		/*
+		 * La PERSONA logueada (dueño o empleado) viaja a cada lote, y el motor la pone como
+		 * employee_id de los price_changes (seguimiento del 29/9/2026): esto corre en el request,
+		 * pero los lotes corren en el worker, donde no hay sesión y quedaba config('app.USER_ID').
+		 * Mismo criterio que ProcessSetFinalPrices::$auth_user_id. Sin sesión, null: como siempre.
+		 */
+		$auth_user_id = Auth::check() ? UserHelper::userId(false) : null;
 
 		foreach ($article_chunks as $article_chunk) {
-			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id, $run->id));
+			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id, $run->id, $auth_user_id));
 		}
 
 		DB::table('price_update_runs')

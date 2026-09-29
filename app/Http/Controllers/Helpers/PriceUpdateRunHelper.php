@@ -112,7 +112,9 @@ class PriceUpdateRunHelper
      * Cierra una corrida que no tiene ningún artículo que recalcular.
      *
      * Se notifica igual: un recálculo que no encontró artículos es información, no
-     * silencio, y el modal tiene su estado vacío para eso.
+     * silencio, y el modal tiene su estado vacío para eso. Salvo el origen `categoria`, que sin
+     * cambios no avisa (29/9/2026; la píldora igual cierra con "Sin cambios"). El aviso no sale
+     * de acá: lo decide quien llama, con FinalizeSetFinalPrices::corresponde_avisar_el_cierre().
      *
      * @param  \App\Models\PriceUpdateRun $run
      * @return void

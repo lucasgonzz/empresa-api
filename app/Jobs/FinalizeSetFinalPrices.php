@@ -40,6 +40,28 @@ class FinalizeSetFinalPrices implements ShouldQueue
      */
     const TOPE_HORAS = 2;
 
+    /**
+     * Orígenes cuya corrida, si termina SIN CAMBIOS, no se avisa con el modal (seguimiento del
+     * 29/9/2026).
+     *
+     * 'categoria': guardar una categoría o una subcategoría dispara un recálculo en segundo plano
+     * (Helpers\category\PriceTypeHelper::update_article_prices()), y en una cuenta con listas de
+     * precio por categoría lo dispara CADA guardado, aunque no haya cambiado nada que mueva un
+     * precio. El aviso "Precios actualizados" va a todas las sesiones del dueño
+     * (is_only_for_auth_user = false): con cero artículos cambiados era un modal en cada
+     * computadora del comercio por cada categoría que alguien guardaba, sin nada que contar. La
+     * píldora de procesos igual cierra con "Sin cambios", así que quien guardó ve que terminó.
+     * Con cambios, el aviso de siempre.
+     *
+     * Los demás orígenes avisan también sin cambios (decisión de Lucas, ver handle()): un cambio
+     * de proveedor, de dólar o de configuración que no movió nada es información.
+     *
+     * @var array
+     */
+    const ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS = [
+        'categoria',
+    ];
+
     protected $user_id;
     protected $price_update_run_id;
 
@@ -47,6 +69,15 @@ class FinalizeSetFinalPrices implements ShouldQueue
     {
         $this->user_id = $user_id;
         $this->price_update_run_id = $price_update_run_id;
+
+        /*
+         * En el shared hosting va a la cola 'excel', con el productor y los lotes (misión
+         * recalculo-precios-motor-rapido, 28/9/2026): el worker de esa cola corre con
+         * --memory=512 y no retiene al del asistente. En el VPS, null: 'default', la única cola
+         * que consume el supervisor de cada cliente. El re-despacho de handle() ya usa
+         * onQueue($this->queue), así que el finalizador se queda en la misma cola que lo encoló.
+         */
+        $this->queue = config('app.VPS') ? null : 'excel';
     }
 
     public function handle()
@@ -66,11 +97,15 @@ class FinalizeSetFinalPrices implements ShouldQueue
         }
 
         /*
-         * 🔴 Las DOS condiciones, no sólo el conteo. Los chunks se despachan dentro del
-         * ->chunk(100, ...) de ProcessSetFinalPrices, así que al principio de la corrida
-         * processed_chunks puede alcanzar a total_chunks simplemente porque el bucle
-         * todavía no despachó el resto. Cerrar ahí daría un modal con números falsos y
-         * sin ningún error visible.
+         * 🔴 Las DOS condiciones, no sólo el conteo. ProcessSetFinalPrices despacha los lotes
+         * MIENTRAS recorre el alcance (por keyset: chunkById sobre articles.id, o la unión de
+         * las dos ramas del dólar global, en lotes de RecalculoDePreciosEnLote::tamanio_de_lote())
+         * y recién al terminar escribe total_chunks. Hasta ese momento total_chunks está en 0, así
+         * que el conteo solo ya daría la corrida por terminada de entrada (ningún procesado es
+         * menor que 0), con el bucle todavía despachando lotes. Cerrar ahí daría un modal con
+         * números falsos y sin ningún error visible. (PriceTypeHelper::
+         * dispatch_recalculate_for_articles() escribe el total y el flag juntos, después de
+         * despachar todo.)
          */
         if (!$run->chunks_encolados || (int) $run->processed_chunks < (int) $run->total_chunks) {
             /*
@@ -177,9 +212,32 @@ class FinalizeSetFinalPrices implements ShouldQueue
         /*
          * Se notifica también cuando no cambió ningún precio (decisión de Lucas): un cambio
          * de configuración que no movió nada es información, no silencio. El modal tiene su
-         * propio estado vacío para eso.
+         * propio estado vacío para eso. Salvo el guardado de una categoría que no movió nada
+         * (ver ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS).
          */
-        SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
+        if (self::corresponde_avisar_el_cierre($run)) {
+            SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
+        }
+    }
+
+    /**
+     * Si al cerrar bien una corrida corresponde el aviso "Precios actualizados".
+     *
+     * Lo usan los dos lugares que cierran una corrida sin error: este finalizador y el
+     * productor cuando no encuentra ningún artículo (ProcessSetFinalPrices, rama de
+     * PriceUpdateRunHelper::cerrar_sin_articulos(), que también la deja en 'sin_cambios'). Los
+     * errores se avisan siempre, por notify_prices_update_failed(); esto no los toca.
+     *
+     * @param  \App\Models\PriceUpdateRun $run  Corrida ya cerrada (status final en memoria).
+     * @return bool
+     */
+    public static function corresponde_avisar_el_cierre($run)
+    {
+        if ($run->status === 'sin_cambios' && in_array($run->origen, self::ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS, true)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -239,8 +297,11 @@ class FinalizeSetFinalPrices implements ShouldQueue
      * Un solo tope, y holgado a propósito. Se probó partirlo en dos —uno corto para la
      * corrida que ni siquiera llegó a encolar sus chunks, con el argumento de que ese bucle
      * dura segundos— y se descartó: en Windows `queue:work` no puede aplicar timeout (no hay
-     * pcntl) y el `->chunk(100)` pagina por offset, así que en un catálogo muy grande el
-     * productor puede tardar de verdad. Un tope corto ahí cierra en error una corrida SANA,
+     * pcntl), y aunque el reparto ya no pagina por offset (keyset con chunkById, en lotes de
+     * RecalculoDePreciosEnLote::tamanio_de_lote(), desde la misión recalculo-precios-motor-rapido
+     * del 28/9/2026) sigue siendo una consulta de ids y un dispatch por lote: en un catálogo muy
+     * grande, contra una base ocupada, el productor puede tardar de verdad (su propio timeout es
+     * ProcessSetFinalPrices::$timeout, 1.200 s). Un tope corto ahí cierra en error una corrida SANA,
      * le avisa al usuario que no se hizo nada mientras se está haciendo, y encima deja al
      * productor escribiendo sobre una corrida ya cerrada. Avisar tarde es malo; avisar mal es
      * peor.

@@ -2,10 +2,9 @@
 
 namespace App\Jobs;
 
-use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\SetFinalPricesNotificationHelper;
-use App\Models\Article;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Models\PriceUpdateRun;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
@@ -16,10 +15,51 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Un lote del recálculo de precios: recalcula sus artículos con el motor en lote y suma el lote a
+ * la corrida.
+ *
+ * Misión recalculo-precios-motor-rapido (28/9/2026): el handle() recorría los artículos llamando
+ * a ArticleHelper::setFinalPrice() uno por uno, con todas sus consultas y escrituras por artículo
+ * (21 a 50 segundos por lote de 100 en Servian). Ahora delega en RecalculoDePreciosEnLote, que
+ * deja la base exactamente igual —lo prueba RecalculoEnLote/1_Equivalencia_...— leyendo y
+ * escribiendo en bloque.
+ */
 class ProcessChunkSetFinalPrices implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * Segundos por intento. Una tanda de 1.000 artículos tarda segundos; 600 es el techo para un
+     * cliente con Tienda Nube o Mercado Libre prendidos (esa marca de sincronización todavía es
+     * por artículo) sin que un lote colgado retenga el worker toda la noche. Va en el job y no
+     * solo en el worker: el worker de la cola 'excel' del shared corre con el --timeout por defecto.
+     *
+     * @var int
+     */
+    public $timeout = 600;
+
+    /**
+     * Tres intentos, y es seguro reintentar: cada tanda del motor es atómica (o se escribe entera
+     * o no se escribe nada), y recalcular de nuevo lo que ya quedó bien no cambia nada. Un corte
+     * de conexión o un deadlock contra otro recálculo del mismo catálogo ya no mata la corrida.
+     * failed() —el aviso de error— corre recién cuando se agotan los tres.
+     *
+     * @var int
+     */
+    public $tries = 3;
+
+    /**
+     * Segundos entre intentos.
+     *
+     * @var int
+     */
+    public $backoff = 10;
+
+    /*
+     * 🔴 Las tres propiedades de siempre, con los mismos nombres y la misma visibilidad: hay jobs
+     * ya encolados con la firma vieja (lotes de 100), y al deserializarlos se hidratan por nombre.
+     */
     protected $article_ids;
     protected $user_id;
 
@@ -31,40 +71,61 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
      */
     protected $price_update_run_id;
 
-    public function __construct(array $article_ids, $user_id, $price_update_run_id = null)
+    /**
+     * La persona (dueño o empleado) que disparó el recálculo, resuelta en el request por quien
+     * encoló este lote (ProcessSetFinalPrices::$auth_user_id, PriceTypeHelper::
+     * dispatch_recalculate_for_articles()): el motor la pone como employee_id de los
+     * price_changes (seguimiento del 29/9/2026). En el worker no hay sesión y sin esto quedaba
+     * config('app.USER_ID').
+     *
+     * Va AL FINAL de la firma y con default null por compatibilidad: un lote encolado antes de
+     * este cambio no la trae al deserializarse, queda null y el motor resuelve como siempre.
+     *
+     * @var int|null
+     */
+    protected $auth_user_id = null;
+
+    public function __construct(array $article_ids, $user_id, $price_update_run_id = null, $auth_user_id = null)
     {
         $this->article_ids = $article_ids;
         $this->user_id = $user_id;
         $this->price_update_run_id = $price_update_run_id;
+        $this->auth_user_id = is_null($auth_user_id) ? null : (int) $auth_user_id;
+
+        /*
+         * En el shared hosting va a la cola 'excel' (la de los jobs pesados: el worker corre con
+         * --memory=512 y --max-time=1200), separada del asistente de IA y de las notificaciones
+         * que viven en 'default'. En el VPS, null: sigue en 'default', la única cola que el
+         * supervisor de cada cliente consume. Mismo patrón que ProcessArticleChunk.
+         *
+         * 🔴 En el constructor (propiedad pública $queue del trait Queueable), no con viaQueue():
+         * ese hook es solo para listeners de eventos y en un job no se invoca nunca.
+         */
+        $this->queue = config('app.VPS') ? null : 'excel';
     }
 
     public function handle()
     {
         Log::info('Procesando chunck');
+
         $user = User::find($this->user_id);
 
-        $articles = Article::whereIn('id', $this->article_ids)->get();
-
-        /** Ids de los artículos cuyo final_price efectivamente cambió en este chunk. */
-        $ids_que_cambiaron = [];
-
-        foreach ($articles as $article) {
-            /*
-             * El precio de antes se guarda ACA y no adentro del helper: setFinalPrice ya
-             * hace su propia comparación para price_changes, pero no la expone. Tener el
-             * artículo en la mano alcanza, y así el helper no se toca (está bajo refactor
-             * en otra rama y tocarlo garantiza conflicto).
-             */
-            $precio_anterior = $article->final_price;
-
-            ArticleHelper::setFinalPrice($article, $user->id, $user);
-
-            if (!is_null($this->price_update_run_id) && $precio_anterior != $article->final_price) {
-                $ids_que_cambiaron[] = $article->id;
-            }
+        if (is_null($user)) {
+            throw new \RuntimeException('ProcessChunkSetFinalPrices: no existe el usuario ' . $this->user_id . ' dueño del recálculo.');
         }
 
-        $this->registrar_articulos_que_cambiaron($ids_que_cambiaron);
+        /*
+         * auth_user_id: la persona que disparó el recálculo, si quien encoló el lote la conocía;
+         * es el employee_id de los price_changes. En null (sin sesión al encolar, o un lote
+         * encolado antes de que existiera) el motor lo resuelve como siempre, con
+         * UserHelper::userId(false): en el worker, config('app.USER_ID'). Los artículos que
+         * cambiaron de precio se registran en price_update_run_articles adentro de la misma
+         * transacción que sus precios: si el commit no llega, no quedan contados.
+         */
+        RecalculoDePreciosEnLote::recalcular($this->article_ids, $user, $this->auth_user_id, [
+            'price_update_run_id' => $this->price_update_run_id,
+        ]);
+
         $this->marcar_chunk_procesado();
     }
 
@@ -79,6 +140,8 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
      * nunca recibe nada. Y ahora que el aviso sale al final, no recibir nada es no enterarse
      * de que su recálculo se murió.
      *
+     * Con $tries = 3 esto corre después del tercer intento fallido, no del primero.
+     *
      * @param  \Throwable $e
      * @return void
      */
@@ -91,36 +154,6 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
             $this->price_update_run_id,
             'Se interrumpió el recálculo de un lote de artículos y la actualización quedó incompleta: ' . $e->getMessage()
         );
-    }
-
-    /**
-     * Guarda los artículos que cambiaron de precio, en lotes.
-     *
-     * insertOrIgnore contra el único (price_update_run_id, article_id): si este job se
-     * reintenta, los que ya estaban no se duplican, y como el total sale de un COUNT y no
-     * de un contador acumulado, el número que ve el usuario sigue siendo el real.
-     *
-     * @param  array $ids_que_cambiaron
-     * @return void
-     */
-    protected function registrar_articulos_que_cambiaron($ids_que_cambiaron)
-    {
-        if (is_null($this->price_update_run_id) || count($ids_que_cambiaron) == 0) {
-            return;
-        }
-
-        foreach (array_chunk($ids_que_cambiaron, 500) as $lote) {
-            $filas = [];
-
-            foreach ($lote as $article_id) {
-                $filas[] = [
-                    'price_update_run_id' => $this->price_update_run_id,
-                    'article_id'          => $article_id,
-                ];
-            }
-
-            DB::table('price_update_run_articles')->insertOrIgnore($filas);
-        }
     }
 
     /**

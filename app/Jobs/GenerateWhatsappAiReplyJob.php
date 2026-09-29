@@ -132,6 +132,34 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return;
             }
 
+            // 🔴 SI YA HAY UNA PENDIENTE, EL AGENTE NO SE METE (misión sugerencia-ia-como-borrador,
+            // bug encontrado por el chequeo independiente, 29/9/2026). Toda `a_confirmar` que sea
+            // ANTERIOR al último entrante ya la borró `WhatsappAgentScheduler::schedule_after_inbound()`
+            // al programar este mismo job (discard corre al PROGRAMAR, no al ejecutar). Así que si
+            // cuando el job por fin corre sigue habiendo una `a_confirmar`, es porque una persona la
+            // creó DESPUÉS de ese entrante —apretó "Sugerir respuesta", o cualquier otro camino
+            // humano que persista un borrador— mientras el job esperaba su demora. Hay alguien
+            // interviniendo el chat en este momento, y el agente automático no puede pisarle el
+            // borrador ni, peor, mandar una respuesta que nadie aprobó por encima suyo.
+            //
+            // Va ACÁ, antes de gastar una llamada a Anthropic, y de nuevo más abajo justo antes de
+            // `store_pending_ai_message()`: la sugerencia se puede crear durante los segundos que
+            // dura la llamada a la IA, después de este primer chequeo.
+            //
+            // No rompe el reintento de un envío fallido (`WhatsappChatHelper::mark_ai_message_send_failed()`
+            // deja la fila en 'a_confirmar' con `delivery_status = 'fallido'`): ese mensaje fallado
+            // es justamente una `a_confirmar` que YA EXISTÍA antes de cualquier entrante nuevo, así
+            // que si el cliente vuelve a escribir, `schedule_after_inbound()` la descarta al
+            // programar el job siguiente, igual que a cualquier otra pendiente vieja — nunca llega
+            // a convivir con un job que la vea todavía viva.
+            if ($chat->is_esperando_aprobacion()) {
+                Log::channel('daily')->info('GenerateWhatsappAiReplyJob: omitido (ya hay una respuesta a_confirmar esperando aprobación: alguien está interviniendo el chat).', [
+                    'chat_id' => $this->chat_id,
+                ]);
+
+                return;
+            }
+
             // Se pide la variante con foto porque este es el ÚNICO consumidor que puede hacer
             // algo con el código de barras marcado. El texto que devuelve ya viene sin el
             // marcador: el recorte lo hace el service, que es el único que produce el texto, y
@@ -182,6 +210,20 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 // blanco esperando que la confirme. Mismo criterio que la respuesta vacía de
                 // más arriba: no se persiste nada.
                 Log::channel('daily')->warning('GenerateWhatsappAiReplyJob: la respuesta era solo el marcador de foto y el producto no se pudo resolver, no se persiste nada.', [
+                    'chat_id' => $this->chat_id,
+                ]);
+
+                return;
+            }
+
+            // 🔴 SEGUNDO CHEQUEO, MISMO MOTIVO QUE EL DE ARRIBA: entre el primer chequeo y esta
+            // línea pasó toda la llamada a Anthropic (segundos) más la resolución de la foto del
+            // producto, y en ese hueco una persona pudo haber pedido una sugerencia. Sin este
+            // re-chequeo, el `store_pending_ai_message()` de acá abajo dejaría DOS borradores
+            // conviviendo en el chat, y el de la persona quedaría enterrado debajo del que generó
+            // el agente sin que nadie lo haya aprobado.
+            if ($chat->is_esperando_aprobacion()) {
+                Log::channel('daily')->info('GenerateWhatsappAiReplyJob: respuesta descartada (apareció una a_confirmar mientras la IA generaba la suya).', [
                     'chat_id' => $this->chat_id,
                 ]);
 

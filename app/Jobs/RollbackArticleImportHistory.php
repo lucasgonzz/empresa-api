@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\ImportHistory;
@@ -633,13 +634,24 @@ class RollbackArticleImportHistory implements ShouldQueue
 
     /**
      * Recalcula final_price, costo_real, previus_final_price y final_price_updated_at
-     * de los artículos restaurados, por la misma vía que usa la importación real
-     * (`ArticleHelper::setFinalPrice()`, la misma que llama
-     * `ActualizarBBDD::set_precios_finales()`). No se escribe una derivación nueva:
-     * se recargan los modelos frescos -- los pasos anteriores restauraron columnas y
-     * relaciones con query builder (`Article::where()->update()`, `DB::table()`),
-     * que no pasan por Eloquent, así que cualquier modelo en memoria quedó viejo --
-     * y se les vuelve a aplicar el cálculo normal.
+     * de los artículos restaurados, con el MISMO cálculo que usa la importación real
+     * (`ArticleHelper::setFinalPrice()`). No se escribe una derivación nueva: los pasos
+     * anteriores restauraron columnas y relaciones con query builder
+     * (`Article::where()->update()`, `DB::table()`), así que el recálculo relee los
+     * artículos frescos de la base y les vuelve a aplicar el cálculo normal.
+     *
+     * Misión recalculo-precios-motor-rapido (28/9/2026): el recálculo lo hace el motor en
+     * lote (`RecalculoDePreciosEnLote`), que lee los artículos por tanda con sus relaciones
+     * precargadas y escribe en bloque, y deja la base EXACTAMENTE igual que el
+     * `setFinalPrice(..., true, ...)` por artículo de antes (lo prueba
+     * `RecalculoEnLote/10_Rollback_de_importacion_con_el_motor_Test`). Antes eran decenas de
+     * consultas por artículo adentro de la transacción del rollback, que tiene 30 minutos
+     * de tope: en una importación grande, el recálculo solo podía comerse ese tope.
+     *
+     * Mismo dueño (el del historial, ya validado contra quien pidió la reversión) y mismo
+     * autor de los price_changes (`owner_user_id`) que antes. El motor abre una transacción
+     * por tanda: adentro de la del handle() es un savepoint, así que si algo falla se
+     * revierte la reversión entera, igual que antes.
      *
      * @param  int[] $article_ids
      * @param  int   $user_id
@@ -653,13 +665,7 @@ class RollbackArticleImportHistory implements ShouldQueue
             return;
         }
 
-        $price_types = PriceType::where('user_id', $user->id)
-                                    ->orderBy('position', 'ASC')
-                                    ->get();
-
-        Article::whereIn('id', $article_ids)->get()->each(function (Article $article) use ($user, $price_types) {
-            ArticleHelper::setFinalPrice($article, $user->id, $user, $this->owner_user_id, true, $price_types);
-        });
+        RecalculoDePreciosEnLote::recalcular($article_ids, $user, $this->owner_user_id);
     }
 
     /**

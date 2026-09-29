@@ -10,6 +10,7 @@ use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAiAutoSendScheduler;
 use App\Services\WhatsappBotSendService;
 use App\Services\WhatsappInboundMediaService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -551,6 +552,67 @@ class WhatsappChatHelper
     }
 
     /**
+     * Edita el cuerpo de una respuesta pendiente y/o pausa su auto-envío (misión
+     * sugerencia-ia-como-borrador, contrato 2: `PUT whatsapp-chats/messages/{message_id}`).
+     * Con `$body` no nulo reemplaza el texto; con `$body` null solo cancela el temporizador
+     * (D5: entrar en modo edición pausa el auto-envío para que no mande el texto viejo
+     * mientras el operador escribe el nuevo).
+     *
+     * 🔴 EL AUTO-ENVÍO SE CANCELA SIEMPRE, ANTES DE MIRAR SI EL MENSAJE SIGUE EN
+     * 'a_confirmar'. Mismo orden que `discard_pending_ai_messages()`: una persona ya tomó el
+     * mensaje con solo entrar a editarlo, así que el temporizador no tiene más razón para
+     * seguir vivo, gane o pierda la carrera contra un auto-envío que ya arrancó.
+     *
+     * 🔴 LA CONDICIÓN "SIGUE EN 'a_confirmar'" SE VERIFICA CON `lockForUpdate()` ADENTRO DE
+     * UNA TRANSACCIÓN, NO CONTANDO FILAS AFECTADAS COMO `claim_ai_message_for_send()`. Es la
+     * misma garantía (nadie más puede tocar la fila entre que se lee el estado y se escribe:
+     * el lock la bloquea hasta el commit) pero por OTRO camino, y no es antojo: acá el UPDATE
+     * puede no cambiar ningún valor (pausar sin `body` un mensaje al que `cancel_for_message()`
+     * -que corre arriba, sin condición- ya le dejó `ai_auto_send_at` en null). MySQL informa
+     * "filas afectadas" como filas REALMENTE MODIFICADAS, no filas que matchearon el WHERE: un
+     * `UPDATE ... SET ai_auto_send_at = NULL` sobre una fila que YA tiene `ai_auto_send_at`
+     * null actualiza 0 filas aunque el WHERE haya encontrado la fila, así que contar filas
+     * acá daría un 422 falso en el caso más común (pausar sin editar el texto). Medido
+     * armando esta misión: por eso el mismo criterio de `claim_ai_message_for_send()` (que
+     * SÍ sirve ahí porque `ai_status` cambia de valor de verdad, de 'a_confirmar' a
+     * 'enviando') no se puede copiar tal cual acá.
+     *
+     * `delivery_status` y `send_error` no se tocan: siguen siendo información de un intento de
+     * envío anterior, y editar el texto no los borra ni los confirma.
+     *
+     * @param  WhatsappChatMessage  $message  Mensaje con `ai_status = 'a_confirmar'` (ya
+     *                                         validado por el caller).
+     * @param  string|null  $body  Texto nuevo (ya trimeado y no vacío), o null para solo pausar.
+     * @return WhatsappChatMessage|null  El mensaje actualizado, o null si perdió la condición
+     *                                   (ya no estaba en 'a_confirmar' al momento del UPDATE).
+     */
+    public static function update_pending_ai_message(WhatsappChatMessage $message, $body = null)
+    {
+        (new WhatsappAiAutoSendScheduler())->cancel_for_message((int) $message->id);
+
+        return DB::transaction(function () use ($message, $body) {
+            $estado_actual = WhatsappChatMessage::where('id', $message->id)
+                ->lockForUpdate()
+                ->value('ai_status');
+
+            if ((string) $estado_actual !== 'a_confirmar') {
+                return null;
+            }
+
+            $columns = ['ai_auto_send_at' => null];
+            if (! is_null($body)) {
+                $columns['body'] = $body;
+            }
+
+            WhatsappChatMessage::where('id', $message->id)->update($columns);
+
+            // El UPDATE fue por query builder: el modelo en memoria queda viejo y hay que
+            // releerlo antes de devolverlo (lo va a servir `fullModel()` en la respuesta).
+            return $message->refresh();
+        });
+    }
+
+    /**
      * Versión EN LOTE de `WhatsappChat::is_esperando_aprobacion()`: ids de `$chat_ids` que
      * tienen al menos un mensaje esperando aprobación humana (misión
      * whatsapp-tablero-clientes). Una sola consulta, sin importar cuántos chats haya —
@@ -572,6 +634,40 @@ class WhatsappChatHelper
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * Números para la campanita del menú lateral y para el "resumen" del módulo (misión
+     * sugerencia-ia-como-borrador, contrato 3: `GET whatsapp-chats/resumen`), acotados a un
+     * owner puntual — nunca a la base entera, que es justo el tipo de fuga que ya costó un
+     * hallazgo en otros lugares del sistema (ver `APRENDER_NO_PARCHEAR.md`).
+     *
+     * 🔴 LOS DOS NÚMEROS SE CALCULAN POR SEPARADO A PROPÓSITO, aunque hoy en la práctica
+     * coincidan (D6 del plan: mientras valga D2 —nunca dos borradores en el mismo chat a la
+     * vez—, "cuántos mensajes" y "en cuántos chats" son el mismo número). No se deriva uno del
+     * otro porque nada en esta función garantiza D2: es una decisión de otro lugar del código
+     * (`suggest()` descarta el pendiente viejo antes de guardar el nuevo), y si ese lugar
+     * cambiara el día de mañana, esta cuenta no tiene por qué enterarse mal.
+     *
+     * @param  int  $owner_id
+     * @return array{mensajes_por_aprobar: int, chats_esperando_aprobacion: int}
+     */
+    public static function resumen_pendientes($owner_id)
+    {
+        $chat_ids = WhatsappChat::where('user_id', $owner_id)->pluck('id')->all();
+
+        if ($chat_ids === []) {
+            return ['mensajes_por_aprobar' => 0, 'chats_esperando_aprobacion' => 0];
+        }
+
+        $mensajes_por_aprobar = WhatsappChatMessage::whereIn('whatsapp_chat_id', $chat_ids)
+            ->where('ai_status', 'a_confirmar')
+            ->count();
+
+        return [
+            'mensajes_por_aprobar'       => $mensajes_por_aprobar,
+            'chats_esperando_aprobacion' => count(self::chat_ids_esperando_aprobacion($chat_ids)),
+        ];
     }
 
     /**

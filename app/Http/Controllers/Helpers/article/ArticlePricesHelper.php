@@ -240,12 +240,29 @@ class ArticlePricesHelper {
         // describir: abajo ya no se distingue cual de las dos ramas gano.
         $origen_de_los_margenes = null;
 
+        /*
+         * Modo lote (PreciosEnLote: la importación y el recálculo en segundo plano, misión
+         * recalculo-precios-motor-rapido, 28/9/2026). Las listas de una categoría o subcategoría
+         * son las mismas para todos sus artículos, y consultarlas por artículo —más los recargos
+         * de cada lista, otra vez por artículo— era el costo de estas cuentas en un recálculo
+         * masivo. En modo lote se consultan una vez por categoría y por tanda (el memo vive en
+         * PreciosEnLote); fuera del modo lote, la misma consulta de siempre, en el momento.
+         * La consulta es UNA sola definición, la de acá, para los dos modos.
+         */
+        $en_lote = PreciosEnLote::esta_activo();
+
         // Priorizar los tipos de precios de la subcategoría si existen y tienen porcentaje válido
         if (!is_null($sub_category)) {
-            $price_types = $sub_category->price_types()
-                ->whereNotNull('price_type_sub_category.percentage') // Asegurar que el porcentaje no sea nulo
-                ->where('price_type_sub_category.percentage', '!=', '') // Asegurar que no sea un string vacío
-                ->get();
+            $consulta_de_la_subcategoria = function () use ($sub_category) {
+                return $sub_category->price_types()
+                    ->whereNotNull('price_type_sub_category.percentage') // Asegurar que el porcentaje no sea nulo
+                    ->where('price_type_sub_category.percentage', '!=', '') // Asegurar que no sea un string vacío
+                    ->get();
+            };
+
+            $price_types = $en_lote
+                            ? PreciosEnLote::listas_de_categoria_en_memoria('sub_category', $sub_category->id, $consulta_de_la_subcategoria)
+                            : $consulta_de_la_subcategoria();
 
             if (!$price_types->isEmpty()) {
                 $origen_de_los_margenes = 'de la subcategoría '.$sub_category->name;
@@ -255,9 +272,15 @@ class ArticlePricesHelper {
         // Si no hay tipos de precios válidos en la subcategoría, buscar en la categoría
         if (is_null($price_types) || $price_types->isEmpty()) {
             if (!is_null($category)) {
-                $price_types = $category->price_types()
-                    // ->withPivot('percentage')
-                    ->get();
+                $consulta_de_la_categoria = function () use ($category) {
+                    return $category->price_types()
+                        // ->withPivot('percentage')
+                        ->get();
+                };
+
+                $price_types = $en_lote
+                                ? PreciosEnLote::listas_de_categoria_en_memoria('category', $category->id, $consulta_de_la_categoria)
+                                : $consulta_de_la_categoria();
 
                 $origen_de_los_margenes = 'de la categoría '.$category->name;
 
@@ -270,7 +293,11 @@ class ArticlePricesHelper {
 
         if (!is_null($price_types)) {
 
-            Log::info('Va a usar price types de la categoria');
+            /* Un renglón por artículo: en un recálculo masivo con el log en debug son miles de
+               líneas por corrida. Se loguea solo fuera del modo lote, como siempre. */
+            if (!$en_lote) {
+                Log::info('Va a usar price types de la categoria');
+            }
 
             // Recorrer cada tipo de precio para calcular el precio final
             foreach ($price_types as $price_type) {

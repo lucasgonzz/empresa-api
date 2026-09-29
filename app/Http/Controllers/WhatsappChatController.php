@@ -592,29 +592,42 @@ class WhatsappChatController extends Controller
 
     /**
      * Genera una respuesta sugerida con IA para el chat (misma personalidad, mismas reglas
-     * fijas y mismo historial que usaría la respuesta automática del webhook), pero NO la
-     * envía ni la persiste: el front la carga en el input para que el operador la edite y
-     * la mande a mano por `POST whatsapp-chats/{id}/messages` (Prompt 02).
+     * fijas y mismo historial que usaría la respuesta automática del webhook) y la PERSISTE
+     * como burbuja `a_confirmar` (misión sugerencia-ia-como-borrador, 29/9/2026): el front ya
+     * no la carga en el input, la dibuja como un mensaje del negocio con el borde de
+     * "esperando tu aprobación" y el operador la edita o la manda desde ahí, con el mismo
+     * camino que ya usan las respuestas del agente automático (`confirm_ai_message()` /
+     * `discard_ai_message()` / `PUT whatsapp-chats/messages/{id}` nuevo).
      *
-     * 🔴 LA SUGERENCIA SALE COMO TEXTO PELADO, SIN LA FOTO DEL PRODUCTO, Y ES A PROPÓSITO. El
-     * agente automático puede adjuntar la foto porque él mismo persiste la fila del mensaje y la
-     * manda; acá el texto cae en el input del operador y después viaja por
-     * `POST whatsapp-chats/{id}/messages`, que envía `body` y nada más: un adjunto no tiene por
-     * dónde pasar en ese camino. Hacer que la sugerencia lleve la foto no es agregar un campo:
-     * es un segundo campo en esta respuesta, un adjunto pendiente dibujado en el composer y otro
-     * en el endpoint de envío del operador — y el operador YA tiene el clip al lado del input
-     * para mandar la foto que quiera. No entra en el arreglo de un bug.
+     * 🔴 ANTES DE ESTA MISIÓN NO PERSISTÍA NADA: el texto caía en el input y salía por
+     * `POST whatsapp-chats/{id}/messages`. Lucas pidió el cambio de comportamiento a propósito
+     * (el pedido es justamente que la sugerencia "quede guardada como una burbuja enviada por
+     * el negocio"), así que `suggestion` en la respuesta es compatibilidad para quien todavía
+     * lea ese campo; `model` y `chat` son el contrato nuevo.
+     *
+     * D2 del plan: pedir una sugerencia nueva REEMPLAZA cualquier pendiente que ya hubiera en
+     * el chat (se descarta antes de guardar la que llega) — nunca dos borradores esperando
+     * aprobación a la vez. D1: nace SIN temporizador de auto-envío, porque la pidió una
+     * persona a mano y tiene que salir solo cuando ella la confirme; por eso acá NO se llama a
+     * `WhatsappAiAutoSendScheduler::schedule_for_message()` (a diferencia del agente
+     * automático, que sí lo hace después de `store_pending_ai_message()`).
+     *
+     * 🔴 LA SUGERENCIA SALE COMO TEXTO PELADO, SIN LA FOTO DEL PRODUCTO, Y ES A PROPÓSITO (D7,
+     * sigue fuera de alcance como antes de esta misión). El agente automático puede adjuntar
+     * la foto porque su Job resuelve el `bar_code` contra el catálogo
+     * (`GenerateWhatsappAiReplyJob::resolve_product_photo()`); acá no se resuelve nada de eso,
+     * así que `store_pending_ai_message()` se llama sin `$extra`.
      *
      * Lo que sí se garantiza es que el `[FOTO:...]` con el que el agente pide esa foto no le
      * llegue nunca al operador ni, a través suyo, al cliente: el marcador lo saca
      * `WhatsappBotAiService::generate_response_with_photo()`, o sea el productor del texto, no
      * este caller.
      *
-     * 🔴 SIN SUGERENCIA ES UN 422 CON MENSAJE, NO UN 200 CON `suggestion: ''`. Antes del
-     * 15/9/2026 cualquier falla interna del service (sin conexión configurada, la API de
-     * Anthropic caída, una excepción) volvía como 200 silencioso: el botón dejaba de decir
-     * "Sugiriendo..." y no pasaba nada más, sin ningún error a la vista. Ver
-     * `WhatsappBotAiService::empty_response()` para los motivos posibles.
+     * 🔴 SIN SUGERENCIA ES UN 422 CON MENSAJE, NO UN 200 CON `suggestion: ''`, Y NO SE
+     * PERSISTE NADA. Antes del 15/9/2026 cualquier falla interna del service (sin conexión
+     * configurada, la API de Anthropic caída, una excepción) volvía como 200 silencioso: el
+     * botón dejaba de decir "Sugiriendo..." y no pasaba nada más, sin ningún error a la vista.
+     * Ver `WhatsappBotAiService::empty_response()` para los motivos posibles.
      *
      * @param  int  $id
      * @return JsonResponse
@@ -646,7 +659,8 @@ class WhatsappChatController extends Controller
         // body vacío con este mismo array — es el contrato correcto para el agente automático,
         // que no tiene a nadie esperando una respuesta. Acá SÍ hay un operador mirando el botón
         // "Sugiriendo...", así que un body vacío deja de ser un 200 silencioso y pasa a explicar
-        // qué pasó, con el mensaje que corresponde a `motivo`.
+        // qué pasó, con el mensaje que corresponde a `motivo`. Y sin body no hay nada que
+        // persistir: se sale ANTES de tocar el pendiente que ya hubiera en el chat.
         if ($resultado['body'] === '') {
             $mensajes_por_motivo = [
                 'sin_configurar' => 'No hay una conexión con la IA configurada para esta empresa.',
@@ -662,7 +676,26 @@ class WhatsappChatController extends Controller
             ], 422);
         }
 
-        return response()->json(['suggestion' => $resultado['body']], 200);
+        // D2: la sugerencia nueva reemplaza a la que ya hubiera esperando aprobación en este
+        // chat. Va ANTES de crear la nueva: si quedara viva junto a la recién creada, D2
+        // ("nunca dos borradores a la vez") se rompería justo en el caso que más importa,
+        // que es pedir una sugerencia dos veces seguidas.
+        WhatsappChatHelper::discard_pending_ai_messages($chat);
+
+        // D1: sin temporizador de auto-envío. A diferencia del agente automático (que llama a
+        // WhatsappAiAutoSendScheduler::schedule_for_message() después de esto), acá la pidió
+        // una persona mirando la pantalla: sale sola cuando ELLA la confirma, nunca por un
+        // plazo vencido.
+        $message = WhatsappChatHelper::store_pending_ai_message($chat, $resultado['body']);
+
+        // `estado_pendiente()` se lee DESPUÉS de crear el mensaje: antes de esta línea el chat
+        // todavía no tenía ningún `a_confirmar` (se acaba de descartar el que hubiera), así
+        // que leerlo antes devolvería un estado viejo.
+        return response()->json([
+            'suggestion' => $resultado['body'],
+            'model'      => $this->fullModel('WhatsappChatMessage', $message->id),
+            'chat'       => ['id' => $chat->id, 'estado_pendiente' => $chat->estado_pendiente()],
+        ], 200);
     }
 
     /**
@@ -823,6 +856,90 @@ class WhatsappChatController extends Controller
         }
 
         return response()->json(['message' => 'Mensaje descartado.'], 200);
+    }
+
+    /**
+     * Edita el cuerpo de una respuesta pendiente (sugerencia o del agente automático), o solo
+     * pausa su auto-envío si no llega `body` (misión sugerencia-ia-como-borrador, contrato 2).
+     * Es lo que dispara el modo edición de la burbuja `a_confirmar` en la SPA: al hacer clic en
+     * el texto para editarlo (D5), y también al tocar "Enviar" con el texto cambiado (ahí el
+     * front llama este endpoint primero y `confirm_ai_message()` después).
+     *
+     * 🔴 D5: EDITAR UNA PENDIENTE CANCELA SU AUTO-ENVÍO, SIEMPRE, VENGA O NO `body`. Una
+     * persona la tomó (la está mirando, editando o a punto de pausar para editar) y el
+     * temporizador no tiene que seguir corriendo con el texto viejo por debajo. Por eso el
+     * front, al entrar en modo edición sobre un mensaje con `ai_auto_send_at`, llama a este
+     * mismo endpoint SIN `body` antes de dejar tipear.
+     *
+     * `delivery_status` y `send_error` no se tocan: siguen siendo información de un intento de
+     * envío anterior (si lo hubo) y editar el texto no lo borra ni lo confirma.
+     *
+     * @param  Request  $request  Espera `body` (opcional; string no vacío tras `trim()`).
+     * @param  int  $message_id
+     * @return JsonResponse
+     */
+    public function update_ai_message(Request $request, $message_id): JsonResponse
+    {
+        $message = $this->find_owned_ai_message($message_id);
+        if (is_null($message)) {
+            return response()->json(['message' => 'Mensaje no encontrado.'], 404);
+        }
+
+        if ((string) $message->ai_status !== 'a_confirmar') {
+            // Mismo atajo que confirm_ai_message() / discard_ai_message(): esta lectura NO
+            // bloquea nada, es solo para devolver el `code` correcto sin hacer trabajo al
+            // pedo. La defensa de verdad es el UPDATE condicional de adentro del helper.
+            $code = (string) $message->ai_status === 'enviando' ? 'ya_en_envio' : 'ya_no_esta_pendiente';
+
+            return response()->json([
+                'code'    => $code,
+                'message' => 'El mensaje ya no está esperando confirmación.',
+            ], 422);
+        }
+
+        // `has('body')` distingue "no vino la clave" (solo pausar) de "vino vacía" (422): un
+        // `trim((string) $request->body)` sin este chequeo previo no puede hacer esa
+        // diferencia, porque tanto ausente como vacío dan ''.
+        $body = null;
+        if ($request->has('body')) {
+            $body = trim((string) $request->body);
+            if ($body === '') {
+                return response()->json(['message' => 'El mensaje no puede quedar vacío.'], 422);
+            }
+        }
+
+        $actualizado = WhatsappChatHelper::update_pending_ai_message($message, $body);
+
+        if (is_null($actualizado)) {
+            // Perdió la carrera contra el chequeo de arriba (por ejemplo, el auto-envío
+            // arrancó justo en el medio): desde 'a_confirmar' la única transición posible es
+            // hacia 'enviando', así que el código no admite ambigüedad como en el chequeo de
+            // arriba.
+            return response()->json([
+                'code'    => 'ya_en_envio',
+                'message' => 'El mensaje ya no está esperando confirmación.',
+            ], 422);
+        }
+
+        $chat = WhatsappChat::find($actualizado->whatsapp_chat_id);
+        if (! is_null($chat)) {
+            WhatsappChatHelper::broadcast_update((int) $chat->user_id, $chat, $actualizado);
+        }
+
+        return response()->json(['model' => $this->fullModel('WhatsappChatMessage', $actualizado->id)], 200);
+    }
+
+    /**
+     * Números para la campanita del menú lateral y para la tarjeta del tablero (contrato 3 de
+     * la misión sugerencia-ia-como-borrador): cuántos mensajes están esperando aprobación
+     * humana y en cuántos chats distintos, acotado al owner autenticado (un empleado ve lo
+     * del dueño, no lo propio: `userId()` sin `false` resuelve al owner).
+     *
+     * @return JsonResponse
+     */
+    public function resumen(): JsonResponse
+    {
+        return response()->json(WhatsappChatHelper::resumen_pendientes($this->userId()), 200);
     }
 
     /**
