@@ -1055,6 +1055,13 @@ Route::middleware('auth:sanctum')->group(function () {
 // gateados por auth Sanctum + la extensión 'whatsapp' (ver ExtencionEmpresaWhatsappSeeder).
 Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(function () {
     Route::get('whatsapp-chats', 'WhatsappChatController@index');
+
+    // Contrato 3 de la misión sugerencia-ia-como-borrador. Va ANTES de cualquier
+    // `whatsapp-chats/{id}` (hoy solo existe con sufijo, como `{id}/messages`, pero se declara
+    // acá para que el día que se agregue un `GET whatsapp-chats/{id}` puro, 'resumen' no caiga
+    // adentro de ese `{id}` en vez de resolver a este endpoint.
+    Route::get('whatsapp-chats/resumen', 'WhatsappChatController@resumen');
+
     Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
     Route::post('whatsapp-chats', 'WhatsappChatController@store');
     Route::post('whatsapp-chats/{id}/messages', 'WhatsappChatController@send_message');
@@ -1104,6 +1111,10 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:whatsapp'])->group(f
     // Confirmación humana de la respuesta del agente (grupo 137, misión whatsapp-agente).
     Route::put('whatsapp-chats/messages/{message_id}/confirm', 'WhatsappChatController@confirm_ai_message');
     Route::delete('whatsapp-chats/messages/{message_id}', 'WhatsappChatController@discard_ai_message');
+
+    // Edita o pausa una respuesta pendiente (contrato 2 de la misión
+    // sugerencia-ia-como-borrador): el "clic para editar" de la burbuja `a_confirmar`.
+    Route::put('whatsapp-chats/messages/{message_id}', 'WhatsappChatController@update_ai_message');
 
     // Inyecta un mensaje entrante como si lo hubiera mandado el cliente (solo dueño). Corre
     // exactamente el mismo camino que el webhook real: ventana de 24 h, debounce y agente.
