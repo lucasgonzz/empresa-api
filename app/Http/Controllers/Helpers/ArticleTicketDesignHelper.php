@@ -113,10 +113,29 @@ class ArticleTicketDesignHelper
         'imagen'               => array('w' => 20, 'h' => 20, 'tamano' => 8,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'C'),
         'fecha_impresion'      => array('w' => 15, 'h' => 5,  'tamano' => 8,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'C'),
         'texto_fijo'           => array('w' => 30, 'h' => 6,  'tamano' => 10, 'negrita' => true,  'saltos_de_linea' => false, 'alineacion' => 'L'),
+
+        /* Agregadas en la segunda tanda (29/9/2026). El SPA las espeja con las mismas claves y defaults. */
+        'precio_anterior'      => array('w' => 40, 'h' => 8,  'tamano' => 14, 'negrita' => true,  'saltos_de_linea' => false, 'alineacion' => 'R'),
+        'precio_promocional'   => array('w' => 40, 'h' => 10, 'tamano' => 20, 'negrita' => true,  'saltos_de_linea' => false, 'alineacion' => 'R'),
+        'contenido'            => array('w' => 30, 'h' => 5,  'tamano' => 9,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'L'),
+        'plu'                  => array('w' => 30, 'h' => 5,  'tamano' => 9,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'L'),
+        'origen'               => array('w' => 30, 'h' => 5,  'tamano' => 9,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'L'),
+        'modelo'               => array('w' => 50, 'h' => 8,  'tamano' => 9,  'negrita' => false, 'saltos_de_linea' => true,  'alineacion' => 'L'),
+        'unidades_por_bulto'   => array('w' => 30, 'h' => 5,  'tamano' => 9,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'L'),
+        'peso'                 => array('w' => 30, 'h' => 5,  'tamano' => 9,  'negrita' => false, 'saltos_de_linea' => false, 'alineacion' => 'L'),
     );
 
-    /** Tipos que llevan `rotulo` (anteponer el nombre de la lista, o "Precio: "). */
-    const TIPOS_CON_ROTULO = array('precio_final', 'precio_lista');
+    /**
+     * Tipos que llevan `rotulo`: `precio_lista` antepone el nombre de la lista; `precio_final`,
+     * "Precio: "; `precio_anterior`, "Antes: "; `precio_promocional`, "Promo: ".
+     */
+    const TIPOS_CON_ROTULO = array('precio_final', 'precio_lista', 'precio_anterior', 'precio_promocional');
+
+    /**
+     * Los precios: van siempre en un renglón y NUNCA se recortan con "…" (un precio cortado es un
+     * precio equivocado). Si no entran, el PDF les achica la letra de a 0,5 pt, hasta 5 pt.
+     */
+    const TIPOS_DE_PRECIO = array('precio_final', 'precio_lista', 'precio_anterior', 'precio_promocional');
 
     /** Alineaciones válidas. */
     const ALINEACIONES = array('L', 'C', 'R');
@@ -418,8 +437,10 @@ class ArticleTicketDesignHelper
 
     /**
      * Acota posición y largo de un campo sobre un eje: `pos >= 0`, `largo >= 2`, `pos + largo <=
-     * limite`. Si no entra, primero se achica el largo y, si aun así no entra (la posición quedó
-     * pegada al borde), se corre la posición. Todo redondeado a un decimal.
+     * limite`. Si el campo se sale, se CORRE hacia adentro conservando su tamaño
+     * (`pos = min(pos, limite - largo)`); el largo solo se achica si es más grande que la etiqueta
+     * entera. Es lo mismo que hace `encerrar_en_la_etiqueta` en el editor del SPA, así las dos
+     * puntas dejan el campo en el mismo lugar. Todo redondeado a un decimal.
      *
      * @param  mixed  $pos
      * @param  mixed  $largo
@@ -446,12 +467,12 @@ class ArticleTicketDesignHelper
             $largo = $limite;
         }
 
-        if ($pos > $limite - self::LADO_MINIMO + self::EPSILON) {
-            $pos = round($limite - self::LADO_MINIMO, 1);
+        if ($pos + $largo > $limite + self::EPSILON) {
+            $pos = round($limite - $largo, 1);
         }
 
-        if ($pos + $largo > $limite + self::EPSILON) {
-            $largo = round($limite - $pos, 1);
+        if ($pos < 0) {
+            $pos = 0.0;
         }
 
         return array(self::numero_limpio($pos), self::numero_limpio($largo));
@@ -483,7 +504,7 @@ class ArticleTicketDesignHelper
 
             $dueno = self::bloquear_dueno($owner_id);
 
-            if (is_null($dueno) || !is_null($dueno->owner_id)) {
+            if (is_null($dueno) || !is_null($dueno->owner_id) || self::imprime_con_funcion_propia($dueno)) {
                 return 0;
             }
 
@@ -540,7 +561,7 @@ class ArticleTicketDesignHelper
 
             $dueno = self::bloquear_dueno($owner_id);
 
-            if (is_null($dueno) || !is_null($dueno->owner_id)) {
+            if (is_null($dueno) || !is_null($dueno->owner_id) || self::imprime_con_funcion_propia($dueno)) {
                 return null;
             }
 
@@ -610,6 +631,59 @@ class ArticleTicketDesignHelper
         }
 
         return (int) round($valor);
+    }
+
+    /**
+     * Si el dueño imprime las etiquetas con una función propia (`users.article_ticket_print_function`,
+     * hoy solo 'golonorte'). A esos dueños el sistema NO les genera diseños —ni el seeder ni el alta
+     * de una lista—, así su menú de etiquetas del listado queda exactamente como hoy (sin diseños,
+     * el SPA muestra las opciones de siempre).
+     *
+     * @param  \App\Models\User  $dueno
+     * @return bool
+     */
+    static function imprime_con_funcion_propia($dueno)
+    {
+        $funcion = $dueno->article_ticket_print_function;
+
+        return !is_null($funcion) && trim((string) $funcion) !== '';
+    }
+
+    /**
+     * Lista borrada -> se borran los diseños que el sistema generó para ella (los del usuario
+     * tienen `price_type_id` null y no se tocan). Lo llama `PriceTypeObserver::deleted()`.
+     *
+     * @param  \App\Models\PriceType  $lista
+     * @return int  Cuántos borró.
+     */
+    static function borrar_disenos_de_lista($lista)
+    {
+        return ArticleTicketDesign::where('user_id', $lista->user_id)
+                                    ->where('price_type_id', $lista->id)
+                                    ->delete();
+    }
+
+    /**
+     * Lista renombrada -> se renombran los diseños que el sistema generó para ella, solo si
+     * todavía se llaman como la lista (si el usuario le puso otro nombre, se respeta). Lo llama
+     * `PriceTypeObserver::updated()`.
+     *
+     * @param  \App\Models\PriceType  $lista
+     * @param  string                 $nombre_viejo
+     * @return int  Cuántos renombró.
+     */
+    static function renombrar_disenos_de_lista($lista, $nombre_viejo)
+    {
+        $nombre_nuevo = mb_substr(trim((string) $lista->name), 0, 120, 'UTF-8');
+
+        if ($nombre_nuevo === '') {
+            return 0;
+        }
+
+        return ArticleTicketDesign::where('user_id', $lista->user_id)
+                                    ->where('price_type_id', $lista->id)
+                                    ->where('name', mb_substr(trim((string) $nombre_viejo), 0, 120, 'UTF-8'))
+                                    ->update(array('name' => $nombre_nuevo));
     }
 
     /*

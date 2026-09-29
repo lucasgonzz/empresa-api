@@ -439,6 +439,30 @@ class ArticleTicketDesignPdf extends \fpdf
 
             case 'texto_fijo':
                 return isset($elemento['texto']) ? (string) $elemento['texto'] : '';
+
+            case 'precio_anterior':
+                return $this->precio_opcional($articulo->previus_final_price, $elemento['rotulo'] ? 'Antes: ' : '');
+
+            case 'precio_promocional':
+                return $this->precio_opcional($articulo->precio_promocional, $elemento['rotulo'] ? 'Promo: ' : '');
+
+            case 'contenido':
+                return trim((string) $articulo->contenido);
+
+            case 'plu':
+                return trim((string) $articulo->plu);
+
+            case 'origen':
+                return trim((string) $articulo->origen);
+
+            case 'modelo':
+                return $this->texto_plano($articulo->modelo);
+
+            case 'unidades_por_bulto':
+                return $this->entero($articulo->unidades_por_bulto);
+
+            case 'peso':
+                return $this->decimal_sin_ceros($articulo->peso);
         }
 
         return '';
@@ -515,10 +539,75 @@ class ArticleTicketDesignPdf extends \fpdf
             $texto = (string) $articulo->descriptions->first()->content;
         }
 
-        $texto = preg_replace('/<br\s*\/?>|<\/p>/i', "\n", $texto);
+        return $this->texto_plano($texto);
+    }
+
+    /**
+     * Un texto que puede traer HTML (descripción, modelo) en texto plano: los `<br>` y fines de
+     * párrafo pasan a salto de línea, se sacan las etiquetas y se decodifican las entidades.
+     *
+     * @param  mixed  $texto
+     * @return string
+     */
+    protected function texto_plano($texto)
+    {
+        $texto = preg_replace('/<br\s*\/?>|<\/p>/i', "\n", (string) $texto);
         $texto = html_entity_decode(strip_tags((string) $texto), ENT_QUOTES, 'UTF-8');
 
         return trim($texto);
+    }
+
+    /**
+     * Un precio que el artículo puede no tener (anterior, promocional): vacío si es null o 0.
+     *
+     * @param  mixed   $precio
+     * @param  string  $rotulo  "Antes: ", "Promo: " o ''.
+     * @return string
+     */
+    protected function precio_opcional($precio, $rotulo)
+    {
+        if (is_null($precio) || $precio === '' || !is_numeric($precio) || (float) $precio == 0) {
+            return '';
+        }
+
+        return $rotulo.$this->con_signo($precio);
+    }
+
+    /**
+     * Un entero ("12"), vacío si no hay dato.
+     *
+     * @param  mixed  $valor
+     * @return string
+     */
+    protected function entero($valor)
+    {
+        if (is_null($valor) || $valor === '' || !is_numeric($valor)) {
+            return '';
+        }
+
+        return number_format((int) round((float) $valor), 0, '', '.');
+    }
+
+    /**
+     * Un número con formato argentino y sin ceros de más: 1.5 -> "1,5", 1000 -> "1.000",
+     * 0.250 -> "0,25". Vacío si es null o 0 (un peso 0 es un dato sin cargar).
+     *
+     * @param  mixed  $valor
+     * @return string
+     */
+    protected function decimal_sin_ceros($valor)
+    {
+        if (is_null($valor) || $valor === '' || !is_numeric($valor) || (float) $valor == 0) {
+            return '';
+        }
+
+        $texto = number_format((float) $valor, 4, ',', '.');
+
+        if (strpos($texto, ',') !== false) {
+            $texto = rtrim(rtrim($texto, '0'), ',');
+        }
+
+        return $texto;
     }
 
     /**
@@ -545,9 +634,16 @@ class ArticleTicketDesignPdf extends \fpdf
     /**
      * Un texto en su recuadro.
      *
+     *   - Precios (`TIPOS_DE_PRECIO`): siempre un renglón, y NUNCA se recortan con "…" (un precio
+     *     cortado es un precio equivocado): si no entran, se les achica la letra de a 0,5 pt hasta
+     *     que entren, con un mínimo de 5 pt.
      *   - Sin saltos de línea: un solo renglón, centrado verticalmente, recortado con "…" al ancho.
      *   - Con saltos de línea: renglones de `tamano * 0.3528 * 1.15` mm desde arriba, cortados al
      *     alto del campo (el último que entra termina en "…" si sobraba texto).
+     *
+     * El ancho útil de un renglón es el de `Cell()`: con alineación L o R, `Cell()` deja un solo
+     * margen de celda (del lado de donde arranca el texto), así que se descuenta uno solo; centrado,
+     * los dos. Así un precio que `ArticleTicketPdf` imprimía entero acá también entra entero.
      *
      * @param  string  $texto  UTF-8.
      * @param  array   $elemento
@@ -561,17 +657,27 @@ class ArticleTicketDesignPdf extends \fpdf
     {
         $this->fuente($elemento);
 
-        $ancho_util = $w - (2 * $this->cMargin);
+        $es_precio = in_array($elemento['tipo'], ArticleTicketDesignHelper::TIPOS_DE_PRECIO, true);
 
-        if (!$elemento['saltos_de_linea']) {
+        if ($es_precio || !$elemento['saltos_de_linea']) {
+            $margenes = $elemento['alineacion'] === 'C' ? 2 : 1;
+            $ancho_de_un_renglon = $w - ($margenes * $this->cMargin);
+
             $renglon = $this->a_cp1252($this->en_un_renglon($texto));
-            $renglon = $this->recortar($renglon, $ancho_util, false);
+
+            if ($es_precio) {
+                $this->achicar_hasta_que_entre($renglon, $ancho_de_un_renglon, $elemento);
+            } else {
+                $renglon = $this->recortar($renglon, $ancho_de_un_renglon, false);
+            }
 
             $this->SetXY($x, $y);
             $this->celda($w, $h, $renglon, $elemento['alineacion']);
 
             return;
         }
+
+        $ancho_util = $w - (2 * $this->cMargin);
 
         $alto_renglon = $elemento['tamano'] * self::PT_A_MM * self::INTERLINEADO;
 
@@ -588,6 +694,37 @@ class ArticleTicketDesignPdf extends \fpdf
             $this->SetXY($x, $y + ($i * $alto_renglon));
             $this->celda($w, $alto_renglon, $renglon, $elemento['alineacion']);
         }
+    }
+
+    /**
+     * Achica la letra del campo de a 0,5 pt hasta que el renglón (CP1252) entre en el ancho, con un
+     * mínimo de 5 pt. El ancho de un texto es proporcional al tamaño de la letra, así que se calcula
+     * el tamaño final sin redibujar y se fija la fuente una sola vez.
+     *
+     * @param  string  $renglon
+     * @param  float   $ancho
+     * @param  array   $elemento
+     * @return void
+     */
+    protected function achicar_hasta_que_entre($renglon, $ancho, array $elemento)
+    {
+        $tamano = (float) $elemento['tamano'];
+        $ancho_actual = $this->GetStringWidth($renglon);
+
+        if ($ancho_actual <= $ancho || $ancho_actual <= 0) {
+            return;
+        }
+
+        $nuevo = $tamano;
+
+        while ($nuevo > ArticleTicketDesignHelper::TAMANO_MINIMO
+            && ($ancho_actual * $nuevo / $tamano) > $ancho + 0.0001) {
+            $nuevo -= 0.5;
+        }
+
+        $nuevo = max((float) ArticleTicketDesignHelper::TAMANO_MINIMO, $nuevo);
+
+        $this->SetFont('Arial', $elemento['negrita'] ? 'B' : '', $nuevo);
     }
 
     /**
