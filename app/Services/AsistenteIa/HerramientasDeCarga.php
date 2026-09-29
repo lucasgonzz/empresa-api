@@ -1202,7 +1202,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_permiso_de_empleado',
-                'description'  => 'Arma la tarjeta para DARLE o SACARLE un permiso a un empleado, por el mismo camino que la pantalla de Empleados. El empleado va por su nombre y el permiso por su nombre como lo muestra la pantalla ("Listar ventas") o por su código ("sale.index"). 🔴 SIEMPRE deja tarjeta para confirmar, aunque el dueño tenga el modo directo prendido y aunque te pidan que lo hagas sin preguntar: la pantalla reemplaza la lista entera de permisos y un cambio mal hecho deja a alguien sin poder trabajar, y nadie se entera hasta que llega. La tarjeta muestra CON QUÉ PERMISOS QUEDA el empleado: cuando la respuesta vuelva, contá eso. Solo la puede usar el dueño o un administrador. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para DARLE o SACARLE un permiso a un empleado, por el mismo camino que la pantalla de Empleados. El empleado va por su nombre y el permiso por su nombre como lo muestra la pantalla ("Ver el listado de ventas") o por su código ("sale.index"). 🔴 SIEMPRE deja tarjeta para confirmar, aunque el dueño tenga el modo directo prendido y aunque te pidan que lo hagas sin preguntar: la pantalla reemplaza la lista entera de permisos y un cambio mal hecho deja a alguien sin poder trabajar, y nadie se entera hasta que llega. La tarjeta muestra CON QUÉ PERMISOS QUEDA el empleado: cuando la respuesta vuelva, contá eso. Solo la puede usar el dueño o un administrador. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1212,7 +1212,7 @@ class HerramientasDeCarga
                         ],
                         'permiso'     => [
                             'type'        => 'string',
-                            'description' => 'Nombre del permiso como lo muestra la pantalla de Empleados, o su código. "Ver las ventas" es "Listar ventas" (sale.index).',
+                            'description' => 'Nombre del permiso como lo muestra la pantalla de Empleados, o su código. "Ver las ventas" es "Ver el listado de ventas" (sale.index).',
                         ],
                         'accion'      => [
                             'type'        => 'string',
