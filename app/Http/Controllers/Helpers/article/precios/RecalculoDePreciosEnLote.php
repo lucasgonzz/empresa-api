@@ -328,8 +328,12 @@ class RecalculoDePreciosEnLote
      * - Menos las columnas decimales cuyo valor nuevo y el de la base, los dos no nulos, quedarían
      *   guardados igual (ver es_decimal_sin_cambio()). Eloquent compara decimales como texto
      *   ("123.450000" de la base contra 123.45 en memoria) y los da por sucios siempre; save()
-     *   los escribía igual y la base quedaba con el mismo número. Saltearlos es lo que hace que
-     *   un recálculo que no cambia nada no escriba nada.
+     *   los escribía igual y la base quedaba con el mismo número. Saltearlos hace que un
+     *   recálculo que no cambia ningún precio no reescriba esas columnas; NO hace que no
+     *   escriba nada: un artículo con costo igual entra al UPDATE, con updated_at = ahora y
+     *   nada más, porque así lo dejaba el camino por artículo (el punto de abajo, a propósito).
+     *   Los únicos que no se escriben en absoluto son los que no traen ninguna columna: en la
+     *   práctica, los artículos sin costo cuyo precio no cambió.
      *
      * - 🔴 Más `updated_at`, cuando el camino por artículo lo tocaba. setFinalPrice() hace un
      *   save() CON timestamps apenas calcula costo_real (línea ~355, `if ($guardar_cambios)`), y
