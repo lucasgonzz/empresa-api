@@ -71,11 +71,26 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
      */
     protected $price_update_run_id;
 
-    public function __construct(array $article_ids, $user_id, $price_update_run_id = null)
+    /**
+     * La persona (dueño o empleado) que disparó el recálculo, resuelta en el request por quien
+     * encoló este lote (ProcessSetFinalPrices::$auth_user_id, PriceTypeHelper::
+     * dispatch_recalculate_for_articles()): el motor la pone como employee_id de los
+     * price_changes (seguimiento del 29/9/2026). En el worker no hay sesión y sin esto quedaba
+     * config('app.USER_ID').
+     *
+     * Va AL FINAL de la firma y con default null por compatibilidad: un lote encolado antes de
+     * este cambio no la trae al deserializarse, queda null y el motor resuelve como siempre.
+     *
+     * @var int|null
+     */
+    protected $auth_user_id = null;
+
+    public function __construct(array $article_ids, $user_id, $price_update_run_id = null, $auth_user_id = null)
     {
         $this->article_ids = $article_ids;
         $this->user_id = $user_id;
         $this->price_update_run_id = $price_update_run_id;
+        $this->auth_user_id = is_null($auth_user_id) ? null : (int) $auth_user_id;
 
         /*
          * En el shared hosting va a la cola 'excel' (la de los jobs pesados: el worker corre con
@@ -100,12 +115,14 @@ class ProcessChunkSetFinalPrices implements ShouldQueue
         }
 
         /*
-         * auth_user_id en null, como antes: el employee_id de los price_changes lo resuelve el
-         * motor con UserHelper::userId(false) (en el worker, config('app.USER_ID')). Los artículos
-         * que cambiaron de precio se registran en price_update_run_articles adentro de la misma
+         * auth_user_id: la persona que disparó el recálculo, si quien encoló el lote la conocía;
+         * es el employee_id de los price_changes. En null (sin sesión al encolar, o un lote
+         * encolado antes de que existiera) el motor lo resuelve como siempre, con
+         * UserHelper::userId(false): en el worker, config('app.USER_ID'). Los artículos que
+         * cambiaron de precio se registran en price_update_run_articles adentro de la misma
          * transacción que sus precios: si el commit no llega, no quedan contados.
          */
-        RecalculoDePreciosEnLote::recalcular($this->article_ids, $user, null, [
+        RecalculoDePreciosEnLote::recalcular($this->article_ids, $user, $this->auth_user_id, [
             'price_update_run_id' => $this->price_update_run_id,
         ]);
 

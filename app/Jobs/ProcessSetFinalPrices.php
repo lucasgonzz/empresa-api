@@ -107,6 +107,26 @@ class ProcessSetFinalPrices implements ShouldQueue
     public $background_process_id = null;
 
     /**
+     * La PERSONA que disparó el recálculo (dueño o empleado), resuelta al encolar en
+     * anunciar_en_pendiente(), que es el único momento en que hay sesión (seguimiento del
+     * 29/9/2026). Viaja a cada lote (ProcessChunkSetFinalPrices) y de ahí al motor, que la pone
+     * como employee_id de los price_changes.
+     *
+     * Por qué: en el worker no hay sesión, así que todo recálculo encolado dejaba employee_id =
+     * config('app.USER_ID') (el motor resuelve con UserHelper::userId(false)). Con esta misión,
+     * el recálculo por el guardado de una categoría y el de los recargos de una lista, que antes
+     * corrían en el request y registraban a la persona logueada, pasaron a la cola: sin esto
+     * perdían ese dato.
+     *
+     * null sin sesión (la cotización automática del dólar, un comando): el motor resuelve como
+     * siempre. Pública y con default null por compatibilidad con los jobs ya encolados antes de
+     * este cambio, igual que $background_process_id.
+     *
+     * @var int|null
+     */
+    public $auth_user_id = null;
+
+    /**
      * $origen y $origen_detalle van AL FINAL de la firma y con default a propósito: así los
      * llamados que ya existen siguen andando sin tocarlos, y los que quieran contar por qué
      * se recalcularon los precios lo agregan de a uno.
@@ -146,7 +166,8 @@ class ProcessSetFinalPrices implements ShouldQueue
      *
      * `auth_user_id` se resuelve acá porque es el único momento en que hay sesión: en el
      * worker `Auth::check()` da false y queda null. `UserHelper::userId(false)` devuelve la
-     * PERSONA (dueño o empleado), no el dueño.
+     * PERSONA (dueño o empleado), no el dueño. Se guarda en $this->auth_user_id ANTES de abrir
+     * el registro, así viaja a los lotes aunque el registro no se pueda crear.
      *
      * @return void
      */
@@ -154,6 +175,8 @@ class ProcessSetFinalPrices implements ShouldQueue
     {
         try {
             $auth_user_id = Auth::check() ? UserHelper::userId(false) : null;
+
+            $this->auth_user_id = is_null($auth_user_id) ? null : (int) $auth_user_id;
 
             $proceso = BackgroundProcessHelper::iniciar($this->user_id, 'recalculo_precios', 'Recálculo de precios', [
                 'auth_user_id' => $auth_user_id,
@@ -243,8 +266,12 @@ class ProcessSetFinalPrices implements ShouldQueue
             /** Chunks despachados por este job, que es el único productor de esta corrida. */
             $chunks_despachados = 0;
 
+            /*
+             * Cada lote lleva a la persona que disparó el recálculo (ver $auth_user_id). Un job
+             * encolado antes de ese cambio no la trae: queda null y el motor resuelve como siempre.
+             */
             $this->repartir_en_lotes($alcance, RecalculoDePreciosEnLote::tamanio_de_lote(), function (array $ids) use ($run, &$chunks_despachados) {
-                dispatch(new ProcessChunkSetFinalPrices($ids, $this->user_id, $run->id));
+                dispatch(new ProcessChunkSetFinalPrices($ids, $this->user_id, $run->id, $this->auth_user_id));
                 $chunks_despachados++;
             });
 

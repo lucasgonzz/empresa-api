@@ -12,6 +12,7 @@ use App\Jobs\ProcessSetFinalPrices;
 use App\Models\PriceType;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -273,8 +274,16 @@ class PriceTypeHelper {
 		 */
 		$article_chunks = array_chunk($article_ids, RecalculoDePreciosEnLote::tamanio_de_lote());
 
+		/*
+		 * La PERSONA logueada (dueño o empleado) viaja a cada lote, y el motor la pone como
+		 * employee_id de los price_changes (seguimiento del 29/9/2026): esto corre en el request,
+		 * pero los lotes corren en el worker, donde no hay sesión y quedaba config('app.USER_ID').
+		 * Mismo criterio que ProcessSetFinalPrices::$auth_user_id. Sin sesión, null: como siempre.
+		 */
+		$auth_user_id = Auth::check() ? UserHelper::userId(false) : null;
+
 		foreach ($article_chunks as $article_chunk) {
-			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id, $run->id));
+			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id, $run->id, $auth_user_id));
 		}
 
 		DB::table('price_update_runs')
