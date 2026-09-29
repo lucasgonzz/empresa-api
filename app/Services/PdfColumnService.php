@@ -405,10 +405,10 @@ class PdfColumnService
         }
 
         $options[] = ['Subtotal línea', 'Sub total', 'document_item_subtotal', 32, false];
-        $options[] = ['Marca del articulo', 'Marca', 'document_item_brand_name', 30, false];
-        $options[] = ['Categoria del articulo', 'Categoria', 'document_item_category_name', 35, false];
-        $options[] = ['Subcategoria del articulo', 'Subcategoria', 'document_item_sub_category_name', 35, false];
-        $options[] = ['Proveedor del articulo', 'Proveedor', 'document_item_provider_name', 35, false];
+        $options[] = ['Marca', 'Marca', 'document_item_brand_name', 30, false];
+        $options[] = ['Categoría', 'Categoría', 'document_item_category_name', 35, false];
+        $options[] = ['Subcategoría', 'Subcategoría', 'document_item_sub_category_name', 35, false];
+        $options[] = ['Proveedor', 'Proveedor', 'document_item_provider_name', 35, false];
 
         $result = [];
         foreach ($options as $option) {
