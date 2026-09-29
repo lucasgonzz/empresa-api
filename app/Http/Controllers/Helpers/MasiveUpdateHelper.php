@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessMasiveUpdateJob;
 use App\Models\Article;
@@ -397,6 +398,15 @@ class MasiveUpdateHelper
          */
         $user_del_comercio = $model_name == 'article' ? User::find($masive_update->user_id) : null;
 
+        /*
+         * Articulos que ya tienen sus cambios guardados y a los que les falta el precio (mision
+         * recalculo-precios-motor-rapido, 28/9/2026). Ver recalcular_precios_de_la_masiva(): el
+         * setFinalPrice() por articulo paso a correr en tandas con el motor en bloque.
+         */
+        $pendientes_de_precio = [];
+
+        $tamanio_de_tanda = RecalculoDePreciosEnLote::tamanio_de_lote();
+
         foreach ($models as $model) {
             // Se cuenta ANTES del continue: un modelo nulo también es un registro recorrido, y
             // si no la barra quedaba por debajo del total hasta que completar() la corrigiera.
@@ -455,7 +465,9 @@ class MasiveUpdateHelper
                      * helper resuelva por su cuenta daria false siempre y la preferencia quedaria
                      * muerta acá, sin ningun error que lo delate.
                      *
-                     * Va antes de setFinalPrice, que es quien tiene que ver los descuentos nuevos.
+                     * Va antes del recalculo de precios, que es quien tiene que ver los descuentos
+                     * nuevos: los escribe en la base ahora, y el motor lee el articulo de la base
+                     * cuando le toca su tanda.
                      */
                     ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor(
                         $model,
@@ -463,13 +475,19 @@ class MasiveUpdateHelper
                         $user_del_comercio
                     );
 
-                    ArticleHelper::setFinalPrice(
-                        $model,
-                        $masive_update->user_id,
-                        null,
-                        $masive_update->employee_id
-                    );
-                    TiendaNubeSyncArticleService::add_article_to_sync($model);
+                    /*
+                     * El precio NO se calcula aca: el articulo queda pendiente y se recalcula con
+                     * su tanda (ver recalcular_precios_de_la_masiva()). Sus cambios ya estan
+                     * guardados (apply_form_change() y la materializacion escriben en la base), que
+                     * es lo unico que el calculo lee.
+                     *
+                     * 🔴 El attach del historial va ACA, antes del precio, y no despues como
+                     * cuando el precio se calculaba en el lugar: si el recalculo de la tanda
+                     * fallara, los articulos de esa tanda ya tienen sus cambios guardados, y sin su
+                     * fila en el historial la reversion no podria devolverlos. Con la fila, revertir
+                     * los deja exactamente como estaban (precio incluido).
+                     */
+                    $pendientes_de_precio[] = $model;
                     $masive_update->articles()->attach($model->id, [
                         'changes_json' => json_encode($article_changes),
                     ]);
@@ -480,6 +498,18 @@ class MasiveUpdateHelper
                     ];
                 }
                 $affected_count++;
+            }
+
+            // Tanda llena: se recalcula ya, para no juntar en memoria mas de una tanda de modelos.
+            if (count($pendientes_de_precio) >= $tamanio_de_tanda) {
+                self::recalcular_precios_de_la_masiva(
+                    $pendientes_de_precio,
+                    $user_del_comercio,
+                    $masive_update->user_id,
+                    $masive_update->employee_id
+                );
+
+                $pendientes_de_precio = [];
             }
 
             /*
@@ -494,6 +524,14 @@ class MasiveUpdateHelper
                 ]);
             }
         }
+
+        // La ultima tanda, la que no llego a llenarse.
+        self::recalcular_precios_de_la_masiva(
+            $pendientes_de_precio,
+            $user_del_comercio,
+            $masive_update->user_id,
+            $masive_update->employee_id
+        );
 
         $criteria['used_filters_resolved'] = $used_filters;
         $masive_update->criteria_json = json_encode($criteria);
@@ -941,6 +979,14 @@ class MasiveUpdateHelper
         $proceso = BackgroundProcessHelper::por_referencia($revert_masive_update);
         $recorridos = 0;
 
+        /*
+         * Mismo criterio que process_update() (28/9/2026): los articulos ya revertidos se juntan y
+         * el precio se recalcula por tandas con el motor (ver recalcular_precios_de_la_masiva()).
+         */
+        $pendientes_de_precio = [];
+
+        $tamanio_de_tanda = RecalculoDePreciosEnLote::tamanio_de_lote();
+
         foreach ($parent_masive_update->articles as $article) {
             // Se cuenta antes de cualquier continue: un pivot ilegible o un artículo borrado
             // también son registros recorridos para la barra.
@@ -1064,17 +1110,100 @@ class MasiveUpdateHelper
                 }
             }
 
-            ArticleHelper::setFinalPrice(
-                $model,
-                $parent_masive_update->user_id,
-                null,
-                $revert_masive_update->employee_id
-            );
-            TiendaNubeSyncArticleService::add_article_to_sync($model);
+            /*
+             * El precio se recalcula con la tanda, no aca (ver process_update()). El attach va
+             * antes por el mismo motivo: el articulo ya quedo revertido en la base, y el historial
+             * tiene que decirlo aunque el recalculo de la tanda fallara.
+             */
+            $pendientes_de_precio[] = $model;
 
             $revert_masive_update->articles()->attach($model->id, [
                 'changes_json' => json_encode($revert_changes),
             ]);
+
+            if (count($pendientes_de_precio) >= $tamanio_de_tanda) {
+                self::recalcular_precios_de_la_masiva(
+                    $pendientes_de_precio,
+                    $user_del_comercio,
+                    $parent_masive_update->user_id,
+                    $revert_masive_update->employee_id
+                );
+
+                $pendientes_de_precio = [];
+            }
+        }
+
+        self::recalcular_precios_de_la_masiva(
+            $pendientes_de_precio,
+            $user_del_comercio,
+            $parent_masive_update->user_id,
+            $revert_masive_update->employee_id
+        );
+    }
+
+    /**
+     * Recalcula el precio de los articulos de una masiva (o de su reversion) con el motor en bloque,
+     * y los marca para sincronizar con Tienda Nube (mision recalculo-precios-motor-rapido,
+     * 28/9/2026).
+     *
+     * 🔴 POR QUE ASI. Hasta esta mision, cada articulo de la masiva corria su propio
+     * `ArticleHelper::setFinalPrice()` apenas se le aplicaban los cambios: leia sus relaciones de a
+     * una (descuentos, recargos, proveedor, categoria, IVA, listas...) y escribia por su cuenta dos
+     * UPDATE de `articles`, un INSERT de price_changes y tres o cuatro consultas por lista. En una
+     * masiva de 3.000 articulos eso son decenas de miles de consultas. Ahora el MISMO calculo corre
+     * con RecalculoDePreciosEnLote, que lee la tanda de una vez y escribe en bloque, dejando la base
+     * exactamente igual (el invariante del motor).
+     *
+     * Lo que se conserva, a proposito:
+     *   - El precio se calcula DESPUES de apply_form_change() y de la materializacion de descuentos
+     *     de cada articulo, que ya guardaron en la base: el motor lee el articulo de ahi.
+     *   - `employee_id` de los price_changes = el de la masiva (quien la lanzo o quien la revierte),
+     *     igual que el `$auth_user_id` que se le pasaba a setFinalPrice().
+     *   - El dueño es el de la masiva, resuelto una vez (antes, un User::find() por articulo adentro
+     *     de setFinalPrice()).
+     *   - `TiendaNubeSyncArticleService::add_article_to_sync()` por articulo, DESPUES del precio,
+     *     como antes: solo deja una marca "pendiente" (no toma una foto del precio), pero asi el
+     *     sincronizador de Tienda Nube nunca queda con la marca consumida antes de que el precio
+     *     nuevo este escrito.
+     *
+     * Un articulo que aparezca dos veces en la misma tanda (ids repetidos en la seleccion) se
+     * recalcula una sola vez, con el estado final: el resultado en `articles` es el mismo, pero queda
+     * un solo price_change en vez de uno por pasada.
+     *
+     * Si el dueño no existe o es un empleado (dato roto: el motor se niega a calcular con un
+     * empleado), se cae al setFinalPrice() por articulo de siempre, exactamente como antes.
+     *
+     * @param  \App\Models\Article[]  $modelos      Articulos con sus cambios ya guardados.
+     * @param  \App\Models\User|null  $owner        Dueño del comercio (resuelto una vez).
+     * @param  int                    $owner_id     Id del dueño (el user_id de la masiva).
+     * @param  int|null               $employee_id  employee_id de los price_changes.
+     * @return void
+     */
+    protected static function recalcular_precios_de_la_masiva(array $modelos, $owner, $owner_id, $employee_id)
+    {
+        if (count($modelos) === 0) {
+            return;
+        }
+
+        if (!is_null($owner) && empty($owner->owner_id)) {
+
+            $ids = [];
+
+            foreach ($modelos as $modelo) {
+                $ids[] = (int) $modelo->id;
+            }
+
+            RecalculoDePreciosEnLote::recalcular($ids, $owner, $employee_id);
+
+        } else {
+
+            foreach ($modelos as $modelo) {
+                ArticleHelper::setFinalPrice($modelo, $owner_id, null, $employee_id);
+            }
+        }
+
+        foreach ($modelos as $modelo) {
+            TiendaNubeSyncArticleService::add_article_to_sync($modelo);
         }
     }
 
