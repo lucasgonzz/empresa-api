@@ -146,7 +146,9 @@ use Illuminate\Support\Facades\Log;
  *     filas huérfanas (`$st['huerfanos']`, las de direcciones borradas, que la relación
  *     `addresses` no ve pero la suma de `articles.stock` sí). El JSON se arma con
  *     `SetStockPorDeposito::armar()`/`a_json()`, los mismos que usa `crear()` vía el cast del
- *     modelo, así la columna queda idéntica byte a byte. Sin consultas por fila: los nombres de
+ *     modelo, así la columna queda idéntica byte a byte (incluida la regla de que un artículo
+ *     con sólo filas huérfanas, sin ningún depósito vivo, queda con la foto en NULL: cada
+ *     depósito lleva `vivo` según su dirección exista). Sin consultas por fila: los nombres de
  *     los depósitos salen del mismo `SELECT` de `address_article` y, para los depósitos que el
  *     lote abre, de UN `SELECT` de `addresses` por lote. Límite conocido: el `resultante` del
  *     último movimiento de cada artículo sale de la simulación y no de una relectura (a
@@ -196,6 +198,14 @@ class StockEnLote
      * @var array address_id => string|null
      */
     protected $nombres_de_depositos = [];
+
+    /**
+     * Direcciones del lote que existen en `addresses` (paso 13): un depósito es "vivo" para la
+     * foto sólo si su dirección existe, igual que el LEFT JOIN de `SetStockPorDeposito::foto()`.
+     *
+     * @var array address_id => true
+     */
+    protected $direcciones_existentes = [];
 
     /**
      * @param \App\Models\User|null                                   $user
@@ -703,7 +713,8 @@ class StockEnLote
                 continue;
             }
 
-            $this->nombres_de_depositos[$address_id] = $pivot->street;
+            $this->nombres_de_depositos[$address_id]   = $pivot->street;
+            $this->direcciones_existentes[$address_id] = true;
 
             if (!isset($estado[$article_id]['depositos'][$address_id])) {
                 $estado[$article_id]['depositos'][$address_id] = ['filas' => 0, 'suma' => 0.0];
@@ -754,6 +765,10 @@ class StockEnLote
         foreach (array_keys($faltan) as $address_id) {
             // Una dirección que no existe queda con nombre null, como la lee el LEFT JOIN de crear().
             $this->nombres_de_depositos[$address_id] = array_key_exists($address_id, $nombres) ? $nombres[$address_id] : null;
+
+            if (array_key_exists($address_id, $nombres)) {
+                $this->direcciones_existentes[$address_id] = true;
+            }
         }
     }
 
@@ -862,10 +877,11 @@ class StockEnLote
     /**
      * Paso 13: los depósitos del artículo como los ve `SetStockPorDeposito::foto()`: todas las
      * filas de `address_article` (las de direcciones vivas y las huérfanas), sumadas por
-     * dirección, con el nombre de la dirección.
+     * dirección, con el nombre de la dirección y si la dirección existe (`vivo`, que decide si el
+     * artículo reparte por depósitos: ver `SetStockPorDeposito::armar()`).
      *
      * @param  array $st  estado del artículo
-     * @return array address_id => ['deposito' => string|null, 'amount' => float]
+     * @return array address_id => ['deposito' => string|null, 'amount' => float, 'vivo' => bool]
      */
     protected function depositos_para_la_foto(array $st)
     {
@@ -875,13 +891,14 @@ class StockEnLote
             $mapa[$address_id] = [
                 'deposito' => array_key_exists($address_id, $this->nombres_de_depositos) ? $this->nombres_de_depositos[$address_id] : null,
                 'amount'   => (float) $deposito['suma'],
+                'vivo'     => isset($this->direcciones_existentes[$address_id]),
             ];
         }
 
         foreach ($st['huerfanos'] as $address_id => $cantidad) {
 
             if (!isset($mapa[$address_id])) {
-                $mapa[$address_id] = ['deposito' => null, 'amount' => 0.0];
+                $mapa[$address_id] = ['deposito' => null, 'amount' => 0.0, 'vivo' => false];
             }
 
             $mapa[$address_id]['amount'] += (float) $cantidad;

@@ -18,7 +18,8 @@ use Illuminate\Support\Facades\DB;
  * TODOS los depósitos del artículo antes y después (`stock_por_deposito`). Acá se custodia, por
  * endpoint real y con artículos propios:
  *
- *  - un artículo sin depósitos guarda solo `stock_anterior` (la foto queda NULL);
+ *  - un artículo sin depósitos guarda solo `stock_anterior` (la foto queda NULL), y lo mismo uno
+ *    que solo tiene filas de sucursales borradas;
  *  - una venta en una sucursal cambia ese depósito y deja el otro igual;
  *  - un traslado entre depósitos cambia origen y destino y deja el resto igual;
  *  - un ingreso que abre un depósito nuevo lo muestra con `anterior` 0;
@@ -140,6 +141,35 @@ class Stock_por_deposito_en_movimientos_Test extends AuditoriaStockTestCase
         $this->assertNull($movimiento->stock_anterior);
         $this->assertEquals(3.0, (float) $movimiento->stock_resultante);
         $this->assertNull($movimiento->stock_por_deposito);
+    }
+
+    /**
+     * Un artículo que solo tiene filas de depósito de sucursales borradas lleva el stock global
+     * (la relación `addresses` no ve esas filas, CheckGlobalStock le suma al global): no reparte
+     * por depósitos y la foto queda NULL, porque no cuadraría con el stock resultante.
+     *
+     * @group stock
+     * @test
+     */
+    public function un_articulo_con_solo_filas_huerfanas_no_guarda_foto()
+    {
+        $articulo = $this->crear_articulo('zz Stock por deposito solo huerfanas', ['stock' => 10]);
+
+        $huerfana = (int) DB::table('addresses')->max('id') + 1000;
+
+        DB::table('address_article')->insert([
+            'article_id' => $articulo->id,
+            'address_id' => $huerfana,
+            'amount'     => 2,
+        ]);
+
+        $this->postJson('api/stock-movement', ['model_id' => $articulo->id, 'amount' => 5])->assertStatus(201);
+
+        $movimiento = $this->movimientos($articulo)->last();
+
+        $this->assertEquals(10.0, (float) $movimiento->stock_anterior);
+        $this->assertEquals(15.0, (float) $movimiento->stock_resultante, 'Sin depósitos vivos el movimiento va al stock global.');
+        $this->assertNull($movimiento->stock_por_deposito, 'Con solo filas huérfanas el artículo no reparte por depósitos: sin foto.');
     }
 
     /**
@@ -372,6 +402,7 @@ class Stock_por_deposito_en_movimientos_Test extends AuditoriaStockTestCase
             'depositos'         => ['stock' => 3, 'depositos' => [$sucursal->id => 3]],
             'con fila huerfana' => ['stock' => 5, 'depositos' => [$sucursal->id => 3, $huerfana => 2]],
             'abre sobre cero'   => ['stock' => 0, 'depositos' => []],
+            'solo fila huerfana' => ['stock' => 10, 'depositos' => [$huerfana => 2]],
         ];
 
         $viejos = [];
@@ -401,7 +432,8 @@ class Stock_por_deposito_en_movimientos_Test extends AuditoriaStockTestCase
             $viejo = $viejos[$nombre];
             $nuevo = $nuevos[$nombre];
 
-            if ($nombre === 'global') {
+            // Movimiento global: el artículo sin depósitos, y el que solo tiene una fila huérfana.
+            if ($nombre === 'global' || $nombre === 'solo fila huerfana') {
 
                 $ct->crear(['model_id' => $viejo->id, 'amount' => 7, 'concepto_stock_movement_name' => 'Importacion de excel'], true, $user, $user->id);
                 $lote->agregar_global($nuevo, 7);
@@ -466,6 +498,11 @@ class Stock_por_deposito_en_movimientos_Test extends AuditoriaStockTestCase
         $this->assertEquals(2.0, $renglon_huerfano['resultante']);
         $this->assert_invariante($huerfanos[0]);
         $this->assert_invariante($huerfanos[1]);
+
+        $solo_huerfana = $this->movimientos($nuevos['solo fila huerfana'])->last();
+        $this->assertEquals(10.0, (float) $solo_huerfana->stock_anterior);
+        $this->assertEquals(17.0, (float) $solo_huerfana->stock_resultante);
+        $this->assertNull($solo_huerfana->stock_por_deposito, 'Sin depósitos vivos no hay foto, tampoco por el lote.');
 
         $abre = $this->movimientos($nuevos['abre sobre cero']);
         $this->assertEquals(0.0, (float) $abre[0]->stock_anterior);

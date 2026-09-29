@@ -38,6 +38,9 @@ use Illuminate\Support\Facades\Log;
  *    `ArticleHelper::setArticleStockFromAddresses()` para escribir `articles.stock`, así la suma
  *    de los `resultante` coincide con el `stock_resultante` del movimiento.
  *  - Artículo que no reparte por depósitos (ni antes ni después) → la columna queda NULL.
+ *    "Repartir" es tener al menos un depósito VIVO (fila cuya dirección existe): un artículo con
+ *    solo filas de sucursales borradas lleva el stock global y también queda NULL. Con al menos
+ *    un depósito vivo, las filas huérfanas entran en la foto (ver armar()).
  *  - Qué depósito "tocó" el movimiento no se guarda aparte: sale de `from_address_id` /
  *    `to_address_id` y de `anterior != resultante`.
  *
@@ -60,15 +63,24 @@ class SetStockPorDeposito {
      * `address_article_variant`; las dos últimas van por los índices de (article_id, address_id)
      * y (article_variant_id, address_id).
      *
+     * La foto de "después" no necesita el stock (guardar() usa solo el de antes, y el de después
+     * lo lee SetStockResultante): con `$leer_stock` en false se ahorra esa consulta y `stock`
+     * queda null.
+     *
      * @param  int       $article_id
      * @param  int|null  $article_variant_id
-     * @return array ['stock' => float|null, 'articulo' => [address_id => ['deposito' => string|null, 'amount' => float]], 'variante' => [...]]
+     * @param  bool      $leer_stock
+     * @return array ['stock' => float|null, 'articulo' => [address_id => ['deposito' => string|null, 'amount' => float, 'vivo' => bool]], 'variante' => [...]]
      */
-    static function foto($article_id, $article_variant_id = null) {
+    static function foto($article_id, $article_variant_id = null, $leer_stock = true) {
 
-        $stock = DB::table('articles')
-                    ->where('id', $article_id)
-                    ->value('stock');
+        $stock = null;
+
+        if ($leer_stock) {
+            $stock = DB::table('articles')
+                        ->where('id', $article_id)
+                        ->value('stock');
+        }
 
         $variante = [];
 
@@ -89,14 +101,18 @@ class SetStockPorDeposito {
      * @param  string  $tabla    address_article | address_article_variant
      * @param  string  $columna  article_id | article_variant_id
      * @param  int     $id
-     * @return array address_id => ['deposito' => string|null, 'amount' => float]
+     * `vivo` dice si la dirección existe: una fila de una sucursal borrada entra en la suma (y en
+     * la foto), pero la relación `addresses` del artículo no la ve, así que sola no alcanza para
+     * que el artículo "reparta por depósitos" (ver armar()).
+     *
+     * @return array address_id => ['deposito' => string|null, 'amount' => float, 'vivo' => bool]
      */
     static function depositos($tabla, $columna, $id) {
 
         $filas = DB::table($tabla)
                     ->leftJoin('addresses', 'addresses.id', '=', $tabla.'.address_id')
                     ->where($tabla.'.'.$columna, $id)
-                    ->get([$tabla.'.address_id', $tabla.'.amount', 'addresses.street']);
+                    ->get([$tabla.'.address_id', $tabla.'.amount', 'addresses.street', 'addresses.id as address_existente']);
 
         $mapa = [];
 
@@ -108,6 +124,7 @@ class SetStockPorDeposito {
                 $mapa[$address_id] = [
                     'deposito'  => $fila->street,
                     'amount'    => 0.0,
+                    'vivo'      => !is_null($fila->address_existente),
                 ];
             }
 
@@ -151,33 +168,55 @@ class SetStockPorDeposito {
     /**
      * Arma el contenido de `stock_por_deposito` uniendo los depósitos de las dos fotos.
      *
+     * "Reparte por depósitos" = tiene al menos un depósito VIVO (fila cuya dirección existe),
+     * antes o después. Un artículo con solo filas de sucursales borradas lleva el stock global
+     * (CheckGlobalStock lo trata así, porque la relación `addresses` no ve esas filas) y su foto
+     * no cuadraría con el stock_resultante: queda NULL. Con al menos un depósito vivo, las filas
+     * huérfanas SÍ entran, porque la suma de `articles.stock` las incluye. Mismo criterio para el
+     * bloque de la variante.
+     *
      * @param  array  $antes    ['articulo' => mapa, 'variante' => mapa] (ver foto())
      * @param  array  $despues  idem
      * @return array|null  null si ni el artículo ni la variante reparten por depósitos
      */
     static function armar($antes, $despues) {
 
-        $articulo = Self::unir($antes['articulo'], $despues['articulo']);
-        $variante = Self::unir($antes['variante'], $despues['variante']);
+        $articulo_reparte = Self::tiene_deposito_vivo($antes['articulo']) || Self::tiene_deposito_vivo($despues['articulo']);
+        $variante_reparte = Self::tiene_deposito_vivo($antes['variante']) || Self::tiene_deposito_vivo($despues['variante']);
 
-        if (count($articulo) == 0 && count($variante) == 0) {
+        if (!$articulo_reparte && !$variante_reparte) {
             return null;
         }
 
-        $foto = ['articulo' => $articulo];
+        $foto = ['articulo' => Self::unir($antes['articulo'], $despues['articulo'])];
 
-        if (count($variante) > 0) {
-            $foto['variante'] = $variante;
+        if ($variante_reparte) {
+            $foto['variante'] = Self::unir($antes['variante'], $despues['variante']);
         }
 
         return $foto;
     }
 
     /**
+     * @param  array  $depositos  address_id => ['deposito', 'amount', 'vivo']
+     * @return bool   si alguno es de una dirección que existe
+     */
+    static function tiene_deposito_vivo($depositos) {
+
+        foreach ($depositos as $deposito) {
+            if (!empty($deposito['vivo'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Une los depósitos de antes y de después en una lista ordenada por `address_id`. El nombre
      * del depósito sale de la foto de después (si la fila desapareció, de la de antes).
      *
-     * @param  array  $antes    address_id => ['deposito' => string|null, 'amount' => float]
+     * @param  array  $antes    address_id => ['deposito' => string|null, 'amount' => float, 'vivo' => bool]
      * @param  array  $despues  idem
      * @return array  [['address_id', 'deposito', 'anterior', 'resultante'], …]
      */
