@@ -268,9 +268,18 @@ class ProcessSetFinalPrices implements ShouldQueue
                  * No hay un solo artículo que recalcular. Se cierra acá y se notifica igual:
                  * un recálculo que no encontró nada es información, no silencio (decisión de
                  * Lucas). Sin esto la corrida quedaría abierta para siempre.
+                 *
+                 * Con la misma excepción que el finalizador (29/9/2026): una categoría o
+                 * subcategoría sin artículos, guardada, no avisa; cerrar_sin_articulos() la
+                 * deja en 'sin_cambios' y la píldora lo muestra (ver
+                 * FinalizeSetFinalPrices::ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS).
                  */
                 PriceUpdateRunHelper::cerrar_sin_articulos($run);
-                SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
+
+                if (FinalizeSetFinalPrices::corresponde_avisar_el_cierre($run)) {
+                    SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
+                }
+
                 return;
             }
 

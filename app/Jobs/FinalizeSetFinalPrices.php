@@ -40,6 +40,28 @@ class FinalizeSetFinalPrices implements ShouldQueue
      */
     const TOPE_HORAS = 2;
 
+    /**
+     * Orígenes cuya corrida, si termina SIN CAMBIOS, no se avisa con el modal (seguimiento del
+     * 29/9/2026).
+     *
+     * 'categoria': guardar una categoría o una subcategoría dispara un recálculo en segundo plano
+     * (Helpers\category\PriceTypeHelper::update_article_prices()), y en una cuenta con listas de
+     * precio por categoría lo dispara CADA guardado, aunque no haya cambiado nada que mueva un
+     * precio. El aviso "Precios actualizados" va a todas las sesiones del dueño
+     * (is_only_for_auth_user = false): con cero artículos cambiados era un modal en cada
+     * computadora del comercio por cada categoría que alguien guardaba, sin nada que contar. La
+     * píldora de procesos igual cierra con "Sin cambios", así que quien guardó ve que terminó.
+     * Con cambios, el aviso de siempre.
+     *
+     * Los demás orígenes avisan también sin cambios (decisión de Lucas, ver handle()): un cambio
+     * de proveedor, de dólar o de configuración que no movió nada es información.
+     *
+     * @var array
+     */
+    const ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS = [
+        'categoria',
+    ];
+
     protected $user_id;
     protected $price_update_run_id;
 
@@ -186,9 +208,32 @@ class FinalizeSetFinalPrices implements ShouldQueue
         /*
          * Se notifica también cuando no cambió ningún precio (decisión de Lucas): un cambio
          * de configuración que no movió nada es información, no silencio. El modal tiene su
-         * propio estado vacío para eso.
+         * propio estado vacío para eso. Salvo el guardado de una categoría que no movió nada
+         * (ver ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS).
          */
-        SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
+        if (self::corresponde_avisar_el_cierre($run)) {
+            SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
+        }
+    }
+
+    /**
+     * Si al cerrar bien una corrida corresponde el aviso "Precios actualizados".
+     *
+     * Lo usan los dos lugares que cierran una corrida sin error: este finalizador y el
+     * productor cuando no encuentra ningún artículo (ProcessSetFinalPrices, rama de
+     * PriceUpdateRunHelper::cerrar_sin_articulos(), que también la deja en 'sin_cambios'). Los
+     * errores se avisan siempre, por notify_prices_update_failed(); esto no los toca.
+     *
+     * @param  \App\Models\PriceUpdateRun $run  Corrida ya cerrada (status final en memoria).
+     * @return bool
+     */
+    public static function corresponde_avisar_el_cierre($run)
+    {
+        if ($run->status === 'sin_cambios' && in_array($run->origen, self::ORIGENES_QUE_NO_AVISAN_SIN_CAMBIOS, true)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
