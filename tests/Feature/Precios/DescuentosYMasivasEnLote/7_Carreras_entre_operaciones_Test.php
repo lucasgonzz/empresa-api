@@ -5,6 +5,9 @@ namespace Tests\Feature\Precios\DescuentosYMasivasEnLote;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Models\Provider;
 use App\Models\User;
+use Illuminate\Database\Events\TransactionBeginning;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 
 /**
  * Mision `recalculo-precios-motor-rapido`, seguimiento del 29/9/2026 — dos operaciones sobre los
@@ -37,6 +40,37 @@ class Carreras_entre_operaciones_Test extends DescuentosYMasivasEnLoteTestCase
 
     /** @var bool Si la operacion del medio llego a correr (el callback traga excepciones). */
     private $corrio_la_del_medio = false;
+
+    /** @var \PDO|null Una segunda conexion real, independiente de Laravel (ver abrir_segunda_conexion()). */
+    private $segunda = null;
+
+    /** @var array Filas que confirmo la segunda conexion, para borrarlas al final: [tabla => [ids]]. */
+    private $confirmadas = [];
+
+    /**
+     * Primero se revierte la transaccion del test (que tiene tomado el candado del proveedor hasta ese
+     * momento), y despues la segunda conexion borra lo que confirmo.
+     *
+     * @return void
+     */
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        if (!is_null($this->segunda)) {
+
+            foreach ($this->confirmadas as $tabla => $ids) {
+
+                if (count($ids) > 0) {
+                    $marcas = implode(', ', array_fill(0, count($ids), '?'));
+                    $this->segunda->prepare('DELETE FROM `' . $tabla . '` WHERE `id` IN (' . $marcas . ')')->execute($ids);
+                }
+            }
+
+            $this->segunda = null;
+            $this->confirmadas = [];
+        }
+    }
 
     /**
      * Comercio con la preferencia prendida y un proveedor con la ficha en 15 % + 5 %.
@@ -208,5 +242,193 @@ class Carreras_entre_operaciones_Test extends DescuentosYMasivasEnLoteTestCase
         foreach ($this->de_la_ficha_por_articulo($r['foto']['descuentos']) as $article_id => $cantidad) {
             $this->assertSame(2, $cantidad, 'El articulo ' . $article_id . ' quedo con los descuentos de la ficha duplicados.');
         }
+    }
+
+    /* ------------------------------------------------------------------------------------------
+     * El candado del proveedor (chequeo independiente del 29/9/2026)
+     * ---------------------------------------------------------------------------------------- */
+
+    /**
+     * La forma: al abrir la transaccion de cada tanda, lo PRIMERO es el candado de la fila del
+     * proveedor (`select ... from providers ... for update`), y recien despues la relectura con
+     * candado de los descuentos. Ese orden es el que serializa a dos operaciones en bloque del mismo
+     * proveedor: la segunda espera en el proveedor, sin haber tomado nada, a que la primera confirme.
+     *
+     * @test
+     */
+    public function cada_tanda_empieza_tomando_el_candado_del_proveedor()
+    {
+        config(['app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE' => 2]);
+
+        $c = $this->comercio_con_ficha();
+
+        $ids = [];
+
+        for ($i = 1; $i <= 3; $i++) {
+            $ids[] = $this->crear_articulo($c['dueno'], ['cost' => 900 + $i, 'provider_id' => $c['provider']->id])->id;
+        }
+
+        $this->calentar($ids, $c['dueno']->id);
+
+        $secuencia = [];
+
+        Event::listen(TransactionBeginning::class, function () use (&$secuencia) {
+            $secuencia[] = 'BEGIN';
+        });
+
+        DB::listen(function ($query) use (&$secuencia) {
+            $secuencia[] = $query->sql;
+        });
+
+        ArticleProviderDiscountHelper::sincronizar_a_articulos(Provider::find($c['provider']->id), ArticleProviderDiscountHelper::ALCANCE_TODOS);
+
+        /* Las relecturas con candado de los descuentos: una por tanda (3 articulos en tandas de 2). */
+        $relecturas = [];
+
+        foreach ($secuencia as $i => $sql) {
+            if ($sql !== 'BEGIN' && preg_match('/^select .* from `article_discounts` where `article_id` in \(.* for update$/i', $sql)) {
+                $relecturas[] = $i;
+            }
+        }
+
+        $this->assertCount(2, $relecturas, 'Una relectura con candado por tanda: ' . implode("\n", $secuencia));
+
+        foreach ($relecturas as $i) {
+
+            $this->assertMatchesRegularExpression(
+                '/^select .* from `providers` where `id` = \? limit 1 for update$/i',
+                $i > 0 ? $secuencia[$i - 1] : '',
+                'Antes de releer los descuentos, la tanda tiene que tomar el candado del proveedor.'
+            );
+
+            $this->assertSame(
+                'BEGIN',
+                $i > 1 ? $secuencia[$i - 2] : null,
+                'El candado del proveedor tiene que ser la PRIMERA sentencia de la transaccion de la tanda.'
+            );
+        }
+    }
+
+    /**
+     * El comportamiento, con DOS conexiones reales: mientras una tanda de descuentos del proveedor
+     * esta abierta, otra operacion del mismo proveedor no puede tomar el candado del proveedor (con
+     * que empieza cada tanda), o sea que no puede revalidar ni escribir hasta que la primera
+     * confirme.
+     *
+     * La segunda conexion es un PDO fuera de Laravel, con un tope de espera de candado de 1 segundo:
+     * el proveedor lo confirma ella misma (los datos del test viven sin confirmar en la transaccion de
+     * DatabaseTransactions y ninguna otra conexion los veria). Se intenta tomar el candado justo
+     * cuando la tanda relee los descuentos.
+     *
+     * 🔴 El limite, igual que en el test del candado del motor: PHP corre en un solo hilo, asi que la
+     * otra conexion no puede esperar de verdad a que la tanda termine; lo que se prueba es que en ese
+     * momento NO PUEDE entrar. Que en produccion entra despues y revalida contra lo confirmado (READ
+     * COMMITTED) es lo que ya prueban los tests de carrera de arriba con la intercalacion completa.
+     *
+     * @test
+     */
+    public function otra_operacion_del_mismo_proveedor_no_entra_mientras_la_tanda_esta_abierta()
+    {
+        $this->abrir_segunda_conexion();
+
+        $dueno = $this->crear_dueno(['aplicar_descuentos_proveedor_al_asignar' => 1]);
+
+        $ahora = date('Y-m-d H:i:s');
+
+        /* El proveedor, CONFIRMADO por la segunda conexion (providers no tiene FK a users). */
+        $provider_id = $this->confirmar('providers', [
+            'name'            => 'zz Proveedor dos conexiones ' . uniqid(),
+            'user_id'         => $dueno->id,
+            'percentage_gain' => 30,
+            'created_at'      => $ahora,
+            'updated_at'      => $ahora,
+        ]);
+
+        $provider = Provider::find($provider_id);
+
+        $this->assertNotNull($provider, 'Precondicion: la conexion del test ve el proveedor confirmado.');
+
+        $this->descuento_de_la_ficha($provider, 15, 'Bonif general');
+
+        $ids = [];
+
+        for ($i = 1; $i <= 2; $i++) {
+            $ids[] = $this->crear_articulo($dueno, ['cost' => 700 + $i, 'provider_id' => $provider_id])->id;
+        }
+
+        $this->calentar($ids, $dueno->id);
+
+        $disparado = false;
+        $resultado = null;
+
+        $segunda = $this->segunda;
+
+        DB::listen(function ($query) use (&$disparado, &$resultado, $segunda, $provider_id) {
+
+            if ($disparado || !preg_match('/^select .* from `article_discounts` where `article_id` in \(.* for update$/i', $query->sql)) {
+                return;
+            }
+
+            $disparado = true;
+
+            try {
+                $segunda->prepare('SELECT `id` FROM `providers` WHERE `id` = ? FOR UPDATE')->execute([$provider_id]);
+                $resultado = 'tomo_el_candado';
+            } catch (\PDOException $e) {
+                $resultado = (isset($e->errorInfo[1]) && (int) $e->errorInfo[1] === 1205) ? 'bloqueada' : 'error: ' . $e->getMessage();
+            }
+        });
+
+        ArticleProviderDiscountHelper::sincronizar_a_articulos(Provider::find($provider_id), ArticleProviderDiscountHelper::ALCANCE_TODOS);
+
+        $this->assertTrue($disparado, 'La tanda no llego a releer los descuentos: el test no probo nada.');
+
+        $this->assertSame(
+            'bloqueada',
+            $resultado,
+            'Otra operacion del mismo proveedor pudo tomar el candado del proveedor con una tanda abierta: '.
+            'en READ COMMITTED las dos revalidarian "vacio" y los descuentos quedarian duplicados.'
+        );
+    }
+
+    /**
+     * Abre la segunda conexion con la misma base que el test, en autocommit, con un tope de espera de
+     * candado de 1 segundo en su sesion (mismo armado que el test del candado del motor).
+     *
+     * @return void
+     */
+    private function abrir_segunda_conexion()
+    {
+        $config = config('database.connections.' . config('database.default'));
+
+        $dsn = 'mysql:host=' . $config['host'] . ';port=' . $config['port'] . ';dbname=' . DB::connection()->getDatabaseName() . ';charset=utf8mb4';
+
+        $this->segunda = new \PDO($dsn, $config['username'], $config['password'], [
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+        ]);
+
+        $this->segunda->exec('SET SESSION innodb_lock_wait_timeout = 1');
+    }
+
+    /**
+     * Inserta y CONFIRMA una fila con la segunda conexion (autocommit) y la anota para borrarla.
+     *
+     * @param  string $tabla
+     * @param  array  $fila
+     * @return int
+     */
+    private function confirmar($tabla, array $fila)
+    {
+        $columnas = array_keys($fila);
+
+        $sql = 'INSERT INTO `' . $tabla . '` (`' . implode('`, `', $columnas) . '`) VALUES (' . implode(', ', array_fill(0, count($columnas), '?')) . ')';
+
+        $this->segunda->prepare($sql)->execute(array_values($fila));
+
+        $id = (int) $this->segunda->lastInsertId();
+
+        $this->confirmadas[$tabla][] = $id;
+
+        return $id;
     }
 }

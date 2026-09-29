@@ -1884,10 +1884,12 @@ class ArticleProviderDiscountHelper {
      * se escribe y las anteriores quedan firmes. La sincronizacion es idempotente (una corrida
      * posterior retoma exactamente donde quedo, ver `escanear_articulos_del_proveedor()`).
      *
-     * 🔴 Y antes de escribir, adentro de la misma transaccion, cada tanda se revalida con candado
-     * contra lo que vio el plan (revalidar_contra_el_plan(), 29/9/2026): el articulo que otro proceso
-     * toco despues del plan se saltea entero. Sin eso, dos operaciones del mismo proveedor cruzadas
-     * le duplicaban los descuentos de la ficha a cada articulo.
+     * 🔴 Y antes de escribir, adentro de la misma transaccion, cada tanda toma el candado del
+     * proveedor (bloquear_proveedor()) y se revalida con candado contra lo que vio el plan
+     * (revalidar_contra_el_plan(), 29/9/2026): el articulo que otro proceso toco despues del plan se
+     * saltea entero. Sin eso, dos operaciones del mismo proveedor cruzadas le duplicaban los
+     * descuentos de la ficha a cada articulo. Orden de candados, siempre el mismo: el proveedor, sus
+     * `article_discounts`, y adentro del motor los `articles`.
      *
      * El orden de los descuentos se conserva: el INSERT lleva las filas articulo por articulo y, en
      * cada articulo, en el orden de `provider_discounts`, igual que los create() de antes. MySQL da
@@ -1971,7 +1973,15 @@ class ArticleProviderDiscountHelper {
                 DB::transaction(function () use ($vigentes, $provider, $plantilla, $duenos_de_la_tanda, &$cache_de_duenos, $auth_user_id, &$escritos) {
 
                     /*
-                     * 🔴 PRIMERO, con candado, que nadie haya tocado estos articulos despues del plan
+                     * 🔴 LO PRIMERO de la tanda: el candado del proveedor (ver bloquear_proveedor()).
+                     * Serializa, tanda por tanda, a todas las operaciones de descuentos en bloque de
+                     * este proveedor: la que llega segunda espera aca a que la primera confirme, y
+                     * recien entonces revalida.
+                     */
+                    self::bloquear_proveedor($provider->id);
+
+                    /*
+                     * 🔴 DESPUES, con candado, que nadie haya tocado estos articulos despues del plan
                      * (ver revalidar_contra_el_plan()). Sin esto, dos operaciones del mismo proveedor
                      * que se cruzan le duplican los descuentos de la ficha a cada articulo.
                      */
@@ -2007,6 +2017,34 @@ class ArticleProviderDiscountHelper {
     }
 
     /**
+     * Toma el candado de la fila del proveedor (`SELECT ... FOR UPDATE`), adentro de la transaccion
+     * de una tanda de descuentos en bloque (chequeo independiente del 29/9/2026).
+     *
+     * 🔴 ES LO QUE SERIALIZA A DOS OPERACIONES DE DESCUENTOS DEL MISMO PROVEEDOR. Tiene que ser la
+     * PRIMERA sentencia de la tanda: la que llega segunda espera aca, sin haber tomado nada todavia,
+     * a que la primera confirme; y recien despues relee los descuentos (revalidar_contra_el_plan()).
+     * Con la conexion en READ COMMITTED, la relectura sola no alcanzaba (ver su docblock).
+     *
+     * El orden de los candados es siempre el mismo —el proveedor, sus `article_discounts`, y adentro
+     * del motor los `articles`—, asi que dos operaciones en bloque no se pueden abrazar entre si. El
+     * motor solo (un recalculo) toma los `articles` y no pide ni el proveedor ni los descuentos con
+     * candado: tampoco se abraza con estas.
+     *
+     * Por el query builder y no por el modelo: no hace falta hidratar nada, y el candado se toma
+     * igual sobre un proveedor en la papelera (SoftDeletes).
+     *
+     * @param  int $provider_id
+     * @return void
+     */
+    static function bloquear_proveedor($provider_id) {
+
+        DB::table('providers')
+            ->where('id', (int) $provider_id)
+            ->lockForUpdate()
+            ->value('id');
+    }
+
+    /**
      * Revalida, CON CANDADO y adentro de la transaccion de la tanda, que los articulos sigan como los
      * vio el plan, y devuelve solo los que se pueden escribir (seguimiento del 29/9/2026, bloqueante
      * del chequeo independiente).
@@ -2030,11 +2068,23 @@ class ArticleProviderDiscountHelper {
      * es lo mas nuevo: el articulo se saltea ENTERO —ni se borra, ni se inserta, ni se recalcula por
      * este camino, y no cuenta como tocado—. Los salteados quedan en el log.
      *
-     * ⚠️ Lo que no cubre del todo: dos tandas que llegan a esta lectura EXACTAMENTE a la vez sobre un
-     * articulo sin ninguna fila en `article_discounts` (ni manual, ni de otro proveedor) toman solo
-     * candados de hueco, que no se excluyen entre si; al insertar, MySQL detecta el abrazo mortal y
-     * aborta una de las dos con error. Falla ruidoso (la operacion que pierde termina en error y se
-     * puede reintentar), nunca con descuentos duplicados.
+     * 🔴 ESTA LECTURA SOLA NO ALCANZA, y por eso la tanda toma ANTES el candado del proveedor
+     * (bloquear_proveedor(), chequeo independiente del 29/9/2026). La conexion corre en READ COMMITTED
+     * (config/database.php): ahi un `FOR UPDATE` sobre un rango VACIO —el articulo que el plan vio
+     * sin descuentos de este proveedor, el caso del alcance "todos"— no toma candados de hueco. Dos
+     * tandas solapadas revalidaban las dos "vacio == vacio", insertaban sin esperarse y dejaban 4
+     * filas por articulo con una ficha de 2 (demostrado con dos conexiones reales). Con el candado del
+     * proveedor, dos operaciones de descuentos EN BLOQUE del mismo proveedor (sincronizacion,
+     * propagacion, en el request o en segundo plano) se serializan por tanda: la segunda espera a que
+     * la primera confirme y recien ahi hace esta lectura, que en READ COMMITTED ve lo ultimo
+     * confirmado; y como el articulo ya no esta como lo vio su plan, lo saltea.
+     *
+     * ⚠️ Lo que NO cubre, y es preexistente: un escritor de UN articulo que no toma ese candado —una
+     * compra que materializa sus bonificaciones, el alta o el cambio de proveedor de un articulo con
+     * la preferencia prendida— sigue teniendo contra una tanda la ventana de milisegundos de siempre
+     * (la que habia antes de esta mision entre dos escritores cualesquiera). Esta lectura con candado
+     * la achica (si ese escritor ya confirmo, se ve; si tiene filas tomadas, se espera), pero no la
+     * cierra sobre un articulo sin ninguna fila.
      *
      * Un item sin `ids_vistos` (un llamador que no arma el plan con el escaneo) no se revalida: se
      * escribe como antes.
@@ -2062,10 +2112,18 @@ class ArticleProviderDiscountHelper {
          * Lo de ahora, con candado, ordenado (siempre en el mismo orden: dos tandas que se cruzan
          * toman los candados en el mismo orden y no se abrazan por el orden). Partido para no pasar
          * el tope de placeholders de MySQL con una tanda configurada muy grande.
+         *
+         * Los ids se ORDENAN antes de partirlos: los items vienen en el orden del plan, que no esta
+         * ordenado, y con una tanda de mas de IDS_POR_DELETE articulos las consultas se partirian en
+         * ese orden (el ORDER BY de cada una ordena solo adentro de su pedazo).
          */
         $actuales = [];
 
-        foreach (array_chunk(array_keys($a_revisar), self::IDS_POR_DELETE) as $lote) {
+        $ids_a_revisar = array_keys($a_revisar);
+
+        sort($ids_a_revisar);
+
+        foreach (array_chunk($ids_a_revisar, self::IDS_POR_DELETE) as $lote) {
 
             $filas = DB::table('article_discounts')
                         ->whereIn('article_id', $lote)
