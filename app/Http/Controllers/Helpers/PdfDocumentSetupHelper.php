@@ -36,9 +36,13 @@ class PdfDocumentSetupHelper
      */
     public static function default_profiles_definition()
     {
-        /** Encabezado del presupuesto: el default del remito + el empleado que lo cargó (el `BudgetPdf` de antes lo imprimía). */
+        /**
+         * Encabezado del presupuesto: el default del remito + el vendedor (el empleado que lo cargó),
+         * que el `BudgetPdf` de antes imprimía como "Vendedor:". Va el campo `vendedor` y no
+         * `empleado` para conservar ese rótulo (ver `BudgetPdfDocument::header_document()`).
+         */
         $budget_header_layout = PdfColumnProfile::default_header_layout(false);
-        $budget_header_layout['receptor']['izquierda'][] = 'empleado';
+        $budget_header_layout['receptor']['izquierda'][] = 'vendedor';
 
         return [
             [

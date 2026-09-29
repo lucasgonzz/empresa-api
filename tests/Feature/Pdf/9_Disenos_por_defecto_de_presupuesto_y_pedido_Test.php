@@ -268,22 +268,23 @@ class Disenos_por_defecto_de_presupuesto_y_pedido_Test extends EmpresaTestCase
     }
 
     /**
-     * El encabezado del cliente de los presupuestos lleva el empleado que lo cargó (el `BudgetPdf`
-     * de antes lo imprimía y sacarlo sería una regresión silenciosa); el del pedido no, porque
-     * un pedido de la tienda no lo carga ningún empleado.
+     * El encabezado del cliente de los presupuestos lleva el vendedor, o sea el empleado que lo cargó
+     * (el `BudgetPdf` de antes lo imprimía como "Vendedor:" y sacarlo sería una regresión silenciosa);
+     * el del pedido no, porque un pedido de la tienda no lo carga ningún empleado.
      *
      * @test
      */
-    public function el_encabezado_del_presupuesto_lleva_el_empleado_y_el_del_pedido_no()
+    public function el_encabezado_del_presupuesto_lleva_el_vendedor_y_el_del_pedido_no()
     {
         $this->correr_el_seeder();
 
         foreach ($this->disenos_de($this->dueno->id, 'budget') as $perfil) {
             $izquierda = $perfil->header_layout['receptor']['izquierda'];
-            $this->assertSame('empleado', end($izquierda), '"'.$perfil->name.'" tiene que cerrar el bloque del cliente con el empleado.');
+            $this->assertSame('vendedor', end($izquierda), '"'.$perfil->name.'" tiene que cerrar el bloque del cliente con el vendedor.');
         }
 
         $pedido = $this->disenos_de($this->dueno->id, 'order')->first();
+        $this->assertNotContains('vendedor', $pedido->header_layout['receptor']['izquierda']);
         $this->assertNotContains('empleado', $pedido->header_layout['receptor']['izquierda']);
     }
 

@@ -132,6 +132,12 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
         $this->assertPdfContiene('20222222229', $pdf, 'Falta el CUIT del cliente.');
         $this->assertPdfContiene('(Observaciones: Paga a 30 dias)', $pdf, 'Falta la descripcion del cliente.');
         $this->assertPdfContiene(self::VENDEDOR, $pdf, 'Falta el vendedor en el encabezado del cliente.');
+        /**
+         * El rótulo es el de siempre: "Vendedor:". El campo `empleado` del encabezado del remito
+         * rotula "Empleado:", que el cliente final nunca leyó en un presupuesto.
+         */
+        $this->assertPdfContiene('Vendedor:', $pdf, 'El empleado del presupuesto tiene que rotularse "Vendedor:".');
+        $this->assertPdfNoContiene('Empleado:', $pdf, 'No debe aparecer el rotulo "Empleado:" en el presupuesto.');
         $this->assertPdfContiene('Razon Social PDF SA', $pdf, 'Falta la razon social del emisor.');
     }
 

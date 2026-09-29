@@ -62,15 +62,29 @@ class BudgetPdfDocument implements PdfDocumentSource
     }
 
     /**
-     * El propio presupuesto: ya tiene `num`, `created_at`, `address` y `client`, y `employee` es
-     * su vendedor. `seller` no existe y devuelve null (Eloquent no está en modo estricto), que
-     * es justo lo que el encabezado necesita.
+     * El "documento" que lee el encabezado del remito (`AfipPdfHelper::header_comercial()`):
+     * `num`, `created_at`, `address`, `client`, `seller` y `employee`.
      *
-     * @return \App\Models\Budget
+     * Es un objeto adaptador, como el del pedido, y no el `Budget` a secas, por el rótulo del
+     * vendedor: el `BudgetPdf` de siempre imprimía "Vendedor: <empleado que lo cargó>", pero el
+     * encabezado del remito rotula el campo `empleado` como "Empleado:" y el campo `vendedor`
+     * como "Vendedor:" (y lo lee de `seller`, que un presupuesto no tiene). Poniendo el empleado
+     * también en `seller`, el diseño por defecto usa el campo `vendedor` y el cliente final sigue
+     * leyendo "Vendedor:" como antes. No simplificar devolviendo `$this->budget`.
+     *
+     * @return \stdClass
      */
     public function header_document()
     {
-        return $this->budget;
+        $document = new \stdClass();
+        $document->num = $this->budget->num;
+        $document->created_at = $this->budget->created_at;
+        $document->address = $this->budget->address;
+        $document->client = $this->budget->client;
+        $document->seller = $this->budget->employee;
+        $document->employee = $this->budget->employee;
+
+        return $document;
     }
 
     /**
