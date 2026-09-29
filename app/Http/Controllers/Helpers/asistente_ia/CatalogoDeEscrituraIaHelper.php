@@ -952,6 +952,14 @@ class CatalogoDeEscrituraIaHelper
         'task'                         => 'mensajes internos entre usuarios',
         'tienda_nube_order'            => 'Tienda Nube',
         'title'                        => 'banner de la tienda: su contenido es una imagen',
+        /*
+         * Diseños de Vender (mision diseno-vender-configurable, 29/9/2026): el diseño es un JSON que
+         * arma el editor de arrastrar y soltar del ABM contra el catalogo de campos que vive en el
+         * SPA (components/vender/layout/elementos.js). El backend no conoce ese catalogo, y una
+         * edicion por chat podria dejar Vender sin ningun buscador de articulos (esa validacion
+         * vive solo en el editor).
+         */
+        'vender_layout'                => 'diseños de Vender: se arman arrastrando en el editor del ABM (un JSON que resuelve el SPA)',
     ];
 
     /**

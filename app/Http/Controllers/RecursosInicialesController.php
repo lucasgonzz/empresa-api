@@ -117,6 +117,7 @@ class RecursosInicialesController extends Controller
         'turno_caja'                             => 'App\Http\Controllers\TurnoCajaController',
         'unidad_frecuencia'                      => 'App\Http\Controllers\UnidadFrecuenciaController',
         'unidad_medida'                          => 'App\Http\Controllers\UnidadMedidaController',
+        'vender_layout'                          => 'App\Http\Controllers\VenderLayoutController',
     );
 
     /**

@@ -1233,10 +1233,22 @@ class AfipPdfHelper
 
         $pdf->y = $start_y + 2;
 
+        /**
+         * Si el cliente no tiene CUIT cargado, se muestra su DNI en lugar del CUIT.
+         * Sin CUIT ni DNI queda la línea de CUIT vacía, como antes.
+         */
+        $documento_label = 'CUIT: ';
+        $documento_valor = trim((string) $client->cuit);
+
+        if ($documento_valor === '' && trim((string) $client->dni) !== '') {
+            $documento_label = 'DNI: ';
+            $documento_valor = trim((string) $client->dni);
+        }
+
         self::print_label_value_line(
             $pdf,
-            'CUIT: ',
-            (string) $client->cuit,
+            $documento_label,
+            $documento_valor,
             $content_x,
             $left_content_width
         );

@@ -99,6 +99,12 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
         'ProductionBatchMovementTypeSeeder',
         'RecipeRouteTypeSeeder',
 
+        /*
+         * El "Diseño predeterminado" de Vender (mision diseno-vender-configurable, 28/9/2026): corre
+         * en local (DatabaseSeeder) y en la demo, y sin el la demo arranca sin ningun diseño en el ABM.
+         */
+        'VenderLayoutSeeder',
+
         /* Los que ya estaban en los dos y sostienen la aritmética de `semilla:datos`. */
         'AddressSeeder',
         'ClientSeeder',

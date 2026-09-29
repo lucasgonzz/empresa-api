@@ -37,6 +37,13 @@ class AfipWsfeHelper extends Controller
     public $consulto_despues_de_error_en_emision = false;
     public $error_al_consultar_comprobante = false;
 
+    /**
+     * true cuando `consultar_comprobante()` encontro en ARCA un comprobante con el mismo numero y
+     * el mismo total, pero se nego a adoptarlo porque es de otro receptor o ya lo tiene otra venta.
+     * Los callers pueden usarlo para distinguir "no lo pudimos consultar" de "lo consultamos y es ajeno".
+     */
+    public $comprobante_recuperado_descartado = false;
+
     public function __construct($afip_ticket, $testing = null) {
 
         $this->afip_ticket = $afip_ticket;
@@ -184,7 +191,7 @@ class AfipWsfeHelper extends Controller
                         } 
 
 
-                        if (
+                        $coincide_con_el_ticket = (
                             $data->PtoVta == $this->afip_ticket->punto_venta
                             && $data->CbteTipo == $this->afip_ticket->cbte_tipo
                             && (
@@ -193,7 +200,26 @@ class AfipWsfeHelper extends Controller
                                 // imp_total_enviado sale de la base como string ("12100.00").
                                 || abs((float) $data->ImpTotal - (float) $total_a_facturar) < 0.01
                             )
-                        ) {
+                        );
+
+                        /**
+                         * Coincidir en punto de venta, tipo y total NO alcanza para decir que el
+                         * comprobante es de esta venta: dos ventas del mismo importe comparten
+                         * esos tres datos (Ferretotal, 29/9/2026: dos ventas de $147.500 quedaron
+                         * con el mismo 0005-19099 y el mismo CAE). Se valida ademas el receptor y
+                         * que el numero no lo tenga ya otro ticket vivo.
+                         */
+                        $motivo_ajeno = null;
+
+                        if ($coincide_con_el_ticket) {
+                            $motivo_ajeno = $this->motivo_de_comprobante_ajeno($data, $from_sale);
+                        }
+
+                        if ($coincide_con_el_ticket && !is_null($motivo_ajeno)) {
+
+                            $this->descartar_comprobante_ajeno($data, $motivo_ajeno);
+
+                        } else if ($coincide_con_el_ticket) {
 
                             $campos = [
                                 'cbte_letra'        => AfipWsHelper::getTipoLetra($data->CbteTipo),
@@ -219,6 +245,18 @@ class AfipWsfeHelper extends Controller
 
                             if ($from_sale) {
                                 AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $total_a_facturar);
+
+                                /**
+                                 * La ganancia depende del IVA declarado, que recien acaba de quedar
+                                 * escrito en el ticket. En el camino "error de red al emitir" ya la
+                                 * recalcula `MakeAfipTicket::recalcular_ganancia_facturada()` cuando
+                                 * vuelve `procesar()`, asi que ahi NO se repite; en la consulta
+                                 * manual (`AfipTicketController::consultar_comprobante`) nadie mas
+                                 * lo hace y la venta se quedaba con la ganancia de antes del CAE.
+                                 */
+                                if (!$this->consulto_despues_de_error_en_emision) {
+                                    $this->recalcular_ganancia_de_la_venta();
+                                }
                             }
 
                         } else {
@@ -246,6 +284,163 @@ class AfipWsfeHelper extends Controller
                 $this->save_error($result);
             }
         }
+    }
+
+    /**
+     * Motivo por el que el comprobante que devolvio ARCA NO puede adoptarse para este ticket, o null
+     * si se puede adoptar.
+     *
+     * ─── Por que existe ───────────────────────────────────────────────────────────────────────
+     *
+     * `consultar_comprobante()` adoptaba lo que ARCA contestara para (punto de venta, tipo, numero)
+     * con solo que el total coincidiera. Si otra venta del mismo importe habia quedado con ese
+     * numero (numeracion pisada por una emision paralela o un reintento), la consulta le devolvia a
+     * la segunda venta el CAE de la primera: mismo 0005-19099 y mismo CAE en dos ventas de
+     * $147.500 (Ferretotal, 29/9/2026). Fiscalmente esa segunda venta quedaba facturada a un
+     * receptor que no era el suyo.
+     *
+     * ─── Que se valida ────────────────────────────────────────────────────────────────────────
+     *
+     *  1. **Receptor** (solo facturas): el `DocTipo`/`DocNro` que ARCA tiene asentados contra los
+     *     que se le mandan por esta venta (`AfipSolicitarCaeHelper::get_doc_client()`, "NR" es
+     *     tipo 99 y numero 0). Se comparan como digitos. Si la respuesta no trae el dato (las
+     *     respuestas transcriptas viejas), no se valida ese punto.
+     *  2. **Unicidad**: que ningun OTRO `afip_tickets` vivo (el modelo usa SoftDeletes: un ticket
+     *     borrado no cuenta) tenga ya ese numero de comprobante con CAE, ni ese mismo CAE. Rige
+     *     tambien para las notas de credito.
+     *
+     * @param  mixed $data Nodo `FECompConsultarResult->ResultGet` de la respuesta de ARCA.
+     * @param  bool  $from_sale true si el ticket es una factura, false si es una nota de credito.
+     * @return string|null
+     */
+    protected function motivo_de_comprobante_ajeno($data, $from_sale)
+    {
+        if ($from_sale && isset($data->DocNro) && isset($data->DocTipo) && $this->afip_ticket->sale) {
+
+            $esperado = AfipSolicitarCaeHelper::get_doc_client($this->afip_ticket->sale);
+
+            $doc_nro_esperado = $esperado['doc_client'] == 'NR' ? '0' : $this->solo_digitos($esperado['doc_client']);
+            $doc_nro_arca     = $this->solo_digitos($data->DocNro);
+
+            if (
+                (string) $data->DocTipo !== (string) $esperado['doc_type']
+                || ltrim($doc_nro_arca, '0') !== ltrim($doc_nro_esperado, '0')
+            ) {
+                return 'El comprobante N° '.$this->afip_ticket->cbte_numero.' de ARCA pertenece a otro receptor '
+                    .'(documento '.$data->DocTipo.' '.$doc_nro_arca.'); no se asoció a esta venta.';
+            }
+        }
+
+        $otros = AfipTicket::where('id', '!=', $this->afip_ticket->id)
+                            ->whereNotNull('cae')
+                            ->where('cae', '!=', '');
+
+        if (is_null($this->afip_ticket->afip_information_id)) {
+            $otros->whereNull('afip_information_id');
+        } else {
+            $otros->where('afip_information_id', $this->afip_ticket->afip_information_id);
+        }
+
+        $mismo_numero = (clone $otros)
+                            ->where('punto_venta', $this->afip_ticket->punto_venta)
+                            ->where('cbte_tipo', $this->afip_ticket->cbte_tipo)
+                            ->where('cbte_numero', $this->afip_ticket->cbte_numero)
+                            ->first();
+
+        $mismo_cae = null;
+
+        if (isset($data->CodAutorizacion) && (string) $data->CodAutorizacion !== '') {
+            $mismo_cae = (clone $otros)->where('cae', (string) $data->CodAutorizacion)->first();
+        }
+
+        $otro = !is_null($mismo_numero) ? $mismo_numero : $mismo_cae;
+
+        if (!is_null($otro)) {
+            $venta_ajena = !is_null($otro->sale_id) ? $otro->sale_id : $otro->sale_nota_credito_id;
+
+            return 'El comprobante N° '.$this->afip_ticket->cbte_numero.' de ARCA ya pertenece a otra venta (N° de venta '
+                .$venta_ajena.'); no se asoció a esta venta.';
+        }
+
+        return null;
+    }
+
+    /**
+     * Deja registrado que un comprobante recuperado por consulta se descarto por ser ajeno: no se
+     * escribe ni el CAE ni el resultado, se loguea con las dos ventas y se crea un `AfipError` para
+     * que el usuario lo vea en la venta en vez de un ticket que "no pasa nada".
+     *
+     * @param  mixed  $data   Nodo `ResultGet` de ARCA.
+     * @param  string $motivo Mensaje en español ya armado por `motivo_de_comprobante_ajeno()`.
+     * @return void
+     */
+    protected function descartar_comprobante_ajeno($data, $motivo)
+    {
+        $this->comprobante_recuperado_descartado = true;
+
+        $sale_id = !is_null($this->afip_ticket->sale_id)
+                    ? $this->afip_ticket->sale_id
+                    : $this->afip_ticket->sale_nota_credito_id;
+
+        Log::warning('consultar_comprobante: comprobante descartado, no se adopta. '.$motivo.' Ticket '
+            .$this->afip_ticket->id.', venta '.$sale_id.', CAE de ARCA '
+            .(isset($data->CodAutorizacion) ? $data->CodAutorizacion : '-'));
+
+        AfipError::create([
+            'message'           => $motivo,
+            'code'              => 'Comprobante ajeno',
+            'afip_ticket_id'    => $this->afip_ticket->id,
+            'sale_id'           => $sale_id,
+        ]);
+    }
+
+    /**
+     * Recarga la venta del ticket y recalcula `sales.ganancia` (y la de sus consolidadas, si es una
+     * consolidacion de facturacion). Se recarga en vez de usar la
+     * instancia de la relacion para no guardar columnas viejas (mismo criterio que
+     * `MakeAfipTicket::recalcular_ganancia_facturada()`).
+     *
+     * @return void
+     */
+    protected function recalcular_ganancia_de_la_venta()
+    {
+        $venta = Sale::find($this->afip_ticket->sale_id);
+
+        if (is_null($venta)) {
+            return;
+        }
+
+        SaleHelper::set_sale_ganancia($venta);
+
+        /**
+         * Igual que `MakeAfipTicket::recalcular_ganancia_facturada()`: si la venta es una
+         * consolidacion de facturacion, el comprobante es el de TODAS las ventas que contiene y sus
+         * ganancias tambien quedaron viejas. Se replica el bucle chico en vez de exponer el metodo
+         * privado de MakeAfipTicket, para no tocar el camino de emision.
+         */
+        if ($venta->is_consolidacion_facturacion) {
+            $consolidadas = Sale::where('consolidacion_facturacion_id', $venta->id)->get();
+
+            foreach ($consolidadas as $consolidada) {
+                SaleHelper::set_sale_ganancia($consolidada);
+            }
+        }
+    }
+
+    /**
+     * Deja solo los digitos de un numero de documento (ARCA lo devuelve numerico; el sistema lo
+     * guarda como texto, a veces con guiones).
+     *
+     * @param  mixed $valor
+     * @return string
+     */
+    protected function solo_digitos($valor)
+    {
+        if (is_float($valor)) {
+            $valor = sprintf('%.0f', $valor);
+        }
+
+        return preg_replace('/\D/', '', (string) $valor);
     }
 
     /**

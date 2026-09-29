@@ -410,6 +410,15 @@ class DatabaseSeeder extends Seeder
             ahi sembraria cero filas SIN FALLAR. Al final del run() cubre las dos ramas.
         */
         $this->call(PdfColumnProfileDocumentosSeeder::class);
+
+        /*
+            "Diseño predeterminado" de Vender (misión diseno-vender-configurable, 28/9/2026): uno
+            por dueño, con layout null (= el diseño del sistema que arma el SPA). Mismo motivo que
+            los dos de arriba para ir acá y no en common_seeders(): itera
+            `User::whereNull('owner_id')`, y ahí todavía no existe ningún usuario. También lo corren
+            UserSetupHelper::base_seeders() y DemoSetupHelper::base_seeders().
+        */
+        $this->call(VenderLayoutSeeder::class);
     }
 
     function local_y_demo() {

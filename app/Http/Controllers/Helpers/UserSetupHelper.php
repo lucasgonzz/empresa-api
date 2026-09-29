@@ -426,6 +426,13 @@ class UserSetupHelper
             'GlobalSearchDefaultsSeeder',
 
             /*
+                "Diseño predeterminado" de Vender (misión diseno-vender-configurable, 28/9/2026).
+                Itera los dueños (owner_id null), así que tiene que correr después de
+                create_user(): este foreach ya lo es.
+            */
+            'VenderLayoutSeeder',
+
+            /*
                 Respaldo idempotente: para cuando las 4 extensiones de IA (agregadas en
                 base_extencions()) ya esten enganchadas al usuario por el sync de mas arriba.
                 Si ya estan, las salta (ver su propio PHPDoc). Mismo fix que ya tiene

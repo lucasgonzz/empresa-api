@@ -1035,6 +1035,10 @@ Route::middleware(['auth:sanctum'])->group(function() {
 
     Route::resource('sale-status', 'SaleStatusController');
 
+    // Diseños de Vender (misión diseno-vender-configurable, 28/9/2026): ABM -> Ventas -> "Diseños de Vender".
+    // Sin create/edit: no hay vistas de servidor, y así `vender-layout/create` cae en show() y da 404.
+    Route::resource('vender-layout', 'VenderLayoutController')->except(['create', 'edit']);
+
 
 });
 
