@@ -422,6 +422,74 @@ class Sincronizacion_en_bloque_Test extends DescuentosYMasivasEnLoteTestCase
     }
 
     /**
+     * 🔴 ATOMICIDAD DE LA TANDA (chequeo de mutantes del 29/9/2026, D06): los descuentos nuevos y los
+     * precios que salen de ellos se escriben JUNTOS o no se escribe nada. Si el recalculo de la tanda
+     * tira a mitad de camino, el DELETE y el INSERT de descuentos de esa tanda se deshacen con el:
+     * sin la transaccion que los une, los articulos quedarian con los descuentos nuevos y el costo y
+     * el precio calculados con los viejos, sin nada que lo avise.
+     *
+     * El recalculo se hace tirar con un impuesto sobre ventas del 100 % en el articulo del medio (la
+     * cadena de precios divide por cero), como el test de la tanda que tira del motor. Los tres
+     * articulos caen en la misma tanda (la del motor, sin forzar la de la sincronizacion).
+     *
+     * @test
+     */
+    public function una_tanda_que_tira_no_deja_descuentos_nuevos_sin_su_precio()
+    {
+        $dueno = $this->crear_dueno(['listas_de_precio' => 1]);
+        $this->crear_lista($dueno, 'Lista', 30, 1);
+
+        $provider = $this->crear_proveedor($dueno, ['percentage_gain' => 30]);
+        $this->descuento_de_la_ficha($provider, 15, 'Bonif');
+
+        $ids = [];
+
+        for ($i = 0; $i < 3; $i++) {
+
+            $article = $this->crear_articulo($dueno, ['cost' => 1000 + $i, 'provider_id' => $provider->id]);
+
+            /* Copia vieja de la ficha (10 contra 15): desactualizado, la sincronizacion lo rehace. */
+            $this->copia_de_la_ficha($article, $provider, 10);
+
+            $ids[] = $article->id;
+        }
+
+        $this->calentar($ids, $dueno->id);
+
+        /* El del medio revienta al calcular: impuesto del 100 % solo para el (division por cero). */
+        $impuesto = $this->impuesto_sobre_ventas($dueno, 100, false);
+        DB::table('article_sale_tax')->insert(['article_id' => $ids[1], 'sale_tax_id' => $impuesto->id]);
+
+        $marca = (int) DB::table('price_changes')->max('id');
+
+        $antes = $this->foto_completa($ids, $marca);
+
+        $tiro = null;
+
+        try {
+            ArticleProviderDiscountHelper::sincronizar_a_articulos(
+                Provider::find($provider->id),
+                ArticleProviderDiscountHelper::ALCANCE_SOLO_CON_DESCUENTOS
+            );
+        } catch (\Throwable $e) {
+            $tiro = $e;
+        }
+
+        $this->assertNotNull($tiro, 'Precondicion: el articulo con el impuesto del 100 % tenia que tirar.');
+
+        $despues = $this->foto_completa($ids, $marca);
+
+        $this->assertEquals(
+            $antes['descuentos'],
+            $despues['descuentos'],
+            'La tanda que tiro dejo los descuentos nuevos escritos sin su precio.'
+        );
+
+        $this->assertEquals($antes['articles'], $despues['articles'], 'Ni un costo ni un precio de esa tanda puede haber quedado escrito.');
+        $this->assertEquals($antes['cambios'], $despues['cambios'], 'Ni un price_change.');
+    }
+
+    /**
      * Los descuentos de un articulo, en orden de id (atajo para las aserciones).
      *
      * @param  int $article_id

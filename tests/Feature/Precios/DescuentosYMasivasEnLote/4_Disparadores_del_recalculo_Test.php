@@ -355,6 +355,56 @@ class Disparadores_del_recalculo_Test extends EmpresaTestCase
     }
 
     /**
+     * La modalidad PRENDIDA escrita distinto tampoco es un cambio (chequeo de mutantes del 29/9/2026,
+     * T03): `1` de la base contra `'true'` de un formulario, `true` contra `'1'` y `'1'` contra
+     * `true` son el mismo tilde prendido, y no encolan nada. Una comparacion cruda (`!=`) daria
+     * `1 != 'true'` = verdadero en PHP 7.4 ('true' se convierte a 0) y recalcularia todo el proveedor
+     * por un guardado que no cambio nada.
+     *
+     * Se prueba sobre la decision misma (recalcular_precios_si_corresponde(), por reflexion, con los
+     * valores en memoria) y NO por el endpoint: con MySQL en modo estricto, guardar `'true'` en la
+     * columna tinyint da error antes de llegar a decidir. Lo que se fija es la comparacion.
+     *
+     * @test
+     */
+    public function la_modalidad_prendida_escrita_distinto_no_es_un_cambio()
+    {
+        $provider = $this->proveedor_de_la_suite('modalidad prendida');
+
+        $provider->price_from_cost_mas_iva = 1;
+        $provider->save();
+        $provider = $provider->fresh();
+
+        $controller = new \App\Http\Controllers\ProviderController();
+
+        $decidir = new \ReflectionMethod($controller, 'recalcular_precios_si_corresponde');
+        $decidir->setAccessible(true);
+
+        foreach ([[1, 'true'], [true, '1'], ['1', true]] as $par) {
+
+            list($anterior, $nueva) = $par;
+
+            // El valor nuevo, solo en memoria: es lo que el controller compara despues de asignarlo.
+            $provider->price_from_cost_mas_iva = $nueva;
+
+            $alcance = $decidir->invoke(
+                $controller,
+                $provider,
+                $provider->percentage_gain,
+                $provider->dolar,
+                $anterior
+            );
+
+            $this->assertNull(
+                $alcance,
+                'La modalidad prendida (' . var_export($anterior, true) . ' contra ' . var_export($nueva, true) . ') no es un cambio.'
+            );
+        }
+
+        $this->assertCount(0, $this->recalculos(), 'Y no se encola nada.');
+    }
+
+    /**
      * Margen y dolar en el mismo guardado: UN recalculo de todo el proveedor, que ya incluye a los
      * articulos en dolares. Nunca dos.
      *
