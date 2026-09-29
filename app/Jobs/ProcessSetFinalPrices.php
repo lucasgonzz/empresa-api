@@ -27,9 +27,11 @@ use App\Jobs\FinalizeSetFinalPrices;
  *
  * Misión recalculo-precios-motor-rapido (28/9/2026):
  *
- *  - Los ids se recorren por keyset (`id > último ORDER BY id LIMIT n`), no con ->chunk(), que
- *    pagina con OFFSET: en Servian, `provider_id = ? ... OFFSET 20000 LIMIT 100` tardaba 112 ms
- *    por página y cada página leía y descartaba todas las anteriores.
+ *  - Los ids ya no se recorren con ->chunk(), que pagina con OFFSET: en Servian,
+ *    `provider_id = ? ... OFFSET 20000 LIMIT 100` tardaba 112 ms por página y cada página leía y
+ *    descartaba todas las anteriores. Todo el catálogo y el dólar global van por keyset
+ *    (`id > último ORDER BY id LIMIT n`); un alcance por columna, con una sola consulta sin
+ *    ORDER BY y los ids ordenados en PHP (ver repartir_en_lotes()).
  *  - Toda consulta lleva `user_id`: así el alcance por proveedor usa el índice
  *    articles_user_provider_status_idx (user_id, provider_id, status, deleted_at), y un id de otra
  *    cuenta nunca entra al recálculo de ésta.
@@ -395,13 +397,18 @@ class ProcessSetFinalPrices implements ShouldQueue
     }
 
     /**
-     * Recorre los ids del alcance en orden, por keyset, y le pasa cada lote de hasta $lote ids a
-     * $despachar.
+     * Recorre los ids del alcance en orden de id y le pasa cada lote de hasta $lote ids a
+     * $despachar. Nunca con OFFSET, que en un catálogo grande hacía que cada página leyera y
+     * tirara todas las anteriores.
      *
-     * Para una sola consulta (todo el catálogo, o una columna) es el chunkById() de Laravel:
-     * `id > último ORDER BY id LIMIT n`, sin OFFSET, que en un catálogo grande hacía que cada
-     * página leyera y tirara todas las anteriores. El alcance del dólar global son dos consultas
-     * (ver repartir_el_alcance_del_dolar()) y se pagina con el mismo keyset, a mano.
+     * - Todo el catálogo del dueño: el chunkById() de Laravel, `id > último ORDER BY id LIMIT n`.
+     *   Ahí el keyset es barato: articles_user_deleted_idx (user_id, deleted_at) ya sale ordenado
+     *   por id y cubre la consulta entera.
+     * - Una columna (proveedor, categoría, subcategoría, lista de precios del proveedor, con o sin
+     *   la intersección con el costo en dólares): UNA consulta sin ORDER BY, y los ids se ordenan
+     *   y se parten en PHP (ver repartir_de_una_sola_consulta()).
+     * - El dólar global: dos consultas (ver repartir_el_alcance_del_dolar()), paginadas con el
+     *   mismo keyset, a mano.
      *
      * @param  array    $alcance
      * @param  int      $lote
@@ -429,6 +436,10 @@ class ProcessSetFinalPrices implements ShouldQueue
             if ($alcance['solo_en_dolares']) {
                 $query->where('cost_in_dollars', 1);
             }
+
+            $this->repartir_de_una_sola_consulta($query, $lote, $despachar);
+
+            return;
         }
 
         $query->toBase()
@@ -444,6 +455,52 @@ class ProcessSetFinalPrices implements ShouldQueue
                     $despachar($ids);
 
                 }, 'articles.id', 'id');
+    }
+
+    /**
+     * Reparte un alcance por columna con UNA consulta sin ORDER BY: junta todos los ids, los
+     * ordena en PHP y los parte en lotes de $lote (medición a escala del 29/9/2026). Salen el
+     * mismo conjunto y los mismos lotes que con el keyset.
+     *
+     * 🔴 Por qué no chunkById(), que es lo que había: con `ORDER BY id`, MySQL no puede sacar los
+     * ids ordenados de articles_user_provider_status_idx (user_id, provider_id, status,
+     * deleted_at), porque status está en el medio y no está en el WHERE. Entonces recorre
+     * articles_user_deleted_idx, que sí sale ordenado por id, y va a buscar cada fila para mirar
+     * el provider_id: medido con ETMAN (64.500 artículos de un dueño con 250.000, en
+     * empresa_bench_s24), el reparto tardaba 8,6 a 9,9 segundos en 65 consultas, 168 ms por página
+     * con las filas frías. Sin ORDER BY, la misma consulta es una lectura del índice cubriente:
+     * 70 a 90 ms en total. Poner `status` en el WHERE también usaría el índice, pero achicaría el
+     * alcance: hoy entran los artículos inactivos, y tienen que seguir entrando.
+     *
+     * Con cursor() y no con pluck(): es la misma consulta, pero pluck() arma de una vez un objeto
+     * por fila y cursor() los trae de a uno. Medido con ETMAN: +35 MB de memoria con pluck()
+     * contra +7,6 MB con cursor(), en un worker que corre con --memory=512 y una columna que puede
+     * tener cientos de miles de artículos.
+     *
+     * Las columnas sin índice propio (category_id, sub_category_id, provider_price_list_id) no
+     * empeoran: el keyset también recorría todos los artículos del dueño para encontrarlas, y
+     * ahora es una sola pasada.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder $query  Con user_id y la columna (SoftDeletes
+     *                                                        agrega deleted_at IS NULL).
+     * @param  int                                   $lote
+     * @param  callable                              $despachar
+     * @return void
+     */
+    protected function repartir_de_una_sola_consulta($query, $lote, callable $despachar)
+    {
+        $ids = [];
+
+        foreach ($query->toBase()->select('articles.id')->cursor() as $fila) {
+            $ids[] = (int) $fila->id;
+        }
+
+        /* Sin ORDER BY, el índice los devuelve agrupados por status: el orden de id se arma acá. */
+        sort($ids, SORT_NUMERIC);
+
+        foreach (array_chunk($ids, $lote) as $ids_del_lote) {
+            $despachar($ids_del_lote);
+        }
     }
 
     /**

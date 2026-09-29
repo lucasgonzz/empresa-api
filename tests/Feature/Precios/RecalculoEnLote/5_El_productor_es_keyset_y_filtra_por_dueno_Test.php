@@ -13,13 +13,20 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 
 /**
- * El productor del recálculo recorre los ids por keyset y siempre por dueño (misión
+ * El productor del recálculo reparte los ids sin OFFSET y siempre por dueño (misión
  * recalculo-precios-motor-rapido, 28/9/2026).
  *
  * Por qué importa: el ->chunk(100) de antes paginaba con OFFSET, y en Servian cada página por
  * proveedor (`provider_id = ? ... OFFSET 20000 LIMIT 100`, sin índice) leía y tiraba todas las
  * anteriores: 112 ms por página. Y la consulta por columna no llevaba user_id: ni usaba el índice
  * por (user_id, provider_id), ni impedía que un id de otra cuenta de una base compartida entrara.
+ *
+ * Todo el catálogo y el dólar global van por keyset. Un alcance por columna, desde el 29/9/2026,
+ * es UNA consulta sin ORDER BY con los ids ordenados en PHP: con ORDER BY id, MySQL dejaba el
+ * índice (user_id, provider_id, status, deleted_at) y recorría el catálogo entero del dueño
+ * (ETMAN, 64.500 artículos: 8,4 s de reparto contra 50 ms). Por eso esos tests miran además que
+ * la consulta sea una sola, sin ORDER BY ni status, y que los lotes salgan ordenados y completos
+ * aunque el índice devuelva los ids agrupados por status.
  *
  * Con la cola falsa, los lotes no corren: se mira qué encoló el productor y con qué consultas.
  *
@@ -53,20 +60,24 @@ class El_productor_es_keyset_y_filtra_por_dueno_Test extends RecalculoEnLoteTest
     }
 
     /**
-     * Por proveedor: lotes en orden de id, sin OFFSET, con user_id, sin artículos borrados ni de
-     * otra cuenta.
+     * Por proveedor: UNA consulta sin ORDER BY, y lotes en orden de id y completos (los inactivos
+     * incluidos), sin OFFSET, con user_id, sin artículos borrados ni de otra cuenta.
+     *
+     * Los status van intercalados a propósito: el índice (user_id, provider_id, status, ...)
+     * devuelve los ids agrupados por status, así que el orden de los lotes lo tiene que armar el
+     * productor.
      *
      * @return void
      */
-    public function test_por_proveedor_reparte_por_keyset_con_user_id_y_sin_offset()
+    public function test_por_proveedor_reparte_de_una_consulta_en_orden_con_user_id_y_sin_offset()
     {
         $dueno = $this->crear_dueno();
 
         $proveedor = $this->crear_proveedor($dueno);
 
         $ids = [];
-        for ($i = 0; $i < 5; $i++) {
-            $ids[] = $this->crear_articulo($dueno, ['cost' => 10, 'provider_id' => $proveedor->id])->id;
+        foreach (['active', 'inactive', 'active', 'from_budget', 'active'] as $status) {
+            $ids[] = $this->crear_articulo($dueno, ['cost' => 10, 'provider_id' => $proveedor->id, 'status' => $status])->id;
         }
 
         $borrado = $this->crear_articulo($dueno, ['cost' => 10, 'provider_id' => $proveedor->id]);
@@ -75,11 +86,70 @@ class El_productor_es_keyset_y_filtra_por_dueno_Test extends RecalculoEnLoteTest
         $otro_dueno = $this->crear_dueno();
         $ajeno = $this->crear_articulo($otro_dueno, ['cost' => 10, 'provider_id' => $proveedor->id])->id;
 
+        $this->assertOrdenCrudoNoEsPorId($dueno->id, 'provider_id', $proveedor->id);
+
         $lotes = $this->lotes_encolados(new ProcessSetFinalPrices($dueno->id, 'provider_id', $proveedor->id, false, 'proveedor'));
 
-        $this->assertSame([[$ids[0], $ids[1]], [$ids[2], $ids[3]], [$ids[4]]], $lotes, 'Los lotes tienen que salir en orden de id, de a dos, sin el borrado ni el de otra cuenta.');
+        $this->assertSame([[$ids[0], $ids[1]], [$ids[2], $ids[3]], [$ids[4]]], $lotes, 'Los lotes tienen que salir en orden de id, de a dos, completos (con los inactivos), sin el borrado ni el de otra cuenta.');
 
         $this->assertSinOffsetYConUserId();
+        $this->assertUnaSolaConsultaSinOrden('provider_id');
+    }
+
+    /**
+     * El dólar de un proveedor (columna + costo en dólares): la misma consulta única, con la
+     * intersección; solo los del proveedor con costo en dólares, en orden.
+     *
+     * @return void
+     */
+    public function test_dolar_del_proveedor_reparte_de_una_consulta_solo_los_de_costo_en_dolares()
+    {
+        $dueno = $this->crear_dueno();
+
+        $proveedor = $this->crear_proveedor($dueno);
+
+        $en_dolares = [];
+        foreach (['inactive', 'active', 'active', 'inactive'] as $i => $status) {
+            $en_dolares[] = $this->crear_articulo($dueno, ['cost' => 10, 'provider_id' => $proveedor->id, 'status' => $status, 'cost_in_dollars' => 1])->id;
+            $this->crear_articulo($dueno, ['cost' => 10, 'provider_id' => $proveedor->id, 'status' => $status]);
+        }
+
+        $lotes = $this->lotes_encolados(new ProcessSetFinalPrices($dueno->id, 'provider_id', $proveedor->id, true, 'proveedor'));
+
+        $this->assertSame([[$en_dolares[0], $en_dolares[1]], [$en_dolares[2], $en_dolares[3]]], $lotes);
+
+        $this->assertSinOffsetYConUserId();
+        $this->assertUnaSolaConsultaSinOrden('provider_id');
+
+        $this->assertMatchesRegularExpression('/`cost_in_dollars`\s*=\s*\?/i', $this->consultas_de_articulos()[0], 'La consulta del dólar del proveedor perdió la intersección con el costo en dólares.');
+    }
+
+    /**
+     * Por categoría (una columna sin índice propio): el mismo reparto de una consulta, lotes
+     * ordenados y completos.
+     *
+     * @return void
+     */
+    public function test_por_categoria_reparte_de_una_consulta_en_orden()
+    {
+        $dueno = $this->crear_dueno();
+
+        $categoria = $this->crear_categoria($dueno);
+
+        $ids = [];
+        for ($i = 0; $i < 3; $i++) {
+            $ids[] = $this->crear_articulo($dueno, ['cost' => 10, 'category_id' => $categoria->id, 'status' => $i === 1 ? 'inactive' : 'active'])->id;
+        }
+
+        /* De otra categoría: afuera. */
+        $this->crear_articulo($dueno, ['cost' => 10]);
+
+        $lotes = $this->lotes_encolados(new ProcessSetFinalPrices($dueno->id, 'category_id', $categoria->id, false, 'categoria'));
+
+        $this->assertSame([[$ids[0], $ids[1]], [$ids[2]]], $lotes);
+
+        $this->assertSinOffsetYConUserId();
+        $this->assertUnaSolaConsultaSinOrden('category_id');
     }
 
     /**
@@ -253,6 +323,71 @@ class El_productor_es_keyset_y_filtra_por_dueno_Test extends RecalculoEnLoteTest
         }
 
         $this->assertGreaterThan(0, $de_articulos, 'No se vio ninguna consulta de ids de artículos: el test no está mirando lo que dice.');
+    }
+
+    /**
+     * Las consultas del productor que leen `articles`, en orden.
+     *
+     * @return string[]
+     */
+    protected function consultas_de_articulos()
+    {
+        $de_articulos = [];
+
+        foreach ($this->consultas as $sql) {
+            if (preg_match('/^select .*\bfrom `articles`/i', $sql)) {
+                $de_articulos[] = $sql;
+            }
+        }
+
+        return $de_articulos;
+    }
+
+    /**
+     * El alcance por columna se juntó en UNA consulta, sin ORDER BY ni LIMIT (con ORDER BY id,
+     * MySQL deja el índice por (user_id, provider_id) y recorre todo el catálogo del dueño), con la
+     * columna, sin borrados y sin filtrar por status (los inactivos también se recalculan).
+     *
+     * @param  string $columna
+     * @return void
+     */
+    protected function assertUnaSolaConsultaSinOrden($columna)
+    {
+        $de_articulos = $this->consultas_de_articulos();
+
+        $this->assertCount(1, $de_articulos, 'El alcance por columna se tiene que juntar en una sola consulta: ' . implode(' || ', $de_articulos));
+
+        $sql = $de_articulos[0];
+
+        $this->assertDoesNotMatchRegularExpression('/\border\s+by\b/i', $sql, 'La consulta del alcance por columna volvió a ordenar en la base: ' . $sql);
+        $this->assertDoesNotMatchRegularExpression('/\blimit\b/i', $sql, 'La consulta del alcance por columna volvió a paginar: ' . $sql);
+        $this->assertMatchesRegularExpression('/`' . $columna . '`\s*=\s*\?/i', $sql);
+        $this->assertMatchesRegularExpression('/`deleted_at`\s+is\s+null/i', $sql, 'La consulta dejó de excluir los borrados: ' . $sql);
+        $this->assertDoesNotMatchRegularExpression('/`status`/i', $sql, 'El alcance no filtra por status: los inactivos también se recalculan.');
+    }
+
+    /**
+     * Precondición: la misma consulta, sin ORDER BY, devuelve los ids en un orden que NO es el de
+     * id (el índice los agrupa por status). Si los devolviera ordenados, el test no probaría que
+     * el productor ordena.
+     *
+     * @param  int    $user_id
+     * @param  string $columna
+     * @param  int    $valor
+     * @return void
+     */
+    protected function assertOrdenCrudoNoEsPorId($user_id, $columna, $valor)
+    {
+        $crudos = [];
+
+        foreach (DB::select('select `articles`.`id` from `articles` where `user_id` = ? and `' . $columna . '` = ? and `articles`.`deleted_at` is null', [$user_id, $valor]) as $fila) {
+            $crudos[] = (int) $fila->id;
+        }
+
+        $ordenados = $crudos;
+        sort($ordenados);
+
+        $this->assertNotSame($ordenados, $crudos, 'Precondición: la base tenía que devolver los ids agrupados por status, no en orden de id (si no, el test no prueba el orden que arma el productor).');
     }
 
     /**
