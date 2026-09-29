@@ -1036,7 +1036,7 @@ class ArticleController extends Controller
      * un SPA viejo sigue imprimiendo igual.
      */
     function ticketsPdf($ids) {
-        $diseno = ArticleTicketDesignHelper::diseno_del_dueno(request()->query('article_ticket_design_id'), $this->userId());
+        $diseno = $this->diseno_de_etiquetas_pedido(request()->query('article_ticket_design_id'));
 
         if (!is_null($diseno)) {
             $pdf = new ArticleTicketDesignPdf($diseno->diseno, $ids, $this->userId());
@@ -1048,6 +1048,18 @@ class ArticleController extends Controller
         }
 
         new ArticleTicketPdf($ids);
+    }
+
+    /**
+     * La bifurcación de `ticketsPdf()`: el diseño de etiquetas pedido si es DEL DUEÑO, o null
+     * (-> camino de siempre, `ArticleTicketPdf`). Separado en su propio método para poder
+     * testearlo: el camino de siempre termina en `exit` y no se puede ejercitar desde PHPUnit.
+     *
+     * @param  mixed  $article_ticket_design_id  El `?article_ticket_design_id=` tal cual llegó.
+     * @return \App\Models\ArticleTicketDesign|null
+     */
+    function diseno_de_etiquetas_pedido($article_ticket_design_id) {
+        return ArticleTicketDesignHelper::diseno_del_dueno($article_ticket_design_id, $this->userId());
     }
 
     function pdf($ids, $moneda_id = null) {

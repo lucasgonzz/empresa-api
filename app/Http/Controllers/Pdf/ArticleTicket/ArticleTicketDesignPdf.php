@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Pdf\ArticleTicket;
 use App\Http\Controllers\CommonLaravel\Helpers\Numbers;
 use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
 use App\Http\Controllers\Helpers\GeneralHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\PriceType;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Milon\Barcode\DNS1D;
@@ -77,6 +79,12 @@ class ArticleTicketDesignPdf extends \fpdf
 
     /** @var array `[price_type_id => nombre]` de las listas del dueño que usa el diseño. */
     protected $listas = array();
+
+    /**
+     * @var bool Si el dueño trabaja con listas de precios. Sin listas, `precio_lista` imprime el
+     *           `final_price` del artículo (igual que `ArticleTicketPdf::get_price()`).
+     */
+    protected $usa_listas = false;
 
     /** @var float Ancho real de la etiqueta en la hoja (sin redondear). */
     protected $ancho_etiqueta;
@@ -269,6 +277,10 @@ class ArticleTicketDesignPdf extends \fpdf
             return;
         }
 
+        $dueno = User::find($this->owner_id);
+
+        $this->usa_listas = !is_null($dueno) && UserHelper::uses_listas_de_precio($dueno);
+
         $listas = PriceType::where('user_id', $this->owner_id)
                             ->whereIn('id', array_values(array_unique($ids)))
                             ->get();
@@ -433,8 +445,11 @@ class ArticleTicketDesignPdf extends \fpdf
     }
 
     /**
-     * El precio final de la lista para el artículo (pivot `article_price_type.final_price`); si
-     * el artículo no tiene pivot para esa lista, su `final_price` (igual que `ArticleTicketPdf`).
+     * El precio de un `precio_lista`, con el mismo criterio que `ArticleTicketPdf::get_price()`:
+     *
+     *   - El dueño no trabaja con listas -> el `final_price` del artículo.
+     *   - Trabaja con listas -> el precio final de la lista (pivot `article_price_type.final_price`)
+     *     y, si el artículo no tiene pivot para esa lista, su `final_price`.
      *
      * @param  \App\Models\Article  $articulo
      * @param  int                  $lista_id
@@ -442,6 +457,10 @@ class ArticleTicketDesignPdf extends \fpdf
      */
     protected function precio_de_lista($articulo, $lista_id)
     {
+        if (!$this->usa_listas) {
+            return $articulo->final_price;
+        }
+
         foreach ($articulo->price_types as $lista) {
             if ((int) $lista->id === (int) $lista_id
                 && isset($lista->pivot)
