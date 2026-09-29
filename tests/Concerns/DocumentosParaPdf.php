@@ -316,8 +316,27 @@ trait DocumentosParaPdf
      */
     protected function colgar_imagen_jpg(Article $articulo, $ancho = 60, $alto = 40)
     {
-        $nombre = 'test_pdfdoc_'.uniqid().'.jpg';
-        $ruta = storage_path('app/public/'.$nombre);
+        $ruta = $this->crear_jpg_de_prueba($ancho, $alto);
+
+        Image::create([
+            'hosting_url'    => 'https://api-cliente.comerciocity.com/storage/'.basename($ruta),
+            'imageable_id'   => $articulo->id,
+            'imageable_type' => 'article',
+        ]);
+
+        return $ruta;
+    }
+
+    /**
+     * Crea un JPG real bajo storage/app/public/ (lo agenda para borrarlo en tearDown).
+     *
+     * @param int $ancho
+     * @param int $alto
+     * @return string Ruta del archivo.
+     */
+    protected function crear_jpg_de_prueba($ancho = 60, $alto = 40)
+    {
+        $ruta = storage_path('app/public/test_pdfdoc_'.uniqid().'.jpg');
 
         $imagen = imagecreatetruecolor($ancho, $alto);
         imagefill($imagen, 0, 0, imagecolorallocate($imagen, 200, 60, 60));
@@ -325,12 +344,6 @@ trait DocumentosParaPdf
         imagedestroy($imagen);
 
         $this->archivos_de_prueba[] = $ruta;
-
-        Image::create([
-            'hosting_url'    => 'https://api-cliente.comerciocity.com/storage/'.$nombre,
-            'imageable_id'   => $articulo->id,
-            'imageable_type' => 'article',
-        ]);
 
         return $ruta;
     }

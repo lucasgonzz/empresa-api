@@ -315,14 +315,45 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
      */
     public function el_bloque_final_nunca_se_sale_de_la_hoja()
     {
+        $this->barrer_el_bloque_final(18, 48, 2);
+    }
+
+    /**
+     * El mismo barrido con el LOGO del negocio (35 mm): el encabezado es mucho más alto que sin
+     * logo, y los umbrales de salto de hoja están en milímetros absolutos, no relativos al
+     * encabezado. Es el caso de la mayoría de los clientes reales.
+     *
+     * @test
+     */
+    public function con_logo_el_bloque_final_tampoco_se_sale_de_la_hoja()
+    {
+        $this->dueno->image_url = $this->crear_jpg_de_prueba(200, 200);
+        $this->dueno->save();
+
+        $this->barrer_el_bloque_final(10, 40, 3);
+    }
+
+    /**
+     * Renderiza presupuestos de `$desde` a `$hasta` renglones (de a `$paso`) con observaciones
+     * largas y verifica, en cada uno, que la caja de totales sale UNA vez y en la última hoja y que
+     * ningún recuadro de 200 mm se sale del papel. Exige que el barrido pase por al menos un caso
+     * en que el bloque final salta de hoja (si no, el rango no está probando lo que dice).
+     *
+     * @param int $desde
+     * @param int $hasta
+     * @param int $paso
+     * @return void
+     */
+    protected function barrer_el_bloque_final($desde, $hasta, $paso)
+    {
         $articulos = [];
-        for ($i = 1; $i <= 48; $i++) {
+        for ($i = 1; $i <= $hasta; $i++) {
             $articulos[] = $this->crear_articulo('Barrido '.$i);
         }
 
         $saltos_de_hoja_por_el_bloque = 0;
 
-        for ($cantidad = 18; $cantidad <= 48; $cantidad += 2) {
+        for ($cantidad = $desde; $cantidad <= $hasta; $cantidad += $paso) {
             $renglones = [];
             for ($i = 0; $i < $cantidad; $i++) {
                 $renglones[] = ['article' => $articulos[$i], 'amount' => 1, 'price' => 1000];
@@ -339,7 +370,7 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
             $this->assertSame(1, substr_count($pdf, '(Total: $'), 'Con '.$cantidad.' renglones la caja de totales no salio exactamente una vez.');
             $this->assertPdfContiene('(Total: $', end($por_hoja), 'Con '.$cantidad.' renglones el total no quedo en la ultima hoja.');
 
-            /** Los rectángulos de 200 mm: `x y ancho -alto re B`. Abajo del papel, el borde inferior <= 286 mm. */
+            /** Los rectángulos de 200 mm: `x y ancho -alto re B`. Abajo del papel, el borde inferior <= 287 mm. */
             $k = 72 / 25.4;
             preg_match_all('~[\d.]+ ([\d.]+) 566\.93 (-[\d.]+) re B~', $pdf, $rects, PREG_SET_ORDER);
             $this->assertNotEmpty($rects, 'Con '.$cantidad.' renglones no se dibujo ningun recuadro.');
@@ -353,8 +384,8 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
                 );
             }
 
-            if ($this->cantidad_de_hojas($pdf) > 1 && $cantidad < 40) {
-                /** Menos de 40 renglones caben en la primera hoja: la segunda existe solo por el bloque final. */
+            /** El caso que interesa: la última hoja NO tiene ningún renglón, o sea que existe solo porque el bloque final no entraba. */
+            if (count($por_hoja) > 1 && strpos(end($por_hoja), '(Barrido ') === false) {
                 $saltos_de_hoja_por_el_bloque++;
             }
         }
