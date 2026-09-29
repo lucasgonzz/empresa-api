@@ -230,9 +230,9 @@ class Abm_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
             /* id repetido e id inválido: se regeneran. */
             $this->elemento('marca', array('id' => 'repetido')),
             $this->elemento('categoria', array('id' => "Mayúsculas\n")),
-            /* Se sale por la derecha y por abajo: se recorta. */
+            /* Se sale por la derecha y por abajo: se corre hacia adentro. */
             $this->elemento('proveedor', array('x' => 45, 'y' => 18, 'w' => 20, 'h' => 5)),
-            /* Pegado al borde: se corre para que queden 2 mm. */
+            /* Pegado al borde y de menos de 2 mm. */
             $this->elemento('stock', array('x' => 49.9, 'y' => 30, 'w' => 1, 'h' => 0)),
             $this->elemento('precio_lista', array('price_type_id' => $lista_propia->id, 'rotulo' => 'true')),
             $this->elemento('precio_lista', array('price_type_id' => $lista_ajena->id)),
@@ -288,13 +288,19 @@ class Abm_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         $this->assertNotSame('repetido', $marca['id']);
         $this->assertMatchesRegularExpression('/^[a-z0-9_]{1,40}$/', $categoria['id']);
 
-        $this->assertEquals(45, $proveedor['x']);
-        $this->assertEquals(5, $proveedor['w']);
-        $this->assertEquals(18, $proveedor['y']);
-        $this->assertEquals(4.5, $proveedor['h']);
+        /*
+         * Se sale por la derecha y por abajo: se CORRE hacia adentro conservando su tamaño
+         * (x = 50 - 20, y = 22,5 - 5), igual que encerrar_en_la_etiqueta del editor del SPA.
+         */
+        $this->assertEquals(30, $proveedor['x']);
+        $this->assertEquals(20, $proveedor['w']);
+        $this->assertEquals(17.5, $proveedor['y']);
+        $this->assertEquals(5, $proveedor['h']);
 
+        /* Pegado al borde y de menos de 2 mm: queda de 2 mm, corrido hacia adentro. */
         $this->assertEquals(48, $stock['x']);
         $this->assertEquals(2, $stock['w']);
+        $this->assertEquals(20.5, $stock['y']);
         $this->assertEquals(2, $stock['h']);
 
         $this->assertSame($lista_propia->id, $precio_lista['price_type_id']);
@@ -302,6 +308,27 @@ class Abm_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
 
         $this->assertSame(200, mb_strlen($texto_fijo['texto']));
         $this->assertEquals(5, $texto_fijo['tamano']);
+    }
+
+    /**
+     * Un campo más grande que la etiqueta se achica a la etiqueta entera y queda en 0.
+     *
+     * @test
+     */
+    public function un_campo_mas_grande_que_la_etiqueta_se_achica()
+    {
+        $dueno = $this->crear_dueno();
+
+        $diseno = ArticleTicketDesignHelper::diseno_actual();
+        $diseno['elementos'] = array($this->elemento('nombre', array('x' => 10, 'y' => 5, 'w' => 80, 'h' => 50)));
+
+        list($valido, $normalizado) = ArticleTicketDesignHelper::normalizar_diseno($diseno, $dueno->id);
+
+        $this->assertTrue($valido);
+        $this->assertEquals(0, $normalizado['elementos'][0]['x']);
+        $this->assertEquals(66.7, $normalizado['elementos'][0]['w']);
+        $this->assertEquals(0, $normalizado['elementos'][0]['y']);
+        $this->assertEquals(40, $normalizado['elementos'][0]['h']);
     }
 
     /** @test */

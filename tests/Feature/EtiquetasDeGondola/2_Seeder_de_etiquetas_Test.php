@@ -214,6 +214,104 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         $this->assertSame(ArticleTicketDesignHelper::POSICION_MAXIMA, $this->disenos_de($dueno)[0]->position);
     }
 
+    /**
+     * 🔴 Un dueño con función de impresión propia (golonorte) no recibe diseños del sistema, ni
+     * del seeder ni al crear una lista: su menú de etiquetas queda exactamente como hoy.
+     *
+     * @test
+     */
+    public function un_dueno_con_funcion_de_impresion_propia_no_recibe_disenos()
+    {
+        $con_listas = $this->crear_dueno(true);
+        $sin_listas = $this->crear_dueno(false);
+
+        foreach (array($con_listas, $sin_listas) as $dueno) {
+            $dueno->article_ticket_print_function = 'golonorte';
+            $dueno->save();
+        }
+
+        $lista = $this->crear_lista($con_listas, 'Mayorista', 1);
+
+        $this->correr_seeder();
+
+        $this->assertCount(0, $this->disenos_de($con_listas));
+        $this->assertCount(0, $this->disenos_de($sin_listas));
+        $this->assertNull(ArticleTicketDesignHelper::crear_diseno_de_lista($lista));
+        $this->assertSame(0, ArticleTicketDesignHelper::crear_disenos_del_sistema($sin_listas->id));
+    }
+
+    /**
+     * Lista borrada -> se borra el diseño que el sistema le generó; los del usuario quedan.
+     *
+     * @test
+     */
+    public function borrar_una_lista_borra_su_diseno_y_no_los_del_usuario()
+    {
+        $dueno = $this->crear_dueno(true);
+
+        $lista = $this->crear_lista($dueno, 'Mayorista', 1);
+        $otra = $this->crear_lista($dueno, 'Minorista', 2);
+        $del_usuario = $this->crear_diseno($dueno, 'Mío', ArticleTicketDesignHelper::diseno_actual($lista->id));
+
+        $this->assertCount(3, $this->disenos_de($dueno));
+
+        $lista->delete();
+
+        $quedan = $this->disenos_de($dueno);
+
+        $this->assertSame(0, ArticleTicketDesign::where('price_type_id', $lista->id)->count());
+        $esperados = array($del_usuario->id, ArticleTicketDesign::where('price_type_id', $otra->id)->value('id'));
+        sort($esperados);
+
+        $this->assertSame($esperados, $quedan->pluck('id')->sort()->values()->all());
+    }
+
+    /**
+     * Borrar la lista por la API (`PriceTypeController@destroy`) también se lleva su diseño.
+     *
+     * @test
+     */
+    public function borrar_una_lista_por_la_api_borra_su_diseno()
+    {
+        $dueno = $this->crear_dueno(true);
+        $lista = $this->crear_lista($dueno, 'Mayorista', 1);
+
+        $this->actingAs($dueno, 'web');
+
+        $this->deleteJson('api/price-type/'.$lista->id)->assertStatus(200);
+
+        $this->assertCount(0, $this->disenos_de($dueno));
+    }
+
+    /**
+     * Lista renombrada -> su diseño toma el nombre nuevo, salvo que el usuario ya lo haya
+     * renombrado a mano.
+     *
+     * @test
+     */
+    public function renombrar_una_lista_renombra_su_diseno_si_no_lo_cambio_el_usuario()
+    {
+        $dueno = $this->crear_dueno(true);
+
+        $lista = $this->crear_lista($dueno, 'Mayorista', 1);
+        $otra = $this->crear_lista($dueno, 'Minorista', 2);
+
+        ArticleTicketDesign::where('price_type_id', $otra->id)->update(array('name' => 'Mi etiqueta'));
+
+        $lista->name = 'Mayorista 2026';
+        $lista->save();
+
+        $otra->name = 'Minorista 2026';
+        $otra->save();
+
+        /* Cambiar otra cosa que no es el nombre no toca nada. */
+        $lista->position = 5;
+        $lista->save();
+
+        $this->assertSame('Mayorista 2026', ArticleTicketDesign::where('price_type_id', $lista->id)->value('name'));
+        $this->assertSame('Mi etiqueta', ArticleTicketDesign::where('price_type_id', $otra->id)->value('name'));
+    }
+
     /** @test */
     public function crear_una_lista_sin_trabajar_con_listas_no_crea_diseno()
     {

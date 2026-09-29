@@ -79,7 +79,7 @@ class Pdf_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
                 $extra['rotulo'] = true;
             }
 
-            if ($tipo === 'precio_final') {
+            if (in_array($tipo, ArticleTicketDesignHelper::TIPOS_CON_ROTULO, true)) {
                 $extra['rotulo'] = true;
             }
 
@@ -92,7 +92,7 @@ class Pdf_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         }
 
         return array(
-            'version' => 1, 'columnas' => 1, 'filas' => 3, 'alto_mm' => 95, 'marco' => true,
+            'version' => 1, 'columnas' => 1, 'filas' => 2, 'alto_mm' => 130, 'marco' => true,
             'elementos' => $elementos,
         );
     }
@@ -269,6 +269,14 @@ class Pdf_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
             'descripcion'   => '<p>Rinde &amp; dura</p>',
             'stock'         => 12.5,
             'final_price'   => 1000,
+            'previus_final_price' => 1100,
+            'precio_promocional'  => 900,
+            'contenido'           => '500 ml',
+            'plu'                 => '4321',
+            'origen'              => 'Argentina',
+            'modelo'              => 'Modelo <b>X</b>',
+            'unidades_por_bulto'  => 24,
+            'peso'                => 1.5,
         ));
 
         DB::table('article_price_type')->insert(array(
@@ -285,6 +293,59 @@ class Pdf_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         $this->assertStringContainsString('(Rinde & dura)', $pdf);
         $this->assertStringContainsString('(12,50)', $pdf);
         $this->assertStringContainsString('(OFERTA)', $pdf);
+        $this->assertStringContainsString('(Antes: $1.100)', $pdf);
+        $this->assertStringContainsString('(Promo: $900)', $pdf);
+        $this->assertStringContainsString('(500 ml)', $pdf);
+        $this->assertStringContainsString('(4321)', $pdf);
+        $this->assertStringContainsString('(Argentina)', $pdf);
+        $this->assertStringContainsString('(Modelo X)', $pdf);
+        $this->assertStringContainsString('(24)', $pdf);
+        $this->assertStringContainsString('(1,5)', $pdf);
+    }
+
+    /**
+     * Precio anterior y promocional en null o 0 no imprimen nada (ni el rótulo).
+     *
+     * @test
+     */
+    public function los_precios_opcionales_en_cero_no_imprimen()
+    {
+        $dueno = $this->crear_dueno();
+        $articulo = $this->crear_articulo($dueno, array('previus_final_price' => 0, 'precio_promocional' => null, 'peso' => 0));
+
+        $pdf = $this->pdf_plano($this->diseno_con_todo(), array($articulo), $dueno->id);
+
+        $this->assertStringNotContainsString('(Antes:', $pdf);
+        $this->assertStringNotContainsString('(Promo:', $pdf);
+        $this->assertStringNotContainsString('($0)', $pdf);
+    }
+
+    /**
+     * 🔴 Un precio NUNCA se corta con "…": en el diseño de siempre, `$123.456,78` y `$12.345.678`
+     * entran enteros a 33 pt (como en ArticleTicketPdf, que descuenta un solo margen con 'R'), y
+     * uno que no entra achica la letra de a 0,5 pt.
+     *
+     * @test
+     */
+    public function un_precio_largo_sale_entero_y_si_no_entra_achica_la_letra()
+    {
+        $dueno = $this->crear_dueno();
+
+        $casos = array(
+            array(123456.78,  '($123.456,78)',   '33.00'),
+            array(12345678,   '($12.345.678)',   '33.00'),
+            array(1234567.89, '($1.234.567,89)', '29.00'),
+        );
+
+        foreach ($casos as $caso) {
+            $articulo = $this->crear_articulo($dueno, array('final_price' => $caso[0]));
+
+            $pdf = $this->pdf_plano(ArticleTicketDesignHelper::diseno_actual(), array($articulo), $dueno->id);
+
+            $this->assertStringContainsString($caso[1], $pdf, 'El precio '.$caso[1].' tiene que salir entero.');
+            $this->assertSame(0, preg_match('/\(\$[^)]*\x85\)/', $pdf), 'Un precio no se corta con "…".');
+            $this->assertMatchesRegularExpression('#/F\d+ '.preg_quote($caso[2]).' Tf ET\s*BT [^\n]*'.preg_quote($caso[1]).'#', $pdf);
+        }
     }
 
     /** @test */

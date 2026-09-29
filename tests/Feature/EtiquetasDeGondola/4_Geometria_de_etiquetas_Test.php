@@ -58,6 +58,31 @@ class Geometria_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         $this->assertFalse($con_lista['elementos'][0]['rotulo']);
     }
 
+    /**
+     * El catálogo tiene 25 tipos y el SPA lo espeja con las mismas claves.
+     *
+     * @test
+     */
+    public function el_catalogo_tiene_los_25_tipos()
+    {
+        $this->assertSame(array(
+            'nombre', 'precio_final', 'precio_lista', 'codigo_barras_imagen', 'codigo_barras_texto',
+            'codigo_proveedor', 'codigo_interno', 'categoria', 'sub_categoria', 'marca', 'proveedor',
+            'descripcion', 'unidad_medida', 'stock', 'imagen', 'fecha_impresion', 'texto_fijo',
+            'precio_anterior', 'precio_promocional', 'contenido', 'plu', 'origen', 'modelo',
+            'unidades_por_bulto', 'peso',
+        ), array_keys(ArticleTicketDesignHelper::CATALOGO));
+
+        $this->assertSame(
+            array('precio_final', 'precio_lista', 'precio_anterior', 'precio_promocional'),
+            ArticleTicketDesignHelper::TIPOS_CON_ROTULO
+        );
+
+        $this->assertSame(array('w' => 40, 'h' => 8, 'tamano' => 14, 'negrita' => true, 'saltos_de_linea' => false, 'alineacion' => 'R'), ArticleTicketDesignHelper::CATALOGO['precio_anterior']);
+        $this->assertSame(array('w' => 40, 'h' => 10, 'tamano' => 20, 'negrita' => true, 'saltos_de_linea' => false, 'alineacion' => 'R'), ArticleTicketDesignHelper::CATALOGO['precio_promocional']);
+        $this->assertSame(array('w' => 50, 'h' => 8, 'tamano' => 9, 'negrita' => false, 'saltos_de_linea' => true, 'alineacion' => 'L'), ArticleTicketDesignHelper::CATALOGO['modelo']);
+    }
+
     /** @test */
     public function ancho_por_columnas_filas_por_alto_y_alto_por_filas()
     {
