@@ -47,6 +47,15 @@ class FinalizeSetFinalPrices implements ShouldQueue
     {
         $this->user_id = $user_id;
         $this->price_update_run_id = $price_update_run_id;
+
+        /*
+         * En el shared hosting va a la cola 'excel', con el productor y los lotes (misión
+         * recalculo-precios-motor-rapido, 28/9/2026): el worker de esa cola corre con
+         * --memory=512 y no retiene al del asistente. En el VPS, null: 'default', la única cola
+         * que consume el supervisor de cada cliente. El re-despacho de handle() ya usa
+         * onQueue($this->queue), así que el finalizador se queda en la misma cola que lo encoló.
+         */
+        $this->queue = config('app.VPS') ? null : 'excel';
     }
 
     public function handle()

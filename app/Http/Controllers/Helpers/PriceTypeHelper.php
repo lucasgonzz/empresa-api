@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PriceUpdateRunHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Jobs\FinalizeSetFinalPrices;
 use App\Jobs\ProcessChunkSetFinalPrices;
 use App\Models\PriceType;
@@ -178,8 +179,13 @@ class PriceTypeHelper {
 		 */
 		$run = PriceUpdateRunHelper::abrir($user_id, $origen, $origen_detalle);
 
-		// Procesa en lotes para evitar jobs grandes y mantener bajo consumo de memoria.
-		$article_chunks = array_chunk($article_ids, 100);
+		/*
+		 * Lotes del tamaño del motor del recálculo (RecalculoDePreciosEnLote::tamanio_de_lote(), 1.000
+		 * por defecto) y no de 100 (misión recalculo-precios-motor-rapido, 28/9/2026): cada lote ya
+		 * no paga consultas por artículo sino un costo fijo por tanda, así que menos lotes es menos
+		 * costo fijo repetido y menos jobs en la cola.
+		 */
+		$article_chunks = array_chunk($article_ids, RecalculoDePreciosEnLote::tamanio_de_lote());
 
 		foreach ($article_chunks as $article_chunk) {
 			dispatch(new ProcessChunkSetFinalPrices($article_chunk, $user_id, $run->id));
