@@ -636,8 +636,12 @@ class OrderController extends Controller
             );
 
             if ($profile) {
-                $pdf = new ProfileDocumentPdf($order_document, $profile);
-                $pdf->emit();
+                /** Si el diseño falla al dibujarse, cae al PDF de siempre (ver `try_render()`). */
+                $pdf = ProfileDocumentPdf::try_render($order_document, $profile);
+
+                if ($pdf) {
+                    $pdf->emit();
+                }
             }
         }
 

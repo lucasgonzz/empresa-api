@@ -745,8 +745,15 @@ class BudgetController extends Controller
             );
 
             if ($profile) {
-                $pdf = new ProfileDocumentPdf(new BudgetPdfDocument($budget), $profile);
-                $pdf->emit();
+                /**
+                 * Si el diseño falla al dibujarse, `try_render()` devuelve null (y deja el error en
+                 * el log) y se cae al PDF de siempre: este link lo abre el cliente final por WhatsApp.
+                 */
+                $pdf = ProfileDocumentPdf::try_render(new BudgetPdfDocument($budget), $profile);
+
+                if ($pdf) {
+                    $pdf->emit();
+                }
             }
         }
 

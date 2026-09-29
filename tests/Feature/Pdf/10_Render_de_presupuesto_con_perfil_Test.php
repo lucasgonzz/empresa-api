@@ -130,7 +130,6 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
 
         $this->assertPdfContiene('Cliente Presupuesto Test', $pdf);
         $this->assertPdfContiene('20222222229', $pdf, 'Falta el CUIT del cliente.');
-        $this->assertPdfContiene('(Observaciones: Paga a 30 dias)', $pdf, 'Falta la descripcion del cliente.');
         $this->assertPdfContiene(self::VENDEDOR, $pdf, 'Falta el vendedor en el encabezado del cliente.');
         /**
          * El rótulo es el de siempre: "Vendedor:". El campo `empleado` del encabezado del remito
@@ -139,6 +138,47 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
         $this->assertPdfContiene('Vendedor:', $pdf, 'El empleado del presupuesto tiene que rotularse "Vendedor:".');
         $this->assertPdfNoContiene('Empleado:', $pdf, 'No debe aparecer el rotulo "Empleado:" en el presupuesto.');
         $this->assertPdfContiene('Razon Social PDF SA', $pdf, 'Falta la razon social del emisor.');
+    }
+
+    /**
+     * 🔴 La descripción del cliente (`clients.description`) es una nota que muchos dueños usan como
+     * INTERNA ("pide descuento", "paga tarde"). El `BudgetPdf` de siempre nunca la imprimía y el
+     * link del presupuesto le llega al propio cliente por WhatsApp (ruta pública por id): los
+     * diseños sembrados la traen APAGADA. Si el dueño la enciende desde el ABM, sale.
+     *
+     * @test
+     */
+    public function la_descripcion_del_cliente_solo_sale_si_el_dueno_la_enciende()
+    {
+        $budget = $this->presupuesto_con_plata();
+
+        $sembrado = $this->pdf_de($budget, 'Presupuesto');
+        $this->assertPdfNoContiene('Paga a 30 dias', $sembrado, 'El diseño sembrado filtro la nota del cliente al propio cliente.');
+        $this->assertPdfNoContiene('Observaciones: Paga', $sembrado);
+
+        $diseno = $this->diseno('budget', 'Presupuesto');
+        $diseno->show_client_description = true;
+
+        $encendido = $this->renderizar(new BudgetPdfDocument($budget), $diseno);
+        $this->assertPdfContiene('(Observaciones: Paga a 30 dias)', $encendido, 'Con la casilla encendida la descripcion del cliente tiene que salir.');
+    }
+
+    /**
+     * Un diseño de presupuesto armado a mano en el ABM todavía no tiene `header_layout` (queda en
+     * null hasta que el dueño abre el diseñador): igual tiene que imprimir el Vendedor, porque el
+     * `BudgetPdf` de siempre lo imprimía. El default del presupuesto es el del remito + `vendedor`.
+     *
+     * @test
+     */
+    public function un_diseno_sin_header_layout_tambien_imprime_al_vendedor()
+    {
+        $diseno = $this->diseno('budget', 'Presupuesto');
+        $diseno->header_layout = null;
+
+        $pdf = $this->renderizar(new BudgetPdfDocument($this->presupuesto_con_plata()), $diseno);
+
+        $this->assertPdfContiene('Vendedor:', $pdf, 'Un diseño sin header_layout perdio el Vendedor del presupuesto.');
+        $this->assertPdfContiene(self::VENDEDOR, $pdf);
     }
 
     /**
@@ -220,6 +260,33 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
 
         $this->assertPdfContiene('(+ $226,50 Ajuste del total)', $pdf_arriba);
         $this->assertPdfContiene('(Total: $2.400)', $pdf_arriba);
+
+        /**
+         * 🔴 Y el Sub Total se imprime IGUAL: sin él, el renglón del ajuste quedaría solo, sin decir
+         * nunca de cuánto se partía. Acá `total_original` ($2.300) es MENOR que el total ($2.400), o
+         * sea que la comparación de siempre da false y solo lo hace aparecer la cláusula del total
+         * forzado (`|| $monto_forzado != 0`). Si alguien la borra, este assert se pone rojo.
+         */
+        $this->assertPdfContiene('(Sub Total sin descuentos: $2.300)', $pdf_arriba, 'Un forzado hacia arriba perdio el Sub Total.');
+    }
+
+    /**
+     * 🔴 El Total impreso sale de `BudgetHelper::getTotal()` (la cuenta de los renglones), NUNCA de la
+     * columna `budgets.total` guardada. Si un cliente tuviera el total guardado desfasado, el
+     * documento no puede imprimir un número que no es la suma de lo que muestra.
+     *
+     * @test
+     */
+    public function el_total_impreso_es_el_de_get_total_y_no_el_guardado_en_la_columna()
+    {
+        $budget = $this->presupuesto_con_plata(['total' => 1]);
+
+        $this->assertEqualsWithDelta(2173.5, BudgetHelper::getTotal($budget), 0.001);
+
+        $pdf = $this->pdf_de($budget, 'Presupuesto');
+
+        $this->assertPdfContiene('(Total: $2.173,50)', $pdf, 'El Total impreso no es el de getTotal().');
+        $this->assertPdfNoContiene('(Total: $1)', $pdf, 'El Total impreso salio de budgets.total.');
     }
 
     /**
@@ -309,6 +376,39 @@ class Render_de_presupuesto_con_perfil_Test extends EmpresaTestCase
         /** Y ningún renglón se perdió en el salto de hoja. */
         $this->assertPdfContiene('(Articulo de relleno 1)', $pdf);
         $this->assertPdfContiene('(Articulo de relleno 70)', $pdf);
+    }
+
+    /**
+     * 🔴 Sin nada que dibujar al final (diseño "sin precios", sin observaciones ni pie) el PDF NO puede
+     * terminar con una hoja vacía. El límite de la última hoja era 275 aunque no hubiera bloque
+     * final: un último renglón entre y=275 y y=285 saltaba de hoja para no dibujar nada. Se barre la
+     * cantidad de renglones para pasar por todas las posiciones del último renglón, y en cada
+     * PDF toda hoja tiene que tener al menos un renglón.
+     *
+     * @test
+     */
+    public function el_diseno_sin_precios_no_deja_una_hoja_vacia_al_final()
+    {
+        for ($cantidad = 30; $cantidad <= 62; $cantidad++) {
+
+            $renglones = [];
+            for ($i = 1; $i <= $cantidad; $i++) {
+                $renglones[] = ['article' => $this->crear_articulo('Renglon sin precios '.$i), 'amount' => 1, 'price' => 100];
+            }
+
+            /** Sin observaciones a propósito: es lo que deja el bloque final vacío. */
+            $budget = $this->crear_presupuesto($renglones, ['total' => 100 * $cantidad, 'observations' => null]);
+
+            $pdf = $this->pdf_de($budget, 'Presupuesto sin precios');
+
+            foreach ($this->hojas($pdf) as $numero => $contenido) {
+                $this->assertStringContainsString(
+                    '(Renglon sin precios ',
+                    $contenido,
+                    $cantidad.' renglones: la hoja '.($numero + 1).' de '.$this->cantidad_de_hojas($pdf).' quedo sin ningun renglon.'
+                );
+            }
+        }
     }
 
     /**

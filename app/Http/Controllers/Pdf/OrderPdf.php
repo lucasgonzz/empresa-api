@@ -6,7 +6,13 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+/*
+	| require_once y NO require, igual que BudgetPdf: si el diseño nuevo (ProfileDocumentPdf) ya
+	| cargó fpdf.php y falla, el controlador cae a este PDF en el MISMO pedido; un require pelado
+	| re-ejecutaria el archivo y PHP moriria con 'Cannot declare class FPDF', un fatal que ningun
+	| try/catch atrapa. En produccion no cambia nada: cada pedido arma un solo PDF.
+*/
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class OrderPdf extends fpdf {
 

@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
 use App\Http\Controllers\Helpers\CatalogHeaderLayoutHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PdfDocument\PdfDocumentSource;
+use App\Http\Controllers\Helpers\PdfDocumentSetupHelper;
 use App\Http\Controllers\Pdf\Afip\AfipPdfHelper;
 use App\Models\PdfColumnProfile;
 use App\Models\User;
@@ -113,12 +114,12 @@ class ProfileDocumentPdf extends fpdf
         $this->discarded_images_count = 0;
 
         /**
-         * Layout del encabezado: el guardado en el perfil o, si no tiene uno propio, el default
-         * por código (el mismo con el que arranca el remito).
+         * Layout del encabezado: el guardado en el perfil o, si no tiene uno propio, el default del
+         * tipo de comprobante (el del remito y, para el presupuesto, además el Vendedor).
          */
         $this->header_layout = ! empty($profile->header_layout)
             ? $profile->header_layout
-            : PdfColumnProfile::default_header_layout(false);
+            : PdfDocumentSetupHelper::default_header_layout_for($source->model_name());
 
         /** Los flags que vienen null (perfil viejo) toman el mismo default que en el remito. */
         $this->show_total_in_footer = $this->flag($profile->show_total_in_footer, true);
@@ -187,6 +188,38 @@ class ProfileDocumentPdf extends fpdf
         $this->render();
         $this->Output();
         exit;
+    }
+
+    /**
+     * Arma el PDF con el diseño y devuelve la instancia ya dibujada, o null si el diseño falló.
+     *
+     * Por qué existe: el link de WhatsApp de un presupuesto lo abre el CLIENTE FINAL del comercio y
+     * desde esta misión lleva el diseño por defecto. Si el diseño nuevo tirara una excepción con un
+     * dato raro, el cliente vería un 500 donde antes veía un PDF. El controlador, con null, cae al
+     * PDF de siempre (`BudgetPdf` / `OrderPdf`).
+     *
+     * La falla NO se traga: `report()` la manda al log y al registro de errores, así que un diseño
+     * que se rompe se entera igual; lo que cambia es que el cliente final no se lleva el 500.
+     *
+     * Nada salió al navegador hasta acá: `render()` arma todo en memoria y recién `emit()` llama a
+     * `Output()`. Por eso volver atrás a mitad de camino es seguro.
+     *
+     * @param PdfDocumentSource $source  Presupuesto o pedido adaptado.
+     * @param PdfColumnProfile  $profile Diseño elegido.
+     * @return ProfileDocumentPdf|null
+     */
+    public static function try_render(PdfDocumentSource $source, PdfColumnProfile $profile)
+    {
+        try {
+            $pdf = new self($source, $profile);
+            $pdf->render();
+
+            return $pdf;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
     }
 
     /**
@@ -426,6 +459,20 @@ class ProfileDocumentPdf extends fpdf
     private function print_closing_blocks()
     {
         $with_total = count($this->get_totals_rows()) > 0;
+
+        /**
+         * Sin caja de totales, sin pie y sin observaciones no hay NADA que dibujar (el diseño
+         * "sin precios" de un presupuesto sin observaciones): no se salta de hoja. Sin esta salida,
+         * un último renglón entre y=275 y y=285 disparaba un AddPage() para no dibujar nada y el PDF
+         * terminaba con una hoja con encabezado y tabla vacía.
+         */
+        if (
+            ! $with_total
+            && $this->estimate_footer_text_height() <= 0
+            && $this->estimate_observations_height() <= 0
+        ) {
+            return;
+        }
 
         if ($this->y >= $this->get_last_page_break_limit_y($with_total)) {
             $this->AddPage();
