@@ -194,8 +194,11 @@ class Importacion_en_la_cola_sin_sesion_Test extends ComprasTestCase
              * Y tiene que ser EL precio que da el cálculo de siempre con lo que el artículo tiene
              * guardado después de la compra: eso distingue "se recalculó con el estado final" de "se
              * movió a cualquier lado". No se compara contra el precio sembrado escalado por los
-             * costos: el fixture lo guardó con otra configuración fiscal (sin IVA en el precio) y
-             * la de hoy (RRII con usar_condicion_fiscal_en_costeo) sí lo suma.
+             * costos: el precio guardado en el fixture no es el que da el cálculo de hoy. El
+             * sembrado no lleva IVA (Pinza: 2.072,54 = 1.000 × 2 / 0,965) y el cálculo de hoy, con
+             * RRII y usar_condicion_fiscal_en_costeo, sí lo suma al vender (medido el 29/9/2026:
+             * 1.300 de costo da 3.260,10 = 1.300 × 2 × 1,21 / 0,965, igual por el motor que por
+             * setFinalPrice() artículo por artículo).
              */
             $referencia = $this->precio_segun_el_calculo($foto['id'], $dueno);
 
