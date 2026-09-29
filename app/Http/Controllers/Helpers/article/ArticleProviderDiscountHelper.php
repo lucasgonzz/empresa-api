@@ -1958,11 +1958,14 @@ class ArticleProviderDiscountHelper {
      * INSERT y su recalculo, y tiene sentido que coincida con la tanda del motor.
      *
      * `config('app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE')`, si viene seteada, MANDA: es la que usan
-     * los tests para forzar el corte entre tandas con pocos articulos (lote de 2 con 5 articulos).
+     * los tests para forzar el corte entre tandas con pocos articulos (lote de 2 con 5 articulos), y
+     * se puede forzar desde el .env.
      *
-     * ⚠️ Mientras `config/app.php` le ponga default (hoy 200), esa config viene SIEMPRE seteada y la
-     * tanda real es 200, no la del motor. Funciona igual (es solo mas transacciones), pero para que
-     * la sincronizacion use la tanda del motor el default de esa clave tiene que pasar a null.
+     * Desde el commit 03b7d48b (28/9/2026) esa clave NO tiene default en `config/app.php`: sin la
+     * variable en el .env queda en null y la tanda es la del motor. Si alguien le vuelve a poner un
+     * numero por defecto ahi, la sincronizacion va a correr SIEMPRE en tandas de ese numero (funciona
+     * igual, pero con mas transacciones de las necesarias): el 200 que tenia era el tope de cuando se
+     * escribia articulo por articulo.
      *
      * @return int
      */
