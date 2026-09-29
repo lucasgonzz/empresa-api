@@ -1147,6 +1147,12 @@ class SaleHelper extends Controller {
                         'id'                    => $previus_article->id,
                         'amount'                => (float)$previus_article->pivot->amount,
                         'cost'                  => $previus_article->pivot->cost,
+                        /*
+                            El costo del pivot ya es UNITARIO. La clave va presente y en null a
+                            proposito: `getCost()` respeta la clave cuando viene y, sin ella, leeria
+                            las unidades del articulo y lo dividiria por segunda vez.
+                        */
+                        'unidades_individuales' => null,
                         'price_vender'          => $previus_article->pivot->price,
                         'returned_amount'       => $previus_article->pivot->returned_amount,
                         'delivered_amount'      => $previus_article->pivot->delivered_amount,
