@@ -34,7 +34,7 @@ use App\Jobs\FinalizeSetFinalPrices;
  *    articles_user_provider_status_idx (user_id, provider_id, status, deleted_at), y un id de otra
  *    cuenta nunca entra al recálculo de ésta.
  *  - Lotes de RecalculoDePreciosEnLote::tamanio_de_lote() (1.000) en vez de 100.
- *  - El alcance del dólar global (unión de costo en dólares y cotización cruzada) sin la
+ *  - El alcance del dólar global (unión de costo en dólares, listas en dólares y cotización cruzada) sin la
  *    subconsulta correlacionada por fila del orWhereHas; y el nuevo alcance "dólar del
  *    proveedor" (columna + from_dolar = true: solo los artículos de esa columna con costo en
  *    dólares, los únicos que leen el dólar del proveedor en ArticleHelper::cotizar()).
@@ -56,6 +56,14 @@ class ProcessSetFinalPrices implements ShouldQueue
         'sub_category_id',
         'provider_price_list_id',
     ];
+
+    /**
+     * El id fijo de la moneda dólar en article_price_type_monedas: el mismo `$usd_id = 2` que usa
+     * ArticlePriceTypeMonedaHelper para decidir qué entradas se calculan con el dólar de la cuenta.
+     *
+     * @var int
+     */
+    const MONEDA_DOLAR = 2;
 
     /**
      * Segundos. Repartir los lotes es solo leer ids y encolar: con keyset, un catálogo de 574.000
@@ -107,8 +115,8 @@ class ProcessSetFinalPrices implements ShouldQueue
      *  - $from_model_id (una de COLUMNAS_DE_ALCANCE) + $model_id: los artículos del dueño con esa
      *    columna en ese valor; y si además $from_dolar es true, solo los que tienen el costo en
      *    dólares (el cambio de dólar de un proveedor).
-     *  - sin $from_model_id y $from_dolar true: los del dueño con costo en dólares o con alguna
-     *    lista por moneda que cotiza desde otra moneda (el cambio del dólar global).
+     *  - sin $from_model_id y $from_dolar true: los del dueño con costo en dólares, o con alguna
+     *    lista por moneda en dólares o que cotiza desde otra moneda (el cambio del dólar global).
      *  - sin nada: todo el catálogo del dueño.
      */
     public function __construct($user_id, $from_model_id = null, $model_id = null, $from_dolar = false, $origen = 'otro', $origen_detalle = null)
@@ -338,7 +346,7 @@ class ProcessSetFinalPrices implements ShouldQueue
                 'tipo'            => 'dolar_global',
                 'columna'         => null,
                 'solo_en_dolares' => false,
-                'descripcion'     => 'costo en dólares o listas por moneda que cotizan desde otra moneda',
+                'descripcion'     => 'costo en dólares, listas en dólares o listas que cotizan desde otra moneda',
             ];
         }
 
@@ -357,7 +365,7 @@ class ProcessSetFinalPrices implements ShouldQueue
      * Para una sola consulta (todo el catálogo, o una columna) es el chunkById() de Laravel:
      * `id > último ORDER BY id LIMIT n`, sin OFFSET, que en un catálogo grande hacía que cada
      * página leyera y tirara todas las anteriores. El alcance del dólar global son dos consultas
-     * (ver siguiente_lote_del_dolar_global()) y se pagina con el mismo keyset, a mano.
+     * (ver repartir_el_alcance_del_dolar()) y se pagina con el mismo keyset, a mano.
      *
      * @param  array    $alcance
      * @param  int      $lote
@@ -367,22 +375,7 @@ class ProcessSetFinalPrices implements ShouldQueue
     protected function repartir_en_lotes(array $alcance, $lote, callable $despachar)
     {
         if ($alcance['tipo'] === 'dolar_global') {
-
-            $ultimo_id = 0;
-
-            do {
-                $ids = $this->siguiente_lote_del_dolar_global($ultimo_id, $lote);
-
-                if (empty($ids)) {
-                    break;
-                }
-
-                $despachar($ids);
-
-                $ultimo_id = (int) end($ids);
-
-            } while (count($ids) >= $lote);
-
+            $this->repartir_el_alcance_del_dolar($lote, $despachar);
             return;
         }
 
@@ -418,53 +411,123 @@ class ProcessSetFinalPrices implements ShouldQueue
     }
 
     /**
-     * El siguiente lote del alcance del dólar global: los artículos del dueño con costo en dólares
-     * O con alguna lista por moneda que cotiza desde otra moneda (el mismo conjunto que el
-     * `orWhereHas('price_type_monedas', cotizar_desde_otra_moneda = 1)` de antes).
+     * Reparte el alcance del dólar global: los artículos del dueño cuyo precio depende del dólar de
+     * la cuenta. Son dos ramas (ver ids_con_costo_en_dolares() e
+     * ids_con_listas_que_dependen_del_dolar()), cada una paginada por keyset —sus primeros $lote
+     * ids mayores que el último despachado—, y cada lote es la unión de las dos, ordenada y cortada
+     * en $lote. Es correcto: los $lote ids más chicos de la unión están, cada uno, entre los $lote
+     * más chicos de su rama.
      *
-     * Son dos consultas por keyset —cada rama devuelve sus primeros $lote ids mayores que el
-     * último—, y el lote es la unión de las dos, ordenada y cortada en $lote. Es correcto: los
-     * $lote ids más chicos de la unión están, cada uno, entre los $lote más chicos de su rama. Y
-     * sin la subconsulta correlacionada del orWhereHas, que se evaluaba por cada fila del
-     * catálogo. La rama de las monedas va con DISTINCT: un artículo con varias listas que cotizan
-     * aparece una sola vez (sin él, sus filas repetidas le robarían lugar al corte de la rama).
+     * Una rama se deja de consultar cuando se AGOTÓ (seguimiento del 29/9/2026): si devolvió menos
+     * de $lote ids, no tiene más que esos; y si además el último de ellos ya quedó despachado (es
+     * menor o igual que el nuevo cursor), no le queda nada por delante. Sin esto, en una cuenta con
+     * muchos artículos en dólares y pocas listas en dólares, la rama de las listas se volvía a
+     * consultar en cada página para devolver nada. 🔴 Las dos condiciones hacen falta: una rama
+     * que devolvió menos de $lote pero cuyo último id quedó afuera del corte de la unión todavía
+     * tiene ids por despachar, y dejarla de consultar los perdería.
+     *
+     * @param  int      $lote
+     * @param  callable $despachar  Recibe un array de ids (int).
+     * @return void
+     */
+    protected function repartir_el_alcance_del_dolar($lote, callable $despachar)
+    {
+        $ultimo_id = 0;
+
+        $articulos_agotada = false;
+        $listas_agotada    = false;
+
+        while (!$articulos_agotada || !$listas_agotada) {
+
+            $de_articulos = $articulos_agotada ? [] : $this->ids_con_costo_en_dolares($ultimo_id, $lote);
+            $de_listas    = $listas_agotada ? [] : $this->ids_con_listas_que_dependen_del_dolar($ultimo_id, $lote);
+
+            $ids = [];
+
+            foreach (array_merge($de_articulos, $de_listas) as $id) {
+                $ids[(int) $id] = (int) $id;
+            }
+
+            ksort($ids);
+
+            $ids = array_slice(array_values($ids), 0, $lote);
+
+            if (empty($ids)) {
+                break;
+            }
+
+            $despachar($ids);
+
+            $ultimo_id = (int) end($ids);
+
+            if (count($de_articulos) < $lote && (empty($de_articulos) || (int) end($de_articulos) <= $ultimo_id)) {
+                $articulos_agotada = true;
+            }
+
+            if (count($de_listas) < $lote && (empty($de_listas) || (int) end($de_listas) <= $ultimo_id)) {
+                $listas_agotada = true;
+            }
+        }
+    }
+
+    /**
+     * Rama 1 del dólar global: artículos del dueño con el costo en dólares (ArticleHelper::cotizar()
+     * los multiplica por el dólar).
      *
      * @param  int $ultimo_id
      * @param  int $lote
      * @return int[]
      */
-    protected function siguiente_lote_del_dolar_global($ultimo_id, $lote)
+    protected function ids_con_costo_en_dolares($ultimo_id, $lote)
     {
-        $con_costo_en_dolares = Article::where('user_id', $this->user_id)
-                                        ->where('cost_in_dollars', 1)
-                                        ->toBase()
-                                        ->where('articles.id', '>', $ultimo_id)
-                                        ->orderBy('articles.id')
-                                        ->limit($lote)
-                                        ->pluck('articles.id')
-                                        ->all();
+        return Article::where('user_id', $this->user_id)
+                        ->where('cost_in_dollars', 1)
+                        ->toBase()
+                        ->where('articles.id', '>', $ultimo_id)
+                        ->orderBy('articles.id')
+                        ->limit($lote)
+                        ->pluck('articles.id')
+                        ->map(function ($id) { return (int) $id; })
+                        ->all();
+    }
 
-        $que_cotizan_desde_otra_moneda = DB::table('article_price_type_monedas')
-                                            ->join('articles', 'articles.id', '=', 'article_price_type_monedas.article_id')
-                                            ->where('articles.user_id', $this->user_id)
-                                            ->whereNull('articles.deleted_at')
-                                            ->where('article_price_type_monedas.cotizar_desde_otra_moneda', 1)
-                                            ->where('article_price_type_monedas.article_id', '>', $ultimo_id)
-                                            ->distinct()
-                                            ->orderBy('article_price_type_monedas.article_id')
-                                            ->limit($lote)
-                                            ->pluck('article_price_type_monedas.article_id')
-                                            ->all();
-
-        $ids = [];
-
-        foreach (array_merge($con_costo_en_dolares, $que_cotizan_desde_otra_moneda) as $id) {
-            $ids[(int) $id] = (int) $id;
-        }
-
-        ksort($ids);
-
-        return array_slice(array_values($ids), 0, $lote);
+    /**
+     * Rama 2 del dólar global: artículos del dueño (no borrados) con alguna entrada por lista y
+     * moneda (extensión ventas_en_dolares) cuyo precio sale del dólar de la cuenta:
+     *
+     *  - las que cotizan desde otra moneda (cotizar_desde_otra_moneda = 1), como antes;
+     *  - 🔴 las entradas EN DÓLARES (moneda_id = 2), también de artículos con el costo en pesos
+     *    (seguimiento del 29/9/2026): ArticlePriceTypeMonedaHelper calcula el precio en dólares de
+     *    un artículo en pesos DIVIDIENDO el costo por el dólar de la cuenta, así que al cambiar el
+     *    dólar ese precio cambia. Antes esos artículos no entraban al alcance y su precio en
+     *    dólares quedaba viejo hasta el próximo recálculo completo.
+     *
+     * Sin la subconsulta correlacionada del orWhereHas de antes, que se evaluaba por cada fila del
+     * catálogo. Con DISTINCT: un artículo con varias entradas que dependen del dólar aparece una
+     * sola vez (sin él, sus filas repetidas le robarían lugar al corte de la rama y el keyset se
+     * salteaba ids).
+     *
+     * @param  int $ultimo_id
+     * @param  int $lote
+     * @return int[]
+     */
+    protected function ids_con_listas_que_dependen_del_dolar($ultimo_id, $lote)
+    {
+        return DB::table('article_price_type_monedas')
+                    ->join('articles', 'articles.id', '=', 'article_price_type_monedas.article_id')
+                    ->where('articles.user_id', $this->user_id)
+                    ->whereNull('articles.deleted_at')
+                    ->where(function ($query) {
+                        $query->where('article_price_type_monedas.cotizar_desde_otra_moneda', 1)
+                              ->orWhere('article_price_type_monedas.moneda_id', self::MONEDA_DOLAR);
+                    })
+                    ->where('article_price_type_monedas.article_id', '>', $ultimo_id)
+                    ->distinct()
+                    ->orderBy('article_price_type_monedas.article_id')
+                    ->limit($lote)
+                    ->pluck('article_price_type_monedas.article_id')
+                    ->map(function ($id) { return (int) $id; })
+                    ->all();
     }
 
     /*
