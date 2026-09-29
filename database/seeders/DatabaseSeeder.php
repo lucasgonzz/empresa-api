@@ -402,6 +402,14 @@ class DatabaseSeeder extends Seeder
             UserSetupHelper::base_seeders(), y faltaba tanto aca como en DemoSetupHelper.
         */
         $this->call(PdfColumnProfileArticleSeeder::class);
+
+        /*
+            Disenos de PDF de presupuesto ("Presupuesto", "sin precios", "con imagenes") y de pedido
+            online. Van ACA por el mismo motivo que el de articulos de arriba: itera
+            `User::whereNull('owner_id')` y common_seeders() corre antes que UserSeeder, asi que
+            ahi sembraria cero filas SIN FALLAR. Al final del run() cubre las dos ramas.
+        */
+        $this->call(PdfColumnProfileDocumentosSeeder::class);
     }
 
     function local_y_demo() {

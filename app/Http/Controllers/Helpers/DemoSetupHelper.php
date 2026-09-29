@@ -1004,6 +1004,12 @@ class DemoSetupHelper
             'PdfColumnOptionSeeder',
             'PdfColumnProfileSeeder',
             'PdfColumnProfileArticleSeeder',
+            /*
+                Disenos de PDF de presupuesto y pedido online (28/9/2026 en adelante). Itera los
+                duenios, igual que el de articulos de arriba: por eso va en esta lista y no en
+                common_seeders() de DatabaseSeeder.
+            */
+            'PdfColumnProfileDocumentosSeeder',
             'PdfColumnProfileComisionesSeeder',
             'InputsSizeSeeder',
 
