@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article\motor;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Stock\SetStockPorDeposito;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Advise;
 use App\Models\Article;
@@ -135,6 +136,23 @@ use Illuminate\Support\Facades\Log;
  * 12. Los `Log::info` incondicionales de `crear()`, `SetConcepto` y `CheckGlobalStock` (~8 por
  *     movimiento) se reemplazan por UN `Log::info` por lote.
  *
+ * 13. `SetStockPorDeposito` (misión stock-por-deposito-en-movimientos, 29/9/2026) — `crear()`
+ *     saca una foto de `articles.stock` y de TODAS las filas de `address_article` del artículo
+ *     (LEFT JOIN a `addresses`, sin filtrar direcciones vivas, sumando las filas repetidas del
+ *     par) antes y después de aplicar el movimiento, y guarda `stock_anterior` y
+ *     `stock_por_deposito` (JSON). → Las dos fotos salen del estado simulado: `stock_anterior` es
+ *     `$st['stock']` antes del movimiento (el `stock_resultante` del movimiento anterior del mismo
+ *     artículo en el lote, o el `SELECT` inicial), y los depósitos son `$st['depositos']` más las
+ *     filas huérfanas (`$st['huerfanos']`, las de direcciones borradas, que la relación
+ *     `addresses` no ve pero la suma de `articles.stock` sí). El JSON se arma con
+ *     `SetStockPorDeposito::armar()`/`a_json()`, los mismos que usa `crear()` vía el cast del
+ *     modelo, así la columna queda idéntica byte a byte. Sin consultas por fila: los nombres de
+ *     los depósitos salen del mismo `SELECT` de `address_article` y, para los depósitos que el
+ *     lote abre, de UN `SELECT` de `addresses` por lote. Límite conocido: el `resultante` del
+ *     último movimiento de cada artículo sale de la simulación y no de una relectura (a
+ *     diferencia de `stock_resultante`); coinciden mientras los montos tengan hasta 2 decimales,
+ *     que es la precisión de la columna.
+ *
  * Lo que NO se cubre y sigue yendo por `crear()` (`procesar_a_la_vieja()`): un artículo que ya
  * tiene filas en `article_variants` (ahí `CheckGlobalStock` no suma y `setArticleStockFromAddresses`
  * recalcula desde las variantes). Los movimientos de variantes (`guardar_stock_movement_variant`)
@@ -169,6 +187,15 @@ class StockEnLote
      * @var array
      */
     protected $pedidos = [];
+
+    /**
+     * Nombre (`addresses.street`) de cada depósito que aparece en el lote, para la foto de
+     * `stock_por_deposito` (paso 13). Se llena en `leer_estado_inicial()` y
+     * `leer_nombres_de_depositos()`.
+     *
+     * @var array address_id => string|null
+     */
+    protected $nombres_de_depositos = [];
 
     /**
      * @param \App\Models\User|null                                   $user
@@ -287,6 +314,9 @@ class StockEnLote
         // Artículos con variantes: van por el camino viejo.
         $con_variantes = $this->leer_articulos_con_variantes($ids);
 
+        // Paso 13: nombres de los depósitos que el lote abre (los existentes vinieron arriba).
+        $this->leer_nombres_de_depositos($pedidos);
+
         /*
          * Acumuladores de lo que se va a escribir. Todos se llenan en la simulación de abajo y se
          * ejecutan después, en el mismo orden en que crear() dejaba cada efecto.
@@ -344,6 +374,10 @@ class StockEnLote
 
                 $stock_anterior = is_null($st['stock']) ? 0.0 : (float) $st['stock'];
 
+                // 13: la foto de antes (el stock tal cual, null incluido, y los depósitos).
+                $stock_previo    = $st['stock'];
+                $depositos_antes = $this->depositos_para_la_foto($st);
+
                 // 6.d: stock null -> 0 con save() (toca updated_at).
                 if (is_null($st['stock'])) {
                     $st['stock'] = 0.0;
@@ -364,7 +398,7 @@ class StockEnLote
                     $recalcular_desde_depositos[$article_id] = true;
                 }
 
-                $movimientos[] = $this->fila_de_movimiento($article_id, $amount, null, $st['stock'], $concepto_id, $employee_id, $user_id, $ahora);
+                $movimientos[] = $this->fila_de_movimiento($article_id, $amount, null, $st['stock'], $concepto_id, $employee_id, $user_id, $ahora, $stock_previo, $this->stock_por_deposito($depositos_antes, $st));
                 $ultimo_movimiento_de[$article_id] = count($movimientos) - 1;
 
                 if (!is_null($concepto_id)) {
@@ -389,6 +423,10 @@ class StockEnLote
                 $amount         = (float) $pedido['amount'];
                 $stock_anterior = is_null($st['stock']) ? 0.0 : (float) $st['stock'];
                 $to_address_id  = $address_id;
+
+                // 13: la foto de antes (el stock tal cual, null incluido, y los depósitos).
+                $stock_previo    = $st['stock'];
+                $depositos_antes = $this->depositos_para_la_foto($st);
 
                 // 6.b: CheckToAddress.
                 if (isset($st['depositos'][$address_id])) {
@@ -438,7 +476,7 @@ class StockEnLote
                     $recalcular_desde_depositos[$article_id] = true;
                 }
 
-                $movimientos[] = $this->fila_de_movimiento($article_id, $amount, $to_address_id, $st['stock'], $concepto_id, $employee_id, $user_id, $ahora);
+                $movimientos[] = $this->fila_de_movimiento($article_id, $amount, $to_address_id, $st['stock'], $concepto_id, $employee_id, $user_id, $ahora, $stock_previo, $this->stock_por_deposito($depositos_antes, $st));
                 $ultimo_movimiento_de[$article_id] = count($movimientos) - 1;
 
                 if (!is_null($concepto_id)) {
@@ -606,7 +644,7 @@ class StockEnLote
      * `$article->addresses` y `SUM(address_article)` al arrancar el lote).
      *
      * @param  array $ids
-     * @return array article_id => ['stock' => float|null, 'depositos' => [address_id => ['filas' => int, 'suma' => float]], 'tiene_depositos' => bool]
+     * @return array article_id => ['stock' => float|null, 'depositos' => [address_id => ['filas' => int, 'suma' => float]], 'huerfanos' => [address_id => float], 'tiene_depositos' => bool]
      */
     protected function leer_estado_inicial(array $ids)
     {
@@ -623,6 +661,7 @@ class StockEnLote
             $estado[(int) $articulo->id] = [
                 'stock'           => is_null($articulo->stock) ? null : (float) $articulo->stock,
                 'depositos'       => [],
+                'huerfanos'       => [],
                 'tiene_depositos' => false,
             ];
         }
@@ -631,12 +670,17 @@ class StockEnLote
          * Depósitos como los ve la relación `addresses` (belongsToMany: sólo pivots cuya dirección
          * existe). Se cuentan las filas por par porque la tabla no tiene índice único y
          * sumar_al_deposito() incrementa TODAS las filas del par.
+         *
+         * LEFT JOIN y no JOIN (paso 13): las filas cuya dirección ya no existe no son depósitos
+         * para la simulación (la relación no las ve), pero sí entran en `SUM(address_article)` y
+         * en la foto de stock_por_deposito. Van aparte, a `huerfanos`, y `depositos` queda igual
+         * que con el JOIN. De paso trae el nombre de cada depósito, sin otra consulta.
          */
         $pivots = DB::table('address_article')
-                    ->join('addresses', 'addresses.id', '=', 'address_article.address_id')
+                    ->leftJoin('addresses', 'addresses.id', '=', 'address_article.address_id')
                     ->whereIn('address_article.article_id', array_keys($estado))
                     ->orderBy('address_article.id')
-                    ->get(['address_article.article_id', 'address_article.address_id', 'address_article.amount']);
+                    ->get(['address_article.article_id', 'address_article.address_id', 'address_article.amount', 'addresses.id as address_existente', 'addresses.street']);
 
         foreach ($pivots as $pivot) {
 
@@ -646,6 +690,20 @@ class StockEnLote
             if (!isset($estado[$article_id])) {
                 continue;
             }
+
+            if (is_null($pivot->address_existente)) {
+
+                // Fila huérfana: sólo cuenta para la foto y para la suma de articles.stock.
+                if (!isset($estado[$article_id]['huerfanos'][$address_id])) {
+                    $estado[$article_id]['huerfanos'][$address_id] = 0.0;
+                }
+
+                $estado[$article_id]['huerfanos'][$address_id] += is_null($pivot->amount) ? 0.0 : (float) $pivot->amount;
+
+                continue;
+            }
+
+            $this->nombres_de_depositos[$address_id] = $pivot->street;
 
             if (!isset($estado[$article_id]['depositos'][$address_id])) {
                 $estado[$article_id]['depositos'][$address_id] = ['filas' => 0, 'suma' => 0.0];
@@ -657,6 +715,46 @@ class StockEnLote
         }
 
         return $estado;
+    }
+
+    /**
+     * Paso 13: nombre de los depósitos que el lote va a abrir y que ningún artículo del lote
+     * tenía todavía (los demás vinieron en `leer_estado_inicial()`). UN `SELECT` por lote, y
+     * ninguno si no falta nada.
+     *
+     * @param  array $pedidos
+     * @return void
+     */
+    protected function leer_nombres_de_depositos(array $pedidos)
+    {
+        $faltan = [];
+
+        foreach ($pedidos as $pedido) {
+
+            if ($pedido['tipo'] !== 'deposito') {
+                continue;
+            }
+
+            $address_id = (int) $pedido['address_id'];
+
+            if (!array_key_exists($address_id, $this->nombres_de_depositos)) {
+                $faltan[$address_id] = true;
+            }
+        }
+
+        if (count($faltan) === 0) {
+            return;
+        }
+
+        $nombres = DB::table('addresses')
+                    ->whereIn('id', array_keys($faltan))
+                    ->pluck('street', 'id')
+                    ->all();
+
+        foreach (array_keys($faltan) as $address_id) {
+            // Una dirección que no existe queda con nombre null, como la lee el LEFT JOIN de crear().
+            $this->nombres_de_depositos[$address_id] = array_key_exists($address_id, $nombres) ? $nombres[$address_id] : null;
+        }
     }
 
     /**
@@ -738,6 +836,11 @@ class StockEnLote
      * Suma de los depósitos del artículo, redondeada a los 2 decimales de la columna (lo que
      * calcula `SUM(aa.amount)` en la base).
      *
+     * Incluye las filas huérfanas (paso 13): `SUM(aa.amount)` no filtra direcciones vivas, así
+     * que sin ellas el stock corrido de un movimiento intermedio quedaba por debajo del que deja
+     * `crear()` en un artículo con alguna fila de una dirección borrada (el del último movimiento
+     * ya salía bien, porque se relee de la base).
+     *
      * @param  array $st
      * @return float
      */
@@ -749,7 +852,60 @@ class StockEnLote
             $suma += $deposito['suma'];
         }
 
+        foreach ($st['huerfanos'] as $cantidad) {
+            $suma += $cantidad;
+        }
+
         return round($suma, 2);
+    }
+
+    /**
+     * Paso 13: los depósitos del artículo como los ve `SetStockPorDeposito::foto()`: todas las
+     * filas de `address_article` (las de direcciones vivas y las huérfanas), sumadas por
+     * dirección, con el nombre de la dirección.
+     *
+     * @param  array $st  estado del artículo
+     * @return array address_id => ['deposito' => string|null, 'amount' => float]
+     */
+    protected function depositos_para_la_foto(array $st)
+    {
+        $mapa = [];
+
+        foreach ($st['depositos'] as $address_id => $deposito) {
+            $mapa[$address_id] = [
+                'deposito' => array_key_exists($address_id, $this->nombres_de_depositos) ? $this->nombres_de_depositos[$address_id] : null,
+                'amount'   => (float) $deposito['suma'],
+            ];
+        }
+
+        foreach ($st['huerfanos'] as $address_id => $cantidad) {
+
+            if (!isset($mapa[$address_id])) {
+                $mapa[$address_id] = ['deposito' => null, 'amount' => 0.0];
+            }
+
+            $mapa[$address_id]['amount'] += (float) $cantidad;
+        }
+
+        return $mapa;
+    }
+
+    /**
+     * Paso 13: `stock_por_deposito` del movimiento, en JSON, con la foto de antes y el estado
+     * simulado después de aplicarlo. Mismo armado y misma codificación que `crear()`.
+     *
+     * @param  array $depositos_antes  depositos_para_la_foto() antes del movimiento
+     * @param  array $st               estado del artículo ya con el movimiento aplicado
+     * @return string|null
+     */
+    protected function stock_por_deposito(array $depositos_antes, array $st)
+    {
+        $foto = SetStockPorDeposito::armar(
+            ['articulo' => $depositos_antes, 'variante' => []],
+            ['articulo' => $this->depositos_para_la_foto($st), 'variante' => []]
+        );
+
+        return SetStockPorDeposito::a_json($foto);
     }
 
     /**
@@ -763,9 +919,11 @@ class StockEnLote
      * @param  mixed    $employee_id
      * @param  mixed    $user_id
      * @param  string   $ahora
+     * @param  float|null  $stock_anterior      paso 13: el stock antes del movimiento
+     * @param  string|null $stock_por_deposito  paso 13: la foto de depósitos en JSON
      * @return array
      */
-    protected function fila_de_movimiento($article_id, $amount, $to_address_id, $stock_resultante, $concepto_id, $employee_id, $user_id, $ahora)
+    protected function fila_de_movimiento($article_id, $amount, $to_address_id, $stock_resultante, $concepto_id, $employee_id, $user_id, $ahora, $stock_anterior = null, $stock_por_deposito = null)
     {
         return [
             'concepto_stock_movement_id' => $concepto_id,
@@ -783,6 +941,8 @@ class StockEnLote
             'observations'               => (float) $stock_resultante,
             'amount'                     => (float) $amount,
             'stock_resultante'           => (float) $stock_resultante,
+            'stock_anterior'             => is_null($stock_anterior) ? null : (float) $stock_anterior,
+            'stock_por_deposito'         => $stock_por_deposito,
             'employee_id'                => $employee_id,
             'user_id'                    => $user_id,
             'created_at'                 => $ahora,
