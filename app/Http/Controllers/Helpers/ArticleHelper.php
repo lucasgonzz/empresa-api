@@ -910,7 +910,11 @@ class ArticleHelper {
                     'Cotizando al dolar global '.Numbers::price($user->dollar, true).' = '.Numbers::price($price, true)
                 );
             }
-            Log::info('Costo cotizado: '.$price);
+            // Un renglón por artículo en dólares: en modo lote (PreciosEnLote: importación y
+            // recálculo en segundo plano, 28/9/2026) no se loguea; fuera de él, como siempre.
+            if (!PreciosEnLote::esta_activo()) {
+                Log::info('Costo cotizado: '.$price);
+            }
         }
         return [
             'price' => $price,

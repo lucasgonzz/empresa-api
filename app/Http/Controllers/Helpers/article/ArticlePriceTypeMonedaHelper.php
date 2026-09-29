@@ -159,11 +159,30 @@ class ArticlePriceTypeMonedaHelper {
     {
         $ars_id = 1;
 
-        /* Se relee de la base: el calculo de arriba guardo fila por fila con `save()`, y la
-         * coleccion que traia el articulo en memoria puede no reflejar lo ultimo. */
-        $entradas = $article->price_type_monedas()
-            ->where('moneda_id', $ars_id)
-            ->get();
+        if (PreciosEnLote::esta_activo()) {
+
+            /*
+             * Modo lote (misión recalculo-precios-motor-rapido, 28/9/2026): el cálculo de arriba no
+             * guardó nada todavía —registró sus entradas en PreciosEnLote, que las escribe al
+             * volcar—, así que releer de la base traería los precios VIEJOS. Las entradas en
+             * memoria son los mismos objetos que el cálculo acaba de modificar, o sea exactamente
+             * lo que save() hubiera escrito: se filtran igual que la consulta de abajo (moneda
+             * pesos), en el mismo orden (por id, el de la relación cargada). Ver
+             * PreciosEnLote::registrar_moneda() por qué el valor crudo en memoria deja en la
+             * pivot el mismo número que el releído.
+             */
+            $entradas = $article->price_type_monedas->filter(function ($entrada) use ($ars_id) {
+                return (int) $entrada->moneda_id === $ars_id;
+            });
+
+        } else {
+
+            /* Se relee de la base: el calculo de arriba guardo fila por fila con `save()`, y la
+             * coleccion que traia el articulo en memoria puede no reflejar lo ultimo. */
+            $entradas = $article->price_type_monedas()
+                ->where('moneda_id', $ars_id)
+                ->get();
+        }
 
         foreach ($entradas as $entrada) {
 
@@ -201,6 +220,28 @@ class ArticlePriceTypeMonedaHelper {
     }
 
     /**
+     * Guarda una entrada de `price_type_monedas` recién calculada.
+     *
+     * Fuera del modo lote es el `save()` de siempre. En modo lote (PreciosEnLote: la importación y
+     * el recálculo en segundo plano, misión recalculo-precios-motor-rapido, 28/9/2026) se registra
+     * lo que ese save() hubiera escrito —columnas sucias más updated_at— y PreciosEnLote::volcar()
+     * lo escribe en bloque al final de la tanda: un UPDATE por tanda en vez de uno por entrada.
+     *
+     * @param mixed $entrada ArticlePriceTypeMoneda del artículo, ya modificada.
+     *
+     * @return void
+     */
+    private static function guardar_entrada($entrada)
+    {
+        if (PreciosEnLote::esta_activo()) {
+            PreciosEnLote::registrar_moneda($entrada);
+            return;
+        }
+
+        $entrada->save();
+    }
+
+    /**
      * El calculo propiamente dicho. Era el cuerpo de
      * `aplicar_precios_por_price_type_y_moneda()` y no cambio: se separo para poder espejar en la
      * pivot despues de cualquiera de sus caminos de salida.
@@ -213,7 +254,18 @@ class ArticlePriceTypeMonedaHelper {
      */
     private static function calcular_precios_por_price_type_y_moneda($article, $_cost, $user)
     {
-        Log::info('entro 2');
+        /*
+         * Modo lote (PreciosEnLote: la importación y el recálculo en segundo plano, misión
+         * recalculo-precios-motor-rapido, 28/9/2026): cada entrada se registra en PreciosEnLote en
+         * vez de guardarse (ver guardar_entrada()), y no se loguea por artículo: el Log::info de
+         * la colección entera la serializa aunque el nivel del log la descarte, en cada artículo.
+         * Fuera del modo lote, todo igual que siempre.
+         */
+        $en_lote = PreciosEnLote::esta_activo();
+
+        if (!$en_lote) {
+            Log::info('entro 2');
+        }
         $ars_id = 1;
         $usd_id = 2;
 
@@ -289,8 +341,10 @@ class ArticlePriceTypeMonedaHelper {
 
         $groups = $article->price_type_monedas->groupBy('price_type_id');
 
-        Log::info('groups');
-        Log::info($groups);
+        if (!$en_lote) {
+            Log::info('groups');
+            Log::info($groups);
+        }
 
         /**
          * ✅ MODO SIN COSTO: solo cotización cruzada usando final_price fijo de la moneda referencia
@@ -328,8 +382,10 @@ class ArticlePriceTypeMonedaHelper {
                         $ars_entry->final_price = $ars_final;
 
                         // Sin costo base NO recalculamos percentage
-                        $ars_entry->save();
-                        Log::Info('ENTRO ACA para pesos');
+                        self::guardar_entrada($ars_entry);
+                        if (!$en_lote) {
+                            Log::Info('ENTRO ACA para pesos');
+                        }
                     }
 
                     continue;
@@ -345,7 +401,7 @@ class ArticlePriceTypeMonedaHelper {
                         $usd_entry->final_price = $usd_final;
 
                         // Sin costo base NO recalculamos percentage
-                        $usd_entry->save();
+                        self::guardar_entrada($usd_entry);
                     }
 
                     continue;
@@ -372,7 +428,7 @@ class ArticlePriceTypeMonedaHelper {
                     $res = $calc_normal($entry, $base_cost);
                     $entry->percentage  = $res['percentage'];
                     $entry->final_price = $res['final_price'];
-                    $entry->save();
+                    self::guardar_entrada($entry);
                 }
                 continue;
             }
@@ -384,7 +440,7 @@ class ArticlePriceTypeMonedaHelper {
 
                 $usd_entry->percentage  = $usd_res['percentage'];
                 $usd_entry->final_price = $usd_res['final_price'];
-                $usd_entry->save();
+                self::guardar_entrada($usd_entry);
 
                 $ars_final = $usd_res['final_price'] * $rate;
 
@@ -397,14 +453,14 @@ class ArticlePriceTypeMonedaHelper {
 
                 $ars_entry->final_price = $ars_final;
                 $ars_entry->percentage  = $ars_percentage;
-                $ars_entry->save();
+                self::guardar_entrada($ars_entry);
 
                 foreach ($group as $entry) {
                     if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) continue;
                     $res = $calc_normal($entry, $base_cost);
                     $entry->percentage  = $res['percentage'];
                     $entry->final_price = $res['final_price'];
-                    $entry->save();
+                    self::guardar_entrada($entry);
                 }
 
                 continue;
@@ -417,7 +473,7 @@ class ArticlePriceTypeMonedaHelper {
 
                 $ars_entry->percentage  = $ars_res['percentage'];
                 $ars_entry->final_price = $ars_res['final_price'];
-                $ars_entry->save();
+                self::guardar_entrada($ars_entry);
 
                 $usd_final = $rate > 0 ? ($ars_res['final_price'] / $rate) : 0;
 
@@ -430,14 +486,14 @@ class ArticlePriceTypeMonedaHelper {
 
                 $usd_entry->final_price = $usd_final;
                 $usd_entry->percentage  = $usd_percentage;
-                $usd_entry->save();
+                self::guardar_entrada($usd_entry);
 
                 foreach ($group as $entry) {
                     if ((int)$entry->moneda_id === $ars_id || (int)$entry->moneda_id === $usd_id) continue;
                     $res = $calc_normal($entry, $base_cost);
                     $entry->percentage  = $res['percentage'];
                     $entry->final_price = $res['final_price'];
-                    $entry->save();
+                    self::guardar_entrada($entry);
                 }
 
                 continue;
@@ -448,7 +504,7 @@ class ArticlePriceTypeMonedaHelper {
                 $res = $calc_normal($entry, $base_cost);
                 $entry->percentage  = $res['percentage'];
                 $entry->final_price = $res['final_price'];
-                $entry->save();
+                self::guardar_entrada($entry);
             }
         }
     }

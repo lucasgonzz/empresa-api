@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Helpers\import\article\motor;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\ArticlePriceTypeMoneda;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -41,6 +43,20 @@ use Illuminate\Support\Facades\Log;
  *
  * El cálculo de los precios no vive acá y no se toca: sigue en ArticleHelper / ArticlePricesHelper.
  * Esta clase solo difiere la ESCRITURA.
+ *
+ * Misión recalculo-precios-motor-rapido (28/9/2026): el mismo modo lote lo usa el motor del
+ * recálculo en segundo plano (article\precios\RecalculoDePreciosEnLote), y se le sumaron dos cosas
+ * que el cálculo todavía hacía por artículo:
+ *
+ *  - Las listas por categoría y subcategoría (extensión lista_de_precios_por_categoria) se
+ *    consultaban por artículo, y los recargos de cada lista otra vez por artículo porque cada
+ *    consulta devolvía instancias nuevas. En modo lote se memorizan por categoría/subcategoría
+ *    (listas_de_categoria_en_memoria()), con los recargos precargados.
+ *  - Las entradas de article_price_type_monedas (extensión ventas_en_dolares) se guardaban con un
+ *    save() por entrada, y el espejo en pesos las releía de la base. En modo lote se registran
+ *    (registrar_moneda()) y volcar() las escribe en bloque; el espejo las lee de memoria.
+ *
+ * Las dos cosas se limpian en activar() y al volcar/descartar: el memo dura una tanda.
  *
  * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promoción de constructor, readonly, enum ni #[...].
@@ -105,6 +121,21 @@ class PreciosEnLote
         'setear_precio_final',
     ];
 
+    /**
+     * Columnas de article_price_type_monedas que el cálculo por moneda puede escribir
+     * (ArticlePriceTypeMonedaHelper: percentage y final_price, más el updated_at que pone save()).
+     * Es una lista blanca por el mismo motivo que COLUMNAS_DEL_PIVOT: el nombre entra al SQL. Si
+     * el helper algún día ensucia otra columna, registrar_moneda() lo corta en vez de no
+     * escribirla en silencio.
+     *
+     * @var array
+     */
+    const COLUMNAS_DE_MONEDAS = [
+        'percentage',
+        'final_price',
+        'updated_at',
+    ];
+
     /** Filas por INSERT multi-fila. */
     const FILAS_POR_INSERT = 500;
 
@@ -155,6 +186,23 @@ class PreciosEnLote
      * @var array
      */
     protected static $cambios = [];
+
+    /**
+     * Entradas de article_price_type_monedas pendientes de escribir: [id => [columna => valor]],
+     * con lo que hubiera escrito el save() de cada una (ver registrar_moneda()).
+     *
+     * @var array
+     */
+    protected static $monedas = [];
+
+    /**
+     * Memo de las listas de precio de cada categoría y subcategoría mientras dura el modo lote:
+     * ['category:ID' | 'sub_category:ID' => Collection de PriceType con su pivot y sus recargos].
+     * Ver listas_de_categoria_en_memoria().
+     *
+     * @var array
+     */
+    protected static $listas_por_categoria = [];
 
     /** @var int Cuántas veces volcar() escribió algo en este proceso (lo miran los tests). */
     protected static $volcados = 0;
@@ -246,10 +294,11 @@ class PreciosEnLote
         try {
             $resumen = self::volcar_pivots();
             $resumen = array_merge($resumen, self::volcar_cambios_de_precio());
+            $resumen = array_merge($resumen, self::volcar_monedas());
 
             self::$ultimo_resumen = $resumen;
 
-            if ($resumen['pares'] > 0 || $resumen['cambios'] > 0) {
+            if ($resumen['pares'] > 0 || $resumen['cambios'] > 0 || $resumen['monedas'] > 0) {
                 self::$volcados++;
                 Log::info('PreciosEnLote: volcado en bloque', $resumen);
             }
@@ -271,7 +320,8 @@ class PreciosEnLote
     }
 
     /**
-     * Resumen del último volcar(): pares, insertados, actualizados, cambios, filas_de_listas.
+     * Resumen del último volcar(): pares, insertados, actualizados, cambios, filas_de_listas,
+     * monedas.
      *
      * @return array|null
      */
@@ -283,7 +333,7 @@ class PreciosEnLote
     /**
      * Cuánto hay registrado y todavía sin escribir.
      *
-     * @return array{pares:int,cambios:int}
+     * @return array{pares:int,cambios:int,monedas:int}
      */
     public static function pendientes()
     {
@@ -296,6 +346,7 @@ class PreciosEnLote
         return [
             'pares'   => $pares,
             'cambios' => count(self::$cambios),
+            'monedas' => count(self::$monedas),
         ];
     }
 
@@ -476,6 +527,104 @@ class PreciosEnLote
             'created_at'  => $ahora,
             'listas'      => $listas,
         ];
+    }
+
+    /**
+     * Registra lo que `$entrada->save()` hubiera escrito en article_price_type_monedas, para que
+     * volcar() lo escriba en bloque. Lo usa ArticlePriceTypeMonedaHelper en modo lote.
+     *
+     * Reproduce save() sobre un modelo que ya existe, paso por paso, para que la base quede igual:
+     *  - sin nada sucio, save() no escribe nada (tampoco updated_at): acá tampoco se registra;
+     *  - con algo sucio, save() pone updated_at = ahora (updateTimestamps()) y escribe getDirty():
+     *    se registra exactamente eso;
+     *  - al terminar, save() deja el modelo "guardado" (syncChanges() + syncOriginal()): acá
+     *    también, así un segundo guardado de la misma entrada en el mismo cálculo registra solo lo
+     *    que cambió después, igual que haría un segundo save().
+     *
+     * 🔴 La entrada en memoria queda con el valor crudo (el float del cálculo), no con el que
+     * devolvería la base, igual que después de un save() de verdad. El espejo en pesos la lee así
+     * y escribe ese float en article_price_type: queda el mismo número que si lo hubiera releído
+     * de la base porque final_price y percentage tienen escala 2 en las dos tablas (si alguna vez
+     * se cambia la escala de una sola de las dos, esto deja de ser cierto).
+     *
+     * ArticlePriceTypeMoneda no tiene observers ni listeners, así que los eventos de modelo que
+     * save() dispararía no tienen a nadie esperándolos.
+     *
+     * @param  \App\Models\ArticlePriceTypeMoneda $entrada
+     * @return void
+     */
+    public static function registrar_moneda($entrada)
+    {
+        self::asegurar_activo(__FUNCTION__);
+
+        if (!($entrada instanceof ArticlePriceTypeMoneda) || !$entrada->exists) {
+            throw new \InvalidArgumentException('PreciosEnLote: registrar_moneda() espera una entrada de article_price_type_monedas que ya exista.');
+        }
+
+        if (!$entrada->isDirty()) {
+            return;
+        }
+
+        if ($entrada->usesTimestamps()) {
+            $entrada->updateTimestamps();
+        }
+
+        $columnas = $entrada->getDirty();
+
+        foreach (array_keys($columnas) as $columna) {
+            if (!in_array($columna, self::COLUMNAS_DE_MONEDAS, true)) {
+                throw new \InvalidArgumentException('PreciosEnLote: la columna "' . $columna . '" no es una columna registrable de article_price_type_monedas.');
+            }
+        }
+
+        $id = (int) $entrada->getKey();
+
+        self::$monedas[$id] = isset(self::$monedas[$id])
+                                ? array_merge(self::$monedas[$id], $columnas)
+                                : $columnas;
+
+        $entrada->syncChanges();
+        $entrada->syncOriginal();
+    }
+
+    /**
+     * Las listas de precio de una categoría o subcategoría, memorizadas mientras dura el modo
+     * lote. Lo usa ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias().
+     *
+     * La consulta NO vive acá: la pasa el helper, que es el dueño de los filtros (una subcategoría
+     * solo cuenta con porcentaje cargado, etc.). Así hay una sola definición de "qué listas usa
+     * una categoría" y el memo no se puede desincronizar de ella. Acá solo se decide ejecutarla
+     * una vez por categoría y por tanda en vez de una vez por artículo, y precargar los recargos
+     * de cada lista (aplicar_price_type_surchages() los lee por lista y por artículo; sin la
+     * precarga, cada instancia nueva los volvía a consultar).
+     *
+     * Memorizar es seguro: durante el cálculo nadie escribe price_type_sub_category ni
+     * category_price_type, y las instancias memorizadas solo se leen. El memo se vacía con cada
+     * activar(), volcar() y descartar(): nunca sobrevive a su tanda.
+     *
+     * @param  string   $tipo      'category' | 'sub_category' (solo arma la clave del memo).
+     * @param  int      $id
+     * @param  callable $consulta  Devuelve la Collection de PriceType, como fuera del modo lote.
+     * @return \Illuminate\Support\Collection
+     */
+    public static function listas_de_categoria_en_memoria($tipo, $id, callable $consulta)
+    {
+        self::asegurar_activo(__FUNCTION__);
+
+        $clave = (string) $tipo . ':' . (int) $id;
+
+        if (!array_key_exists($clave, self::$listas_por_categoria)) {
+
+            $listas = $consulta();
+
+            if ($listas instanceof EloquentCollection) {
+                $listas->load('price_type_surchages');
+            }
+
+            self::$listas_por_categoria[$clave] = $listas;
+        }
+
+        return self::$listas_por_categoria[$clave];
     }
 
     /* ------------------------------------------------------------------------------------------
@@ -819,6 +968,70 @@ class PreciosEnLote
         return $ids;
     }
 
+    /**
+     * article_price_type_monedas en bloque: las entradas se agrupan por el conjunto de columnas
+     * que traen y cada grupo sale en UPDATE ... CASE `id` WHEN ... de a FILAS_POR_INSERT filas,
+     * con `ELSE columna` y `WHERE id IN (...)`: el mismo UPDATE por id que hacía el save() de cada
+     * entrada, con los mismos valores como bindings.
+     *
+     * @return array{monedas:int}
+     */
+    protected static function volcar_monedas()
+    {
+        $resumen = ['monedas' => 0];
+
+        if (empty(self::$monedas)) {
+            return $resumen;
+        }
+
+        $grupos = [];
+
+        foreach (self::$monedas as $id => $columnas) {
+
+            ksort($columnas);
+
+            $grupos[implode(',', array_keys($columnas))][(int) $id] = $columnas;
+        }
+
+        foreach ($grupos as $firma => $filas) {
+
+            $nombres = explode(',', $firma);
+
+            foreach (array_chunk($filas, self::FILAS_POR_INSERT, true) as $tanda) {
+
+                $sets     = [];
+                $bindings = [];
+
+                foreach ($nombres as $columna) {
+
+                    $whens = [];
+
+                    foreach ($tanda as $id => $columnas) {
+                        $whens[]    = 'WHEN ' . (int) $id . ' THEN ?';
+                        $bindings[] = $columnas[$columna];
+                    }
+
+                    $sets[] = '`' . $columna . '` = CASE `id` ' . implode(' ', $whens) . ' ELSE `' . $columna . '` END';
+                }
+
+                $ids_sql = [];
+
+                foreach (array_keys($tanda) as $id) {
+                    $ids_sql[] = (int) $id;
+                }
+
+                DB::update(
+                    'UPDATE `article_price_type_monedas` SET ' . implode(', ', $sets) . ' WHERE `id` IN (' . implode(', ', $ids_sql) . ')',
+                    $bindings
+                );
+
+                $resumen['monedas'] += count($tanda);
+            }
+        }
+
+        return $resumen;
+    }
+
     /* ------------------------------------------------------------------------------------------
      * Internos
      * ---------------------------------------------------------------------------------------- */
@@ -865,11 +1078,13 @@ class PreciosEnLote
      */
     protected static function reiniciar()
     {
-        self::$activo       = false;
-        self::$user         = null;
-        self::$auth_user_id = null;
-        self::$articulos    = [];
-        self::$pivots       = [];
-        self::$cambios      = [];
+        self::$activo               = false;
+        self::$user                 = null;
+        self::$auth_user_id         = null;
+        self::$articulos            = [];
+        self::$pivots               = [];
+        self::$cambios              = [];
+        self::$monedas              = [];
+        self::$listas_por_categoria = [];
     }
 }

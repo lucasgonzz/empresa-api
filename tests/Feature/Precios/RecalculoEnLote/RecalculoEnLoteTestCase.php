@@ -278,6 +278,137 @@ abstract class RecalculoEnLoteTestCase extends TestCase
     }
 
     /**
+     * El catálogo "de todo un poco" que usan casi todas las configuraciones: un artículo por cada
+     * rama del cálculo que no depende de la cuenta. Devuelve los ids (en orden de creación) por
+     * nombre, y ya deja calculado todo con una pasada del camino de hoy (calentamiento) y
+     * preparado lo que la corrida comparada tiene que volver a recorrer:
+     *
+     *  - a los artículos de $a_pisar se les pisa el precio final (van a cambiar de precio);
+     *  - al de "margen_y_precio_viejo" se le vuelve a poner el precio manual viejo, para que la
+     *    corrida comparada pase por la rama que lo borra (price = null + save());
+     *  - "estable" queda como lo dejó el calentamiento (no cambia: sin price_change).
+     *
+     * @param  \App\Models\User $dueno
+     * @param  callable|null    $antes_de_calentar  Recibe ($dueno, $articulos) para atar listas,
+     *                                              monedas o impuestos antes del calentamiento.
+     * @return array [nombre => id]
+     */
+    protected function escenario_general($dueno, $antes_de_calentar = null)
+    {
+        $proveedor           = $this->crear_proveedor($dueno, ['percentage_gain' => 30]);
+        $proveedor_con_dolar = $this->crear_proveedor($dueno, ['percentage_gain' => 25, 'dolar' => 1350.5]);
+
+        $lista_del_proveedor = ProviderPriceList::create([
+            'name'        => 'zz Lista del proveedor',
+            'percentage'  => 15,
+            'provider_id' => $proveedor->id,
+        ]);
+
+        $categoria = $this->crear_categoria($dueno, ['percentage_gain' => 12]);
+
+        $articulos = [];
+
+        /* Descuentos y recargos en porcentaje y en monto, antes y después del precio final. */
+        $completo = $this->crear_articulo($dueno, ['cost' => 1234.56, 'provider_id' => $proveedor->id, 'category_id' => $categoria->id]);
+        $this->descuento($completo, ['percentage' => 10]);
+        $this->descuento($completo, ['amount' => 50]);
+        $this->recargo($completo, ['percentage' => 5, 'luego_del_precio_final' => 0]);
+        $this->recargo($completo, ['amount' => 20, 'luego_del_precio_final' => 0]);
+        $this->recargo($completo, ['percentage' => 3, 'luego_del_precio_final' => 1]);
+        $this->recargo($completo, ['amount' => 15, 'luego_del_precio_final' => 1]);
+        $articulos['completo'] = $completo->id;
+
+        $articulos['margen_propio'] = $this->crear_articulo($dueno, [
+            'cost' => 250, 'percentage_gain' => 35, 'iva_id' => self::IVA_10_5, 'provider_id' => $proveedor->id,
+        ])->id;
+
+        $articulos['dolar_global'] = $this->crear_articulo($dueno, [
+            'cost' => 12.5, 'cost_in_dollars' => 1, 'provider_id' => $proveedor->id,
+        ])->id;
+
+        $articulos['dolar_del_proveedor'] = $this->crear_articulo($dueno, [
+            'cost' => 9.99, 'cost_in_dollars' => 1, 'provider_id' => $proveedor_con_dolar->id,
+        ])->id;
+
+        $articulos['lista_del_proveedor'] = $this->crear_articulo($dueno, [
+            'cost' => 500, 'provider_id' => $proveedor->id, 'provider_price_list_id' => $lista_del_proveedor->id,
+        ])->id;
+
+        $articulos['unidades_individuales'] = $this->crear_articulo($dueno, [
+            'cost' => 1200, 'unidades_individuales' => 12, 'provider_id' => $proveedor->id,
+        ])->id;
+
+        $articulos['margen_de_categoria'] = $this->crear_articulo($dueno, [
+            'cost' => 800, 'apply_provider_percentage_gain' => 0, 'category_id' => $categoria->id,
+        ])->id;
+
+        $articulos['precio_manual'] = $this->crear_articulo($dueno, [
+            'price' => 1500, 'apply_provider_percentage_gain' => 0,
+        ])->id;
+
+        $articulos['margen_y_precio_viejo'] = $this->crear_articulo($dueno, [
+            'cost' => 300, 'percentage_gain' => 40, 'price' => 999,
+        ])->id;
+
+        $articulos['sin_costo_ni_precio'] = $this->crear_articulo($dueno, [
+            'provider_id' => $proveedor->id,
+        ])->id;
+
+        $articulos['sin_iva'] = $this->crear_articulo($dueno, [
+            'cost' => 640, 'aplicar_iva' => 0, 'provider_id' => $proveedor->id,
+        ])->id;
+
+        $articulos['estable'] = $this->crear_articulo($dueno, [
+            'cost' => 480.4, 'provider_id' => $proveedor->id,
+        ])->id;
+
+        if (!is_null($antes_de_calentar)) {
+            $antes_de_calentar($dueno, $articulos);
+        }
+
+        $ids = array_values($articulos);
+
+        /* Calentamiento: precios calculados, listas atadas y estables. */
+        $this->recalcular_como_hoy($ids, $dueno->id);
+
+        $a_pisar = [];
+
+        foreach ($articulos as $nombre => $id) {
+            if ($nombre !== 'estable' && $nombre !== 'sin_costo_ni_precio') {
+                $a_pisar[] = $id;
+            }
+        }
+
+        $this->pisar_precio_final($a_pisar, 1);
+
+        DB::table('articles')->where('id', $articulos['margen_y_precio_viejo'])->update(['price' => 999]);
+
+        return $articulos;
+    }
+
+    /**
+     * Corre comparar_caminos() sobre el escenario general y deja las guardas comunes: que haya
+     * artículos que cambien y uno que no, y que la rama que borra el precio viejo se haya
+     * recorrido. Devuelve lo mismo que comparar_caminos().
+     *
+     * @param  \App\Models\User $dueno
+     * @param  array            $articulos [nombre => id] de escenario_general()
+     * @param  int              $pasadas
+     * @return array
+     */
+    protected function comparar_escenario_general($dueno, array $articulos, $pasadas = 2)
+    {
+        $r = $this->comparar_caminos(array_values($articulos), $dueno->id, $pasadas);
+
+        $this->assertGreaterThanOrEqual(5, count($r['cambiaron_hoy']), 'El escenario tenía que cambiar varios precios: si no, la comparación no prueba nada.');
+        $this->assertNotContains($articulos['estable'], $r['cambiaron_hoy'], 'El artículo estable no tenía que cambiar de precio.');
+        $this->assertArrayNotHasKey($articulos['estable'], $r['foto_hoy']['cambios'], 'El artículo estable no genera price_change.');
+        $this->assertNull($r['foto_hoy']['articles'][$articulos['margen_y_precio_viejo']]['price'], 'La corrida tenía que pasar por la rama que borra el precio manual viejo.');
+
+        return $r;
+    }
+
+    /**
      * Pone un precio de venta viejo a mano en la base, sin pasar por el cálculo: es lo que hace
      * que el recálculo tenga algo que cambiar.
      *
