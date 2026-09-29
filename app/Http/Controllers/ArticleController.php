@@ -11,6 +11,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ArticleTablePdfHelper;
+use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\InventoryLinkageHelper;
@@ -35,6 +36,7 @@ use App\Http\Controllers\Pdf\ArticleTablePdf;
 use App\Http\Controllers\Pdf\ArticlePdf\TruvariArticleListPdf;
 use App\Http\Controllers\Pdf\ArticleTicketPdf;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleBarCodeEtiquetasPdf;
+use App\Http\Controllers\Pdf\ArticleTicket\ArticleTicketDesignPdf;
 use App\Imports\ArticleImport;
 use App\Imports\LocationImport;
 use App\Imports\ProvinciaImport;
@@ -1024,7 +1026,27 @@ class ArticleController extends Controller
         );
     }
 
+    /**
+     * Etiquetas de góndola de los artículos `$ids` (separados por `-`).
+     *
+     * Con `?article_ticket_design_id=` de un diseño DEL DUEÑO (misión disenos-etiquetas-gondola,
+     * 29/9/2026) las dibuja `ArticleTicketDesignPdf` según ese diseño y responde el PDF inline.
+     * Sin ese parámetro, o con un id que no es del dueño, sale el camino de siempre
+     * (`ArticleTicketPdf`, con su `?price_type_id=` y la variante golonorte) sin ningún cambio:
+     * un SPA viejo sigue imprimiendo igual.
+     */
     function ticketsPdf($ids) {
+        $diseno = ArticleTicketDesignHelper::diseno_del_dueno(request()->query('article_ticket_design_id'), $this->userId());
+
+        if (!is_null($diseno)) {
+            $pdf = new ArticleTicketDesignPdf($diseno->diseno, $ids, $this->userId());
+
+            return response($pdf->generar(), 200, [
+                'Content-Type'        => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="etiquetas.pdf"',
+            ]);
+        }
+
         new ArticleTicketPdf($ids);
     }
 
