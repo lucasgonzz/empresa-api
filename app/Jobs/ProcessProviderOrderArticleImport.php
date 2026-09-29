@@ -9,11 +9,13 @@ use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Imports\ProviderOrderArticleImport;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
+use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Facades\Excel;
@@ -40,9 +42,26 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
               $overwrite_articles, $hoja, $hoja_nombre, $archivo_excel_path,
               $import_status_id, $import_history_id;
 
+    /**
+     * Id de la persona que disparó la importación (el empleado o el dueño). El worker no la tiene
+     * en sesión: handle() corre la importación autenticado como ella (ver autenticado_como()).
+     *
+     * Un job encolado antes de la misión compras-precios-en-lote (29/9/2026) no trae esta
+     * propiedad: SerializesModels saltea lo que no vino en el payload, queda en null y la
+     * importación corre como el dueño ($user).
+     *
+     * @var int|null
+     */
+    protected $auth_user_id = null;
+
     public $timeout = 1800; // 30 minutos, igual piso que ProcessArticleChunk
     public $tries = 1;
 
+    /**
+     * @param int|null $auth_user_id Quién importó (UserHelper::userId(false) del request). Va
+     *                               ÚLTIMO y es opcional a propósito: así un dispatch viejo, con un
+     *                               argumento menos, sigue andando y corre como el dueño.
+     */
     public function __construct(
         $columns,
         $start_row,
@@ -55,7 +74,8 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
         $hoja_nombre,
         $archivo_excel_path,
         $import_status_id,
-        $import_history_id
+        $import_history_id,
+        $auth_user_id = null
     ) {
         $this->columns             = $columns;
         $this->start_row           = $start_row;
@@ -69,6 +89,7 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
         $this->archivo_excel_path  = $archivo_excel_path;
         $this->import_status_id    = $import_status_id;
         $this->import_history_id   = $import_history_id;
+        $this->auth_user_id        = $auth_user_id;
 
         /*
          * En shared hosting va a la cola 'excel' (separada del asistente por WhatsApp/panel),
@@ -115,7 +136,17 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
                 }
             );
 
-            Excel::import($importer, $this->archivo_excel_path);
+            /*
+             * 🔴 Autenticado como quien importó (misión compras-precios-en-lote, 29/9/2026). El
+             * pipeline de la compra (NewProviderOrderHelper, los movimientos de stock, los cambios
+             * de precio) lee al usuario de la sesión, y en el worker no hay sesión: sin esto,
+             * UserHelper::user() da null y la importación revienta en todo worker real. Ver
+             * autenticado_como().
+             */
+            $this->autenticado_como($this->persona_que_importo(), function () use ($importer) {
+
+                Excel::import($importer, $this->archivo_excel_path);
+            });
 
             $this->marcar_completado($importer);
 
@@ -146,6 +177,86 @@ class ProcessProviderOrderArticleImport implements ShouldQueue
     public function failed(Throwable $exception)
     {
         $this->marcar_fallo($exception);
+    }
+
+    /**
+     * La persona como la que corre la importación: la que la disparó ($auth_user_id), o el dueño
+     * ($user) si el job no la trae (encolado antes de este cambio) o si ya no existe (un empleado
+     * borrado entre el encolado y la corrida). Con el dueño la compra se procesa igual, solo que
+     * los movimientos y los cambios de precio quedan a su nombre.
+     *
+     * @return \App\Models\User|null
+     */
+    private function persona_que_importo()
+    {
+        if (!is_null($this->auth_user_id)) {
+
+            $persona = User::find((int) $this->auth_user_id);
+
+            if (!is_null($persona)) {
+                return $persona;
+            }
+        }
+
+        return $this->user;
+    }
+
+    /**
+     * Corre $accion con $persona autenticada y deja la autenticación como estaba (el mismo patrón
+     * que ConfirmacionPorTextoIaHelper::autenticado_como(), copiado acá a propósito para no tocar
+     * el helper del asistente).
+     *
+     * 🔴 Por qué hace falta: el pipeline de la compra lee al usuario de la sesión en todos lados
+     * (NewProviderOrderHelper::__construct() toma el dueño con UserHelper::user(), el movimiento
+     * de stock y los cambios de precio firman con UserHelper::userId(false)). En el worker no hay
+     * request ni sesión: sin esto UserHelper::user() da null y la importación revienta, en todo
+     * worker real, con "Trying to get property 'iva_included' of non-object" (medido el 29/9/2026
+     * con tests/Feature/Compras/PreciosEnLote/1_Importacion_en_la_cola_sin_sesion_Test.php). Los
+     * tests del job lo corrían con el usuario de prueba todavía autenticado, y por eso nunca se vio.
+     *
+     * 🔴 El finally es la parte que importa y no se saca: si la importación tira, el worker sigue
+     * vivo y toma el próximo job — con esta persona todavía autenticada, si no se la saca. En un
+     * worker compartido eso firma el próximo job (de este cliente o de otro) a nombre de quien no
+     * fue. Si no había nadie antes (el caso normal en un worker), se olvidan los guards; si había
+     * alguien, se lo vuelve a poner.
+     *
+     * @param  \App\Models\User|null $persona
+     * @param  callable              $accion
+     * @return mixed Lo que devuelva $accion.
+     */
+    private function autenticado_como($persona, $accion)
+    {
+        $previo = null;
+
+        try {
+
+            $previo = Auth::user();
+
+        } catch (Throwable $e) {
+
+            /* Sin sesión de la que leer (el caso normal en un worker): no había nadie. */
+            Log::info('ProcessProviderOrderArticleImport: no se pudo leer el usuario previo -- ' . $e->getMessage());
+        }
+
+        if (!is_null($persona)) {
+            Auth::setUser($persona);
+        }
+
+        try {
+
+            return call_user_func($accion);
+
+        } finally {
+
+            if (is_null($previo)) {
+
+                Auth::forgetGuards();
+
+            } else {
+
+                Auth::setUser($previo);
+            }
+        }
     }
 
     /**
