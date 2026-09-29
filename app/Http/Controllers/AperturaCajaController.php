@@ -12,12 +12,39 @@ use Maatwebsite\Excel\Facades\Excel;
 class AperturaCajaController extends Controller
 {
 
-    public function index($caja_id) {
-        $models = AperturaCaja::where('caja_id', $caja_id)
+    /**
+     * Aperturas de una caja, de la más nueva a la más vieja.
+     *
+     * Sin `page` responde como siempre (`models` con TODAS las aperturas), para que una SPA
+     * anterior a la paginación siga andando. Con `page` responde solo esa página y suma el
+     * paginador (`total`, `current_page`, `last_page`, `per_page`) al costado de `models`.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param int $caja_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function index(Request $request, $caja_id) {
+        $query = AperturaCaja::where('caja_id', $caja_id)
                             ->orderBy('created_at', 'DESC')
-                            ->withAll()
-                            ->get();
-        return response()->json(['models' => $models], 200);
+                            ->orderBy('id', 'DESC')
+                            ->withAll();
+
+        if (!$request->filled('page')) {
+            return response()->json(['models' => $query->get()], 200);
+        }
+
+        $per_page = (int) $request->input('per_page', 15);
+        $per_page = max(1, min($per_page, 100));
+
+        $paginador = $query->paginate($per_page);
+
+        return response()->json([
+            'models'        => $paginador->items(),
+            'total'         => $paginador->total(),
+            'current_page'  => $paginador->currentPage(),
+            'last_page'     => $paginador->lastPage(),
+            'per_page'      => $paginador->perPage(),
+        ], 200);
     }
 
 
