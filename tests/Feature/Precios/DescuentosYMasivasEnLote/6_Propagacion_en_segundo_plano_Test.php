@@ -399,6 +399,40 @@ class Propagacion_en_segundo_plano_Test extends DescuentosYMasivasEnLoteTestCase
     }
 
     /**
+     * Si cuando el worker vuelve a planificar no queda nada que actualizar (aca: el dueño apago la
+     * preferencia entre el clic y el worker; lo mismo si otro camino ya los propago), el registro
+     * cierra con el total REAL, 0 de 0, y el resultado dice 0 actualizados. Antes cerraba "5 de 5"
+     * con el total anunciado al encolar, mientras el aviso decia "0 articulos actualizados"
+     * (29/9/2026, chequeo independiente).
+     *
+     * @test
+     */
+    public function si_el_plan_del_worker_sale_vacio_el_registro_cierra_con_cero_de_cero()
+    {
+        $e = $this->escenario(5);
+
+        $empleado = $this->empleado($e['dueno']);
+
+        $id = ProcessPropagarDescuentosProveedorJob::anunciar($e['provider'], $e['dueno']->id, $empleado->id, false, 5);
+
+        $this->assertSame(5, (int) BackgroundProcess::find($id)->total, 'Precondicion: se anuncio con el total del plan del request.');
+
+        /* Entre el clic y el worker, el dueño apaga la preferencia. */
+        DB::table('users')->where('id', $e['dueno']->id)->update(['aplicar_descuentos_proveedor_al_asignar' => 0]);
+
+        $this->sin_sesion();
+
+        (new ProcessPropagarDescuentosProveedorJob($e['provider']->id, $e['dueno']->id, $empleado->id, false, 'op-' . uniqid('', true), $id))->handle();
+
+        $registro = BackgroundProcess::find($id);
+
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $registro->status);
+        $this->assertSame(0, (int) $registro->total, 'El total real, no el anunciado al encolar.');
+        $this->assertSame(0, (int) $registro->procesados);
+        $this->assertSame(0, (int) $registro->resultado()['actualizados']);
+    }
+
+    /**
      * El avance que da la propagacion: el total al arrancar y uno por tanda escrita, acumulando.
      *
      * @test

@@ -1089,20 +1089,27 @@ class ArticleProviderDiscountHelper {
 
         $resultado = ['actualizados' => 0, 'respetados' => (int) $plan['respetados']];
 
-        if (is_null($provider) || count($plan['items']) === 0) {
-            return $resultado;
-        }
-
         /*
          * El avance, con el mismo contrato que la sincronizacion: el total (los articulos que se van
          * a tocar) con 0 procesados, y despues uno por tanda escrita. Solo lo pide el job de segundo
          * plano; el request no manda callback y aca no pasa nada.
+         *
+         * 🔴 El total se avisa ANTES de la salida temprana, aunque sea 0 (29/9/2026, chequeo
+         * independiente). El registro visible del job nace al encolar con el total del plan del
+         * request (por ejemplo 40.000); si cuando el worker vuelve a planificar no queda nada —la
+         * preferencia se apago en el medio, o otro camino ya los propago— y aca se saliera sin avisar,
+         * el registro cerraria como "40.000 de 40.000" mientras el aviso dice "0 articulos
+         * actualizados". Con el 0 avisado, cierra con el total real: 0 de 0.
          */
-        $total = count($plan['items']);
-
-        $procesados = 0;
+        $total = (is_null($provider) || !isset($plan['items'])) ? 0 : count($plan['items']);
 
         self::avisar_avance($al_avanzar, 0, $total);
+
+        if ($total === 0) {
+            return $resultado;
+        }
+
+        $procesados = 0;
 
         $al_terminar_tanda = function ($cantidad) use (&$procesados, $total, $al_avanzar) {
 
