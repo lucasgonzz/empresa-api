@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Jobs\ProcessSetFinalPrices;
 use App\Models\Article;
@@ -63,6 +64,19 @@ class PriceTypeController extends Controller
 
 
         $this->sendAddModelNotification('price_type', $model->id);
+
+        /*
+            Lista nueva -> su diseño de etiquetas de góndola (misión disenos-etiquetas-gondola,
+            29/9/2026): una copia del diseño de siempre con el precio de esta lista, así la opción
+            que antes aparecía sola en el menú de etiquetas del listado sigue apareciendo. Solo si
+            el dueño trabaja con listas, e idempotente. Un error acá NO puede romper el alta de
+            la lista: se loguea y sigue.
+        */
+        try {
+            ArticleTicketDesignHelper::crear_diseno_de_lista($model);
+        } catch (\Throwable $e) {
+            Log::warning('PriceTypeController@store: no se pudo crear el diseño de etiquetas de la lista '.$model->id.': '.$e->getMessage());
+        }
 
         $this->updateRelationsCreated('price_type', $model->id, $request->childrens);
         

@@ -411,6 +411,14 @@ class DatabaseSeeder extends Seeder
             UserSetupHelper::base_seeders() y DemoSetupHelper::base_seeders().
         */
         $this->call(VenderLayoutSeeder::class);
+
+        /*
+            Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno por
+            lista de precios, o uno genérico. Al final del run() por los mismos motivos que el de
+            arriba (itera los dueños) y además porque tiene que correr después de PriceTypeSeeder,
+            que las ramas por cliente llaman más arriba.
+        */
+        $this->call(ArticleTicketDesignSeeder::class);
     }
 
     function local_y_demo() {

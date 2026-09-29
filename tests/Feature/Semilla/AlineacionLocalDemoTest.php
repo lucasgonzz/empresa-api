@@ -99,6 +99,13 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
          */
         'VenderLayoutSeeder',
 
+        /*
+         * Los diseños de etiquetas de góndola (mision disenos-etiquetas-gondola, 29/9/2026): corre
+         * en local (DatabaseSeeder) y en la demo, y sin el el menu de etiquetas del listado queda
+         * con la opcion de siempre y el ABM de diseños vacio.
+         */
+        'ArticleTicketDesignSeeder',
+
         /* Los que ya estaban en los dos y sostienen la aritmética de `semilla:datos`. */
         'AddressSeeder',
         'ClientSeeder',

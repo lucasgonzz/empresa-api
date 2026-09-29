@@ -430,6 +430,13 @@ class UserSetupHelper
             'VenderLayoutSeeder',
 
             /*
+                Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno
+                por lista de precios, o uno genérico. Tiene que correr después de create_user() y
+                de crear_price_types(), y este foreach ya va después de los dos.
+            */
+            'ArticleTicketDesignSeeder',
+
+            /*
                 Respaldo idempotente: para cuando las 4 extensiones de IA (agregadas en
                 base_extencions()) ya esten enganchadas al usuario por el sync de mas arriba.
                 Si ya estan, las salta (ver su propio PHPDoc). Mismo fix que ya tiene
