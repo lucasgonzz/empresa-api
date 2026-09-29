@@ -38,9 +38,11 @@ class ArticleEmbeddingServiceConTandaChica extends ArticleEmbeddingService
  *   búsqueda no compacta artículos de otro dueño;
  * - `persistir_embedding()` —el único escritor de vectores— BORRA el compacto en vez de escribirlo
  *   (el job pone el sello de frescura después, así que uno escrito ahí nacería viejo);
- * - un compacto viejo (su `embedding_generated_at` ya no coincide con el del artículo, como deja
- *   un frente con la versión anterior al re-indexar) no se usa: se recompacta desde el JSON, tanto
- *   en la búsqueda como en el comando;
+ * - un compacto viejo (su `embedding_source_hash` ya no coincide con el del artículo, como deja
+ *   un frente con la versión anterior al re-indexar; o, sin hash, su `embedding_generated_at`) no
+ *   se usa: se recompacta desde el JSON, tanto en la búsqueda como en el comando;
+ * - un toque que no cambia el texto (solo la fecha, como una actualización masiva de precios) NO
+ *   invalida el compacto ni hace releer el JSON;
  * - el recorrido en varias tandas da el mismo top-K que la fuerza bruta, y a igual score gana el
  *   id menor;
  * - el comando `articles:compactar-embeddings` compacta los que faltan y no pisa los que están.
@@ -158,7 +160,8 @@ class Busqueda_semantica_acotada_Test extends TestCase
 
     /**
      * Deja un compacto FRESCO para el artículo, como lo dejaría el recorrido: el vector sale del
-     * JSON actual y el sello es el `embedding_generated_at` actual del artículo.
+     * JSON actual y el sello es el `embedding_source_hash` + `embedding_generated_at` actual del
+     * artículo.
      *
      * @param int $article_id
      * @return void
@@ -171,6 +174,7 @@ class Busqueda_semantica_acotada_Test extends TestCase
             'article_id'             => $article_id,
             'user_id'                => $fila->user_id,
             'vector'                 => (new ArticleEmbeddingService())->compactar_vector(json_decode($fila->embedding, true)),
+            'embedding_source_hash'  => $fila->embedding_source_hash,
             'embedding_generated_at' => $fila->embedding_generated_at,
         ]);
     }
@@ -303,9 +307,13 @@ class Busqueda_semantica_acotada_Test extends TestCase
         $this->assertNotEmpty($consultas);
 
         foreach ($consultas as $sql) {
-            // El nombre de la tabla nueva y la columna del sello contienen "embedding": se sacan
-            // antes de buscar la columna pesada. Comparar el sello es barato (no arrastra el JSON).
-            $sin_tabla = str_replace(['article_compact_embeddings', 'embedding_generated_at'], '', $sql);
+            // El nombre de la tabla nueva y las dos columnas del sello contienen "embedding": se
+            // sacan antes de buscar la columna pesada. Comparar el sello es barato (no arrastra el JSON).
+            $sin_tabla = str_replace(
+                ['article_compact_embeddings', 'embedding_source_hash', 'embedding_generated_at'],
+                '',
+                $sql
+            );
 
             $this->assertStringNotContainsString(
                 'embedding',
@@ -389,9 +397,25 @@ class Busqueda_semantica_acotada_Test extends TestCase
     }
 
     /**
+     * Pone el sello de un artículo como lo deja el job: hash del texto y fecha de generación.
+     *
+     * @param int         $article_id
+     * @param string|null $hash
+     * @param string      $fecha
+     * @return void
+     */
+    protected function sellar($article_id, $hash, $fecha)
+    {
+        DB::table('articles')->where('id', $article_id)->update([
+            'embedding_source_hash'  => $hash,
+            'embedding_generated_at' => $fecha,
+        ]);
+    }
+
+    /**
      * El caso real de la flota: el cron quedó en el frente con la versión anterior, que re-indexa
-     * `articles.embedding` y `embedding_generated_at` SIN conocer `article_compact_embeddings`.
-     * Se simula escribiendo las dos columnas por SQL crudo, sin pasar por `persistir_embedding()`.
+     * `articles.embedding` y su `embedding_source_hash` SIN conocer `article_compact_embeddings`.
+     * Se simula escribiendo las columnas por SQL crudo, sin pasar por `persistir_embedding()`.
      *
      * @group whatsapp
      * @test
@@ -403,17 +427,18 @@ class Busqueda_semantica_acotada_Test extends TestCase
         $cerca = $this->articulo('Frescura cerca', [1.0, 0.0, 0.0]);
         $lejos = $this->articulo('Frescura lejos', [0.6, 0.8, 0.0]);
 
-        DB::table('articles')->whereIn('id', [$cerca->id, $lejos->id])
-            ->update(['embedding_generated_at' => '2026-09-01 10:00:00']);
+        $this->sellar($cerca->id, sha1('texto cerca v1'), '2026-09-01 10:00:00');
+        $this->sellar($lejos->id, sha1('texto lejos v1'), '2026-09-01 10:00:00');
         $this->compactar_a_mano($cerca->id);
         $this->compactar_a_mano($lejos->id);
 
         $servicio = new ArticleEmbeddingService();
         $this->assertEquals([$cerca->id, $lejos->id], $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 5)));
 
-        // El frente viejo re-indexa "cerca" con un vector ortogonal a la consulta.
+        // El frente viejo re-indexa "cerca" (texto nuevo → hash nuevo) con un vector ortogonal.
         DB::table('articles')->where('id', $cerca->id)->update([
             'embedding'              => json_encode([0.0, 0.0, 1.0]),
+            'embedding_source_hash'  => sha1('texto cerca v2'),
             'embedding_generated_at' => '2026-09-28 18:30:00',
         ]);
 
@@ -425,12 +450,103 @@ class Busqueda_semantica_acotada_Test extends TestCase
         );
 
         $fila = DB::table('article_compact_embeddings')->where('article_id', $cerca->id)->first();
-        $this->assertEquals('2026-09-28 18:30:00', $fila->embedding_generated_at, 'El compacto nuevo lleva el sello nuevo.');
+        $this->assertEquals(sha1('texto cerca v2'), $fila->embedding_source_hash, 'El compacto nuevo lleva el hash nuevo.');
+        $this->assertEquals('2026-09-28 18:30:00', $fila->embedding_generated_at);
         $this->assertEqualsWithDelta(1.0, $this->compacto_de($cerca->id)[2], 1e-6);
 
         // Ya fresco: una búsqueda más da lo mismo y no deja filas repetidas.
         $this->assertEquals([$lejos->id, $cerca->id], $this->ids($servicio->search_similar_articles('x', (int) $this->comercio->id, 5)));
         $this->assertEquals(1, DB::table('article_compact_embeddings')->where('article_id', $cerca->id)->count());
+    }
+
+    /**
+     * El camino normal de todos los días: una actualización masiva de precios re-encola el
+     * artículo y el job, al ver que el texto no cambió, solo refresca `embedding_generated_at`
+     * (`GenerateArticleEmbeddingJob`, rama "el texto no cambió"). El vector y el hash quedan
+     * iguales, así que el compacto TIENE que seguir fresco: si no, cada actualización de precios
+     * haría releer el JSON de miles de artículos en el siguiente mensaje de WhatsApp.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function tocar_el_articulo_sin_cambiar_el_texto_no_invalida_el_compacto()
+    {
+        $this->fingir_openai([1.0, 0.0, 0.0]);
+
+        $articulo = $this->articulo('Toque sin cambio', [1.0, 0.0, 0.0]);
+        $this->sellar($articulo->id, sha1('texto sin cambio'), '2026-09-01 10:00:00');
+        $this->compactar_a_mano($articulo->id);
+
+        $antes = DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->first();
+
+        // Lo que hace el job cuando el texto no cambió: solo la fecha (y el precio mueve updated_at).
+        DB::table('articles')->where('id', $articulo->id)->update([
+            'embedding_generated_at' => '2026-09-28 18:30:00',
+            'updated_at'             => '2026-09-28 18:29:00',
+        ]);
+
+        $consultas = [];
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = $query->sql;
+        });
+
+        $resultados = (new ArticleEmbeddingService())->search_similar_articles('x', (int) $this->comercio->id, 5);
+        $this->assertEquals([$articulo->id], $this->ids($resultados));
+
+        // Ninguna consulta leyó el JSON: si el compacto se hubiera dado por viejo, la pasada 2
+        // habría traído `embedding` por clave primaria.
+        foreach ($consultas as $sql) {
+            $sin_columnas_chicas = str_replace(
+                ['article_compact_embeddings', 'embedding_source_hash', 'embedding_generated_at'],
+                '',
+                $sql
+            );
+
+            $this->assertStringNotContainsString(
+                'embedding',
+                $sin_columnas_chicas,
+                'Un toque sin cambio de texto no puede hacer releer el JSON: ' . $sql
+            );
+        }
+
+        // Y la fila compacta quedó exactamente como estaba (no se reescribió).
+        $despues = DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->first();
+        $this->assertEquals($antes->vector, $despues->vector);
+        $this->assertEquals('2026-09-01 10:00:00', $despues->embedding_generated_at);
+        $this->assertEquals($antes->embedding_source_hash, $despues->embedding_source_hash);
+    }
+
+    /**
+     * Respaldo: artículos sin hash (vectorizados por código anterior a la columna, o sembrados sin
+     * él). Ahí el hash es NULL de los dos lados y no distingue nada, así que manda la fecha.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function sin_hash_la_fecha_detecta_el_compacto_viejo()
+    {
+        $this->fingir_openai([1.0, 0.0, 0.0]);
+
+        $articulo = $this->articulo('Respaldo sin hash', [1.0, 0.0, 0.0]);
+        $this->sellar($articulo->id, null, '2026-09-01 10:00:00');
+        $this->compactar_a_mano($articulo->id);
+
+        // Re-indexado sin hash: cambian el vector y la fecha.
+        DB::table('articles')->where('id', $articulo->id)->update([
+            'embedding'              => json_encode([0.0, 3.0, 4.0]),
+            'embedding_generated_at' => '2026-09-28 18:30:00',
+        ]);
+
+        (new ArticleEmbeddingService())->search_similar_articles('x', (int) $this->comercio->id, 5);
+
+        $compacto = $this->compacto_de($articulo->id);
+        $this->assertEqualsWithDelta(0.0, $compacto[0], 1e-6, 'Sin hash, la fecha distinta tiene que marcar el compacto como viejo.');
+        $this->assertEqualsWithDelta(0.6, $compacto[1], 1e-6);
+        $this->assertEqualsWithDelta(0.8, $compacto[2], 1e-6);
+
+        $fila = DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->first();
+        $this->assertNull($fila->embedding_source_hash);
+        $this->assertEquals('2026-09-28 18:30:00', $fila->embedding_generated_at);
     }
 
     /**
@@ -440,12 +556,13 @@ class Busqueda_semantica_acotada_Test extends TestCase
     public function el_comando_tambien_recompacta_los_viejos()
     {
         $articulo = $this->articulo('Frescura comando', [1.0, 0.0, 0.0]);
-        DB::table('articles')->where('id', $articulo->id)->update(['embedding_generated_at' => '2026-09-01 10:00:00']);
+        $this->sellar($articulo->id, sha1('texto comando v1'), '2026-09-01 10:00:00');
         $this->compactar_a_mano($articulo->id);
 
-        // Re-indexado por el frente viejo.
+        // Re-indexado por el frente viejo: vector y hash nuevos.
         DB::table('articles')->where('id', $articulo->id)->update([
             'embedding'              => json_encode([0.0, 2.0, 0.0]),
+            'embedding_source_hash'  => sha1('texto comando v2'),
             'embedding_generated_at' => '2026-09-28 18:30:00',
         ]);
 
@@ -454,8 +571,8 @@ class Busqueda_semantica_acotada_Test extends TestCase
 
         $this->assertEqualsWithDelta(1.0, $this->compacto_de($articulo->id)[1], 1e-6);
         $this->assertEquals(
-            '2026-09-28 18:30:00',
-            DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->value('embedding_generated_at')
+            sha1('texto comando v2'),
+            DB::table('article_compact_embeddings')->where('article_id', $articulo->id)->value('embedding_source_hash')
         );
 
         // Ya fresco: la segunda corrida no encuentra nada.
