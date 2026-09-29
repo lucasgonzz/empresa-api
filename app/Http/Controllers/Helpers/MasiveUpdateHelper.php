@@ -482,10 +482,16 @@ class MasiveUpdateHelper
                      * es lo unico que el calculo lee.
                      *
                      * 🔴 El attach del historial va ACA, antes del precio, y no despues como
-                     * cuando el precio se calculaba en el lugar: si el recalculo de la tanda
-                     * fallara, los articulos de esa tanda ya tienen sus cambios guardados, y sin su
-                     * fila en el historial la reversion no podria devolverlos. Con la fila, revertir
-                     * los deja exactamente como estaban (precio incluido).
+                     * cuando el precio se calculaba en el lugar: los cambios del articulo ya estan
+                     * guardados, y el historial tiene que decir que se tocaron aunque el recalculo
+                     * de su tanda falle.
+                     *
+                     * ⚠️ Lo que NO da: una reversion. Si el recalculo falla, la masiva termina en
+                     * fallo, y una masiva fallida no se puede revertir desde la pantalla
+                     * (can_revert() exige `completed`). Por eso, si el motor tira en una tanda,
+                     * esa tanda se recalcula articulo por articulo (ver
+                     * recalcular_precios_de_la_masiva()): quedan sin precio nuevo a lo sumo los
+                     * articulos que de verdad no se pueden calcular, como en develop.
                      */
                     $pendientes_de_precio[] = $model;
                     $masive_update->articles()->attach($model->id, [
@@ -1113,7 +1119,9 @@ class MasiveUpdateHelper
             /*
              * El precio se recalcula con la tanda, no aca (ver process_update()). El attach va
              * antes por el mismo motivo: el articulo ya quedo revertido en la base, y el historial
-             * tiene que decirlo aunque el recalculo de la tanda fallara.
+             * tiene que decirlo aunque el recalculo de la tanda fallara. Si el motor tira, la tanda
+             * se recalcula articulo por articulo y la reversion termina en fallo con el motivo (ver
+             * recalcular_precios_de_la_masiva()).
              */
             $pendientes_de_precio[] = $model;
 
@@ -1173,11 +1181,27 @@ class MasiveUpdateHelper
      * Si el dueño no existe o es un empleado (dato roto: el motor se niega a calcular con un
      * empleado), se cae al setFinalPrice() por articulo de siempre, exactamente como antes.
      *
+     * 🔴 SI EL MOTOR TIRA EN UNA TANDA (seguimiento del 29/9/2026, chequeo de lectura critica): a esa
+     * altura los cambios de TODA la tanda ya estan guardados (apply_form_change(), la
+     * materializacion y el historial pasaron articulo por articulo). Si la excepcion subiera tal
+     * cual, la masiva terminaria en fallo con hasta una tanda entera (1.000 articulos) con el costo
+     * nuevo y el precio viejo, y sin forma de revertirla desde la pantalla: can_revert() exige
+     * `completed`. En develop ese mismo fallo dejaba asi a UN articulo, el que tiro.
+     *
+     * Por eso la tanda cae al setFinalPrice() por articulo de siempre (mismo usuario, mismo
+     * employee_id, el modelo en memoria como antes), atrapando articulo por articulo: el que se puede
+     * calcular queda con su precio y su marca de Tienda Nube; el que ni asi se puede queda como en
+     * develop. Al terminar la tanda se relanza la PRIMERA excepcion (la del motor), asi que la masiva
+     * sigue terminando en fallo con ese mensaje, como hoy — pero con a lo sumo los articulos que de
+     * verdad no se pueden calcular sin precio. La caida al camino por articulo queda en el log con el
+     * motivo.
+     *
      * @param  \App\Models\Article[]  $modelos      Articulos con sus cambios ya guardados.
      * @param  \App\Models\User|null  $owner        Dueño del comercio (resuelto una vez).
      * @param  int                    $owner_id     Id del dueño (el user_id de la masiva).
      * @param  int|null               $employee_id  employee_id de los price_changes.
      * @return void
+     * @throws \Throwable  La primera excepcion de la tanda, despues de recalcular lo que se pudo.
      */
     protected static function recalcular_precios_de_la_masiva(array $modelos, $owner, $owner_id, $employee_id)
     {
@@ -1193,17 +1217,88 @@ class MasiveUpdateHelper
                 $ids[] = (int) $modelo->id;
             }
 
-            RecalculoDePreciosEnLote::recalcular($ids, $owner, $employee_id);
+            try {
 
-        } else {
+                RecalculoDePreciosEnLote::recalcular($ids, $owner, $employee_id);
+
+            } catch (\Throwable $e) {
+
+                /*
+                 * La tanda del motor es atomica: si tiro, no escribio nada de esta tanda (ni precios,
+                 * ni pivots, ni price_changes) y dejo el modo lote apagado. Los modelos en memoria
+                 * de la masiva no los toco (el motor lee sus propias copias), asi que el camino por
+                 * articulo arranca del mismo estado que tenia develop.
+                 */
+                Log::warning('MasiveUpdateHelper: el motor de precios fallo en una tanda de la masiva; se recalcula articulo por articulo', [
+                    'articulos'   => count($ids),
+                    'owner_id'    => (int) $owner_id,
+                    'employee_id' => $employee_id,
+                    'motivo'      => $e->getMessage(),
+                    'archivo'     => $e->getFile(),
+                    'linea'       => $e->getLine(),
+                ]);
+
+                self::recalcular_de_a_uno($modelos, $owner_id, $employee_id, $e);
+
+                return;
+            }
 
             foreach ($modelos as $modelo) {
-                ArticleHelper::setFinalPrice($modelo, $owner_id, null, $employee_id);
+                TiendaNubeSyncArticleService::add_article_to_sync($modelo);
             }
+
+            return;
         }
 
+        self::recalcular_de_a_uno($modelos, $owner_id, $employee_id);
+    }
+
+    /**
+     * El camino por articulo de siempre, para una tanda de la masiva: setFinalPrice() con el modelo
+     * en memoria, el user_id del dueño y el employee_id de la masiva (exactamente la llamada que
+     * hacia develop por cada articulo), y la marca de Tienda Nube despues del precio.
+     *
+     * 🔴 Atrapa POR ARTICULO: un articulo que no se puede calcular no deja sin precio al resto de la
+     * tanda, que ya tiene sus cambios guardados. Al terminar relanza la primera excepcion —la que
+     * vino de afuera (la del motor) o, si no vino ninguna, la del primer articulo que fallo— para que
+     * la masiva termine en fallo, como hoy. Los demas fallos quedan en el log.
+     *
+     * @param  \App\Models\Article[] $modelos
+     * @param  int                   $owner_id
+     * @param  int|null              $employee_id
+     * @param  \Throwable|null       $primera_excepcion  La que ya ocurrio antes (la del motor), si hubo.
+     * @return void
+     * @throws \Throwable  La primera excepcion, si hubo alguna.
+     */
+    protected static function recalcular_de_a_uno(array $modelos, $owner_id, $employee_id, $primera_excepcion = null)
+    {
         foreach ($modelos as $modelo) {
+
+            try {
+
+                ArticleHelper::setFinalPrice($modelo, $owner_id, null, $employee_id);
+
+            } catch (\Throwable $e) {
+
+                Log::warning('MasiveUpdateHelper: no se pudo recalcular el precio de un articulo de la masiva', [
+                    'article_id'  => (int) $modelo->id,
+                    'employee_id' => $employee_id,
+                    'motivo'      => $e->getMessage(),
+                ]);
+
+                if (is_null($primera_excepcion)) {
+                    $primera_excepcion = $e;
+                }
+
+                // Sin precio nuevo no hay nada nuevo que mandar a Tienda Nube.
+                continue;
+            }
+
             TiendaNubeSyncArticleService::add_article_to_sync($modelo);
+        }
+
+        if (!is_null($primera_excepcion)) {
+            throw $primera_excepcion;
         }
     }
 

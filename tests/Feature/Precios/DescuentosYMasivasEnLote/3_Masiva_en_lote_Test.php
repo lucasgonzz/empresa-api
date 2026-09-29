@@ -673,4 +673,203 @@ class Masiva_en_lote_Test extends DescuentosYMasivasEnLoteTestCase
 
         $this->assertEquals($despues_de_la_masiva, $despues_del_recalculo);
     }
+
+    /**
+     * Arma la masiva de costo (+5%) de 5 articulos en tandas de 2 ([0, 1], [2, 3], [4]), calcula con
+     * la masiva de develop (en un savepoint) lo que tiene que quedar, y registra el listener que
+     * simula las fallas.
+     *
+     * El deadlock del motor se simula con un listener de consultas que tira SOLO ante la sentencia
+     * del motor (`UPDATE `articles` SET ... WHERE `id` IN (...)`, con los ids escritos en el SQL) y
+     * solo si la tanda trae al tercer articulo (la segunda tanda). El listener corre despues de
+     * ejecutar la sentencia, adentro de la transaccion de la tanda del motor: la excepcion la
+     * revierte, igual que un deadlock de verdad. El UPDATE por articulo de Eloquent tiene otra forma
+     * (`update `articles` set ... where `id` = ?`, en minusculas) y pasa, salvo que se pida que el
+     * tercer articulo tampoco se pueda calcular por articulo: entonces su save() tira ANTES de
+     * escribir (evento `saving`), y solo despues de que tiro el motor, para no romper
+     * apply_form_change(), que guarda antes.
+     *
+     * @param  bool $tambien_falla_por_articulo
+     * @return array ['ids', 'empleado', 'antes', 'como_develop', 'masiva_id', 'marca', 'leer']
+     */
+    private function masiva_con_un_motor_que_tira($tambien_falla_por_articulo)
+    {
+        config(['app.RECALCULO_PRECIOS_LOTE' => 2]);
+
+        $dueno = $this->crear_dueno(['listas_de_precio' => 1]);
+        $this->crear_lista($dueno, 'Mayorista', 10, 1);
+
+        $a = $this->catalogo($dueno);
+        unset($a['sin_costo']);
+
+        $ids = array_values($a);
+
+        $empleado = $this->empleado($dueno, 'Empleado que lanza');
+
+        $update_form = [['type' => 'number', 'key' => 'increment_cost', 'value' => 5]];
+
+        $leer = function () use ($ids) {
+            $filas = [];
+            foreach (DB::table('articles')->whereIn('id', $ids)->orderBy('id')->get(['id', 'cost', 'costo_real', 'final_price']) as $fila) {
+                $filas[(int) $fila->id] = (array) $fila;
+            }
+            return $filas;
+        };
+
+        $antes = $leer();
+
+        /* Lo que tiene que quedar en los articulos que se procesan: la misma masiva por develop. */
+        $referencia = $this->masiva_pendiente($dueno, $empleado, $ids, $update_form);
+
+        DB::beginTransaction();
+        $this->masiva_como_hoy(MasiveUpdate::find($referencia->id));
+        $como_develop = $leer();
+        DB::rollBack();
+
+        $this->limpiar_estado_del_proceso();
+
+        $masiva = $this->masiva_pendiente($dueno, $empleado, $ids, $update_form);
+
+        $marca = (int) DB::table('price_changes')->max('id');
+
+        $envenenado = $ids[2];
+        $motor_tiro = false;
+
+        DB::listen(function ($query) use ($envenenado, &$motor_tiro) {
+
+            if (strpos($query->sql, 'UPDATE `articles` SET') === 0
+                && preg_match('/WHERE `id` IN \(([^)]*)\)/', $query->sql, $coincidencia)
+                && in_array($envenenado, array_map('intval', explode(',', $coincidencia[1])), true)) {
+
+                $motor_tiro = true;
+
+                throw new \RuntimeException('Deadlock simulado contra una venta');
+            }
+        });
+
+        /*
+         * La falla por articulo va en el evento `saving` de Eloquent y NO en el listener de consultas:
+         * ese listener corre DESPUES de ejecutar la sentencia, y el camino por articulo no tiene
+         * transaccion, asi que el UPDATE ya habria quedado escrito (medido: el costo real se escribia
+         * igual). `saving` corre ANTES de escribir, como un error real de la base. El UPDATE en bloque
+         * del motor no dispara eventos de Eloquent, asi que esto solo toca al camino por articulo.
+         */
+        if ($tambien_falla_por_articulo) {
+
+            Article::saving(function ($article) use ($envenenado, &$motor_tiro) {
+
+                if ($motor_tiro && (int) $article->id === $envenenado) {
+                    throw new \RuntimeException('Columna desbordada en el articulo');
+                }
+            });
+        }
+
+        return [
+            'ids'          => $ids,
+            'empleado'     => $empleado,
+            'antes'        => $antes,
+            'como_develop' => $como_develop,
+            'masiva_id'    => $masiva->id,
+            'marca'        => $marca,
+            'leer'         => $leer,
+        ];
+    }
+
+    /**
+     * 🔴 Si el motor tira en una tanda (un deadlock simulado en su UPDATE en bloque de la SEGUNDA
+     * tanda), esa tanda cae al setFinalPrice() por articulo de siempre: sus articulos terminan con el
+     * precio recalculado —el mismo que deja la masiva de develop— y la masiva termina en fallo con el
+     * mensaje de la excepcion, como hoy (seguimiento del 29/9/2026).
+     *
+     * Sin el camino por articulo, los dos articulos de esa tanda quedarian con el costo nuevo y el
+     * precio viejo, y una masiva fallida no se puede revertir desde la pantalla.
+     *
+     * @test
+     */
+    public function si_el_motor_tira_en_una_tanda_esa_tanda_se_recalcula_articulo_por_articulo_y_la_masiva_falla()
+    {
+        $e = $this->masiva_con_un_motor_que_tira(false);
+
+        $ids = $e['ids'];
+
+        (new \App\Jobs\ProcessMasiveUpdateJob($e['masiva_id']))->handle();
+
+        $masiva = MasiveUpdate::find($e['masiva_id']);
+
+        $this->assertSame('failed', $masiva->status, 'La masiva sigue terminando en fallo, como hoy.');
+        $this->assertSame('Deadlock simulado contra una venta', $masiva->error_message, 'Con el mensaje de la excepcion del motor.');
+
+        $despues = call_user_func($e['leer']);
+
+        /* Las dos primeras tandas: costo nuevo Y precio recalculado, igual que develop. */
+        foreach ([$ids[0], $ids[1], $ids[2], $ids[3]] as $id) {
+            $this->assertEquals(
+                $e['como_develop'][$id],
+                $despues[$id],
+                'El articulo ' . $id . ' tiene que quedar como con la masiva de develop (costo nuevo y precio recalculado).'
+            );
+            $this->assertNotEquals($e['antes'][$id]['cost'], $despues[$id]['cost'], 'Precondicion: la masiva le cambio el costo.');
+        }
+
+        /* La tanda que el motor no pudo escribir se recalculo por articulo, con el employee_id de la masiva. */
+        foreach ([$ids[2], $ids[3]] as $id) {
+
+            $cambios = DB::table('price_changes')->where('id', '>', $e['marca'])->where('article_id', $id)->get();
+
+            if ($e['antes'][$id]['final_price'] != $despues[$id]['final_price']) {
+                $this->assertCount(1, $cambios, 'Un price_change por el precio que cambio.');
+                $this->assertSame((int) $e['empleado']->id, (int) $cambios->first()->employee_id);
+            }
+        }
+
+        /* La tercera tanda no llego a correr: la masiva corto en la segunda, como corta develop. */
+        $this->assertEquals($e['antes'][$ids[4]], $despues[$ids[4]], 'El articulo que venia despues de la tanda que fallo no se toca.');
+
+        /* El historial dice lo que se toco (el attach va antes del precio): los cuatro, no el quinto. */
+        $en_el_historial = DB::table('masive_update_article')
+                                ->where('masive_update_id', $e['masiva_id'])
+                                ->orderBy('id')
+                                ->pluck('article_id')
+                                ->map(function ($id) { return (int) $id; })
+                                ->all();
+
+        $this->assertSame([$ids[0], $ids[1], $ids[2], $ids[3]], $en_el_historial);
+    }
+
+    /**
+     * El mismo motor que tira, y ademas el tercer articulo tampoco se puede calcular por articulo
+     * (su save() tira): ese articulo queda como en develop cuando un articulo falla —costo nuevo,
+     * precio viejo—, pero el que viene despues EN LA MISMA TANDA igual queda con su precio (se atrapa
+     * por articulo). Y la masiva falla con la PRIMERA excepcion, la del motor, no con la del articulo.
+     *
+     * @test
+     */
+    public function si_ademas_un_articulo_no_se_puede_calcular_el_resto_de_la_tanda_igual_queda_con_precio()
+    {
+        $e = $this->masiva_con_un_motor_que_tira(true);
+
+        $ids = $e['ids'];
+
+        (new \App\Jobs\ProcessMasiveUpdateJob($e['masiva_id']))->handle();
+
+        $masiva = MasiveUpdate::find($e['masiva_id']);
+
+        $this->assertSame('failed', $masiva->status);
+        $this->assertSame('Deadlock simulado contra una venta', $masiva->error_message, 'Se relanza la PRIMERA excepcion (la del motor).');
+
+        $despues = call_user_func($e['leer']);
+
+        /* El que no se puede calcular: costo nuevo, costo real y precio de antes. */
+        $this->assertEquals($e['como_develop'][$ids[2]]['cost'], $despues[$ids[2]]['cost']);
+        $this->assertEquals($e['antes'][$ids[2]]['costo_real'], $despues[$ids[2]]['costo_real']);
+        $this->assertEquals($e['antes'][$ids[2]]['final_price'], $despues[$ids[2]]['final_price']);
+
+        /* El siguiente de la misma tanda, y los de la primera: como develop. */
+        foreach ([$ids[0], $ids[1], $ids[3]] as $id) {
+            $this->assertEquals($e['como_develop'][$id], $despues[$id], 'El articulo ' . $id . ' queda con su precio recalculado.');
+        }
+
+        $this->assertEquals($e['antes'][$ids[4]], $despues[$ids[4]]);
+    }
+
 }
