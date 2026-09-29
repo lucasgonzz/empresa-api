@@ -3,11 +3,13 @@
 namespace Tests\Feature\Whatsapp;
 
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
+use App\Jobs\GenerateWhatsappAiReplyJob;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
+use App\Services\WhatsappAgentScheduler;
 use App\Services\WhatsappAiAutoSendScheduler;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
@@ -469,5 +471,53 @@ class Sugerencia_como_borrador_Test extends TestCase
         $mensaje->refresh();
         $this->assertEquals('enviado', $mensaje->ai_status);
         $this->assertEquals('Texto que el operador corrigió a mano.', $mensaje->body);
+    }
+
+    /**
+     * 🔴 BUG encontrado por el chequeo independiente de la misión (29/9/2026): el cliente
+     * escribe, `WhatsappAgentScheduler::schedule_after_inbound()` programa el job con demora
+     * (el descarte de pendientes viejas corre AHÍ, al programar, no al ejecutar). En esa
+     * ventana el operador aprieta "Sugerir respuesta" y queda la pendiente A. Sin el freno de
+     * `GenerateWhatsappAiReplyJob::handle()`, al vencer la demora el job corría igual,
+     * generaba la pendiente B por encima de A y —con `ai_confirm_delay_seconds` en 0, que es
+     * el default— la mandaba sola: dos borradores conviviendo y una respuesta de IA que
+     * ninguna persona aprobó, mandada mientras un humano estaba interviniendo el chat.
+     *
+     * Este test corre el job con el token de debounce vigente (como si la demora ya hubiera
+     * vencido) sobre un chat que YA tiene una `a_confirmar`, y verifica que no pase nada de
+     * eso: ni una segunda fila, ni una llamada a Kapso.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function el_job_del_agente_se_abstiene_si_ya_hay_una_pendiente_esperando_aprobacion()
+    {
+        Queue::fake();
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        $this->texto_de_la_ia = 'Respuesta que el agente NO tiene que generar.';
+        $this->fakes_de_red();
+
+        $chat = $this->chat_con_entrante($this->comercio);
+
+        // La pendiente A: alguien pidió una sugerencia (o el agente ya había generado una y
+        // sigue esperando aprobación) DESPUÉS del entrante que programó este job.
+        $pendiente = WhatsappChatHelper::store_pending_ai_message($chat, 'Sugerencia que ya pidió una persona.');
+
+        // Token de debounce vigente (1): el scheduler lo bumpea sin encolar nada, igual que
+        // deja `schedule_after_inbound()` antes de despachar el job real.
+        (new WhatsappAgentScheduler())->cancel((int) $chat->id);
+
+        (new GenerateWhatsappAiReplyJob((int) $chat->id, 1))->handle(app(WhatsappAgentScheduler::class));
+
+        $salientes = $this->salientes($chat);
+        $this->assertCount(1, $salientes, 'El agente no puede crear una segunda pendiente por encima de la que ya hay.');
+        $this->assertEquals($pendiente->id, $salientes[0]->id);
+        $this->assertEquals(
+            'Sugerencia que ya pidió una persona.',
+            $salientes[0]->body,
+            'El texto de la persona no se pisa ni se reemplaza.'
+        );
+        $this->assertEquals('a_confirmar', $salientes[0]->ai_status);
+        $this->assertEquals(0, count($this->payloads_kapso), 'Nada puede haber salido: nadie aprobó nada.');
     }
 }
