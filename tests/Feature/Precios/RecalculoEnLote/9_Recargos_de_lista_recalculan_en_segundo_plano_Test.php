@@ -4,7 +4,9 @@ namespace Tests\Feature\Precios\RecalculoEnLote;
 
 use App\Jobs\ProcessChunkSetFinalPrices;
 use App\Jobs\ProcessSetFinalPrices;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
 
 /**
@@ -110,6 +112,43 @@ class Recargos_de_lista_recalculan_en_segundo_plano_Test extends RecalculoEnLote
 
         Queue::assertNotPushed(ProcessSetFinalPrices::class);
         Queue::assertNotPushed(ProcessChunkSetFinalPrices::class);
+    }
+
+    /**
+     * Una lista con recargos que quedó a nombre de un EMPLEADO: el recálculo se encola igual con
+     * el DUEÑO de la cuenta (chequeo de mutantes del 29/9/2026, T09: sin este caso,
+     * dueno_de_la_lista() podía dejar de subir al dueño y los tests seguían verdes). Con el
+     * empleado, el productor no encontraría ningún artículo (filtra por el user_id del dueño) y el
+     * motor se negaría a calcular.
+     *
+     * @return void
+     */
+    public function test_una_lista_a_nombre_de_un_empleado_encola_el_recalculo_con_el_dueno()
+    {
+        $empleado = User::create([
+            'name'     => 'zz Empleado recargos',
+            'email'    => 'recargos-empleado-' . uniqid('', true) . '@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $this->dueno->id,
+        ]);
+
+        $lista = $this->crear_lista($this->dueno, 'Del empleado con recargos', 30, 1, [['percentage' => 5]]);
+
+        DB::table('price_types')->where('id', $lista->id)->update(['user_id' => $empleado->id]);
+
+        $this->envejecer($lista);
+
+        Queue::fake();
+
+        $this->putJson('api/price-type/' . $lista->id, $this->payload_sin_cambios($lista))->assertStatus(200);
+
+        $dueno_id = (int) $this->dueno->id;
+
+        Queue::assertPushed(ProcessSetFinalPrices::class, function ($job) use ($dueno_id) {
+            return (int) $job->user_id === $dueno_id;
+        });
+
+        Queue::assertPushed(ProcessSetFinalPrices::class, 1);
     }
 
     /**

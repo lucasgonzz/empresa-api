@@ -242,6 +242,59 @@ class Equivalencia_con_el_camino_por_articulo_Test extends RecalculoEnLoteTestCa
     }
 
     /**
+     * El memo de listas por categoría no sobrevive entre dos llamadas al motor en el MISMO proceso
+     * (chequeo de mutantes del 29/9/2026, P03: si reiniciar() no lo vaciaba, los tests seguían
+     * verdes, porque cada uno llama al motor sobre categorías recién creadas).
+     *
+     * Un worker toma dos jobs seguidos: si el memo de la primera llamada quedara vivo, la segunda
+     * recalcularía la categoría con los porcentajes viejos, sin ningún error y con plata de por
+     * medio. Se llena el memo con el 45 %, el dueño cambia la lista de la categoría a 80 % y la
+     * llamada siguiente tiene que dejar lo mismo que el camino de hoy.
+     *
+     * @return void
+     */
+    public function test_el_memo_de_listas_por_categoria_no_sobrevive_entre_llamadas_del_mismo_proceso()
+    {
+        $dueno = $this->crear_dueno([], ['lista_de_precios_por_categoria']);
+        $lista = $this->crear_lista($dueno, 'Lista A', null, 1);
+
+        $categoria = $this->crear_categoria($dueno);
+        $categoria->price_types()->attach($lista->id, ['percentage' => 45]);
+
+        $proveedor = $this->crear_proveedor($dueno, ['percentage_gain' => 20]);
+        $id = $this->crear_articulo($dueno, ['cost' => 100, 'provider_id' => $proveedor->id, 'category_id' => $categoria->id])->id;
+
+        /* Primera llamada: el memo se llena con el 45 %. */
+        $this->recalcular_con_el_motor([$id], $dueno->id);
+
+        $precio_con_45 = DB::table('article_price_type')->where('article_id', $id)->where('price_type_id', $lista->id)->value('final_price');
+
+        $this->assertNotNull($precio_con_45, 'Precondición: la primera llamada tenía que atar el artículo a la lista de su categoría.');
+
+        /* El dueño cambia el porcentaje de la lista en la categoría. */
+        $categoria->price_types()->updateExistingPivot($lista->id, ['percentage' => 80]);
+
+        /* La llamada siguiente, en el mismo proceso, deja lo mismo que el camino de hoy. */
+        $r = $this->comparar_caminos([$id], $dueno->id, 1);
+
+        /*
+         * Precondición (comparar_caminos() revierte los dos caminos, así que se mira su foto): con
+         * el 80 % el camino de hoy mueve el precio de la lista; si no lo moviera, un memo viejo no
+         * se notaría y el test no probaría nada.
+         */
+        $precio_de_hoy = null;
+
+        foreach ($r['foto_hoy']['pivots'] as $pivot) {
+            if ((int) $pivot['price_type_id'] === (int) $lista->id) {
+                $precio_de_hoy = $pivot['final_price'];
+            }
+        }
+
+        $this->assertNotNull($precio_de_hoy);
+        $this->assertNotEquals((float) $precio_con_45, (float) $precio_de_hoy, 'Precondición: el porcentaje nuevo de la categoría tenía que mover el precio de la lista.');
+    }
+
+    /**
      * Extensión ventas_en_dolares (listas por lista y por moneda), con y sin cotización cruzada:
      * normal, pesos derivado de dólares, dólares derivado de pesos, las dos marcadas (vuelve al
      * normal), un precio fijado a mano en una moneda, y un artículo sin costo que solo cotiza
