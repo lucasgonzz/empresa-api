@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\category;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Jobs\ProcessSetFinalPrices;
+use App\Models\User;
 
 /**
  * Recalculo de precios por un cambio en una categoria o subcategoria.
@@ -64,7 +65,7 @@ class PriceTypeHelper {
 
         $columna = !is_null($category) ? 'category_id' : 'sub_category_id';
 
-        $owner_id = !empty($modelo->user_id) ? (int) $modelo->user_id : UserHelper::userId();
+        $owner_id = self::dueno_de($modelo);
 
         ProcessSetFinalPrices::dispatch(
             $owner_id,
@@ -76,5 +77,37 @@ class PriceTypeHelper {
         );
 
         return true;
+    }
+
+    /**
+     * El dueño de la cuenta a la que pertenece la categoria (o subcategoria): el usuario cuyo
+     * catalogo hay que recalcular.
+     *
+     * Las categorias se crean a nombre del dueño (CategoryController::store() y
+     * SubCategoryController::store() usan $this->userId(), que resuelve al dueño), asi que en el
+     * flujo normal es `$modelo->user_id`. Pero si alguna vez una quedo a nombre de un EMPLEADO, se
+     * sube a su dueño (29/9/2026, hallazgo del chequeo independiente): con el id del empleado el
+     * productor no encontraria ningun articulo (filtra por el `user_id` del dueño) y el motor se
+     * negaria a calcular con un empleado. Mismo criterio que PriceTypeHelper::dueno_de_la_lista()
+     * para las listas de precio.
+     *
+     * Sin `user_id` en el modelo (dato viejo), el dueño de la sesion, como antes.
+     *
+     * @param  \App\Models\Category|\App\Models\SubCategory $modelo
+     * @return int
+     */
+    static function dueno_de($modelo) {
+
+        if (empty($modelo->user_id)) {
+            return (int) UserHelper::userId();
+        }
+
+        $usuario = User::find($modelo->user_id);
+
+        if (!is_null($usuario) && !empty($usuario->owner_id)) {
+            return (int) $usuario->owner_id;
+        }
+
+        return (int) $modelo->user_id;
     }
 }

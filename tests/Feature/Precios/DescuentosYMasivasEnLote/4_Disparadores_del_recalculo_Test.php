@@ -600,6 +600,53 @@ class Disparadores_del_recalculo_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Una categoria o subcategoria que quedo a nombre de un EMPLEADO (dato raro, pero posible)
+     * despacha el recalculo con el DUEÑO (seguimiento del 29/9/2026). Con el id del empleado el
+     * productor no encontraria ningun articulo, porque filtra por el user_id del dueño, y el motor
+     * se negaria a calcular: el recalculo saldria "sin articulos" sin que nadie sepa por que.
+     *
+     * @test
+     */
+    public function una_categoria_a_nombre_de_un_empleado_despacha_el_recalculo_con_el_dueno()
+    {
+        $empleado = $this->empleado();
+
+        $category = Category::create([
+            'name'            => 'zz Categoria del empleado ' . uniqid(),
+            'user_id'         => $empleado->id,
+            'percentage_gain' => 10,
+        ]);
+
+        $this->guardar_categoria($category, ['percentage_gain' => 30])->assertStatus(200);
+
+        $this->assert_un_solo_recalculo('category_id', $category->id, false, 'categoria', $category->name, 'Categoria a nombre de un empleado');
+
+        /* La subcategoria, con la extension (sin margen propio, es lo unico que la dispara). */
+        $this->prender_listas_por_categoria();
+
+        $sub_category = SubCategory::create([
+            'name'        => 'zz Subcategoria del empleado ' . uniqid(),
+            'category_id' => $category->id,
+            'user_id'     => $empleado->id,
+        ]);
+
+        $this->putJson('api/sub-category/' . $sub_category->id, [
+            'name'           => $sub_category->name,
+            'category_id'    => $category->id,
+            'show_in_vender' => 1,
+            'image_url'      => null,
+            'price_types'    => [],
+        ])->assertStatus(200);
+
+        $del_sub = $this->recalculos()->filter(function ($job) {
+            return $job->from_model_id === 'sub_category_id';
+        })->values();
+
+        $this->assertCount(1, $del_sub, 'Un recalculo por el guardado de la subcategoria.');
+        $this->assertSame((int) $this->owner()->id, (int) $del_sub->first()->user_id, 'Con el dueño, no con el empleado.');
+    }
+
+    /**
      * @test
      */
     public function el_origen_categoria_tiene_su_texto()
