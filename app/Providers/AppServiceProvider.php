@@ -10,11 +10,13 @@ use App\Database\Connectors\RetryingMySqlConnector;
 use App\Models\Article;
 use App\Models\Category;
 use App\Models\Description;
+use App\Models\PriceType;
 use App\Models\SubCategory;
 use App\Models\User;
 use App\Observers\ArticleObserver;
 use App\Observers\CategoryObserver;
 use App\Observers\DescriptionObserver;
+use App\Observers\PriceTypeObserver;
 use App\Observers\SubCategoryObserver;
 use App\Observers\UserEtiquetaMedidaObserver;
 
@@ -75,5 +77,7 @@ class AppServiceProvider extends ServiceProvider
         Category::observe(CategoryObserver::class);
         SubCategory::observe(SubCategoryObserver::class);
         User::observe(UserEtiquetaMedidaObserver::class);
+        /* Lista de precios nueva -> su diseño de etiquetas de góndola, venga del camino que venga. */
+        PriceType::observe(PriceTypeObserver::class);
     }
 }

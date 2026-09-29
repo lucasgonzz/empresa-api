@@ -186,6 +186,11 @@ class CatalogoDeAccionesDePantallaIaHelper
          */
         '#^(POST|PUT|DELETE) api/vender-layout(/|$)#'  => 'diseños de Vender: se editan arrastrando en el editor del ABM; por chat se podría dejar Vender sin buscador de artículos',
         /*
+         * Diseños de etiquetas de góndola (mision disenos-etiquetas-gondola, 29/9/2026): mismo caso
+         * que los de Vender, se leen pero no se crean, editan ni borran por chat.
+         */
+        '#^(POST|PUT|DELETE) api/article-ticket-design(/|$)#'  => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
+        /*
          * ── Los endpoints genéricos de la SPA ──────────────────────────────────────────────
          * 🔴 `search/{model_name}`, `global-search/{model_name}`, `previus-next/{model_name}`,
          * `papelera/{model_name}`, `masive-update/{model_name}`... reciben el MODELO en el parámetro,
