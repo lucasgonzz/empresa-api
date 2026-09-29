@@ -135,6 +135,8 @@ Route::middleware(['auth:sanctum'])->group(function() {
     Route::put('vender-keyboard-shortcut', 'VenderKeyboardShortcutController@update');
 
     // Employee
+    // Va antes del resource, igual que budget/{id}/duplicate.
+    Route::post('employee/{id}/duplicate', 'CommonLaravel\EmployeeController@duplicate');
     Route::resource('employee', 'CommonLaravel\EmployeeController');
 
     // Permissions
