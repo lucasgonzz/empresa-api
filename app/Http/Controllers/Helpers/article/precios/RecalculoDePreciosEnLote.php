@@ -164,6 +164,16 @@ class RecalculoDePreciosEnLote
          */
         unset(ArticlePricesHelper::$sale_taxes_cache[$owner->id]);
 
+        /*
+         * Las dos listas de columnas de `articles` (la de sinEmbedding() y la de las escalas de
+         * los decimales) se leen una vez por proceso y quedan en estáticas. Se piden ACÁ, antes
+         * de abrir la primera tanda, para que la primera sentencia de la transacción de cada
+         * tanda sea siempre la lectura con candado (ver recalcular_tanda()): si no, en la
+         * primera tanda de cada worker la consulta a information_schema quedaba adelante.
+         */
+        Article::columnas_sin_embedding();
+        self::columnas_de_articles();
+
         foreach (array_chunk($ids, self::tamanio_de_lote()) as $tanda) {
 
             $parcial = self::recalcular_tanda($tanda, $owner, $auth_user_id, $price_types, $price_update_run_id);
@@ -192,31 +202,6 @@ class RecalculoDePreciosEnLote
     protected static function recalcular_tanda(array $ids, $owner, $auth_user_id, $price_types, $price_update_run_id)
     {
         /*
-         * 🔴 sinEmbedding() y NO un select de columnas elegidas a mano. El cálculo lee columnas de
-         * `articles` desperdigadas en tres helpers (cost, price, percentage_gain, cost_in_dollars,
-         * unidades_individuales, aplicar_iva, presentacion, ...), y una columna que no se trajo no
-         * da error: da null, y null en el medio de la cadena es un precio mal calculado en
-         * silencio. sinEmbedding() trae todas menos el vector del agente de WhatsApp, que son
-         * ~29 KB por fila en los clientes con asistente y no participa de ningún precio.
-         *
-         * La lectura va afuera de la transacción a propósito: es la parte larga de una tanda y no
-         * escribe nada, así que no tiene por qué alargar el tiempo con filas bloqueadas.
-         */
-        $articles = Article::sinEmbedding()
-                            ->whereIn('articles.id', $ids)
-                            ->with(PreciosEnLote::RELACIONES_A_PRECARGAR)
-                            ->orderBy('articles.id')
-                            ->get();
-
-        if ($articles->isEmpty()) {
-            return [
-                'recalculados'   => 0,
-                'cambiaron'      => [],
-                'filas_escritas' => 0,
-            ];
-        }
-
-        /*
          * 🔴 UNA transacción por tanda y SIN reintentos adentro (DB::transaction con el intento
          * único por defecto). Es tentador pasarle un 3 "por los deadlocks", y es un error:
          * PreciosEnLote::volcar() vacía su estado en un finally, así que un segundo intento
@@ -229,7 +214,61 @@ class RecalculoDePreciosEnLote
          * margen y precio viejo, y la marca de sincronización de Tienda Nube / Mercado Libre), y
          * así eso también se revierte si la tanda se aborta.
          */
-        return DB::transaction(function () use ($articles, $owner, $auth_user_id, $price_types, $price_update_run_id) {
+        return DB::transaction(function () use ($ids, $owner, $auth_user_id, $price_types, $price_update_run_id) {
+
+            /*
+             * 🔴 La lectura de la tanda es la PRIMERA sentencia de la transacción, con candado
+             * (SELECT ... FOR UPDATE) y en orden de id (seguimiento del 29/9/2026).
+             *
+             * Por qué, y por qué no se puede "optimizar" sacándola afuera como estaba antes: el
+             * motor lee, calcula en memoria y escribe con un UPDATE ... CASE que NO vuelve a leer.
+             * Si entre la lectura y la escritura otra transacción confirma algo de estos artículos
+             * —la propagación de descuentos del proveedor, que escribe descuentos nuevos y sus
+             * precios; un usuario editando el costo en la ficha—, el motor pisaba esos precios con
+             * los que calculó con lo viejo, en silencio. Con FOR UPDATE, esa otra transacción
+             * espera a que esta tanda termine y escribe después, encima de lo nuestro.
+             *
+             * - El orden de id es el orden en que se toman los candados: dos motores sobre
+             *   artículos que se pisan los piden en el mismo orden, así que uno espera al otro y
+             *   no se traban entre sí (deadlock).
+             * - Las relaciones se cargan DESPUÉS, con los candados ya tomados: en READ COMMITTED
+             *   (el nivel de la conexión, config/database.php) cada lectura ve lo último
+             *   confirmado, y en REPEATABLE READ (si una instancia lo fijara) la foto de las
+             *   lecturas sin candado se toma en la primera de ellas, o sea también después de
+             *   conseguir los candados. En los dos casos el cálculo ve lo que la otra transacción
+             *   ya había confirmado.
+             * - El costo: los artículos de la tanda quedan bloqueados mientras se calcula (unos
+             *   segundos para 1.000). Un usuario que guarde uno de ellos en ese momento espera
+             *   eso, en vez de que su precio se pierda.
+             *
+             * Cuando el motor corre adentro de la transacción de otro (la sincronización y la
+             * propagación de descuentos, la actualización masiva, el rollback de una importación),
+             * esto es un savepoint: los candados duran hasta que ese otro confirme, y las
+             * escrituras que ese otro ya hizo en la misma transacción se ven, como siempre.
+             *
+             * 🔴 sinEmbedding() y NO un select de columnas elegidas a mano. El cálculo lee columnas
+             * de `articles` desperdigadas en tres helpers (cost, price, percentage_gain,
+             * cost_in_dollars, unidades_individuales, aplicar_iva, presentacion, ...), y una
+             * columna que no se trajo no da error: da null, y null en el medio de la cadena es un
+             * precio mal calculado en silencio. sinEmbedding() trae todas menos el vector del
+             * agente de WhatsApp, que son ~29 KB por fila en los clientes con asistente y no
+             * participa de ningún precio.
+             */
+            $articles = Article::sinEmbedding()
+                                ->whereIn('articles.id', $ids)
+                                ->orderBy('articles.id')
+                                ->lockForUpdate()
+                                ->get();
+
+            if ($articles->isEmpty()) {
+                return [
+                    'recalculados'   => 0,
+                    'cambiaron'      => [],
+                    'filas_escritas' => 0,
+                ];
+            }
+
+            $articles->load(PreciosEnLote::RELACIONES_A_PRECARGAR);
 
             PreciosEnLote::activar($owner, $auth_user_id);
 
