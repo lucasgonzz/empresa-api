@@ -264,6 +264,29 @@ class Duplicar_empleado_Test extends EmpresaTestCase
     }
 
     /**
+     * Campos que no son texto o demasiado largos: 422 y no un 500.
+     *
+     * @return void
+     */
+    public function test_rechaza_campos_que_no_son_texto_o_son_demasiado_largos()
+    {
+        $antes = User::where('owner_id', $this->owner->id)->count();
+
+        $this->postJson('api/employee/'.$this->origen->id.'/duplicate', $this->datos_del_nuevo(['phone' => ['no', 'es', 'texto']]))
+            ->assertStatus(201);
+
+        $this->postJson('api/employee/'.$this->origen->id.'/duplicate', $this->datos_del_nuevo(['name' => ['un', 'array']]))
+            ->assertStatus(422);
+
+        $this->postJson('api/employee/'.$this->origen->id.'/duplicate', $this->datos_del_nuevo(['name' => str_repeat('a', 129)]))
+            ->assertStatus(422);
+
+        // Solo se creó el primero (el del teléfono descartado, que es opcional).
+        $this->assertEquals($antes + 1, User::where('owner_id', $this->owner->id)->count());
+        $this->assertNull(User::where('owner_id', $this->owner->id)->orderBy('id', 'desc')->first()->phone);
+    }
+
+    /**
      * Un empleado de otro dueño no se puede duplicar aunque se conozca su id.
      *
      * @return void

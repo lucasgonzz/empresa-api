@@ -95,23 +95,31 @@ class EmployeeController extends Controller
             return response()->json(['message' => 'No se encontro el empleado a duplicar'], 404);
         }
 
-        $name = trim((string) $request->name);
-        $doc_number = trim((string) $request->doc_number);
-        $password = (string) $request->visible_password;
+        // Los campos del formulario son texto: si llega otra cosa (un array, por ejemplo) se descarta
+        // en vez de romper con un 500.
+        $name = is_scalar($request->name) ? trim((string) $request->name) : '';
+        $doc_number = is_scalar($request->doc_number) ? trim((string) $request->doc_number) : '';
+        $password = is_scalar($request->visible_password) ? (string) $request->visible_password : '';
+        $phone = is_scalar($request->phone) ? trim((string) $request->phone) : null;
 
         if ($name == '' || $doc_number == '' || $password == '') {
             return response()->json(['message' => 'Completa el nombre, el numero de documento y la contrasena del nuevo empleado'], 422);
+        }
+
+        // Las columnas son varchar(128): mas largo que eso en modo estricto de MySQL da un error 500.
+        if (mb_strlen($name) > 128 || mb_strlen($doc_number) > 128 || mb_strlen($password) > 128 || mb_strlen((string) $phone) > 128) {
+            return response()->json(['message' => 'El nombre, el documento, la contrasena y el telefono no pueden tener mas de 128 caracteres'], 422);
         }
 
         if ($this->docNumerRegister($doc_number)) {
             return response()->json(['message' => 'Ya hay un empleado con ese numero de documento'], 422);
         }
 
-        $copia = DB::transaction(function () use ($origen, $request, $name, $doc_number, $password) {
+        $copia = DB::transaction(function () use ($origen, $name, $doc_number, $password, $phone) {
 
             $copia = User::create([
                 'name'                                          => ucfirst($name),
-                'phone'                                         => $request->phone,
+                'phone'                                         => $phone,
                 'doc_number'                                    => $doc_number,
                 'visible_password'                              => $password,
                 'password'                                      => Hash::make($password),

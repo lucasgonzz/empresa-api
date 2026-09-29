@@ -31,6 +31,12 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
      * Todos los slugs que el catálogo tiene que seguir teniendo. Si alguien saca uno, un empleado
      * con ese permiso lo perdería en silencio: el test lo frena. Para sumar un permiso se agrega
      * acá y en el catálogo; para sacar uno hace falta una decisión de producto, no un refactor.
+     *
+     * La lista está FIJA acá (no se arma desde el catálogo). Los 133 primeros slugs de
+     * `PermissionSeeder` (versión anterior al catálogo) se contrastaron a mano contra este
+     * archivo al crearlo; los cinco últimos son `article.edit_stock_only_sucursal`, los dos de
+     * WhatsApp y los dos que el menú consulta y nadie sembraba (`cupon.index`,
+     * `mercado_libre.orders`).
      */
     const SLUGS_QUE_NO_PUEDEN_FALTAR = [
         'sale.store',
