@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -24,13 +25,47 @@ use App\Models\ProviderOrderDiscount;
 use App\Models\ProviderOrderExtraCost;
 use App\Services\Compras\OfertasDeProveedorService;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class NewProviderOrderHelper {
 
+    /** Artículos por UPDATE del historial de proveedores (los ids van en el IN del SQL). */
+    const ARTICULOS_POR_UPDATE_DEL_HISTORIAL = 1000;
+
     public $provider_order;
     public $new_articles;
     public $ultimos_articulos_recividos;
+
+    /**
+     * Interruptor del recálculo de precios de la compra (misión compras-precios-en-lote,
+     * 29/9/2026). Con false (el default) el precio de los artículos se recalcula una sola vez, al
+     * final de procesar_pedido(), con el motor en lote; con true, cada una de las cuatro llamadas
+     * recalcula en el momento, artículo por artículo, como hasta esa misión. Ver
+     * recalcular_por_articulo().
+     *
+     * @var bool
+     */
+    protected static $recalculo_por_articulo = false;
+
+    /**
+     * Artículos cuyo precio quedó pendiente de recalcular en esta compra: [article_id => article_id].
+     * La clave evita repetidos: un artículo puede pasar por las cuatro llamadas y se recalcula una
+     * sola vez. Lo llena recalcular_precio() y lo vacía recalcular_precios_pendientes().
+     *
+     * @var array<int, int>
+     */
+    protected $articulos_con_precio_pendiente = [];
+
+    /**
+     * Pares del historial de proveedores ("Precio Final" de article_provider) que SetProvider grabó
+     * en esta compra mientras el recálculo estaba diferido, o sea con el precio de ANTES:
+     * [article_id => provider_id]. Lo llena save_stock_movement() y lo resuelve
+     * actualizar_historial_de_proveedores() después del motor.
+     *
+     * @var array<int, int>
+     */
+    protected $historial_de_proveedores_pendiente = [];
 
 	function __construct($provider_order, $new_articles, $ya_se_actualizo_stock = false) {
 
@@ -65,7 +100,241 @@ class NewProviderOrderHelper {
         // sub_total y provider_order_extra_costs ya cargados/calculados.
         $this->aplicar_costos_extra_a_recargos_articulos();
 
+        /*
+         * Misión compras-precios-en-lote (29/9/2026): el precio de venta de los artículos de la
+         * compra se recalcula ACÁ, una sola vez por artículo y con el motor en lote, en vez de en
+         * cada una de las cuatro llamadas (update_cost() y update_price() adentro de
+         * attach_articles(), y los dos métodos de arriba), que ahora solo anotan el artículo (ver
+         * recalcular_precio()).
+         *
+         * 🔴 El lugar no es arbitrario:
+         *  - DESPUÉS de aplicar_costos_extra_a_recargos_articulos(), que era la última llamada:
+         *    recién acá están escritos el costo, el precio, el IVA, el proveedor, el estado, los
+         *    descuentos tagueados y los recargos de la compra, que es el estado con el que calculaba
+         *    la última llamada de cada artículo hasta esta misión.
+         *  - ANTES de set_current_acount(), igual que esa última llamada: la compra sigue
+         *    escribiendo en el mismo orden de siempre (artículos y precios primero, la deuda con el
+         *    proveedor al final).
+         *
+         * Un llamador que use attach_articles() con `update_prices` y NO pase por procesar_pedido()
+         * tiene que llamar a recalcular_precios_pendientes() él mismo, o los costos quedan
+         * guardados con los precios de venta sin recalcular, sin ningún error. Hoy no hay ninguno:
+         * la sugerencia de compra (PurchaseSuggestionController) va con update_prices = 0 y no anota
+         * nada.
+         */
+        $this->recalcular_precios_pendientes();
+
         $this->set_current_acount();
+    }
+
+    /**
+     * Prende (o apaga) el recálculo de precios "de antes": cada una de las cuatro llamadas de la
+     * compra (update_cost(), update_price(), materializar_descuentos_proveedor_en_articulos() y
+     * aplicar_costos_extra_a_recargos_articulos()) llama a ArticleHelper::setFinalPrice() en el
+     * momento, artículo por artículo, exactamente como hasta la misión compras-precios-en-lote
+     * (29/9/2026). Con el interruptor prendido tampoco se toca el historial de proveedores: queda
+     * lo que graba SetProvider, como antes (ver actualizar_historial_de_proveedores()).
+     *
+     * Lo usan los tests de equivalencia para correr el camino de antes y el nuevo sobre la misma
+     * base y compararlos campo por campo. También sirve como salida de emergencia desde tinker o un
+     * comando si el recálculo en lote diera algo raro en producción (el mismo espíritu que
+     * PreciosEnLote::deshabilitar()).
+     *
+     * ⚠️ Es estático: vale para todo el proceso (el request, o el worker entero de la cola) hasta
+     * que alguien lo vuelva a apagar. Quien lo prende lo apaga en un finally.
+     *
+     * @param  bool $prendido true = por artículo (el camino de antes); false = diferido, con el motor.
+     * @return void
+     */
+    public static function recalcular_por_articulo($prendido = true)
+    {
+        self::$recalculo_por_articulo = (bool) $prendido;
+    }
+
+    /**
+     * ¿El precio de esta compra se recalcula al final, una sola vez por artículo y con el motor en
+     * lote (true), o en cada llamada, artículo por artículo, como hasta la misión
+     * compras-precios-en-lote (false)?
+     *
+     * Se difiere siempre, salvo en dos casos:
+     *
+     *  - El interruptor recalcular_por_articulo() está prendido.
+     *
+     *  - 🔴 La compra NO tiene proveedor. Esta excepción no es un descuido y no se "simplifica".
+     *    Diferir da el mismo precio que antes solo porque, con proveedor, la llamada #3
+     *    (materializar_descuentos_proveedor_en_articulos()) vuelve a recalcular TODOS los artículos
+     *    de la compra al final, con el estado completo. Sin proveedor esa llamada no corre: el
+     *    precio que queda es el de update_cost()/update_price(), calculado ANTES de que
+     *    update_article_provider() le ponga provider_id = null al artículo (o sea con el margen,
+     *    el dólar y la lista del proveedor anterior), salvo en los artículos a los que
+     *    aplicar_costos_extra_a_recargos_articulos() les prorratea un costo extra, que sí se
+     *    recalculan al final. Es una inconsistencia preexistente (plan de la misión, §2), pero
+     *    diferir la "arreglaría" en silencio, cambiando precios de venta que hoy quedan de otra
+     *    forma, y ese cambio no se decidió. Sin proveedor todo sigue exactamente como antes.
+     *
+     * El gate es el mismo `is_null()` con el que materializar_descuentos_proveedor_en_articulos()
+     * decide si corre, y las cuatro llamadas solo existen con `update_prices`, igual que la #3: todo
+     * lo que se difiere es de una compra en la que la #3 recalculaba al final.
+     *
+     * @return bool
+     */
+    protected function se_difiere_el_recalculo()
+    {
+        if (self::$recalculo_por_articulo) {
+            return false;
+        }
+
+        return !is_null($this->provider_order->provider_id);
+    }
+
+    /**
+     * Punto único por el que pasan las cuatro llamadas al cálculo de precio de la compra:
+     * update_cost() (#1), update_price() (#2), materializar_descuentos_proveedor_en_articulos()
+     * (#3) y aplicar_costos_extra_a_recargos_articulos() (#4).
+     *
+     *  - Diferido (el caso normal, ver se_difiere_el_recalculo()): solo anota el id. El precio lo
+     *    recalcula recalcular_precios_pendientes() una sola vez, al final de procesar_pedido().
+     *  - Inmediato: ArticleHelper::setFinalPrice($article), exactamente como antes (el mismo
+     *    objeto, sin argumentos extra: el dueño lo resuelve setFinalPrice() desde la sesión).
+     *
+     * 🔴 Por qué diferir no pierde nada: setFinalPrice() no acumula, recalcula el costo real y el
+     * precio desde cero con lo que el artículo tiene en ese momento. Con proveedor, la última
+     * llamada de cada artículo (la #3, que recorre todos los de la compra, o la #4 si le toca un
+     * costo extra) ya calculaba con el estado final completo, y las anteriores solo dejaban cambios
+     * de precio intermedios en el historial. El motor lee ese mismo estado final de la base, así
+     * que el precio que queda es el mismo, con un solo cambio de precio por artículo y por compra
+     * (decisión D1 del plan).
+     *
+     * ⚠️ Diferido, el objeto en memoria NO se toca: el $article que sigue su camino por
+     * update_article() conserva el costo real, el precio final y el `price` de antes (en un
+     * artículo con margen, setFinalPrice() le habría puesto `price` en null). No cambia el
+     * resultado: los save() posteriores solo escriben lo que quedó sucio, y si update_price()
+     * graba el precio del renglón en un artículo con margen, el motor lo vuelve a poner en null,
+     * como hacía la llamada #3.
+     *
+     * @param  \App\Models\Article $article
+     * @return void
+     */
+    protected function recalcular_precio($article)
+    {
+        if ($this->se_difiere_el_recalculo()) {
+
+            $article_id = (int) $article->id;
+
+            $this->articulos_con_precio_pendiente[$article_id] = $article_id;
+
+            return;
+        }
+
+        ArticleHelper::setFinalPrice($article);
+    }
+
+    /**
+     * Recalcula, una sola vez por artículo y con el motor en lote, el precio de todos los
+     * artículos que las llamadas de esta compra dejaron anotados (ver recalcular_precio()), y
+     * después deja el "Precio Final" del historial de proveedores con el precio recién calculado
+     * (ver actualizar_historial_de_proveedores()).
+     *
+     * Lo llama procesar_pedido() (el comentario de ahí explica el lugar exacto). 🔴 Un llamador
+     * que use attach_articles() con `update_prices` sin pasar por procesar_pedido() tiene que
+     * llamarlo al terminar: si no, los costos quedan guardados y los precios de venta sin
+     * recalcular, sin ningún error. Hoy no hay ninguno.
+     *
+     * - RecalculoDePreciosEnLote::recalcular() va con el dueño ($this->user, que el constructor
+     *   resuelve con UserHelper::user()) y SIN auth_user_id: el motor resuelve el employee_id de
+     *   los price_changes con UserHelper::userId(false), que es lo que hacía
+     *   PriceChangeController::store() con null en el camino de antes. O sea, la persona logueada.
+     * - Corre adentro de la transacción del llamador (un savepoint) y bloquea los artículos con
+     *   lockForUpdate, en orden de id. Si tira, la excepción sube y el llamador revierte la compra
+     *   entera, igual que con una falla de antes a mitad de un cálculo.
+     * - La lista se vacía ANTES de llamar al motor: si alguien lo llamara dos veces, la segunda no
+     *   recalcula de nuevo lo mismo.
+     *
+     * @return void
+     */
+    public function recalcular_precios_pendientes()
+    {
+        if (empty($this->articulos_con_precio_pendiente)) {
+
+            /*
+             * Sin precios pendientes no se recalculó ningún precio en esta compra (por ejemplo, con
+             * update_prices apagado): lo que SetProvider grabó en el historial de proveedores ya es
+             * el precio con el que queda el artículo, y no hay nada que corregir.
+             */
+            $this->historial_de_proveedores_pendiente = [];
+
+            return;
+        }
+
+        $ids = array_values($this->articulos_con_precio_pendiente);
+
+        $this->articulos_con_precio_pendiente = [];
+
+        RecalculoDePreciosEnLote::recalcular($ids, $this->user);
+
+        $this->actualizar_historial_de_proveedores();
+    }
+
+    /**
+     * Decisión D2 del plan (misión compras-precios-en-lote, 29/9/2026): el "Precio Final" del
+     * historial de proveedores (article_provider.price, la columna del modal "Historial de
+     * Proveedores y Stock") queda con el precio con el que el artículo SALE de la compra.
+     *
+     * 🔴 Por qué existe: ese valor no lo escribe el cálculo de precios sino
+     * SetProvider::set_provider(), adentro del movimiento de stock (update_stock(), en el medio de
+     * attach_articles()), copiando articles.final_price de ESE momento. Antes de esta misión ahí
+     * ya estaba el precio de la llamada #1 (update_cost()), que en la compra común es el precio
+     * final. Con el recálculo diferido, cuando corre el movimiento el precio todavía no se movió y
+     * SetProvider graba el de ANTES de la compra. Por eso, después del motor, se copia el
+     * final_price recién calculado a esos mismos pares (artículo, proveedor), y solo a esos: los
+     * que SetProvider escribió en esta compra (ver save_stock_movement()). Sin este método el
+     * historial queda con precios viejos, sin ningún error.
+     *
+     * - Un UPDATE ... JOIN por proveedor, en tandas de ARTICULOS_POR_UPDATE_DEL_HISTORIAL ids. La
+     *   base convierte el decimal de final_price a la columna int de article_provider igual que
+     *   cuando SetProvider le manda el texto: redondeo al entero, mitad hacia afuera del cero
+     *   (medido el 29/9/2026 en MySQL 8.3 con el sql_mode estricto de la conexión).
+     * - No toca article_provider.updated_at: lo dejó puesto SetProvider en esta misma compra, como
+     *   antes.
+     * - Los ids van en el SQL como enteros validados; el proveedor va como binding.
+     *
+     * @return void
+     */
+    protected function actualizar_historial_de_proveedores()
+    {
+        if (empty($this->historial_de_proveedores_pendiente)) {
+            return;
+        }
+
+        // [provider_id => [article_id, ...]]. Una compra tiene un solo proveedor, pero el
+        // agrupado no lo da por sentado.
+        $articulos_por_proveedor = [];
+
+        foreach ($this->historial_de_proveedores_pendiente as $article_id => $provider_id) {
+
+            $article_id  = (int) $article_id;
+            $provider_id = (int) $provider_id;
+
+            if ($article_id > 0 && $provider_id > 0) {
+                $articulos_por_proveedor[$provider_id][] = $article_id;
+            }
+        }
+
+        foreach ($articulos_por_proveedor as $provider_id => $article_ids) {
+
+            foreach (array_chunk($article_ids, self::ARTICULOS_POR_UPDATE_DEL_HISTORIAL) as $tanda) {
+
+                DB::update(
+                    'UPDATE `article_provider` AS `ap`'
+                    . ' INNER JOIN `articles` AS `a` ON `a`.`id` = `ap`.`article_id`'
+                    . ' SET `ap`.`price` = `a`.`final_price`'
+                    . ' WHERE `ap`.`provider_id` = ? AND `ap`.`article_id` IN (' . implode(', ', $tanda) . ')',
+                    [$provider_id]
+                );
+            }
+        }
+
+        $this->historial_de_proveedores_pendiente = [];
     }
 
     /**
@@ -173,8 +442,11 @@ class NewProviderOrderHelper {
             Log::info('materializar_descuentos_proveedor_en_articulos: descuentos del proveedor '.$provider_id.' materializados en '.$articulo->name);
 
             // Recalcula costo_real con el costo bruto (sin hornear) + los descuentos recién
-            // materializados, aplicados una sola vez por el pipeline de precios.
-            ArticleHelper::setFinalPrice($articulo);
+            // materializados, aplicados una sola vez por el pipeline de precios. Acá la compra
+            // siempre tiene proveedor, así que el recálculo se difiere al final de
+            // procesar_pedido() (salvo con recalcular_por_articulo() prendido): ver
+            // recalcular_precio().
+            $this->recalcular_precio($articulo);
         }
     }
 
@@ -246,10 +518,13 @@ class NewProviderOrderHelper {
      * del mismo tipo pueden tener alícuotas distintas, o uno venir facturado y el otro no. Por eso
      * la agregación suma los valores DESPUÉS del back-out individual de cada uno, nunca antes.
      *
-     * `ArticleHelper::setFinalPrice()` se llama UNA vez por artículo (antes era una vez por artículo
-     * por costo extra). Da lo mismo y cuesta menos: no acumula, recalcula `costo_real`/`final_price`
-     * desde cero leyendo `articles.cost` + la relación `article_surchages` completa, así que la
-     * última llamada subsume a todas las anteriores.
+     * El recálculo del precio (`recalcular_precio()`) se pide UNA vez por artículo, después de
+     * guardar todos sus recargos (antes era una vez por artículo por costo extra). Y con proveedor,
+     * desde la misión `compras-precios-en-lote` (29/9/2026), ni siquiera se calcula acá: se anota y
+     * lo hace recalcular_precios_pendientes() al final de procesar_pedido(), una vez por artículo
+     * para toda la compra. Da lo mismo porque `ArticleHelper::setFinalPrice()` no acumula:
+     * recalcula `costo_real`/`final_price` desde cero leyendo `articles.cost` + la relación
+     * `article_surchages` completa, así que la última llamada subsume a todas las anteriores.
      */
     function aplicar_costos_extra_a_recargos_articulos() {
 
@@ -373,8 +648,8 @@ class NewProviderOrderHelper {
          * PASO 2 — un solo pase por artículo, y adentro un pase por tipo.
          *
          * El subtotal y la cantidad del ítem se calculan UNA vez por artículo (antes se
-         * recalculaban por cada costo extra), y setFinalPrice() se llama UNA vez por artículo,
-         * después de guardar todos sus recargos.
+         * recalculaban por cada costo extra), y el recálculo del precio se pide UNA vez por
+         * artículo (recalcular_precio()), después de guardar todos sus recargos.
          */
         foreach ($this->provider_order->articles as $article) {
 
@@ -441,18 +716,20 @@ class NewProviderOrderHelper {
 
             /*
              * Los recargos se acaban de crear/actualizar por query, después de que `Article::find()`
-             * trajera el modelo: se refresca la relación explícitamente para que setFinalPrice() ->
-             * ArticlePricesHelper::aplicar_recargos() calcule con los recargos nuevos y no con una
-             * relación cacheada.
+             * trajera el modelo: se refresca la relación explícitamente para que, cuando el
+             * recálculo es inmediato (compra sin proveedor, o recalcular_por_articulo() prendido),
+             * setFinalPrice() -> ArticlePricesHelper::aplicar_recargos() calcule con los recargos
+             * nuevos y no con una relación cacheada. Diferido, el motor relee el artículo y sus
+             * recargos de la base al final de procesar_pedido().
              *
-             * Una sola llamada por artículo alcanza aunque haya varios tipos: setFinalPrice() no
-             * acumula, recalcula el costo real desde cero iterando TODOS los article_surchages del
-             * artículo, así que la última llamada subsume a las que antes se hacían por cada costo
-             * extra.
+             * Un solo pedido de recálculo por artículo alcanza aunque haya varios tipos:
+             * setFinalPrice() no acumula, recalcula el costo real desde cero iterando TODOS los
+             * article_surchages del artículo, así que la última llamada subsume a las que antes se
+             * hacían por cada costo extra.
              */
             $articulo->load('article_surchages');
 
-            ArticleHelper::setFinalPrice($articulo);
+            $this->recalcular_precio($articulo);
         }
     }
 
@@ -1354,7 +1631,25 @@ class NewProviderOrderHelper {
                 }
                 
 
-                $ct_stock_movement->crear($data);
+                $movimiento = $ct_stock_movement->crear($data);
+
+                /*
+                 * Decisión D2 (misión compras-precios-en-lote, 29/9/2026): SetProvider acaba de
+                 * grabar en el historial de proveedores (article_provider.price) el final_price de
+                 * ESTE momento, y con el recálculo diferido ese es el precio de ANTES de la compra.
+                 * Se anota el par para que actualizar_historial_de_proveedores() le copie el precio
+                 * final después del motor. La condición es la misma con la que SetProvider escribe
+                 * el pivot (el movimiento tiene proveedor y ese proveedor existe): un par que
+                 * SetProvider no tocó, no se toca.
+                 */
+                if (
+                    $this->se_difiere_el_recalculo()
+                    && !is_null($movimiento)
+                    && !is_null($movimiento->provider_id)
+                    && !is_null($movimiento->provider)
+                ) {
+                    $this->historial_de_proveedores_pendiente[(int) $article->id] = (int) $movimiento->provider_id;
+                }
             }
 
         }
@@ -1400,7 +1695,9 @@ class NewProviderOrderHelper {
 
             Log::info('update_price');
 
-            ArticleHelper::setFinalPrice($article);
+            // Con proveedor se anota y se recalcula al final de procesar_pedido(): ver
+            // recalcular_precio().
+            $this->recalcular_precio($article);
         }
 
         return $article;
@@ -1459,7 +1756,9 @@ class NewProviderOrderHelper {
 
             Log::info('update_cost con '. $article->cost);
 
-            ArticleHelper::setFinalPrice($article);
+            // Con proveedor se anota y se recalcula al final de procesar_pedido(): ver
+            // recalcular_precio().
+            $this->recalcular_precio($article);
         }
 
         return $article;
