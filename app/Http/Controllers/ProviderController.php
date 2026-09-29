@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
 use App\Jobs\ProcessArticleExportJob;
 use App\Jobs\ProcessProviderExportJob;
+use App\Jobs\ProcessSetFinalPrices;
 use App\Jobs\ProcessSincronizarDescuentosProveedorJob;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
@@ -12,7 +13,6 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
 use App\Imports\ProviderImport;
 use App\Models\Provider;
-use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Log;
@@ -123,8 +123,15 @@ class ProviderController extends Controller
 
     public function update(Request $request, $id) {
         $model = Provider::find($id);
+
+        /*
+         * Los tres datos del proveedor que lee el calculo de precios, tomados ANTES de pisarlos con
+         * lo que manda el formulario: son los unicos que deciden si guardar el proveedor tiene que
+         * recalcular precios (ver recalcular_precios_si_corresponde()).
+         */
         $last_percentage_gain                           = $model->percentage_gain;
         $last_dolar                                     = $model->dolar;
+        $last_price_from_cost_mas_iva                   = $model->price_from_cost_mas_iva;
         $model->name                                    = $request->name;
         $model->phone                                   = $request->phone; 
         $model->address                                 = $request->address;   
@@ -139,36 +146,21 @@ class ProviderController extends Controller
         $model->dolar                                   = $request->dolar; 
         $model->porcentaje_comision_negro               = $request->porcentaje_comision_negro; 
         $model->porcentaje_comision_blanco              = $request->porcentaje_comision_blanco; 
-        $model->price_from_cost_mas_iva                 = $request->price_from_cost_mas_iva; 
+        $model->price_from_cost_mas_iva                 = $request->price_from_cost_mas_iva;
         $model->save();
 
+        $this->recalcular_precios_si_corresponde(
+            $model,
+            $last_percentage_gain,
+            $last_dolar,
+            $last_price_from_cost_mas_iva
+        );
 
-        $should_update_prices = $model->should_update_prices;
-
-        if ($should_update_prices) {
-            Log::info('Cambios por should_update_prices');
-        }
-
-        // Log::info('dolar antes: '.$last_dolar);
-        // Log::info('dolar ahora: '.$model->dolar);
-
-        if ($last_percentage_gain != $model->percentage_gain) {
-            $should_update_prices = true;
-            Log::info('Cambios en el margen');
-        }
-
-        if ($last_dolar != $model->dolar) {
-            $should_update_prices = true;
-            Log::info('Cambios en el dolar');
-        }
-
-
-        $should_update_prices = $this->hubo_cambios_en_provider_discounts($model, $should_update_prices);
-
-        if ($should_update_prices) {
-            GeneralHelper::checkNewValuesForArticlesPrices($this, 0, 1, 'provider_id', $model->id);
-        }
-
+        /*
+         * `should_update_prices` lo sigue prendiendo ProviderDiscountController::destroy(), pero YA NO
+         * dispara nada (ver recalcular_precios_si_corresponde()). Se lo sigue bajando para que la
+         * columna no quede en 1 para siempre y nadie la lea como "hay un recalculo pendiente".
+         */
         $model->should_update_prices = 0;
         $model->save();
 
@@ -233,18 +225,86 @@ class ProviderController extends Controller
         ], 200);
     }
 
-    function hubo_cambios_en_provider_discounts($provider, $should_update_prices) {
+    /**
+     * Decide si guardar el proveedor tiene que recalcular precios en segundo plano, y con que alcance
+     * (mision recalculo-precios-motor-rapido, 28/9/2026).
+     *
+     * El calculo de precios lee del proveedor TRES cosas y nada mas (ArticleHelper /
+     * ArticlePricesHelper, relevado con grep el 28/9/2026): `percentage_gain`, `dolar` y
+     * `price_from_cost_mas_iva`. Por eso son las unicas que disparan:
+     *
+     *   - margen o modalidad "precio desde costo mas IVA" -> TODOS los articulos del proveedor.
+     *     La modalidad es nueva como disparador: hasta hoy cambiarla no recalculaba nada, y cambia
+     *     el precio de todo el proveedor.
+     *   - SOLO el dolar -> solo los articulos del proveedor con `cost_in_dollars = 1`
+     *     (ProcessSetFinalPrices con `from_dolar = true` sobre un alcance = interseccion). El dolar
+     *     del proveedor lo usa unicamente ArticleHelper::cotizar(), y solo para esos: recalcular el
+     *     resto del proveedor es trabajo que no puede mover un centavo.
+     *
+     * 🔴 LO QUE YA NO DISPARA, y no hay que volver a agregar: un cambio SOLO en los descuentos del
+     * proveedor (el viejo `hubo_cambios_en_provider_discounts()`, que miraba si algun
+     * `provider_discount` se toco hace menos de 2 minutos, y el flag `should_update_prices` que prende
+     * ProviderDiscountController::destroy()). Desde el prompt 261 el precio NO lee
+     * `provider_discounts`: lee las copias materializadas en `article_discounts`, asi que ese
+     * recalculo no puede mover un centavo (lo dice tambien
+     * ArticleProviderDiscountHelper::propagar_a_articulos()). Lo que si mueve precios despues de
+     * editar descuentos es la propagacion o el boton "Sincronizar articulos", que ya recalculan lo que
+     * tocan. Medido en Servian el 28/9/2026 (574.359 articulos): Rejovot tardo 3 h 08 min para
+     * recalcular 40.393 articulos y cambio de precio en 21; ETMAN (64.662) cambio 1; Zerbini (28.994)
+     * cambio 1 y 0; Distrisuper y MAC FRNEOS, 0. Horas de cola por nada, trabando los recalculos que
+     * si importaban.
+     *
+     * El `user_id` que se despacha es el del DUEÑO (`$this->userId()`), nunca el del empleado que
+     * guardo: el productor filtra los articulos por `user_id`, y con el de un empleado no
+     * encontraria ninguno.
+     *
+     * @param  \App\Models\Provider $provider            Proveedor ya guardado con los valores nuevos.
+     * @param  mixed                $margen_anterior     `percentage_gain` antes de guardar.
+     * @param  mixed                $dolar_anterior      `dolar` antes de guardar.
+     * @param  mixed                $modalidad_anterior  `price_from_cost_mas_iva` antes de guardar.
+     * @return string|null  'todo_el_proveedor', 'solo_en_dolares' o null si no se despacho nada.
+     */
+    protected function recalcular_precios_si_corresponde($provider, $margen_anterior, $dolar_anterior, $modalidad_anterior) {
 
-        foreach ($provider->provider_discounts as $provider_discount) {
+        // Comparacion suelta (`!=`), la misma de siempre: "50.00" de la base contra 50 del
+        // formulario no es un cambio, y null contra '' tampoco.
+        $cambio_el_margen = $margen_anterior != $provider->percentage_gain;
+        $cambio_el_dolar  = $dolar_anterior != $provider->dolar;
 
-            if ($provider_discount->updated_at > Carbon::now()->subMinutes(2)) {
+        /*
+         * La modalidad es un tilde: se compara como booleano. filter_var y no un cast crudo, porque
+         * `(bool) 'false'` es TRUE en PHP y el formulario puede mandar el valor como texto; null,
+         * '', 0, '0' y false son todos "apagado".
+         */
+        $cambio_la_modalidad = filter_var($modalidad_anterior, FILTER_VALIDATE_BOOLEAN)
+                                !== filter_var($provider->price_from_cost_mas_iva, FILTER_VALIDATE_BOOLEAN);
 
-                $should_update_prices = true;
-                Log::info('Cambios en provider_discounts');
-            }
+        if (!$cambio_el_margen && !$cambio_la_modalidad && !$cambio_el_dolar) {
+            return null;
         }
 
-        return $should_update_prices;
+        /*
+         * UN solo despacho por guardado. Si cambio el margen o la modalidad, el recalculo de todo el
+         * proveedor ya incluye a los articulos en dolares, asi que el dolar no suma un segundo
+         * despacho: son los mismos articulos recalculados dos veces.
+         */
+        $solo_los_articulos_en_dolares = !$cambio_el_margen && !$cambio_la_modalidad;
+
+        ProcessSetFinalPrices::dispatch(
+            $this->userId(),
+            'provider_id',
+            $provider->id,
+            $solo_los_articulos_en_dolares,
+            'proveedor',
+            $provider->name
+        );
+
+        Log::info('ProviderController: recalculo de precios despachado', [
+            'provider_id' => $provider->id,
+            'alcance'     => $solo_los_articulos_en_dolares ? 'solo_en_dolares' : 'todo_el_proveedor',
+        ]);
+
+        return $solo_los_articulos_en_dolares ? 'solo_en_dolares' : 'todo_el_proveedor';
     }
 
     /**
