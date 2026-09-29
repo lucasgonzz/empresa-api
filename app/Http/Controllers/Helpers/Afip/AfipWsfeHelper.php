@@ -395,7 +395,8 @@ class AfipWsfeHelper extends Controller
     }
 
     /**
-     * Recarga la venta del ticket y recalcula `sales.ganancia`. Se recarga en vez de usar la
+     * Recarga la venta del ticket y recalcula `sales.ganancia` (y la de sus consolidadas, si es una
+     * consolidacion de facturacion). Se recarga en vez de usar la
      * instancia de la relacion para no guardar columnas viejas (mismo criterio que
      * `MakeAfipTicket::recalcular_ganancia_facturada()`).
      *
@@ -405,8 +406,24 @@ class AfipWsfeHelper extends Controller
     {
         $venta = Sale::find($this->afip_ticket->sale_id);
 
-        if (!is_null($venta)) {
-            SaleHelper::set_sale_ganancia($venta);
+        if (is_null($venta)) {
+            return;
+        }
+
+        SaleHelper::set_sale_ganancia($venta);
+
+        /**
+         * Igual que `MakeAfipTicket::recalcular_ganancia_facturada()`: si la venta es una
+         * consolidacion de facturacion, el comprobante es el de TODAS las ventas que contiene y sus
+         * ganancias tambien quedaron viejas. Se replica el bucle chico en vez de exponer el metodo
+         * privado de MakeAfipTicket, para no tocar el camino de emision.
+         */
+        if ($venta->is_consolidacion_facturacion) {
+            $consolidadas = Sale::where('consolidacion_facturacion_id', $venta->id)->get();
+
+            foreach ($consolidadas as $consolidada) {
+                SaleHelper::set_sale_ganancia($consolidada);
+            }
         }
     }
 
