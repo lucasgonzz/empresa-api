@@ -38,10 +38,19 @@ use Illuminate\Support\Str;
  * (misión catalogo-ia-tablas-sin-id, 29/9/2026):
  *
  *   - Una tabla sin columna `id` no se declara —ni derivada, ni curada, ni hija—, y una relación
- *     no apunta a una tabla sin `id`: el motor cuenta, proyecta, ordena, pagina y resuelve
- *     etiquetas por `id`. Ver tabla_legible().
- *   - Una columna binaria nunca es un campo, se llame como se llame: sus bytes rompen el
- *     `json_encode` del tool_result y el modelo lee "no hay registros". Ver TIPOS_BINARIOS.
+ *     DERIVADA (por la convención `x_id → xs` o por RELACIONES_POR_CONVENCION) no apunta a una
+ *     tabla sin `id`: el motor cuenta, proyecta, ordena, pagina y resuelve etiquetas por `id`. Ver
+ *     tabla_legible().
+ *   - Una columna que se lee del esquema nunca es un campo si su tipo vuelve como bytes (binario,
+ *     espacial, VECTOR), se llame como se llame: rompe el `json_encode` del tool_result y el
+ *     modelo lee "no hay registros". Ver TIPOS_BINARIOS.
+ *
+ * ⚠️ LO ESCRITO A MANO NO PASA POR ESTAS GUARDAS: las relaciones curadas de
+ * CatalogoDeDatosIaHelper::ENTIDADES y de CURADAS_ADICIONALES (entran por aplicar_override()), los
+ * campos curados, los `campos_del_padre` de una hija y la tabla padre de una hija. Todo eso apunta
+ * a tablas núcleo (clientes, proveedores, ventas, cajas) y lo sostienen, sobre la base de testing,
+ * el invariante del test 59 (toda entidad y toda relación apuntan a una tabla con `id`, ningún
+ * campo es binario) y el test 30 (el padre de cada hija existe y tiene su columna de join).
  *
  * Las entidades HIJAS (renglón de venta, de compra, de presupuesto, de nota de crédito, de pedido,
  * movimiento de caja y empleado) no tienen `user_id` propio: se scopean por su padre
@@ -149,19 +158,27 @@ class EsquemaDeDatosIaHelper
     ];
 
     /**
-     * 🔴 LOS TIPOS DE COLUMNA QUE NUNCA SON UN CAMPO, se llame como se llame la columna: los binarios
-     * (DATA_TYPE de MySQL).
+     * 🔴 LOS TIPOS DE COLUMNA QUE NUNCA SON UN CAMPO, se llame como se llame la columna: los que por
+     * PDO vuelven como BYTES y no como texto. Van como los reporta `information_schema.DATA_TYPE`.
      *
-     * Sus bytes no son texto UTF-8, y el tool_result viaja por `json_encode`: con un solo valor
-     * binario en la página devuelve false, y AsistenteIaService::contenido_de_tool_result() lo
-     * reemplaza por `'[]'`. El modelo lee "no hay registros" y lo contesta tranquilo: una falla muda
-     * con cara de respuesta. Lo mismo al agrupar por esa columna en resumir_datos. Y adentro no hay
-     * nada que un comerciante quiera leer: son vectores, imágenes o archivos serializados.
+     *   - Los binarios: BINARY, VARBINARY y los BLOB.
+     *   - Los espaciales: vuelven como el WKB de la geometría (con el SRID adelante, que es como
+     *     MySQL los guarda). `geomcollection` es como lo reporta MySQL 8; `geometrycollection`,
+     *     como lo reportan las versiones viejas.
+     *   - `vector` (MySQL 9): vuelve como los float32 empaquetados.
+     *
+     * Esos bytes no son texto UTF-8, y el tool_result viaja por `json_encode`: con un solo valor así
+     * en la página devuelve false, y AsistenteIaService::contenido_de_tool_result() lo reemplaza por
+     * `'[]'`. El modelo lee "no hay registros" y lo contesta tranquilo: una falla muda con cara de
+     * respuesta. Lo mismo al agrupar por esa columna en resumir_datos. Y adentro no hay nada que un
+     * comerciante quiera leer: son vectores, imágenes, archivos serializados o geometrías crudas.
      *
      * El caso que la trajo (29/9/2026): `article_compact_embeddings.vector` (4.3.0), el vector
      * compacto de la búsqueda semántica del agente de WhatsApp, un BLOB de 2048 bytes por artículo.
      * No llegó a viajar porque la tabla tampoco tenía `id` (ver tabla_legible()); con un `id`, habría
-     * ido en la proyección por defecto.
+     * ido en la proyección por defecto. Los espaciales y `vector` no tienen caso todavía —ninguna
+     * migración crea una columna así (medido el 29/9/2026)—: están porque rompen exactamente igual
+     * que un BLOB, y el esquema de un cliente puede tener lo que las migraciones no crean.
      *
      * Va por TIPO y no por nombre a propósito: COLUMNAS_SENSIBLES mira nombres, y `vector` no cae en
      * ninguno. Se chequea en columna_visible(), que es la puerta por la que pasa toda columna antes
@@ -169,7 +186,15 @@ class EsquemaDeDatosIaHelper
      *
      * @var array<int, string>
      */
-    const TIPOS_BINARIOS = ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'];
+    const TIPOS_BINARIOS = [
+        // Binarios.
+        'binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob',
+        // Espaciales (WKB).
+        'geometry', 'point', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'multipolygon',
+        'geomcollection', 'geometrycollection',
+        // VECTOR de MySQL 9 (float32 empaquetados).
+        'vector',
+    ];
 
     /**
      * LA LISTA NEGRA DE TABLAS: tabla => por qué no es un dato del negocio.
@@ -978,6 +1003,12 @@ class EsquemaDeDatosIaHelper
      * una tabla temporal no aparece en `information_schema`. Por eso es PURA: no consulta la base
      * ni el caché; todo lo que sabe del esquema es el mapa que recibe.
      *
+     * 🔴 SE LLAMA SOLO CON EL MAPA DE columnas_de_la_base() —o, en un test, con ese mapa más tablas
+     * sintéticas—, NUNCA con un mapa armado con input del modelo o de un request. Los nombres de
+     * tabla y de columna de la declaración terminan interpolados en SQL (CatalogoDeDatosIaHelper y
+     * ResumenDeDatosIaHelper), y lo único que garantiza que salgan de `information_schema` o de una
+     * constante de este archivo es que el mapa sale de acá.
+     *
      * @param  array  $columnas  tabla => columna => info, con la forma de columnas_de_la_base()
      * @return array<string, array<string, mixed>>
      */
@@ -1051,7 +1082,9 @@ class EsquemaDeDatosIaHelper
      * lado de las relaciones filtra por nombre con `SELECT id FROM <destino>`
      * (condicion_por_nombre) y busca las etiquetas con `whereIn('id')` (etiquetas_de_relacion).
      * Una tabla sin `id` se puede declarar —figura en que_puedo_consultar y en los recursos MCP—,
-     * pero no se puede consultar: revienta recién cuando el modelo la pide.
+     * pero consultar_datos sobre ella revienta, y recién cuando el modelo la pide. resumir_datos
+     * andaría (cuenta con `COUNT(*)` y agrupa por campos, no toca el `id`), pero una entidad que se
+     * puede sumar y no se puede listar confunde al modelo: queda afuera entera, a propósito.
      *
      * El caso que la trajo (29/9/2026): `article_compact_embeddings`, que entró con la 4.3.0 con
      * clave primaria `article_id`. Tenía `user_id`, así que se derivó como entidad, y cada
@@ -1134,8 +1167,8 @@ class EsquemaDeDatosIaHelper
     }
 
     /**
-     * La declaración derivada de una tabla: todos sus campos menos los sensibles y `user_id`, con
-     * tipo, etiqueta, relaciones por convención y condiciones fijas.
+     * La declaración derivada de una tabla: todos sus campos menos los sensibles, los binarios y
+     * `user_id`, con tipo, etiqueta, relaciones por convención y condiciones fijas.
      *
      * @param  string  $tabla
      * @param  array   $columnas

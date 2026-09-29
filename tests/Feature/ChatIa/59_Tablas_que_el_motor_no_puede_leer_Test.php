@@ -43,8 +43,9 @@ use Tests\TestCase;
  *      producción; este test obliga a decidir y a dejar el motivo escrito.
  *   4. LAS GUARDAS DE PUNTA A PUNTA, con derivar_de() sobre el mapa real más tablas sintéticas que
  *      ninguna lista conoce —como las que puede tener el esquema de un cliente viejo y la base de
- *      testing no—: la tabla sin `id` no entra, la columna BLOB no es campo y la relación hacia un
- *      destino sin `id` no se arma. Y el refactor no cambia el catálogo real.
+ *      testing no—: la tabla sin `id` no entra, las columnas binarias (BLOB, VARBINARY, espacial) no
+ *      son campo y la relación hacia un destino sin `id` no se arma. Y derivar_de() es el mismo
+ *      código que sirve catalogo(), así que lo probado con mapas sintéticos es lo que corre.
  *   5. Los caminos que el 4 no recorre, con la misma guarda: una curada y una hija cuya tabla no
  *      tiene `id`, una relación fija (RELACIONES_POR_CONVENCION) hacia una tabla sin `id`, y una
  *      columna BLOB en la tabla de una hija.
@@ -54,10 +55,20 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
     use DatabaseTransactions;
 
     /**
-     * Los tipos binarios de MySQL, escritos acá y NO leídos de EsquemaDeDatosIaHelper::TIPOS_BINARIOS:
-     * el invariante no puede depender de la constante que está verificando.
+     * Los tipos de MySQL que por PDO vuelven como bytes (binarios, espaciales, VECTOR), como los
+     * reporta `information_schema.DATA_TYPE`. Escritos acá y NO leídos de
+     * EsquemaDeDatosIaHelper::TIPOS_BINARIOS: el invariante no puede depender de la constante que
+     * está verificando.
      */
-    const TIPOS_BINARIOS = ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob'];
+    const TIPOS_BINARIOS = [
+        // Binarios.
+        'binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob',
+        // Espaciales (vuelven como WKB).
+        'geometry', 'point', 'linestring', 'polygon', 'multipoint', 'multilinestring', 'multipolygon',
+        'geomcollection', 'geometrycollection',
+        // VECTOR de MySQL 9 (vuelve como float32 empaquetados).
+        'vector',
+    ];
 
     protected function setUp(): void
     {
@@ -252,8 +263,15 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
             $this->assertArrayNotHasKey($tabla, $columnas, $tabla . ' existe en la base: el prefijo zz_ estaba para que no.');
         }
 
-        // Si `vector` cayera en la lista negra por NOMBRE, este test no probaría la guarda por TIPO.
-        $this->assertSame(0, preg_match(EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES, 'vector'));
+        // Si alguna de las columnas que vuelven como bytes cayera en la lista negra por NOMBRE, este
+        // test no probaría la guarda por TIPO.
+        foreach (['vector', 'ubicacion', 'firma'] as $nombre) {
+            $this->assertSame(
+                0,
+                preg_match(EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES, $nombre),
+                $nombre . ' cae en COLUMNAS_SENSIBLES: saldría por nombre y no probaría la guarda de tipo.'
+            );
+        }
 
         // 1. Con user_id y name, SIN id: la forma de article_compact_embeddings, en ninguna lista.
         $columnas['zz_sin_ids'] = [
@@ -261,7 +279,8 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
             'name'    => $this->columna_sintetica('varchar', 'varchar(191)', 2, true),
         ];
 
-        // 2. Legible, con una BLOB, una relación que se arma y otra hacia un destino sin id.
+        // 2. Legible, con tres columnas que vuelven como bytes (BLOB, espacial y VARBINARY), una
+        //    relación que se arma y otra hacia un destino sin id.
         $columnas['zz_legibles'] = [
             'id'            => $this->columna_sintetica('bigint', 'bigint unsigned', 1, false),
             'user_id'       => $this->columna_sintetica('bigint', 'bigint unsigned', 2, false),
@@ -269,6 +288,8 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
             'vector'        => $this->columna_sintetica('blob', 'blob', 4, false),
             'article_id'    => $this->columna_sintetica('bigint', 'bigint unsigned', 5, true),
             'zz_destino_id' => $this->columna_sintetica('bigint', 'bigint unsigned', 6, true),
+            'ubicacion'     => $this->columna_sintetica('geometry', 'geometry', 7, true),
+            'firma'         => $this->columna_sintetica('varbinary', 'varbinary(64)', 8, true),
         ];
 
         // 3. El destino de zz_destino_id: tiene name (la convención lo tomaría) y NO tiene id.
@@ -289,6 +310,8 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
         $this->assertNotNull($legible, 'Una tabla con id y user_id entra: la guarda no puede frenar de más.');
         $this->assertArrayHasKey('name', $legible['campos']);
         $this->assertArrayNotHasKey('vector', $legible['campos'], 'Una columna BLOB no es un campo: sus bytes vacían el tool_result entero.');
+        $this->assertArrayNotHasKey('ubicacion', $legible['campos'], 'Una columna espacial no es un campo: vuelve como WKB, bytes que vacían el tool_result entero.');
+        $this->assertArrayNotHasKey('firma', $legible['campos'], 'Una columna VARBINARY no es un campo: sus bytes vacían el tool_result entero.');
 
         $relaciones = $this->relaciones_por_columna($legible);
 
@@ -301,7 +324,12 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
         $this->assertEquals('number', $legible['campos']['zz_destino_id']['tipo'], 'Hacia una tabla sin id no hay relación: el campo queda number.');
         $this->assertArrayNotHasKey('zz_destino_id', $relaciones, 'El filtro por nombre haría SELECT id FROM zz_destinos y reventaría.');
 
-        // Y el refactor no cambió nada: derivar_de() sobre el mapa real es el catálogo de siempre.
+        /*
+         * Y catalogo() y derivar_de() son el mismo código: derivar_de() sobre el mapa real da
+         * exactamente el catálogo que se sirve, así que lo probado arriba con mapas sintéticos es lo
+         * que corre en producción. Esto NO compara contra la derivación de develop —acá las dos
+         * puntas son la versión nueva—: esa comparación se midió aparte (informe de la misión).
+         */
         $this->assertSame(
             EsquemaDeDatosIaHelper::catalogo(),
             EsquemaDeDatosIaHelper::derivar_de(EsquemaDeDatosIaHelper::columnas_de_la_base())
@@ -338,7 +366,14 @@ class Tablas_que_el_motor_no_puede_leer_Test extends TestCase
         ];
 
         // Y una columna BLOB en la tabla de una hija. movimiento_de_caja no tiene `solo_campos`:
-        // toda columna visible es campo, así que si la BLOB no entra es por la guarda de tipo.
+        // toda columna visible es campo, así que si la BLOB no entra es por la guarda de tipo...
+        // siempre que su nombre no caiga en la lista negra por NOMBRE.
+        $this->assertSame(
+            0,
+            preg_match(EsquemaDeDatosIaHelper::COLUMNAS_SENSIBLES, 'zz_adjunto'),
+            'zz_adjunto cae en COLUMNAS_SENSIBLES: saldría por nombre y no probaría la guarda de tipo.'
+        );
+
         $columnas['movimiento_cajas']['zz_adjunto'] = $this->columna_sintetica('blob', 'blob', 999, true);
 
         // Control: con su id, todo entra y la relación fija se arma.
