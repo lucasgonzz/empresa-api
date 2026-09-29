@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Models\ArticleTicketDesign;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Jobs\ProcessSetFinalPrices;
 use App\Models\Article;
@@ -63,6 +64,25 @@ class PriceTypeController extends Controller
 
 
         $this->sendAddModelNotification('price_type', $model->id);
+
+        /*
+            Lista nueva -> su diseño de etiquetas de góndola (misión disenos-etiquetas-gondola,
+            29/9/2026). Lo crea PriceTypeObserver::created() en el PriceType::create() de arriba,
+            así también lo reciben las listas de la importación de clientes y de la demo. Acá solo
+            se avisa a las otras sesiones del negocio, que es algo que un observer no puede hacer
+            (sendAddModelNotification es del Controller). Un error acá no rompe el alta.
+        */
+        try {
+            $diseno_de_la_lista = ArticleTicketDesign::where('user_id', $model->user_id)
+                                                        ->where('price_type_id', $model->id)
+                                                        ->first();
+
+            if (!is_null($diseno_de_la_lista)) {
+                $this->sendAddModelNotification('article_ticket_design', $diseno_de_la_lista->id);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('PriceTypeController@store: no se pudo avisar el diseño de etiquetas de la lista '.$model->id.': '.$e->getMessage());
+        }
 
         $this->updateRelationsCreated('price_type', $model->id, $request->childrens);
         

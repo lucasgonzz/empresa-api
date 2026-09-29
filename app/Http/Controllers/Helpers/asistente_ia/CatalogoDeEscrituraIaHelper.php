@@ -960,6 +960,12 @@ class CatalogoDeEscrituraIaHelper
          * vive solo en el editor).
          */
         'vender_layout'                => 'diseños de Vender: se arman arrastrando en el editor del ABM (un JSON que resuelve el SPA)',
+        /*
+         * Diseños de etiquetas de góndola (mision disenos-etiquetas-gondola, 29/9/2026): el diseño
+         * es un JSON de posiciones en milímetros que se arma arrastrando y redimensionando campos
+         * en el editor del ABM. Por chat no hay forma razonable de ubicarlos.
+         */
+        'article_ticket_design'        => 'diseños de etiquetas: se arman arrastrando en el editor del ABM',
     ];
 
     /**

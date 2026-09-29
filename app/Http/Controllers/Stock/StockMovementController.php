@@ -158,8 +158,18 @@ class StockMovementController extends Controller
 
         $stock_movement = SetConcepto::set_concepto($stock_movement, $data);
 
+        // Foto de los depositos ANTES de aplicar el movimiento: stock_anterior y el "anterior" de
+        // cada deposito en stock_por_deposito (ver SetStockPorDeposito).
+        $foto_antes = SetStockPorDeposito::foto($article->id, $stock_movement->article_variant_id);
+
         SetArticleStock::set_article_stock($stock_movement, $article, $set_updated_at, $this->user_id);
-        
+
+        // Y la de DESPUES, sin releer articles.stock (lo lee SetStockResultante). Solo se asigna
+        // al modelo: viaja en el save() de SetStockResultante.
+        $foto_despues = SetStockPorDeposito::foto($article->id, $stock_movement->article_variant_id, false);
+
+        SetStockPorDeposito::guardar($stock_movement, $foto_antes, $foto_despues);
+
         SetStockResultante::set_stock_resultante($stock_movement, $article);
 
         SetProvider::set_provider($stock_movement, $article, $data);
