@@ -146,10 +146,72 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
 
         /* Ni el helper de nuevo ni el seeder lo duplican. */
         $lista = \App\Models\PriceType::find($lista_id);
-        $this->assertFalse(ArticleTicketDesignHelper::crear_diseno_de_lista($lista));
+        /* crear_diseno_de_lista() devuelve el diseño creado, o null si no hacía falta. */
+        $this->assertNull(ArticleTicketDesignHelper::crear_diseno_de_lista($lista));
         $this->correr_seeder();
 
         $this->assertCount(1, $this->disenos_de($dueno));
+    }
+
+    /**
+     * La importación de clientes (`ClientImport` -> `LocalImportHelper::savePriceType()`) y la demo
+     * crean listas con `PriceType::create()` directo, sin pasar por el controller: el diseño lo
+     * tiene que crear el observer del modelo.
+     *
+     * @test
+     */
+    public function una_lista_creada_por_fuera_del_controller_recibe_su_diseno()
+    {
+        $dueno = $this->crear_dueno(true);
+
+        $lista = $this->crear_lista($dueno, 'Importada', 3);
+
+        $disenos = $this->disenos_de($dueno);
+
+        $this->assertCount(1, $disenos);
+        $this->assertSame('Importada', $disenos[0]->name);
+        $this->assertSame($lista->id, $disenos[0]->price_type_id);
+        $this->assertSame(3, $disenos[0]->position);
+        $this->assertEquals(ArticleTicketDesignHelper::diseno_actual($lista->id), $disenos[0]->diseno);
+
+        /* Sin listas prendidas, crear una lista no crea diseño. */
+        $sin_listas = $this->crear_dueno(false);
+        $this->crear_lista($sin_listas, 'Suelta', 1);
+        $this->assertCount(0, $this->disenos_de($sin_listas));
+    }
+
+    /**
+     * Una lista de un dueño que no existe (dato roto de una importación) se crea igual: el
+     * observer no puede romper el alta.
+     *
+     * @test
+     */
+    public function el_observer_no_rompe_el_alta_de_una_lista_huerfana()
+    {
+        $lista = \App\Models\PriceType::create(array(
+            'num' => 1, 'name' => 'Huérfana', 'percentage' => 10, 'position' => 1, 'user_id' => 999999999,
+        ));
+
+        $this->assertNotNull(\App\Models\PriceType::find($lista->id));
+        $this->assertSame(0, ArticleTicketDesign::where('price_type_id', $lista->id)->count());
+    }
+
+    /**
+     * Una `position` enorme en la lista (la columna del diseño es int) se acota.
+     *
+     * @test
+     */
+    public function la_posicion_de_una_lista_enorme_se_acota_en_su_diseno()
+    {
+        $dueno = $this->crear_dueno(true);
+
+        $lista = $this->crear_lista($dueno, 'Lejos', 1);
+        ArticleTicketDesign::where('price_type_id', $lista->id)->delete();
+
+        $lista->position = 5000000;
+        $this->assertNotNull(ArticleTicketDesignHelper::crear_diseno_de_lista($lista));
+
+        $this->assertSame(ArticleTicketDesignHelper::POSICION_MAXIMA, $this->disenos_de($dueno)[0]->position);
     }
 
     /** @test */

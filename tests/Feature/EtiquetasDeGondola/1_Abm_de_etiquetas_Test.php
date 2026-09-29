@@ -59,6 +59,49 @@ class Abm_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
     }
 
     /** @test */
+    public function un_empleado_edita_y_borra_los_disenos_del_dueno()
+    {
+        $dueno = $this->crear_dueno();
+        $empleado = $this->crear_empleado($dueno);
+
+        $editable = $this->crear_diseno($dueno, 'Del dueño', ArticleTicketDesignHelper::diseno_actual());
+        $borrable = $this->crear_diseno($dueno, 'Borrable', ArticleTicketDesignHelper::diseno_actual());
+
+        $this->actingAs($empleado, 'web');
+
+        $respuesta = $this->putJson('api/article-ticket-design/'.$editable->id, array('name' => 'Editado por el empleado'));
+        $respuesta->assertStatus(200);
+        $this->assertSame('Editado por el empleado', ArticleTicketDesign::find($editable->id)->name);
+        $this->assertSame($dueno->id, (int) ArticleTicketDesign::find($editable->id)->user_id);
+
+        $this->deleteJson('api/article-ticket-design/'.$borrable->id)->assertStatus(200);
+        $this->assertNull(ArticleTicketDesign::find($borrable->id));
+    }
+
+    /** @test */
+    public function la_posicion_se_acota_entre_0_y_un_millon()
+    {
+        $dueno = $this->crear_dueno();
+        $this->actingAs($dueno, 'web');
+
+        $enorme = $this->postJson('api/article-ticket-design', array('name' => 'Enorme', 'position' => 1e30));
+        $enorme->assertStatus(201);
+        $this->assertSame(1000000, $enorme->json('model.position'));
+
+        $negativa = $this->postJson('api/article-ticket-design', array('name' => 'Negativa', 'position' => -5));
+        $negativa->assertStatus(201);
+        $this->assertSame(0, $negativa->json('model.position'));
+
+        $id = $negativa->json('model.id');
+
+        $this->putJson('api/article-ticket-design/'.$id, array('position' => '99999999999999999999'))->assertStatus(200);
+        $this->assertSame(1000000, ArticleTicketDesign::find($id)->position);
+
+        $this->putJson('api/article-ticket-design/'.$id, array('position' => -1))->assertStatus(200);
+        $this->assertSame(0, ArticleTicketDesign::find($id)->position);
+    }
+
+    /** @test */
     public function crear_sin_diseno_arranca_con_el_de_siempre_con_precio_final()
     {
         $dueno = $this->crear_dueno();

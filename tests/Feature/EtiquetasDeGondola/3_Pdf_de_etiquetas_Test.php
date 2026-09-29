@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\EtiquetasDeGondola;
 
+use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
 use App\Http\Controllers\Pdf\ArticleTicket\ArticleTicketDesignPdf;
 use Illuminate\Support\Facades\DB;
@@ -11,8 +12,9 @@ use Illuminate\Support\Facades\DB;
  * 29/9/2026): `GET article/tickets-pdf/{ids}?article_ticket_design_id=`.
  *
  * 🔴 El camino viejo (`ArticleTicketPdf`) no se puede ejercitar acá: termina en `Output(); exit;`
- * y mataría el proceso de PHPUnit. Lo que sí se fija es la bifurcación: un diseño ajeno no lo
- * resuelve `diseno_del_dueno()`, que es lo único que decide el camino en `ArticleController`.
+ * y mataría el proceso de PHPUnit. Lo que sí se fija es la bifurcación: el método del controller
+ * que decide el camino (`ArticleController::diseno_de_etiquetas_pedido()`) devuelve null para un
+ * diseño ajeno, y con null `ticketsPdf()` va a `ArticleTicketPdf`.
  *
  * Los tests que miran el contenido instancian la clase directo con la compresión apagada, para
  * poder buscar los textos en el binario.
@@ -128,6 +130,55 @@ class Pdf_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         $this->assertNull(ArticleTicketDesignHelper::diseno_del_dueno('', $dueno->id));
         $this->assertNull(ArticleTicketDesignHelper::diseno_del_dueno($propio->id.'abc', $dueno->id));
         $this->assertSame($propio->id, ArticleTicketDesignHelper::diseno_del_dueno((string) $propio->id, $dueno->id)->id);
+    }
+
+    /** @test */
+    public function la_bifurcacion_del_controller_solo_resuelve_disenos_del_dueno()
+    {
+        $dueno = $this->crear_dueno();
+        $otro = $this->crear_dueno();
+
+        $ajeno = $this->crear_diseno($otro, 'Ajeno', ArticleTicketDesignHelper::diseno_actual());
+        $propio = $this->crear_diseno($dueno, 'Propio', ArticleTicketDesignHelper::diseno_actual());
+
+        $this->actingAs($dueno, 'web');
+
+        $controller = app(ArticleController::class);
+
+        $this->assertNull($controller->diseno_de_etiquetas_pedido((string) $ajeno->id));
+        $this->assertNull($controller->diseno_de_etiquetas_pedido(null));
+        $this->assertSame($propio->id, $controller->diseno_de_etiquetas_pedido((string) $propio->id)->id);
+
+        /* Un empleado resuelve los del dueño. */
+        $this->actingAs($this->crear_empleado($dueno), 'web');
+        $this->assertSame($propio->id, app(ArticleController::class)->diseno_de_etiquetas_pedido($propio->id)->id);
+    }
+
+    /** @test */
+    public function precio_lista_con_las_listas_apagadas_imprime_el_precio_final()
+    {
+        $dueno = $this->crear_dueno(true);
+        $lista = $this->crear_lista($dueno, 'Mayorista', 1);
+
+        $articulo = $this->crear_articulo($dueno, array('final_price' => 777));
+
+        DB::table('article_price_type')->insert(array(
+            'article_id' => $articulo, 'price_type_id' => $lista->id, 'final_price' => 999,
+        ));
+
+        $diseno = ArticleTicketDesignHelper::diseno_actual($lista->id);
+
+        /* Con listas: el del pivot. */
+        $pdf = $this->pdf_plano($diseno, array($articulo), $dueno->id);
+        $this->assertStringContainsString('($999)', $pdf);
+        $this->assertStringNotContainsString('($777)', $pdf);
+
+        /* El dueño apaga las listas: como ArticleTicketPdf::get_price(), el precio final. */
+        DB::table('users')->where('id', $dueno->id)->update(array('listas_de_precio' => 0));
+
+        $pdf = $this->pdf_plano($diseno, array($articulo), $dueno->id);
+        $this->assertStringContainsString('($777)', $pdf);
+        $this->assertStringNotContainsString('($999)', $pdf);
     }
 
     /** @test */
