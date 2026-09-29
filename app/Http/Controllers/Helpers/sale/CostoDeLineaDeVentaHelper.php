@@ -317,6 +317,84 @@ class CostoDeLineaDeVentaHelper
     }
 
     /**
+     * Defensa "en vivo": si un costo UNITARIO que está por copiarse de una línea guardada (pivot de
+     * venta o de presupuesto) es en realidad el costo del BULTO sin dividir, devuelve el costo
+     * dividido por las unidades individuales del artículo; si no, lo devuelve tal cual.
+     *
+     * Es la misma condición de la Causa A de `analizar()` (la que el saneo histórico aplica a
+     * `article_sale`), pero pensada para el momento de GUARDAR: sin filas ni contadores, solo los
+     * tres números de la línea.
+     *
+     *   - `unidades > 1`
+     *   - `price > 0`
+     *   - `cost > price × FACTOR_COSTO_INCOHERENTE`  → la línea pierde más del doble de lo que factura
+     *   - `cost / unidades <= price × FACTOR_COSTO_INCOHERENTE` → y dividir la vuelve coherente
+     *
+     * Si las cuatro se cumplen → `round(cost / unidades, 2)`. Si falla cualquiera → `cost` intacto.
+     *
+     * 🔴 POR QUÉ el criterio se mide contra el PRECIO DE LA PROPIA LÍNEA y NO contra
+     * `articles.costo_real` de hoy (medido en ferretotal el 29/9/2026, misión
+     * ganancia-unidades-individuales):
+     *
+     * El disparador fue la venta 54.499 (`sales.id 54735`): nació del presupuesto 411, que se creó
+     * el 2/9 con el SPA viejo, sin la clave `unidades_individuales`. `getCost()` guardó el costo del
+     * bulto en `article_budget.cost` y, al confirmarlo, `attachSaleArticles()` lo copió tal cual a
+     * `article_sale.cost`: PRECINTOS (ui 100) con costo 4118,66 y precio 61,78; TORNILLO C/TANQUE
+     * (ui 200) con costo 4174,98 y precio 31,31. Ganancia negativa.
+     *
+     * La tentación es "comparar con el costo actual de la ficha y corregir si difiere". No se puede:
+     * la ficha cambia DESPUÉS de la venta. En las mangueras 3073/3074/3075 el `costo_real` de hoy es
+     * 6,17 y el costo con que se vendió fue 388,77 (margen exacto del 50 % y ganancia positiva): una
+     * línea perfectamente sana que un criterio contra la ficha "arreglaría" mal, dividiéndole el
+     * costo por 25 y falsificándole la ganancia a un negocio real.
+     *
+     * Contra el precio de la propia línea, en cambio, solo se actúa cuando la línea está rota de
+     * forma EVIDENTE: pierde más que el doble de lo que factura Y dividir por las unidades la vuelve
+     * coherente. Una línea sana con ui > 1 (mangueras: costo 388,77 < precio 583,16) no cumple la
+     * primera condición y pasa intacta; una venta legítima a pérdida sin unidades individuales no
+     * cumple `unidades > 1` y pasa intacta.
+     *
+     * ⚠️ Esto es una defensa, NO reemplaza al saneo del histórico (`sale:sanear-costo-de-linea`):
+     * corrige lo que se está por copiar, no lo que ya quedó guardado mal. No hay que "simplificarla"
+     * ni a un `if ui > 1 dividir` (rompe toda línea ya dividida) ni a una comparación con la ficha.
+     *
+     * @param  mixed $cost      Costo unitario guardado en la línea (pivot).
+     * @param  mixed $price     Precio unitario de la misma línea.
+     * @param  mixed $unidades  `unidades_individuales` del artículo.
+     * @return mixed            `float` redondeado a 2 decimales si se corrigió; `$cost` tal cual si no.
+     */
+    public static function corregir_costo_de_bulto_sin_dividir($cost, $price, $unidades)
+    {
+        if (!is_numeric($cost) || !is_numeric($price) || !is_numeric($unidades)) {
+            return $cost;
+        }
+
+        $cost_float = (float) $cost;
+        $price_float = (float) $price;
+        $unidades_float = (float) $unidades;
+
+        if ($unidades_float <= 1 || $price_float <= 0) {
+            return $cost;
+        }
+
+        // El techo de coherencia: por encima, la línea pierde más de lo que factura.
+        $techo = $price_float * self::FACTOR_COSTO_INCOHERENTE;
+
+        if ($cost_float <= $techo) {
+            return $cost;
+        }
+
+        $candidato = $cost_float / $unidades_float;
+
+        // Si ni dividiendo por las unidades queda coherente, el motivo es otro: no se adivina.
+        if ($candidato <= 0 || $candidato > $techo) {
+            return $cost;
+        }
+
+        return round($candidato, 2);
+    }
+
+    /**
      * ¿El análisis termina en una corrección que involucra a la causa B?
      *
      * Es lo que la guarda de orden de `set_costo_ventas` cuenta, y no "cualquier corrección": lo que
