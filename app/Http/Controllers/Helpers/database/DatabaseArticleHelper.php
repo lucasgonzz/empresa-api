@@ -131,6 +131,11 @@ class DatabaseArticleHelper {
                 'observations'              =>  $stock_movement->observations,
                 'amount'                    =>  $stock_movement->amount,
                 'stock_resultante'          =>  $stock_movement->stock_resultante,
+                // Stock por deposito del movimiento (ver SetStockPorDeposito). Con el cast del
+                // modelo llega como array y se vuelve a guardar como JSON; una base de origen sin
+                // estas columnas las da en null.
+                'stock_anterior'            =>  $stock_movement->stock_anterior,
+                'stock_por_deposito'        =>  $stock_movement->stock_por_deposito,
                 'employee_id'               =>  $stock_movement->employee_id,
                 'user_id'                   =>  $stock_movement->user_id,
             ]);
