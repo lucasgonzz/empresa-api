@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ForzarTotalEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\SaleTotalesHelper;
@@ -257,6 +258,32 @@ class BudgetHelper {
 			$cost = $article->pivot->cost;
 			$price = $article->pivot->price;
 			$amount = $article->pivot->amount;
+
+			/*
+			 * 🔴 NO simplificar esto a "copiar el costo del presupuesto tal cual": el costo guardado en
+			 * `article_budget.cost` puede ser el del BULTO sin dividir. Pasó con el presupuesto 411 de
+			 * ferretotal (2/9/2026, SPA viejo sin la clave `unidades_individuales`): al confirmarlo el
+			 * 25/9 este método lo copió tal cual y la venta 54.499 salió con PRECINTOS a costo 4118,66
+			 * y precio 61,78, y TORNILLO C/TANQUE a 4174,98 y 31,31: ganancia negativa.
+			 *
+			 * Se corrige acá, al pasar a la venta, y NO se toca `article_budget`: el presupuesto queda
+			 * como se guardó y lo único que cambia es lo que se le copia a la venta.
+			 *
+			 * El criterio —`CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir`— se mide
+			 * contra el PRECIO DE LA PROPIA LÍNEA y no contra `articles.costo_real` de hoy, porque la
+			 * ficha del artículo cambia después de la venta (mangueras 3073/3074/3075: costo_real hoy
+			 * 6,17 contra 388,77 con el que se vendió, margen del 50 %): comparar contra la ficha
+			 * "arreglaría" mal una línea sana. Una línea ya unitaria pasa intacta, así que no se divide
+			 * dos veces. Es una defensa y no reemplaza al saneo del histórico. Va ANTES de calcular la
+			 * ganancia de la línea para que ésta salga con el costo ya corregido.
+			 *
+			 * Las unidades salen del modelo del artículo, que es el mismo dato que `getCost()` lee.
+			 */
+			$cost = CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
+				$cost,
+				$price,
+				$article->unidades_individuales
+			);
 
 			/*
 			 * 🔴 `article_sale.cost` es UNITARIO y `article_sale.ganancia` es el TOTAL de la linea:
