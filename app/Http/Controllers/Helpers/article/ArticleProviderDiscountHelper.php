@@ -4,12 +4,14 @@ namespace App\Http\Controllers\Helpers\article;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
 use App\Models\ProviderDiscount;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * ArticleProviderDiscountHelper
@@ -75,6 +77,21 @@ class ArticleProviderDiscountHelper {
     const ACCION_COMPRAS_SALTEAR = 'saltear';
     const ACCION_COMPRAS_PISAR = 'pisar';
     const ACCION_COMPRAS_AGREGAR = 'agregar';
+
+    /**
+     * Escritura en bloque de la sincronizacion y la propagacion (28/9/2026): filas por INSERT
+     * multi-fila de `article_discounts`. Son 11 columnas por fila, asi que 500 filas son 5.500
+     * placeholders, lejos del tope de 65.535 de MySQL por sentencia. Mismo valor que
+     * PreciosEnLote::FILAS_POR_INSERT.
+     */
+    const FILAS_POR_INSERT = 500;
+
+    /**
+     * Ids por `DELETE ... WHERE id IN (...)` en la escritura en bloque. Una tanda normal (1.000
+     * articulos con uno a tres descuentos cada uno) entra en una sola sentencia; el tope es para que
+     * una tanda configurada mas grande no pase el limite de placeholders.
+     */
+    const IDS_POR_DELETE = 5000;
 
     const COLUMNAS_PARA_CLASIFICAR = [
         'id',
@@ -177,35 +194,25 @@ class ArticleProviderDiscountHelper {
 
         foreach ($discounts as $discount_original) {
 
-            // Normalizo a objeto para leer percentage/amount sin importar si vino como array
-            // (import) o como modelo Eloquent (ProviderOrderDiscount / ProviderDiscount).
-            //
-            // ⚠️ El item ORIGINAL se conserva aparte: `leer_provider_discount_id()` necesita saber
-            // de QUE CLASE vino, y el cast de un array a stdClass borra esa informacion. Ver el
-            // docblock de ese metodo, que es donde esta la trampa.
-            $discount = (object) $discount_original;
-
-            $percentage = isset($discount->percentage) ? $discount->percentage : null;
-
-            // `monto` es el nombre de columna que usa ProviderOrderDiscount; `amount` es el que
-            // usa ArticleDiscount. Se acepta cualquiera de los dos como origen del dato.
-            $amount = isset($discount->amount)
-                ? $discount->amount
-                : (isset($discount->monto) ? $discount->monto : null);
+            /*
+             * La lectura de percentage / amount / de que descuento sale / nombre vive en
+             * normalizar_descuento_tagueado(), y no aca, desde el 28/9/2026: la escritura en bloque
+             * de la sincronizacion y la propagacion (escribir_descuentos_en_bloque()) tiene que
+             * escribir EXACTAMENTE los mismos valores que este create(), y la unica forma de que no
+             * se separen con el tiempo es que los dos lean con la misma funcion.
+             */
+            $datos = self::normalizar_descuento_tagueado($discount_original);
 
             // Sin percentage ni amount cargado, no hay nada que materializar de este item.
-            if (
-                (is_null($percentage) || $percentage === '')
-                && (is_null($amount) || $amount === '')
-            ) {
+            if (is_null($datos)) {
                 continue;
             }
 
             ArticleDiscount::create([
                 'article_id'  => $article->id,
                 'provider_id' => $provider_id,
-                'percentage'  => (!is_null($percentage) && $percentage !== '') ? $percentage : null,
-                'amount'      => (!is_null($amount) && $amount !== '') ? $amount : null,
+                'percentage'  => $datos['percentage'],
+                'amount'      => $datos['amount'],
                 // Tipo del descuento (Prompt 260): distingue la naturaleza contable, siempre
                 // "bonificación de proveedor" para los que vienen de acá.
                 'tipo'        => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
@@ -223,10 +230,55 @@ class ArticleProviderDiscountHelper {
                 // `['percentage' => x]`, y una compra manda un ProviderOrderDiscount, que no
                 // pertenece a la relacion. Eso esta bien y no rompe nada: `origen` sigue siendo la
                 // unica columna con la que se decide algo.
-                'provider_discount_id' => self::leer_provider_discount_id($discount_original, $discount),
-                'nombre'               => self::leer_nombre_del_descuento($discount),
+                'provider_discount_id' => $datos['provider_discount_id'],
+                'nombre'               => $datos['nombre'],
             ]);
         }
+    }
+
+    /**
+     * Lee de un item de origen (array del import, ProviderOrderDiscount de una compra,
+     * ProviderDiscount de la ficha) los cuatro datos que se copian a un `article_discount`
+     * tagueado, con la MISMA normalizacion de siempre. Es la parte de `create_tagged_discounts()`
+     * que no depende del articulo, sacada aparte (28/9/2026) para que la escritura en bloque
+     * (escribir_descuentos_en_bloque()) escriba exactamente lo mismo que el create() por articulo.
+     *
+     * @param  mixed $discount_original Item tal como viene en la coleccion (array o modelo).
+     * @return array|null  ['percentage', 'amount', 'provider_discount_id', 'nombre'], o null si el
+     *                     item no trae ni porcentaje ni monto (no hay nada que materializar).
+     */
+    static function normalizar_descuento_tagueado($discount_original) {
+
+        // Normalizo a objeto para leer percentage/amount sin importar si vino como array
+        // (import) o como modelo Eloquent (ProviderOrderDiscount / ProviderDiscount).
+        //
+        // ⚠️ El item ORIGINAL se conserva aparte: `leer_provider_discount_id()` necesita saber
+        // de QUE CLASE vino, y el cast de un array a stdClass borra esa informacion. Ver el
+        // docblock de ese metodo, que es donde esta la trampa.
+        $discount = (object) $discount_original;
+
+        $percentage = isset($discount->percentage) ? $discount->percentage : null;
+
+        // `monto` es el nombre de columna que usa ProviderOrderDiscount; `amount` es el que
+        // usa ArticleDiscount. Se acepta cualquiera de los dos como origen del dato.
+        $amount = isset($discount->amount)
+            ? $discount->amount
+            : (isset($discount->monto) ? $discount->monto : null);
+
+        // Sin percentage ni amount cargado, no hay nada que materializar de este item.
+        if (
+            (is_null($percentage) || $percentage === '')
+            && (is_null($amount) || $amount === '')
+        ) {
+            return null;
+        }
+
+        return [
+            'percentage'           => (!is_null($percentage) && $percentage !== '') ? $percentage : null,
+            'amount'               => (!is_null($amount) && $amount !== '') ? $amount : null,
+            'provider_discount_id' => self::leer_provider_discount_id($discount_original, $discount),
+            'nombre'               => self::leer_nombre_del_descuento($discount),
+        ];
     }
 
     /**
@@ -855,6 +907,21 @@ class ArticleProviderDiscountHelper {
                                         ->get()
                                         ->groupBy('article_id');
 
+        /*
+         * 🔴 DESDE EL 28/9/2026 ESTO NO ESCRIBE ARTICULO POR ARTICULO (mision
+         * recalculo-precios-motor-rapido). Antes cada articulo a rehacer era un Article::find(), una
+         * transaccion con su DELETE y sus INSERT, y un setFinalPrice() que leia sus relaciones de a
+         * una y escribia por su cuenta — todo adentro del request. Ahora son tres pasos:
+         *
+         *   1. Clasificar, sin escribir nada (esta vuelta): la MISMA clasificacion de siempre.
+         *   2. Averiguar cuales articulos existen y de quien son: una consulta cada 1.000.
+         *   3. aplicar_ficha_en_lote(): por tanda, UN DELETE, UN INSERT multi-fila y el motor de
+         *      precios (RecalculoDePreciosEnLote), en una sola transaccion.
+         *
+         * La respuesta (`actualizados`, `respetados`) es la misma: la SPA no se entera.
+         */
+        $items = [];
+
         foreach ($articulos as $article_id => $tagueados) {
 
             $clase = self::clasificar_articulo($tagueados, $percentages_actuales);
@@ -868,15 +935,9 @@ class ArticleProviderDiscountHelper {
                 continue;
             }
 
-            $article = Article::find($article_id);
-
-            if (is_null($article)) {
-                continue;
-            }
-
             /*
              * 🔴 Se rehace SOLO lo que gobierna la ficha del proveedor, y el delete+create va dentro
-             * de una transaccion.
+             * de una transaccion (la de la tanda, en aplicar_ficha_en_lote()).
              *
              * Lo que se conserva y por que:
              *   - los descuentos de MONTO FIJO tagueados, que dejo una compra con su bonificacion
@@ -890,11 +951,10 @@ class ArticleProviderDiscountHelper {
              *     propagacion le apagaba en silencio el precio tachado y el badge de oferta en el
              *     ecommerce, articulo por articulo y sin forma de saber cuales.
              *
-             * La transaccion importa por el mecanismo viejo, que sigue vivo: ProviderController
-             * despacha ProcessSetFinalPrices cuando algun descuento se toco hace menos de 2 minutos,
-             * asi que puede haber un worker recalculando estos mismos articulos. Sin transaccion,
-             * ese worker puede leer el articulo entre el DELETE y el INSERT y guardarle un
-             * costo_real calculado con CERO descuentos.
+             * La transaccion importa porque puede haber un worker recalculando estos mismos
+             * articulos (un cambio de margen o de dolar del proveedor despacha ProcessSetFinalPrices).
+             * Sin transaccion, ese worker puede leer el articulo entre el DELETE y el INSERT y
+             * guardarle un costo_real calculado con CERO descuentos.
              */
             /*
              * Que se rehace: EXACTAMENTE lo que la ficha creo, ni mas ni menos.
@@ -925,41 +985,54 @@ class ArticleProviderDiscountHelper {
                 }
             }
 
-            $ids_a_barrer = $gobernados->pluck('id')->all();
-
-            DB::transaction(function () use ($article, $provider, $ids_a_barrer, $mostrar_en_online) {
-
-                if (!count($ids_a_barrer)) {
-                    /*
-                     * 🔴 Defensa en profundidad: si no hay nada que reemplazar, tampoco se crea.
-                     * El DELETE ya era condicional y el CREATE no, asi que un articulo sin filas de
-                     * la ficha recibia una fila NUEVA encima de las que ya tenia. Hoy
-                     * `clasificar_articulo` no deja llegar ese caso hasta aca, pero la asimetria
-                     * entre las dos operaciones fue exactamente el defecto, y no vuelve a existir.
-                     */
-                    return;
-                }
-
-                ArticleDiscount::whereIn('id', $ids_a_barrer)->delete();
-
-                self::create_tagged_discounts(
-                    $article,
-                    $provider->id,
-                    $provider->provider_discounts,
-                    $mostrar_en_online,
-                    ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
-                );
-            });
-
-            // Clase de error del 31/8/2026: setFinalPrice lee esta relacion justo abajo.
-            $article->unsetRelation('article_discounts');
-
-            // El usuario va explicito: sin el, setFinalPrice resuelve UserHelper::user() por
-            // articulo, que con auth por token es un User::find() por cada uno.
-            ArticleHelper::setFinalPrice($article, $article->user_id);
-
-            $resultado['actualizados']++;
+            $items[] = [
+                'article_id'        => (int) $article_id,
+                'ids_a_barrer'      => $gobernados->pluck('id')->all(),
+                'mostrar_en_online' => $mostrar_en_online,
+                /*
+                 * 🔴 Defensa en profundidad de siempre: si no hay nada que reemplazar, tampoco se
+                 * crea (el articulo igual se recalcula y se cuenta, como antes). El DELETE era
+                 * condicional y el CREATE no, asi que un articulo sin filas de la ficha recibia una
+                 * fila NUEVA encima de las que ya tenia. Hoy `clasificar_articulo` no deja llegar
+                 * ese caso hasta aca, pero la asimetria entre las dos operaciones fue exactamente
+                 * el defecto, y no vuelve a existir.
+                 *
+                 * La sincronizacion NO lleva esta marca a proposito: su alcance "todos" crea
+                 * descuentos justamente en articulos que no tienen nada que reemplazar.
+                 */
+                'solo_si_reemplaza' => true,
+            ];
         }
+
+        if (count($items) === 0) {
+            return $resultado;
+        }
+
+        /*
+         * Cuales existen y de quien son, en UNA consulta cada 1.000 articulos (antes, un
+         * Article::find() por articulo). Un articulo borrado con descuentos tagueados se saltea igual
+         * que antes: no se le toca nada y no se cuenta como actualizado. Los `respetados` ya se
+         * contaron arriba, antes de mirar si existe, como siempre.
+         */
+        $duenos = self::duenos_de_articulos(array_column($items, 'article_id'));
+
+        $vigentes = [];
+
+        foreach ($items as $item) {
+
+            if (isset($duenos[$item['article_id']])) {
+                $vigentes[] = $item;
+            }
+        }
+
+        /*
+         * El dueño de cada articulo lo resuelve aplicar_ficha_en_lote() desde `$duenos` (un
+         * User::find() por dueño distinto, en la practica uno solo), igual que el
+         * `setFinalPrice($article, $article->user_id)` de antes. El employee_id de los price_changes
+         * queda en null: el motor lo resuelve con UserHelper::userId(false), que en este request es
+         * la persona logueada, exactamente como antes.
+         */
+        $resultado['actualizados'] = count(self::aplicar_ficha_en_lote($provider, $vigentes, null, $duenos));
 
         return $resultado;
     }
@@ -1093,6 +1166,13 @@ class ArticleProviderDiscountHelper {
             'desactualizados'            => [],
             'editados_a_mano'            => [],
             'tagueados_por_articulo'     => [],
+            /*
+             * Los ids de los articulos cuyo `provider_id` es este proveedor (no borrados, del dueño
+             * del proveedor). Clave agregada el 28/9/2026 para la sincronizacion en bloque: son los
+             * que se sabe que existen y de quien son sin volver a consultarlos (ver
+             * duenos_del_universo()). El preview y el export no la leen.
+             */
+            'ids_del_proveedor'          => [],
         ];
 
         if (is_null($provider)) {
@@ -1132,7 +1212,7 @@ class ArticleProviderDiscountHelper {
          *
          * ⚠️ Se puede hacer porque NADA de lo que consume estas filas necesita un modelo:
          * `gobernado_por_la_ficha()` lee `isset($descuento->origen)`, `clasificar_articulo()` lee
-         * `->editado_a_mano` y `->percentage`, y `rehacer_lo_de_la_ficha()` lee `->id` y
+         * `->editado_a_mano` y `->percentage`, y `preparar_item_de_sincronizacion()` lee `->id` y
          * `->show_in_online` — todo acceso por propiedad. `ArticleDiscount` no declara `$casts`, ni
          * accessors, ni SoftDeletes, ni global scopes, asi que el crudo trae exactamente los mismos
          * valores. Si algun dia alguno de esos consumidores necesita un metodo de Eloquent, se le
@@ -1166,6 +1246,7 @@ class ArticleProviderDiscountHelper {
 
         foreach ($ids_del_proveedor as $article_id) {
             $universo[(int) $article_id] = true;
+            $resultado['ids_del_proveedor'][] = (int) $article_id;
         }
 
         foreach (array_keys($tagueados_por_articulo) as $article_id) {
@@ -1284,23 +1365,37 @@ class ArticleProviderDiscountHelper {
      * `ProcessRow`: dejarlo resolver solo da `false` siempre, con la funcionalidad muerta y sin un
      * solo error que lo delate.
      *
-     * 🔴 PROCESA EN LOTES, no articulo por articulo (fix 22/9/2026, incidente Servian/EXPOYER: unos
+     * 🔴 PROCESA EN TANDAS, no articulo por articulo (fix 22/9/2026, incidente Servian/EXPOYER: unos
      * 106.000 articulos hicieron que el job tocara el timeout de 3600s de
      * `ProcessSincronizarDescuentosProveedorJob`). Antes, cada articulo abria su propia
      * `DB::transaction()` y su propio `User::find()` adentro de `setFinalPrice()` — con el MISMO
-     * owner repetido cientos de miles de veces. El detalle esta en `aplicar_ficha_en_lote()`.
+     * owner repetido cientos de miles de veces. Y desde el 28/9/2026 (mision
+     * recalculo-precios-motor-rapido) cada tanda es UN DELETE, UN INSERT multi-fila y el motor de
+     * precios en bloque, en una sola transaccion: en Servian la sincronizacion seguia fallando por
+     * el tope de 3600s 3 de cada 5 veces, porque cada articulo seguia costando varias consultas. El
+     * detalle esta en `aplicar_ficha_en_lote()`.
      *
      * @param  \App\Models\Provider $provider
-     * @param  string $alcance               ALCANCE_TODOS | ALCANCE_SOLO_CON_DESCUENTOS.
-     * @param  bool   $pisar_editados        Si tambien se rehacen los editados a mano.
-     * @param  string $accion_sobre_compras  ACCION_COMPRAS_*.
+     * @param  string   $alcance               ALCANCE_TODOS | ALCANCE_SOLO_CON_DESCUENTOS.
+     * @param  bool     $pisar_editados        Si tambien se rehacen los editados a mano.
+     * @param  string   $accion_sobre_compras  ACCION_COMPRAS_*.
+     * @param  callable|null $al_avanzar       Opcional, agregado AL FINAL de la firma (28/9/2026) para
+     *                                         no romper a ningun llamador: function ($procesados,
+     *                                         $total). Se llama una vez cuando se sabe cuantos
+     *                                         articulos se van a tocar (con 0 procesados) y despues
+     *                                         de cada tanda escrita. Es lo que le da al registro
+     *                                         visible del job el "X de Y articulos". Si la ficha no
+     *                                         tiene porcentajes utilizables no se toca nada y no se
+     *                                         llama nunca. Un aviso que tira no frena la
+     *                                         sincronizacion (ver avisar_avance()).
      * @return array
      */
     static function sincronizar_a_articulos(
         $provider,
         $alcance = self::ALCANCE_SOLO_CON_DESCUENTOS,
         $pisar_editados = false,
-        $accion_sobre_compras = self::ACCION_COMPRAS_SALTEAR
+        $accion_sobre_compras = self::ACCION_COMPRAS_SALTEAR,
+        $al_avanzar = null
     ) {
 
         $resultado = [
@@ -1362,75 +1457,103 @@ class ArticleProviderDiscountHelper {
          */
         $owner_user = User::find($provider->user_id);
 
+        /*
+         * Que articulos del universo existen y de quien son, sin volver a consultar los del proveedor
+         * (ver duenos_del_universo()). Un articulo que ya no existe (borrado, con descuentos
+         * tagueados colgando) se saltea igual que siempre —no se le toca nada y no se cuenta—, pero
+         * ahora se lo saca ANTES de armar las tandas: asi el total del avance es el de los articulos
+         * que de verdad se van a tocar, y la barra no termina en "97 de 100".
+         */
+        $duenos = self::duenos_del_universo($provider, $escaneo);
+
+        /*
+         * Los cuatro grupos se arman ANTES de escribir nada, para saber el total del avance. El
+         * orden en que se procesan despues es el de siempre (1, 2, 3, 4).
+         */
+
         // 1) Articulos SIN ningun descuento tagueado a este proveedor. Es el alcance nuevo: hasta
         //    hoy eran invisibles para toda propagacion.
+        $items_sin_descuentos = [];
+
         if ($alcance === self::ALCANCE_TODOS) {
 
-            $items = [];
-
             foreach ($escaneo['sin_descuentos'] as $article_id) {
-                $items[] = ['article_id' => $article_id, 'ids_a_barrer' => [], 'mostrar_en_online' => 0];
-            }
 
-            $resultado['creados'] = count(self::aplicar_ficha_en_lote($provider, $items, $owner_user));
+                if (isset($duenos[$article_id])) {
+                    $items_sin_descuentos[] = ['article_id' => $article_id, 'ids_a_barrer' => [], 'mostrar_en_online' => 0];
+                }
+            }
         }
 
         // 2) Desactualizados: tienen la copia vieja de la ficha y nadie los edito.
-        $items = [];
-
-        foreach ($escaneo['desactualizados'] as $article_id) {
-            $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, false);
-        }
-
-        $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items, $owner_user));
+        $items_desactualizados = self::items_de_sincronizacion($escaneo, $escaneo['desactualizados'], false, $duenos);
 
         // 3) Editados a mano: se respetan salvo tilde explicito del usuario.
-        if ($pisar_editados) {
-
-            $items = [];
-
-            foreach ($escaneo['editados_a_mano'] as $article_id) {
-                $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, false);
-            }
-
-            $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items, $owner_user));
-
-        } else {
-            $resultado['respetados'] = count($escaneo['editados_a_mano']);
-        }
+        $items_editados = $pisar_editados
+            ? self::items_de_sincronizacion($escaneo, $escaneo['editados_a_mano'], false, $duenos)
+            : [];
 
         // 4) Los que tienen descuentos que la ficha no puede reponer. Su destino lo eligio el
         //    usuario en el modal. `$accion_sobre_compras` no cambia articulo a articulo, asi que la
         //    rama se decide una sola vez para todo el grupo.
+        /*
+         * PISAR: se barre TODO lo tagueado a este proveedor —incluida la bonificacion negociada
+         * de una compra— y se deja solo lo de la ficha. El usuario lo eligio con el numero a la
+         * vista; el default es saltear justamente porque esto no se puede deshacer.
+         *
+         * AGREGAR: se rehace lo de la ficha y se DEJA lo de la compra. El articulo queda con
+         * los dos, en cascada — 1000 con 10% de compra y 10% de ficha da 810, no 900. Es la
+         * opcion que duplica y Lucas la pidio explicitamente.
+         *
+         * ⚠️ "Agregar" rehace lo de la ficha en vez de sumar una copia mas: si el articulo ya
+         * tenia filas de ficha, apilar otras dejaria la operacion NO idempotente y cada click
+         * del boton bajaria el costo un escalon mas. Con esto, correrlo dos veces da el mismo
+         * resultado que correrlo una.
+         */
+        $barrer_todo = ($accion_sobre_compras === self::ACCION_COMPRAS_PISAR);
+
+        $items_de_compra = ($accion_sobre_compras === self::ACCION_COMPRAS_SALTEAR)
+            ? []
+            : self::items_de_sincronizacion($escaneo, $escaneo['con_descuentos_de_compra'], $barrer_todo, $duenos);
+
+        /*
+         * El avance: "X de Y articulos". El total es la suma de lo que se va a tocar, y se avisa
+         * antes de la primera tanda (con 0) para que la barra pase de indeterminada a medible desde
+         * el arranque. Despues, un aviso por tanda escrita (no por articulo: cada aviso es un UPDATE
+         * del registro visible).
+         */
+        $total = count($items_sin_descuentos) + count($items_desactualizados) + count($items_editados) + count($items_de_compra);
+
+        $procesados = 0;
+
+        self::avisar_avance($al_avanzar, 0, $total);
+
+        $al_terminar_tanda = function ($cantidad) use (&$procesados, $total, $al_avanzar) {
+
+            $procesados += (int) $cantidad;
+
+            self::avisar_avance($al_avanzar, $procesados, $total);
+        };
+
+        if ($alcance === self::ALCANCE_TODOS) {
+            $resultado['creados'] = count(self::aplicar_ficha_en_lote($provider, $items_sin_descuentos, $owner_user, $duenos, $al_terminar_tanda));
+        }
+
+        $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items_desactualizados, $owner_user, $duenos, $al_terminar_tanda));
+
+        if ($pisar_editados) {
+            $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items_editados, $owner_user, $duenos, $al_terminar_tanda));
+        } else {
+            $resultado['respetados'] = count($escaneo['editados_a_mano']);
+        }
+
         if ($accion_sobre_compras === self::ACCION_COMPRAS_SALTEAR) {
 
             $resultado['de_compra_salteados'] = count($escaneo['con_descuentos_de_compra']);
 
         } else {
 
-            /*
-             * PISAR: se barre TODO lo tagueado a este proveedor —incluida la bonificacion negociada
-             * de una compra— y se deja solo lo de la ficha. El usuario lo eligio con el numero a la
-             * vista; el default es saltear justamente porque esto no se puede deshacer.
-             *
-             * AGREGAR: se rehace lo de la ficha y se DEJA lo de la compra. El articulo queda con
-             * los dos, en cascada — 1000 con 10% de compra y 10% de ficha da 810, no 900. Es la
-             * opcion que duplica y Lucas la pidio explicitamente.
-             *
-             * ⚠️ "Agregar" rehace lo de la ficha en vez de sumar una copia mas: si el articulo ya
-             * tenia filas de ficha, apilar otras dejaria la operacion NO idempotente y cada click
-             * del boton bajaria el costo un escalon mas. Con esto, correrlo dos veces da el mismo
-             * resultado que correrlo una.
-             */
-            $barrer_todo = ($accion_sobre_compras === self::ACCION_COMPRAS_PISAR);
-
-            $items = [];
-
-            foreach ($escaneo['con_descuentos_de_compra'] as $article_id) {
-                $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, $barrer_todo);
-            }
-
-            $tocados = self::aplicar_ficha_en_lote($provider, $items, $owner_user);
+            $tocados = self::aplicar_ficha_en_lote($provider, $items_de_compra, $owner_user, $duenos, $al_terminar_tanda);
 
             if ($barrer_todo) {
                 $resultado['de_compra_pisados'] = count($tocados);
@@ -1440,6 +1563,60 @@ class ArticleProviderDiscountHelper {
         }
 
         return $resultado;
+    }
+
+    /**
+     * Arma los items de un grupo del escaneo (ver preparar_item_de_sincronizacion()), dejando
+     * afuera los articulos que ya no existen.
+     *
+     * @param  array $escaneo      Salida de `escanear_articulos_del_proveedor()`.
+     * @param  array $article_ids  Ids del grupo.
+     * @param  bool  $barrer_todo  Ver preparar_item_de_sincronizacion().
+     * @param  array $duenos       [article_id => user_id] de los que existen.
+     * @return array
+     */
+    static function items_de_sincronizacion(array $escaneo, array $article_ids, $barrer_todo, array $duenos) {
+
+        $items = [];
+
+        foreach ($article_ids as $article_id) {
+
+            if (isset($duenos[(int) $article_id])) {
+                $items[] = self::preparar_item_de_sincronizacion($escaneo, $article_id, $barrer_todo);
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * Le pasa el avance al que lo pidio, sin dejar que un aviso que falla frene la sincronizacion.
+     *
+     * Mismo criterio que la regla 1 de BackgroundProcessHelper: el avance es presentacion. Si el
+     * que escucha tira (hoy es BackgroundProcessHelper::avanzar(), que no tira nunca, pero el
+     * parametro acepta cualquier callable), se pierde una barrita, no la sincronizacion de miles de
+     * articulos a mitad de camino.
+     *
+     * @param  callable|null $al_avanzar
+     * @param  int $procesados
+     * @param  int $total
+     * @return void
+     */
+    protected static function avisar_avance($al_avanzar, $procesados, $total) {
+
+        if (!is_callable($al_avanzar)) {
+            return;
+        }
+
+        try {
+            call_user_func($al_avanzar, (int) $procesados, (int) $total);
+        } catch (\Throwable $e) {
+            Log::warning('ArticleProviderDiscountHelper: fallo el aviso de avance; la sincronizacion sigue.', [
+                'procesados' => $procesados,
+                'total'      => $total,
+                'error'      => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -1491,53 +1668,56 @@ class ArticleProviderDiscountHelper {
     }
 
     /**
-     * Borra los descuentos indicados y crea los de la ficha para VARIOS articulos, en lotes, y
-     * recalcula el precio de cada uno.
+     * Borra los descuentos indicados y crea los de la ficha para VARIOS articulos, por tandas, y
+     * recalcula el precio de todos con el motor en bloque.
      *
-     * 🔴 REEMPLAZA a las (ex) `aplicar_ficha_al_articulo()` + `rehacer_lo_de_la_ficha()`, que hacian
-     * todo esto UNA VEZ POR ARTICULO. El fix del incidente Servian/EXPOYER (22/9/2026: ~106.000
-     * articulos, timeout de 3600s en `ProcessSincronizarDescuentosProveedorJob`) esta entero en tres
-     * cambios sobre el camino viejo:
+     * 🔴 LA HISTORIA, porque cada paso fue un incidente de Servian:
      *
-     *   1. `Article::whereIn()->get()` UNA VEZ POR LOTE, no `Article::find()` por articulo.
-     *   2. `DB::transaction()` UNA VEZ POR LOTE para el DELETE + los INSERT de descuentos, no una
-     *      transaccion por articulo. El invariante que protegia esa transaccion sigue protegido:
-     *      `ProviderController` puede despachar `ProcessSetFinalPrices` con un worker leyendo estos
-     *      mismos articulos, y el DELETE y el INSERT de CADA articulo siguen sin ser separables
-     *      desde afuera, porque los dos quedan dentro del mismo commit del lote.
+     *   - Hasta el 22/9/2026 esto era `aplicar_ficha_al_articulo()` + `rehacer_lo_de_la_ficha()`,
+     *     UNA VEZ POR ARTICULO, con su transaccion y su User::find() del dueño. EXPOYER (~106.000
+     *     articulos) toco el timeout de 3600s del job.
+     *   - El 22/9 paso a lotes: un whereIn de articulos por lote, una transaccion por lote para los
+     *     descuentos y el dueño una sola vez. Pero cada articulo seguia costando varias consultas:
+     *     un DELETE, un INSERT por descuento y un setFinalPrice() que leia sus relaciones de a una y
+     *     escribia por su cuenta. Medido el 28/9/2026: en Servian la sincronizacion fallo por el tope
+     *     de 3600s 3 de las ultimas 5 veces, y las que terminaron tardaron 30 a 43 minutos.
+     *   - Desde el 28/9/2026 (mision recalculo-precios-motor-rapido), por tanda:
+     *       1. UN `DELETE ... WHERE id IN (...)` con todos los descuentos a barrer de la tanda;
+     *       2. UN `INSERT` multi-fila con todos los descuentos nuevos de la tanda, con las MISMAS
+     *          columnas y valores que escribe create_tagged_discounts() (ver
+     *          escribir_descuentos_en_bloque());
+     *       3. el motor de precios (RecalculoDePreciosEnLote::recalcular()), que lee los articulos
+     *          de la tanda de una vez con sus relaciones, calcula en memoria con el mismo
+     *          setFinalPrice() de siempre y escribe en bloque.
+     *     Los tres en UNA transaccion: descuentos y precios de la tanda se escriben juntos o no se
+     *     escribe nada. Un worker que recalcule estos mismos articulos en paralelo nunca ve el
+     *     articulo entre el DELETE y el INSERT, ni con los descuentos nuevos y el precio viejo.
      *
-     *      ⚠️ Esto SI cambia el radio del fallo (hallazgo del chequeo independiente, 22/9/2026): con
-     *      la transaccion vieja, un error a mitad de camino perdia el trabajo de 1 articulo, que ya
-     *      quedaba el resto firme en la base. Con el lote, un error en el articulo 150 de 200
-     *      revierte los otros 199 que ya estaban bien. Se acepta a proposito: el tamaño de lote por
-     *      defecto (200) deja esa perdida en ~0,2% de un catalogo como el de EXPOYER, la
-     *      sincronizacion es idempotente (una corrida posterior retoma exactamente donde quedo,
-     *      ver `escanear_articulos_del_proveedor()`) y evitarlo del todo exigiria volver a pagar la
-     *      transaccion por articulo que es, junto con el punto 3, lo que rozaba el timeout.
-     *   3. El `User` dueño se busca UNA SOLA VEZ para TODA la sincronizacion (no adentro de esta
-     *      funcion, que se llama hasta 4 veces — una por grupo): lo busca `sincronizar_a_articulos()`
-     *      y lo pasa por parametro. Es el hallazgo mas caro: son cientos de miles de consultas
-     *      identicas al MISMO registro. Es siempre el mismo owner porque
-     *      `escanear_articulos_del_proveedor()` arma el universo con
-     *      `Article::where('user_id', $provider->user_id)`; aun asi se verifica articulo por
-     *      articulo antes de reusarlo (mas abajo) en vez de asumirlo a ciegas: si alguna vez no
-     *      coincidiera, cae al `User::find()` puntual de siempre.
+     * El radio del fallo es la tanda: si algo tira en el articulo 150 de 1.000, esa tanda entera no
+     * se escribe y las anteriores quedan firmes. La sincronizacion es idempotente (una corrida
+     * posterior retoma exactamente donde quedo, ver `escanear_articulos_del_proveedor()`).
      *
-     * `setFinalPrice()` NO se toca (motor de precios completo, usado en todo el sistema) y sigue
-     * corriendo POR ARTICULO y FUERA de la transaccion, en el mismo orden relativo que antes.
+     * El orden de los descuentos se conserva: el INSERT lleva las filas articulo por articulo y, en
+     * cada articulo, en el orden de `provider_discounts`, igual que los create() de antes. MySQL da
+     * ids crecientes en el orden de las filas de un mismo INSERT, y el id es lo que decide el orden
+     * en que se aplican porcentajes y montos (la relacion `article_discounts` ordena por id).
      *
      * @param  \App\Models\Provider $provider
      * @param  array $items  Cada item: ['article_id' => int, 'ids_a_barrer' => array,
-     *                       'mostrar_en_online' => int]. Salen de `preparar_item_de_sincronizacion()`
-     *                       o, para el alcance "todos" (articulos sin ningun descuento tagueado), se
-     *                       arman directo con `ids_a_barrer` vacio.
-     * @param  \App\Models\User|null $owner_user  Dueño ya resuelto por el llamador (una sola vez
-     *                       para toda la sincronizacion). Si viene null, cada articulo cae al
-     *                       `User::find()` puntual de siempre dentro de `setFinalPrice()` — mas
-     *                       lento pero correcto, nunca se asume un dueño sin haberlo verificado.
+     *                       'mostrar_en_online' => int, 'solo_si_reemplaza' => bool opcional]. Salen
+     *                       de `preparar_item_de_sincronizacion()`, de la propagacion o, para el
+     *                       alcance "todos", se arman directo con `ids_a_barrer` vacio.
+     * @param  \App\Models\User|null $owner_user  Dueño ya resuelto por el llamador (una sola vez para
+     *                       toda la sincronizacion). Solo se usa para los articulos que son suyos;
+     *                       el de cualquier otro articulo se busca una vez por dueño distinto.
+     * @param  array|null $duenos  [article_id => user_id] de los articulos que existen, si el llamador
+     *                       ya lo sabe. Con null se consulta una vez por tanda (un whereIn).
+     * @param  callable|null $al_terminar_tanda  function ($cantidad): se llama despues de cada tanda
+     *                       escrita con la cantidad de items de esa tanda (el avance del registro
+     *                       visible).
      * @return array  Ids de los articulos que existian y se tocaron.
      */
-    static function aplicar_ficha_en_lote($provider, array $items, $owner_user = null) {
+    static function aplicar_ficha_en_lote($provider, array $items, $owner_user = null, $duenos = null, $al_terminar_tanda = null) {
 
         if (count($items) === 0) {
             return [];
@@ -1545,71 +1725,346 @@ class ArticleProviderDiscountHelper {
 
         $tocados = [];
 
-        // Tamaño del lote, configurable para poder testear el corte entre lotes con pocos
-        // articulos (mismo patron que `ARTICLE_EXCEL_CHUNK_SIZE` del importador de catalogo).
-        $tamano_lote = (int) config('app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE', 200);
+        /*
+         * Lo que la ficha crea, normalizado UNA vez para toda la llamada (antes se normalizaba de
+         * nuevo por cada articulo, con el mismo resultado).
+         */
+        $plantilla = self::plantilla_de_descuentos($provider->provider_discounts);
 
-        if ($tamano_lote < 1) {
-            $tamano_lote = 200;
+        /*
+         * Dueños ya resueltos, por user_id. El del llamador entra de una: es el que tienen todos los
+         * articulos del proveedor, y buscarlo de nuevo seria la consulta repetida que el fix del
+         * 22/9 saco (los tests de 8_Sincronizar_* cuentan UNA sola consulta a `users`).
+         */
+        $cache_de_duenos = [];
+
+        if (!is_null($owner_user)) {
+            $cache_de_duenos[(int) $owner_user->id] = $owner_user;
         }
 
-        foreach (array_chunk($items, $tamano_lote) as $lote) {
+        foreach (array_chunk($items, self::tamanio_de_tanda()) as $tanda) {
 
-            $ids_del_lote = array_column($lote, 'article_id');
+            $duenos_de_la_tanda = is_null($duenos)
+                ? self::duenos_de_articulos(array_column($tanda, 'article_id'))
+                : $duenos;
 
-            $articulos = Article::whereIn('id', $ids_del_lote)->get()->keyBy('id');
+            /*
+             * Un articulo que ya no existe se saltea entero, como siempre: ni se le barren ni se le
+             * crean descuentos, y no se cuenta como tocado.
+             */
+            $vigentes = [];
 
-            DB::transaction(function () use ($lote, $articulos, $provider) {
+            foreach ($tanda as $item) {
 
-                foreach ($lote as $item) {
+                if (isset($duenos_de_la_tanda[(int) $item['article_id']])) {
+                    $vigentes[] = $item;
+                }
+            }
 
-                    $article = $articulos->get($item['article_id']);
+            if (count($vigentes) > 0) {
 
-                    if (is_null($article)) {
-                        continue;
-                    }
+                /*
+                 * 🔴 SIN reintentos adentro (el intento unico por defecto de DB::transaction). El
+                 * motor usa PreciosEnLote, que vacia su estado en un finally: un segundo intento de
+                 * esta misma closure escribiria los articulos sin sus listas ni sus price_changes. El
+                 * reintento seguro es el de afuera (volver a correr la sincronizacion).
+                 */
+                DB::transaction(function () use ($vigentes, $provider, $plantilla, $duenos_de_la_tanda, &$cache_de_duenos) {
 
-                    if (count($item['ids_a_barrer'])) {
-                        ArticleDiscount::whereIn('id', $item['ids_a_barrer'])->delete();
-                    }
+                    self::escribir_descuentos_en_bloque($vigentes, $provider->id, $plantilla);
 
-                    self::create_tagged_discounts(
-                        $article,
-                        $provider->id,
-                        $provider->provider_discounts,
-                        $item['mostrar_en_online'],
-                        ArticleDiscount::ORIGEN_FICHA_PROVEEDOR
+                    self::recalcular_precios_de_la_tanda(
+                        array_column($vigentes, 'article_id'),
+                        $duenos_de_la_tanda,
+                        $cache_de_duenos
                     );
+                });
+
+                foreach ($vigentes as $item) {
+                    $tocados[] = (int) $item['article_id'];
                 }
-            });
+            }
 
-            foreach ($lote as $item) {
-
-                $article = $articulos->get($item['article_id']);
-
-                if (is_null($article)) {
-                    continue;
-                }
-
-                // 🔴 `unsetRelation('article_discounts')` antes de recalcular: clase de error del
-                // 31/8/2026, ya fijada dos veces en este helper. Eloquent cachea las relaciones ya
-                // cargadas, asi que sin esto `setFinalPrice()` calcula con los descuentos de ANTES
-                // y guarda el resultado como si estuviera bien, sin ninguna excepcion de por medio.
-                $article->unsetRelation('article_discounts');
-
-                // El owner memoizado solo se reusa si de verdad es el dueño de ESTE articulo. No
-                // debería pasar nunca en este camino (ver el punto 3 del docblock), pero preferimos
-                // la consulta de mas antes que asumir mal a quien va a parar `setFinalPrice()`.
-                $user_para_precio = (!is_null($owner_user) && (int) $owner_user->id === (int) $article->user_id)
-                    ? $owner_user
-                    : null;
-
-                ArticleHelper::setFinalPrice($article, $article->user_id, $user_para_precio);
-
-                $tocados[] = $item['article_id'];
+            if (is_callable($al_terminar_tanda)) {
+                call_user_func($al_terminar_tanda, count($tanda));
             }
         }
 
         return $tocados;
+    }
+
+    /**
+     * Tamaño de tanda de la sincronizacion y la propagacion de descuentos.
+     *
+     * Por defecto es el del motor de precios (RecalculoDePreciosEnLote::tamanio_de_lote(), 1.000,
+     * configurable con RECALCULO_PRECIOS_LOTE): cada tanda es una transaccion con su DELETE, su
+     * INSERT y su recalculo, y tiene sentido que coincida con la tanda del motor.
+     *
+     * `config('app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE')`, si viene seteada, MANDA: es la que usan
+     * los tests para forzar el corte entre tandas con pocos articulos (lote de 2 con 5 articulos).
+     *
+     * ⚠️ Mientras `config/app.php` le ponga default (hoy 200), esa config viene SIEMPRE seteada y la
+     * tanda real es 200, no la del motor. Funciona igual (es solo mas transacciones), pero para que
+     * la sincronizacion use la tanda del motor el default de esa clave tiene que pasar a null.
+     *
+     * @return int
+     */
+    static function tamanio_de_tanda() {
+
+        $forzado = config('app.SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE');
+
+        if (!is_null($forzado) && $forzado !== '' && (int) $forzado >= 1) {
+            return (int) $forzado;
+        }
+
+        return RecalculoDePreciosEnLote::tamanio_de_lote();
+    }
+
+    /**
+     * Normaliza la lista de descuentos de la ficha a lo que se escribe en `article_discounts`, con
+     * normalizar_descuento_tagueado(), en el mismo orden y salteando los items vacios: exactamente lo
+     * que create_tagged_discounts() crearia para cada articulo.
+     *
+     * @param  iterable|null $discounts
+     * @return array  Lista de ['percentage', 'amount', 'provider_discount_id', 'nombre'].
+     */
+    static function plantilla_de_descuentos($discounts) {
+
+        $plantilla = [];
+
+        if (is_null($discounts)) {
+            return $plantilla;
+        }
+
+        foreach ($discounts as $discount_original) {
+
+            $datos = self::normalizar_descuento_tagueado($discount_original);
+
+            if (!is_null($datos)) {
+                $plantilla[] = $datos;
+            }
+        }
+
+        return $plantilla;
+    }
+
+    /**
+     * La escritura de descuentos de una tanda: UN DELETE con todos los `ids_a_barrer` y UN INSERT
+     * multi-fila con los descuentos de la ficha de cada articulo.
+     *
+     * 🔴 El INSERT escribe EXACTAMENTE las columnas y los valores que escribia
+     * create_tagged_discounts() con ArticleDiscount::create() (y ninguna mas, asi el resto queda con
+     * el default del esquema, igual que antes: `editado_a_mano` 0, `temporal_id` null):
+     *
+     *   article_id, provider_id, percentage, amount, tipo, show_in_online, origen,
+     *   provider_discount_id, nombre, created_at, updated_at
+     *
+     * - Los cuatro datos del descuento salen de normalizar_descuento_tagueado(), la misma funcion que
+     *   usa create_tagged_discounts(): no hay dos copias de la normalizacion que se puedan separar.
+     * - `created_at` / `updated_at`: ArticleDiscount tiene timestamps (no declara lo contrario) y la
+     *   tabla las tiene; se escriben con freshTimestampString() del modelo, que es el mismo formato
+     *   que usa create(). ArticleDiscount no declara `$casts`, mutators, observers ni SoftDeletes,
+     *   asi que no hay nada que el create() hiciera y el INSERT crudo se salte (verificado el
+     *   28/9/2026).
+     * - El orden de las filas es el del create() de antes: articulo por articulo y, adentro de cada
+     *   uno, el de la plantilla (ver el docblock de aplicar_ficha_en_lote()).
+     *
+     * El DELETE va antes que el INSERT y barre SOLO los ids de cada item (los de la ficha, o todo lo
+     * tagueado a este proveedor con "pisar"): los manuales y los de otros proveedores no entran nunca
+     * en esa lista. Los dos se parten en sentencias acotadas para no pasar el tope de 65.535
+     * placeholders de MySQL con tandas grandes.
+     *
+     * @param  array $items        Items de la tanda, todos de articulos que existen.
+     * @param  int   $provider_id
+     * @param  array $plantilla    Salida de plantilla_de_descuentos().
+     * @return int   Filas insertadas.
+     */
+    static function escribir_descuentos_en_bloque(array $items, $provider_id, array $plantilla) {
+
+        $ids_a_barrer = [];
+
+        foreach ($items as $item) {
+
+            foreach ($item['ids_a_barrer'] as $id) {
+                $ids_a_barrer[] = (int) $id;
+            }
+        }
+
+        foreach (array_chunk($ids_a_barrer, self::IDS_POR_DELETE) as $ids) {
+            ArticleDiscount::whereIn('id', $ids)->delete();
+        }
+
+        // El mismo instante para toda la tanda, con el formato de fechas del modelo.
+        $ahora = (new ArticleDiscount())->freshTimestampString();
+
+        $filas = [];
+
+        foreach ($items as $item) {
+
+            /*
+             * La defensa de la propagacion: sin nada que reemplazar, no se crea (ver el item que arma
+             * propagar_a_articulos()). La sincronizacion no pone la marca y crea siempre.
+             */
+            if (!empty($item['solo_si_reemplaza']) && count($item['ids_a_barrer']) === 0) {
+                continue;
+            }
+
+            foreach ($plantilla as $datos) {
+
+                $filas[] = [
+                    'article_id'           => (int) $item['article_id'],
+                    'provider_id'          => $provider_id,
+                    'percentage'           => $datos['percentage'],
+                    'amount'               => $datos['amount'],
+                    // Siempre "bonificacion de proveedor" para los que vienen de la ficha (Prompt 260).
+                    'tipo'                 => ArticleDiscount::TIPO_BONIFICACION_PROVEEDOR,
+                    'show_in_online'       => $item['mostrar_en_online'] ? 1 : 0,
+                    // 🔴 QUIEN lo creo: la ficha. Es lo que despues deja rehacerlo.
+                    'origen'               => ArticleDiscount::ORIGEN_FICHA_PROVEEDOR,
+                    'provider_discount_id' => $datos['provider_discount_id'],
+                    'nombre'               => $datos['nombre'],
+                    'created_at'           => $ahora,
+                    'updated_at'           => $ahora,
+                ];
+            }
+        }
+
+        foreach (array_chunk($filas, self::FILAS_POR_INSERT) as $lote) {
+            DB::table('article_discounts')->insert($lote);
+        }
+
+        return count($filas);
+    }
+
+    /**
+     * Recalcula el precio de los articulos de una tanda con el motor en bloque, agrupados por dueño.
+     *
+     * En la practica hay un solo dueño (el del proveedor) y esto es UNA llamada al motor por tanda.
+     * El agrupado existe para no cambiar lo que pasaba antes en el caso raro de un articulo de otro
+     * dueño (descuentos tagueados a este proveedor en un articulo ajeno): antes se le calculaba el
+     * precio con SU dueño (`setFinalPrice($article, $article->user_id)`), y se sigue haciendo asi.
+     *
+     * Si ese dueño no existe o es un empleado (dato roto: el motor se niega a calcular con un
+     * empleado), esos articulos caen al setFinalPrice() por articulo de siempre, que es exactamente
+     * lo que se hacia antes con ellos.
+     *
+     * El employee_id de los price_changes va en null: el motor lo resuelve con
+     * UserHelper::userId(false), igual que PriceChangeController::store() cuando setFinalPrice() se
+     * llamaba sin `$auth_user_id` (que es como lo llamaban la sincronizacion y la propagacion).
+     *
+     * @param  int[] $article_ids
+     * @param  array $duenos           [article_id => user_id]
+     * @param  array $cache_de_duenos  [user_id => User|null], por referencia: se reusa entre tandas.
+     * @return void
+     */
+    static function recalcular_precios_de_la_tanda(array $article_ids, array $duenos, array &$cache_de_duenos) {
+
+        $por_dueno = [];
+
+        foreach ($article_ids as $article_id) {
+
+            $user_id = isset($duenos[(int) $article_id]) ? (int) $duenos[(int) $article_id] : 0;
+
+            $por_dueno[$user_id][] = (int) $article_id;
+        }
+
+        foreach ($por_dueno as $user_id => $ids) {
+
+            if (!array_key_exists($user_id, $cache_de_duenos)) {
+                $cache_de_duenos[$user_id] = $user_id > 0 ? User::find($user_id) : null;
+            }
+
+            $dueno = $cache_de_duenos[$user_id];
+
+            if (!is_null($dueno) && empty($dueno->owner_id)) {
+
+                RecalculoDePreciosEnLote::recalcular($ids, $dueno, null);
+
+                continue;
+            }
+
+            foreach ($ids as $article_id) {
+
+                $article = Article::find($article_id);
+
+                if (!is_null($article)) {
+                    ArticleHelper::setFinalPrice($article, $article->user_id);
+                }
+            }
+        }
+    }
+
+    /**
+     * [article_id => user_id] de los articulos que EXISTEN (no borrados), en una consulta cada
+     * 1.000 ids. Reemplaza al Article::find() por articulo de la propagacion y al whereIn que el
+     * lote hacia antes de escribir.
+     *
+     * @param  array $article_ids
+     * @return array
+     */
+    static function duenos_de_articulos(array $article_ids) {
+
+        $duenos = [];
+
+        $ids = [];
+
+        foreach ($article_ids as $article_id) {
+            $ids[(int) $article_id] = (int) $article_id;
+        }
+
+        foreach (array_chunk(array_values($ids), 1000) as $lote) {
+
+            // toBase() aplica los scopes globales: los borrados (SoftDeletes) quedan afuera.
+            $filas = Article::whereIn('id', $lote)->toBase()->get(['id', 'user_id']);
+
+            foreach ($filas as $fila) {
+                $duenos[(int) $fila->id] = (int) $fila->user_id;
+            }
+        }
+
+        return $duenos;
+    }
+
+    /**
+     * [article_id => user_id] del universo de una sincronizacion, sin volver a consultar lo que el
+     * escaneo ya sabe.
+     *
+     *   - Los articulos del proveedor (`ids_del_proveedor` del escaneo) existen y son del dueño del
+     *     proveedor: el escaneo los trajo con `where('user_id', $provider->user_id)` y SoftDeletes.
+     *   - Los que solo arrastran descuentos tagueados a este proveedor (se les cambio el proveedor
+     *     despues de una compra) pueden estar borrados o ser de otro dueño: solo esos se consultan.
+     *
+     * Con esto la sincronizacion hace UNA sola lectura de `articles` por tanda (la del motor), que
+     * es lo que cuentan los tests de 8_Sincronizar_*.
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  array $escaneo  Salida de `escanear_articulos_del_proveedor()`.
+     * @return array
+     */
+    static function duenos_del_universo($provider, array $escaneo) {
+
+        $duenos = [];
+
+        foreach ($escaneo['ids_del_proveedor'] as $article_id) {
+            $duenos[(int) $article_id] = (int) $provider->user_id;
+        }
+
+        $a_consultar = [];
+
+        foreach (array_keys($escaneo['tagueados_por_articulo']) as $article_id) {
+
+            if (!isset($duenos[(int) $article_id])) {
+                $a_consultar[] = (int) $article_id;
+            }
+        }
+
+        if (count($a_consultar) > 0) {
+
+            foreach (self::duenos_de_articulos($a_consultar) as $article_id => $user_id) {
+                $duenos[$article_id] = $user_id;
+            }
+        }
+
+        return $duenos;
     }
 }
