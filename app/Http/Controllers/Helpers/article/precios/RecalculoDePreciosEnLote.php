@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Models\Article;
 use App\Models\PriceType;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -55,6 +56,19 @@ class RecalculoDePreciosEnLote
 
     /** Filas por INSERT de price_update_run_articles. */
     const FILAS_POR_INSERT = 500;
+
+    /**
+     * Las columnas de `articles` con el instante en que se escribió la fila, que leen los que
+     * traen artículos "cambiados desde" (la descarga offline del listado y el export para
+     * integraciones). El motor las sella al ESCRIBIR, con un solo instante por tanda (ver
+     * recalcular_tanda()).
+     *
+     * @var array
+     */
+    const COLUMNAS_DE_SELLO = [
+        'updated_at',
+        'final_price_updated_at',
+    ];
 
     /**
      * Columnas de `articles` con su tipo, tal como las devuelve SHOW COLUMNS: [columna => tipo].
@@ -312,6 +326,34 @@ class RecalculoDePreciosEnLote
                     }
                 }
 
+                /*
+                 * 🔴 Los sellos de tiempo se ponen ACÁ, al escribir, y no durante el cálculo
+                 * (seguimiento del 29/9/2026). El cálculo de una tanda de 1.000 tarda segundos, y
+                 * cada artículo se sellaba con la hora de SU cálculo; pero la fila recién se ve al
+                 * confirmarse la tanda. Un lector incremental (la descarga offline del listado, el
+                 * export a integraciones) que en el medio guardó "vi hasta las HH:MM:SS" se
+                 * salteaba las filas selladas antes de esa marca y confirmadas después. Ahora todas
+                 * las filas de la tanda llevan el MISMO instante, tomado justo antes del UPDATE, en
+                 * las dos columnas.
+                 *
+                 * Solo en las filas que ya traían esas columnas para escribir: updated_at donde el
+                 * camino por artículo lo tocaba, y final_price_updated_at solo donde cambió el
+                 * precio (lo pone setFinalPrice(), como siempre). Con el reloj congelado de los
+                 * tests de equivalencia el valor es el mismo que antes.
+                 */
+                if (!empty($escrituras)) {
+
+                    $sello = $articles->first()->fromDateTime(Carbon::now());
+
+                    foreach ($escrituras as $article_id => $columnas) {
+                        foreach (self::COLUMNAS_DE_SELLO as $columna) {
+                            if (array_key_exists($columna, $columnas)) {
+                                $escrituras[$article_id][$columna] = $sello;
+                            }
+                        }
+                    }
+                }
+
                 $filas_escritas = self::actualizar_articulos($escrituras);
 
                 PreciosEnLote::volcar();
@@ -385,6 +427,8 @@ class RecalculoDePreciosEnLote
      *   esas integraciones. Se reproduce tal cual: se toca exactamente cuando el save() de hoy lo
      *   tocaba (costo_real sucio para Eloquent al terminar el cálculo). Si el artículo pasó por el
      *   `price = null; save()` del modo lote, ese save() ya lo tocó y costo_real quedó limpio.
+     *   El valor que se anota acá es provisorio: recalcular_tanda() lo reemplaza, junto con el de
+     *   final_price_updated_at, por un solo instante tomado justo antes del UPDATE.
      *
      * @param  \App\Models\Article $article
      * @return array [columna => valor]
