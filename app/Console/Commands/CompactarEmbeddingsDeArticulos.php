@@ -12,7 +12,8 @@ use Illuminate\Console\Command;
  * La búsqueda semántica del agente de WhatsApp compara contra un vector compacto de cada artículo
  * (512 dims normalizadas, float32 binario) en vez del JSON de 1536 floats. Ese compacto se arma
  * solo: la propia búsqueda compacta al vuelo los que faltan y los que quedaron viejos (su sello
- * `embedding_generated_at` ya no coincide con el del artículo, porque se re-indexó —desde esta
+ * —`embedding_source_hash`, o `embedding_generated_at` si el artículo no tiene hash— ya no
+ * coincide con el del artículo, porque se re-indexó —desde esta
  * versión, desde un frente con la versión anterior o después de un rollback—). Este comando hace
  * ese mismo backfill de una, para que el primer mensaje de cada cliente después del deploy no pague
  * el costo de compactar todo el catálogo.

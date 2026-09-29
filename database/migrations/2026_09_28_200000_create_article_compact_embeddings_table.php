@@ -29,14 +29,21 @@ use Illuminate\Support\Facades\Schema;
  * - `user_id` con índice: permite recorrer o limpiar lo de un dueño sin pasar por `articles`.
  * - `vector` BLOB NOT NULL: una fila sin vector no tiene sentido; el servicio borra la fila en vez
  *   de dejarla vacía.
- * - `embedding_generated_at`: el SELLO DE FRESCURA. Es copia del `articles.embedding_generated_at`
- *   que tenía el artículo en la misma lectura de fila de la que salió el JSON compactado. Un
- *   compacto vale solo mientras los dos sellos coincidan (igualdad null-safe `<=>`); si no, la
- *   búsqueda y el comando lo re-arman desde el JSON. Existe porque cada cliente tiene DOS frentes
- *   sobre la misma base: si el cron quedó en el frente viejo, `articles:generate-embeddings` de esa
- *   versión re-indexa `articles.embedding` sin saber que esta tabla existe, y sin el sello el
+ * - `embedding_source_hash` + `embedding_generated_at`: el SELLO DE FRESCURA. Son copia de las
+ *   columnas homónimas de `articles` tal como estaban en la misma lectura de fila de la que salió
+ *   el JSON compactado. Un compacto vale solo mientras el sello coincida con el del artículo; si
+ *   no, la búsqueda y el comando lo re-arman desde el JSON. Existe porque cada cliente tiene DOS
+ *   frentes sobre la misma base: si el cron quedó en el frente viejo, `articles:generate-embeddings`
+ *   de esa versión re-indexa `articles.embedding` sin saber que esta tabla existe, y sin el sello el
  *   compacto quedaría rankeando para siempre con el vector anterior, sin ningún error. Lo mismo con
- *   un rollback de versión. Nullable porque `articles.embedding_generated_at` también lo es.
+ *   un rollback de versión.
+ *   - Manda el HASH (sha1 del texto vectorizado): cambia solo cuando cambia el texto, o sea cuando
+ *     cambia el vector. `embedding_generated_at` NO sirve como sello principal porque el job lo
+ *     refresca aunque el texto no cambie (una actualización masiva de precios lo movería en miles
+ *     de artículos y el siguiente mensaje de WhatsApp tendría que releer todo ese JSON).
+ *   - La FECHA es solo el respaldo para los artículos sin hash (vectorizados por código anterior a
+ *     la columna, o sembrados sin él).
+ *   - `string(64)`, igual que `articles.embedding_source_hash`. Las dos nullable, como allá.
  * - Sin foreign keys (regla del repo) y sin `created_at`/`updated_at` (nadie los lee; la fila se
  *   reescribe entera cada vez que cambia el vector del artículo).
  *
@@ -69,7 +76,10 @@ class CreateArticleCompactEmbeddingsTable extends Migration
             /* 512 floats float32 little-endian (pack('g*')), vector de norma 1: 2048 bytes. */
             $table->binary('vector');
 
-            /* Sello de frescura: articles.embedding_generated_at del JSON que se compactó. */
+            /* Sello de frescura: articles.embedding_source_hash del JSON que se compactó. */
+            $table->string('embedding_source_hash', 64)->nullable();
+
+            /* Respaldo del sello para artículos sin hash: articles.embedding_generated_at. */
             $table->timestamp('embedding_generated_at')->nullable();
         });
     }
