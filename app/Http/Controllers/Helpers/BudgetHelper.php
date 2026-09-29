@@ -270,19 +270,24 @@ class BudgetHelper {
 			 * como se guardó y lo único que cambia es lo que se le copia a la venta.
 			 *
 			 * El criterio —`CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir`— se mide
-			 * contra el PRECIO DE LA PROPIA LÍNEA y no contra `articles.costo_real` de hoy, porque la
-			 * ficha del artículo cambia después de la venta (mangueras 3073/3074/3075: costo_real hoy
-			 * 6,17 contra 388,77 con el que se vendió, margen del 50 %): comparar contra la ficha
-			 * "arreglaría" mal una línea sana. Una línea ya unitaria pasa intacta, así que no se divide
-			 * dos veces. Es una defensa y no reemplaza al saneo del histórico. Va ANTES de calcular la
-			 * ganancia de la línea para que ésta salga con el costo ya corregido.
+			 * contra el PRECIO DE LA PROPIA LÍNEA y no contra `articles.costo_real` de hoy como valor a
+			 * copiar, porque la ficha del artículo cambia después de la venta (mangueras
+			 * 3073/3074/3075: costo_real hoy 6,17 contra 388,77 con el que se vendió, margen del 50 %):
+			 * "corregir si difiere de la ficha" arreglaría mal una línea sana. La ficha entra SOLO como
+			 * desempate de orden de magnitud: el costo guardado tiene que estar más cerca del BULTO que
+			 * de la UNIDAD, o si no una pérdida real con ui > 1 (cost 100, price 40, ui 10) se
+			 * confundiría con un bulto sin dividir y se "arreglaría" a 10. Una línea ya unitaria pasa
+			 * intacta, así que no se divide dos veces. Es una defensa y no reemplaza al saneo del
+			 * histórico. Va ANTES de calcular la ganancia de la línea para que ésta salga con el costo
+			 * ya corregido.
 			 *
-			 * Las unidades salen del modelo del artículo, que es el mismo dato que `getCost()` lee.
+			 * Unidades y ficha salen del modelo del artículo, el mismo dato que `getCost()` lee.
 			 */
 			$cost = CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
 				$cost,
 				$price,
-				$article->unidades_individuales
+				$article->unidades_individuales,
+				$article->costo_real
 			);
 
 			/*

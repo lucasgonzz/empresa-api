@@ -323,18 +323,35 @@ class CostoDeLineaDeVentaHelper
      *
      * Es la misma condición de la Causa A de `analizar()` (la que el saneo histórico aplica a
      * `article_sale`), pero pensada para el momento de GUARDAR: sin filas ni contadores, solo los
-     * tres números de la línea.
+     * números de la línea, más una quinta condición que el saneo histórico no necesita.
      *
      *   - `unidades > 1`
      *   - `price > 0`
      *   - `cost > price × FACTOR_COSTO_INCOHERENTE`  → la línea pierde más del doble de lo que factura
      *   - `cost / unidades <= price × FACTOR_COSTO_INCOHERENTE` → y dividir la vuelve coherente
+     *   - `cost / costo_real_ficha > sqrt(1 / unidades)` → el costo guardado está más cerca del
+     *     BULTO que de la UNIDAD, según la ficha del artículo de hoy
      *
-     * Si las cuatro se cumplen → `round(cost / unidades, 2)`. Si falla cualquiera → `cost` intacto.
+     * Si las cinco se cumplen → `round(cost / unidades, 2)`. Si falla cualquiera → `cost` intacto.
      *
-     * 🔴 POR QUÉ el criterio se mide contra el PRECIO DE LA PROPIA LÍNEA y NO contra
-     * `articles.costo_real` de hoy (medido en ferretotal el 29/9/2026, misión
-     * ganancia-unidades-individuales):
+     * 🔴 POR QUÉ la quinta condición (falsos positivos medidos por el verificador independiente,
+     * 29/9/2026): con las primeras cuatro solas, la guarda no distingue una pérdida REAL de un bulto
+     * sin dividir. Una línea SANA de un artículo con ui > 1 vendida a pérdida fuerte cumple las
+     * cuatro y se "arreglaba" mal, falsificando la ganancia en silencio:
+     *
+     *     (cost 100, price 40, ui 10) → 10,00     (cost 100, price 10, ui 25) → 4,00
+     *     (cost 100, price 40, ui 2)  → 50,00
+     *
+     * Lo que las separa es el orden de magnitud contra la ficha: un costo de bulto sin dividir vale
+     * ~ `costo_real` (ratio ≈ 1) y un costo ya unitario vale ~ `costo_real / ui` (ratio ≈ 1/ui). Se
+     * corrige solo si el ratio pasa el punto medio geométrico, `sqrt(1/ui)`. Sin cota superior a
+     * propósito: si la ficha se cotizó en dólares o cambió mucho después de la venta, el criterio de
+     * precio de la propia línea (las condiciones 3 y 4) sigue siendo el árbitro. Y si la ficha no
+     * es numérica o es <= 0 no hay con qué comparar, así que NO se adivina: `cost` intacto.
+     *
+     * 🔴 POR QUÉ el criterio principal se mide contra el PRECIO DE LA PROPIA LÍNEA y la ficha entra
+     * solo como desempate de orden de magnitud, no como valor a copiar (medido en ferretotal el
+     * 29/9/2026, misión ganancia-unidades-individuales):
      *
      * El disparador fue la venta 54.499 (`sales.id 54735`): nació del presupuesto 411, que se creó
      * el 2/9 con el SPA viejo, sin la clave `unidades_individuales`. `getCost()` guardó el costo del
@@ -356,24 +373,34 @@ class CostoDeLineaDeVentaHelper
      *
      * ⚠️ Esto es una defensa, NO reemplaza al saneo del histórico (`sale:sanear-costo-de-linea`):
      * corrige lo que se está por copiar, no lo que ya quedó guardado mal. No hay que "simplificarla"
-     * ni a un `if ui > 1 dividir` (rompe toda línea ya dividida) ni a una comparación con la ficha.
+     * ni a un `if ui > 1 dividir` (rompe toda línea ya dividida), ni a "solo el precio" (falsos
+     * positivos de arriba), ni a "corregir si difiere de la ficha" (rompe las líneas cuya ficha
+     * cambió después de la venta).
      *
      * @param  mixed $cost      Costo unitario guardado en la línea (pivot).
      * @param  mixed $price     Precio unitario de la misma línea.
      * @param  mixed $unidades  `unidades_individuales` del artículo.
+     * @param  mixed $costo_real_ficha  `articles.costo_real` (el costo del BULTO) del artículo, hoy.
      * @return mixed            `float` redondeado a 2 decimales si se corrigió; `$cost` tal cual si no.
      */
-    public static function corregir_costo_de_bulto_sin_dividir($cost, $price, $unidades)
+    public static function corregir_costo_de_bulto_sin_dividir($cost, $price, $unidades, $costo_real_ficha)
     {
-        if (!is_numeric($cost) || !is_numeric($price) || !is_numeric($unidades)) {
+        if (!is_numeric($cost) || !is_numeric($price) || !is_numeric($unidades) || !is_numeric($costo_real_ficha)) {
             return $cost;
         }
 
         $cost_float = (float) $cost;
         $price_float = (float) $price;
         $unidades_float = (float) $unidades;
+        $ficha_float = (float) $costo_real_ficha;
 
-        if ($unidades_float <= 1 || $price_float <= 0) {
+        // Sin ficha positiva no hay con qué decidir si el costo está cerca del bulto: no se adivina.
+        if ($unidades_float <= 1 || $price_float <= 0 || $ficha_float <= 0) {
+            return $cost;
+        }
+
+        // Más cerca de la unidad que del bulto (punto medio geométrico): es un costo unitario sano.
+        if ($cost_float / $ficha_float <= sqrt(1 / $unidades_float)) {
             return $cost;
         }
 
