@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Jobs\FinalizeSetFinalPrices;
 use App\Jobs\ProcessChunkSetFinalPrices;
+use App\Jobs\ProcessSetFinalPrices;
 use App\Models\PriceType;
 use App\Models\User;
 use Carbon\Carbon;
@@ -68,6 +69,20 @@ class PriceTypeHelper {
 	/**
 	 * Verifica cambios en recargos y dispara recálculo global cuando corresponde.
 	 *
+	 * La condición ($hubo_cambios) es la de siempre y no se tocó. Lo que cambió es CÓMO se
+	 * recalcula (misión recalculo-precios-motor-rapido, 28/9/2026): antes se llamaba a
+	 * ArticleHelper::setArticlesFinalPrice(), que recorría el catálogo ENTERO del dueño adentro
+	 * del request de guardar la lista, artículo por artículo, leyendo cada fila completa (con el
+	 * vector de embeddings) y con un User::find() por artículo. En un catálogo como el de Servian
+	 * (574.000 artículos) ese request no terminaba nunca. Ahora se encola el recálculo en segundo
+	 * plano, igual que al crear una lista (PriceTypeController::agregar_a_articulos_existentes()):
+	 * mismo alcance (todos los artículos no borrados del dueño), mismo cálculo (el motor en lote
+	 * deja la base exactamente igual que setFinalPrice() por artículo) y visible en la píldora de
+	 * procesos, con el nombre de la lista.
+	 *
+	 * 🔴 No volver al recálculo sincrónico "para que el precio se vea al toque": es justamente lo
+	 * que dejaba colgado el guardado de una lista en los catálogos grandes.
+	 *
 	 * @param PriceType $price_type
 	 * @return void
 	 */
@@ -77,15 +92,39 @@ class PriceTypeHelper {
 		$hubo_cambios = false;
 
 		foreach ($price_type->price_type_surchages as $price_type_surchage) {
-			
+
 			if ($price_type->updated_at <= Carbon::now()->subMinute()) {
 				$hubo_cambios = true;
 			}
 		}
 
 		if ($hubo_cambios) {
-			ArticleHelper::setArticlesFinalPrice();
+			ProcessSetFinalPrices::dispatch(Self::dueno_de_la_lista($price_type), null, null, false, 'tipo_de_precio', $price_type->name);
 		}
+	}
+
+	/**
+	 * El dueño de la cuenta a la que pertenece una lista de precios: el usuario cuyo catálogo hay
+	 * que recalcular.
+	 *
+	 * Las listas se crean a nombre del dueño (PriceTypeController::store() usa $this->userId(),
+	 * que resuelve al dueño), así que en el flujo normal es $price_type->user_id y coincide con el
+	 * UserHelper::userId() que usaba setArticlesFinalPrice(). Si alguna vez una lista quedó a
+	 * nombre de un empleado, se sube a su dueño: el cálculo de precios es de la cuenta, y con un
+	 * empleado el recálculo usaría la configuración equivocada.
+	 *
+	 * @param PriceType $price_type
+	 * @return int
+	 */
+	static function dueno_de_la_lista($price_type) {
+
+		$usuario = User::find($price_type->user_id);
+
+		if (!is_null($usuario) && !empty($usuario->owner_id)) {
+			return (int) $usuario->owner_id;
+		}
+
+		return (int) $price_type->user_id;
 	}
 
 	/**
