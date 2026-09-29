@@ -343,4 +343,31 @@ class Catalogo_de_permisos_Test extends EmpresaTestCase
             'Tiene que ir Vender, después Ventas, después Reportes, y lo que no está en el catálogo al final'
         );
     }
+
+    /**
+     * El buscador de la pantalla de Empleados suma estas palabras al nombre y al grupo: sin ellas
+     * "plata" no encuentra las cajas ni "borrar" los permisos de eliminar.
+     *
+     * @return void
+     */
+    public function test_el_endpoint_manda_palabras_clave_para_el_buscador()
+    {
+        PermissionEmpresa::forceCreate(['slug' => 'caja.index', 'name' => 'x', 'model_name' => 'x']);
+        PermissionEmpresa::forceCreate(['slug' => 'client.delete', 'name' => 'x', 'model_name' => 'x']);
+        PermissionEmpresa::forceCreate(['slug' => 'cliente.especial', 'name' => 'Algo propio', 'model_name' => 'Propios']);
+
+        $response = $this->getJson('api/permission');
+        $response->assertStatus(200);
+
+        $por_slug = collect($response->json('models'))->keyBy('slug');
+
+        $this->assertStringContainsString('plata', $por_slug['caja.index']['palabras_clave']);
+        $this->assertStringContainsString('borrar', $por_slug['client.delete']['palabras_clave']);
+        $this->assertStringContainsString('cobrar', $por_slug['client.delete']['palabras_clave']);
+        // Un permiso que el catalogo no conoce no rompe: llega con el campo vacio.
+        $this->assertSame('', $por_slug['cliente.especial']['palabras_clave']);
+
+        // Las palabras clave son solo para la respuesta: no se guardan en la base.
+        $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('permission_empresas', 'palabras_clave'));
+    }
 }

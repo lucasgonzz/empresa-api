@@ -72,9 +72,9 @@ class PermisosCatalogoHelper
                 'sale.index.previus_days'                       => 'Ver ventas de días anteriores (sin esto solo ve las de hoy)',
                 'sale.index.total'                              => 'Ver el total vendido',
                 'sale.index.addresses.all'                      => 'Ver las ventas de todas las sucursales',
-                'sale.index.addresses.only_your'                => 'Ver solo las ventas de su sucursal',
+                'sale.index.addresses.only_your'                => 'Ver solo las ventas de su sucursal (si tiene también el de todas, gana ese)',
                 'sale.index.employees.all'                      => 'Ver las ventas de todos los empleados',
-                'sale.index.employees.only_your'                => 'Ver solo sus propias ventas',
+                'sale.index.employees.only_your'                => 'Ver solo sus propias ventas (si tiene también el de todos, gana ese)',
                 'devolucion.store'                              => 'Hacer devoluciones',
             ],
 
@@ -155,10 +155,10 @@ class PermisosCatalogoHelper
                 'reportes.ingresos'                             => 'Ver los ingresos de la empresa',
                 'reportes.sucursales.index'                     => 'Ver ventas por sucursal',
                 'reportes.sucursales.index.all'                 => 'Reportes: ver todas las sucursales',
-                'reportes.sucursales.index.only_your'           => 'Reportes: ver solo su sucursal',
+                'reportes.sucursales.index.only_your'           => 'Reportes: ver solo su sucursal (si tiene también el de todas, gana ese)',
                 'reportes.empleados.index'                      => 'Ver ventas por empleado',
                 'reportes.empleados.index.all'                  => 'Reportes: ver todos los empleados',
-                'reportes.empleados.index.only_your'            => 'Reportes: ver solo sus ventas',
+                'reportes.empleados.index.only_your'            => 'Reportes: ver solo sus ventas (si tiene también el de todos, gana ese)',
                 'reportes.gastos'                               => 'Ver el gráfico de gastos',
                 'reportes.clientes'                             => 'Ver el gráfico de clientes',
             ],
@@ -240,6 +240,86 @@ class PermisosCatalogoHelper
                 'support.see_other_users_chats'                 => 'Ver los chats de soporte de otros empleados',
             ],
         ];
+    }
+
+    /**
+     * Sinónimos con los que un comerciante busca cada permiso ("plata" para las cajas, "borrar" para
+     * los `.delete`). Viajan en la respuesta de `GET api/permission` como `palabras_clave` (no se
+     * guardan en la base) y el buscador de la pantalla de Empleados los suma al nombre y al grupo.
+     *
+     * Cada fila es `[regex sobre el slug, palabras]` y se acumulan todas las que coincidan. Las
+     * palabras van sin tildes y en minúscula; el buscador las normaliza igual.
+     *
+     * @var array
+     */
+    const PALABRAS_CLAVE = [
+        ['/\.delete$/',                                     'borrar anular quitar eliminar'],
+        ['/^sale\.delete$/',                                'anular factura comprobante'],
+        ['/\.excel\.import$/',                              'planilla xls xlsx subir cargar'],
+        ['/\.excel\.export$/',                              'planilla xls xlsx descargar bajar'],
+        ['/^sale\./',                                       'venta ventas factura comprobante'],
+        ['/^devolucion\./',                                 'nota de credito cambio reclamo'],
+        ['/^vender\.|^article\.vender\./',                  'punto de venta mostrador'],
+        ['/^article\.vender\.change_price$|^vender\.prohibir_camibar/', 'precio lista de precios'],
+        ['/discount/',                                      'descuento recargo promocion rebaja'],
+        ['/^vender\.prohibir_/',                            'bloquear restringir clave'],
+        ['/^vender\.prohibir_eliminar/',                    'borrar anular quitar'],
+        ['/^vender\.change_employee$|employees\.|^reportes\.empleados/', 'vendedor comision usuario empleado'],
+        ['/addresses\.|^reportes\.sucursales|address/',     'sucursal local negocio'],
+        ['/^article\./',                                    'producto mercaderia catalogo'],
+        ['/^article\.cost$/',                               'costo precio de compra'],
+        ['/^article\.percentage_gain$/',                    'margen ganancia rentabilidad utilidad'],
+        ['/^article\.provider$/',                           'proveedor'],
+        ['/stock|^deposit|^deposito/',                      'inventario existencias mercaderia deposito'],
+        ['/^client\./',                                     'cobrar cobranza deuda saldo fiado cuenta corriente'],
+        ['/^payment_plan\./',                               'tarjeta financiar cuotas credito'],
+        ['/^provider/',                                     'compra compras pedido pedidos mercaderia'],
+        ['/^budget\./',                                     'cotizacion presupuesto'],
+        ['/^caja\.index$/',                                 'caja cajas plata dinero efectivo arqueo apertura cierre cierre de caja tesoreria'],
+        ['/^movimiento_entre_caja|^expense\./',             'plata dinero traspaso transferencia egresos'],
+        ['/^reportes\./',                                   'estadisticas informe grafico'],
+        ['/^reportes\.cards$/',                             'utilidad rentabilidad ganancia balance resultado'],
+        ['/^reportes\.cheques$/',                           'cheque cheques banco'],
+        ['/^alerts\.problemas_al_facturar$/',               'afip arca cae factura electronica error'],
+        ['/^alerts\.recordatorio_cobro$/',                  'cobrar cobranza deuda cliente fiado mensaje'],
+        ['/^alerts\./',                                     'aviso avisos notificacion'],
+        ['/^pending\./',                                    'tareas recordatorios agenda'],
+        ['/^road_map\./',                                   'envio envios reparto entrega logistica'],
+        ['/^order\.|^buyer\.|^cupon\.|^mercado_libre\./',   'ecommerce web online tienda pedidos'],
+        ['/^produccion|^recipe|^order_production|^production_movement/', 'fabricar receta elaborar'],
+        ['/^abm$/',                                         'configuracion ajustes categorias marcas listas de precios'],
+    ];
+
+    /**
+     * Palabras clave de un permiso (ver PALABRAS_CLAVE), juntas en un solo texto.
+     *
+     * @param  string  $slug
+     * @return string
+     */
+    public static function palabras_clave($slug)
+    {
+        $palabras = [];
+
+        foreach (self::PALABRAS_CLAVE as $regla) {
+            if (preg_match($regla[0], (string) $slug)) {
+                $palabras[] = $regla[1];
+            }
+        }
+
+        return implode(' ', $palabras);
+    }
+
+    /**
+     * Le agrega `palabras_clave` a cada permiso, solo para la respuesta (no se persiste).
+     *
+     * @param  \Illuminate\Support\Collection  $permisos
+     * @return \Illuminate\Support\Collection
+     */
+    public static function conPalabrasClave($permisos)
+    {
+        return $permisos->each(function ($permiso) {
+            $permiso->setAttribute('palabras_clave', self::palabras_clave($permiso->slug));
+        });
     }
 
     /**

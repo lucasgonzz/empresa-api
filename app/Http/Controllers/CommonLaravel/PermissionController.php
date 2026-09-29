@@ -13,7 +13,7 @@ class PermissionController extends Controller
     function index() {
         // El orden (grupos de arriba hacia abajo y, dentro de cada uno, entrar -> crear -> editar ->
         // eliminar) lo fija el catalogo: sin esto salia por id, distinto en cada base.
-        $models = PermisosCatalogoHelper::ordenar(PermissionEmpresa::all());
+        $models = PermisosCatalogoHelper::conPalabrasClave(PermisosCatalogoHelper::ordenar(PermissionEmpresa::all()));
         return response()->json(['models' => $models], 200);
     }
 }
