@@ -179,6 +179,13 @@ class CatalogoDeAccionesDePantallaIaHelper
         // ── Ya tienen herramienta propia (las de recurso van por HERRAMIENTAS_PROPIAS) ────────
         '#api/pdf-column-profiles#'                   => 'tiene su herramienta: proponer_cambio_en_diseno_pdf',
         /*
+         * Diseños de Vender (29/9/2026): se LEEN (el asistente puede decir cual esta en uso), pero no
+         * se crean, editan ni borran por chat. Mismo motivo que su entrada en
+         * CatalogoDeEscrituraIaHelper::EXCLUIDAS: el JSON lo resuelve el SPA contra su catalogo de
+         * campos, y por aca se podria guardar un Vender sin buscador de articulos.
+         */
+        '#^(POST|PUT|DELETE) api/vender-layout(/|$)#'  => 'diseños de Vender: se editan arrastrando en el editor del ABM; por chat se podría dejar Vender sin buscador de artículos',
+        /*
          * ── Los endpoints genéricos de la SPA ──────────────────────────────────────────────
          * 🔴 `search/{model_name}`, `global-search/{model_name}`, `previus-next/{model_name}`,
          * `papelera/{model_name}`, `masive-update/{model_name}`... reciben el MODELO en el parámetro,
