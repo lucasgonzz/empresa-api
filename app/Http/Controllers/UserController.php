@@ -916,9 +916,14 @@ class UserController extends Controller
         $current_redondear_miles_en_vender
     ) {
 
-        if (
-            $model->dollar != $current_dolar
-            || $model->iva_included != $current_iva_included
+        /** @var bool $cambio_el_dolar El dólar de la cuenta cambió en este guardado. */
+        $cambio_el_dolar = $model->dollar != $current_dolar;
+
+        /**
+         * @var bool $cambio_otro_parametro Cambió en este mismo guardado algún OTRO parámetro que
+         *      mueve precios. Son los mismos de siempre de esta comparación, sin el dólar.
+         */
+        $cambio_otro_parametro = $model->iva_included != $current_iva_included
             || $model->percentage_gain != $current_percentage_gain
             || $model->cotizar_precios_en_dolares != $current_cotizar_precios_en_dolares
             || (int) $model->redondear_precios_en_decenas !== (int) $current_redondear_precios_en_decenas
@@ -928,9 +933,9 @@ class UserController extends Controller
             || $model->condicion_iva_precios != $current_condicion_iva_precios
             || (int) $model->usar_condicion_fiscal_en_costeo !== (int) $current_usar_condicion_fiscal_en_costeo
             || (int) $model->redondear_centenas_en_vender !== (int) $current_redondear_centenas_en_vender
-            || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender
+            || (int) $model->redondear_miles_en_vender !== (int) $current_redondear_miles_en_vender;
 
-        ) {
+        if ($cambio_el_dolar || $cambio_otro_parametro) {
             Log::info($model->dollar.' | '.$current_dolar);
             Log::info($model->iva_included.' | '.$current_iva_included);
             Log::info($model->percentage_gain.' | '.$current_percentage_gain);
@@ -943,12 +948,18 @@ class UserController extends Controller
             Log::info((int) $model->usar_condicion_fiscal_en_costeo.' | '.(int) $current_usar_condicion_fiscal_en_costeo);
             Log::info('Hubo cambios en propiedades de user');
 
-            /** @var bool $from_dolar Indica si el recálculo se disparó por cambio de dólar (optimiza query en job). */
-            $from_dolar = false;
-
-            if ($model->dollar != $current_dolar) {
-                $from_dolar = true;
-            }
+            /**
+             * @var bool $from_dolar El recálculo se acota a los artículos que dependen del dólar
+             *      (ProcessSetFinalPrices, alcance del dólar global).
+             *
+             * 🔴 SOLO si el dólar es lo ÚNICO que cambió (misión recalculo-precios-motor-rapido,
+             * seguimiento del 29/9/2026). Antes bastaba con que cambiara el dólar: si en el mismo
+             * guardado cambiaba también el redondeo, el margen general o el IVA, el recálculo se
+             * acotaba igual a los artículos en dólares y todo el resto del catálogo se quedaba con
+             * el redondeo, el margen o el IVA viejos, sin ningún aviso. Con otro parámetro en el
+             * medio, el recálculo es el completo, con origen configuracion_usuario.
+             */
+            $from_dolar = $cambio_el_dolar && !$cambio_otro_parametro;
 
             // from_dolar ya distinguia este caso; ahora ademas lo cuenta el modal.
             ProcessSetFinalPrices::dispatch(UserHelper::userId(), null, null, $from_dolar, $from_dolar ? 'dolar' : 'configuracion_usuario');

@@ -318,7 +318,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => 'El proveedor va a la papelera. Sus artículos y sus compras quedan.',
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'ProviderController: store() crea con num() y sus cuentas corrientes; update() reasigna los campos y, si cambió percentage_gain o dolar, encola el recálculo de precios (ProcessSetFinalPrices); destroy() soft delete. Los descuentos (provider_discounts) son otro recurso y update() no los toca.',
+            'revisado'           => 'ProviderController: store() crea con num() y sus cuentas corrientes; update() reasigna los campos y encola el recálculo de precios (ProcessSetFinalPrices) solo si cambió algo que mueve precios: el margen (percentage_gain) o la modalidad precio desde costo más IVA (price_from_cost_mas_iva) recalculan todos los artículos del proveedor; un cambio solo del dólar, solo sus artículos con costo en dólares. Un cambio solo de sus descuentos ya no recalcula nada (el precio lee las copias de article_discounts: eso lo mueve la propagación o la sincronización de descuentos). destroy() soft delete. Los descuentos (provider_discounts) son otro recurso y update() no los toca.',
         ],
         'category' => [
             'etiqueta'           => 'categorías',

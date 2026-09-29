@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
-use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\category\PriceTypeHelper;
 use App\Http\Controllers\Helpers\category\SetPriceTypesHelper;
 use App\Models\Article;
@@ -68,9 +67,21 @@ class CategoryController extends Controller
         $model->save();
         GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
 
-        PriceTypeHelper::update_article_prices($model);
-
-        $this->check_percetange_gain($model, $previus_percentage_gain);
+        /*
+         * UN solo recalculo, en segundo plano, cuando corresponde (con la extension de listas por
+         * categoria, o si cambio el margen). Hasta el 28/9/2026 esto eran DOS recalculos
+         * SINCRONICOS de la categoria entera en el request: el de las listas y, si cambio el margen,
+         * otro mas en el ex check_percetange_gain(), que se borro. El porque esta en
+         * PriceTypeHelper::update_article_prices().
+         *
+         * Comparacion suelta (`!=`), la misma de siempre: "10.00" de la base contra 10 del
+         * formulario no es un cambio.
+         */
+        PriceTypeHelper::update_article_prices(
+            $model,
+            null,
+            $previus_percentage_gain != $model->percentage_gain
+        );
 
         /* Sincronizar el nombre actualizado de la categoría en TN antes de subir la imagen */
         $this->sync_category_to_tienda_nube($model);
@@ -105,18 +116,6 @@ class CategoryController extends Controller
 
     public function deleteSubCategories($category) {
         SubCategory::where('category_id', $category->id)->delete();
-    }
-
-    function check_percetange_gain($category, $previus_percentage_gain) {
-
-        if ($previus_percentage_gain != $category->percentage_gain) {
-
-            Log::info('Hubo cambios en percentage_gain de la categoria');
-            foreach ($category->articles as $article) {
-
-                ArticleHelper::setFinalPrice($article);
-            }
-        }
     }
 
     function check_tienda_nube_image($category) {

@@ -48,6 +48,11 @@ class PriceUpdateRun extends Model
                 return 'Se recalcularon por un cambio en un proveedor';
             case 'configuracion_usuario':
                 return 'Se recalcularon por un cambio en la configuración';
+            case 'categoria':
+                // Mision recalculo-precios-motor-rapido (28/9/2026): guardar una categoria o
+                // subcategoria dejo de recalcular en el request y pasa por ProcessSetFinalPrices
+                // (ver Helpers\category\PriceTypeHelper::update_article_prices()).
+                return 'Se recalcularon por un cambio en una categoría';
             default:
                 return 'Se recalcularon los precios';
         }

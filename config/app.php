@@ -251,8 +251,32 @@ return [
      * (los slots en 50, Servian en 100).
      */
     'ARTICLE_EXCEL_CHUNK_SIZE'                  => env('ARTICLE_EXCEL_CHUNK_SIZE', 1000),
-    // Fix 22/9/2026 (incidente Servian/EXPOYER, ver ArticleProviderDiscountHelper::aplicar_ficha_en_lote).
-    'SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE'     => env('SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE', 200),
+    /*
+     * Fix 22/9/2026 (incidente Servian/EXPOYER, ver ArticleProviderDiscountHelper::aplicar_ficha_en_lote).
+     *
+     * 🔴 SIN default desde la misión recalculo-precios-motor-rapido (28/9/2026), a propósito. Con
+     * la variable ausente del .env queda en null, y ArticleProviderDiscountHelper::tamanio_de_tanda()
+     * usa entonces la tanda del motor de precios (RecalculoDePreciosEnLote::tamanio_de_lote(): 1.000,
+     * configurable con RECALCULO_PRECIOS_LOTE). Ponerle un número acá la dejaría SIEMPRE seteada y
+     * la sincronización de descuentos correría en tandas de ese número en vez de las del motor: el
+     * 200 de antes era el tope de una sincronización que escribía artículo por artículo, y con el
+     * motor en bloque solo agrega transacciones. Se sigue pudiendo forzar desde el .env (y los tests
+     * la fijan con config() para cortar entre tandas con pocos artículos).
+     */
+    'SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE'     => env('SINCRONIZAR_DESCUENTOS_PROVEEDOR_LOTE'),
+    /*
+     * Artículos por tanda del recálculo de precios en segundo plano (misión
+     * recalculo-precios-motor-rapido, 28/9/2026): lo usan RecalculoDePreciosEnLote (cada tanda es
+     * una unidad atómica: una lectura con las relaciones precargadas, un UPDATE en bloque y una
+     * transacción), el productor ProcessSetFinalPrices (un ProcessChunkSetFinalPrices por tanda) y
+     * PriceTypeHelper::dispatch_recalculate_for_articles().
+     *
+     * 1.000 y no los 100 de antes: el costo de cada lote dejó de ser por artículo (una consulta de
+     * descuentos de 200 ms por artículo en Servian) y pasó a ser fijo por tanda (una docena de
+     * consultas de precarga), así que un lote grande reparte ese costo fijo entre más artículos.
+     * Se puede bajar desde el .env si en algún cliente la memoria del worker aprieta.
+     */
+    'RECALCULO_PRECIOS_LOTE'                    => env('RECALCULO_PRECIOS_LOTE', 1000),
     'VPS'                                       => env('VPS', false),
     'APP_ENV'                                   => env('APP_ENV', 'production'),
     'APP_URL'                                   => env('APP_URL'),

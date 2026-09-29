@@ -3,6 +3,7 @@
 namespace App\Services\MercadoLibre;
 
 use App\Http\Controllers\Helpers\ArticlePlatformSyncNotificationHelper;
+use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Models\Article;
 use App\Models\MeliAttribute;
 use App\Models\SyncToMeliArticle;
@@ -39,28 +40,50 @@ class ProductService extends MercadoLibreService
             return;
         }
 
-        Log::info('add_article_to_sync');
+        /*
+         * Modo lote de precios (PreciosEnLote: el recálculo en segundo plano y la importación,
+         * misión recalculo-precios-motor-rapido, 29/9/2026): ArticleHelper::setFinalPrice() pasa
+         * por acá con CADA artículo que recalcula, y en un cliente con Mercado Libre prendido casi
+         * ninguno es de Mercado Libre, así que cada recálculo escribía un Log::info y un
+         * Log::error por artículo del catálogo (decenas de miles de renglones de "error" que no
+         * son errores, en el mismo log donde se buscan los de verdad). En modo lote no se
+         * loguea; los return y lo que se encola son exactamente los mismos. Fuera del modo lote
+         * (la ficha de un artículo, la sincronización a mano), como siempre.
+         */
+        $en_lote = PreciosEnLote::esta_activo();
+
+        if (!$en_lote) {
+            Log::info('add_article_to_sync');
+        }
 
         if (!$article->mercado_libre) {
-            Log::error("Artículo Mercado Libre: ID {$article->id}");
+            if (!$en_lote) {
+                Log::error("Artículo Mercado Libre: ID {$article->id}");
+            }
 
             return;
         }
 
         if (!$article->meli_category_id) {
-            Log::error("Artículo sin categoria de Mercado Libre: ID {$article->id}");
+            if (!$en_lote) {
+                Log::error("Artículo sin categoria de Mercado Libre: ID {$article->id}");
+            }
 
             return;
         }
 
         if (is_null($article->stock)) {
-            Log::error("Artículo sin stock para Mercado Libre: ID {$article->id}");
+            if (!$en_lote) {
+                Log::error("Artículo sin stock para Mercado Libre: ID {$article->id}");
+            }
 
             return;
         }
 
         if (count($article->images) == 0) {
-            Log::error("Artículo sin imagenes para Mercado Libre: ID {$article->id}");
+            if (!$en_lote) {
+                Log::error("Artículo sin imagenes para Mercado Libre: ID {$article->id}");
+            }
 
             return;
         }

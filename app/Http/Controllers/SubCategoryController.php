@@ -55,6 +55,12 @@ class SubCategoryController extends Controller
 
         GeneralHelper::attachModels($model, 'price_types', $request->price_types, ['percentage']);
 
+        /*
+         * Con la extension de listas por categoria, UN recalculo de los articulos de la subcategoria
+         * en segundo plano (hasta el 28/9/2026 era sincronico, en este mismo request). Una
+         * subcategoria no tiene margen propio: sin la extension, guardarla no mueve precios. El
+         * porque esta en PriceTypeHelper::update_article_prices().
+         */
         PriceTypeHelper::update_article_prices(null, $model);
 
         $this->check_tienda_nube_image($model);

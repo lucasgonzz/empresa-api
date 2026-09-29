@@ -35,8 +35,9 @@ use Illuminate\Support\Facades\Log;
  *     eso el aviso llega hasta 75 minutos tarde en el shared hosting; esta explicado en
  *     `GlobalNotification::toBroadcast()`).
  *
- * 🔴 EN EL WORKER NO HAY SESION NI `Auth::user()`. El owner viaja explicito y el helper le pasa
- * `$article->user_id` a `setFinalPrice()`. Es el pozo que ya esta documentado dos veces en
+ * 🔴 EN EL WORKER NO HAY SESION NI `Auth::user()`. El owner viaja explicito y el helper recalcula
+ * con el dueño de cada articulo (RecalculoDePreciosEnLote, desde el 28/9/2026; antes
+ * `setFinalPrice()` con `$article->user_id`). Es el pozo que ya esta documentado dos veces en
  * `MasiveUpdateHelper` y en `ProcessRow`: dejarlo resolver solo da `false` siempre, con la
  * funcionalidad muerta y sin un solo error que lo delate.
  */
@@ -45,8 +46,11 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * Timeout amplio: el modo "todos" sobre un proveedor de miles de articulos hace un
-     * `setFinalPrice()` por articulo. Mismo valor que el export y la masiva.
+     * Timeout amplio, mismo valor que el export y la masiva. Desde el 28/9/2026 cada tanda de
+     * articulos es un DELETE, un INSERT y el motor de precios en bloque (ver
+     * ArticleProviderDiscountHelper::aplicar_ficha_en_lote()), asi que un proveedor de decenas de
+     * miles de articulos ya no deberia acercarse a este tope; hasta esa fecha, en Servian, lo tocaba
+     * 3 de cada 5 veces.
      *
      * @var int
      */
@@ -170,13 +174,16 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
             }
 
             /*
-             * Registro visible (misión procesos-en-segundo-plano, 18/9/2026). Sin total: el
-             * loop por artículo vive en ArticleProviderDiscountHelper::sincronizar_a_articulos()
-             * y no expone avance, así que la barra es indeterminada y lo que se muestra es el
-             * cierre con los números. La referencia es el proveedor: es lo que permite que
-             * failed() —que corre sobre otra instancia— encuentre la misma fila.
+             * Registro visible (misión procesos-en-segundo-plano, 18/9/2026). La referencia es
+             * el proveedor: es lo que permite que failed() —que corre sobre otra instancia—
+             * encuentre la misma fila.
+             *
+             * Nace sin total a propósito: el total recién se conoce cuando el helper termina de
+             * escanear el proveedor y sabe cuántos artículos va a tocar (ver el callback de más
+             * abajo). Hasta el 28/9/2026 no se conocía nunca y la barra era indeterminada de
+             * punta a punta: en Servian, 30 a 43 minutos sin saber cuánto faltaba.
              */
-            BackgroundProcessHelper::iniciar(
+            $proceso = BackgroundProcessHelper::iniciar(
                 $this->owner_user_id,
                 'sincronizar_descuentos',
                 'Sincronización de descuentos de ' . $provider->name,
@@ -191,11 +198,31 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
                 ]
             );
 
+            /*
+             * Avance medible (misión recalculo-precios-motor-rapido, 28/9/2026): "X de Y
+             * artículos". El helper avisa una vez con el total (los artículos que se van a tocar,
+             * con 0 procesados) y después una vez por tanda escrita, no por artículo: cada aviso es
+             * un UPDATE del registro, y el broadcast lo regula BackgroundProcessHelper. Si la ficha
+             * no tiene porcentajes utilizables no se toca nada y no avisa: la fila cierra sin total,
+             * como siempre.
+             *
+             * avanzar() no tira nunca (regla 1 de BackgroundProcessHelper); si el registro no se
+             * pudo crear, $proceso es null y avanzar() no hace nada.
+             */
             $resultado = ArticleProviderDiscountHelper::sincronizar_a_articulos(
                 $provider,
                 $this->alcance,
                 $this->pisar_editados_a_mano,
-                $this->accion_sobre_compras
+                $this->accion_sobre_compras,
+                function ($procesados, $total) use ($proceso) {
+                    BackgroundProcessHelper::avanzar($proceso, $procesados, ['total' => $total]);
+                },
+                /*
+                 * La persona que apreto el boton queda en los price_changes (29/9/2026). En el worker
+                 * no hay sesion: sin pasarla, el motor resolvia UserHelper::userId(false) y los
+                 * cambios de precio quedaban a nombre de config('app.USER_ID'), no de quien sincronizo.
+                 */
+                $this->auth_user_id
             );
 
             BackgroundProcessHelper::completar(BackgroundProcessHelper::por_referencia($provider), [
