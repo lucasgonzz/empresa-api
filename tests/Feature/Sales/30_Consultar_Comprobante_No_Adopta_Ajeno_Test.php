@@ -212,6 +212,132 @@ class Consultar_Comprobante_No_Adopta_Ajeno_Test extends EmpresaTestCase
         $this->assertFalse($helper->comprobante_recuperado_descartado);
     }
 
+    /**
+     * Test 6 — Cliente sin documento (NR, tipo 99) y ARCA devolviendo DocNro 0: SE ADOPTA.
+     *
+     * Es el consumidor final anónimo, el caso más común. "NR" no es un número: tiene que
+     * normalizarse a 0 para compararse con lo que ARCA tiene asentado.
+     *
+     * @group sales
+     * @test
+     */
+    public function un_cliente_sin_documento_con_docnro_cero_de_arca_se_adopta()
+    {
+        $venta = $this->crear_venta_con_cliente(null);
+
+        $ticket = $this->ticket_de($venta, '19099');
+
+        $helper = $this->consultar($ticket, ['ImpIVA' => 21.00, 'DocTipo' => 99, 'DocNro' => 0]);
+
+        $this->assertEquals(self::CAE, AfipTicket::find($ticket->id)->cae);
+        $this->assertFalse($helper->comprobante_recuperado_descartado);
+    }
+
+    /**
+     * Test 7 — CUIT con guiones en el cliente contra DocNro numérico de ARCA (entero y float): SE ADOPTA.
+     *
+     * El sistema guarda el CUIT como texto, a veces con guiones; ARCA lo devuelve como número, y por
+     * SOAP puede llegar como float. La comparación es por dígitos.
+     *
+     * @group sales
+     * @test
+     */
+    public function un_cuit_con_guiones_se_compara_por_digitos_con_el_docnro_de_arca()
+    {
+        foreach ([20111111112, 20111111112.0] as $doc_nro) {
+
+            $venta = $this->crear_venta_con_cliente('20-11111111-2');
+
+            $ticket = $this->ticket_de($venta, '19099');
+
+            $helper = $this->consultar($ticket, ['DocTipo' => 80, 'DocNro' => $doc_nro]);
+
+            $this->assertEquals(self::CAE, AfipTicket::find($ticket->id)->cae, 'DocNro '.var_export($doc_nro, true));
+            $this->assertFalse($helper->comprobante_recuperado_descartado);
+
+            AfipTicket::where('id', $ticket->id)->forceDelete();
+        }
+    }
+
+    /**
+     * Test 8 — El mismo CAE ya tomado por otra venta viva, con OTRO número: NO se adopta.
+     *
+     * Un CAE identifica un solo comprobante; que aparezca en dos tickets es siempre un duplicado.
+     *
+     * @group sales
+     * @test
+     */
+    public function con_el_mismo_cae_tomado_por_otra_venta_y_otro_numero_no_adopta()
+    {
+        $venta_a = $this->crear_venta_con_cliente('20111111112');
+        $venta_b = $this->crear_venta_con_cliente('20111111112');
+
+        $ticket_a = $this->ticket_de($venta_a, '19098');
+        $ticket_a->update(['cae' => self::CAE, 'resultado' => 'A']);
+
+        $ticket_b = $this->ticket_de($venta_b, '19099');
+
+        $helper = $this->consultar($ticket_b, ['DocTipo' => 80, 'DocNro' => 20111111112]);
+
+        $this->assertNull(AfipTicket::find($ticket_b->id)->cae);
+        $this->assertTrue($helper->comprobante_recuperado_descartado);
+        $this->assertEquals(1, AfipError::where('afip_ticket_id', $ticket_b->id)->count());
+    }
+
+    /**
+     * Test 9 — Si se consultó después de un error de red al emitir, la consulta NO recalcula la
+     * ganancia: eso lo hace `MakeAfipTicket` cuando vuelve `procesar()`, y no debe hacerse dos veces.
+     *
+     * @group sales
+     * @test
+     */
+    public function despues_de_un_error_de_red_la_consulta_no_recalcula_la_ganancia()
+    {
+        $venta = $this->crear_venta_con_cliente('20111111112');
+
+        Sale::where('id', $venta->id)->update(['ganancia' => 999]);
+
+        $ticket = $this->ticket_de($venta, '19099');
+
+        $this->consultar($ticket, ['ImpIVA' => 21.00], true);
+
+        $this->assertEquals(self::CAE, AfipTicket::find($ticket->id)->cae, 'Se adopta igual.');
+        $this->assertEqualsWithDelta(
+            999.00,
+            (float) Sale::find($venta->id)->ganancia,
+            self::DELTA,
+            'En el camino de error de red la ganancia la recalcula MakeAfipTicket, no consultar_comprobante().'
+        );
+    }
+
+    /**
+     * Test 10 — Venta consolidadora: al adoptar por consulta se recalculan también las consolidadas.
+     *
+     * Mismo criterio que `MakeAfipTicket::recalcular_ganancia_facturada()`.
+     *
+     * @group sales
+     * @test
+     */
+    public function al_adoptar_una_consolidadora_se_recalculan_las_ventas_consolidadas()
+    {
+        $consolidadora = $this->crear_venta_con_cliente('20111111112');
+        $consolidada   = $this->crear_venta_con_cliente('20111111112');
+
+        Sale::where('id', $consolidadora->id)->update(['is_consolidacion_facturacion' => 1, 'ganancia' => 999]);
+        Sale::where('id', $consolidada->id)->update(['consolidacion_facturacion_id' => $consolidadora->id, 'ganancia' => 999]);
+
+        $ticket = $this->ticket_de($consolidadora, '19099');
+
+        $this->consultar($ticket, ['ImpIVA' => 21.00]);
+
+        $this->assertNotEquals(
+            999.00,
+            (float) Sale::find($consolidada->id)->ganancia,
+            'La ganancia de la venta consolidada tenía que recalcularse junto con la de la consolidadora.'
+        );
+        $this->assertNotEquals(999.00, (float) Sale::find($consolidadora->id)->ganancia);
+    }
+
     // =========================================================================================
     // Helpers del archivo
     // =========================================================================================
@@ -221,9 +347,10 @@ class Consultar_Comprobante_No_Adopta_Ajeno_Test extends EmpresaTestCase
      *
      * @param  \App\Models\AfipTicket $afip_ticket
      * @param  array $result_get Campos de `ResultGet` que este escenario quiere fijar.
+     * @param  bool  $despues_de_error_de_red Simula que la consulta la dispara `solicitar_cae()`.
      * @return \App\Http\Controllers\Helpers\Afip\AfipWsfeHelper
      */
-    protected function consultar($afip_ticket, $result_get)
+    protected function consultar($afip_ticket, $result_get, $despues_de_error_de_red = false)
     {
         $data = array_merge([
             'PtoVta'          => self::PUNTO_VENTA,
@@ -249,6 +376,7 @@ class Consultar_Comprobante_No_Adopta_Ajeno_Test extends EmpresaTestCase
         $helper = (new ReflectionClass(AfipWsfeHelper::class))->newInstanceWithoutConstructor();
         $helper->afip_ticket = AfipTicket::find($afip_ticket->id);
         $helper->wsfe = new DobleDeWsfeQueContestaAjeno($respuesta);
+        $helper->consulto_despues_de_error_en_emision = $despues_de_error_de_red;
 
         $helper->consultar_comprobante();
 
@@ -286,7 +414,7 @@ class Consultar_Comprobante_No_Adopta_Ajeno_Test extends EmpresaTestCase
     /**
      * Crea una venta de $121 (costo 100) por el endpoint real y la asocia a un cliente con ese CUIT.
      *
-     * @param  string $cuit CUIT del receptor.
+     * @param  string|null $cuit CUIT del receptor (null: cliente sin documento).
      * @return \App\Models\Sale
      */
     protected function crear_venta_con_cliente($cuit)
