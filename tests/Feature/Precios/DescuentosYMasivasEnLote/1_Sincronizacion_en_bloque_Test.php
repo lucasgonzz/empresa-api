@@ -368,6 +368,53 @@ class Sincronizacion_en_bloque_Test extends DescuentosYMasivasEnLoteTestCase
     }
 
     /**
+     * La sincronizacion manual deja los price_changes a nombre de la persona que apreto el boton,
+     * aunque en el worker no haya sesion (29/9/2026). Antes quedaban a nombre de
+     * config('app.USER_ID'): el job tenia el auth_user_id y no lo pasaba.
+     *
+     * @test
+     */
+    public function el_job_deja_los_cambios_de_precio_a_nombre_de_quien_sincronizo()
+    {
+        Notification::fake();
+
+        $e = $this->escenario();
+
+        $empleado = \App\Models\User::create([
+            'name'         => 'zz Empleado que sincroniza',
+            'company_name' => 'zz Comercio recalculo en lote',
+            'email'        => 'sincroniza-' . uniqid('', true) . '@test.local',
+            'password'     => \Illuminate\Support\Facades\Hash::make('secret'),
+            'owner_id'     => $e['dueno']->id,
+            'admin_access' => 1,
+        ]);
+
+        $marca = (int) DB::table('price_changes')->max('id');
+
+        /* Como en el worker: sin sesion. */
+        Auth::shouldUse('web');
+        Auth::logout();
+
+        (new ProcessSincronizarDescuentosProveedorJob(
+            $e['provider']->id,
+            $e['dueno']->id,
+            $empleado->id,
+            ArticleProviderDiscountHelper::ALCANCE_TODOS,
+            false,
+            ArticleProviderDiscountHelper::ACCION_COMPRAS_SALTEAR,
+            'op-' . uniqid('', true)
+        ))->handle();
+
+        $cambios = DB::table('price_changes')->where('id', '>', $marca)->get();
+
+        $this->assertNotEmpty($cambios, 'Precondicion: la sincronizacion cambio precios.');
+
+        foreach ($cambios as $cambio) {
+            $this->assertSame((int) $empleado->id, (int) $cambio->employee_id, 'El cambio de precio queda a nombre de quien sincronizo.');
+        }
+    }
+
+    /**
      * Por el job: el registro visible termina con el total de articulos tocados, en "artículos".
      *
      * @test

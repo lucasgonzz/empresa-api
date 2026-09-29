@@ -216,7 +216,13 @@ class ProcessSincronizarDescuentosProveedorJob implements ShouldQueue
                 $this->accion_sobre_compras,
                 function ($procesados, $total) use ($proceso) {
                     BackgroundProcessHelper::avanzar($proceso, $procesados, ['total' => $total]);
-                }
+                },
+                /*
+                 * La persona que apreto el boton queda en los price_changes (29/9/2026). En el worker
+                 * no hay sesion: sin pasarla, el motor resolvia UserHelper::userId(false) y los
+                 * cambios de precio quedaban a nombre de config('app.USER_ID'), no de quien sincronizo.
+                 */
+                $this->auth_user_id
             );
 
             BackgroundProcessHelper::completar(BackgroundProcessHelper::por_referencia($provider), [

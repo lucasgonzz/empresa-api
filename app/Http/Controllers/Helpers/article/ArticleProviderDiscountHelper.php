@@ -1547,6 +1547,11 @@ class ArticleProviderDiscountHelper {
      *                                         tiene porcentajes utilizables no se toca nada y no se
      *                                         llama nunca. Un aviso que tira no frena la
      *                                         sincronizacion (ver avisar_avance()).
+     * @param  int|null $auth_user_id          Opcional, al final de la firma (29/9/2026): quien queda
+     *                                         como employee_id de los price_changes. El job manda la
+     *                                         persona que apreto el boton; sin esto, en el worker (sin
+     *                                         sesion) quedaban a nombre de config('app.USER_ID'). null =
+     *                                         lo de siempre (el motor usa UserHelper::userId(false)).
      * @return array
      */
     static function sincronizar_a_articulos(
@@ -1554,7 +1559,8 @@ class ArticleProviderDiscountHelper {
         $alcance = self::ALCANCE_SOLO_CON_DESCUENTOS,
         $pisar_editados = false,
         $accion_sobre_compras = self::ACCION_COMPRAS_SALTEAR,
-        $al_avanzar = null
+        $al_avanzar = null,
+        $auth_user_id = null
     ) {
 
         $resultado = [
@@ -1700,13 +1706,13 @@ class ArticleProviderDiscountHelper {
         };
 
         if ($alcance === self::ALCANCE_TODOS) {
-            $resultado['creados'] = count(self::aplicar_ficha_en_lote($provider, $items_sin_descuentos, $owner_user, $duenos, $al_terminar_tanda));
+            $resultado['creados'] = count(self::aplicar_ficha_en_lote($provider, $items_sin_descuentos, $owner_user, $duenos, $al_terminar_tanda, $auth_user_id));
         }
 
-        $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items_desactualizados, $owner_user, $duenos, $al_terminar_tanda));
+        $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items_desactualizados, $owner_user, $duenos, $al_terminar_tanda, $auth_user_id));
 
         if ($pisar_editados) {
-            $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items_editados, $owner_user, $duenos, $al_terminar_tanda));
+            $resultado['actualizados'] += count(self::aplicar_ficha_en_lote($provider, $items_editados, $owner_user, $duenos, $al_terminar_tanda, $auth_user_id));
         } else {
             $resultado['respetados'] = count($escaneo['editados_a_mano']);
         }
@@ -1717,7 +1723,7 @@ class ArticleProviderDiscountHelper {
 
         } else {
 
-            $tocados = self::aplicar_ficha_en_lote($provider, $items_de_compra, $owner_user, $duenos, $al_terminar_tanda);
+            $tocados = self::aplicar_ficha_en_lote($provider, $items_de_compra, $owner_user, $duenos, $al_terminar_tanda, $auth_user_id);
 
             if ($barrer_todo) {
                 $resultado['de_compra_pisados'] = count($tocados);
