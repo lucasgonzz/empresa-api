@@ -332,7 +332,7 @@ class VenderLayoutController extends Controller
             return response()->json(['message' => self::MENSAJE_BORRAR_EN_USO], 422);
         }
 
-        $this->sendDeleteModelNotification('VenderLayout', $id_borrado);
+        $this->sendDeleteModelNotification('vender_layout', $id_borrado);
 
         return response(null);
     }
@@ -402,16 +402,22 @@ class VenderLayoutController extends Controller
      * apagó: el "en uso" cambia en varias filas a la vez, y una sesión que se enterara solo del
      * guardado quedaría viendo dos diseños en uso.
      *
+     * 🔴 El nombre va en snake_case ('vender_layout') y NO en StudlyCase ('VenderLayout'): la SPA
+     * lo usa tal cual para elegir el store (`common-vue/mixins/broadcast.js` hace
+     * `model_name.toLowerCase()` → `vender_layout/...`) y para armar la ruta del GET. Con
+     * 'VenderLayout' quedaba `venderlayout`, un store que no existe: el aviso se perdia en silencio.
+     * (Hoy `sendAddModelNotification` sale con `return;` en toda la API; el de borrado si viaja.)
+     *
      * @param  int    $id        El diseño que se guardó.
      * @param  array  $apagados  Los ids que `VenderLayoutHelper::poner_en_uso()` apagó.
      * @return void
      */
     private function notificar_guardado($id, array $apagados)
     {
-        $this->sendAddModelNotification('VenderLayout', $id);
+        $this->sendAddModelNotification('vender_layout', $id);
 
         foreach ($apagados as $id_apagado) {
-            $this->sendAddModelNotification('VenderLayout', $id_apagado);
+            $this->sendAddModelNotification('vender_layout', $id_apagado);
         }
     }
 }
