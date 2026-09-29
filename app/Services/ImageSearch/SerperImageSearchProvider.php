@@ -34,11 +34,18 @@ class SerperImageSearchProvider implements ImageSearchProvider
     /** Resultados que se piden por búsqueda: los mismos 10 que devuelve Custom Search. */
     const RESULTADOS_POR_BUSQUEDA = 10;
 
-    /** @var string Clave de Serper (de config, salvo que el llamador pase otra). */
+    /**
+     * @var string Clave de Serper con la que se busca. ImageSearchProviderFactory::para() pasa siempre
+     *             la que resolvió para el dueño (misión serper-en-user-setup, 28/9/2026): la del
+     *             comercio (users.serper_api_key) o, si no tiene, la del servidor. Sin clave del
+     *             llamador, la de config.
+     */
     protected $api_key;
 
     /**
-     * @param string|null $api_key  Null = la de config('services.serper.api_key').
+     * @param string|null $api_key  La clave a usar ('' = no hay ninguna). Null = la de
+     *                              config('services.serper.api_key'), como antes de que existiera
+     *                              la del comercio.
      */
     public function __construct($api_key = null)
     {
@@ -66,7 +73,8 @@ class SerperImageSearchProvider implements ImageSearchProvider
         $consulta = trim((string) $consulta);
 
         if ($this->api_key === '') {
-            return $this->fallo('No está configurada la clave de Serper (SERPER_API_KEY) en el servidor.');
+            // Desde la misión serper-en-user-setup la clave puede venir de dos lados: se nombran los dos.
+            return $this->fallo('No hay clave de Serper: ni la del comercio ni SERPER_API_KEY en el servidor.');
         }
 
         // Para el registro de consultas (image_service_calls): cuánto tardó Serper en responder.
@@ -92,8 +100,11 @@ class SerperImageSearchProvider implements ImageSearchProvider
              * motivo_detalle y al motivo de la asignación, que ve cualquier usuario del comercio. Al
              * usuario, un texto legible; el detalle (sin claves) al log y, como `detalle`, al registro
              * de consultas que mira el admin.
+             *
+             * sin_claves() con la clave de ESTE proveedor (misión serper-en-user-setup): puede ser la
+             * del comercio, que config no conoce, y este detalle va al log antes de pasar por fallo().
              */
-            $detalle = 'No se pudo conectar con Serper: '.Str::limit(ImageServiceCallLogger::sin_claves($e->getMessage()), 200, '…');
+            $detalle = 'No se pudo conectar con Serper: '.Str::limit(ImageServiceCallLogger::sin_claves($e->getMessage(), [$this->api_key]), 200, '…');
 
             Log::warning('[ImagenesInteligentes] Serper no respondió.', ['error' => $detalle]);
 

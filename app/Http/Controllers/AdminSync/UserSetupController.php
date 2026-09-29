@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoSetupLockHelper;
+use App\Http\Controllers\Helpers\SetupErrorHelper;
 use App\Http\Controllers\Helpers\UserSetupHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -58,11 +59,21 @@ class UserSetupController extends Controller
         try {
             $user = UserSetupHelper::run($request->all());
         } catch (\Throwable $e) {
-            Log::error('AdminSync user-setup: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString(),
+            /*
+             * 🔴 Sin secretos ANTES de loguear y de responder (misión serper-en-user-setup, revisión
+             * independiente del 28/9/2026). Un QueryException de Laravel 8 trae el SQL del INSERT del
+             * dueño con los valores interpolados —serper_api_key y google_custom_search_api_key
+             * incluidas— y este texto va al log de la instancia y, por la respuesta, a
+             * leads.user_setup_last_error del admin. Ver SetupErrorHelper.
+             */
+            $datos   = $request->all();
+            $mensaje = SetupErrorHelper::sin_secretos($e->getMessage(), $datos);
+
+            Log::error('AdminSync user-setup: ' . $mensaje, [
+                'trace' => SetupErrorHelper::sin_secretos($e->getTraceAsString(), $datos),
             ]);
 
-            return response()->json(['error' => 'internal error: ' . $e->getMessage()], 500);
+            return response()->json(['error' => 'internal error: ' . $mensaje], 500);
         } finally {
             DemoSetupLockHelper::soltar($candado);
         }

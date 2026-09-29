@@ -8,6 +8,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
 use App\Models\OnlineTemplate;
 use App\Models\User;
+use App\Services\ImageSearch\ImageSearchProviderFactory;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
@@ -58,7 +59,8 @@ class UserSetupHelper
      *                                   omitir_cuentas_corrientes, ventas_con_fecha_de_entrega,
      *                                   cajas, usar_codigos_de_barra, codigos_de_barra_por_defecto,
      *                                   consultora_de_precios, imagenes, produccion,
-     *                                   address_1..3, price_type_1..3
+     *                                   address_1..3, price_type_1..3,
+     *                                   serper_api_key (opcional, misión serper-en-user-setup)
      *
      * @return User Usuario creado
      */
@@ -233,6 +235,13 @@ class UserSetupHelper
             'google_cuota'                  => (isset($data['google_cuota']) && is_numeric($data['google_cuota']))
                 ? (int) $data['google_cuota']
                 : 300,
+            // Clave de Serper del comercio (misión serper-en-user-setup, 28/9/2026): la manda admin-api
+            // (RunUserSetupService, configurable desde admin-spa vía AdminSetting) SOLO si está cargada.
+            // Sin fallback propio a propósito, a diferencia de la de Google: si no llega (o no tiene
+            // forma de clave) queda null y el buscador de imágenes usa SERPER_API_KEY del .env
+            // (ImageSearchProviderFactory::clave_serper_para()). 🔴 Es un secreto: User::$hidden la
+            // saca de toda respuesta al navegador.
+            'serper_api_key'                => ImageSearchProviderFactory::clave_serper_del_payload($data),
 
             /*
                 Pedido de Lucas (27/8/2026): un cliente real tambien nace con la dinamica de costeo

@@ -153,8 +153,10 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
         // La corrida se creó con Serper y alguien sacó la clave: no tiene sentido recorrer los
         // artículos fallando uno por uno. Se frena y se puede reanudar cuando vuelva la clave.
-        if ($run->proveedor === ImageAssignmentRun::PROVEEDOR_SERPER && !ImageSearchProviderFactory::serper_configurado()) {
-            ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_FALLIDA, 'Se quitó la clave de Serper (SERPER_API_KEY) del servidor y la asignación no puede seguir. Cuando esté cargada de nuevo, se puede reanudar.');
+        // Con el dueño recién leído (misión serper-en-user-setup, 28/9/2026): la clave del comercio
+        // alcanza aunque el .env no tenga SERPER_API_KEY, y es la misma que va a usar el motor.
+        if ($run->proveedor === ImageAssignmentRun::PROVEEDOR_SERPER && !ImageSearchProviderFactory::serper_configurado($owner)) {
+            ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_FALLIDA, 'Se quitó la clave de Serper (no está ni la del comercio ni SERPER_API_KEY en el servidor) y la asignación no puede seguir. Cuando esté cargada de nuevo, se puede reanudar.');
 
             return;
         }
@@ -441,10 +443,11 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 : 'El proceso se interrumpió sin dejar traza (probable falta de memoria, timeout o worker reiniciado).';
 
             // El detalle crudo, solo al log (plan §13, S2): al usuario le llega un texto genérico.
+            // Sin las claves del servidor ni la de Serper del dueño (misión serper-en-user-setup).
             Log::error('[ImagenesInteligentes] Se interrumpió un tramo.', [
                 'run_id' => $this->run_id,
                 'tramo'  => $this->tramo,
-                'error'  => ImageServiceCallLogger::sin_claves($mensaje),
+                'error'  => ImageServiceCallLogger::sin_claves($mensaje, ImageServiceCallLogger::claves_del_dueno($run->user_id)),
             ]);
 
             // Solo el artículo que reclamó ESTE tramo (ver $tramo): uno "procesando" con otra ficha
@@ -717,7 +720,9 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
     /**
      * El error del proveedor que quedó en el diagnóstico del artículo (para el motivo de la corrida
-     * fallida). Nunca trae claves: los proveedores no las ponen en sus mensajes.
+     * fallida). Nunca trae claves: los proveedores no las ponen en sus mensajes, y por las dudas se
+     * tachan las del servidor y la de Serper del dueño (misión serper-en-user-setup), que config no
+     * conoce.
      *
      * @param  \App\Models\ImageAssignmentItem|null $item
      * @return string
@@ -737,6 +742,6 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
         }
 
         // Sin el punto final: el motivo lo pone entre paréntesis y sigue la frase.
-        return rtrim(Str::limit(ImageServiceCallLogger::sin_claves($ultimo), 200, '…'), '. ');
+        return rtrim(Str::limit(ImageServiceCallLogger::sin_claves($ultimo, ImageServiceCallLogger::claves_del_dueno($item->user_id)), 200, '…'), '. ');
     }
 }
