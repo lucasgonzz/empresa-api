@@ -356,7 +356,22 @@ class ProviderController extends Controller
             ? filter_var($request->pisar_editados_a_mano, FILTER_VALIDATE_BOOLEAN)
             : false;
 
-        $resultado = ArticleProviderDiscountHelper::propagar_a_articulos($provider, $pisar_editados);
+        /*
+         * Pocos articulos: se propaga aca mismo, con la respuesta de siempre (`actualizados`,
+         * `respetados`). Muchos (mas que una tanda del motor): se encola
+         * ProcessPropagarDescuentosProveedorJob y la respuesta vuelve de inmediato con
+         * `en_segundo_plano: true` (29/9/2026). El porque y el contrato estan en
+         * ArticleProviderDiscountHelper::propagar_o_encolar().
+         *
+         * El dueño va para el job (scopea el proveedor y decide la preferencia en el worker, donde no
+         * hay sesion) y la persona para el aviso y los price_changes.
+         */
+        $resultado = ArticleProviderDiscountHelper::propagar_o_encolar(
+            $provider,
+            $pisar_editados,
+            $this->userId(),
+            $this->userId(false)
+        );
 
         return response()->json($resultado, 200);
     }

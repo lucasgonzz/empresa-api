@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
+use App\Jobs\ProcessPropagarDescuentosProveedorJob;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
 use App\Models\Provider;
@@ -823,9 +824,14 @@ class ArticleProviderDiscountHelper {
          * Se seleccionan solo las columnas que la clasificacion necesita (COLUMNAS_PARA_CLASIFICAR)
          * en vez de traer la fila entera: esto corre en cada guardado de la ficha de un proveedor, y
          * uno grande puede tener miles de filas tagueadas.
+         *
+         * Y como stdClass crudos (`toBase()`), no como modelos Eloquent (29/9/2026): mismo motivo y
+         * mismos valores que en planificar_propagacion(), que es la accion que este preview anuncia.
+         * Leer las dos igual es lo que mantiene de acuerdo a la ventana con lo que la accion hace.
          */
         $articulos = ArticleDiscount::where('provider_id', $provider->id)
                                         ->select(self::COLUMNAS_PARA_CLASIFICAR)
+                                        ->toBase()
                                         ->get()
                                         ->groupBy('article_id');
 
@@ -856,21 +862,58 @@ class ArticleProviderDiscountHelper {
      * lee los `article_discounts`, que son COPIAS con su propio porcentaje: recalcular sin tocarlas
      * da exactamente el mismo precio de antes. El sistema trabaja y nada se mueve.
      *
+     * Desde el 29/9/2026 es la composicion de dos pasos que tambien se pueden llamar por separado:
+     * planificar_propagacion() (clasificar, sin escribir nada) y aplicar_plan_de_propagacion()
+     * (escribir en bloque con el motor). El endpoint los separa para decidir, con el plan en la
+     * mano, si propaga en el request o en segundo plano (ver propagar_o_encolar()); el job de
+     * segundo plano llama a esta funcion entera.
+     *
      * @param  \App\Models\Provider $provider
      * @param  bool  $pisar_editados Si es true, tambien se rehacen los articulos cuyo descuento
      *                               alguien edito a mano. Por defecto NO se tocan.
      * @param  \App\Models\User|int|null $user Usuario/comercio, explicito para poder correr sin sesion.
+     * @param  callable|null $al_avanzar  Opcional, agregado AL FINAL de la firma (29/9/2026) para no
+     *                               romper a ningun llamador: function ($procesados, $total). Mismo
+     *                               contrato que el de sincronizar_a_articulos(): una vez con el
+     *                               total (0 procesados) y despues una vez por tanda escrita.
+     * @param  int|null $auth_user_id  Quien queda como employee_id de los price_changes. Con null
+     *                               (lo de siempre) el motor usa UserHelper::userId(false), que en
+     *                               el request es la persona logueada. El job de segundo plano la
+     *                               manda EXPLICITA: en el worker no hay sesion, y sin esto los
+     *                               price_changes quedarian a nombre de config('app.USER_ID') en vez
+     *                               de la persona que confirmo la ventana.
      * @return array{actualizados:int,respetados:int}
      */
-    static function propagar_a_articulos($provider, $pisar_editados = false, $user = null) {
+    static function propagar_a_articulos($provider, $pisar_editados = false, $user = null, $al_avanzar = null, $auth_user_id = null) {
 
-        $resultado = ['actualizados' => 0, 'respetados' => 0];
+        $plan = self::planificar_propagacion($provider, $pisar_editados, $user);
+
+        return self::aplicar_plan_de_propagacion($provider, $plan, $al_avanzar, $auth_user_id);
+    }
+
+    /**
+     * Primer paso de la propagacion: clasifica los articulos del proveedor y arma lo que habria que
+     * rehacer, SIN ESCRIBIR NADA. Es la misma clasificacion de siempre (ver clasificar_articulo()).
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  bool  $pisar_editados
+     * @param  \App\Models\User|int|null $user  Usuario/comercio del que leer la preferencia.
+     * @return array{items:array,duenos:array,respetados:int}
+     *         items:      los articulos a rehacer QUE EXISTEN, en el formato de aplicar_ficha_en_lote()
+     *                     (su cantidad es lo que termina en `actualizados`);
+     *         duenos:     [article_id => user_id] de esos articulos;
+     *         respetados: los editados a mano que no se tocan (contados antes de mirar si existen,
+     *                     como siempre).
+     */
+    static function planificar_propagacion($provider, $pisar_editados = false, $user = null) {
+
+        $plan = ['items' => [], 'duenos' => [], 'respetados' => 0];
 
         // 🔴 Gateado por la preferencia del comercio: con la preferencia apagada este comercio nunca
         // quiso descuentos copiados en sus articulos, y propagarlos le moveria los costos sin
         // haberlo pedido.
         if (is_null($provider) || !self::debe_aplicar_al_asignar($user)) {
-            return $resultado;
+            return $plan;
         }
 
         $percentages_actuales = [];
@@ -899,27 +942,26 @@ class ArticleProviderDiscountHelper {
          * SIEMPRE false (verificado con el binario 7.4), asi que una guarda escrita asi no corta.
          */
         if (count($percentages_actuales) === 0) {
-            return $resultado;
+            return $plan;
         }
 
+        /*
+         * 🔴 `toBase()`: las filas vienen como stdClass crudos, no como modelos Eloquent (29/9/2026).
+         * Esto corre adentro del request (ahora tambien para decidir si la propagacion va en segundo
+         * plano), y un proveedor grande de Servian tiene decenas de miles de filas tagueadas: como
+         * modelos, cada una arrastra sus atributos originales y su diccionario de cambios, varias
+         * veces la memoria. Se puede porque nada de lo que las consume necesita un modelo:
+         * clasificar_articulo() y gobernado_por_la_ficha() leen propiedades, y `pluck('id')` anda
+         * igual sobre stdClass. ArticleDiscount no declara `$casts`, accessors, SoftDeletes ni
+         * scopes globales, asi que los valores son exactamente los mismos. Es el mismo criterio que
+         * ya usa escanear_articulos_del_proveedor() para la sincronizacion.
+         */
         $articulos = ArticleDiscount::where('provider_id', $provider->id)
                                         ->select(self::COLUMNAS_PARA_CLASIFICAR)
+                                        ->toBase()
                                         ->get()
                                         ->groupBy('article_id');
 
-        /*
-         * 🔴 DESDE EL 28/9/2026 ESTO NO ESCRIBE ARTICULO POR ARTICULO (mision
-         * recalculo-precios-motor-rapido). Antes cada articulo a rehacer era un Article::find(), una
-         * transaccion con su DELETE y sus INSERT, y un setFinalPrice() que leia sus relaciones de a
-         * una y escribia por su cuenta — todo adentro del request. Ahora son tres pasos:
-         *
-         *   1. Clasificar, sin escribir nada (esta vuelta): la MISMA clasificacion de siempre.
-         *   2. Averiguar cuales articulos existen y de quien son: una consulta cada 1.000.
-         *   3. aplicar_ficha_en_lote(): por tanda, UN DELETE, UN INSERT multi-fila y el motor de
-         *      precios (RecalculoDePreciosEnLote), en una sola transaccion.
-         *
-         * La respuesta (`actualizados`, `respetados`) es la misma: la SPA no se entera.
-         */
         $items = [];
 
         foreach ($articulos as $article_id => $tagueados) {
@@ -931,7 +973,7 @@ class ArticleProviderDiscountHelper {
             }
 
             if ($clase === 'editado_a_mano' && !$pisar_editados) {
-                $resultado['respetados']++;
+                $plan['respetados']++;
                 continue;
             }
 
@@ -1005,7 +1047,7 @@ class ArticleProviderDiscountHelper {
         }
 
         if (count($items) === 0) {
-            return $resultado;
+            return $plan;
         }
 
         /*
@@ -1014,27 +1056,137 @@ class ArticleProviderDiscountHelper {
          * que antes: no se le toca nada y no se cuenta como actualizado. Los `respetados` ya se
          * contaron arriba, antes de mirar si existe, como siempre.
          */
-        $duenos = self::duenos_de_articulos(array_column($items, 'article_id'));
-
-        $vigentes = [];
+        $plan['duenos'] = self::duenos_de_articulos(array_column($items, 'article_id'));
 
         foreach ($items as $item) {
 
-            if (isset($duenos[$item['article_id']])) {
-                $vigentes[] = $item;
+            if (isset($plan['duenos'][$item['article_id']])) {
+                $plan['items'][] = $item;
             }
         }
 
+        return $plan;
+    }
+
+    /**
+     * Segundo paso de la propagacion: escribe lo planificado en bloque (aplicar_ficha_en_lote(): por
+     * tanda, UN DELETE, UN INSERT multi-fila y el motor de precios, en una transaccion).
+     *
+     * @param  \App\Models\Provider $provider
+     * @param  array $plan  Salida de planificar_propagacion().
+     * @param  callable|null $al_avanzar    Ver propagar_a_articulos().
+     * @param  int|null      $auth_user_id  Ver propagar_a_articulos().
+     * @return array{actualizados:int,respetados:int}
+     */
+    static function aplicar_plan_de_propagacion($provider, array $plan, $al_avanzar = null, $auth_user_id = null) {
+
+        $resultado = ['actualizados' => 0, 'respetados' => (int) $plan['respetados']];
+
+        if (is_null($provider) || count($plan['items']) === 0) {
+            return $resultado;
+        }
+
         /*
-         * El dueño de cada articulo lo resuelve aplicar_ficha_en_lote() desde `$duenos` (un
-         * User::find() por dueño distinto, en la practica uno solo), igual que el
-         * `setFinalPrice($article, $article->user_id)` de antes. El employee_id de los price_changes
-         * queda en null: el motor lo resuelve con UserHelper::userId(false), que en este request es
-         * la persona logueada, exactamente como antes.
+         * El avance, con el mismo contrato que la sincronizacion: el total (los articulos que se van
+         * a tocar) con 0 procesados, y despues uno por tanda escrita. Solo lo pide el job de segundo
+         * plano; el request no manda callback y aca no pasa nada.
          */
-        $resultado['actualizados'] = count(self::aplicar_ficha_en_lote($provider, $vigentes, null, $duenos));
+        $total = count($plan['items']);
+
+        $procesados = 0;
+
+        self::avisar_avance($al_avanzar, 0, $total);
+
+        $al_terminar_tanda = function ($cantidad) use (&$procesados, $total, $al_avanzar) {
+
+            $procesados += (int) $cantidad;
+
+            self::avisar_avance($al_avanzar, $procesados, $total);
+        };
+
+        /*
+         * El dueño de cada articulo lo resuelve aplicar_ficha_en_lote() desde `duenos` (un
+         * User::find() por dueño distinto, en la practica uno solo), igual que el
+         * `setFinalPrice($article, $article->user_id)` de antes.
+         */
+        $resultado['actualizados'] = count(self::aplicar_ficha_en_lote(
+            $provider,
+            $plan['items'],
+            null,
+            $plan['duenos'],
+            $al_terminar_tanda,
+            $auth_user_id
+        ));
 
         return $resultado;
+    }
+
+    /**
+     * Lo que hace el endpoint `PUT provider/{id}/propagar-descuentos` (29/9/2026): propaga en el
+     * request si son pocos articulos, o encola la propagacion en segundo plano si son muchos.
+     *
+     * 🔴 POR QUE. Hasta hoy la propagacion corria SIEMPRE adentro del request. Con la preferencia
+     * prendida, en Servian editar un descuento de Rejovot (40.393 articulos) o de ETMAN (64.662) son
+     * decenas de tandas del motor dentro de un HTTP, y con el `max_execution_time` de 120 s del VPS
+     * se puede cortar a la mitad: parte del catalogo con los descuentos nuevos y parte no, sin que
+     * nadie sepa cuales. Arriba del tamaño de una tanda del motor
+     * (RecalculoDePreciosEnLote::tamanio_de_lote(), 1.000 por defecto) la propagacion va a
+     * ProcessPropagarDescuentosProveedorJob, con su registro visible y su aviso al terminar.
+     *
+     * Con esa cantidad o menos, TODO es exactamente como antes: sincronico y con la misma respuesta
+     * (`actualizados`, `respetados`), sin ninguna clave nueva. El plan que se usa para decidir es el
+     * mismo que se escribe: no se clasifica dos veces.
+     *
+     * En segundo plano la respuesta llega de inmediato con `actualizados` = los que se VAN a
+     * actualizar, `respetados` y `en_segundo_plano: true`. Compatible en las dos direcciones: una SPA
+     * vieja lee `actualizados` y muestra "Se actualizaron N articulos" (se estan actualizando, que es
+     * aceptable); una SPA nueva contra una API vieja no recibe la clave y hace lo de siempre. El job
+     * vuelve a clasificar cuando arranca, con los datos de ese momento.
+     *
+     * @param  \App\Models\Provider $provider  Proveedor ya scopeado al comercio de la sesion.
+     * @param  bool $pisar_editados
+     * @param  int  $owner_user_id  Dueño del comercio (el del job y el del registro visible).
+     * @param  int  $auth_user_id   Persona que confirmo la ventana (dueño o empleado).
+     * @return array  La respuesta del endpoint.
+     */
+    static function propagar_o_encolar($provider, $pisar_editados, $owner_user_id, $auth_user_id) {
+
+        $plan = self::planificar_propagacion($provider, $pisar_editados);
+
+        $a_actualizar = count($plan['items']);
+
+        if ($a_actualizar > RecalculoDePreciosEnLote::tamanio_de_lote()) {
+
+            /*
+             * El registro visible nace ACA, en el request, y no cuando el worker levanta el job: en
+             * el shared hosting el worker pasa una vez por minuto, y hasta entonces el usuario que
+             * acaba de confirmar no veria ningun proceso.
+             */
+            $background_process_id = ProcessPropagarDescuentosProveedorJob::anunciar(
+                $provider,
+                $owner_user_id,
+                $auth_user_id,
+                $pisar_editados,
+                $a_actualizar
+            );
+
+            ProcessPropagarDescuentosProveedorJob::dispatch(
+                $provider->id,
+                $owner_user_id,
+                $auth_user_id,
+                $pisar_editados,
+                uniqid('propagar_desc_', true),
+                $background_process_id
+            );
+
+            return [
+                'actualizados'     => $a_actualizar,
+                'respetados'       => (int) $plan['respetados'],
+                'en_segundo_plano' => true,
+            ];
+        }
+
+        return self::aplicar_plan_de_propagacion($provider, $plan);
     }
 
     /* ==================================================================================
@@ -1715,9 +1867,13 @@ class ArticleProviderDiscountHelper {
      * @param  callable|null $al_terminar_tanda  function ($cantidad): se llama despues de cada tanda
      *                       escrita con la cantidad de items de esa tanda (el avance del registro
      *                       visible).
+     * @param  int|null $auth_user_id  employee_id de los price_changes (29/9/2026, al final de la
+     *                       firma). null = lo de siempre: el motor usa UserHelper::userId(false). Lo
+     *                       manda explicito el job de la propagacion en segundo plano, donde no hay
+     *                       sesion (ver propagar_a_articulos()).
      * @return array  Ids de los articulos que existian y se tocaron.
      */
-    static function aplicar_ficha_en_lote($provider, array $items, $owner_user = null, $duenos = null, $al_terminar_tanda = null) {
+    static function aplicar_ficha_en_lote($provider, array $items, $owner_user = null, $duenos = null, $al_terminar_tanda = null, $auth_user_id = null) {
 
         if (count($items) === 0) {
             return [];
@@ -1769,14 +1925,15 @@ class ArticleProviderDiscountHelper {
                  * esta misma closure escribiria los articulos sin sus listas ni sus price_changes. El
                  * reintento seguro es el de afuera (volver a correr la sincronizacion).
                  */
-                DB::transaction(function () use ($vigentes, $provider, $plantilla, $duenos_de_la_tanda, &$cache_de_duenos) {
+                DB::transaction(function () use ($vigentes, $provider, $plantilla, $duenos_de_la_tanda, &$cache_de_duenos, $auth_user_id) {
 
                     self::escribir_descuentos_en_bloque($vigentes, $provider->id, $plantilla);
 
                     self::recalcular_precios_de_la_tanda(
                         array_column($vigentes, 'article_id'),
                         $duenos_de_la_tanda,
-                        $cache_de_duenos
+                        $cache_de_duenos,
+                        $auth_user_id
                     );
                 });
 
@@ -1948,16 +2105,18 @@ class ArticleProviderDiscountHelper {
      * empleado), esos articulos caen al setFinalPrice() por articulo de siempre, que es exactamente
      * lo que se hacia antes con ellos.
      *
-     * El employee_id de los price_changes va en null: el motor lo resuelve con
-     * UserHelper::userId(false), igual que PriceChangeController::store() cuando setFinalPrice() se
-     * llamaba sin `$auth_user_id` (que es como lo llamaban la sincronizacion y la propagacion).
+     * El employee_id de los price_changes: con `$auth_user_id` null (lo de siempre) el motor lo
+     * resuelve con UserHelper::userId(false), igual que PriceChangeController::store() cuando
+     * setFinalPrice() se llamaba sin `$auth_user_id` (que es como lo llamaban la sincronizacion y la
+     * propagacion). El job de la propagacion en segundo plano lo manda explicito (29/9/2026).
      *
      * @param  int[] $article_ids
      * @param  array $duenos           [article_id => user_id]
      * @param  array $cache_de_duenos  [user_id => User|null], por referencia: se reusa entre tandas.
+     * @param  int|null $auth_user_id  employee_id de los price_changes (null = lo de siempre).
      * @return void
      */
-    static function recalcular_precios_de_la_tanda(array $article_ids, array $duenos, array &$cache_de_duenos) {
+    static function recalcular_precios_de_la_tanda(array $article_ids, array $duenos, array &$cache_de_duenos, $auth_user_id = null) {
 
         $por_dueno = [];
 
@@ -1978,7 +2137,7 @@ class ArticleProviderDiscountHelper {
 
             if (!is_null($dueno) && empty($dueno->owner_id)) {
 
-                RecalculoDePreciosEnLote::recalcular($ids, $dueno, null);
+                RecalculoDePreciosEnLote::recalcular($ids, $dueno, $auth_user_id);
 
                 continue;
             }
@@ -1988,7 +2147,7 @@ class ArticleProviderDiscountHelper {
                 $article = Article::find($article_id);
 
                 if (!is_null($article)) {
-                    ArticleHelper::setFinalPrice($article, $article->user_id);
+                    ArticleHelper::setFinalPrice($article, $article->user_id, null, $auth_user_id);
                 }
             }
         }
