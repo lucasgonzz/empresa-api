@@ -557,9 +557,7 @@ class ArticleTicketDesignHelper
     {
         $owner_id = $lista->user_id;
 
-        return DB::transaction(function () use ($owner_id, $lista) {
-
-            $dueno = self::bloquear_dueno($owner_id);
+        $crear = function ($dueno) use ($owner_id, $lista) {
 
             if (is_null($dueno) || !is_null($dueno->owner_id) || self::imprime_con_funcion_propia($dueno)) {
                 return null;
@@ -570,6 +568,22 @@ class ArticleTicketDesignHelper
             }
 
             return self::crear_diseno_de_lista_sin_candado($owner_id, $lista);
+        };
+
+        /*
+            * Si la lista se crea adentro de una transacción ajena (por ejemplo, la confirmación de
+            * una acción del asistente de IA), no se toma el candado del dueño: ese candado duraría
+            * hasta que termine la transacción de afuera, y ante un deadlock MySQL revierte TODO
+            * mientras el catch del observer se traga el error y el flujo de afuera sigue como si
+            * la lista existiera. Sin candado, lo peor que puede pasar es una carrera con el seeder,
+            * que igual es idempotente por `user_id` + `price_type_id`.
+        */
+        if (DB::transactionLevel() > 0) {
+            return $crear(User::find($owner_id));
+        }
+
+        return DB::transaction(function () use ($owner_id, $crear) {
+            return $crear(self::bloquear_dueno($owner_id));
         });
     }
 

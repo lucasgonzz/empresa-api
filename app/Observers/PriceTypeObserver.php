@@ -16,9 +16,14 @@ use Illuminate\Support\Facades\Log;
  *   - deleted: se borra su diseño.
  *
  * Va en el evento `created` del modelo y no en `PriceTypeController@store` porque las listas se
- * crean por más de un camino: el ABM, la importación de clientes (`ClientImport` ->
- * `LocalImportHelper::savePriceType()`), el alta de una demo (`DemoSetupHelper::crear_price_types()`)
- * y los seeders. Todos pasan por `PriceType::create()`.
+ * crean por más de un camino: el ABM, el alta de una demo (`DemoSetupHelper::crear_price_types()`)
+ * y los seeders, que pasan por `PriceType::create()`.
+ *
+ * ⚠️ La importación de clientes (`ClientImport` -> `LocalImportHelper::savePriceType()` ->
+ * `Controller::createIfNotExist()`) inserta con `DB::table('price_types')->insert()` y NO dispara
+ * este observer: esa lista queda sin diseño. No se pierde nada porque el menú de etiquetas del
+ * listado le deja a toda lista sin diseño su opción de siempre (`?price_type_id=`), y el seeder la
+ * cubre en la próxima corrida.
  *
  * Solo crea si el dueño trabaja con listas, y es idempotente (`crear_diseno_de_lista()` mira si
  * ya existe el de esa lista, con el candado del dueño). 🔴 Un error acá JAMÁS puede romper el alta
