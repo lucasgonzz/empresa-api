@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\comisiones\ComisionesHelper;
 use App\Http\Controllers\Helpers\sale\ArticlePurchaseHelper;
 use App\Http\Controllers\Helpers\sale\ComboHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeLineaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\IvaDeVentaHelper;
 use App\Http\Controllers\Helpers\sale\PromocionVinotecaHelper;
@@ -62,6 +63,7 @@ use App\Models\StockMovement;
 use App\Models\User;
 use App\Models\Variant;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 
@@ -2050,6 +2052,43 @@ class SaleHelper extends Controller {
         return null;
     }
 
+    /**
+     * Las `unidades_individuales` con las que hay que dividir el costo de un item.
+     *
+     * Si el item TRAE la clave `unidades_individuales` (aunque sea null o 0) se respeta lo que mandó
+     * el front, igual que siempre: la tabla de VENDER permite editarla por venta y el API no la pisa.
+     * Si la clave NO viene, se lee de `articles.unidades_individuales`.
+     *
+     * 🔴 POR QUÉ el API la busca él mismo (misión ganancia-unidades-individuales, 29/9/2026): antes
+     * "clave ausente" significaba "no dividir", o sea que el API le creía al front un dato que él
+     * mismo tiene en la base. Cualquier camino que llegara sin la clave —el SPA viejo, una respuesta
+     * liviana de búsqueda, un camino de IA, un duplicado— guardaba el costo del BULTO como unitario.
+     * Así nació la venta 54.499 de ferretotal (presupuesto 411, SPA del 2/9 sin la clave).
+     *
+     * `DB::table` y no `Article::find`: sin scopes ni eventos, y una sola columna. Se filtra por el
+     * `user_id` de la venta para no leer nunca el artículo de otra cuenta. Los ítems sin `id`
+     * numérico mayor a 0 (servicios, artículos inactivos con id <= 0) no consultan nada.
+     *
+     * @param  \App\Models\Sale|\App\Models\Budget $sale
+     * @param  array $item
+     * @return mixed  Lo que haya (valor del front o de la base); el llamador decide si es > 0.
+     */
+    private static function get_unidades_individuales_del_item($sale, $item) {
+
+        if (array_key_exists('unidades_individuales', $item)) {
+            return $item['unidades_individuales'];
+        }
+
+        if (!isset($item['id']) || !is_numeric($item['id']) || (int) $item['id'] <= 0) {
+            return null;
+        }
+
+        return DB::table('articles')
+                    ->where('id', (int) $item['id'])
+                    ->where('user_id', $sale->user_id)
+                    ->value('unidades_individuales');
+    }
+
     static function getCost($sale, $item) {
         $user = $sale->user;
         Log::info('getCost');
@@ -2060,6 +2099,12 @@ class SaleHelper extends Controller {
 
         $cost = null;
 
+        /*
+         * Una sola vez por renglón: la usan la rama del pivot y la división del final, y la consulta
+         * a la base (cuando la clave no viene) no tiene por qué repetirse.
+         */
+        $unidades_individuales = Self::get_unidades_individuales_del_item($sale, $item);
+
         // Si se esta actualizando, se retorna el valor que estaba guardado (ya cotizado)
         if (
             isset($item['pivot'])
@@ -2067,7 +2112,40 @@ class SaleHelper extends Controller {
         ) {
             Log::info('retornando del pivot: '.$item['pivot']['cost']);
             $cost = (float) $item['pivot']['cost'];
-            return $cost;
+
+            /*
+             * 🔴 NO simplificar esto a "devolver el pivot tal cual", ni a "dividir siempre por las
+             * unidades": el costo guardado en el pivot de una venta o de un presupuesto puede ser
+             * el del BULTO sin dividir (el 2/9/2026 el SPA viejo guardó así el presupuesto 411 de
+             * ferretotal) y este return lo propagaba de venta en venta y de presupuesto a venta.
+             * La venta 54.499 salió con PRECINTOS a costo 4118,66 y precio 61,78.
+             *
+             * Y tampoco se puede comparar contra `articles.costo_real` de hoy: la ficha cambia
+             * DESPUÉS de la venta (mangueras 3073/3074/3075: costo_real hoy 6,17 contra 388,77 con
+             * el que se vendió, margen del 50 % y ganancia positiva; ese "arreglo" las rompería).
+             * El criterio único —`CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir`—
+             * mira el PRECIO DE LA PROPIA LÍNEA y solo actúa si la línea pierde más del doble de lo
+             * que factura Y dividir por las unidades la vuelve coherente. Una línea ya dividida
+             * pasa intacta, así que no hay riesgo de dividir dos veces. Es una defensa: no
+             * reemplaza al saneo del histórico.
+             *
+             * El precio de la línea: `price_vender` (venta), si no `pivot.price`, si no `price`.
+             */
+            $price_de_la_linea = null;
+
+            if (isset($item['price_vender'])) {
+                $price_de_la_linea = $item['price_vender'];
+            } else if (isset($item['pivot']['price'])) {
+                $price_de_la_linea = $item['pivot']['price'];
+            } else if (isset($item['price'])) {
+                $price_de_la_linea = $item['price'];
+            }
+
+            return (float) CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
+                $cost,
+                $price_de_la_linea,
+                $unidades_individuales
+            );
         }
 
 
@@ -2135,11 +2213,10 @@ class SaleHelper extends Controller {
         }
 
         if (
-            isset($item['unidades_individuales'])
-            && $item['unidades_individuales']
-            && (float)$item['unidades_individuales'] > 0
+            $unidades_individuales
+            && (float)$unidades_individuales > 0
         ) {
-            $cost /= (float)$item['unidades_individuales'];
+            $cost /= (float)$unidades_individuales;
         }
 
         return $cost;
