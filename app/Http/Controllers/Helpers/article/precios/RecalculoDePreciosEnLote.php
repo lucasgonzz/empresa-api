@@ -336,6 +336,19 @@ class RecalculoDePreciosEnLote
                  * las filas de la tanda llevan el MISMO instante, tomado justo antes del UPDATE, en
                  * las dos columnas.
                  *
+                 * ⚠️ Eso ACHICA la ventana, no la cierra: con el motor en su propia transacción pasa
+                 * de los segundos del cálculo a los milisegundos que van del sello al commit de la
+                 * tanda. Quedan tres huecos conocidos:
+                 *  - la fila que pasó por el `price = null; save()` del modo lote conserva el
+                 *    updated_at que le puso ese save(), el de su propio cálculo (ver
+                 *    columnas_a_escribir());
+                 *  - con el motor anidado en la transacción de otro (la sincronización y la
+                 *    propagación de descuentos, la masiva, el rollback de una importación), la fila
+                 *    recién se ve cuando confirma la transacción de afuera, que puede ser varias
+                 *    tandas después del sello;
+                 *  - las dos columnas se guardan al segundo: un lector que corta en el mismo
+                 *    segundo del sello puede perder o repetir filas, según compare con > o con >=.
+                 *
                  * Solo en las filas que ya traían esas columnas para escribir: updated_at donde el
                  * camino por artículo lo tocaba, y final_price_updated_at solo donde cambió el
                  * precio (lo pone setFinalPrice(), como siempre). Con el reloj congelado de los
