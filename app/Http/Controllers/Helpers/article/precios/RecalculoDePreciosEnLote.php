@@ -408,19 +408,20 @@ class RecalculoDePreciosEnLote
      *
      * - Menos las columnas decimales cuyo valor nuevo y el de la base, los dos no nulos, quedarían
      *   guardados igual (ver es_decimal_sin_cambio()). Eloquent compara decimales como texto
-     *   ("123.450000" de la base contra 123.45 en memoria) y los da por sucios siempre; save()
-     *   los escribía igual y la base quedaba con el mismo número. Saltearlos hace que un
-     *   recálculo que no cambia ningún precio no reescriba esas columnas; NO hace que no
-     *   escriba nada: un artículo con costo igual entra al UPDATE, con updated_at = ahora y
-     *   nada más, porque así lo dejaba el camino por artículo (el punto de abajo, a propósito).
-     *   Los únicos que no se escriben en absoluto son los que no traen ninguna columna: en la
-     *   práctica, los artículos sin costo cuyo precio no cambió.
+     *   ("123.450000" de la base contra 123.45 en memoria): un valor que salió de una cuenta es
+     *   un float y queda "sucio" aunque sea el mismo número; save() lo escribía igual y la base
+     *   quedaba con lo mismo. Saltearlos hace que un recálculo que no cambia ningún precio no
+     *   reescriba esas columnas. NO hace que no escriba nada: el artículo puede entrar igual al
+     *   UPDATE solo con updated_at, por el punto de abajo, a propósito.
      *
      * - 🔴 Más `updated_at`, cuando el camino por artículo lo tocaba. setFinalPrice() hace un
      *   save() CON timestamps apenas calcula costo_real (línea ~355, `if ($guardar_cambios)`), y
-     *   por lo de arriba ese save() encontraba costo_real sucio en todo artículo con costo: o sea
-     *   que hoy todo recálculo le pone updated_at = ahora a cada artículo con costo, aunque el
-     *   precio no se mueva. El save() final va con timestamps = false y ese no lo toca. Quien lee
+     *   por lo de arriba ese save() encontraba costo_real sucio en todo artículo cuyo costo real
+     *   salió de alguna cuenta (un descuento, un recargo, el IVA al costo): hoy todo recálculo le
+     *   pone updated_at = ahora a esos artículos, aunque el precio no se mueva. Si el costo real
+     *   queda igual al costo, sin ninguna cuenta en el medio, sigue siendo el mismo texto que trajo
+     *   la base, no queda sucio y ese save() no escribía nada: acá tampoco se toca. El save()
+     *   final va con timestamps = false y ese no lo toca. Quien lee
      *   updated_at: el export incremental de artículos para integraciones (n8n,
      *   Integraciones\ArticulosExportController, que filtra SOLO por updated_at) y la descarga
      *   offline del listado. Si el motor dejara de tocarlo, un cambio de dólar dejaría de llegar a
