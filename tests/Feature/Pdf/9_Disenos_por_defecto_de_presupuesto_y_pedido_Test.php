@@ -268,6 +268,27 @@ class Disenos_por_defecto_de_presupuesto_y_pedido_Test extends EmpresaTestCase
     }
 
     /**
+     * La descripción del cliente es una nota que muchos dueños usan como interna y el link del PDF
+     * le llega al cliente: los diseños sembrados la traen apagada (el `BudgetPdf` de siempre no la
+     * imprimía).
+     *
+     * @test
+     */
+    public function los_disenos_sembrados_no_imprimen_la_descripcion_del_cliente()
+    {
+        $this->correr_el_seeder();
+
+        foreach (['budget', 'order'] as $modelo) {
+            foreach ($this->disenos_de($this->dueno->id, $modelo) as $perfil) {
+                $this->assertFalse(
+                    (bool) $perfil->show_client_description,
+                    '"'.$perfil->name.'" tiene que nacer con show_client_description apagado.'
+                );
+            }
+        }
+    }
+
+    /**
      * El encabezado del cliente de los presupuestos lleva el vendedor, o sea el empleado que lo cargó
      * (el `BudgetPdf` de antes lo imprimía como "Vendedor:" y sacarlo sería una regresión silenciosa);
      * el del pedido no, porque un pedido de la tienda no lo carga ningún empleado.

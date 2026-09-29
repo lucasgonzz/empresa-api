@@ -7,6 +7,7 @@ use App\Models\PdfColumnProfile;
 use App\Models\SheetType;
 use App\Models\User;
 use App\Services\PdfColumnService;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Diseños de PDF por defecto de los presupuestos y de los pedidos online.
@@ -26,6 +27,31 @@ use App\Services\PdfColumnService;
 class PdfDocumentSetupHelper
 {
     /**
+     * Layout del encabezado por defecto de un tipo de comprobante: el del remito
+     * (`PdfColumnProfile::default_header_layout()`) y, para el presupuesto, el vendedor (el
+     * empleado que lo cargó) al final del bloque del cliente, porque el `BudgetPdf` de antes lo
+     * imprimía como "Vendedor:". Va el campo `vendedor` y no `empleado` para conservar ese rótulo
+     * (ver `BudgetPdfDocument::header_document()`).
+     *
+     * Lo usan DOS lugares y tienen que coincidir: la semilla de los diseños por defecto y
+     * `ProfileDocumentPdf` para un diseño creado a mano que todavía no tiene `header_layout`
+     * (sin esto, un presupuesto armado desde cero en el ABM perdería el Vendedor).
+     *
+     * @param string $model_name 'budget' | 'order'.
+     * @return array<string, array<string, array<int, string>>>
+     */
+    public static function default_header_layout_for($model_name)
+    {
+        $layout = PdfColumnProfile::default_header_layout(false);
+
+        if ($model_name === 'budget') {
+            $layout['receptor']['izquierda'][] = 'vendedor';
+        }
+
+        return $layout;
+    }
+
+    /**
      * Definición de los cuatro diseños. Todos son A4 con las columnas sumando 200mm exactos (210 de
      * hoja menos 5mm de margen de cada lado: es lo que valida el controlador al editar).
      *
@@ -36,13 +62,8 @@ class PdfDocumentSetupHelper
      */
     public static function default_profiles_definition()
     {
-        /**
-         * Encabezado del presupuesto: el default del remito + el vendedor (el empleado que lo cargó),
-         * que el `BudgetPdf` de antes imprimía como "Vendedor:". Va el campo `vendedor` y no
-         * `empleado` para conservar ese rótulo (ver `BudgetPdfDocument::header_document()`).
-         */
-        $budget_header_layout = PdfColumnProfile::default_header_layout(false);
-        $budget_header_layout['receptor']['izquierda'][] = 'vendedor';
+        /** Encabezado del presupuesto: ver `default_header_layout_for()`. */
+        $budget_header_layout = self::default_header_layout_for('budget');
 
         return [
             [
@@ -184,39 +205,56 @@ class PdfDocumentSetupHelper
                 ->where('is_default', true)
                 ->exists();
 
-            $profile = PdfColumnProfile::create([
-                'user_id' => $owner_id,
-                'model_name' => $definition['model_name'],
-                'name' => $definition['name'],
-                /** `columns` es json NOT NULL sin default y la app ya no lo usa: las columnas viven en el pivot. */
-                'columns' => [],
-                'is_default' => $definition['is_default'] && ! $has_default,
-                'is_default_whatsapp' => false,
-                'is_default_whatsapp_afip' => false,
-                'is_default_tienda' => false,
-                'paper_width_mm' => 210,
-                'printable_width_mm' => 210,
-                'margin_mm' => 5,
-                'logo_size_mm' => null,
-                'sheet_type_id' => $a4_sheet_type ? $a4_sheet_type->id : null,
-                'is_afip_ticket' => false,
-                'show_totals_on_each_page' => false,
-                'show_comissions' => false,
-                'show_total_costs' => false,
-                'show_client_description' => true,
-                'use_current_date' => false,
-                'footer_text' => null,
-                'show_total_in_footer' => $definition['show_total_in_footer'],
-                'show_subtotal_in_footer' => true,
-                'discount_display_mode' => 'descriptivo',
-                'header_layout' => $definition['header_layout'],
-            ]);
+            /**
+             * El alta del diseño y la asignación de sus columnas van en UNA transacción. La regla de
+             * idempotencia de arriba (existe por nombre => no se toca) protege para siempre a un
+             * diseño ya creado: si `assign_profile_options()` fallara después del `create()`, quedaría
+             * un diseño SIN columnas que ninguna corrida posterior repararía, y el PDF saldría vacío.
+             */
+            DB::transaction(function () use ($definition, $owner_id, $has_default, $a4_sheet_type) {
 
-            PdfColumnProfileSeederHelper::assign_profile_options(
-                $profile,
-                $definition['model_name'],
-                $definition['columns']
-            );
+                $profile = PdfColumnProfile::create([
+                    'user_id' => $owner_id,
+                    'model_name' => $definition['model_name'],
+                    'name' => $definition['name'],
+                    /** `columns` es json NOT NULL sin default y la app ya no lo usa: las columnas viven en el pivot. */
+                    'columns' => [],
+                    'is_default' => $definition['is_default'] && ! $has_default,
+                    'is_default_whatsapp' => false,
+                    'is_default_whatsapp_afip' => false,
+                    'is_default_tienda' => false,
+                    'paper_width_mm' => 210,
+                    'printable_width_mm' => 210,
+                    'margin_mm' => 5,
+                    'logo_size_mm' => null,
+                    'sheet_type_id' => $a4_sheet_type ? $a4_sheet_type->id : null,
+                    'is_afip_ticket' => false,
+                    'show_totals_on_each_page' => false,
+                    'show_comissions' => false,
+                    'show_total_costs' => false,
+                    /**
+                     * Apagada a propósito. El `BudgetPdf` de siempre NO imprimía `clients.description` (el
+                     * remito sí), y muchos dueños la usan como nota interna sobre el cliente ("pide
+                     * descuento", "paga tarde"). La ruta del PDF es pública por id y el link del
+                     * presupuesto se le manda al cliente por WhatsApp: prendida por defecto, esa nota le
+                     * llegaría al propio cliente. El dueño la enciende desde el ABM si la quiere.
+                     */
+                    'show_client_description' => false,
+                    'use_current_date' => false,
+                    'footer_text' => null,
+                    'show_total_in_footer' => $definition['show_total_in_footer'],
+                    'show_subtotal_in_footer' => true,
+                    'discount_display_mode' => 'descriptivo',
+                    'header_layout' => $definition['header_layout'],
+                ]);
+
+                PdfColumnProfileSeederHelper::assign_profile_options(
+                    $profile,
+                    $definition['model_name'],
+                    $definition['columns']
+                );
+
+            });
         }
 
         return $result;
