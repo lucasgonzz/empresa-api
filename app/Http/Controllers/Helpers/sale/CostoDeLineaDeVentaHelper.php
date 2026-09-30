@@ -65,6 +65,18 @@ class CostoDeLineaDeVentaHelper
     const K_MAX_POR_DEFECTO = 4;
 
     /**
+     * Banda de coherencia contra la ficha de HOY para la causa C: el costo unitario reconstruido tiene
+     * que quedar entre 0,4 y 2,5 veces el costo unitario de la ficha (`costo_real / unidades`).
+     *
+     * Es deliberadamente ancha: la ficha cambia después de la venta (inflación, cambio de proveedor) y
+     * lo que se busca es el orden de magnitud —separar "el costo estaba multiplicado por la cantidad"
+     * de "el costo era ese"—, no reproducir el valor. Medido el 30/9/2026 en ferretotal: de 246 líneas
+     * candidatas, 153 entran y en casi todas el precio queda en margen 1,50 sobre el costo corregido.
+     */
+    const FICHA_BANDA_MINIMA = 0.4;
+    const FICHA_BANDA_MAXIMA = 2.5;
+
+    /**
      * Query base de las líneas de venta de UN cliente, con las columnas que necesita `analizar()`.
      *
      * 🔴 El `join` a `articles` NO es decorativo y es una de las tres divergencias que se cerraron:
@@ -99,6 +111,8 @@ class CostoDeLineaDeVentaHelper
                  * valor de HOY, la del pivot —si tuviera algo— seria el valor historico exacto.
                  */
                 'articles.unidades_individuales as unidades_del_articulo',
+                // Solo la usa la causa C, para contrastar el costo reconstruido contra la ficha de hoy.
+                'articles.costo_real as costo_real_del_articulo',
                 'article_sale.unidades_individuales as unidades_de_la_linea',
                 'sales.num as venta_num',
                 'sales.created_at as venta_fecha',
@@ -164,9 +178,12 @@ class CostoDeLineaDeVentaHelper
      * @param  bool $hacer_a
      * @param  bool $hacer_b
      * @param  int $k_max
+     * @param  bool $hacer_c  Causa C (costo TOTAL con firma sana). Apagada por defecto: la guarda de
+     *                        `set_costo_ventas` llama con cuatro argumentos y tiene que seguir
+     *                        respondiendo exactamente lo mismo que antes.
      * @return array
      */
-    public static function analizar($fila, $hacer_a, $hacer_b, $k_max)
+    public static function analizar($fila, $hacer_a, $hacer_b, $k_max, $hacer_c = false)
     {
         $sana = [
             'accion' => 'ninguna',
@@ -247,17 +264,39 @@ class CostoDeLineaDeVentaHelper
 
         $tiene_unidades_individuales = !is_null($unidades);
 
+        /*
+         * 🔴 Causa C: solo si ninguna otra causa tocó la línea (`$causas` vacío) y solo cuando la A no
+         * la resolvió. Es la que reconstruye una línea cuyo costo es unitario × cantidad (÷ unidades)
+         * pero que ya cumple la firma SANA, o sea la que ninguna firma delata. Ver `probar_causa_c()`.
+         */
+        $costo_de_la_causa_c = null;
+
+        if ($es_incoherente && $hacer_c && count($causas) === 0) {
+            $costo_de_la_causa_c = self::probar_causa_c($fila, $cost, $price, $amount, $ganancia, $unidades);
+        }
+
         if ($es_incoherente && $tiene_unidades_individuales && $hacer_a) {
             $candidato = $cost_final / $unidades;
 
             if ($candidato > 0 && $candidato <= $price * self::FACTOR_COSTO_INCOHERENTE) {
                 $cost_final = $candidato;
                 $causas[] = 'A';
+            } elseif (!is_null($costo_de_la_causa_c)) {
+                $cost_final = $costo_de_la_causa_c;
+                $causas[] = 'C';
             } else {
                 return self::descartar($sana, 'dividir_por_unidades_individuales_no_alcanza');
             }
         } elseif ($es_incoherente && $tiene_unidades_individuales) {
-            return self::descartar($sana, 'causa_a_no_pedida_en_esta_corrida');
+            if (is_null($costo_de_la_causa_c)) {
+                return self::descartar($sana, 'causa_a_no_pedida_en_esta_corrida');
+            }
+
+            $cost_final = $costo_de_la_causa_c;
+            $causas[] = 'C';
+        } elseif ($es_incoherente && !is_null($costo_de_la_causa_c)) {
+            $cost_final = $costo_de_la_causa_c;
+            $causas[] = 'C';
         } elseif ($es_incoherente) {
             /*
              * El costo supera el doble del precio pero no hay ninguna causa identificada: sin la
@@ -419,6 +458,83 @@ class CostoDeLineaDeVentaHelper
         }
 
         return round($candidato, 2);
+    }
+
+    /**
+     * Causa C — el costo guardado es el TOTAL de la línea (unitario × cantidad, y además × las unidades
+     * del bulto) y la ganancia ya es la "sana" de ese costo inflado. Devuelve el costo unitario
+     * reconstruido, o null si la línea no cumple TODAS las condiciones.
+     *
+     * 🔴 Por qué existe (ferretotal, 30/9/2026): `set_costo_ventas` dejaba `cost` total y la firma
+     * `price × amount − cost`; después corrió un recálculo de `ganancia` que la reescribió como
+     * `(price − cost) × amount`, y la línea pasó a parecer sana. La causa B la detecta por la firma y
+     * ya no la ve; la causa A solo la ve si dividir por las unidades alcanza. Medido: ~170 líneas, que
+     * concentran el 99 % del monto negativo (la venta 8050 sola suma −4.606 millones).
+     *
+     * Como no hay firma, la identificación descansa en evidencia independiente, y TODAS tienen que
+     * cumplirse. Ante cualquier duda la línea queda sin tocar y el comando la lista con su motivo:
+     *
+     *   1. `amount > 1`, `price > 0`, `cost > 0` y firma sana (`ganancia = (price − cost) × amount`).
+     *   2. El costo candidato `cost / amount / max(1, unidades)` es coherente con el precio de la propia
+     *      línea (`0 < candidato <= price × FACTOR_COSTO_INCOHERENTE`).
+     *   3. La ficha de hoy lo confirma: el candidato cae dentro de la banda
+     *      [`FICHA_BANDA_MINIMA`, `FICHA_BANDA_MAXIMA`] × el costo unitario de la ficha
+     *      (`costo_real / max(1, unidades)`) **y el costo guardado tal cual NO cae**. Si los dos encajan
+     *      (cantidad 2, p. ej.) es ambiguo y no se adivina; si la ficha no sirve (sin `costo_real`, en
+     *      dólares, o que cambió varias veces) tampoco se adivina.
+     *
+     * No se usa "costo > precio" como criterio: una venta legítima a pérdida con `amount > 1` cuyo costo
+     * unitario real supera el doble del precio no cumple 3 (el costo crudo encaja con la ficha).
+     *
+     * @param  object $fila
+     * @param  float $cost
+     * @param  float|null $price
+     * @param  float $amount
+     * @param  float|null $ganancia
+     * @param  float|null $unidades  Ya normalizadas: null si <= 1.
+     * @return float|null
+     */
+    private static function probar_causa_c($fila, $cost, $price, $amount, $ganancia, $unidades)
+    {
+        if (is_null($price) || is_null($ganancia) || $price <= 0 || $cost <= 0 || $amount <= 1.0) {
+            return null;
+        }
+
+        // Firma SANA: la de una línea escrita por `attachArticle` (o reescrita por un recálculo).
+        if (abs($ganancia - (($price - $cost) * $amount)) > self::tolerancia($amount)) {
+            return null;
+        }
+
+        $ficha = (isset($fila->costo_real_del_articulo) && is_numeric($fila->costo_real_del_articulo))
+            ? (float) $fila->costo_real_del_articulo
+            : 0.0;
+
+        if ($ficha <= 0) {
+            return null;
+        }
+
+        $divisor_de_unidades = is_null($unidades) ? 1.0 : $unidades;
+        $candidato = $cost / $amount / $divisor_de_unidades;
+
+        if ($candidato <= 0 || $candidato > $price * self::FACTOR_COSTO_INCOHERENTE) {
+            return null;
+        }
+
+        $ficha_unitaria = $ficha / $divisor_de_unidades;
+
+        $del_candidato = $candidato / $ficha_unitaria;
+        $del_costo_guardado = $cost / $ficha_unitaria;
+
+        if ($del_candidato < self::FICHA_BANDA_MINIMA || $del_candidato > self::FICHA_BANDA_MAXIMA) {
+            return null;
+        }
+
+        // Si el costo guardado TAMBIÉN encaja con la ficha, pudo ser un costo unitario verdadero.
+        if ($del_costo_guardado >= self::FICHA_BANDA_MINIMA && $del_costo_guardado <= self::FICHA_BANDA_MAXIMA) {
+            return null;
+        }
+
+        return $candidato;
     }
 
     /**
