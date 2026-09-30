@@ -405,4 +405,96 @@ class Combo_calculado_Test extends ComboCalculadoTestCase
 
         $this->assertArrayNotHasKey($lista->id, $this->precios_por_lista_en_base($combo));
     }
+
+    /**
+     * 🔴 `combos.price` es lo único que lee una tienda vieja: si la lista de mayor position está
+     * oculta al público (un Mayorista), su precio NO puede copiarse ahí. Se copia el de la lista
+     * pública de mayor position; la fila de la lista oculta existe igual en `combo_price_type`.
+     *
+     * @test
+     */
+    public function la_lista_oculta_mas_alta_no_se_copia_a_combos_price()
+    {
+        $this->con_listas(1);
+
+        $publica = $this->lista('Publica', 90);
+        $oculta  = $this->lista('Oculta', 91);
+        $oculta->ocultar_al_publico = 1;
+        $oculta->save();
+
+        $a = $this->nuevo_articulo();
+        $this->precio_en_lista($a, $publica, 300);
+        $this->precio_en_lista($a, $oculta, 180);
+
+        $combo = $this->combo_calculado([[$a, 1]]);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(300.0, $this->precio_en_base($combo), 'combos.price sale de la pública más alta, no de la oculta');
+
+        $precios = $this->precios_por_lista_en_base($combo);
+
+        $this->assertSame(180.0, $precios[$oculta->id], 'la fila de la lista oculta existe igual: Vender y la tienda nueva eligen por fila');
+        $this->assertSame(300.0, $precios[$publica->id]);
+    }
+
+    /**
+     * Si TODAS las listas están ocultas no hay una pública que elegir: se usa la de mayor position
+     * entre todas, como antes de esta regla.
+     *
+     * @test
+     */
+    public function si_todas_las_listas_estan_ocultas_combos_price_es_el_de_la_mayor_position()
+    {
+        $this->con_listas(1);
+
+        \App\Models\PriceType::where('user_id', self::DUENO)->update(['ocultar_al_publico' => 1]);
+
+        $baja = $this->lista('Oculta baja', 90);
+        $alta = $this->lista('Oculta alta', 91);
+
+        \App\Models\PriceType::whereIn('id', [$baja->id, $alta->id])->update(['ocultar_al_publico' => 1]);
+
+        $a = $this->nuevo_articulo();
+        $this->precio_en_lista($a, $baja, 300);
+        $this->precio_en_lista($a, $alta, 180);
+
+        $combo = $this->combo_calculado([[$a, 1]]);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(180.0, $this->precio_en_base($combo));
+    }
+
+    /**
+     * Una sola lista en la cuenta (visible u oculta): es la que manda, sin casos raros.
+     *
+     * @test
+     */
+    public function con_una_sola_lista_combos_price_es_el_de_esa_lista()
+    {
+        $this->con_listas(1);
+
+        \App\Models\PriceType::where('user_id', self::DUENO)->delete();
+
+        $unica = $this->lista('Unica', 5);
+
+        $a = $this->nuevo_articulo();
+        $this->precio_en_lista($a, $unica, 420);
+
+        $combo = $this->combo_calculado([[$a, 2]]);
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(840.0, $this->precio_en_base($combo));
+        $this->assertSame([(int) $unica->id => 840.0], $this->precios_por_lista_en_base($combo));
+
+        // Y oculta: es la única que hay, así que también manda.
+        $unica->ocultar_al_publico = 1;
+        $unica->save();
+
+        ComboCalculadoHelper::guardar($combo);
+
+        $this->assertSame(840.0, $this->precio_en_base($combo));
+    }
 }

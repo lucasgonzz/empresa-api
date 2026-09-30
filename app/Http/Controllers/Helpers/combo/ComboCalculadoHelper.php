@@ -43,10 +43,15 @@ use Illuminate\Support\Facades\Log;
  *  costo es lo que le cuesta al comercio, y un descuento comercial no lo baja. Con listas de
  *  precio, el mismo a cada lista (el % igual sobre cada precio; el monto restado a cada lista).
  *
- *  CUENTAS CON LISTAS: una fila de `combo_price_type` por cada lista del dueño, y `combos.price` =
- *  el precio de la lista por defecto (la de mayor `position`, desempate por id más alto: el mismo
- *  criterio de `resolver_precio_de_venta()`). 🔴 Eso último no es adorno: es lo que hace que una
- *  tienda o un SPA que todavía no conoce `combo_price_type` siga funcionando leyendo `combos.price`.
+ *  CUENTAS CON LISTAS: una fila de `combo_price_type` por cada lista del dueño (TODAS, también las
+ *  ocultas al público: Vender y la tienda nueva eligen por fila), y `combos.price` = el precio de
+ *  la lista por defecto PARA UNA LECTURA SIN LISTA (`lista_para_combos_price()`): la de mayor
+ *  `position` (desempate por id más alto, el criterio de `resolver_precio_de_venta()`) ENTRE LAS
+ *  QUE NO ESTÁN OCULTAS AL PÚBLICO. 🔴 Eso último no es adorno: es lo que hace que una tienda o un
+ *  SPA que todavía no conoce `combo_price_type` siga funcionando leyendo `combos.price`, y una
+ *  tienda vieja solo lee `combos.price`: si se copiara el precio de una lista oculta (un
+ *  Mayorista, por ejemplo), le mostraría y le cobraría al público el precio de esa lista. Solo si
+ *  TODAS están ocultas no hay una pública que elegir y se usa la de mayor `position`, como antes.
  *  CUENTAS SIN LISTAS: solo `combos.price`, y `combo_price_type` queda vacía para ese combo.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -296,7 +301,8 @@ class ComboCalculadoHelper {
                 $precios_por_lista[(int) $lista->id] = self::precio_del_combo_en_lista($combo, $articulos, $owner, $lista->id);
             }
 
-            $por_defecto = self::lista_por_defecto($listas);
+            // Las filas de `combo_price_type` cubren TODAS las listas; solo `combos.price` mira la visibilidad.
+            $por_defecto = self::lista_para_combos_price($listas);
 
             $precio = $precios_por_lista[(int) $por_defecto->id];
 
@@ -368,6 +374,37 @@ class ComboCalculadoHelper {
         }
 
         return $elegida;
+    }
+
+    /**
+     * La lista cuyo precio se copia a `combos.price`: la lista por defecto ENTRE LAS QUE NO ESTÁN
+     * OCULTAS AL PÚBLICO (`ocultar_al_publico` distinto de 1); si TODAS están ocultas, la por
+     * defecto de todas.
+     *
+     * `combos.price` es lo único que lee una tienda vieja (y un SPA viejo): elegir ahí una lista
+     * oculta sería publicar al público el precio interno de esa lista. No se aplica a las filas de
+     * `combo_price_type`, que siguen siendo una por lista: quien conoce las listas elige por fila.
+     *
+     * 🔴 A propósito no es lo mismo que `ArticlePricesHelper::resolver_precio_de_venta()` (rama
+     * "lista_por_defecto"), que no mira la visibilidad: esa rama es para el ERP, donde el vendedor
+     * sí puede vender con una lista oculta. Acá la pregunta es "qué ve alguien que no sabe de
+     * listas".
+     *
+     * @param  iterable  $listas  PriceType del dueño.
+     * @return \App\Models\PriceType|null
+     */
+    static function lista_para_combos_price($listas) {
+
+        $publicas = [];
+
+        foreach ($listas as $lista) {
+
+            if ((int) $lista->ocultar_al_publico !== 1) {
+                $publicas[] = $lista;
+            }
+        }
+
+        return self::lista_por_defecto(count($publicas) > 0 ? $publicas : $listas);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
