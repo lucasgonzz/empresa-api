@@ -191,7 +191,7 @@ class FinalizeArticleImport implements ShouldQueue
          * una vez por importación. Todos los del dueño y no "los de los artículos importados":
          * a esta altura ya no se sabe cuáles fueron sin releer todo el archivo. Nunca tira.
          */
-        ComboCalculadoHelper::recalcular_de_un_dueno($user->id);
+        ComboCalculadoHelper::encolar_recalculo_de_un_dueno($user->id);
 
         /*
          * Registro visible del proceso (misión procesos-en-segundo-plano): se cierra acá, en el

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\combo;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Jobs\RecalcularCombosCalculados;
 use App\Models\Combo;
 use App\Models\PriceType;
 use App\Models\User;
@@ -105,6 +106,14 @@ class ComboCalculadoHelper {
 
     /** Ids por consulta en los `whereIn` (un recálculo masivo puede traer decenas de miles). */
     const TANDA_DE_IDS = 1000;
+
+    /**
+     * Hasta cuántos combos se recalculan EN LÍNEA (dentro del request que los disparó). Más que
+     * eso se encola el job `RecalcularCombosCalculados` (F5): cada combo cuesta ~8-10 consultas y
+     * hacer decenas dentro de un request de guardado de artículo o de edición de una lista es
+     * hacer esperar a la persona por algo que no necesita ver.
+     */
+    const MAXIMO_EN_LINEA = 25;
 
     /**
      * Tipos de descuento válidos.
@@ -601,11 +610,67 @@ class ComboCalculadoHelper {
             return 0;
         }
 
+        /*
+         * El corte barato (F5): una consulta EXISTS sobre `combos`, ANTES del JOIN con
+         * `article_combo`. La enorme mayoría de las cuentas no tiene ningún combo calculado, y a
+         * esas el guardado de un artículo no tiene que pagarles el JOIN ni el armado de los ids.
+         */
+        if (!self::hay_combos_calculados($user_id)) {
+            return 0;
+        }
+
+        $combo_ids = self::combos_que_incluyen(array_values($ids), $user_id);
+
+        if (is_null($combo_ids) || count($combo_ids) === 0) {
+            return 0;
+        }
+
+        return self::recalcular_o_encolar($combo_ids, $user_id);
+    }
+
+    /**
+     * ¿El dueño (o, sin `$user_id`, cualquiera) tiene algún combo calculado? Una sola consulta
+     * EXISTS. Si la consulta falla devuelve true: el que sigue tiene su propio manejo de errores y
+     * es mejor intentar que dejar de recalcular en silencio.
+     *
+     * @param  int|null  $user_id
+     * @return bool
+     */
+    static function hay_combos_calculados($user_id = null) {
+
+        try {
+
+            $consulta = DB::table('combos')
+                            ->where('calcular_desde_articulos', 1)
+                            ->whereNull('deleted_at');
+
+            if (!is_null($user_id)) {
+                $consulta->where('user_id', self::id_del_dueno($user_id));
+            }
+
+            return $consulta->exists();
+
+        } catch (\Throwable $e) {
+
+            return true;
+        }
+    }
+
+    /**
+     * Los ids (ordenados) de los combos calculados que incluyen alguno de estos artículos, o null
+     * si la búsqueda falló (queda en el log; la red de seguridad diaria lo corrige).
+     *
+     * @param  array     $article_ids  Ids ya limpios.
+     * @param  int|null  $user_id      Si viene, solo los combos de ese dueño.
+     * @return array|null
+     */
+    protected static function combos_que_incluyen(array $article_ids, $user_id = null) {
+
         $combo_ids = [];
 
         try {
 
-            foreach (array_chunk(array_values($ids), self::TANDA_DE_IDS) as $tanda) {
+            foreach (array_chunk($article_ids, self::TANDA_DE_IDS) as $tanda) {
 
                 $consulta = DB::table('article_combo')
                                 ->join('combos', 'combos.id', '=', 'article_combo.combo_id')
@@ -625,20 +690,145 @@ class ComboCalculadoHelper {
         } catch (\Throwable $e) {
 
             Log::warning('ComboCalculadoHelper: no se pudo buscar los combos que incluyen estos artículos', [
-                'articulos' => count($ids),
+                'articulos' => count($article_ids),
                 'motivo'    => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $combo_ids = array_values($combo_ids);
+
+        sort($combo_ids);
+
+        return $combo_ids;
+    }
+
+    /**
+     * Recalcula estos combos: en línea si son pocos (`MAXIMO_EN_LINEA`), o encolando el job si son
+     * más. Devuelve cuántos combos se recalcularon o quedaron encolados.
+     *
+     * Si encolar falla (la cola no responde) se deja en el log y NO se recalcula en línea: el
+     * request que llegó hasta acá no puede pagar decenas de combos, y la red de seguridad diaria
+     * (`combos:recalcular`) corrige lo que quedó viejo.
+     *
+     * @param  array     $combo_ids  Ids ordenados.
+     * @param  int|null  $user_id
+     * @return int
+     */
+    protected static function recalcular_o_encolar(array $combo_ids, $user_id = null) {
+
+        if (count($combo_ids) <= self::MAXIMO_EN_LINEA) {
+            return self::recalcular_combos($combo_ids);
+        }
+
+        try {
+
+            RecalcularCombosCalculados::dispatch($user_id, $combo_ids);
+
+            return count($combo_ids);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('ComboCalculadoHelper: no se pudo encolar el recálculo de combos (lo corrige la red de seguridad diaria)', [
+                'combos' => count($combo_ids),
+                'motivo' => $e->getMessage(),
             ]);
 
             return 0;
         }
+    }
 
-        if (count($combo_ids) === 0) {
+    /**
+     * Recalcula exactamente estos combos (ya buscados), sin decidir nada más. Es lo que llama el
+     * job `RecalcularCombosCalculados` en su modo "estos combos".
+     *
+     * @param  array  $combo_ids
+     * @return int
+     */
+    static function recalcular_ids(array $combo_ids) {
+
+        if (!ComboCalculadoEsquemaHelper::disponible()) {
             return 0;
         }
 
         sort($combo_ids);
 
         return self::recalcular_combos($combo_ids);
+    }
+
+    /**
+     * Encola el recálculo de TODOS los combos calculados del dueño (si tiene alguno). Lo usan los
+     * cierres de corridas masivas: se encola DESPUÉS de cerrar la corrida, para que un timeout o una
+     * falla del recálculo de combos no pueda dejarla abierta. Devuelve true si encoló algo.
+     *
+     * Nunca tira: una falla al encolar queda en el log y la red de seguridad diaria la corrige.
+     *
+     * @param  int  $user_id
+     * @return bool
+     */
+    static function encolar_recalculo_de_un_dueno($user_id) {
+
+        if (!ComboCalculadoEsquemaHelper::disponible() || !self::hay_combos_calculados($user_id)) {
+            return false;
+        }
+
+        try {
+
+            RecalcularCombosCalculados::dispatch($user_id, null);
+
+            return true;
+
+        } catch (\Throwable $e) {
+
+            Log::warning('ComboCalculadoHelper: no se pudo encolar el recálculo de los combos del dueño', [
+                'user_id' => $user_id,
+                'motivo'  => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Recalcula los combos calculados del dueño desde un request: en línea si son pocos
+     * (`MAXIMO_EN_LINEA`), encolando el job si son más. Lo usan la edición y el borrado de una lista
+     * de precios.
+     *
+     * @param  int  $user_id  Dueño (o un empleado: se resuelve al dueño).
+     * @return int  Cuántos combos se recalcularon o quedaron encolados.
+     */
+    static function recalcular_de_un_dueno_o_encolar($user_id) {
+
+        if (!ComboCalculadoEsquemaHelper::disponible()) {
+            return 0;
+        }
+
+        try {
+
+            $cantidad = Combo::where('user_id', self::id_del_dueno($user_id))
+                                ->where('calcular_desde_articulos', 1)
+                                ->count();
+
+        } catch (\Throwable $e) {
+
+            Log::warning('ComboCalculadoHelper: no se pudo contar los combos calculados del dueño', [
+                'user_id' => $user_id,
+                'motivo'  => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+
+        if ($cantidad === 0) {
+            return 0;
+        }
+
+        if ($cantidad <= self::MAXIMO_EN_LINEA) {
+            return self::recalcular_de_un_dueno($user_id);
+        }
+
+        return self::encolar_recalculo_de_un_dueno($user_id) ? $cantidad : 0;
     }
 
     /**

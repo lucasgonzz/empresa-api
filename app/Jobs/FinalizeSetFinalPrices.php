@@ -131,6 +131,13 @@ class FinalizeSetFinalPrices implements ShouldQueue
                     $detalle
                 );
 
+                /*
+                 * F5: la corrida que se da por perdida puede haber escrito precios de una parte de
+                 * los lotes, y los combos que dependen de esos artículos quedarían viejos. Se encola
+                 * el recálculo igual (después de avisar, sin bloquear nada).
+                 */
+                ComboCalculadoHelper::encolar_recalculo_de_un_dueno($this->user_id);
+
                 return;
             }
 
@@ -176,21 +183,6 @@ class FinalizeSetFinalPrices implements ShouldQueue
             return;
         }
 
-        /*
-         * Combos calculados (misión combos-calculados, 30/9/2026): todos los lotes de la corrida ya
-         * escribieron sus precios, así que ahora sí los combos calculados del dueño rehacen su
-         * cuenta, UNA vez por corrida y no una por lote. Se hacen TODOS los del dueño y no "los que
-         * incluyen los artículos que cambiaron": esta tabla solo registra los artículos cuyo
-         * precio final cambió, y un combo también depende del costo real, que puede haberse movido
-         * sin mover el precio.
-         *
-         * Va ANTES de cerrar la corrida, no después: este job se reintenta hasta que la corrida
-         * está cerrada (arriba, `status != en_proceso` corta), así que si algo muriera entre el
-         * cierre y el recálculo, los combos quedarían viejos sin nadie que lo reintente. Recalcular
-         * dos veces es inocuo (idempotente). El helper no tira: sus fallas quedan en el log.
-         */
-        ComboCalculadoHelper::recalcular_de_un_dueno($this->user_id);
-
         $articles_updated = (int) DB::table('price_update_run_articles')
             ->where('price_update_run_id', $run->id)
             ->count();
@@ -234,6 +226,23 @@ class FinalizeSetFinalPrices implements ShouldQueue
         if (self::corresponde_avisar_el_cierre($run)) {
             SetFinalPricesNotificationHelper::notify_prices_updated($this->user_id, $run);
         }
+
+        /*
+         * Combos calculados (misión combos-calculados): todos los lotes de la corrida ya escribieron
+         * sus precios, así que los combos calculados del dueño rehacen su cuenta, UNA vez por corrida
+         * y no una por lote. Se hacen TODOS los del dueño y no "los que incluyen los artículos que
+         * cambiaron": esta tabla solo registra los artículos cuyo precio final cambió, y un combo
+         * también depende del costo real, que puede haberse movido sin mover el precio.
+         *
+         * 🔴 F5: va DESPUÉS de cerrar la corrida y EN COLA, no inline. Antes corría acá, antes del
+         * cierre: con muchos combos podía pasarse del `$timeout` de este job y dejar la corrida
+         * abierta (y este job reintentándose hasta el tope de 120 intentos) por algo que no tiene
+         * nada que ver con los precios. Ahora, si el recálculo de combos falla o tarda, la corrida ya
+         * está cerrada y avisada; los combos se corrigen con el job (idempotente) o con la red de
+         * seguridad diaria. `encolar_recalculo_de_un_dueno()` no tira y no encola si el dueño no
+         * tiene combos calculados.
+         */
+        ComboCalculadoHelper::encolar_recalculo_de_un_dueno($this->user_id);
     }
 
     /**

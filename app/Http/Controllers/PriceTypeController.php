@@ -201,7 +201,7 @@ class PriceTypeController extends Controller
 
         try {
 
-            ComboCalculadoHelper::recalcular_de_un_dueno($this->userId());
+            ComboCalculadoHelper::recalcular_de_un_dueno_o_encolar($this->userId());
 
         } catch (\Throwable $e) {
 

@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\FinalizeSetFinalPrices;
+use App\Jobs\RecalcularCombosCalculados;
 use App\Jobs\RollbackArticleImportHistory;
 use App\Models\Article;
 use App\Models\Combo;
@@ -324,6 +325,17 @@ class Recalculo_de_combos_Test extends ComboCalculadoTestCase
 
         $this->assertNotEquals('en_proceso', $run->fresh()->status, 'precondición: la corrida cerró');
 
+        /*
+         * F5: el cierre ya no recalcula los combos en línea, los ENCOLA (después de cerrar la
+         * corrida). Con la cola falsa el combo sigue viejo hasta que el job corre: se verifica que
+         * se encoló y que el job hace el trabajo.
+         */
+        Queue::assertPushed(RecalcularCombosCalculados::class);
+
+        $this->assertSame(200.0, $this->costo_en_base($this->combo), 'el cierre no recalcula en línea');
+
+        Queue::pushed(RecalcularCombosCalculados::class)->first()->handle();
+
         $this->assert_combo_al_dia('cierre del recálculo por cola');
     }
 
@@ -382,6 +394,11 @@ class Recalculo_de_combos_Test extends ComboCalculadoTestCase
         (new FinalizeArticleImport(self::DUENO, $historial->id, 0))->handle();
 
         $this->assertSame('terminado', $historial->fresh()->status, 'precondición: la importación cerró');
+
+        // F5: el cierre encola el recálculo (ver el test del cierre por cola); el job hace el trabajo.
+        Queue::assertPushed(RecalcularCombosCalculados::class);
+
+        Queue::pushed(RecalcularCombosCalculados::class)->first()->handle();
 
         $this->assert_combo_al_dia('cierre de la importación');
     }
@@ -594,12 +611,14 @@ class Recalculo_de_combos_Test extends ComboCalculadoTestCase
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Cuando ningún combo calculado incluye el artículo, el disparador cuesta UNA consulta. Es lo
+     * Cuando ningún combo calculado incluye el artículo, el disparador cuesta a lo sumo DOS
+     * consultas (el EXISTS "¿tiene el dueño algún combo calculado?" y el JOIN con `article_combo`),
+     * y UNA sola si el dueño no tiene combos calculados: el EXISTS corta antes del JOIN (F5). Es lo
      * que permite engancharlo en `setFinalPrice`, que corre en cada guardado.
      *
      * @test
      */
-    public function un_articulo_que_no_esta_en_ningun_combo_calculado_cuesta_una_consulta()
+    public function un_articulo_que_no_esta_en_ningun_combo_calculado_cuesta_a_lo_sumo_dos_consultas()
     {
         $suelto = $this->nuevo_articulo();
 
@@ -615,7 +634,37 @@ class Recalculo_de_combos_Test extends ComboCalculadoTestCase
         $recalculados = ComboCalculadoHelper::recalcular_por_articulos([$suelto->id]);
 
         $this->assertSame(0, $recalculados);
-        $this->assertCount(1, $consultas, 'una sola consulta: ' . implode(' | ', $consultas));
+        $this->assertCount(2, $consultas, 'el EXISTS y el JOIN: ' . implode(' | ', $consultas));
+    }
+
+    /**
+     * F5: si el dueño no tiene NINGÚN combo calculado, el disparador paga una sola consulta (el
+     * EXISTS) y ni se acerca al JOIN con `article_combo`: es el caso de casi todas las cuentas.
+     *
+     * @test
+     */
+    public function sin_combos_calculados_el_disparador_no_paga_el_join()
+    {
+        // Ningún combo calculado en la cuenta: se apaga el del fixture y se mira la base entera.
+        \Illuminate\Support\Facades\DB::table('combos')->update(['calcular_desde_articulos' => 0]);
+
+        $articulo = $this->nuevo_articulo();
+
+        ComboCalculadoHelper::recalcular_por_articulos([$articulo->id]);
+
+        $consultas = [];
+
+        DB::listen(function ($consulta) use (&$consultas) {
+            $consultas[] = $consulta->sql;
+        });
+
+        $this->assertSame(0, ComboCalculadoHelper::recalcular_por_articulos([$articulo->id]));
+
+        $this->assertCount(1, $consultas, 'solo el EXISTS: ' . implode(' | ', $consultas));
+
+        foreach ($consultas as $sql) {
+            $this->assertStringNotContainsString('article_combo', $sql, 'el JOIN con article_combo no se toca.');
+        }
     }
 
     /**
