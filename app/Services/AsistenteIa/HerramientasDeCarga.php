@@ -929,6 +929,14 @@ class HerramientasDeCarga
                         'margenes_por_lista' => self::esquema_de_margenes_por_lista(
                             'Solo para entidad article en un negocio que trabaja con listas de precio (que_puedo_cargar de article te lo dice): el margen de ganancia de cada lista, como lo dijo la persona. "lista" es el nombre de la lista (o "todas"); "margen", el porcentaje (30 es 30 %). Si la persona dijo un margen sin decir para qué lista, NO lo mandes: preguntale cuál. Con reemplaza_a NO lo mandes si no cambia: se hereda; [] lo saca.'
                         ),
+                        'stock_inicial'      => [
+                            'type'        => 'number',
+                            'description' => 'Solo para entidad article: cuántas unidades de stock entran al crearlo, como lo dijo la persona (las unidades del Listado, no bultos). Queda en un renglón de la tarjeta y se carga al confirmar. Con reemplaza_a NO lo mandes si no cambia: se hereda; 0 lo saca.',
+                        ],
+                        'deposito'           => [
+                            'type'        => 'string',
+                            'description' => 'Solo con stock_inicial, y solo si el negocio tiene depósitos o sucursales: en cuál entra el stock inicial. Si la persona no lo dijo, no lo mandes: uso el suyo o el único, y si hay que elegir la respuesta trae "faltan".',
+                        ],
                     ],
                     'required'   => ['entidad', 'datos'],
                 ],
@@ -1138,7 +1146,7 @@ class HerramientasDeCarga
                         ],
                         'deposito'    => [
                             'type'        => 'string',
-                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito.',
+                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito. Si el negocio no tiene depósitos, no lo mandes: la tarjeta deja el stock total del artículo.',
                         ],
                         'cantidad'    => [
                             'type'        => 'number',
@@ -1151,7 +1159,14 @@ class HerramientasDeCarga
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
                     ],
-                    'required'   => ['deposito', 'cantidad', 'modo'],
+                    /*
+                     * Misión alta-por-agente-margen-y-stock (29/9/2026): `deposito` dejó de ser
+                     * obligatorio. En un negocio sin depósitos no hay ninguno que mandar (en demo3 esa
+                     * era la única herramienta de stock y cortaba con un error que el modelo leyó
+                     * como "ya está"). Con depósitos y sin mandarlo, la respuesta trae "faltan". Un
+                     * cliente MCP viejo que lo manda sigue andando igual.
+                     */
+                    'required'   => ['cantidad', 'modo'],
                 ],
             ],
             [

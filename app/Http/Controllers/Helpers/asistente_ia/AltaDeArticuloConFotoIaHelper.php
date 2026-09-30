@@ -55,6 +55,9 @@ use Illuminate\Support\Facades\Log;
  *     `price_types` que manda la ficha (MargenesPorListaIaHelper::price_types_para_el_payload)
  *     antes de llamar a store(). Acá se separa, se hereda, se resuelve y, después del alta, se
  *     VERIFICA releyendo el pivote.
+ *   - `stock_inicial` (y `deposito` si el negocio tiene depósitos): se resuelve al proponer
+ *     (PropuestaStockIaHelper::resolver_stock_inicial) y se carga DESPUÉS del alta, como la foto,
+ *     por el camino del botón "Asignar Stock" (PropuestaStockIaHelper::cargar_stock_inicial).
  *
  * 🔴 En demo3 el agente dijo "las 20 unidades ya quedaron cargadas" y el margen "del 30 %"
  * quedó en 0 % en las dos listas: el resultado del alta decía "creado" y nada más. Por eso
@@ -73,6 +76,10 @@ class AltaDeArticuloConFotoIaHelper
     /** El margen por lista (misión alta-por-agente-margen-y-stock, 29/9/2026). */
     const MARGENES = MargenesPorListaIaHelper::CLAVE;
 
+    /** El stock inicial y su depósito (misión alta-por-agente-margen-y-stock, 29/9/2026). */
+    const STOCK_INICIAL = 'stock_inicial';
+    const DEPOSITO = 'deposito';
+
     /** La única entidad que acepta extras. */
     const ENTIDAD = 'article';
 
@@ -90,6 +97,7 @@ class AltaDeArticuloConFotoIaHelper
     const QUITAR_FOTO = 'quitar_foto';
     const QUITAR_DESCRIPCION = 'quitar_descripcion';
     const QUITAR_MARGENES = 'quitar_margenes_por_lista';
+    const QUITAR_STOCK = 'quitar_stock_inicial';
 
     /** Cuánto de la descripción se muestra en la tarjeta: la persona la ve, pero no entera. */
     const LARGO_EN_LA_TARJETA = 300;
@@ -148,7 +156,7 @@ class AltaDeArticuloConFotoIaHelper
      */
     public static function claves()
     {
-        return [self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION, self::MARGENES];
+        return [self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION, self::MARGENES, self::STOCK_INICIAL, self::DEPOSITO];
     }
 
     /**
@@ -238,6 +246,26 @@ class AltaDeArticuloConFotoIaHelper
             if (count($heredados)) {
 
                 $extras[self::MARGENES] = $heredados;
+            }
+        }
+
+        /*
+         * El stock inicial también: la cantidad y el depósito se heredan cada uno por su lado ("sí,
+         * pero que sean 30" cambia la cantidad y deja el depósito; "ponelo en Florida" al revés).
+         * `stock_inicial: 0` explícito (QUITAR_STOCK) saca los dos.
+         */
+        if (empty($extras[self::QUITAR_STOCK]) && !empty($de_antes[self::STOCK_INICIAL]) && is_array($de_antes[self::STOCK_INICIAL])) {
+
+            $stock_de_antes = $de_antes[self::STOCK_INICIAL];
+
+            if (!array_key_exists(self::STOCK_INICIAL, $extras) && isset($stock_de_antes['cantidad'])) {
+
+                $extras[self::STOCK_INICIAL] = (float) $stock_de_antes['cantidad'];
+            }
+
+            if (!array_key_exists(self::DEPOSITO, $extras) && !empty($stock_de_antes['deposito'])) {
+
+                $extras[self::DEPOSITO] = (string) $stock_de_antes['deposito'];
             }
         }
 
@@ -362,6 +390,40 @@ class AltaDeArticuloConFotoIaHelper
             }
         }
 
+        /*
+         * 🔴 El stock inicial (misión alta-por-agente-margen-y-stock, 29/9/2026): si la persona lo
+         * dijo, va en un renglón de la tarjeta o no va. En demo3 el agente dijo "tengo listo el
+         * alta con 20 unidades" sin ningún lugar donde cargarlas. Se resuelve AL PROPONER (permiso,
+         * cantidad y depósito) y se carga después del alta, en completar().
+         */
+        if (array_key_exists(self::STOCK_INICIAL, $extras)) {
+
+            $stock = PropuestaStockIaHelper::resolver_stock_inicial(
+                $contexto,
+                $extras[self::STOCK_INICIAL],
+                isset($extras[self::DEPOSITO]) ? $extras[self::DEPOSITO] : ''
+            );
+
+            if (RespuestaDeCargaIa::es_negativa($stock)) {
+
+                return $stock;
+            }
+
+            $guardar[self::STOCK_INICIAL] = $stock;
+
+            $renglones[] = [
+                'etiqueta' => 'Stock inicial',
+                'valor'    => PropuestaStockIaHelper::numero_legible($stock['cantidad']) . (is_null($stock['deposito']) ? '' : ' (en ' . $stock['deposito'] . ')'),
+            ];
+
+        } elseif (isset($extras[self::DEPOSITO])) {
+
+            /* Un depósito suelto no carga nada: se dice, no se ignora. */
+            return RespuestaDeCargaIa::error(
+                'Mandaste un depósito sin stock_inicial: el depósito es para el stock inicial del artículo. Si la persona dijo cuántas unidades, mandalas en stock_inicial; si no, no mandes deposito.'
+            );
+        }
+
         return ['extras' => $guardar, 'renglones' => $renglones, 'imagen_url' => $imagen_url];
     }
 
@@ -468,6 +530,33 @@ class AltaDeArticuloConFotoIaHelper
             foreach ($verificado['fallas'] as $falla) {
 
                 $fallas[] = $falla;
+            }
+        }
+
+        /*
+         * El stock inicial va DESPUÉS de la foto y la descripción, con el artículo ya creado: el
+         * movimiento necesita el artículo, y en uno recién creado CheckToAddress le abre el
+         * depósito porque no hay stock global que perder. Si falla, el artículo no se deshace (ver
+         * el 🔴 del docblock): el resultado lo dice y el stock se puede pedir de nuevo.
+         */
+        if (!empty($extras[self::STOCK_INICIAL]) && is_array($extras[self::STOCK_INICIAL])) {
+
+            $stock = $extras[self::STOCK_INICIAL];
+
+            $cantidad = isset($stock['cantidad']) ? (float) $stock['cantidad'] : 0.0;
+
+            $address_id = isset($stock['address_id']) && !is_null($stock['address_id']) ? (int) $stock['address_id'] : null;
+
+            $motivo = PropuestaStockIaHelper::cargar_stock_inicial($contexto, $articulo, $cantidad, $address_id);
+
+            if (is_null($motivo)) {
+
+                $hechos[] = 'stock inicial ' . PropuestaStockIaHelper::numero_legible($cantidad)
+                    . (empty($stock['deposito']) ? '' : ' en ' . $stock['deposito']);
+
+            } else {
+
+                $fallas[] = 'el stock inicial no se pudo cargar: ' . $motivo;
             }
         }
 
@@ -686,6 +775,42 @@ class AltaDeArticuloConFotoIaHelper
 
                 $limpios[self::MARGENES] = $valor;
             }
+        }
+
+        /*
+         * El stock inicial también viaja crudo (lo valida PropuestaStockIaHelper::resolver_stock_inicial).
+         * Un 0 explícito —0, "0", "0 unidades", "" o false— es la forma de decir "sin stock" en una
+         * corrección: QUITA el heredado, igual que `imagen_id: 0` con la foto.
+         */
+        if (array_key_exists(self::STOCK_INICIAL, $extras) && !is_null($extras[self::STOCK_INICIAL])) {
+
+            $valor = $extras[self::STOCK_INICIAL];
+
+            $numero = PropuestaStockIaHelper::cantidad_de_stock($valor);
+
+            $es_cero = $valor === false
+                || (is_string($valor) && trim($valor) === '')
+                || (!is_null($numero) && abs($numero) < 0.0001);
+
+            if ($es_cero && $es_articulo) {
+
+                $limpios[self::QUITAR_STOCK] = true;
+
+            } elseif (!$es_cero) {
+
+                $limpios[self::STOCK_INICIAL] = $valor;
+            }
+        }
+
+        if (array_key_exists(self::DEPOSITO, $extras) && is_scalar($extras[self::DEPOSITO]) && trim((string) $extras[self::DEPOSITO]) !== '') {
+
+            $limpios[self::DEPOSITO] = trim((string) $extras[self::DEPOSITO]);
+        }
+
+        /* Sin stock no hay depósito del stock: una corrección que saca el stock saca los dos. */
+        if (!empty($limpios[self::QUITAR_STOCK])) {
+
+            unset($limpios[self::DEPOSITO]);
         }
 
         /*
