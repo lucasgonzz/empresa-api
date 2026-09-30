@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -28,6 +29,10 @@ use Illuminate\Support\Facades\Log;
  * posterior es barata para un artículo; para una categoría, asignar sin mirar es justo lo que
  * Lucas no quiere ("solo si no encuentra o no está seguro, le pregunta al usuario"). Si alguien
  * quiere "simplificar" esto devolviendo `usar`, está cambiando la regla de negocio.
+ *
+ * Misión modelos-ia-por-cliente (30/9/2026): es la misma tarea `imagenes` que el padre. El proveedor
+ * y el modelo salen de ModelosIaHelper (`users.ia_modelo_imagenes`, default DeepSeek Flash; sin
+ * DEEPSEEK_API_KEY, Anthropic con el Haiku de siempre) y la llamada va por post_a_la_ia() del padre.
  */
 class CategoriaImagenValidacionService extends ArticleImageValidationService
 {
@@ -70,10 +75,15 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
             return $this->no_verificada('Se alcanzó el límite de validaciones con IA de esta corrida.');
         }
 
-        $api_key = (string) config('services.anthropic.api_key');
+        /*
+         * La misma tarea `imagenes` que el padre (misión modelos-ia-por-cliente, 30/9/2026): la IA
+         * que el admin eligió para este cliente, con su fallback de clave. Acá no hay artículo, así
+         * que el dueño sale directo del `$user_id` que pasa el job (el owner de la corrida).
+         */
+        $ia = ModelosIaHelper::resolver(ModelosIaHelper::dueno_de($user_id), ModelosIaHelper::TAREA_IMAGENES, true);
 
-        if ($api_key === '') {
-            Log::info('[ValidacionImagenCategoria] ANTHROPIC_API_KEY no configurada; la candidata queda dudosa.', [
+        if (is_null($ia)) {
+            Log::info('[ValidacionImagenCategoria] Sin clave de IA (ANTHROPIC_API_KEY ni DEEPSEEK_API_KEY); la candidata queda dudosa.', [
                 'categoria' => $nombre_categoria,
             ]);
 
@@ -90,38 +100,37 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
             return $this->no_verificada();
         }
 
-        $timeout = (int) config('services.article_image_validation.timeout');
-        $model   = (string) config('services.article_image_validation.model');
+        $timeout   = (int) config('services.article_image_validation.timeout');
+        $model     = $ia['modelo'];
+        $proveedor = $ia['proveedor'];
 
         try {
-            $response = $this->build_anthropic_http_client($api_key)
-                ->timeout($timeout > 0 ? $timeout : 25)
-                ->post('https://api.anthropic.com/v1/messages', [
-                    'model'      => $model,
-                    'max_tokens' => 300,
-                    'system'     => $this->build_system_prompt_categoria(),
-                    'messages'   => [
-                        [
-                            'role'    => 'user',
-                            'content' => [
-                                [
-                                    'type'   => 'image',
-                                    'source' => [
-                                        'type'       => 'base64',
-                                        'media_type' => 'image/webp',
-                                        'data'       => $resized_base64,
-                                    ],
+            $response = $this->post_a_la_ia($ia, $timeout, [
+                'model'      => $model,
+                'max_tokens' => 300,
+                'system'     => $this->build_system_prompt_categoria(),
+                'messages'   => [
+                    [
+                        'role'    => 'user',
+                        'content' => [
+                            [
+                                'type'   => 'image',
+                                'source' => [
+                                    'type'       => 'base64',
+                                    'media_type' => 'image/webp',
+                                    'data'       => $resized_base64,
                                 ],
-                                [
-                                    'type' => 'text',
-                                    'text' => $this->build_user_prompt_categoria($nombre_categoria),
-                                ],
+                            ],
+                            [
+                                'type' => 'text',
+                                'text' => $this->build_user_prompt_categoria($nombre_categoria),
                             ],
                         ],
                     ],
-                ]);
+                ],
+            ]);
         } catch (\Exception $e) {
-            Log::info('[ValidacionImagenCategoria] Error de conexión con Anthropic.', [
+            Log::info('[ValidacionImagenCategoria] Error de conexión con '.$this->nombre_del_proveedor($proveedor).'.', [
                 'categoria' => $nombre_categoria,
                 'error'     => $e->getMessage(),
             ]);
@@ -136,8 +145,9 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
             $body      = $response->json();
             $api_error = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP '.$response->status();
 
-            Log::info('[ValidacionImagenCategoria] Anthropic respondió con error.', [
+            Log::info('[ValidacionImagenCategoria] '.$this->nombre_del_proveedor($proveedor).' respondió con error.', [
                 'categoria' => $nombre_categoria,
+                'status'    => $response->status(),
                 'error'     => $api_error,
             ]);
 
@@ -147,11 +157,13 @@ class CategoriaImagenValidacionService extends ArticleImageValidationService
         $body = $response->json();
 
         // Consumo de tokens (misión tokens-por-cliente), después del guard de `!successful()`:
-        // lo que Anthropic rechazó no se paga. Mismo criterio que validate() del padre.
+        // lo que el proveedor rechazó no se paga. Mismo criterio que validate() del padre, con el
+        // proveedor que efectivamente contestó (misión modelos-ia-por-cliente).
         AiTokenUsageHelper::registrar([
             'user_id'       => is_null($user_id) ? null : (int) $user_id,
             'proceso'       => self::PROCESO_TOKENS,
             'body'          => is_array($body) ? $body : [],
+            'proveedor'     => $proveedor,
             'modelo'        => isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : $model,
             'referencia_id' => is_null($category_id) ? null : (int) $category_id,
         ]);

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Events\ArticleBatchImagesProcessed;
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use App\Jobs\ProcessImageAssignmentRunJob;
 use App\Models\Article;
 use App\Models\ArticleImageSearchAttempt;
@@ -292,9 +293,19 @@ class ImageAssignmentRunHelper
      * ¿Está la IA para validar las imágenes? Sin ella nada se asigna solo (plan §13, B2): todo
      * terminaría "a revisar" gastando búsquedas.
      *
+     * Misión modelos-ia-por-cliente (30/9/2026): "configurada" es que ModelosIaHelper pueda resolver
+     * la tarea `imagenes` para el dueño, o sea que haya clave de ALGÚN proveedor (el elegido o el
+     * del fallback). `$owner` es opcional para no tocar a los llamadores que no lo tienen a mano
+     * (ProcessImageAssignmentRunJob): para esta pregunta el dueño no cambia la respuesta, porque
+     * todas las opciones válidas de `imagenes` ven y el fallback cruza de proveedor.
+     *
+     * 🔴 El motivo sin clave ARRANCA IGUAL que antes ("Falta la clave de la IA (ANTHROPIC_API_KEY)")
+     * y nombra después la de DeepSeek: con cualquiera de las dos alcanza.
+     *
+     * @param  \App\Models\User|null $owner
      * @return array  ['configurada' => bool, 'motivo' => string|null]
      */
-    public static function ia_disponible()
+    public static function ia_disponible($owner = null)
     {
         if (!config('services.article_image_validation.enabled')) {
             return [
@@ -303,10 +314,10 @@ class ImageAssignmentRunHelper
             ];
         }
 
-        if (trim((string) config('services.anthropic.api_key')) === '') {
+        if (is_null(ModelosIaHelper::resolver($owner, ModelosIaHelper::TAREA_IMAGENES, true))) {
             return [
                 'configurada' => false,
-                'motivo'      => 'Falta la clave de la IA (ANTHROPIC_API_KEY) en el servidor de este cliente.',
+                'motivo'      => 'Falta la clave de la IA (ANTHROPIC_API_KEY) en el servidor de este cliente, y tampoco está la de DeepSeek (DEEPSEEK_API_KEY): con cualquiera de las dos alcanza.',
             ];
         }
 
@@ -414,7 +425,7 @@ class ImageAssignmentRunHelper
         // Con el dueño (misión serper-en-user-setup, 28/9/2026): alcanza con la clave del comercio,
         // aunque el .env del servidor no tenga SERPER_API_KEY.
         $configurado = ImageSearchProviderFactory::serper_configurado($owner);
-        $ia          = self::ia_disponible();
+        $ia          = self::ia_disponible($owner);
 
         $activa = self::corrida_de_catalogo_activa((int) $owner->id);
 
@@ -466,7 +477,7 @@ class ImageAssignmentRunHelper
         }
 
         // Sin IA nada se asigna solo: el catálogo entero terminaría "a revisar" pagando búsquedas.
-        $ia = self::ia_disponible();
+        $ia = self::ia_disponible($owner);
 
         if (!$ia['configurada']) {
             return [
