@@ -23,7 +23,7 @@ use Illuminate\Support\Facades\Queue;
  * tal cual (ver camino_viejo_*) y se compara contra StockEnLote sobre GEMELOS: cada escenario se
  * arma dos veces con el mismo estado inicial, uno va por cada camino, y las fotos tienen que ser
  * idénticas campo por campo (stock_movements salvo id/article_id/timestamps, articles.stock,
- * stock_updated_at igual al created_at del movimiento, address_article salvo id/article_id).
+ * stock_updated_at igual al created_at del último movimiento, address_article salvo id/article_id).
  *
  * Además: el número de consultas de volcar() no crece con la cantidad de artículos.
  *
@@ -300,15 +300,21 @@ class StockEnLoteTest extends ImportTestCase
                             ->get();
 
         $filas_movimientos = [];
-        $stock_updated_at_coincide = true;
+
+        // stock_updated_at tiene que ser el created_at del ÚLTIMO movimiento con concepto: cada
+        // crear() lo pisa con el suyo (SetStockUpdatedAt). No se compara contra todos porque en el
+        // camino viejo cada crear() toma su propio now() y dos llamadas pueden caer en segundos
+        // distintos, mientras que el lote usa un solo "ahora" (test intermitente, 29/9/2026).
+        // Todos los escenarios usan 'Importacion de excel', así que la excepción de ventas de
+        // SetStockUpdatedAt no entra en juego. Sin movimientos con concepto, da true.
+        $ultimo_con_concepto = null;
 
         foreach ($movimientos as $movimiento) {
 
             $arr = (array) $movimiento;
 
-            // stock_updated_at tiene que ser el created_at del movimiento (si el concepto existe).
-            if (!is_null($movimiento->concepto_stock_movement_id) && (string) $fila->stock_updated_at !== (string) $movimiento->created_at) {
-                $stock_updated_at_coincide = false;
+            if (!is_null($movimiento->concepto_stock_movement_id)) {
+                $ultimo_con_concepto = $movimiento;
             }
 
             unset($arr['id'], $arr['article_id'], $arr['created_at'], $arr['updated_at']);
@@ -316,6 +322,9 @@ class StockEnLoteTest extends ImportTestCase
             // Traducción de los ids de depósito a la clave del escenario (los gemelos comparten depósitos).
             $filas_movimientos[] = $arr;
         }
+
+        $stock_updated_at_coincide = is_null($ultimo_con_concepto)
+            || (string) $fila->stock_updated_at === (string) $ultimo_con_concepto->created_at;
 
         $depositos = DB::table('address_article')
                         ->where('article_id', $article->id)
