@@ -308,8 +308,17 @@ class Article extends Model
         return $this->belongsToMany('App\Models\SaleTax', 'article_sale_tax');
     }
 
+    /**
+     * Los combos que incluyen este artículo (tabla `article_combo`).
+     *
+     * 🔴 Esta relación estaba mal definida desde siempre: apuntaba a `Article` (un artículo contra
+     * sí mismo, con una pivote `article_article` que no existe) y nadie la usaba, por eso nunca
+     * reventó. La misión combos-calculados (30/9/2026) la corrigió a `Combo` porque "¿en qué combos
+     * está este artículo?" pasó a ser una pregunta real. `withTrashed()` para que incluya combos
+     * borrados, igual que `Combo::articles()` incluye artículos borrados.
+     */
     function combos() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed();
+        return $this->belongsToMany('App\Models\Combo')->withTrashed();
     }
 
     function brand() {
