@@ -2,8 +2,11 @@
 
 namespace Tests\Feature\Combos;
 
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
+use App\Models\Article;
 use App\Models\Combo;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Tests\Feature\Compras\ComprasTestCase;
 
@@ -61,7 +64,13 @@ class Combo_y_compra_con_update_prices_Test extends ComprasTestCase
 
         $this->assertNotEquals($costo_antes, (float) $combo_fila->cost, 'El costo del combo se movió con la compra.');
         $this->assertEqualsWithDelta(round($costo_del_articulo * 2, 2), (float) $combo_fila->cost, 0.01, 'El combo dice 2 x el costo de la pinza.');
-        $this->assertEqualsWithDelta(round((float) $fila->final_price * 2, 2), (float) $combo_fila->price, 0.01, 'Y 2 x su precio.');
+        /*
+         * El precio del artículo lo dice `resolver_precio_de_venta()` (esta cuenta tiene listas: el
+         * precio sin lista pedida es el de la lista por defecto, no `articles.final_price`).
+         */
+        $precio_del_articulo = ArticlePricesHelper::resolver_precio_de_venta(Article::find($pinza->id), User::find($pinza->user_id), null)['final_price'];
+
+        $this->assertEqualsWithDelta(round((float) $precio_del_articulo * 2, 2), (float) $combo_fila->price, 0.01, 'Y 2 x su precio.');
         $this->assertNotEquals($precio_antes, (float) $combo_fila->price, 'El precio del combo también se movió.');
     }
 }
